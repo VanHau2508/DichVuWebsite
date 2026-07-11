@@ -83,6 +83,7 @@ jobs:
           }
           run dbtest "cô lập tenant + bất biến schema"  sh -c 'node --test test/*.test.js'
           run auth   "auth (MFA / step-up)"             node apps/auth/test/e2e.mjs
+          run dbtest "chống chiếm shop (P0-4)"          node apps/platform/test/invitation-takeover.e2e.mjs
           run dbtest "onboarding shop"                  node apps/platform/test/e2e.mjs
           run dbtest "seller RBAC + step-up"            node apps/seller/test/e2e.mjs
           run dbtest "catalog"                          node apps/seller/test/catalog.e2e.mjs
@@ -139,7 +140,7 @@ jobs:
       - name: Mutation testing
         run: |
           fail=0
-          for h in tenant-isolation auth seller catalog storefront content preview seo blocks; do
+          for h in tenant-isolation auth invitation seller catalog fulfillment storefront content preview seo blocks; do
             echo "::group::verify-$h"
             if bash "scripts/verify-$h.sh"; then echo "PASS  verify-$h"; else echo "FAIL  verify-$h"; fail=1; fi
             echo "::endgroup::"

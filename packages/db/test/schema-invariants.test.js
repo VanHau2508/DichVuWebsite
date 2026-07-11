@@ -64,6 +64,40 @@ describe('vai trò database', () => {
     });
   }
 
+  test('app_rw KHÔNG ghi được bảng GLOBAL nào (trừ shops) — chống leo thang (P0-3)', async () => {
+    // Bất biến DURABLE: app_rw (service seller) chỉ được ghi bảng TENANT (có shop_id).
+    // Mọi bảng GLOBAL (không shop_id) mà app_rw ghi được là rò quyền — kể cả bảng
+    // thêm về sau tự nhận CRUD qua ALTER DEFAULT PRIVILEGES của 0003.
+    //   • shops được miễn: nó LÀ tenant, RLS khoá theo id = current_shop_id().
+    const { rows } = await owner.query(`
+      SELECT DISTINCT g.table_name
+      FROM information_schema.role_table_grants g
+      WHERE g.grantee = 'app_rw' AND g.table_schema = 'public'
+        AND g.privilege_type IN ('INSERT','UPDATE','DELETE')
+        AND g.table_name <> 'shops'
+        AND NOT EXISTS (
+          SELECT 1 FROM information_schema.columns c
+          WHERE c.table_schema = 'public' AND c.table_name = g.table_name
+            AND c.column_name = 'shop_id')
+    `);
+    assert.deepEqual(rows.map((r) => r.table_name), [],
+      'app_rw ghi được bảng global → leo thang nền tảng; REVOKE trong migration mới');
+  });
+
+  test('app_rw KHÔNG ghi được billing/ledger (tenant nhạy cảm) (P0-3)', async () => {
+    // Bảng tenant nhưng seller không được tự tác động: gói cước, sổ giao dịch.
+    for (const table of ['subscriptions', 'payment_transactions']) {
+      const { rows } = await owner.query(`
+        SELECT has_table_privilege('app_rw','${table}','INSERT') AS ins,
+               has_table_privilege('app_rw','${table}','UPDATE') AS upd,
+               has_table_privilege('app_rw','${table}','DELETE') AS del
+      `);
+      assert.equal(rows[0].ins, false, `${table}: app_rw KHÔNG được INSERT`);
+      assert.equal(rows[0].upd, false, `${table}: app_rw KHÔNG được UPDATE`);
+      assert.equal(rows[0].del, false, `${table}: app_rw KHÔNG được DELETE`);
+    }
+  });
+
   test('app_tls chỉ đọc được shops và domains', async () => {
     const { rows } = await owner.query(`
       SELECT table_name, privilege_type

@@ -109,12 +109,15 @@ async function setupProduct(shop, price, stock) {
   await rq(SELLER, 'POST', `/shops/${shop.shopId}/variants/${vid}/inventory/adjust`, { body: { delta: stock, reason: 'nhập' }, cookie: shop.cookie, origin: OS });
   return vid;
 }
-async function placeOrder(shop, vid, email, qty = 1) {
+async function placeOrder(shop, vid, email, qty = 1, method = 'cod') {
   const cart = (await co(shop.host, 'POST', '/cart/items', { body: { variant_id: vid, qty } })).cartToken;
-  const r = await co(shop.host, 'POST', '/checkout', { body: { customer: { name: 'Khach', phone: '0901234567', email }, payment_method: 'cod' }, cartToken: cart, idemKey: `k-${uniq()}` });
+  const r = await co(shop.host, 'POST', '/checkout', { body: { customer: { name: 'Khach', phone: '0901234567', email }, payment_method: method }, cartToken: cart, idemKey: `k-${uniq()}` });
   return { orderNum: r.json?.order_number, status: r.status, raw: r.raw };
 }
 const reserved = async (vid) => (await owner.query('SELECT reserved FROM inventory_levels WHERE variant_id=$1', [vid])).rows[0]?.reserved;
+const onHand = async (vid) => (await owner.query('SELECT on_hand FROM inventory_levels WHERE variant_id=$1', [vid])).rows[0]?.on_hand;
+const shipLedger = async (vid) => (await owner.query(`SELECT coalesce(sum(delta),0)::int s, count(*)::int n FROM inventory_ledger WHERE variant_id=$1 AND kind='ship'`, [vid])).rows[0];
+const orderStatus = async (id) => (await owner.query('SELECT status FROM orders WHERE id=$1', [id])).rows[0]?.status;
 const orderIdOf = async (shopId, num) => (await owner.query('SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2', [shopId, num])).rows[0]?.id;
 
 async function main() {
@@ -150,10 +153,16 @@ async function main() {
   r.status === 200 && r.json.status === 'confirmed' ? ok('confirm đơn → confirmed') : bad('confirm lỗi', r.raw);
   (await waitEmail(`Đơn hàng #${o1.orderNum} — đã xác nhận`)) ? ok('email "đã xác nhận"') : bad('không có email confirmed');
 
+  const ohBefore = await onHand(vid);          // = 10 (setup); o1 reserved 1, chưa đụng on_hand
   r = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oid}/ship`, { body: { tracking_number: 'VN123456789', carrier: 'GHN' }, cookie: A.cookie, origin: OS });
   r.status === 200 && r.json.tracking_number === 'VN123456789' ? ok('ship đơn → shipped + tracking') : bad('ship lỗi', r.raw);
   const shipMail = await waitEmail(`Đơn hàng #${o1.orderNum} — đang giao`);
   shipMail ? ok('email "đang giao" (có mã vận đơn)') : bad('không có email shipped');
+  // P0-5: ship CONSUME tồn — on_hand -= qty, reserved -= qty, ghi ledger 'ship'.
+  const ohAfter = await onHand(vid), resAfterShip = await reserved(vid), lg = await shipLedger(vid);
+  ohAfter === ohBefore - 1 ? ok(`ship consume on_hand ${ohBefore}→${ohAfter} (hàng rời kho)`) : bad('ship KHÔNG giảm on_hand', `${ohBefore}→${ohAfter}`);
+  resAfterShip === 0 ? ok('ship giải phóng reserved của đơn (đã thành xuất kho)') : bad('reserved không giảm khi ship', String(resAfterShip));
+  lg.n >= 1 && lg.s === -1 ? ok(`ledger 'ship' ghi delta ${lg.s} (giữ bất biến tổng==on_hand)`) : bad('thiếu/ sai ledger ship', JSON.stringify(lg));
 
   r = await rq(SELLER, 'GET', `/shops/${A.shopId}/orders/${oid}`, { cookie: A.cookie });
   r.json?.shipments?.[0]?.tracking_number === 'VN123456789' ? ok('shipment ghi đúng tracking') : bad('shipment sai', r.raw);
@@ -183,6 +192,29 @@ async function main() {
   await sleep(4000); // 3 attempts × 150ms backoff + xử lý
   const s1 = await workerStats();
   s1.failed > s0.failed ? ok(`email bounce → dead-letter (failed ${s0.failed}→${s1.failed}), không kẹt queue`) : bad('bounce không vào dead-letter', JSON.stringify(s1));
+
+  // ── 6. Hết hạn đơn QR chưa trả tiền → release reserve (P0-5) ────────────────
+  // Đặt đơn (reserve thật qua checkout), rồi ép thành đơn QR-chưa-trả-tiền bằng owner
+  // pool để tập trung kiểm SWEEP (luồng QR checkout + cấu hình bank kiểm ở payment e2e).
+  sect('6. Hết hạn đơn QR chưa trả tiền → release reserve');
+  const oq = await placeOrder(A, vid, `qr-${uniq()}@kh.vn`, 2);
+  const oidq = await orderIdOf(A.shopId, oq.orderNum);
+  // qr + unpaid + pending + quá hạn (1 giờ trước > ORDER_EXPIRY_MINUTES=30').
+  await owner.query(`UPDATE orders SET payment_method='qr', payment_status='unpaid', status='pending', created_at = now() - interval '1 hour' WHERE id=$1`, [oidq]);
+  const resBeforeExp = await reserved(vid);
+  const sweep = await (await fetch(`${WORKER}/internal/expire-sweep`, { method: 'POST' })).json();
+  const resAfterExp = await reserved(vid);
+  sweep.expired >= 1 && resAfterExp === resBeforeExp - 2 && (await orderStatus(oidq)) === 'cancelled'
+    ? ok(`sweep: đơn QR quá hạn → huỷ + release reserve ${resBeforeExp}→${resAfterExp}`)
+    : bad('sweep không release/huỷ đơn quá hạn', `expired=${sweep.expired} ${resBeforeExp}→${resAfterExp} status=${await orderStatus(oidq)}`);
+  // Đơn QR còn MỚI (created_at giờ) KHÔNG bị đụng.
+  const oq2 = await placeOrder(A, vid, `qr2-${uniq()}@kh.vn`, 1);
+  const oidq2 = await orderIdOf(A.shopId, oq2.orderNum);
+  await owner.query(`UPDATE orders SET payment_method='qr', payment_status='unpaid', status='pending' WHERE id=$1`, [oidq2]);
+  const resBeforeFresh = await reserved(vid);
+  await fetch(`${WORKER}/internal/expire-sweep`, { method: 'POST' });
+  (await reserved(vid)) === resBeforeFresh && (await orderStatus(oidq2)) === 'pending'
+    ? ok('đơn QR còn mới KHÔNG bị hết hạn (giữ reserve + pending)') : bad('sweep hết hạn nhầm đơn mới');
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

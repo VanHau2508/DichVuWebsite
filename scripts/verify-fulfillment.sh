@@ -55,6 +55,11 @@ mutate release seller 3040 "bỏ release reserve khi huỷ đơn" \
 mutate statemachine seller 3040 "bỏ kiểm state machine khi ship" \
   "sed -i \"s@if (o.status !== 'confirmed') return { code: 409, cur: o.status };@if (false) return { code: 409 };@\" $ORD"
 
+# Ship KHÔNG consume on_hand (P0-5) — hàng rời kho mà tồn không giảm → oversell.
+# (expire-release do worker lo — không mount src nên không mutate ở đây; e2e §6 tự canh.)
+mutate consume seller 3040 "bỏ consume on_hand khi ship" \
+  "sed -i 's@const nextOnHand = Math.max(0, lvl.on_hand - ln.qty);@const nextOnHand = lvl.on_hand;@' $ORD"
+
 sect "2. Trạng thái sau khi hoàn nguyên"
 restore; $COMPOSE restart seller checkout >/dev/null 2>&1; wait_svc seller 3040; wait_svc checkout 3060
 run_e2e && ok "e2e xanh trở lại" || bad "e2e còn đỏ — chưa hoàn nguyên đúng!"

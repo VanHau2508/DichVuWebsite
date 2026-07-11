@@ -83,6 +83,25 @@ async function shipOrder(res, ctx, body, params) {
     const o = (await c.query(`SELECT id, status, order_number, customer_email FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
     if (!o) return { code: 404 };
     if (o.status !== 'confirmed') return { code: 409, cur: o.status };
+    // CONSUME tồn: hàng rời kho. Mỗi dòng: on_hand -= qty, reserved -= qty, ghi ledger
+    // 'ship' (giữ bất biến tổng delta ledger == on_hand). Chỉ xảy ra MỘT lần: guard
+    // status='confirmed' ở trên = idempotent (ship lần 2 → 409). Cùng transaction với đổi trạng thái.
+    const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1`, [orderId])).rows;
+    for (const ln of lines) {
+      const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [ln.variant_id])).rows[0];
+      if (!lvl) continue; // biến thể không theo dõi tồn (không nên xảy ra sau reserve)
+      const nextOnHand = Math.max(0, lvl.on_hand - ln.qty);
+      const nextReserved = Math.max(0, lvl.reserved - ln.qty);
+      await c.query(`UPDATE inventory_levels SET on_hand = $2, reserved = $3, updated_at = now() WHERE variant_id = $1`, [ln.variant_id, nextOnHand, nextReserved]);
+      const delta = nextOnHand - lvl.on_hand; // = -qty (âm); dùng thay đổi thực tế để khớp invariant
+      if (delta !== 0) {
+        await c.query(
+          `INSERT INTO inventory_ledger (shop_id, variant_id, delta, kind, reason, actor_id)
+           VALUES (current_shop_id(), $1, $2, 'ship', $3, $4)`,
+          [ln.variant_id, delta, `đơn #${o.order_number}`, ctx.user.id],
+        );
+      }
+    }
     await c.query(`INSERT INTO shipments (shop_id, order_id, carrier, tracking_number, status) VALUES (current_shop_id(), $1, $2, $3, 'in_transit')`, [orderId, carrier || null, tracking]);
     await c.query(`UPDATE orders SET status = 'shipped', shipped_at = now() WHERE id = $1`, [orderId]);
     o.status = 'shipped';

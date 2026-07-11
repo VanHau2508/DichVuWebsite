@@ -541,32 +541,48 @@ async function acceptInvitation(req, res, body, ctx) {
       return send(res, 400, { error: 'lời mời đã được dùng' });
     }
 
-    // Tìm user theo email của lời mời. Chưa có → tạo (cần mật khẩu). Có rồi →
-    // chỉ thêm membership (bỏ qua mật khẩu; họ đã có tài khoản).
-    let userRow = (await client.query(`SELECT id FROM users WHERE email = $1`, [email])).rows[0];
-    let created = false;
-    if (!userRow) {
-      if (!validPassword(password)) {
-        await client.query('ROLLBACK');
-        return send(res, 400, { error: 'mật khẩu tối thiểu 10 ký tự' });
-      }
+    // TOKEN LỜI MỜI = bằng chứng sở hữu email. Ba nhánh (xem 0020):
+    const existing = (await client.query(`SELECT id, email_verified_at FROM users WHERE email = $1`, [email])).rows[0];
+    let userId, created = false;
+
+    if (!existing) {
+      // (a) Chưa có tài khoản → tạo mới, đánh dấu đã xác minh (token chứng minh email).
+      if (!validPassword(password)) { await client.query('ROLLBACK'); return send(res, 400, { error: 'mật khẩu tối thiểu 10 ký tự' }); }
       const hash = await hashPassword(password);
-      userRow = (
-        await client.query(`INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id`, [email, hash])
-      ).rows[0];
+      userId = (await client.query(
+        `INSERT INTO users (email, password_hash, email_verified_at) VALUES ($1, $2, now()) RETURNING id`,
+        [email, hash],
+      )).rows[0].id;
       created = true;
+    } else if (existing.email_verified_at === null) {
+      // (b) Tài khoản CHƯA xác minh (có thể do kẻ đăng ký trước để chiếm). Người giữ
+      // token mới là chủ email thật → CLAIM: đặt lại mật khẩu, TẮT MFA, thu hồi mọi
+      // phiên cũ. Sau bước này account thuộc về người vừa chấp nhận, kẻ cũ bị đá.
+      if (!validPassword(password)) { await client.query('ROLLBACK'); return send(res, 400, { error: 'mật khẩu tối thiểu 10 ký tự' }); }
+      const hash = await hashPassword(password);
+      userId = existing.id;
+      await client.query(`UPDATE users SET password_hash = $1, email_verified_at = now(), mfa_enabled = false WHERE id = $2`, [hash, userId]);
+      await client.query(`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, [userId]);
+    } else {
+      // (c) Tài khoản ĐÃ xác minh = chủ email hợp lệ (đã chứng minh trước). KHÔNG bind
+      // mù: bắt buộc đang đăng nhập ĐÚNG tài khoản này mới thêm membership.
+      if (!ctx.auth || ctx.auth.user.id !== existing.id) {
+        await client.query('ROLLBACK');
+        return send(res, 403, { error: 'vui lòng đăng nhập bằng tài khoản này rồi chấp nhận lại', login_required: true });
+      }
+      userId = existing.id;
     }
 
     // Tạo membership. Đã là thành viên (chấp nhận lại) → giữ nguyên, không lỗi.
     await client.query(
       `INSERT INTO memberships (shop_id, user_id, role) VALUES ($1, $2, $3)
        ON CONFLICT (shop_id, user_id) DO NOTHING`,
-      [shopId, userRow.id, role],
+      [shopId, userId, role],
     );
 
     await client.query('COMMIT');
     await audit('user.invitation_accepted', {
-      userId: userRow.id,
+      userId,
       ip: ctx.ip,
       ua: ctx.ua,
       metadata: { shop_id: shopId, role, created },

@@ -261,6 +261,10 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://app_worker:devpassword@postgres:5432/app
+      # Pool riêng, role hẹp: hết hạn đơn QR + release reserve (0022).
+      DATABASE_URL_EXPIRY: postgres://app_expiry:devpassword@postgres:5432/app
+      ORDER_EXPIRY_MINUTES: "30"
+      EXPIRY_SWEEP_MS: "60000"
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       SMTP_HOST: mailpit

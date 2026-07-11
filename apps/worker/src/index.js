@@ -28,6 +28,12 @@ const BACKOFF_MS = Number(process.env.EMAIL_BACKOFF_MS ?? 2000);
 const FROM = process.env.EMAIL_FROM ?? 'no-reply@nentang.vn';
 
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 4 });
+// Pool RIÊNG cho job hết hạn đơn (role app_expiry cực hẹp — xem migration 0022).
+// Thiếu env → tắt tính năng (worker vẫn chạy phần outbox).
+const EXPIRY_URL = process.env.DATABASE_URL_EXPIRY;
+const expiryDb = EXPIRY_URL ? new pg.Pool({ connectionString: EXPIRY_URL, max: 2 }) : null;
+const ORDER_EXPIRY_MINUTES = Number(process.env.ORDER_EXPIRY_MINUTES ?? 30);
+const EXPIRY_SWEEP_MS = Number(process.env.EXPIRY_SWEEP_MS ?? 60000);
 const connection = { host: process.env.REDIS_HOST ?? 'redis', port: Number(process.env.REDIS_PORT ?? 6379) };
 const transport = nodemailer.createTransport({ host: process.env.SMTP_HOST ?? 'mailpit', port: Number(process.env.SMTP_PORT ?? 1025), secure: false });
 
@@ -91,7 +97,45 @@ const worker = new Worker('email', async (job) => {
 
 worker.on('failed', (job, err) => log('warn', 'email_failed', { id: job?.id, attempts: job?.attemptsMade, message: err.message }));
 
+// ── sweep: hết hạn đơn QR chưa trả tiền → RELEASE reserve ─────────────────────
+// Đơn QR 'pending'/'unpaid' quá ORDER_EXPIRY_MINUTES: trả lại reserve + huỷ đơn.
+// FOR UPDATE SKIP LOCKED → hai lần quét không xử lý trùng; guard status='pending' =
+// idempotent. Release chỉ giảm reserved (KHÔNG đụng on_hand → không ghi ledger, giống cancel).
+async function sweepExpired() {
+  if (!expiryDb) return 0;
+  const c = await expiryDb.connect();
+  try {
+    await c.query('BEGIN');
+    const orders = (await c.query(
+      `SELECT id, shop_id FROM orders
+        WHERE payment_method = 'qr' AND payment_status = 'unpaid' AND status = 'pending'
+          AND created_at < now() - ($1 || ' minutes')::interval
+        ORDER BY id LIMIT 200 FOR UPDATE SKIP LOCKED`,
+      [String(ORDER_EXPIRY_MINUTES)],
+    )).rows;
+    for (const o of orders) {
+      const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
+      for (const ln of lines) {
+        await c.query(
+          `UPDATE inventory_levels SET reserved = GREATEST(0, reserved - $3), updated_at = now()
+            WHERE shop_id = $1 AND variant_id = $2`,
+          [o.shop_id, ln.variant_id, ln.qty],
+        );
+      }
+      await c.query(`UPDATE orders SET status = 'cancelled', cancelled_at = now() WHERE id = $1`, [o.id]);
+    }
+    await c.query('COMMIT');
+    if (orders.length) log('info', 'orders_expired', { n: orders.length });
+    return orders.length;
+  } catch (e) {
+    await c.query('ROLLBACK').catch(() => {});
+    log('error', 'expiry_error', { message: e.message });
+    return 0;
+  } finally { c.release(); }
+}
+
 const timer = setInterval(poll, POLL_MS);
+const expiryTimer = expiryDb ? setInterval(sweepExpired, EXPIRY_SWEEP_MS) : null;
 
 // ── HTTP: health + stats (cho e2e kiểm dead-letter) ──────────────────────────
 const server = http.createServer(async (req, res) => {
@@ -102,6 +146,13 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(counts));
   }
+  // Kích hoạt quét hết hạn ngay (nội bộ — không route qua Caddy; idempotent, vô hại).
+  // Cho phép cron ngoài gọi đúng lịch, và để e2e kiểm chứng xác định.
+  if (url.pathname === '/internal/expire-sweep' && req.method === 'POST') {
+    const n = await sweepExpired();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({ expired: n }));
+  }
   res.writeHead(404); res.end();
 });
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
@@ -109,8 +160,9 @@ server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, async () => {
     clearInterval(timer);
+    if (expiryTimer) clearInterval(expiryTimer);
     await worker.close().catch(() => {});
     await queue.close().catch(() => {});
-    server.close(async () => { await db.end().catch(() => {}); process.exit(0); });
+    server.close(async () => { await db.end().catch(() => {}); await expiryDb?.end().catch(() => {}); process.exit(0); });
   });
 }

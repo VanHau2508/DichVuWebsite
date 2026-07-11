@@ -70,7 +70,7 @@ const money = (vnd) => new Intl.NumberFormat('vi-VN').format(Number(vnd)) + '₫
 // ── section renderers (nhận dữ liệu ĐÃ đọc, escape khi render) ────────────────
 const SECTIONS = {
   header: (props, ctx) => `<header class="hdr"><a href="/" class="brand">${esc(ctx.shop.name)}</a>
-    <nav>${ctx.categories.map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}<a href="/cart" class="cart-link">🛒 Giỏ hàng</a></nav></header>`,
+    <nav>${ctx.categories.map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}<a href="/checkout/lookup">Tra cứu đơn</a><a href="/cart" class="cart-link">🛒 Giỏ hàng</a></nav></header>`,
 
   hero: (props) => `<section class="hero"><h1>${esc(props.title ?? '')}</h1>
     <p>${esc(props.subtitle ?? '')}</p></section>`,

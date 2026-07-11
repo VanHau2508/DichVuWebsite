@@ -1,6 +1,6 @@
 # Buyer checkout UI (giai đoạn UI — phần 1)
 
-> **Trạng thái: ĐÃ CHẠY.** buyer-flow e2e 15/15 (sản phẩm→giỏ→checkout→COD→QR, escape XSS).
+> **Trạng thái: ĐÃ CHẠY.** buyer-flow e2e 20/20 (sản phẩm→giỏ→checkout→COD→QR + tra cứu đơn, escape XSS).
 > Không hồi quy: checkout e2e 17, worker 18, storefront 16; verify-checkout 7/7 (luồng tiền
 > còn nguyên sau refactor). Rà soát đối kháng 3 chiều (xss/csrf/flow): 2 lỗi LOW đã sửa —
 > (1) lookup token rò qua Referer → `no-referrer` cho trang checkout; (2) thêm giỏ cộng dồn
@@ -50,10 +50,17 @@ Trang kết quả (/checkout/success): số đơn, chi tiết; COD → badge; QR
   đoán/liệt kê được. Trang HTML: `no-store` + `noindex` + `Referrer-Policy` → không rò token.
 - **Content negotiation** `GET /cart`: `Accept: text/html` → trang; khác → JSON (API/e2e vẫn chạy).
 
-## 5. Còn thiếu (fast-follow)
+## 5. Tra cứu đơn (khách quay lại)
+
+`GET /checkout/lookup` → form (số đơn + mã tra cứu, GET) → `/checkout/success` hiển thị đơn.
+Dùng lại `getSuccessPage` (so hash lookup token). `placed=1` (sau khi vừa đặt) → banner "thành
+công"; tra cứu bình thường → tiêu đề "Đơn hàng #X". Sai số/mã → 404 + form + lỗi, **KHÔNG lộ đơn
+và không xác nhận đơn tồn tại** (chống dò). Thiếu tham số → về form (không ngõ cụt). Link "Tra
+cứu đơn" ở header storefront. e2e §9 phủ: form, tra cứu đúng, banner khi vừa đặt, sai mã không lộ.
+
+## 6. Còn thiếu (fast-follow)
 
 - Chỉ báo số lượng giỏ ở header (cần đọc giỏ — app_store không có; hoặc thêm JS nhẹ sau).
 - Nâng cấp JS tuỳ chọn: ajax thêm giỏ (không rời trang), poll trạng thái QR bằng JS thay meta-refresh.
-- Order lookup UI (tra cứu đơn bằng số + token) cho khách quay lại.
 - Ảnh sản phẩm/biến thể trong giỏ; chọn nhiều thuộc tính (size/màu) rõ hơn.
 - Theme của shop cho trang checkout (cần cấp app_checkout đọc themes, hoặc storefront render).

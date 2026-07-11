@@ -74,6 +74,18 @@ export function renderError(shopName, msg) {
     <a class="btn alt" href="/cart">Quay lại giỏ hàng</a></div>`);
 }
 
+// Tra cứu đơn: khách nhập số đơn + mã tra cứu → GET /checkout/success (hiển thị đơn).
+// Dùng GET (chỉ đọc) — không đổi trạng thái. err escape để chống XSS khi hiển thị lại.
+export function renderLookup(shopName, err) {
+  return page('Tra cứu đơn hàng', shopName, `<h1>Tra cứu đơn hàng</h1>
+    ${err ? `<div class="card" style="border-color:#fca5a5;color:#b91c1c">${esc(err)}</div>` : ''}
+    <form method="GET" action="/checkout/success"><div class="card">
+      <label>Số đơn hàng</label><input name="number" inputmode="numeric" required placeholder="vd 12">
+      <label>Mã tra cứu</label><input name="token" required placeholder="mã trong trang xác nhận / email">
+    </div><button class="btn" type="submit">Tra cứu</button></form>
+    <a class="btn alt" href="/" style="margin-top:8px">Về cửa hàng</a>`);
+}
+
 export function renderCart(shopName, s) {
   if (!s.items.length) {
     return page('Giỏ hàng', shopName, `<div class="card empty"><p>Giỏ hàng trống.</p><a class="btn alt" href="/">Tiếp tục mua sắm</a></div>`);
@@ -107,7 +119,7 @@ export function renderCheckout(shopName, s, idemToken) {
     <a class="btn alt" href="/cart" style="margin-top:8px">Quay lại giỏ</a>`);
 }
 
-export function renderOrder(shopName, o, pay, qr) {
+export function renderOrder(shopName, o, pay, qr, justPlaced = false) {
   const paid = o.payment_status === 'paid';
   const statusVi = { pending: 'Chờ xử lý', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ' }[o.status] ?? o.status;
   const head = (o.payment_method === 'qr' && !paid && o.status !== 'cancelled') ? '<meta http-equiv="refresh" content="8">' : '';
@@ -130,13 +142,16 @@ export function renderOrder(shopName, o, pay, qr) {
     payBlock = `<div class="card"><span class="badge ok">Thanh toán khi nhận hàng (COD)</span></div>`;
   }
   return page(`Đơn #${o.order_number}`, shopName, `
-    <div class="card" style="text-align:center"><h1>Đặt hàng thành công 🎉</h1>
+    <div class="card" style="text-align:center">
+      <h1>${justPlaced ? 'Đặt hàng thành công 🎉' : `Đơn hàng #${o.order_number}`}</h1>
       <p>Đơn <strong>#${o.order_number}</strong> · <span class="badge ok">${esc(statusVi)}</span></p></div>
     ${payBlock}
     <div class="card"><h2>Chi tiết đơn</h2>
       ${o.lines.map((l) => `<div class="tot"><span class="muted">${esc(l.title_snapshot)} × ${l.qty}</span><span>${money(Number(l.unit_price_vnd) * l.qty)}</span></div>`).join('')}
       <div class="tot"><span class="muted">Phí giao hàng</span><span>${money(o.shipping_vnd)}</span></div>
       <div class="tot grand"><span>Tổng cộng</span><span>${money(o.total_vnd)}</span></div>
-      <p class="muted" style="margin-top:8px">Giao tới: ${esc(o.customer_name)}</p></div>
-    <a class="btn alt" href="/">Tiếp tục mua sắm</a>`, head);
+      <p class="muted" style="margin-top:8px">Giao tới: ${esc(o.customer_name)}</p>
+      ${justPlaced ? '<p class="muted">Lưu lại đường link/số đơn + mã này để tra cứu sau.</p>' : ''}</div>
+    <a class="btn alt" href="/checkout/lookup">Tra cứu đơn khác</a>
+    <a class="btn alt" href="/" style="margin-top:8px">Tiếp tục mua sắm</a>`, head);
 }

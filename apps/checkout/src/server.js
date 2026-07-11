@@ -18,7 +18,7 @@ import crypto from 'node:crypto';
 import pg from 'pg';
 import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE } from './http.js';
 import { buildVietQR } from './vietqr.js';
-import { renderCart, renderCheckout, renderOrder, renderError, qrSvg } from './pages.js';
+import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
 
 const PORT = Number(process.env.PORT ?? 3060);
 const SHIP_FEE = Number(process.env.SHIP_FEE_VND ?? 30000);
@@ -308,7 +308,7 @@ async function checkoutPlace(req, res, form, ctx) {
   const token = parseCookies(req)[CART_COOKIE];
   try {
     const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, ctx, token, idemKey, f));
-    return redirect(res, `/checkout/success?number=${out.body.order_number}&token=${encodeURIComponent(out.body.lookup_token)}`);
+    return redirect(res, `/checkout/success?number=${out.body.order_number}&token=${encodeURIComponent(out.body.lookup_token)}&placed=1`);
   } catch (err) {
     if (err.statusCode) return sendHtml(res, err.statusCode, renderError(shopName, err.body?.error ?? 'Không đặt được đơn.'));
     throw err;
@@ -343,11 +343,17 @@ async function getCheckoutPage(req, res, _body, ctx) {
   return sendHtml(res, 200, renderCheckout(await getShopName(ctx.shopId), summary, genToken()));
 }
 
+async function getLookupPage(req, res, _body, ctx) {
+  return sendHtml(res, 200, renderLookup(await getShopName(ctx.shopId)));
+}
+
 async function getSuccessPage(req, res, _body, ctx, query) {
-  const number = Number(query.get('number'));
+  const number = Number(String(query.get('number') ?? '').trim());
   const token = query.get('token');
+  const justPlaced = query.get('placed') === '1';
   const shopName = await getShopName(ctx.shopId);
-  if (!Number.isInteger(number) || !token) return sendHtml(res, 400, renderError(shopName, 'Thiếu thông tin đơn.'));
+  // Thiếu tham số → về form tra cứu (không phải ngõ cụt).
+  if (!Number.isInteger(number) || !token) return sendHtml(res, 200, renderLookup(shopName));
   const data = await withTenant(ctx.shopId, async (c) => {
     const o = (await c.query(
       `SELECT id, order_number, status, payment_status, payment_method, shipping_vnd, total_vnd, customer_name, payment_ref
@@ -361,12 +367,13 @@ async function getSuccessPage(req, res, _body, ctx, query) {
     }
     return { o, pay };
   });
-  if (!data) return sendHtml(res, 404, renderError(shopName, 'Không tìm thấy đơn.'));
+  // Sai số đơn/mã → form tra cứu kèm lỗi (không xác nhận đơn tồn tại; chống dò).
+  if (!data) return sendHtml(res, 404, renderLookup(shopName, 'Không tìm thấy đơn — kiểm tra lại số đơn và mã tra cứu.'));
   let qr = '';
   if (data.pay?.bank_bin && data.pay?.account_number) {
     qr = await qrSvg(buildVietQR({ bankBin: data.pay.bank_bin, accountNumber: data.pay.account_number, amountVnd: Number(data.o.total_vnd), content: data.o.payment_ref }));
   }
-  return sendHtml(res, 200, renderOrder(shopName, data.o, data.pay, qr));
+  return sendHtml(res, 200, renderOrder(shopName, data.o, data.pay, qr, justPlaced));
 }
 
 // ── router ───────────────────────────────────────────────────────────────────
@@ -380,6 +387,7 @@ const ROUTES = [
   { m: 'POST', p: '/checkout', fn: checkout },
   { m: 'POST', p: '/checkout/place', fn: checkoutPlace, form: true },
   { m: 'GET', p: '/checkout', fn: getCheckoutPage },
+  { m: 'GET', p: '/checkout/lookup', fn: getLookupPage },
   { m: 'GET', p: '/checkout/success', fn: getSuccessPage },
   { m: 'GET', p: '/checkout/order', fn: orderLookup },
 ];

@@ -164,6 +164,22 @@ async function main() {
   r.body.includes('<svg') && r.body.includes('113366668888') && /NTG[0-9A-F]{12}/.test(r.body)
     ? ok('trang QR: mã QR (SVG) + số TK + nội dung đối soát') : bad('trang QR thiếu QR/thông tin', r.body.match(/Chuyển khoản[\s\S]{0,200}/)?.[0]);
 
+  // ── 9. Tra cứu đơn (khách quay lại) ────────────────────────────────────────
+  sect('9. Tra cứu đơn');
+  r = await co({ host: A.host, path: '/checkout/lookup', accept: 'text/html' });
+  r.status === 200 && r.body.includes('action="/checkout/success"') && r.body.includes('name="number"') && r.body.includes('name="token"')
+    ? ok('trang tra cứu có form (số đơn + mã)') : bad('form tra cứu lỗi', String(r.status));
+  r = await co({ host: A.host, path: `/checkout/success?number=${m[1]}&token=${m[2]}`, accept: 'text/html' });
+  r.status === 200 && r.body.includes(`Đơn hàng #${m[1]}`) && !r.body.includes('Đặt hàng thành công')
+    ? ok('tra cứu đúng → xem đơn (không banner "vừa đặt")') : bad('tra cứu đúng lỗi', String(r.status));
+  r = await co({ host: A.host, path: `/checkout/success?number=${m[1]}&token=${m[2]}&placed=1`, accept: 'text/html' });
+  r.body.includes('Đặt hàng thành công') ? ok('vừa đặt (placed=1) → banner thành công') : bad('không có banner khi vừa đặt');
+  r = await co({ host: A.host, path: `/checkout/success?number=${m[1]}&token=saimakhonghople`, accept: 'text/html' });
+  r.status === 404 && r.body.includes('Không tìm thấy') && !r.body.includes('Giao tới')
+    ? ok('sai mã → KHÔNG lộ đơn, hiện form + lỗi') : bad('sai mã vẫn lộ đơn?', String(r.status));
+  r = await co({ host: A.host, path: '/checkout/success', accept: 'text/html' });
+  r.status === 200 && r.body.includes('Tra cứu đơn hàng') ? ok('thiếu tham số → form tra cứu (không ngõ cụt)') : bad('thiếu tham số không về form');
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

@@ -16,8 +16,9 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import pg from 'pg';
-import { readJson, send, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE } from './http.js';
+import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE } from './http.js';
 import { buildVietQR } from './vietqr.js';
+import { renderCart, renderCheckout, renderOrder, renderError, qrSvg } from './pages.js';
 
 const PORT = Number(process.env.PORT ?? 3060);
 const SHIP_FEE = Number(process.env.SHIP_FEE_VND ?? 30000);
@@ -70,102 +71,132 @@ async function summarize(c, cartId) {
   return { items: out, subtotal_vnd: subtotal, shipping_vnd: out.length ? SHIP_FEE : 0, total_vnd: subtotal + (out.length ? SHIP_FEE : 0) };
 }
 
-// ── cart handlers ────────────────────────────────────────────────────────────
-async function addItem(req, res, body, ctx) {
-  const variantId = body.variant_id;
-  const qty = body.qty;
-  if (typeof variantId !== 'string' || !UUID_RE.test(variantId)) return send(res, 400, { error: 'variant_id không hợp lệ' });
-  if (!isInt(qty) || qty < 1 || qty > 1000) return send(res, 400, { error: 'qty phải là 1..1000' });
+// Tên shop (cho header trang HTML). app_checkout có SELECT shops (policy checkout_shop).
+async function getShopName(shopId) {
+  try { return await withTenant(shopId, async (c) => (await c.query(`SELECT name FROM shops WHERE id = current_shop_id()`)).rows[0]?.name ?? null); }
+  catch { return null; }
+}
 
-  const token = parseCookies(req)[CART_COOKIE];
-  const result = await withTenant(ctx.shopId, async (c) => {
-    const v = (await c.query(`SELECT 1 FROM variants WHERE id = $1`, [variantId])).rows[0]; // RLS: chỉ variant active
-    if (!v) fail(404, 'sản phẩm không tồn tại hoặc ngừng bán');
+// ── cart handlers (lõi dùng chung JSON + form) ───────────────────────────────
+async function cartAddCore(c, token, variantId, qty) {
+  const v = (await c.query(`SELECT 1 FROM variants WHERE id = $1`, [variantId])).rows[0]; // RLS: chỉ variant active
+  if (!v) fail(404, 'sản phẩm không tồn tại hoặc ngừng bán');
+  let cart = await findCart(c, token);
+  let newToken = null;
+  if (!cart) {
+    newToken = genToken();
+    cart = (await c.query(
+      `INSERT INTO carts (shop_id, token_hash, expires_at) VALUES (current_shop_id(), $1, now() + ($2 || ' days')::interval) RETURNING id`,
+      [hashToken(newToken), String(CART_TTL_DAYS)],
+    )).rows[0];
+  }
+  const cur = (await c.query(`SELECT qty FROM cart_items WHERE cart_id = $1 AND variant_id = $2`, [cart.id, variantId])).rows[0];
+  const newQty = (cur?.qty ?? 0) + qty;
+  if (newQty > 1000) fail(422, 'vượt số lượng tối đa 1000 mỗi sản phẩm'); // đối xứng với cartSetQtyCore (cộng dồn không được vượt cap)
+  const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1`, [variantId])).rows[0];
+  const available = lvl ? lvl.on_hand - lvl.reserved : 0;
+  if (newQty > available) fail(422, 'không đủ tồn kho', { available });
+  await c.query(
+    `INSERT INTO cart_items (shop_id, cart_id, variant_id, qty) VALUES (current_shop_id(), $1, $2, $3)
+     ON CONFLICT (shop_id, cart_id, variant_id) DO UPDATE SET qty = $3`,
+    [cart.id, variantId, newQty],
+  );
+  return { summary: await summarize(c, cart.id), newToken };
+}
 
-    let cart = await findCart(c, token);
-    let newToken = null;
-    if (!cart) {
-      newToken = genToken();
-      cart = (await c.query(
-        `INSERT INTO carts (shop_id, token_hash, expires_at) VALUES (current_shop_id(), $1, now() + ($2 || ' days')::interval) RETURNING id`,
-        [hashToken(newToken), String(CART_TTL_DAYS)],
-      )).rows[0];
-    }
-
-    const cur = (await c.query(`SELECT qty FROM cart_items WHERE cart_id = $1 AND variant_id = $2`, [cart.id, variantId])).rows[0];
-    const newQty = (cur?.qty ?? 0) + qty;
+async function cartSetQtyCore(c, token, variantId, qty) {
+  const cart = await findCart(c, token);
+  if (!cart) fail(404, 'giỏ hàng không tồn tại');
+  if (qty === 0) {
+    await c.query(`DELETE FROM cart_items WHERE cart_id = $1 AND variant_id = $2`, [cart.id, variantId]);
+  } else {
     const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1`, [variantId])).rows[0];
     const available = lvl ? lvl.on_hand - lvl.reserved : 0;
-    if (newQty > available) fail(422, 'không đủ tồn kho', { available });
+    if (qty > available) fail(422, 'không đủ tồn kho', { available });
+    const n = await c.query(`UPDATE cart_items SET qty = $3 WHERE cart_id = $1 AND variant_id = $2`, [cart.id, variantId, qty]);
+    if (n.rowCount === 0) fail(404, 'không có trong giỏ');
+  }
+  return summarize(c, cart.id);
+}
 
-    await c.query(
-      `INSERT INTO cart_items (shop_id, cart_id, variant_id, qty) VALUES (current_shop_id(), $1, $2, $3)
-       ON CONFLICT (shop_id, cart_id, variant_id) DO UPDATE SET qty = $3`,
-      [cart.id, variantId, newQty],
-    );
-    return { summary: await summarize(c, cart.id), newToken };
-  });
+async function addItem(req, res, body, ctx) {  // API JSON
+  const variantId = body.variant_id, qty = body.qty;
+  if (typeof variantId !== 'string' || !UUID_RE.test(variantId)) return send(res, 400, { error: 'variant_id không hợp lệ' });
+  if (!isInt(qty) || qty < 1 || qty > 1000) return send(res, 400, { error: 'qty phải là 1..1000' });
+  const token = parseCookies(req)[CART_COOKIE];
+  const result = await withTenant(ctx.shopId, (c) => cartAddCore(c, token, variantId, qty));
   if (result.newToken) setCartCookie(res, result.newToken, CART_TTL_DAYS * 86400);
   return send(res, 200, result.summary);
 }
 
-async function getCart(req, res, _body, ctx) {
+async function addItemForm(req, res, form, ctx) {  // form từ trang sản phẩm → 303 /cart
+  const variantId = String(form.variant_id ?? ''), qty = parseInt(form.qty ?? '1', 10);
+  if (!UUID_RE.test(variantId) || !isInt(qty) || qty < 1 || qty > 1000) return sendHtml(res, 400, renderError(await getShopName(ctx.shopId), 'Yêu cầu không hợp lệ.'));
+  const token = parseCookies(req)[CART_COOKIE];
+  try {
+    const result = await withTenant(ctx.shopId, (c) => cartAddCore(c, token, variantId, qty));
+    if (result.newToken) setCartCookie(res, result.newToken, CART_TTL_DAYS * 86400);
+    return redirect(res, '/cart');
+  } catch (err) {
+    if (err.statusCode) return sendHtml(res, err.statusCode, renderError(await getShopName(ctx.shopId), err.body?.error ?? 'Không thêm được vào giỏ.'));
+    throw err;
+  }
+}
+
+async function getCart(req, res, _body, ctx) {  // HTML (trình duyệt) hoặc JSON (API/e2e)
   const token = parseCookies(req)[CART_COOKIE];
   const summary = await withTenant(ctx.shopId, async (c) => {
     const cart = await findCart(c, token);
-    if (!cart) return { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 };
-    return summarize(c, cart.id);
+    return cart ? summarize(c, cart.id) : { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 };
   });
+  if (wantsHtml(req)) return sendHtml(res, 200, renderCart(await getShopName(ctx.shopId), summary));
   return send(res, 200, summary);
 }
 
-async function setItemQty(req, res, body, ctx) {
-  const variantId = body.variant_id;
-  const qty = body.qty;
+async function setItemQty(req, res, body, ctx) {  // API JSON
+  const variantId = body.variant_id, qty = body.qty;
   if (typeof variantId !== 'string' || !UUID_RE.test(variantId)) return send(res, 400, { error: 'variant_id không hợp lệ' });
   if (!isInt(qty) || qty < 0 || qty > 1000) return send(res, 400, { error: 'qty phải là 0..1000' });
   const token = parseCookies(req)[CART_COOKIE];
-  const summary = await withTenant(ctx.shopId, async (c) => {
-    const cart = await findCart(c, token);
-    if (!cart) fail(404, 'giỏ hàng không tồn tại');
-    if (qty === 0) {
-      await c.query(`DELETE FROM cart_items WHERE cart_id = $1 AND variant_id = $2`, [cart.id, variantId]);
-    } else {
-      const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1`, [variantId])).rows[0];
-      const available = lvl ? lvl.on_hand - lvl.reserved : 0;
-      if (qty > available) fail(422, 'không đủ tồn kho', { available });
-      const n = await c.query(`UPDATE cart_items SET qty = $3 WHERE cart_id = $1 AND variant_id = $2`, [cart.id, variantId, qty]);
-      if (n.rowCount === 0) fail(404, 'không có trong giỏ');
-    }
-    return summarize(c, cart.id);
-  });
+  const summary = await withTenant(ctx.shopId, (c) => cartSetQtyCore(c, token, variantId, qty));
   return send(res, 200, summary);
 }
 
-// ── checkout (crown jewel) ───────────────────────────────────────────────────
-async function checkout(req, res, body, ctx) {
-  const idemKey = req.headers['idempotency-key'];
-  if (typeof idemKey !== 'string' || idemKey.length < 8 || idemKey.length > 200) return send(res, 400, { error: 'thiếu/không hợp lệ Idempotency-Key' });
-
-  const name = String(body.customer?.name ?? '').trim();
-  const phone = String(body.customer?.phone ?? '').trim();
-  const email = body.customer?.email ? String(body.customer.email).trim().toLowerCase() : null;
-  const address = body.address && typeof body.address === 'object' ? body.address : null;
-  const paymentMethod = body.payment_method ?? 'cod';
-  if (name.length < 1 || name.length > 120 || /[\r\n]/.test(name)) return send(res, 400, { error: 'tên người nhận không hợp lệ' });
-  if (!/^[0-9+\s.-]{8,20}$/.test(phone)) return send(res, 400, { error: 'số điện thoại không hợp lệ' });
-  // Email đi thẳng tới worker→nodemailer. Validate chặt + cấm CR/LF (chống header/
-  // SMTP command injection). Email hợp lệ, không xuống dòng, ≤254 ký tự.
-  if (email !== null && (email.length > 254 || /[\r\n\s]/.test(email) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
-    return send(res, 400, { error: 'email không hợp lệ' });
-  }
-  if (!['cod', 'qr'].includes(paymentMethod)) return send(res, 400, { error: 'phương thức thanh toán không hợp lệ' });
-
+async function updateItemForm(req, res, form, ctx) {  // form giỏ (cập nhật/xoá) → 303 /cart
+  const variantId = String(form.variant_id ?? ''), qty = parseInt(form.qty ?? '', 10);
+  if (!UUID_RE.test(variantId) || !isInt(qty) || qty < 0 || qty > 1000) return sendHtml(res, 400, renderError(await getShopName(ctx.shopId), 'Yêu cầu không hợp lệ.'));
   const token = parseCookies(req)[CART_COOKIE];
-  // request_hash: nội dung ĐƠN, KHÔNG gồm bất kỳ giá/total nào client gửi.
-  const requestHash = sha256(idemKey + JSON.stringify({ name, phone, email, address, paymentMethod }));
+  try {
+    await withTenant(ctx.shopId, (c) => cartSetQtyCore(c, token, variantId, qty));
+    return redirect(res, '/cart');
+  } catch (err) {
+    if (err.statusCode) return sendHtml(res, err.statusCode, renderError(await getShopName(ctx.shopId), err.body?.error ?? 'Không cập nhật được giỏ.'));
+    throw err;
+  }
+}
 
-  const out = await withTenant(ctx.shopId, async (c) => {
+// ── checkout (crown jewel) ───────────────────────────────────────────────────
+// Validate + chuẩn hoá input đơn — DÙNG CHUNG cho API JSON và form trình duyệt.
+function parseOrderInput(raw) {
+  const name = String(raw.name ?? '').trim();
+  const phone = String(raw.phone ?? '').trim();
+  const email = raw.email ? String(raw.email).trim().toLowerCase() : null;
+  const address = raw.address && typeof raw.address === 'object' ? raw.address : null;
+  const paymentMethod = raw.payment_method ?? 'cod';
+  if (name.length < 1 || name.length > 120 || /[\r\n]/.test(name)) return { error: 'tên người nhận không hợp lệ' };
+  if (!/^[0-9+\s.-]{8,20}$/.test(phone)) return { error: 'số điện thoại không hợp lệ' };
+  // Email đi thẳng tới worker→nodemailer. Validate chặt + cấm CR/LF (chống header/SMTP injection).
+  if (email !== null && (email.length > 254 || /[\r\n\s]/.test(email) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) return { error: 'email không hợp lệ' };
+  if (!['cod', 'qr'].includes(paymentMethod)) return { error: 'phương thức thanh toán không hợp lệ' };
+  return { name, phone, email, address, paymentMethod };
+}
+
+// Lõi tạo đơn (transaction). Ném fail() khi lỗi nghiệp vụ → withTenant ROLLBACK.
+async function createOrderTx(c, ctx, token, idemKey, f) {
+  const { name, phone, email, address, paymentMethod } = f;
+  {
+    // request_hash: nội dung ĐƠN, KHÔNG gồm bất kỳ giá/total nào client gửi.
+    const requestHash = sha256(idemKey + JSON.stringify({ name, phone, email, address, paymentMethod }));
     // Idempotency: giành key.
     const claim = await c.query(
       `INSERT INTO idempotency_keys (shop_id, key, request_hash, status)
@@ -253,9 +284,35 @@ async function checkout(req, res, body, ctx) {
     await c.query(`UPDATE idempotency_keys SET status = 'completed', response_code = 201, response_body = $2 WHERE key = $1`, [idemKey, response]);
     log('info', 'order_created', { orderNumber: Number(num), total });
     return { code: 201, body: response };
-  });
+  }
+}
 
+// API JSON (e2e + tích hợp): Idempotency-Key ở HEADER. Lỗi nghiệp vụ do dispatcher bắt.
+async function checkout(req, res, body, ctx) {
+  const idemKey = req.headers['idempotency-key'];
+  if (typeof idemKey !== 'string' || idemKey.length < 8 || idemKey.length > 200) return send(res, 400, { error: 'thiếu/không hợp lệ Idempotency-Key' });
+  const f = parseOrderInput({ name: body.customer?.name, phone: body.customer?.phone, email: body.customer?.email, address: body.address, payment_method: body.payment_method });
+  if (f.error) return send(res, 400, { error: f.error });
+  const token = parseCookies(req)[CART_COOKIE];
+  const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, ctx, token, idemKey, f));
   return send(res, out.code, out.body, out.replay ? { 'idempotency-replayed': 'true' } : {});
+}
+
+// Form trình duyệt (không JS): idem-key ở FORM (sinh lúc render /checkout). PRG → /success.
+async function checkoutPlace(req, res, form, ctx) {
+  const shopName = await getShopName(ctx.shopId);
+  const idemKey = String(form.idempotency_key ?? '');
+  if (idemKey.length < 8 || idemKey.length > 200) return sendHtml(res, 400, renderError(shopName, 'Phiên thanh toán không hợp lệ, vui lòng tải lại trang.'));
+  const f = parseOrderInput({ name: form.name, phone: form.phone, email: form.email, address: form.address_line ? { line: String(form.address_line).slice(0, 300) } : null, payment_method: form.payment_method });
+  if (f.error) return sendHtml(res, 400, renderError(shopName, f.error));
+  const token = parseCookies(req)[CART_COOKIE];
+  try {
+    const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, ctx, token, idemKey, f));
+    return redirect(res, `/checkout/success?number=${out.body.order_number}&token=${encodeURIComponent(out.body.lookup_token)}`);
+  } catch (err) {
+    if (err.statusCode) return sendHtml(res, err.statusCode, renderError(shopName, err.body?.error ?? 'Không đặt được đơn.'));
+    throw err;
+  }
 }
 
 async function orderLookup(req, res, _body, ctx, query) {
@@ -275,12 +332,55 @@ async function orderLookup(req, res, _body, ctx, query) {
   return send(res, 200, data);
 }
 
+// ── trang HTML (không JS) ────────────────────────────────────────────────────
+async function getCheckoutPage(req, res, _body, ctx) {
+  const token = parseCookies(req)[CART_COOKIE];
+  const summary = await withTenant(ctx.shopId, async (c) => {
+    const cart = await findCart(c, token);
+    return cart ? summarize(c, cart.id) : { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 };
+  });
+  if (!summary.items.length) return redirect(res, '/cart');       // giỏ trống → về giỏ
+  return sendHtml(res, 200, renderCheckout(await getShopName(ctx.shopId), summary, genToken()));
+}
+
+async function getSuccessPage(req, res, _body, ctx, query) {
+  const number = Number(query.get('number'));
+  const token = query.get('token');
+  const shopName = await getShopName(ctx.shopId);
+  if (!Number.isInteger(number) || !token) return sendHtml(res, 400, renderError(shopName, 'Thiếu thông tin đơn.'));
+  const data = await withTenant(ctx.shopId, async (c) => {
+    const o = (await c.query(
+      `SELECT id, order_number, status, payment_status, payment_method, shipping_vnd, total_vnd, customer_name, payment_ref
+         FROM orders WHERE order_number = $1 AND lookup_token_hash = $2`, [number, hashToken(token)],
+    )).rows[0];
+    if (!o) return null;
+    o.lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
+    let pay = null;
+    if (o.payment_method === 'qr' && o.payment_status !== 'paid') {
+      pay = (await c.query(`SELECT bank_bin, account_number, account_name FROM shop_payment_config WHERE shop_id = current_shop_id()`)).rows[0] ?? null;
+    }
+    return { o, pay };
+  });
+  if (!data) return sendHtml(res, 404, renderError(shopName, 'Không tìm thấy đơn.'));
+  let qr = '';
+  if (data.pay?.bank_bin && data.pay?.account_number) {
+    qr = await qrSvg(buildVietQR({ bankBin: data.pay.bank_bin, accountNumber: data.pay.account_number, amountVnd: Number(data.o.total_vnd), content: data.o.payment_ref }));
+  }
+  return sendHtml(res, 200, renderOrder(shopName, data.o, data.pay, qr));
+}
+
 // ── router ───────────────────────────────────────────────────────────────────
+// form: đọc body dạng x-www-form-urlencoded (thay vì JSON) cho trang không-JS.
 const ROUTES = [
   { m: 'GET', p: '/cart', fn: getCart },
   { m: 'POST', p: '/cart/items', fn: addItem },
   { m: 'PATCH', p: '/cart/items', fn: setItemQty },
+  { m: 'POST', p: '/cart/add', fn: addItemForm, form: true },
+  { m: 'POST', p: '/cart/update', fn: updateItemForm, form: true },
   { m: 'POST', p: '/checkout', fn: checkout },
+  { m: 'POST', p: '/checkout/place', fn: checkoutPlace, form: true },
+  { m: 'GET', p: '/checkout', fn: getCheckoutPage },
+  { m: 'GET', p: '/checkout/success', fn: getSuccessPage },
   { m: 'GET', p: '/checkout/order', fn: orderLookup },
 ];
 
@@ -304,7 +404,7 @@ const server = http.createServer(async (req, res) => {
     const accepting = await withTenant(shopId, async (c) => (await c.query(`SELECT 1 FROM shops WHERE id = current_shop_id()`)).rowCount > 0);
     if (!accepting) return send(res, 503, { error: 'cửa hàng tạm ngưng nhận đơn' });
 
-    const body = ['GET'].includes(req.method) ? {} : await readJson(req);
+    const body = req.method === 'GET' ? {} : (route.form ? await readForm(req) : await readJson(req));
     const ctx = { shopId, ip: clientIp(req) };
     await route.fn(req, res, body, ctx, url.searchParams);
   } catch (err) {

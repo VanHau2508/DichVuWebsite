@@ -143,7 +143,7 @@ const server = http.createServer(async (req, res) => {
           `SELECT id, slug, title, description, price_vnd FROM products WHERE slug = $1`, [pm[1]],
         )).rows[0];
         if (!p) return { ...base, notFound: true };
-        p.variants = (await c.query(`SELECT title, sku, price_vnd FROM variants WHERE product_id = $1 ORDER BY position`, [p.id])).rows;
+        p.variants = (await c.query(`SELECT id, title, sku, price_vnd FROM variants WHERE product_id = $1 ORDER BY position`, [p.id])).rows;
         const media = (await c.query(`SELECT public_key FROM media WHERE product_id = $1 ORDER BY created_at`, [p.id])).rows;
         p.media = media.map((m) => ({ url: imgUrl(m.public_key) }));
         return { ...base, product: p };

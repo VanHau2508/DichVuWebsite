@@ -95,6 +95,7 @@ jobs:
           run dbtest "kéo–thả section (Ngày 11)"        node apps/seller/test/blocks.e2e.mjs
           run dbtest "storefront (CSP / maintenance)"   node apps/storefront/test/e2e.mjs
           run dbtest "giỏ hàng + checkout"              node apps/checkout/test/e2e.mjs
+          run dbtest "buyer checkout UI (form flow)"    node apps/checkout/test/buyer-flow.e2e.mjs
           run dbtest "thanh toán QR + webhook"          node apps/payment/test/e2e.mjs
           run dbtest "vận chuyển + email"               node apps/worker/test/e2e.mjs
           [ "$fail" = 0 ] && echo "=== TẤT CẢ E2E XANH ===" || echo "=== CÓ SUITE ĐỎ ==="

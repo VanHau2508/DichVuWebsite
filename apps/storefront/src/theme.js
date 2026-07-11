@@ -70,7 +70,7 @@ const money = (vnd) => new Intl.NumberFormat('vi-VN').format(Number(vnd)) + '₫
 // ── section renderers (nhận dữ liệu ĐÃ đọc, escape khi render) ────────────────
 const SECTIONS = {
   header: (props, ctx) => `<header class="hdr"><a href="/" class="brand">${esc(ctx.shop.name)}</a>
-    <nav>${ctx.categories.map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}</nav></header>`,
+    <nav>${ctx.categories.map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}<a href="/cart" class="cart-link">🛒 Giỏ hàng</a></nav></header>`,
 
   hero: (props) => `<section class="hero"><h1>${esc(props.title ?? '')}</h1>
     <p>${esc(props.subtitle ?? '')}</p></section>`,
@@ -126,7 +126,12 @@ a{color:inherit;text-decoration:none}.hdr{display:flex;justify-content:space-bet
 .content hr{border:0;border-top:1px solid #eee;margin:1.6em 0}
 .preview-banner{position:sticky;top:0;z-index:10;background:#b45309;color:#fff;padding:10px var(--spacing);font-weight:700;text-align:center;font-size:.95rem}
 .pd{padding:var(--spacing);max-width:900px;margin:0 auto}.pd h1{font-family:var(--font-heading)}
-.pd .price{color:var(--color-primary);font-size:1.4rem;font-weight:700}.pd img{max-width:100%;border-radius:var(--radius)}`;
+.pd .price{color:var(--color-primary);font-size:1.4rem;font-weight:700}.pd img{max-width:100%;border-radius:var(--radius)}
+.hdr nav .cart-link{margin-left:16px;color:var(--color-primary);font-weight:600}
+.addcart{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:16px 0}
+.addcart select,.addcart input{padding:10px;border:1px solid #d1d5db;border-radius:8px;font-size:1rem}
+.addcart input[type=number]{width:72px}
+.addcart button{background:var(--color-primary);color:#fff;border:0;border-radius:8px;padding:11px 18px;font-size:1rem;font-weight:600;cursor:pointer}`;
 
 function page(title, tokens, bodyHtml, head = '') {
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
@@ -144,16 +149,23 @@ export function renderHome(ctx) {
   return page(ctx.shop.name, ctx.theme?.tokens, body);
 }
 
-/** Render trang chi tiết sản phẩm. */
+/** Render trang chi tiết sản phẩm + form "thêm vào giỏ" (POST thuần, không JS). */
 export function renderProduct(ctx, p) {
   const imgs = p.media.map((m) => `<img src="${esc(m.url)}" alt="${esc(p.title)}" loading="lazy">`).join('');
-  const variants = p.variants.map((v) => `<option>${esc(v.title ?? v.sku)} — ${money(v.price_vnd)}</option>`).join('');
+  const options = p.variants.map((v) => `<option value="${esc(v.id)}">${esc(v.title ?? v.sku)} — ${money(v.price_vnd)}</option>`).join('');
+  // action=/cart/add tới checkout service (cùng origin qua Caddy) → form-action 'self' cho phép.
+  const addForm = p.variants.length ? `
+    <form class="addcart" method="POST" action="/cart/add">
+      ${p.variants.length > 1 ? `<select name="variant_id" aria-label="Phân loại">${options}</select>` : `<input type="hidden" name="variant_id" value="${esc(p.variants[0].id)}">`}
+      <input type="number" name="qty" value="1" min="1" max="1000" inputmode="numeric" aria-label="Số lượng">
+      <button type="submit">Thêm vào giỏ</button>
+    </form>` : '';
   const body = `${SECTIONS.header({}, ctx)}
     <main class="pd"><h1>${esc(p.title)}</h1>
       <div class="price">${money(p.price_vnd)}</div>
       ${imgs}
       <p>${esc(p.description ?? '')}</p>
-      ${variants ? `<select aria-label="Biến thể">${variants}</select>` : ''}
+      ${addForm}
     </main>${SECTIONS.footer({}, ctx)}`;
   return page(`${p.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body);
 }

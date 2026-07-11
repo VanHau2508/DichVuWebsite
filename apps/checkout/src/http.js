@@ -22,6 +22,45 @@ export function send(res, status, body, headers = {}) {
   res.end(payload);
 }
 
+// CSP nghiêm cho trang giỏ/checkout: KHÔNG script (form thuần, không JS) → chống XSS
+// mạnh; style nội tuyến cho phép (một khối <style> tĩnh của ta). no-store: trang có PII/giá.
+const HTML_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+export function sendHtml(res, status, html, headers = {}) {
+  res.writeHead(status, {
+    'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+    'content-security-policy': HTML_CSP, 'x-content-type-options': 'nosniff',
+    // no-referrer: /checkout/success mang lookup token trong URL; strict-origin-when-cross
+    // -origin sẽ gửi CẢ URL (kèm token) làm Referer khi bấm link same-origin → rò token vào
+    // log tầng storefront. CSRF dùng Origin (sameOrigin), KHÔNG dùng Referer nên đổi vô hại.
+    'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', ...headers,
+  });
+  res.end(html);
+}
+
+export function redirect(res, location) {
+  // 303: sau POST (PRG) → trình duyệt GET trang kết quả, không gửi lại form khi refresh.
+  res.writeHead(303, { location, 'cache-control': 'no-store' });
+  res.end();
+}
+
+// Đọc body form (application/x-www-form-urlencoded) cho trang không-JS.
+export function readForm(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', (c) => { size += c.length; if (size > 32 * 1024) { reject(Object.assign(new Error('body quá lớn'), { statusCode: 413 })); req.destroy(); return; } chunks.push(c); });
+    req.on('end', () => {
+      const params = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+      const out = {}; for (const [k, v] of params) out[k] = v; resolve(out);
+    });
+    req.on('error', reject);
+  });
+}
+
+/** Client CÓ muốn HTML không (điều hướng trình duyệt) hay JSON (API/e2e)? */
+export function wantsHtml(req) {
+  return String(req.headers.accept ?? '').includes('text/html');
+}
+
 export function parseCookies(req) {
   const header = req.headers.cookie;
   const out = {};

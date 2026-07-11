@@ -1,11 +1,12 @@
-# Admin web nhà bán hàng (giai đoạn UI — phần 2): login + MFA + quản đơn
+# Admin web nhà bán hàng (giai đoạn UI — phần 2): login + MFA + quản đơn + sản phẩm
 
 > **Trạng thái: ĐÃ CHẠY.** admin-flow e2e **22/22** (đăng nhập có/không MFA, guard phiên
-> nửa vời, cô lập chéo shop, CSRF, vòng đời đơn confirm→ship→deliver + cancel + chuyển sai).
-> Mutation `verify-admin` 3/3 (bỏ kiểm Origin → e2e đỏ). Rà soát đối kháng (auth/session/
-> csrf/xss/ss-rf/dos): xác nhận CSRF/redirect/SSRF/header-injection đều đứng; sửa 1 MED
-> (2 chỗ nội suy thô `order_number`/`qty` trong chi tiết đơn → `esc`) + 1 LOW (thủ đơn thiếu
-> `orders`/`lines` → mặc định `[]` thay vì 500). Không hồi quy stack.
+> nửa vời, cô lập chéo shop, CSRF, vòng đời đơn confirm→ship→deliver + cancel + chuyển sai);
+> admin-products e2e **18/18** (tạo→sửa→đăng bán→điều chỉnh tồn→thêm/xoá biến thể→lưu trữ→xoá,
+> chặn tồn âm, chặn xoá biến thể cuối, cô lập chéo shop, CSRF). Mutation `verify-admin` 3/3
+> (bỏ kiểm Origin → e2e đỏ). Rà soát đối kháng (auth/session/csrf/xss/ss-rf/dos): CSRF/redirect/
+> SSRF/header-injection đều đứng; sửa 1 MED (nội suy thô `order_number`/`qty` → `esc`) + 1 LOW
+> (thiếu `orders`/`lines` → `[]` thay vì 500). Không hồi quy stack.
 
 Giao diện quản trị cho **nhà bán hàng** (khác admin sàn `ops`). Phần này làm phần XƯƠNG SỐNG
 vận hành: đăng nhập an toàn (có MFA) và **quản đơn** (xác nhận → giao → hoàn tất, huỷ). Đây là
@@ -77,6 +78,25 @@ State machine (do `seller` giữ, BFF chỉ hiện nút hợp lệ):
 `pending → confirmed → shipped → delivered`; huỷ từ `pending|confirmed`. `ship` tiêu tồn
 (on_hand−), `cancel` nhả reserve — logic đó ở `apps/seller/src/orders.js`, không lặp ở BFF.
 
+## 4b. Quản sản phẩm & tồn kho (form PRG)
+
+- `GET /shops/:id/products` — danh sách + tìm theo tên (`q`) + lọc trạng thái + phân trang.
+- `GET /shops/:id/products/new` + `POST /shops/:id/products` — tạo sản phẩm (tên/slug/giá/
+  trạng thái/mô tả + 1 biến thể đầu). BFF gộp form thành body JSON `seller` mong đợi.
+- `GET /shops/:id/products/:pid` — chi tiết: sửa thông tin (**POST → PATCH** `seller`),
+  đăng bán/lưu trữ, bảng biến thể + **điều chỉnh tồn tại chỗ**, thêm/xoá biến thể, xoá SP.
+- `POST .../variants/:vid/inventory` — điều chỉnh tồn (`delta` âm/dương + lý do) →
+  `seller /inventory/adjust`. Tồn kho tách khỏi payload SP nên chi tiết fetch mức tồn từng
+  biến thể **song song** rồi ghép.
+
+Trạng thái SP `draft → active → archived` (nút Đăng bán / Ẩn / Đăng bán lại). Bất biến do
+`seller` giữ: giá ≥ 0, slug/SKU duy nhất trong shop, SP luôn ≥ 1 biến thể (không xoá biến thể
+cuối), tồn không âm/không dưới mức đang giữ chỗ — BFF chỉ forward + hiện lỗi.
+
+Điều hướng: tab **Đơn hàng | Sản phẩm** trong mỗi shop, ẩn/hiện theo vai trò
+(`owner`/`admin` thấy cả hai; `catalog_manager` chỉ Sản phẩm; `order_manager` chỉ Đơn hàng) —
+`seller` mới là nơi cưỡng chế quyền `catalog.*`/`orders.*`.
+
 ## 5. Header / CSP
 
 `http.js` đặt trên MỌI phản hồi: `Content-Security-Policy: default-src 'none'; style-src
@@ -95,9 +115,11 @@ edge → app là nguồn duy nhất.
 apps/seller-admin/
   src/http.js     esc, cookie, sendHtml (CSP), redirect(303), readForm, sameOrigin (CSRF)
   src/api.js      call() → forward cookie + Origin admin; authApi/sellerApi/platformApi; loadSession
-  src/pages.js    layout + renderLogin/Mfa/Dashboard/Orders/OrderDetail/Error (esc mọi giá trị động)
-  src/server.js   router + handler: login/mfa/logout, dashboard, orders list/detail, order actions
-  test/admin-flow.e2e.mjs   22 kiểm
+  src/pages.js    layout + tabs + renderLogin/Mfa/Dashboard/Orders/OrderDetail
+                  + renderProducts/ProductNew/ProductDetail/Error (esc mọi giá trị động)
+  src/server.js   router + handler: auth, dashboard, orders, sản phẩm/biến thể/tồn kho
+  test/admin-flow.e2e.mjs       22 kiểm (login/MFA/đơn)
+  test/admin-products.e2e.mjs   18 kiểm (sản phẩm/tồn kho)
   Dockerfile      node pinned digest, non-root, healthcheck /healthz
 scripts/verify-admin.sh     mutation: bỏ kiểm Origin → e2e đỏ
 infra/compose.dev.yml       service seller-admin (:3001) + route Caddyfile.dev admin.localtest
@@ -109,11 +131,13 @@ infra/compose.prod.yml      service seller-admin (mem 160m) + Caddyfile admin.ne
 ```bash
 docker compose -f infra/compose.dev.yml up -d --build
 docker compose -f infra/compose.dev.yml exec -T dbtest node apps/seller-admin/test/admin-flow.e2e.mjs
+docker compose -f infra/compose.dev.yml exec -T dbtest node apps/seller-admin/test/admin-products.e2e.mjs
 bash scripts/verify-admin.sh
 ```
 
 ## 8. Còn lại (fast-follow)
 
-- Màn quản **sản phẩm / tồn kho / trang nội dung** trên admin (backend đã có, chỉ thiếu UI).
+- Màn quản **trang nội dung** trên admin (kéo–thả section — backend Ngày 11 đã có).
+- **Ảnh sản phẩm** trên admin (upload media — backend `seller` đã có, chỉ thiếu UI upload).
 - Mời nhân sự shop (invitations) + đổi mật khẩu / bật MFA từ trong admin.
 - Đếm giỏ / ảnh sản phẩm ở buyer UI (docs/24 §8).

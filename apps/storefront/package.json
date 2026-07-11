@@ -1,0 +1,12 @@
+{
+  "name": "@nentang/storefront",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Trang bán hàng công khai (SSR, chỉ đọc, theo domain→shop).",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node src/server.js" },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}

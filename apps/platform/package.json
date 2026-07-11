@@ -1,0 +1,16 @@
+{
+  "name": "@nentang/platform-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Dịch vụ ops: tạo shop, subdomain, mời owner, khoá/mở shop.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}

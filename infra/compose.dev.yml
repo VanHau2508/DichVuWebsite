@@ -1,0 +1,372 @@
+# Stack dev.
+#   docker compose -f infra/compose.dev.yml up -d --build
+#   bash scripts/smoke-tls.sh
+#   bash scripts/smoke-auth.sh
+#   docker compose -f infra/compose.dev.yml exec -T dbtest sh -c 'node --test test/*.test.js'
+#
+# Cổng trên host cố ý lệch (8080/8443) để không đụng thứ khác đang chạy.
+# Chỉ Caddy publish port; mọi thứ khác nằm trong network nội bộ.
+#
+# Thứ tự khởi động: postgres → migrate (chạy migration + seed rồi thoát)
+#                            → tls-authorize / auth / dbtest (cần bảng đã tồn tại).
+
+name: nentang-dev
+
+services:
+  caddy:
+    image: caddy:2-alpine # dev không cần plugin DNS (dùng CA nội bộ)
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # chứng chỉ + CA nội bộ. Ở production PHẢI backup.
+      - caddy_config:/config
+    depends_on:
+      tls-authorize:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app_owner
+      POSTGRES_PASSWORD: devpassword
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # KHÔNG còn mount migration vào initdb.d — migration chạy qua runner thật
+      # (service `migrate`), có tracking + checksum, giống production.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_owner -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    restart: unless-stopped
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Bắt SMTP cho dev: worker gửi email tới đây; e2e đọc qua API :8025.
+  mailpit:
+    image: axllent/mailpit:v1.21
+    restart: unless-stopped
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8025/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # noeviction: rate-limit dùng key có TTL; đừng để Redis đuổi key tuỳ tiện.
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: chạy migration + seed rồi thoát. Consumer chờ nó completed.
+  migrate:
+    build:
+      context: ../packages/db
+    command: ["node", "migrate.js", "up", "--seed", "/seed/900_seed_dev.sql"]
+    environment:
+      DATABASE_URL_OWNER: postgres://app_owner:devpassword@postgres:5432/app
+    volumes:
+      - ../packages/db/migrate.js:/work/migrate.js:ro
+      - ../packages/db/migrations:/work/migrations:ro
+      - ./db/seed/900_seed_dev.sql:/seed/900_seed_dev.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  tls-authorize:
+    build:
+      context: ../apps/tls-authorize
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://app_tls:devpassword@postgres:5432/app
+      PLATFORM_DOMAIN: nentang.vn
+      PORT: "3010"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  auth:
+    build:
+      # Context = repo root: server.js import packages/auth/src qua đường tương đối.
+      context: ..
+      dockerfile: apps/auth/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://app_auth:devpassword@postgres:5432/app
+      REDIS_URL: redis://redis:6379
+      # 64 hex = 32 byte. Dev key CỐ ĐỊNH; production lấy từ secret manager.
+      MFA_ENC_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+      SESSION_TTL_HOURS: "168"
+      # Origin được phép gửi request đổi trạng thái (chống CSRF).
+      ALLOWED_ORIGINS: https://admin.nentang.vn,https://auth.localtest
+      PORT: "3020"
+      # CHỈ DEV. Lưu token đặt lại mật khẩu vào Redis cho e2e đọc.
+      # Service từ chối khởi động nếu cờ này bật cùng APP_ENV=production.
+      DEV_RESET_TOKEN_STASH: "1"
+    volumes:
+      # Chỉ dev: e2e chạy TRONG container này để dùng lại module crypto + fetch nội bộ.
+      - ../apps/auth/test:/app/apps/auth/test:ro
+      # Chỉ dev: mount src để mutation testing patch trên host rồi restart,
+      # không phải rebuild image mỗi lần. Production dùng src đã COPY vào image.
+      - ../apps/auth/src:/app/apps/auth/src:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3020/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  platform:
+    build:
+      context: ../apps/platform
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://app_platform:devpassword@postgres:5432/app
+      AUTH_URL: http://auth:3020
+      PLATFORM_DOMAIN: nentang.vn
+      ALLOWED_ORIGINS: https://admin.nentang.vn,https://ops.localtest
+      PORT: "3030"
+    volumes:
+      # Chỉ dev: mount src cho mutation testing (patch trên host → restart).
+      # Đường dẫn PHẢI khớp CMD của Dockerfile (node src/server.js → /app/src),
+      # không thì mount overlay một path không chạy và mutation vô hiệu.
+      - ../apps/platform/src:/app/src:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3030/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  seller:
+    build:
+      context: ../apps/seller
+    restart: unless-stopped
+    environment:
+      # app_rw: vai trò TENANT (RLS). Seller-admin dùng withTenant(shop_id).
+      DATABASE_URL: postgres://app_rw:devpassword@postgres:5432/app
+      AUTH_URL: http://auth:3020
+      ALLOWED_ORIGINS: https://admin.nentang.vn,https://seller.localtest
+      PORT: "3040"
+      # Media (MinIO). PUBLIC_BASE: prod là cdn.nentang.vn; dev là MinIO nội bộ.
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      MEDIA_BUCKET_PRIVATE: media-private
+      MEDIA_BUCKET_PUBLIC: media-public
+      MEDIA_PUBLIC_BASE: http://minio:9000/media-public
+    volumes:
+      # Mount PHẢI khớp CMD (node src/server.js → /app/src). Xem docs/09 §6.
+      - ../apps/seller/src:/app/src:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3040/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  checkout:
+    build:
+      context: ../apps/checkout
+    restart: unless-stopped
+    environment:
+      # app_checkout: vai trò CÔNG KHAI ghi đơn; RLS tenant-scoped, KHÔNG đụng users.
+      DATABASE_URL: postgres://app_checkout:devpassword@postgres:5432/app
+      SHIP_FEE_VND: "30000"
+      PORT: "3060"
+    volumes:
+      - ../apps/checkout/src:/app/src:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3060/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  payment:
+    build:
+      context: ../apps/payment
+    restart: unless-stopped
+    environment:
+      # app_payment: nhận webhook, chỉ đọc cột không-PII + đặt trạng thái thanh toán.
+      DATABASE_URL: postgres://app_payment:devpassword@postgres:5432/app
+      SEPAY_WEBHOOK_KEY: dev-sepay-secret-key-12345
+      PORT: "3070"
+    volumes:
+      - ../apps/payment/src:/app/src:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3070/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    build:
+      context: ../apps/worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://app_worker:devpassword@postgres:5432/app
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      POLL_MS: "500"
+      EMAIL_ATTEMPTS: "3"
+      EMAIL_BACKOFF_MS: "150"
+      PORT: "3080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  storefront:
+    build:
+      context: ../apps/storefront
+    restart: unless-stopped
+    environment:
+      # app_store: vai trò CÔNG KHAI chỉ đọc; RLS chỉ cho thấy active/ready.
+      DATABASE_URL: postgres://app_store:devpassword@postgres:5432/app
+      MEDIA_PUBLIC_BASE: http://minio:9000/media-public
+      PORT: "3050"
+    volumes:
+      # Mount PHẢI khớp CMD (node src/server.js → /app/src).
+      - ../apps/storefront/src:/app/src:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3050/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Bộ test cô lập tenant + auth. Không bao giờ deploy.
+  dbtest:
+    build:
+      context: ../packages/db
+    environment:
+      DATABASE_URL_RW: postgres://app_rw:devpassword@postgres:5432/app
+      DATABASE_URL_TLS: postgres://app_tls:devpassword@postgres:5432/app
+      DATABASE_URL_AUTH: postgres://app_auth:devpassword@postgres:5432/app
+      DATABASE_URL_PLATFORM: postgres://app_platform:devpassword@postgres:5432/app
+      DATABASE_URL_STORE: postgres://app_store:devpassword@postgres:5432/app
+      DATABASE_URL_OWNER: postgres://app_owner:devpassword@postgres:5432/app
+      # Dùng cho platform/seller e2e: gọi thẳng service nội bộ, quản cookie tay.
+      AUTH_URL: http://auth:3020
+      PLATFORM_URL: http://platform:3030
+      SELLER_URL: http://seller:3040
+      STOREFRONT_URL: http://storefront:3050
+      CHECKOUT_URL: http://checkout:3060
+      PAYMENT_URL: http://payment:3070
+      WORKER_URL: http://worker:3080
+      MAILPIT_URL: http://mailpit:8025
+      SEPAY_WEBHOOK_KEY: dev-sepay-secret-key-12345
+      DATABASE_URL_CHECKOUT: postgres://app_checkout:devpassword@postgres:5432/app
+      MEDIA_PUBLIC_BASE: http://minio:9000/media-public
+      MEDIA_PRIVATE_BASE: http://minio:9000/media-private
+    volumes:
+      - ../packages/db/test:/work/test:ro
+      - ../packages/db/migrations:/work/migrations:ro
+      # Cho e2e: totp để tính mã MFA, và chính các file e2e.
+      - ../packages/auth/src:/work/packages/auth/src:ro
+      - ../apps/platform/test:/work/apps/platform/test:ro
+      - ../apps/seller/test:/work/apps/seller/test:ro
+      - ../apps/storefront/test:/work/apps/storefront/test:ro
+      - ../apps/checkout/test:/work/apps/checkout/test:ro
+      - ../apps/payment/test:/work/apps/payment/test:ro
+      - ../apps/worker/test:/work/apps/worker/test:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      platform:
+        condition: service_healthy
+      seller:
+        condition: service_healthy
+      storefront:
+        condition: service_healthy
+      checkout:
+        condition: service_healthy
+      payment:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+
+  # curl trong container Linux (OpenSSL, tôn trọng --cacert) — xem docs/05 §3.1.
+  toolbox:
+    image: curlimages/curl:8.11.1
+    user: root
+    entrypoint: ["sleep", "infinity"]
+    volumes:
+      - caddy_data:/caddy-data:ro
+    depends_on:
+      - caddy
+
+volumes:
+  caddy_data:
+  caddy_config:
+  pgdata:
+  redisdata:
+  miniodata:

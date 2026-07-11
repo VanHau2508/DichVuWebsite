@@ -1,0 +1,4 @@
+# Toàn dự án chạy trong container Linux (Docker) — ép LF để script .sh / SQL / JS
+# không bị CRLF làm hỏng khi checkout trên Windows.
+* text=auto eol=lf
+*.sh text eol=lf

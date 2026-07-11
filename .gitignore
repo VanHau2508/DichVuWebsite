@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.next/
+.turbo/
+
+# Bí mật — không bao giờ commit. gitleaks chạy trong CI để chặn.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+!infra/**/*.example.pem
+
+# Dữ liệu runtime
+caddy_data/
+pgdata/
+*.log
+tmp/
+
+# Cấu hình cục bộ theo máy (không chia sẻ)
+.claude/settings.local.json

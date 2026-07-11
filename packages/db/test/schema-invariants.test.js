@@ -1,0 +1,212 @@
+/**
+ * Bất biến của schema. Chạy trong CI ở MỌI commit.
+ *
+ * Bộ test kia kiểm hành vi của các bảng đang tồn tại. Bộ này kiểm rằng bảng
+ * TIẾP THEO — cái mà ai đó sẽ thêm vào tháng sau — không thể trốn khỏi RLS.
+ *
+ * Một hệ thống multi-tenant không hỏng vì bảng `products` thiếu policy.
+ * Nó hỏng vì bảng `product_reviews` thêm vào tuần thứ 9 và không ai nhớ.
+ */
+import { test, after, describe } from 'node:test';
+import assert from 'node:assert/strict';
+import { owner, closeAll } from './helpers.js';
+
+after(closeAll);
+
+/** Mọi bảng thường trong schema public có cột shop_id. */
+const TENANT_TABLES = `
+  SELECT c.relname AS table_name, c.relrowsecurity, c.relforcerowsecurity
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public' AND c.relkind = 'r'
+    AND EXISTS (
+      SELECT 1 FROM information_schema.columns col
+      WHERE col.table_schema = 'public'
+        AND col.table_name   = c.relname
+        AND col.column_name  = 'shop_id')
+`;
+
+describe('vai trò database', () => {
+  for (const role of ['app_rw', 'app_tls']) {
+    test(`${role} không phải superuser và không có BYPASSRLS`, async () => {
+      const { rows } = await owner.query(
+        'SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = $1',
+        [role],
+      );
+      assert.equal(rows.length, 1, `role ${role} phải tồn tại`);
+      assert.equal(rows[0].rolsuper, false);
+      assert.equal(rows[0].rolbypassrls, false, 'BYPASSRLS biến RLS thành đồ trang trí');
+    });
+  }
+
+  test('app_rw không sở hữu bảng nào', async () => {
+    // Chủ sở hữu bảng bỏ qua RLS trừ khi có FORCE. Đừng phụ thuộc vào FORCE
+    // như tuyến phòng thủ duy nhất: đơn giản là đừng để app_rw sở hữu gì.
+    const { rows } = await owner.query(`
+      SELECT c.relname FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_roles r ON r.oid = c.relowner
+      WHERE n.nspname = 'public' AND c.relkind = 'r' AND r.rolname = 'app_rw'
+    `);
+    assert.deepEqual(rows.map((r) => r.relname), []);
+  });
+
+  for (const table of ['audit_logs', 'inventory_ledger']) {
+    test(`app_rw không sửa/xoá được ${table} (append-only)`, async () => {
+      const { rows } = await owner.query(`
+        SELECT has_table_privilege('app_rw','${table}','UPDATE') AS upd,
+               has_table_privilege('app_rw','${table}','DELETE') AS del,
+               has_table_privilege('app_rw','${table}','INSERT') AS ins
+      `);
+      assert.equal(rows[0].upd, false, `${table}: KHÔNG được UPDATE`);
+      assert.equal(rows[0].del, false, `${table}: KHÔNG được DELETE`);
+      assert.equal(rows[0].ins, true, `${table}: vẫn phải ghi thêm được`);
+    });
+  }
+
+  test('app_tls chỉ đọc được shops và domains', async () => {
+    const { rows } = await owner.query(`
+      SELECT table_name, privilege_type
+      FROM information_schema.role_table_grants
+      WHERE grantee = 'app_tls' AND table_schema = 'public'
+    `);
+    const granted = rows.map((r) => `${r.table_name}:${r.privilege_type}`).sort();
+    assert.deepEqual(granted, ['domains:SELECT', 'shops:SELECT']);
+  });
+});
+
+describe('Row-Level Security', () => {
+  test('mọi bảng có shop_id đều ENABLE và FORCE RLS', async () => {
+    const { rows } = await owner.query(TENANT_TABLES);
+    assert.ok(rows.length >= 8, `tìm thấy quá ít bảng tenant (${rows.length}) — query sai?`);
+
+    const missing = rows.filter((r) => !r.relrowsecurity || !r.relforcerowsecurity);
+    assert.deepEqual(
+      missing.map((r) => r.table_name),
+      [],
+      'các bảng này thiếu ENABLE hoặc FORCE ROW LEVEL SECURITY',
+    );
+  });
+
+  test('bảng shops cũng bật RLS (nó chính là tenant)', async () => {
+    const { rows } = await owner.query(
+      `SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'shops'`,
+    );
+    assert.equal(rows[0].relrowsecurity, true);
+    assert.equal(rows[0].relforcerowsecurity, true);
+  });
+
+  test('mỗi bảng tenant có ĐÚNG MỘT policy cho app_rw', async () => {
+    // Đây là bất biến bảo mật, không phải thẩm mỹ.
+    //
+    // Policy PERMISSIVE được OR với nhau. Thêm `CREATE POLICY lax ON products
+    // FOR INSERT TO app_rw WITH CHECK (true)` là vô hiệu hoá hoàn toàn
+    // tenant_isolation — dù policy gốc vẫn còn nguyên đó, trông rất vô hại.
+    //
+    // Đã kiểm chứng bằng mutation testing: đúng lỗ hổng này lọt qua mọi test
+    // metadata khác mà ta từng viết.
+    const { rows } = await owner.query(`
+      WITH tenant_tables AS (${TENANT_TABLES})
+      SELECT t.table_name, count(p.policyname) AS n,
+             array_agg(p.policyname) FILTER (WHERE p.policyname IS NOT NULL) AS policies
+      FROM tenant_tables t
+      LEFT JOIN pg_policies p
+        ON p.schemaname = 'public' AND p.tablename = t.table_name AND 'app_rw' = ANY(p.roles)
+      GROUP BY t.table_name
+    `);
+    const wrong = rows.filter((r) => Number(r.n) !== 1);
+    assert.deepEqual(
+      wrong.map((r) => `${r.table_name}: ${r.n} policy ${JSON.stringify(r.policies)}`),
+      [],
+    );
+  });
+
+  test('không policy nào của app_rw dùng biểu thức hằng true', async () => {
+    // USING (true) hoặc WITH CHECK (true) trên bảng tenant = không có RLS.
+    const { rows } = await owner.query(`
+      SELECT tablename, policyname, qual, with_check
+      FROM pg_policies
+      WHERE schemaname = 'public' AND 'app_rw' = ANY(roles)
+        AND (qual = 'true' OR with_check = 'true')
+    `);
+    assert.deepEqual(rows.map((r) => `${r.tablename}.${r.policyname}`), []);
+  });
+
+  test('quy ước: policy FOR ALL khai báo WITH CHECK tường minh', async () => {
+    // KHÔNG phải lỗ hổng: với FOR ALL, Postgres dùng lại biểu thức USING khi
+    // WITH CHECK vắng mặt (đã kiểm chứng — bỏ WITH CHECK vẫn chặn ghi chéo shop).
+    //
+    // Vẫn cưỡng chế vì nếu ai đó tách policy này thành FOR SELECT + FOR INSERT
+    // riêng, mặc định ngầm đó biến mất và không ai nhận ra.
+    const { rows } = await owner.query(`
+      SELECT tablename, policyname
+      FROM pg_policies
+      WHERE schemaname = 'public' AND 'app_rw' = ANY(roles) AND cmd = 'ALL'
+        AND (qual IS NULL OR with_check IS NULL)
+    `);
+    assert.deepEqual(rows.map((r) => `${r.tablename}.${r.policyname}`), []);
+  });
+
+  test('mọi bảng có shop_id đều có ít nhất một policy cho app_rw', async () => {
+    const { rows } = await owner.query(`
+      WITH tenant_tables AS (${TENANT_TABLES})
+      SELECT t.table_name FROM tenant_tables t
+      WHERE NOT EXISTS (
+        SELECT 1 FROM pg_policies p
+        WHERE p.schemaname = 'public' AND p.tablename = t.table_name
+          AND 'app_rw' = ANY(p.roles))
+    `);
+    assert.deepEqual(rows.map((r) => r.table_name), []);
+  });
+});
+
+describe('Composite foreign key', () => {
+  test('mọi FK trỏ tới bảng có shop_id đều phải bao gồm cột shop_id', async () => {
+    // Đây là bất biến thật sự, không phải "mọi bảng có UNIQUE(shop_id,id)".
+    // FK thường tới một bảng có tenant = cho phép tham chiếu chéo shop.
+    // FK tới `shops` được miễn: bảng shops không có cột shop_id.
+    const { rows } = await owner.query(`
+      SELECT con.conname,
+             src.relname AS src_table,
+             tgt.relname AS tgt_table,
+             (SELECT array_agg(a.attname ORDER BY a.attnum)
+                FROM unnest(con.conkey) k
+                JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k) AS src_cols
+      FROM pg_constraint con
+      JOIN pg_class src ON src.oid = con.conrelid
+      JOIN pg_class tgt ON tgt.oid = con.confrelid
+      JOIN pg_namespace n ON n.oid = src.relnamespace
+      WHERE con.contype = 'f' AND n.nspname = 'public'
+        AND EXISTS (
+          SELECT 1 FROM information_schema.columns col
+          WHERE col.table_schema='public' AND col.table_name = tgt.relname
+            AND col.column_name = 'shop_id')
+    `);
+    assert.ok(rows.length >= 3, `tìm thấy quá ít FK giữa các bảng tenant (${rows.length})`);
+
+    const unsafe = rows.filter((r) => !r.src_cols.includes('shop_id'));
+    assert.deepEqual(
+      unsafe.map((r) => `${r.src_table}.${r.conname} → ${r.tgt_table} (${r.src_cols})`),
+      [],
+      'các FK này cho phép tham chiếu chéo shop',
+    );
+  });
+});
+
+describe('Kiểu dữ liệu tiền tệ', () => {
+  test('mọi cột tiền là bigint, không phải float/numeric', async () => {
+    const { rows } = await owner.query(`
+      SELECT table_name, column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND column_name LIKE '%_vnd'
+    `);
+    assert.ok(rows.length > 0);
+
+    const wrong = rows.filter((r) => r.data_type !== 'bigint');
+    assert.deepEqual(
+      wrong.map((r) => `${r.table_name}.${r.column_name}: ${r.data_type}`),
+      [],
+      'VND không có phần lẻ; float/numeric mở đường cho sai số làm tròn',
+    );
+  });
+});

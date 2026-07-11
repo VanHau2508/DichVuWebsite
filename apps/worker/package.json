@@ -1,0 +1,14 @@
+{
+  "name": "@nentang/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Poller outbox → BullMQ → gửi email qua SMTP relay.",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node src/index.js" },
+  "dependencies": {
+    "bullmq": "^5.34.0",
+    "nodemailer": "^9.0.3",
+    "pg": "^8.13.1"
+  }
+}

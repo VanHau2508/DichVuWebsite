@@ -1,0 +1,167 @@
+/**
+ * Media — ảnh sản phẩm. Ngày 9.
+ *
+ * Luồng: upload → kiểm MAGIC BYTE (không tin Content-Type) + kích thước → lưu bản
+ * gốc vào bucket PRIVATE → re-encode sang WebP (sharp, tự strip metadata) → lưu
+ * vào bucket PUBLIC → media.status = ready.
+ *
+ * Bất biến bảo mật (mỗi cái có test + mutation):
+ *   - Kiểm magic byte, KHÔNG tin Content-Type client gửi → chặn file giả dạng ảnh.
+ *   - Bản gốc nằm bucket PRIVATE, không truy cập ẩn danh được. Chỉ WebP đã re-encode
+ *     mới lên PUBLIC. File chưa xử lý KHÔNG BAO GIỜ public.
+ *   - Re-encode strip mọi payload nhúng (một .png có đuôi rác → WebP sạch).
+ *   - media cô lập theo shop (RLS).
+ *
+ * MVP xử lý INLINE trong request. Kiến trúc đích đẩy sang worker + outbox
+ * (docs/01 §10); nâng cấp sau, hợp đồng bất biến (bucket private→public) giữ nguyên.
+ */
+
+import crypto from 'node:crypto';
+import { Client as MinioClient } from 'minio';
+import sharp from 'sharp';
+import { send } from './http.js';
+import { withTenant, audit } from './db.js';
+
+const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
+const MAX_UPLOAD = 10 * 1024 * 1024; // 10MB
+const BUCKET_PRIVATE = process.env.MEDIA_BUCKET_PRIVATE ?? 'media-private';
+const BUCKET_PUBLIC = process.env.MEDIA_BUCKET_PUBLIC ?? 'media-public';
+const PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? 'http://minio:9000/media-public';
+
+const minio = new MinioClient({
+  endPoint: process.env.MINIO_ENDPOINT ?? 'minio',
+  port: Number(process.env.MINIO_PORT ?? 9000),
+  useSSL: false,
+  accessKey: process.env.MINIO_ACCESS_KEY ?? 'minioadmin',
+  secretKey: process.env.MINIO_SECRET_KEY ?? 'minioadmin',
+});
+
+/** Chạy một lần lúc khởi động: tạo bucket, đặt bucket public cho phép đọc ẩn danh. */
+export async function initMedia() {
+  for (const b of [BUCKET_PRIVATE, BUCKET_PUBLIC]) {
+    if (!(await minio.bucketExists(b))) await minio.makeBucket(b);
+  }
+  // CHỈ bucket public cho phép GET ẩn danh. Bucket private KHÔNG có policy nào →
+  // truy cập ẩn danh bị từ chối. Đây là ranh giới "chưa xử lý = không public".
+  await minio.setBucketPolicy(
+    BUCKET_PUBLIC,
+    JSON.stringify({
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Principal: { AWS: ['*'] },
+          Action: ['s3:GetObject'],
+          Resource: [`arn:aws:s3:::${BUCKET_PUBLIC}/*`],
+        },
+      ],
+    }),
+  );
+}
+
+/**
+ * Phát hiện kiểu ảnh THẬT từ magic byte. Trả kiểu MIME hoặc null nếu không phải
+ * ảnh được hỗ trợ. KHÔNG dùng Content-Type do client gửi — nó nói dối được.
+ */
+export function sniffImage(buf) {
+  if (buf.length < 12) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  if (buf.slice(0, 4).toString('latin1') === 'RIFF' && buf.slice(8, 12).toString('latin1') === 'WEBP') return 'image/webp';
+  if (buf.slice(0, 4).toString('latin1') === 'GIF8') return 'image/gif';
+  return null;
+}
+
+async function uploadMedia(res, ctx, body, params) {
+  const productId = params[1];
+  const buf = body; // Buffer thô (dispatcher đọc bằng readBuffer khi route.raw)
+
+  if (!Buffer.isBuffer(buf) || buf.length === 0) return send(res, 400, { error: 'thiếu dữ liệu ảnh' });
+  const detected = sniffImage(buf);
+  if (!detected) return send(res, 400, { error: 'không phải ảnh hợp lệ (JPEG/PNG/WebP/GIF)' });
+
+  const mediaId = crypto.randomUUID();
+  const originalKey = `staging/${ctx.shopId}/${mediaId}`;
+  const publicKey = `${ctx.shopId}/${mediaId}.webp`;
+
+  // 1) Bản gốc → bucket PRIVATE. Ghi media row pending.
+  //    Kiểm sản phẩm tồn tại (composite FK cũng chặn, nhưng báo 404 rõ hơn).
+  const setup = await withTenant(ctx.shopId, async (c) => {
+    const p = await c.query(`SELECT 1 FROM products WHERE id = $1 AND deleted_at IS NULL`, [productId]);
+    if (p.rows.length === 0) return null;
+    await c.query(
+      `INSERT INTO media (id, shop_id, product_id, status, original_key, content_type, size_bytes)
+       VALUES ($1, current_shop_id(), $2, 'pending', $3, $4, $5)`,
+      [mediaId, productId, originalKey, detected, buf.length],
+    );
+    return true;
+  });
+  if (!setup) return send(res, 404, { error: 'không tìm thấy sản phẩm' });
+
+  await minio.putObject(BUCKET_PRIVATE, originalKey, buf, buf.length, { 'Content-Type': detected });
+
+  // 2) Re-encode → WebP. sharp mặc định strip metadata; .rotate() áp EXIF rồi bỏ.
+  //    Bước này biến mọi file "ảnh + payload nhúng" thành ảnh sạch.
+  try {
+    const { data, info } = await sharp(buf)
+      .rotate()
+      .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 82 })
+      .toBuffer({ resolveWithObject: true });
+
+    // 3) WebP → bucket PUBLIC. Chỉ tới đây file mới public.
+    await minio.putObject(BUCKET_PUBLIC, publicKey, data, data.length, { 'Content-Type': 'image/webp' });
+
+    await withTenant(ctx.shopId, async (c) => {
+      await c.query(
+        `UPDATE media SET status = 'ready', public_key = $1, width = $2, height = $3 WHERE id = $4`,
+        [publicKey, info.width, info.height, mediaId],
+      );
+      await audit(c, 'media.uploaded', { actorId: ctx.user.id, ip: ctx.ip, metadata: { mediaId, productId } });
+    });
+    return send(res, 201, { id: mediaId, url: `${PUBLIC_BASE}/${publicKey}`, width: info.width, height: info.height });
+  } catch (err) {
+    await withTenant(ctx.shopId, (c) => c.query(`UPDATE media SET status = 'failed' WHERE id = $1`, [mediaId])).catch(() => {});
+    return send(res, 422, { error: 'xử lý ảnh thất bại' });
+  }
+}
+
+async function listMedia(res, ctx, _body, params) {
+  const productId = params[1];
+  const rows = await withTenant(ctx.shopId, async (c) => {
+    const r = await c.query(
+      `SELECT id, status, public_key, width, height, created_at
+         FROM media WHERE product_id = $1 AND deleted_at IS NULL ORDER BY created_at`,
+      [productId],
+    );
+    return r.rows;
+  });
+  return send(res, 200, {
+    media: rows.map((m) => ({ ...m, url: m.public_key ? `${PUBLIC_BASE}/${m.public_key}` : null })),
+  });
+}
+
+async function deleteMedia(res, ctx, _body, params) {
+  const mediaId = params[1];
+  const row = await withTenant(ctx.shopId, async (c) => {
+    const r = await c.query(
+      `UPDATE media SET deleted_at = now()
+        WHERE id = $1 AND deleted_at IS NULL RETURNING original_key, public_key`,
+      [mediaId],
+    );
+    if (r.rows.length === 0) return null;
+    await audit(c, 'media.deleted', { actorId: ctx.user.id, ip: ctx.ip, metadata: { mediaId } });
+    return r.rows[0];
+  });
+  if (!row) return send(res, 404, { error: 'không tìm thấy media' });
+  // Best-effort xoá object (soft-delete row là nguồn sự thật).
+  await minio.removeObject(BUCKET_PRIVATE, row.original_key).catch(() => {});
+  if (row.public_key) await minio.removeObject(BUCKET_PUBLIC, row.public_key).catch(() => {});
+  return send(res, 200, { ok: true });
+}
+
+export const MEDIA_ROUTES = [
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/products/${UUID}/media$`), perm: 'catalog.write', raw: true, fn: (res, ctx, b, p) => uploadMedia(res, ctx, b, p) },
+  { m: 'GET', re: new RegExp(`^/shops/${UUID}/products/${UUID}/media$`), perm: 'catalog.read', fn: (res, ctx, b, p) => listMedia(res, ctx, b, p) },
+  { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/media/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => deleteMedia(res, ctx, b, p) },
+];

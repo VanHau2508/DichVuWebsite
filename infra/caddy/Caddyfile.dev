@@ -1,0 +1,73 @@
+# Caddyfile — DEV / smoke test TLS on-demand
+#
+# Khác bản production DUY NHẤT ở chỗ cấp chứng chỉ: ở đây dùng CA nội bộ của
+# Caddy (`issuer internal`) thay vì ACME/Let's Encrypt. Toàn bộ cơ chế rủi ro —
+# catch-all host, gọi `ask`, tôn trọng 200/403, cache, fail-closed — là y hệt.
+#
+# Chạy được offline, không giới hạn số lần thử, không đốt quota Let's Encrypt.
+{
+	# Admin API để kiểm tra cert đã cấp. KHÔNG publish port này ra host.
+	admin 0.0.0.0:2019
+
+	# Caddy ≥2.8 đã GỠ BỎ `interval` và `burst` — để lại chúng thì Caddy không
+	# khởi động. Hệ quả: `ask` là lá chắn DUY NHẤT chống cấp chứng chỉ tràn lan.
+	# tls-authorize tự giới hạn tần suất tra cứu database (xem src/ratelimit.js).
+	on_demand_tls {
+		ask http://tls-authorize:3010/internal/tls/authorize
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		-Server
+	}
+}
+
+# ── Chuyển hướng HTTP → HTTPS ────────────────────────────────────────────────
+# Ở production, Caddy tự chèn handler ACME HTTP-01 vào block này trước redirect.
+http:// {
+	redir https://{host}{uri} 308
+}
+
+# ── Dịch vụ auth (host cố định, cert nội bộ) ─────────────────────────────────
+# Origin cố định để cookie __Host-session (yêu cầu Secure+HTTPS) hoạt động, và
+# để smoke test có Origin hợp lệ khi gọi các endpoint đổi trạng thái.
+auth.localtest {
+	tls internal
+	import security_headers
+	header Cache-Control "no-store"
+	reverse_proxy auth:3020
+}
+
+# ── Catch-all: mọi hostname lạ ───────────────────────────────────────────────
+# Site block không có hostname → khớp mọi Host. Vì không biết trước tên miền,
+# Caddy BẮT BUỘC phải dùng on-demand TLS. Mỗi handshake tới một domain chưa có
+# chứng chỉ sẽ gọi `ask` ở trên.
+https:// {
+	tls {
+		issuer internal
+		on_demand
+	}
+
+	import security_headers
+
+	# /cart* /checkout* → dịch vụ checkout (ghi đơn, tự đặt Cache-Control: no-store).
+	# Còn lại → storefront (duyệt, tự đặt public cache cho trang, no-store cho 404).
+	# Mỗi dịch vụ làm chủ header cache của mình → không nhân đôi (bài học Ngày 10).
+	@checkout path /cart /cart/* /checkout /checkout/*
+	handle @checkout {
+		reverse_proxy checkout:3060
+	}
+	handle {
+		reverse_proxy storefront:3050
+	}
+}

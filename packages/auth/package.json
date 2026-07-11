@@ -1,0 +1,17 @@
+{
+  "name": "@nentang/auth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Băm mật khẩu (Argon2id), TOTP, token phiên, rate limit.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "ioredis": "^5.4.1"
+  }
+}

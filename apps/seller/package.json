@@ -1,0 +1,19 @@
+{
+  "name": "@nentang/seller-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Seller-admin: quản trị shop, nhân sự (RBAC), step-up auth.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "minio": "^8.0.1",
+    "pg": "^8.13.1",
+    "sharp": "^0.33.5"
+  }
+}

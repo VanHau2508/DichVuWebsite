@@ -1,0 +1,92 @@
+# Caddyfile — PRODUCTION
+#
+# Yêu cầu image build từ infra/caddy/Dockerfile (có plugin caddy-dns/cloudflare).
+# Image `caddy:2-alpine` gốc sẽ KHÔNG khởi động được với file này.
+#
+# Biến môi trường bắt buộc: ACME_EMAIL, CF_API_TOKEN
+#   CF_API_TOKEN chỉ cần quyền Zone:DNS:Edit trên đúng zone nentang.vn.
+#   Không dùng Global API Key.
+{
+	email {env.ACME_EMAIL}
+
+	# Caddy ≥2.8 đã GỠ BỎ `interval` và `burst`. Để lại → Caddy không khởi động.
+	# `ask` là lá chắn DUY NHẤT: mọi handshake tới hostname chưa có chứng chỉ đều
+	# gọi nó. tls-authorize tự giới hạn tần suất chạm database.
+	on_demand_tls {
+		ask http://tls-authorize:3010/internal/tls/authorize
+	}
+
+	servers {
+		# Caddy là thứ duy nhất chạm Internet; không có proxy nào trước nó.
+		# Vì vậy KHÔNG tin X-Forwarded-For từ bên ngoài.
+		trusted_proxies static private_ranges
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50MiB
+			roll_keep 10
+			roll_keep_for 720h
+		}
+		format json
+	}
+}
+
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		-Server
+	}
+}
+
+# ── Quản trị nhà bán hàng: MỘT origin duy nhất (ADR-005) ─────────────────────
+admin.nentang.vn {
+	import security_headers
+	header Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+	header Cache-Control "private, no-store"
+	reverse_proxy seller-admin:3001
+}
+
+# ── Storefront trên subdomain nền tảng ───────────────────────────────────────
+# Wildcard ⇒ bắt buộc DNS-01 ⇒ bắt buộc plugin cloudflare.
+*.nentang.vn {
+	tls {
+		dns cloudflare {env.CF_API_TOKEN}
+	}
+	import security_headers
+
+	@checkout path /cart /cart/* /checkout /checkout/*
+	handle @checkout {
+		reverse_proxy checkout:3060
+	}
+	handle {
+		reverse_proxy storefront:3050
+	}
+}
+
+# ── Storefront trên tên miền riêng của khách (ADR-003, ADR-004) ──────────────
+# Catch-all. Chứng chỉ cấp on-demand, chỉ sau khi `ask` trả 200.
+# /cart* /checkout* → checkout (tự đặt no-store); còn lại → storefront.
+https:// {
+	tls {
+		on_demand
+	}
+	import security_headers
+
+	@checkout path /cart /cart/* /checkout /checkout/*
+	handle @checkout {
+		reverse_proxy checkout:3060
+	}
+	handle {
+		reverse_proxy storefront:3050
+	}
+}
+
+# ── HTTP → HTTPS ─────────────────────────────────────────────────────────────
+# Phải giữ :80 mở: Let's Encrypt dùng HTTP-01 cho các domain on-demand.
+http:// {
+	redir https://{host}{uri} 308
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@nentang/seller-admin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Admin web (BFF) cho nhà bán hàng — SSR form thuần, gọi auth/seller/platform API.",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node src/server.js" },
+  "dependencies": {}
+}

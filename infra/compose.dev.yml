@@ -307,6 +307,36 @@ services:
       timeout: 3s
       retries: 5
 
+  # Admin web (BFF) cho nhà bán hàng. Caddy: admin.localtest → seller-admin:3001.
+  seller-admin:
+    build:
+      context: ../apps/seller-admin
+    restart: unless-stopped
+    environment:
+      AUTH_URL: http://auth:3020
+      SELLER_URL: http://seller:3040
+      PLATFORM_URL: http://platform:3030
+      # Origin gắn vào request nội bộ: PHẢI thuộc ALLOWED_ORIGINS của auth/seller/platform.
+      ADMIN_ORIGIN: https://admin.nentang.vn
+      # CSRF của chính admin: nhận POST từ Origin admin (prod + host dev).
+      ALLOWED_ORIGINS: https://admin.nentang.vn,https://admin.localtest
+      PORT: "3001"
+    volumes:
+      # Mount PHẢI khớp CMD (node src/server.js → /app/src) cho mutation testing.
+      - ../apps/seller-admin/src:/app/src:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      auth:
+        condition: service_healthy
+      seller:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   # Bộ test cô lập tenant + auth. Không bao giờ deploy.
   dbtest:
     build:
@@ -322,6 +352,8 @@ services:
       AUTH_URL: http://auth:3020
       PLATFORM_URL: http://platform:3030
       SELLER_URL: http://seller:3040
+      ADMIN_URL: http://seller-admin:3001
+      ADMIN_ORIGIN: https://admin.localtest
       STOREFRONT_URL: http://storefront:3050
       CHECKOUT_URL: http://checkout:3060
       PAYMENT_URL: http://payment:3070
@@ -338,6 +370,7 @@ services:
       - ../packages/auth/src:/work/packages/auth/src:ro
       - ../apps/platform/test:/work/apps/platform/test:ro
       - ../apps/seller/test:/work/apps/seller/test:ro
+      - ../apps/seller-admin/test:/work/apps/seller-admin/test:ro
       - ../apps/storefront/test:/work/apps/storefront/test:ro
       - ../apps/checkout/test:/work/apps/checkout/test:ro
       - ../apps/payment/test:/work/apps/payment/test:ro
@@ -348,6 +381,8 @@ services:
       platform:
         condition: service_healthy
       seller:
+        condition: service_healthy
+      seller-admin:
         condition: service_healthy
       storefront:
         condition: service_healthy

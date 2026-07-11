@@ -262,8 +262,27 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
 
-  # LƯU Ý: admin.nentang.vn (Caddyfile) route tới seller-admin:3001 — service UI
-  # nhà bán hàng CHƯA có (giai đoạn UI). Tới lúc đó thêm service `seller-admin` vào đây.
+  # admin.nentang.vn (Caddyfile) → seller-admin:3001. BFF SSR: cầm cookie phiên của
+  # trình duyệt, gọi NỘI BỘ auth/seller/platform. Không đụng DB, không giữ secret DB.
+  seller-admin:
+    build: { context: ../apps/seller-admin }
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      NODE_ENV: production
+      AUTH_URL: http://auth:3020
+      SELLER_URL: http://seller:3040
+      PLATFORM_URL: http://platform:3030
+      # Origin admin gắn vào request nội bộ (backend originAllowed đòi Origin allowlist).
+      ADMIN_ORIGIN: https://${ADMIN_DOMAIN:-admin.nentang.vn}
+      # CSRF của chính admin: chỉ nhận POST từ Origin của mình.
+      ALLOWED_ORIGINS: https://${ADMIN_DOMAIN:-admin.nentang.vn}
+      PORT: "3001"
+    deploy: { resources: { limits: { memory: 160m } } }
+    depends_on:
+      auth: { condition: service_healthy }
+      seller: { condition: service_healthy }
+      platform: { condition: service_healthy }
 
 volumes:
   pgdata:

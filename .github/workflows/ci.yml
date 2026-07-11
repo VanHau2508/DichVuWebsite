@@ -53,7 +53,7 @@ jobs:
 
       - name: Chờ services healthy + migrate xong
         run: |
-          need="postgres redis minio mailpit auth platform seller checkout payment worker storefront"
+          need="postgres redis minio mailpit auth platform seller seller-admin checkout payment worker storefront"
           ok=0
           for _ in $(seq 1 72); do
             bad=""
@@ -96,6 +96,7 @@ jobs:
           run dbtest "storefront (CSP / maintenance)"   node apps/storefront/test/e2e.mjs
           run dbtest "giỏ hàng + checkout"              node apps/checkout/test/e2e.mjs
           run dbtest "buyer checkout UI (form flow)"    node apps/checkout/test/buyer-flow.e2e.mjs
+          run dbtest "admin web (login/MFA/quản đơn)"   node apps/seller-admin/test/admin-flow.e2e.mjs
           run dbtest "thanh toán QR + webhook"          node apps/payment/test/e2e.mjs
           run dbtest "vận chuyển + email"               node apps/worker/test/e2e.mjs
           [ "$fail" = 0 ] && echo "=== TẤT CẢ E2E XANH ===" || echo "=== CÓ SUITE ĐỎ ==="
@@ -124,7 +125,7 @@ jobs:
 
       - name: Chờ services healthy
         run: |
-          need="postgres redis minio mailpit auth platform seller checkout payment worker storefront"
+          need="postgres redis minio mailpit auth platform seller seller-admin checkout payment worker storefront"
           ok=0
           for _ in $(seq 1 72); do
             bad=""
@@ -141,7 +142,7 @@ jobs:
       - name: Mutation testing
         run: |
           fail=0
-          for h in tenant-isolation auth invitation seller catalog fulfillment storefront content preview seo blocks; do
+          for h in tenant-isolation auth invitation seller catalog fulfillment storefront content preview seo blocks admin; do
             echo "::group::verify-$h"
             if bash "scripts/verify-$h.sh"; then echo "PASS  verify-$h"; else echo "FAIL  verify-$h"; fail=1; fi
             echo "::endgroup::"

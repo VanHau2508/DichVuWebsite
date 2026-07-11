@@ -48,6 +48,14 @@ auth.localtest {
 	reverse_proxy auth:3020
 }
 
+# ── Admin web (BFF) cho nhà bán hàng ─────────────────────────────────────────
+# Host cố định để cookie __Host-session hoạt động và Origin hợp lệ khi POST.
+admin.localtest {
+	tls internal
+	import security_headers
+	reverse_proxy seller-admin:3001
+}
+
 # ── Catch-all: mọi hostname lạ ───────────────────────────────────────────────
 # Site block không có hostname → khớp mọi Host. Vì không biết trước tên miền,
 # Caddy BẮT BUỘC phải dùng on-demand TLS. Mỗi handshake tới một domain chưa có

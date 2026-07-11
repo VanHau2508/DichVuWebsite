@@ -43,9 +43,12 @@
 }
 
 # ── Quản trị nhà bán hàng: MỘT origin duy nhất (ADR-005) ─────────────────────
+# CSP PHẢI khớp cái app tự đặt (apps/seller-admin/src/http.js): trình duyệt áp
+# GIAO của hai policy. App là SSR form thuần → cần style-src 'unsafe-inline'
+# (CSS nội tuyến) và img-src data: (QR/ảnh nội tuyến). KHÔNG cho script.
 admin.nentang.vn {
 	import security_headers
-	header Content-Security-Policy "default-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+	header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 	header Cache-Control "private, no-store"
 	reverse_proxy seller-admin:3001
 }

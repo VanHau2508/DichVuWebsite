@@ -1,0 +1,151 @@
+name: CI
+
+# "Kiểm chứng bằng chạy thật" thành cổng tự động:
+#   - unit:     test thuần (node:test), không cần stack — phản hồi nhanh.
+#   - e2e:      dựng toàn bộ stack Docker rồi chạy mọi e2e + bất biến (cổng chính).
+#   - mutation: gỡ từng lớp phòng thủ → e2e phải chuyển đỏ. Rất chậm (restart service
+#               nhiều lần) nên CHỈ chạy nightly hoặc bấm tay, không chặn mỗi push.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 18 * * *"   # 01:00 giờ VN (UTC+7) — mutation nightly
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit (thuần, không cần stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # Mọi module test này chỉ dùng node builtins → không cần npm install.
+      - name: Chạy unit test
+        run: |
+          node --test \
+            packages/auth/test/*.test.js \
+            apps/tls-authorize/test/*.test.js \
+            apps/checkout/test/vietqr.test.js \
+            apps/seller/test/rbac.test.js
+
+  e2e:
+    name: E2E (docker stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      C: "docker compose -f infra/compose.dev.yml"
+    steps:
+      - uses: actions/checkout@v4
+
+      # up -d tôn trọng depends_on (service_healthy + migrate completed) nên khi
+      # lệnh trả về là stack đã sẵn sàng; bước chờ bên dưới là phòng thủ thêm.
+      - name: Build & khởi động stack
+        run: $C up -d --build
+
+      - name: Chờ services healthy + migrate xong
+        run: |
+          need="postgres redis minio mailpit auth platform seller checkout payment worker storefront"
+          ok=0
+          for _ in $(seq 1 72); do
+            bad=""
+            for s in $need; do
+              h=$($C ps "$s" --format '{{.Health}}' 2>/dev/null || echo missing)
+              [ "$h" = "healthy" ] || bad="$bad $s=$h"
+            done
+            dr=$($C ps dbtest --format '{{.State}}' 2>/dev/null || echo missing)
+            [ "$dr" = "running" ] || bad="$bad dbtest=$dr"
+            if [ -z "$bad" ]; then ok=1; break; fi
+            echo "chờ:$bad"; sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "TIMEOUT chờ services"; $C ps; exit 1; }
+          $C exec -T postgres psql -U app_owner -d app -tAc "select count(*) from schema_migrations" >/dev/null \
+            || { echo "migrate chưa chạy"; exit 1; }
+          echo "stack sẵn sàng"
+
+      - name: Chạy toàn bộ e2e + bất biến
+        run: |
+          fail=0
+          run() {  # <container> <mô tả> <lệnh...>
+            local cont="$1" desc="$2"; shift 2
+            $C exec -T redis redis-cli flushall >/dev/null 2>&1 || true
+            echo "::group::$desc"
+            if $C exec -T "$cont" "$@"; then echo "PASS  $desc"; else echo "FAIL  $desc"; fail=1; fi
+            echo "::endgroup::"
+          }
+          run dbtest "cô lập tenant + bất biến schema"  sh -c 'node --test test/*.test.js'
+          run auth   "auth (MFA / step-up)"             node apps/auth/test/e2e.mjs
+          run dbtest "onboarding shop"                  node apps/platform/test/e2e.mjs
+          run dbtest "seller RBAC + step-up"            node apps/seller/test/e2e.mjs
+          run dbtest "catalog"                          node apps/seller/test/catalog.e2e.mjs
+          run dbtest "tồn kho"                          node apps/seller/test/inventory.e2e.mjs
+          run dbtest "media (re-encode)"                node apps/seller/test/media.e2e.mjs
+          run dbtest "trang nội dung (Ngày 11)"         node apps/seller/test/content.e2e.mjs
+          run dbtest "preview bản nháp (Ngày 11)"       node apps/seller/test/preview.e2e.mjs
+          run dbtest "SEO meta (Ngày 11)"               node apps/seller/test/seo.e2e.mjs
+          run dbtest "kéo–thả section (Ngày 11)"        node apps/seller/test/blocks.e2e.mjs
+          run dbtest "storefront (CSP / maintenance)"   node apps/storefront/test/e2e.mjs
+          run dbtest "giỏ hàng + checkout"              node apps/checkout/test/e2e.mjs
+          run dbtest "thanh toán QR + webhook"          node apps/payment/test/e2e.mjs
+          run dbtest "vận chuyển + email"               node apps/worker/test/e2e.mjs
+          [ "$fail" = 0 ] && echo "=== TẤT CẢ E2E XANH ===" || echo "=== CÓ SUITE ĐỎ ==="
+          exit $fail
+
+      - name: Log services khi lỗi
+        if: failure()
+        run: $C logs --no-color --tail 200
+
+      - name: Dọn stack
+        if: always()
+        run: $C down -v
+
+  mutation:
+    name: Mutation (nightly / manual)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      C: "docker compose -f infra/compose.dev.yml"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build & khởi động stack
+        run: $C up -d --build
+
+      - name: Chờ services healthy
+        run: |
+          need="postgres redis minio mailpit auth platform seller checkout payment worker storefront"
+          ok=0
+          for _ in $(seq 1 72); do
+            bad=""
+            for s in $need; do
+              h=$($C ps "$s" --format '{{.Health}}' 2>/dev/null || echo missing)
+              [ "$h" = "healthy" ] || bad="$bad $s=$h"
+            done
+            if [ -z "$bad" ]; then ok=1; break; fi
+            echo "chờ:$bad"; sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "TIMEOUT"; $C ps; exit 1; }
+
+      # Gỡ từng lớp phòng thủ → e2e phải chuyển đỏ; script tự hoàn nguyên (trap).
+      - name: Mutation testing
+        run: |
+          fail=0
+          for h in tenant-isolation auth seller catalog storefront content preview seo blocks; do
+            echo "::group::verify-$h"
+            if bash "scripts/verify-$h.sh"; then echo "PASS  verify-$h"; else echo "FAIL  verify-$h"; fail=1; fi
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      - name: Dọn stack
+        if: always()
+        run: $C down -v

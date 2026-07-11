@@ -3,13 +3,12 @@
 # Layout /app/{apps,packages} được giữ nguyên để đường dẫn ../../../packages/... khớp,
 # và node_modules ở /app để cả hai cây import giải được dependency.
 
-FROM node:22-alpine
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
 
 WORKDIR /app
 
-# TODO(trước production): commit lockfile và dùng `npm ci`.
-COPY apps/auth/package.json ./package.json
-RUN npm install --omit=dev --no-audit --no-fund
+COPY apps/auth/package.json apps/auth/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY packages/auth/src ./packages/auth/src
 COPY apps/auth/src     ./apps/auth/src

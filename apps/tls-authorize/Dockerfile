@@ -1,12 +1,11 @@
-FROM node:22-alpine
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
 
 WORKDIR /app
 
-# TODO(trước production): commit package-lock.json và đổi sang `npm ci`.
 # `npm install` cho phép phiên bản trôi giữa các lần build — không chấp nhận được
 # cho một image chạy production.
-COPY package.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY src ./src
 

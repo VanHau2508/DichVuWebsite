@@ -1,0 +1,275 @@
+# Stack PRODUCTION. Khác compose.dev.yml ở các điểm CỐT LÕI:
+#   - Secret lấy từ .env (${VAR:?} → fail nếu thiếu), KHÔNG hardcode devpassword.
+#   - KHÔNG bind-mount src/test (code đã COPY vào image; npm ci + node pin digest — P0-7).
+#   - CHỈ Caddy mở cổng ra Internet (80/443); mọi service khác chỉ trong mạng nội bộ.
+#   - migrate chạy `up` KHÔNG seed (seed là dev-only).
+#   - Postgres bật WAL archiving cho PITR (P0-8).
+#   - Worker gửi email qua SMTP relay THẬT (không Mailpit).
+#   - Giới hạn RAM + log để một VPS không bị một service ăn hết.
+#   - KHÔNG có dbtest/toolbox/mailpit.
+#
+# Triển khai QUA scripts/deploy.sh (nó sắp thứ tự migrate → provision-db-roles → up).
+# Xem docs/22 (secret/build) + docs/23 (deploy/backup).
+
+name: nentang-prod
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  caddy:
+    build:
+      context: ./caddy          # Dockerfile có plugin caddy-dns/cloudflare (DNS-01 wildcard)
+    restart: unless-stopped
+    <<: *logging
+    ports:
+      - "80:80"                  # HTTP-01 cho domain khách + redirect 308
+      - "443:443"
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?}
+      CF_API_TOKEN: ${CF_API_TOKEN:?}   # chỉ Zone:DNS:Edit trên nentang.vn
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data         # CHỨNG CHỈ + ACME account — PHẢI backup (backup.sh)
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy: { resources: { limits: { memory: 192m } } }
+    depends_on:
+      tls-authorize: { condition: service_healthy }
+      storefront:    { condition: service_healthy }
+
+  # Volume WAL mới thuộc root; archive_command chạy dưới tiến trình postgres (uid 70)
+  # nên phải chown trước, nếu không WAL archiving im lặng thất bại (đã lộ ở pitr-drill).
+  wal-init:
+    image: postgres:16-alpine
+    <<: *logging
+    command: sh -c "chown -R postgres:postgres /wal-archive"
+    volumes:
+      - walarchive:/wal-archive
+    restart: "no"
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app_owner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    depends_on:
+      wal-init: { condition: service_completed_successfully }
+    # WAL archiving cho PITR: mỗi WAL segment được copy sang /wal-archive (volume),
+    # backup.sh đẩy offsite thường xuyên → RPO nhỏ. archive_command idempotent, không đè.
+    # archive_timeout: ép chuyển+archive WAL ít nhất mỗi 5 phút NGAY CẢ khi shop ít giao
+    # dịch (không thì segment 16MB lâu mới đầy → WAL đang mở không được ship → RPO vô hạn).
+    command: >
+      postgres
+      -c wal_level=replica
+      -c archive_mode=on
+      -c archive_command='test ! -f /wal-archive/%f && cp %p /wal-archive/%f'
+      -c archive_timeout=300
+      -c max_wal_senders=3
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - walarchive:/wal-archive
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app_owner -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy: { resources: { limits: { memory: 1g } } }
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    <<: *logging
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy: { resources: { limits: { memory: 320m } } }
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    restart: unless-stopped
+    <<: *logging
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy: { resources: { limits: { memory: 512m } } }
+
+  # One-shot: chạy migration (KHÔNG seed). deploy.sh gọi qua `run --rm`.
+  migrate:
+    build: { context: ../packages/db }
+    <<: *logging
+    command: ["node", "migrate.js", "up"]
+    environment:
+      DATABASE_URL_OWNER: postgres://app_owner:${POSTGRES_PASSWORD:?}@postgres:5432/app
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  tls-authorize:
+    build: { context: ../apps/tls-authorize }
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      DATABASE_URL: postgres://app_tls:${APP_TLS_PASSWORD:?}@postgres:5432/app
+      PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
+      PORT: "3010"
+    deploy: { resources: { limits: { memory: 128m } } }
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  auth:
+    build: { context: .., dockerfile: apps/auth/Dockerfile }
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      APP_ENV: production           # chặn cờ dev (DEV_RESET_TOKEN_STASH) khởi động
+      DATABASE_URL: postgres://app_auth:${APP_AUTH_PASSWORD:?}@postgres:5432/app
+      REDIS_URL: redis://redis:6379
+      MFA_ENC_KEY: ${MFA_ENC_KEY:?}
+      SESSION_TTL_HOURS: "168"
+      ALLOWED_ORIGINS: https://${ADMIN_DOMAIN:-admin.nentang.vn}
+      PORT: "3020"
+    deploy: { resources: { limits: { memory: 256m } } }
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  platform:
+    build: { context: ../apps/platform }
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgres://app_platform:${APP_PLATFORM_PASSWORD:?}@postgres:5432/app
+      AUTH_URL: http://auth:3020
+      PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
+      ALLOWED_ORIGINS: https://${ADMIN_DOMAIN:-admin.nentang.vn}
+      PORT: "3030"
+    deploy: { resources: { limits: { memory: 192m } } }
+    depends_on:
+      postgres: { condition: service_healthy }
+      auth: { condition: service_healthy }
+
+  seller:
+    build: { context: ../apps/seller }
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgres://app_rw:${APP_RW_PASSWORD:?}@postgres:5432/app
+      AUTH_URL: http://auth:3020
+      ALLOWED_ORIGINS: https://${ADMIN_DOMAIN:-admin.nentang.vn}
+      PORT: "3040"
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?}
+      MEDIA_BUCKET_PRIVATE: media-private
+      MEDIA_BUCKET_PUBLIC: media-public
+      MEDIA_PUBLIC_BASE: ${MEDIA_PUBLIC_BASE:?}   # vd https://cdn.nentang.vn/media-public
+    deploy: { resources: { limits: { memory: 384m } } }   # sharp re-encode ảnh
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      auth: { condition: service_healthy }
+
+  checkout:
+    build: { context: ../apps/checkout }
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgres://app_checkout:${APP_CHECKOUT_PASSWORD:?}@postgres:5432/app
+      SHIP_FEE_VND: ${SHIP_FEE_VND:-30000}
+      PORT: "3060"
+    deploy: { resources: { limits: { memory: 192m } } }
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  payment:
+    build: { context: ../apps/payment }
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgres://app_payment:${APP_PAYMENT_PASSWORD:?}@postgres:5432/app
+      SEPAY_WEBHOOK_KEY: ${SEPAY_WEBHOOK_KEY:?}
+      PORT: "3070"
+    deploy: { resources: { limits: { memory: 160m } } }
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  worker:
+    build: { context: ../apps/worker }
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgres://app_worker:${APP_WORKER_PASSWORD:?}@postgres:5432/app
+      DATABASE_URL_EXPIRY: postgres://app_expiry:${APP_EXPIRY_PASSWORD:?}@postgres:5432/app
+      ORDER_EXPIRY_MINUTES: ${ORDER_EXPIRY_MINUTES:-30}
+      EXPIRY_SWEEP_MS: ${EXPIRY_SWEEP_MS:-60000}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      # SMTP relay THẬT (VPS VN thường bị chặn cổng 25 → phải dùng relay).
+      SMTP_HOST: ${SMTP_HOST:?}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:?}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:?}
+      EMAIL_FROM: ${EMAIL_FROM:?}
+      POLL_MS: "1000"
+      EMAIL_ATTEMPTS: "5"
+      EMAIL_BACKOFF_MS: "2000"
+      PORT: "3080"
+    deploy: { resources: { limits: { memory: 256m } } }
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  storefront:
+    build: { context: ../apps/storefront }
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgres://app_store:${APP_STORE_PASSWORD:?}@postgres:5432/app
+      MEDIA_PUBLIC_BASE: ${MEDIA_PUBLIC_BASE:?}
+      PORT: "3050"
+    deploy: { resources: { limits: { memory: 256m } } }
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  # LƯU Ý: admin.nentang.vn (Caddyfile) route tới seller-admin:3001 — service UI
+  # nhà bán hàng CHƯA có (giai đoạn UI). Tới lúc đó thêm service `seller-admin` vào đây.
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  walarchive:
+  caddy_data:
+  caddy_config:
+  caddy_logs:

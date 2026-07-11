@@ -50,6 +50,21 @@ admin.nentang.vn {
 	reverse_proxy seller-admin:3001
 }
 
+# ── CDN ảnh: CHỈ bucket public của MinIO (không lộ admin/API/bucket private) ──
+cdn.nentang.vn {
+	tls {
+		dns cloudflare {env.CF_API_TOKEN}
+	}
+	import security_headers
+	@media path /media-public/*
+	handle @media {
+		reverse_proxy minio:9000
+	}
+	handle {
+		respond 404
+	}
+}
+
 # ── Storefront trên subdomain nền tảng ───────────────────────────────────────
 # Wildcard ⇒ bắt buộc DNS-01 ⇒ bắt buộc plugin cloudflare.
 *.nentang.vn {

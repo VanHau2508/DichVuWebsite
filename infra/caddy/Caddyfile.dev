@@ -56,6 +56,31 @@ admin.localtest {
 	reverse_proxy seller-admin:3001
 }
 
+# ── Webhook thanh toán (host riêng, cert nội bộ) ─────────────────────────────
+# Prod dùng hooks.nentang.vn. Tách host riêng để URL webhook ổn định, không phụ
+# thuộc tên miền shop, và không lộ admin/API sau cùng origin.
+hooks.localtest {
+	tls internal
+	import security_headers
+	header Cache-Control "no-store"
+	reverse_proxy payment:3070
+}
+
+# ── Host CỐ ĐỊNH mô phỏng tên miền shop (chỉ để test routing catch-all qua edge)
+# Cùng logic tách /cart* → checkout, còn lại → storefront như catch-all, nhưng cert
+# nội bộ cố định nên smoke-edge không cần dựng shop + on-demand TLS.
+shop.localtest {
+	tls internal
+	import security_headers
+	@checkout path /cart /cart/* /checkout /checkout/*
+	handle @checkout {
+		reverse_proxy checkout:3060
+	}
+	handle {
+		reverse_proxy storefront:3050
+	}
+}
+
 # ── Catch-all: mọi hostname lạ ───────────────────────────────────────────────
 # Site block không có hostname → khớp mọi Host. Vì không biết trước tên miền,
 # Caddy BẮT BUỘC phải dùng on-demand TLS. Mỗi handshake tới một domain chưa có

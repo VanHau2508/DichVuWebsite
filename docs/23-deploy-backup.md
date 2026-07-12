@@ -29,8 +29,10 @@
 
 ```bash
 # 0. Trên VPS: cài Docker + docker compose. Clone repo. Trỏ DNS:
-#    A  @/*.nentang.vn, admin, cdn  →  <FLOATING_IP>   (ADR-004)
+#    A  @/*.nentang.vn, admin, cdn, hooks  →  <FLOATING_IP>   (ADR-004)
 #    Cloudflare token Zone:DNS:Edit cho wildcard *.nentang.vn (DNS-01).
+#    Trong dashboard SePay/Casso: đặt Webhook URL = https://hooks.nentang.vn/webhooks/sepay
+#    (host RIÊNG, không lộ admin/API; edge test: scripts/smoke-edge.sh).
 # 1. Tạo .env từ mẫu, điền secret THẬT (sinh: openssl rand -hex 32 / -base64 24):
 cp .env.example .env && $EDITOR .env      # KHÔNG commit .env
 # 2. Deploy (tự lo migrate → provision role → up → health):

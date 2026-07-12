@@ -55,6 +55,24 @@ admin.nentang.vn {
 	reverse_proxy seller-admin:3001
 }
 
+# ── Webhook thanh toán: host riêng, ổn định, KHÔNG lộ admin/API ──────────────
+# SePay/Casso POST tới đây. Subdomain nền tảng đã biết trước → DNS-01 (cloudflare),
+# không cần on-demand. Chỉ route /webhooks/* tới payment; còn lại 404.
+hooks.nentang.vn {
+	tls {
+		dns cloudflare {env.CF_API_TOKEN}
+	}
+	import security_headers
+	header Cache-Control "no-store"
+	@hooks path /webhooks/*
+	handle @hooks {
+		reverse_proxy payment:3070
+	}
+	handle {
+		respond 404
+	}
+}
+
 # ── CDN ảnh: CHỈ bucket public của MinIO (không lộ admin/API/bucket private) ──
 cdn.nentang.vn {
 	tls {

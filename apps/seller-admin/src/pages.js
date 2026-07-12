@@ -52,6 +52,7 @@ const ORDER_ROLES = new Set(['owner', 'admin', 'order_manager']);
 const CONTENT_ROLES = new Set(['owner', 'admin']);
 const MEMBER_READ_ROLES = new Set(['owner', 'admin']); // xem nhân sự; SỬA chỉ owner (seller cưỡng chế)
 const EXPORT_ROLES = new Set(['owner']); // xuất dữ liệu: CHỈ chủ shop (seller cưỡng chế perm 'export')
+const DOMAIN_ROLES = new Set(['owner']); // tên miền: CHỈ chủ shop (seller cưỡng chế 'domain.write')
 const ROLE_LABEL = { owner: 'Chủ shop', admin: 'Quản trị', catalog_manager: 'Quản lý sản phẩm', order_manager: 'Quản lý đơn' };
 const INVITE_ROLES = ['admin', 'catalog_manager', 'order_manager']; // KHÔNG mời owner qua đây
 const PSTATUS = { draft: 'Nháp', active: 'Đang bán', archived: 'Lưu trữ' };
@@ -67,6 +68,7 @@ function shopTabs(ctx) {
           + tab(`${base}/products`, 'Sản phẩm', ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
           + tab(`${base}/pages`, 'Trang nội dung', ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
           + tab(`${base}/members`, 'Nhân sự', ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role))
+          + tab(`${base}/domains`, 'Tên miền', ctx.active === 'domains', DOMAIN_ROLES.has(ctx.role))
           + tab(`${base}/export`, 'Xuất dữ liệu', ctx.active === 'export', EXPORT_ROLES.has(ctx.role));
   return t ? `<nav class="tabs">${t}</nav>` : '';
 }
@@ -547,6 +549,61 @@ export function renderExportStepUp(ctx, shopId, err) {
     <form method="POST" action="${base}/step-up">
       <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
       <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận & tạo bản xuất</button>
+    </form>
+    <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
+}
+
+// ── Tên miền tùy chỉnh (owner) ───────────────────────────────────────────────
+export function renderDomains(ctx, shopId, domains, notice, err) {
+  const base = `/shops/${esc(shopId)}`;
+  if (ctx.role !== 'owner') {
+    return layout('Tên miền', ctx, `<h1>Tên miền</h1><div class="card"><p class="muted">Chỉ <strong>chủ cửa hàng</strong> mới quản lý tên miền.</p></div>`);
+  }
+  const isPlatform = (h) => h.endsWith('.nentang.vn') || h === 'nentang.vn';
+  const rows = domains.map((d) => {
+    const status = d.verified ? badge('active', 'Đã xác minh') : badge('pending', 'Chờ xác minh DNS');
+    const primary = d.is_primary ? ` ${badge('confirmed', 'Tên miền chính')}` : '';
+    const challenge = (!d.verified && d.challenge) ? `<div class="card" style="background:#fffbeb;border-color:#fcd34d;margin:8px 0 0">
+        <p class="muted" style="margin:0 0 6px">Thêm bản ghi DNS TXT này tại nhà cung cấp tên miền, rồi chờ ~1 phút (tự kiểm):</p>
+        <table><tbody>
+          <tr><td class="muted">Loại</td><td><code>TXT</code></td></tr>
+          <tr><td class="muted">Tên/Host</td><td><code style="word-break:break-all">${esc(d.challenge.name)}</code></td></tr>
+          <tr><td class="muted">Giá trị</td><td><code style="word-break:break-all">${esc(d.challenge.value)}</code></td></tr>
+        </tbody></table></div>` : '';
+    const setPrimary = (d.verified && !d.is_primary) ? `<form method="POST" action="${base}/domains/${esc(d.id)}/primary" style="display:inline"><button class="btn sm" type="submit">Đặt làm chính</button></form>` : '';
+    const revoke = (!d.is_primary && !isPlatform(d.hostname)) ? `<form method="POST" action="${base}/domains/${esc(d.id)}/revoke" style="display:inline"><button class="btn warn sm" type="submit">Gỡ</button></form>` : '';
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div><strong style="word-break:break-all">${esc(d.hostname)}</strong> ${status}${primary}</div>
+        <div class="actions">${setPrimary} ${revoke}</div>
+      </div>${challenge}</div>`;
+  }).join('');
+  return layout('Tên miền', ctx, `
+    <h1>Tên miền</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
+    ${rows || '<div class="card"><p class="muted">Chưa có tên miền nào.</p></div>'}
+    <div class="card"><h2 style="margin-top:0">Thêm tên miền riêng</h2>
+      <p class="muted" style="font-size:.85rem">Trỏ bản ghi A của tên miền về IP nền tảng, rồi thêm ở đây. Xác minh sở hữu qua DNS TXT.</p>
+      <form method="POST" action="${base}/domains" class="actions" style="align-items:end">
+        <div><label>Tên miền (vd shop.cuahang.vn)</label><input name="hostname" required placeholder="shop.cuahang.vn" style="width:260px"></div>
+        <button class="btn" type="submit">Thêm tên miền</button>
+      </form></div>`);
+}
+
+export function renderDomainStepUp(ctx, shopId, action, params, err) {
+  const base = `/shops/${esc(shopId)}/domains`;
+  const label = { add: 'thêm tên miền', primary: 'đặt tên miền chính', revoke: 'gỡ tên miền' }[action] ?? action;
+  const hidden = Object.entries(params).filter(([, v]) => v != null && v !== '').map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('');
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận mật khẩu</h1>
+    <p class="muted">Thao tác nhạy cảm (${esc(label)}) cần xác thực lại. Nhập mật khẩu để tiếp tục.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${base}/step-up">
+      <input type="hidden" name="__action" value="${esc(action)}">${hidden}
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận & tiếp tục</button>
     </form>
     <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
   </div></div>`);

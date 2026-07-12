@@ -191,6 +191,9 @@ services:
       AUTH_URL: http://auth:3020
       ALLOWED_ORIGINS: https://admin.nentang.vn,https://seller.localtest
       PORT: "3040"
+      # Custom domain (A5): chặn khách chiếm subdomain nền tảng + dựng bản ghi TXT challenge.
+      PLATFORM_DOMAIN: nentang.vn
+      DOMAINVERIFY_PREFIX: _nentang-verify
       # Media (MinIO). PUBLIC_BASE: prod là cdn.nentang.vn; dev là MinIO nội bộ.
       MINIO_ENDPOINT: minio
       MINIO_PORT: "9000"
@@ -267,6 +270,10 @@ services:
       DATABASE_URL_EXPIRY: postgres://app_expiry:devpassword@postgres:5432/app
       ORDER_EXPIRY_MINUTES: "30"
       EXPIRY_SWEEP_MS: "60000"
+      # Pool riêng, role hẹp: xác minh custom domain qua DNS TXT (0027). DNS trỏ stub (dev).
+      DATABASE_URL_DOMAINVERIFY: postgres://app_domainverify:devpassword@postgres:5432/app
+      DOMAINVERIFY_SWEEP_MS: "60000"
+      DOMAINVERIFY_RESOLVER: dns-stub:5353
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       SMTP_HOST: mailpit
@@ -282,11 +289,23 @@ services:
         condition: service_healthy
       mailpit:
         condition: service_healthy
+      dns-stub:
+        condition: service_started
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 3s
       retries: 5
+
+  # DNS stub — CHỈ dev/e2e: trả bản ghi TXT theo đăng ký để test xác minh custom domain (A5)
+  # xác định. Chỉ node builtins → không cần build/deps. KHÔNG có trong prod.
+  dns-stub:
+    image: node:22-alpine
+    restart: unless-stopped
+    working_dir: /app
+    command: ["node", "index.js"]
+    volumes:
+      - ../apps/dns-stub:/app:ro
 
   storefront:
     build:

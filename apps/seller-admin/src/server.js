@@ -533,6 +533,52 @@ async function exportDownload(res, me, cookie, shopId, token) {
   return exportPage(res, me, cookie, shopId, null, msg);
 }
 
+// ── Tên miền tùy chỉnh (owner + step-up) ─────────────────────────────────────
+async function domainsPage(res, me, cookie, shopId, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'domains');
+  if (roleFor(me, shopId) !== 'owner') return sendHtml(res, 200, V.renderDomains(ctx, shopId, [], null, null));
+  const r = await sellerApi('GET', `/shops/${shopId}/domains`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được tên miền.'));
+  return sendHtml(res, err ? 400 : 200, V.renderDomains(ctx, shopId, r.json?.domains ?? [], notice, err));
+}
+async function doDomainAdd(res, me, cookie, shopId, p) {
+  const r = await sellerApi('POST', `/shops/${shopId}/domains`, { cookie, body: { hostname: p.hostname } });
+  if (r.status === 201) return domainsPage(res, me, cookie, shopId, 'Đã thêm tên miền — thêm bản ghi TXT bên dưới rồi chờ xác minh (tự động ~1 phút).', null);
+  return domainsPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không thêm được tên miền.');
+}
+async function doDomainAction(res, me, cookie, shopId, action, p) {
+  const r = action === 'revoke'
+    ? await sellerApi('DELETE', `/shops/${shopId}/domains/${encodeURIComponent(p.did)}`, { cookie })
+    : await sellerApi('POST', `/shops/${shopId}/domains/${encodeURIComponent(p.did)}/primary`, { cookie });
+  if (r.status === 200) return domainsPage(res, me, cookie, shopId, action === 'revoke' ? 'Đã gỡ tên miền.' : 'Đã đặt tên miền chính.', null);
+  return domainsPage(res, me, cookie, shopId, null, r.json?.error ?? 'Thao tác không thực hiện được.');
+}
+async function domainStepUpPage(res, me, cookie, shopId, action, params, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'domains');
+  return sendHtml(res, err ? 401 : 200, V.renderDomainStepUp(ctx, shopId, action, params, err));
+}
+async function domainAdd(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const p = { hostname: String(f.hostname ?? '').trim() };
+  return steppedUp(me) ? doDomainAdd(res, me, cookie, shopId, p) : domainStepUpPage(res, me, cookie, shopId, 'add', p);
+}
+async function domainAction(res, me, cookie, shopId, did, action) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  return steppedUp(me) ? doDomainAction(res, me, cookie, shopId, action, { did }) : domainStepUpPage(res, me, cookie, shopId, action, { did });
+}
+async function domainStepUp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const action = String(f.__action ?? '');
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) return domainStepUpPage(res, me, cookie, shopId, action, { hostname: f.hostname, did: f.did }, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.');
+  if (action === 'add') return doDomainAdd(res, me, cookie, shopId, { hostname: f.hostname });
+  return doDomainAction(res, me, cookie, shopId, action, { did: f.did });
+}
+
 // ── router ───────────────────────────────────────────────────────────────────
 // Dispatch tách riêng và được AWAIT ở dưới: nếu handler async reject (throw/timeout),
 // `return handler(...)` trần sẽ THOÁT try/catch (rejection nằm ngoài scope) → treo
@@ -618,6 +664,12 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/export$`).exec(p)) && req.method === 'POST') return exportCreate(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/export/step-up$`).exec(p)) && req.method === 'POST') return exportStepUp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/export/download$`).exec(p)) && req.method === 'GET') return exportDownload(res, me, cookie, m[1], url.searchParams.get('token') ?? '');
+
+    // Tên miền (owner).
+    if ((m = new RegExp(`^/shops/${UUID}/domains$`).exec(p)) && req.method === 'GET') return domainsPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/domains$`).exec(p)) && req.method === 'POST') return domainAdd(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/domains/step-up$`).exec(p)) && req.method === 'POST') return domainStepUp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/domains/${UUID}/(primary|revoke)$`).exec(p)) && req.method === 'POST') return domainAction(res, me, cookie, m[1], m[2], m[3]);
 
     return sendHtml(res, 404, V.renderError({ user: me }, 'Không tìm thấy trang.'));
 }

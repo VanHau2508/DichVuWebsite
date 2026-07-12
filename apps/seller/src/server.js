@@ -27,6 +27,7 @@ import { PAYMENT_CONFIG_ROUTES } from './payment-config.js';
 import { ORDER_ROUTES } from './orders.js';
 import { CONTENT_ROUTES } from './content.js';
 import { EXPORT_ROUTES } from './export.js';
+import { DOMAIN_ROUTES } from './domains.js';
 import { runReq, makeLog, health } from './obs.js';
 
 const MAX_UPLOAD = 10 * 1024 * 1024;
@@ -184,6 +185,7 @@ const ROUTES = [
   ...ORDER_ROUTES,
   ...CONTENT_ROUTES,
   ...EXPORT_ROUTES,
+  ...DOMAIN_ROUTES,
 ];
 
 const server = http.createServer((req, res) => runReq(req, res, async () => {

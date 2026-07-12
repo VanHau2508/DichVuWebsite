@@ -183,6 +183,8 @@ services:
       AUTH_URL: http://auth:3020
       ALLOWED_ORIGINS: https://${ADMIN_DOMAIN:-admin.nentang.vn}
       PORT: "3040"
+      # Custom domain (A5): chặn khách chiếm subdomain nền tảng.
+      PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
       MINIO_ENDPOINT: minio
       MINIO_PORT: "9000"
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?}
@@ -233,6 +235,11 @@ services:
       DATABASE_URL_EXPIRY: postgres://app_expiry:${APP_EXPIRY_PASSWORD:?}@postgres:5432/app
       ORDER_EXPIRY_MINUTES: ${ORDER_EXPIRY_MINUTES:-30}
       EXPIRY_SWEEP_MS: ${EXPIRY_SWEEP_MS:-60000}
+      # Xác minh custom domain qua DNS TXT (A5). Prod dùng DNS hệ thống (KHÔNG đặt
+      # DOMAINVERIFY_RESOLVER — đó chỉ cho stub e2e).
+      DATABASE_URL_DOMAINVERIFY: postgres://app_domainverify:${APP_DOMAINVERIFY_PASSWORD:?}@postgres:5432/app
+      DOMAINVERIFY_SWEEP_MS: ${DOMAINVERIFY_SWEEP_MS:-60000}
+      PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       # SMTP relay THẬT (VPS VN thường bị chặn cổng 25 → phải dùng relay).

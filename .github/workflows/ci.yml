@@ -103,6 +103,8 @@ jobs:
           run dbtest "admin web (tài khoản/nhân sự)"    node apps/seller-admin/test/admin-account.e2e.mjs
           run dbtest "xuất dữ liệu (seller)"            node apps/seller/test/export.e2e.mjs
           run dbtest "xuất dữ liệu (BFF)"               node apps/seller-admin/test/admin-export.e2e.mjs
+          run dbtest "custom domain (seller)"           node apps/seller/test/domains.e2e.mjs
+          run dbtest "custom domain (BFF)"              node apps/seller-admin/test/admin-domains.e2e.mjs
           run dbtest "thanh toán QR + webhook"          node apps/payment/test/e2e.mjs
           run dbtest "vận chuyển + email"               node apps/worker/test/e2e.mjs
           [ "$fail" = 0 ] && echo "=== TẤT CẢ E2E XANH ===" || echo "=== CÓ SUITE ĐỎ ==="
@@ -157,7 +159,7 @@ jobs:
       - name: Mutation testing
         run: |
           fail=0
-          for h in tenant-isolation auth invitation seller catalog fulfillment storefront content preview seo blocks admin payment export readiness; do
+          for h in tenant-isolation auth invitation seller catalog fulfillment storefront content preview seo blocks admin payment export domains readiness; do
             echo "::group::verify-$h"
             if bash "scripts/verify-$h.sh"; then echo "PASS  verify-$h"; else echo "FAIL  verify-$h"; fail=1; fi
             echo "::endgroup::"

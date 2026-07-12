@@ -17,6 +17,7 @@
  */
 
 import http from 'node:http';
+import { Resolver } from 'node:dns/promises';
 import pg from 'pg';
 import { Queue, Worker } from 'bullmq';
 import nodemailer from 'nodemailer';
@@ -35,6 +36,24 @@ const EXPIRY_URL = process.env.DATABASE_URL_EXPIRY;
 const expiryDb = EXPIRY_URL ? new pg.Pool({ connectionString: EXPIRY_URL, max: 2 }) : null;
 const ORDER_EXPIRY_MINUTES = Number(process.env.ORDER_EXPIRY_MINUTES ?? 30);
 const EXPIRY_SWEEP_MS = Number(process.env.EXPIRY_SWEEP_MS ?? 60000);
+// Pool RIÊNG cho xác minh custom domain qua DNS TXT (role app_domainverify cực hẹp — 0027).
+// Thiếu env → tắt tính năng. Resolver DNS tách được (DOMAINVERIFY_RESOLVER) để e2e trỏ stub.
+const DOMAINVERIFY_URL = process.env.DATABASE_URL_DOMAINVERIFY;
+const domainDb = DOMAINVERIFY_URL ? new pg.Pool({ connectionString: DOMAINVERIFY_URL, max: 2 }) : null;
+const DOMAINVERIFY_SWEEP_MS = Number(process.env.DOMAINVERIFY_SWEEP_MS ?? 60000);
+const DOMAINVERIFY_PREFIX = process.env.DOMAINVERIFY_PREFIX ?? '_nentang-verify';
+// Quá hạn này mà CHƯA verify → xoá (giải phóng hostname toàn cục, chống squat). 7 ngày.
+const DOMAINVERIFY_GIVEUP_HOURS = Number(process.env.DOMAINVERIFY_GIVEUP_HOURS ?? 168);
+const dnsResolver = new Resolver({ timeout: 3000, tries: 2 });
+// DOMAINVERIFY_RESOLVER (dev/e2e): host[:port] của DNS stub. setServers cần IP literal nên
+// phân giải host→IP một lần lúc khởi động (Docker DNS). Prod để trống → dùng resolver hệ thống.
+if (process.env.DOMAINVERIFY_RESOLVER) {
+  const [rhost, rport] = process.env.DOMAINVERIFY_RESOLVER.split(':');
+  import('node:dns').then(({ promises }) => promises.lookup(rhost)).then(({ address }) => {
+    dnsResolver.setServers([rport ? `${address}:${rport}` : address]);
+    log('info', 'domainverify_resolver_set', { host: rhost, address, port: rport ?? '53' });
+  }).catch((e) => log('warn', 'domainverify_resolver_lookup_failed', { message: e.message }));
+}
 const connection = { host: process.env.REDIS_HOST ?? 'redis', port: Number(process.env.REDIS_PORT ?? 6379) };
 const transport = nodemailer.createTransport({ host: process.env.SMTP_HOST ?? 'mailpit', port: Number(process.env.SMTP_PORT ?? 1025), secure: false });
 
@@ -145,8 +164,52 @@ async function sweepExpired() {
   } finally { if (c) c.release(); }
 }
 
+// ── sweep: xác minh custom domain qua DNS TXT (A5) ────────────────────────────
+// Khách thêm TXT `_nentang-verify.<host>` = verification_token. Tra DNS NGOÀI transaction
+// (chậm/ngoại vi — không giữ khoá); khớp thì UPDATE verified_at CÓ GUARD (idempotent, an
+// toàn khi hai lần quét trùng). Bỏ domain quá 24h chưa xong (challenge chết). DB/DNS lỗi →
+// chỉ bỏ nhịp (try/catch), không unhandledRejection → không crash-loop.
+async function sweepDomainVerify() {
+  if (!domainDb) return 0;
+  // DỌN challenge chết: xoá dòng CHƯA verify quá hạn → giải phóng hostname (UNIQUE toàn cục) để
+  // người sở hữu THẬT đăng ký lại được; chống một shop "chiếm" domain người khác bằng dòng
+  // chưa-verify giữ lock mãi. Policy domainverify_gc chỉ cho xoá row verified_at IS NULL.
+  try {
+    const del = await domainDb.query(
+      `DELETE FROM domains WHERE verified_at IS NULL AND created_at <= now() - ($1 || ' hours')::interval`,
+      [String(DOMAINVERIFY_GIVEUP_HOURS)]);
+    if (del.rowCount) log('info', 'domains_giveup_deleted', { n: del.rowCount });
+  } catch (e) { log('error', 'domainverify_gc_error', { message: e.message }); }
+
+  let rows;
+  try {
+    rows = (await domainDb.query(
+      `SELECT id, hostname, verification_token FROM domains
+        WHERE verified_at IS NULL AND created_at > now() - ($1 || ' hours')::interval
+        ORDER BY created_at DESC LIMIT 100`, [String(DOMAINVERIFY_GIVEUP_HOURS)])).rows;
+  } catch (e) { log('error', 'domainverify_query_error', { message: e.message }); return 0; }
+
+  let verified = 0;
+  for (const d of rows) {
+    let txts;
+    try {
+      txts = await dnsResolver.resolveTxt(`${DOMAINVERIFY_PREFIX}.${d.hostname}`);
+    } catch { continue; } // ENOTFOUND/ENODATA = chưa thêm TXT → bỏ qua, thử nhịp sau
+    // resolveTxt trả string[][] (mỗi record là mảng chunk 255-byte) → nối rồi so khớp CHÍNH XÁC.
+    if (!txts.some((chunks) => chunks.join('') === d.verification_token)) continue;
+    try {
+      const upd = await domainDb.query(
+        `UPDATE domains SET verified_at = now() WHERE id = $1 AND verified_at IS NULL`, [d.id]);
+      if (upd.rowCount === 1) { verified++; log('info', 'domain_verified', { hostname: d.hostname }); }
+    } catch (e) { log('error', 'domainverify_flip_error', { message: e.message }); }
+  }
+  if (verified) log('info', 'domains_verified', { n: verified });
+  return verified;
+}
+
 const timer = setInterval(poll, POLL_MS);
 const expiryTimer = expiryDb ? setInterval(sweepExpired, EXPIRY_SWEEP_MS) : null;
+const domainTimer = domainDb ? setInterval(sweepDomainVerify, DOMAINVERIFY_SWEEP_MS) : null;
 
 // ── HTTP: health + stats (cho e2e kiểm dead-letter) ──────────────────────────
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -164,6 +227,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ expired: n }));
   }
+  // Kích hoạt quét xác minh domain ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/verify-sweep' && req.method === 'POST') {
+    const n = await sweepDomainVerify();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({ verified: n }));
+  }
   res.writeHead(404); res.end();
 }));
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
@@ -172,8 +241,9 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, async () => {
     clearInterval(timer);
     if (expiryTimer) clearInterval(expiryTimer);
+    if (domainTimer) clearInterval(domainTimer);
     await worker.close().catch(() => {});
     await queue.close().catch(() => {});
-    server.close(async () => { await db.end().catch(() => {}); await expiryDb?.end().catch(() => {}); process.exit(0); });
+    server.close(async () => { await db.end().catch(() => {}); await expiryDb?.end().catch(() => {}); await domainDb?.end().catch(() => {}); process.exit(0); });
   });
 }

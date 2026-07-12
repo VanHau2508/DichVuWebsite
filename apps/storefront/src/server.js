@@ -42,13 +42,17 @@ const CSP = [
 
 const log = makeLog('storefront');
 
-/** Resolve hostname → shop_id. CHỈ domain đã verified. Không cần tenant context. */
+/** Resolve hostname → {shopId, isPrimary, primaryHost}. CHỈ domain đã verified. Kèm tên
+ *  miền CHÍNH của shop để 301 host phụ về chính (A5 — tránh trùng nội dung SEO). */
 async function resolveShop(hostname) {
   const { rows } = await db.query(
-    `SELECT shop_id FROM domains WHERE hostname = $1 AND verified_at IS NOT NULL`,
+    `SELECT d.shop_id, d.is_primary,
+            (SELECT hostname FROM domains WHERE shop_id = d.shop_id AND is_primary AND verified_at IS NOT NULL LIMIT 1) AS primary_host
+       FROM domains d WHERE d.hostname = $1 AND d.verified_at IS NOT NULL`,
     [hostname],
   );
-  return rows[0]?.shop_id ?? null;
+  const r = rows[0];
+  return r ? { shopId: r.shop_id, isPrimary: r.is_primary, primaryHost: r.primary_host } : null;
 }
 
 /** Mở transaction có tenant context = shopId, chạy fn (app_store, RLS cô lập). */
@@ -103,8 +107,15 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
 
   try {
     const host = normalizeHost(req.headers.host);
-    const shopId = host ? await resolveShop(host) : null;
-    if (!shopId) return sendHtml(res, 404, renderNotFound());
+    const resolved = host ? await resolveShop(host) : null;
+    if (!resolved) return sendHtml(res, 404, renderNotFound());
+    // A5: host phụ (không phải tên miền chính) → 301 sang tên miền chính. Một shop có thể
+    // verified nhiều tên miền; phục vụ tất cả sẽ trùng nội dung → gom về chính cho SEO.
+    if (!resolved.isPrimary && resolved.primaryHost && resolved.primaryHost !== host) {
+      res.writeHead(301, { location: `https://${resolved.primaryHost}${req.url}`, 'cache-control': 'no-store' });
+      return res.end();
+    }
+    const shopId = resolved.shopId;
 
     const data = await withStore(shopId, async (c) => {
       const shopRes = await c.query(`SELECT slug, name, status FROM shops WHERE id = current_shop_id()`);

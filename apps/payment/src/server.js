@@ -15,6 +15,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import pg from 'pg';
+import { runReq, makeLog, health } from './obs.js';
 
 const PORT = Number(process.env.PORT ?? 3070);
 const SEPAY_KEY = process.env.SEPAY_WEBHOOK_KEY ?? '';
@@ -22,7 +23,7 @@ const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 8 });
 
 if (!SEPAY_KEY) throw new Error('thiếu SEPAY_WEBHOOK_KEY');
 
-const log = (level, event, f = {}) => process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), level, event, ...f }) + '\n');
+const log = makeLog('payment');
 
 function readJson(req) {
   return new Promise((resolve, reject) => {
@@ -135,9 +136,9 @@ async function sepayWebhook(req, res, body) {
   return send(res, 200, result);
 }
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
-  if (url.pathname === '/healthz') return send(res, 200, { ok: true });
+  if (await health(url.pathname, res, { db: () => db.query('SELECT 1') })) return;
   if (req.method === 'POST' && url.pathname === '/webhooks/sepay') {
     try {
       const body = await readJson(req);
@@ -150,7 +151,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
   return send(res, 404, { error: 'not found' });
-});
+}));
 
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => server.close(async () => { await db.end().catch(() => {}); process.exit(0); }));

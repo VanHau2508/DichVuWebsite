@@ -16,6 +16,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import pg from 'pg';
 import { renderHome, renderProduct, renderPage, renderMaintenance, renderNotFound } from './theme.js';
+import { runReq, makeLog, health } from './obs.js';
 
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
@@ -39,9 +40,7 @@ const CSP = [
   "frame-ancestors 'none'",
 ].join('; ');
 
-function log(level, event, fields = {}) {
-  process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), level, event, ...fields }) + '\n');
-}
+const log = makeLog('storefront');
 
 /** Resolve hostname → shop_id. CHỈ domain đã verified. Không cần tenant context. */
 async function resolveShop(hostname) {
@@ -98,12 +97,9 @@ function sendHtml(res, status, html, { shopSlug, cache, preview } = {}) {
   res.end(html);
 }
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
-  if (url.pathname === '/healthz') {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    return res.end('{"ok":true}');
-  }
+  if (await health(url.pathname, res, { db: () => db.query('SELECT 1') })) return;
 
   try {
     const host = normalizeHost(req.headers.host);
@@ -209,7 +205,7 @@ const server = http.createServer(async (req, res) => {
     log('error', 'render_error', { path: url.pathname, message: err.message, stack: err.stack });
     if (!res.headersSent) sendHtml(res, 500, renderNotFound());
   }
-});
+}));
 
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
 

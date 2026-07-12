@@ -20,6 +20,7 @@ import http from 'node:http';
 import pg from 'pg';
 import { Queue, Worker } from 'bullmq';
 import nodemailer from 'nodemailer';
+import { runReq, makeLog, health } from './obs.js';
 
 const PORT = Number(process.env.PORT ?? 3080);
 const POLL_MS = Number(process.env.POLL_MS ?? 1000);
@@ -37,7 +38,7 @@ const EXPIRY_SWEEP_MS = Number(process.env.EXPIRY_SWEEP_MS ?? 60000);
 const connection = { host: process.env.REDIS_HOST ?? 'redis', port: Number(process.env.REDIS_PORT ?? 6379) };
 const transport = nodemailer.createTransport({ host: process.env.SMTP_HOST ?? 'mailpit', port: Number(process.env.SMTP_PORT ?? 1025), secure: false });
 
-const log = (level, event, f = {}) => process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), level, event, ...f }) + '\n');
+const log = makeLog('worker');
 
 const queue = new Queue('email', { connection });
 
@@ -68,8 +69,11 @@ function compose(topic, p) {
 
 // ── poller: outbox → queue ───────────────────────────────────────────────────
 async function poll() {
-  const c = await db.connect();
+  // connect() TRONG try: Postgres sập → chỉ log + bỏ nhịp này (KHÔNG để reject lọt ra
+  // setInterval → unhandledRejection → crash-loop, làm hỏng luôn liveness).
+  let c;
   try {
+    c = await db.connect();
     await c.query('BEGIN');
     const rows = (await c.query(
       `SELECT id, topic, payload FROM outbox WHERE processed_at IS NULL ORDER BY id LIMIT 50 FOR UPDATE SKIP LOCKED`,
@@ -84,9 +88,9 @@ async function poll() {
     await c.query('COMMIT');
     if (rows.length) log('info', 'outbox_dispatched', { n: rows.length });
   } catch (e) {
-    await c.query('ROLLBACK').catch(() => {});
+    if (c) await c.query('ROLLBACK').catch(() => {});
     log('error', 'poll_error', { message: e.message });
-  } finally { c.release(); }
+  } finally { if (c) c.release(); }
 }
 
 // ── consumer: queue → email ──────────────────────────────────────────────────
@@ -109,8 +113,9 @@ worker.on('failed', (job, err) => log('warn', 'email_failed', { id: job?.id, att
 // idempotent. Release chỉ giảm reserved (KHÔNG đụng on_hand → không ghi ledger, giống cancel).
 async function sweepExpired() {
   if (!expiryDb) return 0;
-  const c = await expiryDb.connect();
+  let c;
   try {
+    c = await expiryDb.connect(); // connect() TRONG try — DB sập không làm crash worker
     await c.query('BEGIN');
     const orders = (await c.query(
       `SELECT id, shop_id FROM orders
@@ -134,19 +139,19 @@ async function sweepExpired() {
     if (orders.length) log('info', 'orders_expired', { n: orders.length });
     return orders.length;
   } catch (e) {
-    await c.query('ROLLBACK').catch(() => {});
+    if (c) await c.query('ROLLBACK').catch(() => {});
     log('error', 'expiry_error', { message: e.message });
     return 0;
-  } finally { c.release(); }
+  } finally { if (c) c.release(); }
 }
 
 const timer = setInterval(poll, POLL_MS);
 const expiryTimer = expiryDb ? setInterval(sweepExpired, EXPIRY_SWEEP_MS) : null;
 
 // ── HTTP: health + stats (cho e2e kiểm dead-letter) ──────────────────────────
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
-  if (url.pathname === '/healthz') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"ok":true}'); }
+  if (await health(url.pathname, res, { db: () => db.query('SELECT 1'), redis: async () => (await queue.client).ping() })) return;
   if (url.pathname === '/stats') {
     const counts = await queue.getJobCounts('completed', 'failed', 'active', 'waiting', 'delayed');
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -160,7 +165,7 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ expired: n }));
   }
   res.writeHead(404); res.end();
-});
+}));
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
 
 for (const sig of ['SIGTERM', 'SIGINT']) {

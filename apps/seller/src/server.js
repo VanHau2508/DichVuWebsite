@@ -26,6 +26,7 @@ import { THEME_ADMIN_ROUTES } from './theme.js';
 import { PAYMENT_CONFIG_ROUTES } from './payment-config.js';
 import { ORDER_ROUTES } from './orders.js';
 import { CONTENT_ROUTES } from './content.js';
+import { runReq, makeLog, health } from './obs.js';
 
 const MAX_UPLOAD = 10 * 1024 * 1024;
 
@@ -36,9 +37,7 @@ const STEP_UP_WINDOW_MS = 5 * 60_000;
 
 if (ALLOWED_ORIGINS.length === 0) throw new Error('thiếu ALLOWED_ORIGINS');
 
-function log(level, event, fields = {}) {
-  process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), level, event, ...fields }) + '\n');
-}
+const log = makeLog('seller');
 
 async function introspect(cookieHeader) {
   if (!cookieHeader) return null;
@@ -185,9 +184,9 @@ const ROUTES = [
   ...CONTENT_ROUTES,
 ];
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
-  if (url.pathname === '/healthz') return send(res, 200, { ok: true });
+  if (await health(url.pathname, res, { db: () => db.query('SELECT 1') })) return;
 
   if (!originAllowed(req, ALLOWED_ORIGINS)) return send(res, 403, { error: 'origin không được phép' });
 
@@ -235,7 +234,7 @@ const server = http.createServer(async (req, res) => {
     const extra = status === 413 ? { connection: 'close' } : {};
     if (!res.headersSent) send(res, status, { error: status >= 500 ? 'lỗi hệ thống' : err.message }, extra);
   }
-});
+}));
 
 // Tạo bucket + đặt policy public trước khi nhận request. Thử lại vài lần phòng
 // khi MinIO chưa sẵn sàng (depends_on healthy đã bảo đảm, đây là phòng thủ thêm).

@@ -111,6 +111,10 @@ jobs:
       - name: Smoke edge (routing qua Caddy)
         run: bash scripts/smoke-edge.sh
 
+      # A2: mọi service trả /livez + /readyz + /healthz = 200 khi khoẻ.
+      - name: Smoke readiness/liveness
+        run: bash scripts/smoke-readiness.sh
+
       - name: Log services khi lỗi
         if: failure()
         run: $C logs --no-color --tail 200
@@ -151,7 +155,7 @@ jobs:
       - name: Mutation testing
         run: |
           fail=0
-          for h in tenant-isolation auth invitation seller catalog fulfillment storefront content preview seo blocks admin payment; do
+          for h in tenant-isolation auth invitation seller catalog fulfillment storefront content preview seo blocks admin payment readiness; do
             echo "::group::verify-$h"
             if bash "scripts/verify-$h.sh"; then echo "PASS  verify-$h"; else echo "FAIL  verify-$h"; fail=1; fi
             echo "::endgroup::"

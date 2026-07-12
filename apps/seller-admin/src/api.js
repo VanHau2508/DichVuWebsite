@@ -3,6 +3,8 @@
  * duyệt + gửi Origin của admin (backend originAllowed đòi Origin thuộc allowlist cho
  * POST). Trả {status, json, setCookie} để relay Set-Cookie (login/mfa) về trình duyệt.
  */
+import { requestId } from './obs.js';
+
 const AUTH = process.env.AUTH_URL ?? 'http://auth:3020';
 const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
 const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
@@ -10,6 +12,9 @@ const ADMIN_ORIGIN = process.env.ADMIN_ORIGIN ?? 'https://admin.nentang.vn';
 
 async function call(base, method, path, { cookie, body, rawBody, timeoutMs = 8000 } = {}) {
   const headers = { origin: ADMIN_ORIGIN };
+  // Forward request-id → log backend cùng correlation với request admin (lần vết xuyên service).
+  const rid = requestId();
+  if (rid) headers['x-request-id'] = rid;
   if (cookie) headers.cookie = `__Host-session=${cookie}`;
   let payload;
   if (rawBody !== undefined) {

@@ -19,6 +19,7 @@ import pg from 'pg';
 import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE } from './http.js';
 import { buildVietQR } from './vietqr.js';
 import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
+import { runReq, makeLog, health } from './obs.js';
 
 const PORT = Number(process.env.PORT ?? 3060);
 const SHIP_FEE = Number(process.env.SHIP_FEE_VND ?? 30000);
@@ -27,7 +28,7 @@ const imgUrl = (key) => (key ? `${MEDIA_PUBLIC_BASE}/${key}` : null);
 const CART_TTL_DAYS = 30;
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
 
-const log = (level, event, f = {}) => process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), level, event, ...f }) + '\n');
+const log = makeLog('checkout');
 const genToken = () => crypto.randomBytes(32).toString('base64url');
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -395,9 +396,9 @@ const ROUTES = [
   { m: 'GET', p: '/checkout/order', fn: orderLookup },
 ];
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
-  if (url.pathname === '/healthz') return send(res, 200, { ok: true });
+  if (await health(url.pathname, res, { db: () => db.query('SELECT 1') })) return;
 
   const route = ROUTES.find((r) => r.m === req.method && r.p === url.pathname);
   if (!route) return send(res, 404, { error: 'không tìm thấy' });
@@ -426,7 +427,7 @@ const server = http.createServer(async (req, res) => {
     log('error', 'handler_error', { path: url.pathname, message: err.message, stack: err.stack });
     if (!res.headersSent) send(res, 500, { error: 'lỗi hệ thống' });
   }
-});
+}));
 
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => server.close(async () => { await db.end().catch(() => {}); process.exit(0); }));

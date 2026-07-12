@@ -20,6 +20,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import pg from 'pg';
 import { readJson, send, originAllowed, clientIp } from './http.js';
+import { runReq, makeLog, health } from './obs.js';
 
 const PORT = Number(process.env.PORT ?? 3030);
 const AUTH_URL = process.env.AUTH_URL ?? 'http://auth:3020';
@@ -33,9 +34,7 @@ if (ALLOWED_ORIGINS.length === 0) {
 
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
 
-function log(level, event, fields = {}) {
-  process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), level, event, ...fields }) + '\n');
-}
+const log = makeLog('platform');
 
 const genToken = () => crypto.randomBytes(32).toString('base64url');
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
@@ -242,9 +241,9 @@ const ROUTES = [
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/restore$`), fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'restore', s, ip, b) },
 ];
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
-  if (url.pathname === '/healthz') return send(res, 200, { ok: true });
+  if (await health(url.pathname, res, { db: () => db.query('SELECT 1') })) return;
 
   const route = ROUTES.find((r) => r.m === req.method && r.re.test(url.pathname));
   if (!route) return send(res, 404, { error: 'không tìm thấy' });
@@ -263,7 +262,7 @@ const server = http.createServer(async (req, res) => {
     if (status >= 500) log('error', 'handler_error', { path: url.pathname, message: err.message, stack: err.stack });
     if (!res.headersSent) send(res, status, { error: status >= 500 ? 'lỗi hệ thống' : err.message });
   }
-});
+}));
 
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
 

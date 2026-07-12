@@ -36,6 +36,7 @@ import {
   clientIp,
   SESSION_COOKIE,
 } from './http.js';
+import { runReq, makeLog, health } from './obs.js';
 
 const PORT = Number(process.env.PORT ?? 3020);
 const MFA_ENC_KEY = process.env.MFA_ENC_KEY;
@@ -72,9 +73,7 @@ const redis = new Redis(process.env.REDIS_URL, {
 });
 redis.on('error', () => {}); // nuốt sự kiện error (đã xử lý fail-open ở hit/reset)
 
-function log(level, event, fields = {}) {
-  process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), level, event, ...fields }) + '\n');
-}
+const log = makeLog('auth');
 
 // ── audit ────────────────────────────────────────────────────────────────────
 async function audit(action, { userId = null, ip = null, ua = null, metadata = null } = {}) {
@@ -680,9 +679,9 @@ const ROUTES = {
   'POST /auth/invitations/accept': acceptInvitation,
 };
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
-  if (url.pathname === '/healthz') return send(res, 200, { ok: true });
+  if (await health(url.pathname, res, { db: () => db.query('SELECT 1'), redis: () => redis.ping() })) return;
 
   const key = `${req.method} ${url.pathname}`;
   const handler = ROUTES[key];
@@ -701,7 +700,7 @@ const server = http.createServer(async (req, res) => {
     if (status >= 500) log('error', 'handler_error', { path: url.pathname, message: err.message, stack: err.stack });
     if (!res.headersSent) send(res, status, { error: status >= 500 ? 'lỗi hệ thống' : err.message });
   }
-});
+}));
 
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
 

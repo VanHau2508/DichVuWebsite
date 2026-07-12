@@ -23,6 +23,7 @@ import http from 'node:http';
 import pg from 'pg';
 import { normalizeHostname, isReserved } from './hostname.js';
 import { TokenBucket } from './ratelimit.js';
+import { runReq, makeLog, health } from './obs.js';
 
 const PORT = Number(process.env.PORT ?? 3010);
 const PLATFORM_DOMAIN = (process.env.PLATFORM_DOMAIN ?? '').toLowerCase();
@@ -45,6 +46,8 @@ const lookupBudget = new TokenBucket({
   refillPerSec: Number(process.env.LOOKUP_PER_SEC ?? 20),
 });
 
+const log = makeLog('tls-authorize');
+
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   max: 3, // endpoint này không được ăn hết connection của API
@@ -55,11 +58,6 @@ const pool = new pg.Pool({
 });
 
 pool.on('error', (err) => log('error', 'pool_error', { message: err.message }));
-
-function log(level, event, fields = {}) {
-  // Log có cấu trúc, không bao giờ chứa secret. `domain` là dữ liệu công khai.
-  process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), level, event, ...fields }) + '\n');
-}
 
 function cacheGet(hostname) {
   const hit = cache.get(hostname);
@@ -121,13 +119,9 @@ async function isAuthorized(hostname) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
-
-  if (url.pathname === '/healthz') {
-    res.writeHead(200, { 'content-type': 'text/plain' });
-    return res.end('ok');
-  }
+  if (await health(url.pathname, res, { db: () => pool.query('SELECT 1') })) return;
 
   // Chỉ một endpoint. Mọi path khác không tồn tại.
   if (req.method !== 'GET' || url.pathname !== '/internal/tls/authorize') {
@@ -158,7 +152,7 @@ const server = http.createServer(async (req, res) => {
     source,
     ms: Math.round(ms * 10) / 10,
   });
-});
+}));
 
 // Caddy gọi qua network nội bộ Docker. Endpoint này KHÔNG BAO GIỜ được publish
 // ra Internet — không có xác thực, và nó tiết lộ domain nào đang có trên nền tảng.

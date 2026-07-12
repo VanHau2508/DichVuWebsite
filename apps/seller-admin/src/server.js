@@ -11,6 +11,7 @@ import http from 'node:http';
 import { parseCookies, readForm, readMultipartFile, sendHtml, redirect, sameOrigin, SESSION_COOKIE } from './http.js';
 import { authApi, sellerApi, sellerUpload, loadSession } from './api.js';
 import * as V from './pages.js';
+import { runReq, makeLog, health } from './obs.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const ALLOWED = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -18,7 +19,7 @@ if (ALLOWED.length === 0) throw new Error('thiếu ALLOWED_ORIGINS');
 // Origin công khai của admin (để dựng link chấp nhận lời mời gửi cho người được mời).
 const ADMIN_ORIGIN = process.env.ADMIN_ORIGIN ?? 'https://admin.nentang.vn';
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
-const log = (level, event, f = {}) => process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), level, event, ...f }) + '\n');
+const log = makeLog('seller-admin');
 
 const isMember = (me, shopId) => (me.memberships ?? []).some((m) => m.shop_id === shopId);
 const roleFor = (me, shopId) => (me.memberships ?? []).find((m) => m.shop_id === shopId)?.role ?? null;
@@ -557,17 +558,17 @@ async function handle(req, res, url, p) {
     return sendHtml(res, 404, V.renderError({ user: me }, 'Không tìm thấy trang.'));
 }
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
   const p = url.pathname;
-  if (p === '/healthz') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"ok":true}'); }
+  if (await health(url.pathname, res, {})) return;
   try {
     await handle(req, res, url, p);
   } catch (err) {
     log('error', 'handler_error', { path: p, message: err.message });
     if (!res.headersSent) sendHtml(res, 500, V.renderError({}, 'Lỗi hệ thống, vui lòng thử lại.'));
   }
-});
+}));
 
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => server.close(() => process.exit(0)));

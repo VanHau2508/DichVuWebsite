@@ -320,6 +320,8 @@ services:
       ADMIN_ORIGIN: https://admin.nentang.vn
       # CSRF của chính admin: nhận POST từ Origin admin (prod + host dev).
       ALLOWED_ORIGINS: https://admin.nentang.vn,https://admin.localtest
+      # Ảnh SP phục vụ từ đây → origin được thêm vào CSP img-src (xem http.js).
+      MEDIA_PUBLIC_BASE: http://minio:9000/media-public
       PORT: "3001"
     volumes:
       # Mount PHẢI khớp CMD (node src/server.js → /app/src) cho mutation testing.

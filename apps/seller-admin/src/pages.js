@@ -33,13 +33,27 @@ nav.tabs a{margin-right:8px;padding:8px 2px;color:#6b7280}nav.tabs a.on{border-b
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}@media(max-width:560px){.grid2{grid-template-columns:1fr}}
 .inline{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}.inline input{width:auto}
 .num{font-variant-numeric:tabular-nums}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px}
-.stock{font-weight:600}.stock.low{color:#b45309}.stock.zero{color:#b91c1c}`;
+.stock{font-weight:600}.stock.low{color:#b45309}.stock.zero{color:#b91c1c}
+input[type=file]{width:auto;padding:8px;background:#f9fafb;border:1px dashed #cbd5e1}
+.media-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.thumb{margin:0;width:120px}.thumb img{width:120px;height:120px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;display:block}
+.thumb .ph{width:120px;height:120px;border-radius:8px;border:1px dashed #cbd5e1;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:.82rem;background:#f9fafb;text-align:center}
+.thumb form{margin-top:5px;text-align:center}
+.badge.published{background:#d1fae5;color:#065f46}
+.block{border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin:8px 0;background:#fafafa}
+.block textarea{background:#fff}code{background:#f3f4f6;padding:2px 5px;border-radius:4px;font-size:.85rem}`;
 
 const badge = (kind, label) => `<span class="badge ${esc(kind)}">${esc(label)}</span>`;
 // Vai trò nào thấy tab nào (backend mới là nơi cưỡng chế; đây chỉ để ẩn/hiện cho gọn).
 const CATALOG_ROLES = new Set(['owner', 'admin', 'catalog_manager']);
 const ORDER_ROLES = new Set(['owner', 'admin', 'order_manager']);
+const CONTENT_ROLES = new Set(['owner', 'admin']);
+const MEMBER_READ_ROLES = new Set(['owner', 'admin']); // xem nhân sự; SỬA chỉ owner (seller cưỡng chế)
+const ROLE_LABEL = { owner: 'Chủ shop', admin: 'Quản trị', catalog_manager: 'Quản lý sản phẩm', order_manager: 'Quản lý đơn' };
+const INVITE_ROLES = ['admin', 'catalog_manager', 'order_manager']; // KHÔNG mời owner qua đây
 const PSTATUS = { draft: 'Nháp', active: 'Đang bán', archived: 'Lưu trữ' };
+const PGSTATUS = { draft: 'Nháp', published: 'Đã đăng' };
+const BTYPE = { heading: 'Tiêu đề', paragraph: 'Đoạn văn', list: 'Danh sách', quote: 'Trích dẫn', divider: 'Đường kẻ' };
 
 // Tab điều hướng trong 1 shop (Đơn hàng / Sản phẩm) — chỉ hiện tab vai trò được phép.
 function shopTabs(ctx) {
@@ -47,14 +61,16 @@ function shopTabs(ctx) {
   const base = `/shops/${esc(ctx.shopId)}`;
   const tab = (href, label, on, show) => (show ? `<a href="${href}"${on ? ' class="on"' : ''}>${label}</a>` : '');
   const t = tab(`${base}/orders`, 'Đơn hàng', ctx.active === 'orders', ORDER_ROLES.has(ctx.role))
-          + tab(`${base}/products`, 'Sản phẩm', ctx.active === 'products', CATALOG_ROLES.has(ctx.role));
+          + tab(`${base}/products`, 'Sản phẩm', ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
+          + tab(`${base}/pages`, 'Trang nội dung', ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
+          + tab(`${base}/members`, 'Nhân sự', ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role));
   return t ? `<nav class="tabs">${t}</nav>` : '';
 }
 
 export function layout(title, ctx, body) {
   const top = ctx.user ? `<div class="top"><div class="in">
     <span><a class="brand" href="/">⚙ Quản trị</a>${ctx.shopName ? ` · ${esc(ctx.shopName)}` : ''}</span>
-    <span class="muted" style="color:#9ca3af">${esc(ctx.user.email)}
+    <span class="muted" style="color:#9ca3af"><a href="/account" style="color:#d1d5db" title="Tài khoản">${esc(ctx.user.email)}</a>
       <form method="POST" action="/logout" style="margin-left:10px"><button type="submit">Đăng xuất</button></form></span>
   </div></div>` : '';
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -89,6 +105,8 @@ export function renderDashboard(ctx, shops) {
       <div class="actions">
         ${ORDER_ROLES.has(s.role) ? `<a class="btn" href="/shops/${esc(s.shop_id)}/orders">Quản lý đơn hàng</a>` : ''}
         ${CATALOG_ROLES.has(s.role) ? `<a class="btn alt" href="/shops/${esc(s.shop_id)}/products">Quản lý sản phẩm</a>` : ''}
+        ${CONTENT_ROLES.has(s.role) ? `<a class="btn alt" href="/shops/${esc(s.shop_id)}/pages">Trang nội dung</a>` : ''}
+        ${MEMBER_READ_ROLES.has(s.role) ? `<a class="btn alt" href="/shops/${esc(s.shop_id)}/members">Nhân sự</a>` : ''}
       </div>
     </div>`).join('') : `<div class="card"><p class="muted">Bạn chưa thuộc cửa hàng nào.</p></div>`}`);
 }
@@ -202,10 +220,15 @@ export function renderProductNew(ctx, shopId, err, f = {}) {
     </form>`);
 }
 
-export function renderProductDetail(ctx, shopId, p, levels, err, form) {
+export function renderProductDetail(ctx, shopId, p, levels, err, form, media) {
   const base = `/shops/${esc(shopId)}/products/${esc(p.id)}`;
   const f = form ?? {}; // khi lưu lỗi: ưu tiên giá trị vừa nhập để không nuốt sửa đổi
   const val = (k) => esc(f[k] ?? p[k] ?? '');
+  const imgs = media ?? [];
+  const thumb = (m) => `<figure class="thumb">
+    ${m.status === 'ready' && m.url ? `<img src="${esc(m.url)}" alt="Ảnh sản phẩm" loading="lazy" width="120" height="120">` : `<div class="ph">${esc(m.status === 'failed' ? 'lỗi xử lý' : 'đang xử lý…')}</div>`}
+    <form method="POST" action="${base}/media/${esc(m.id)}/delete"><button class="btn warn sm" type="submit">Xoá</button></form>
+  </figure>`;
   const statusBtn = p.status === 'active'
     ? `<form method="POST" action="${base}/archive"><button class="btn alt sm" type="submit">Ẩn (lưu trữ)</button></form>`
     : `<form method="POST" action="${base}/publish"><button class="btn sm" type="submit">${p.status === 'draft' ? 'Đăng bán' : 'Đăng bán lại'}</button></form>`;
@@ -250,10 +273,232 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form) {
         <button class="btn alt sm" type="submit">Thêm biến thể</button>
       </form>
     </div>
+    <div class="card"><h2 style="margin-top:0">Hình ảnh</h2>
+      ${imgs.length ? `<div class="media-grid">${imgs.map(thumb).join('')}</div>` : '<p class="muted">Chưa có ảnh nào.</p>'}
+      <form method="POST" enctype="multipart/form-data" action="${base}/media" class="inline">
+        <input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif" required aria-label="Chọn ảnh">
+        <button class="btn alt sm" type="submit">Tải ảnh lên</button>
+      </form>
+      <p class="muted" style="font-size:.82rem">JPEG / PNG / WebP / GIF, tối đa 10MB. Ảnh gốc được nén lại thành WebP tự động.</p>
+    </div>
     <div class="card"><h2 style="margin-top:0">Xoá sản phẩm</h2>
       <p class="muted">Ẩn sản phẩm khỏi cửa hàng (xoá mềm). Đơn hàng cũ không bị ảnh hưởng.</p>
       <form method="POST" action="${base}/delete"><button class="btn warn sm" type="submit">Xoá sản phẩm</button></form>
     </div>`);
+}
+
+// ── Trang nội dung (versioned: draft → publish snapshot) ─────────────────────
+export function renderContentPages(ctx, shopId, data) {
+  const pages = data?.pages ?? [];
+  const rows = pages.map((p) => `<tr>
+    <td><a href="/shops/${esc(shopId)}/pages/${esc(p.id)}">${esc(p.title)}</a><div class="muted" style="font-size:.8rem">/${esc(p.slug)}</div></td>
+    <td>${badge(p.status, PGSTATUS[p.status] ?? p.status)}</td>
+    <td class="num right">${p.menu_position ?? '—'}</td>
+    <td class="muted">${dt(p.updated_at)}</td></tr>`).join('');
+  return layout('Trang nội dung', ctx, `
+    <div class="toolbar"><h1 style="margin:0">Trang nội dung</h1>
+      <a class="btn" href="/shops/${esc(shopId)}/pages/new">+ Thêm trang</a></div>
+    <div class="card">${pages.length ? `<table><thead><tr><th>Trang</th><th>Trạng thái</th><th class="right">Vị trí menu</th><th>Cập nhật</th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<p class="muted">Chưa có trang nào. Tạo “Giới thiệu”, “Chính sách đổi trả”… bằng nút “+ Thêm trang”.</p>'}</div>`);
+}
+
+export function renderPageNew(ctx, shopId, err, f = {}) {
+  return layout('Thêm trang', ctx, `
+    <a class="muted" href="/shops/${esc(shopId)}/pages">← Danh sách trang</a>
+    <h1>Thêm trang nội dung</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="/shops/${esc(shopId)}/pages">
+      <div class="card">
+        <label>Tiêu đề *</label><input name="title" required maxlength="200" value="${esc(f.title ?? '')}" placeholder="Giới thiệu">
+        <label>Đường dẫn (slug) *</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" value="${esc(f.slug ?? '')}" placeholder="gioi-thieu">
+        <label>SEO title</label><input name="seo_title" maxlength="120" value="${esc(f.seo_title ?? '')}">
+        <label>SEO description</label><textarea name="seo_description" maxlength="320">${esc(f.seo_description ?? '')}</textarea>
+      </div>
+      <button class="btn" type="submit">Tạo trang (nháp)</button>
+      <p class="muted" style="font-size:.85rem">Tạo xong sẽ vào trình sửa: thêm section (tiêu đề, đoạn văn, danh sách…) rồi bấm Đăng.</p>
+    </form>`);
+}
+
+export function renderPageEditor(ctx, shopId, p, err, notice, form) {
+  const base = `/shops/${esc(shopId)}/pages/${esc(p.id)}`;
+  const blocks = p.blocks ?? [];
+  const revs = p.revisions ?? [];
+  const f = form ?? {}; // khi lưu meta lỗi: ưu tiên giá trị vừa nhập, không revert về DB
+  const mval = (k) => esc(f[k] ?? p[k] ?? '');
+  const blockEdit = (b) => {
+    if (b.type === 'divider') return '<p class="muted" style="margin:4px 0">— đường kẻ ngang —</p>';
+    const hid = `<input type="hidden" name="type" value="${esc(b.type)}">`;
+    if (b.type === 'list') return `<form method="POST" action="${base}/blocks/${esc(b.id)}/edit">${hid}
+      <textarea name="text" rows="4" maxlength="5000" placeholder="mỗi dòng 1 mục">${esc((b.items ?? []).join('\n'))}</textarea>
+      <button class="btn alt sm" type="submit">Lưu section</button></form>`;
+    if (b.type === 'quote') return `<form method="POST" action="${base}/blocks/${esc(b.id)}/edit">${hid}
+      <textarea name="text" rows="2" maxlength="5000">${esc(b.text ?? '')}</textarea>
+      <input name="cite" placeholder="Nguồn trích (tuỳ chọn)" maxlength="200" value="${esc(b.cite ?? '')}">
+      <button class="btn alt sm" type="submit">Lưu section</button></form>`;
+    return `<form method="POST" action="${base}/blocks/${esc(b.id)}/edit">${hid}
+      <textarea name="text" rows="${b.type === 'heading' ? 1 : 3}" maxlength="5000">${esc(b.text ?? '')}</textarea>
+      <button class="btn alt sm" type="submit">Lưu section</button></form>`;
+  };
+  const blockCard = (b, i) => `<div class="block">
+    <div class="toolbar" style="margin-bottom:6px"><span class="badge">${esc(BTYPE[b.type] ?? b.type)}</span>
+      <div class="actions">
+        ${i > 0 ? `<form method="POST" action="${base}/blocks/${esc(b.id)}/moveup"><button class="btn alt sm" type="submit" title="Lên">↑</button></form>` : ''}
+        ${i < blocks.length - 1 ? `<form method="POST" action="${base}/blocks/${esc(b.id)}/movedown"><button class="btn alt sm" type="submit" title="Xuống">↓</button></form>` : ''}
+        <form method="POST" action="${base}/blocks/${esc(b.id)}/delete"><button class="btn warn sm" type="submit">Xoá</button></form>
+      </div></div>
+    ${blockEdit(b)}</div>`;
+  return layout(`Sửa: ${p.title}`, ctx, `
+    <a class="muted" href="/shops/${esc(shopId)}/pages">← Danh sách trang</a>
+    <div class="toolbar"><h1 style="margin:0">${esc(p.title)}</h1>${badge(p.status, PGSTATUS[p.status] ?? p.status)}</div>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice?.preview ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0"><strong>Link xem trước</strong> (sống ~${Math.round((notice.preview.expires_in ?? 1800) / 60)} phút):<br>
+      <code style="word-break:break-all">${esc(notice.preview.preview_url ?? notice.preview.path)}</code></div>` : ''}
+    <div class="card"><div class="toolbar"><h2 style="margin:0">Thông tin & xuất bản</h2>
+      <div class="actions">
+        <form method="POST" action="${base}/preview"><button class="btn alt sm" type="submit">Xem trước</button></form>
+        <form method="POST" action="${base}/publish"><button class="btn sm" type="submit">${p.status === 'published' ? 'Đăng lại' : 'Đăng trang'}</button></form>
+      </div></div>
+      ${p.published_revision ? `<p class="muted">Đang đăng: bản #${p.published_revision}. Sửa bên dưới chỉ đổi bản NHÁP tới khi bấm Đăng.</p>` : '<p class="muted">Chưa đăng bao giờ — storefront chưa thấy trang này.</p>'}
+      <form method="POST" action="${base}">
+        <label>Tiêu đề</label><input name="title" required maxlength="200" value="${mval('title')}">
+        <div class="grid2">
+          <div><label>Đường dẫn (slug)</label><input value="/${esc(p.slug)}" disabled></div>
+          <div><label>Vị trí menu (trống = ẩn khỏi menu)</label><input name="menu_position" type="number" value="${mval('menu_position')}"></div>
+        </div>
+        <label>SEO title</label><input name="seo_title" maxlength="120" value="${mval('seo_title')}">
+        <label>SEO description</label><textarea name="seo_description" maxlength="320">${mval('seo_description')}</textarea>
+        <button class="btn" type="submit" style="margin-top:10px">Lưu thông tin (nháp)</button>
+      </form>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Nội dung (section)</h2>
+      <p class="muted" style="font-size:.85rem">Sửa/thêm/xoá là lưu vào bản NHÁP. Dùng ↑ ↓ để đổi thứ tự. Bấm “Đăng trang” để đưa lên storefront.</p>
+      ${blocks.length ? blocks.map(blockCard).join('') : '<p class="muted">Chưa có section nào — thêm bên dưới.</p>'}
+      <h2>Thêm section</h2>
+      <form method="POST" action="${base}/blocks">
+        <div class="grid2"><div><label>Loại</label><select name="type">${Object.entries(BTYPE).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div></div>
+        <label>Nội dung</label><textarea name="text" maxlength="5000" placeholder="Tiêu đề / đoạn / trích: gõ nội dung • Danh sách: mỗi dòng 1 mục • Đường kẻ: để trống"></textarea>
+        <label>Nguồn trích (chỉ dùng cho Trích dẫn)</label><input name="cite" maxlength="200">
+        <button class="btn alt" type="submit">Thêm section</button>
+      </form>
+    </div>
+    ${revs.length ? `<div class="card"><h2 style="margin-top:0">Lịch sử bản đăng</h2><table><tbody>
+      ${revs.map((rv) => `<tr><td>Bản #${rv.revision}${rv.revision === p.published_revision ? ' <span class="badge published">đang đăng</span>' : ''} <span class="muted">${esc(rv.title)}</span></td>
+        <td class="muted">${dt(rv.created_at)}</td>
+        <td class="right">${rv.revision === p.published_revision ? '' : `<form method="POST" action="${base}/rollback"><input type="hidden" name="revision" value="${esc(rv.revision)}"><button class="btn alt sm" type="submit">Khôi phục</button></form>`}</td></tr>`).join('')}
+    </tbody></table></div>` : ''}
+    <div class="card"><h2 style="margin-top:0">Xoá trang</h2>
+      <p class="muted">Xoá mềm; link xem trước cũng bị vô hiệu ngay.</p>
+      <form method="POST" action="${base}/delete"><button class="btn warn sm" type="submit">Xoá trang này</button></form></div>`);
+}
+
+// ── Tài khoản (bảo mật) ──────────────────────────────────────────────────────
+export function renderAccount(info) {
+  const { email, mfa_enabled, enroll, recovery_codes, notice, err } = info;
+  let mfaCard;
+  if (recovery_codes) {
+    mfaCard = `<div class="card"><h2 style="margin-top:0">✅ Đã bật xác thực 2 lớp</h2>
+      <div class="err" style="background:#fffbeb;border-color:#fcd34d;color:#92400e">Lưu KỸ các mã khôi phục sau — chỉ hiện MỘT lần, dùng khi mất thiết bị:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">${recovery_codes.map((c) => `<code>${esc(c)}</code>`).join('')}</div></div>`;
+  } else if (enroll) {
+    mfaCard = `<div class="card"><h2 style="margin-top:0">Bật MFA — bước 2/2</h2>
+      <p>Thêm khoá này vào ứng dụng xác thực (Google Authenticator, Authy…):</p>
+      <p>Khoá bí mật: <code>${esc(enroll.secret)}</code></p>
+      <p class="muted" style="font-size:.82rem;word-break:break-all">otpauth: <code>${esc(enroll.otpauth_url)}</code></p>
+      <form method="POST" action="/account/mfa/activate">
+        <input type="hidden" name="secret" value="${esc(enroll.secret)}"><input type="hidden" name="otpauth" value="${esc(enroll.otpauth_url)}">
+        <label>Nhập mã 6 số từ ứng dụng</label><input name="code" inputmode="numeric" autocomplete="one-time-code" required placeholder="123456" style="max-width:180px">
+        <button class="btn" type="submit" style="margin-top:10px">Kích hoạt MFA</button></form></div>`;
+  } else if (mfa_enabled) {
+    mfaCard = `<div class="card"><h2 style="margin-top:0">Xác thực 2 lớp (MFA)</h2>
+      <p>${badge('active', 'Đang bật')} — tài khoản đã được bảo vệ bằng MFA.</p>
+      <p class="muted" style="font-size:.84rem">Đổi/tắt thiết bị MFA chưa hỗ trợ trong giao diện này.</p></div>`;
+  } else {
+    mfaCard = `<div class="card"><h2 style="margin-top:0">Xác thực 2 lớp (MFA)</h2>
+      <p class="muted">Bảo vệ tài khoản bằng mã 6 số đổi liên tục. Nên bật — nhất là với chủ shop.</p>
+      <form method="POST" action="/account/mfa/enroll"><button class="btn" type="submit">Bật MFA</button></form></div>`;
+  }
+  return layout('Tài khoản', { user: { email } }, `<h1>Tài khoản</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
+    <div class="card"><h2 style="margin-top:0">Thông tin</h2><p>Email: <strong>${esc(email)}</strong></p></div>
+    ${mfaCard}
+    <div class="card"><h2 style="margin-top:0">Mật khẩu</h2>
+      <p class="muted">Đổi mật khẩu qua email: gửi link đặt lại về hộp thư của bạn.</p>
+      <form method="POST" action="/account/password/forgot"><button class="btn alt" type="submit">Gửi link đặt lại mật khẩu</button></form></div>
+    <a class="btn alt" href="/">← Bảng điều khiển</a>`);
+}
+
+// ── Nhân sự ──────────────────────────────────────────────────────────────────
+export function renderMembers(ctx, shopId, data, canWrite, notice, err) {
+  const members = data?.members ?? [];
+  const base = `/shops/${esc(shopId)}/members`;
+  const rows = members.map((mb) => `<tr>
+    <td>${esc(mb.email)}</td>
+    <td>${canWrite && mb.role !== 'owner' ? `<form method="POST" action="${base}/${esc(mb.user_id)}/role" class="inline">
+        <select name="role">${INVITE_ROLES.map((r) => `<option value="${r}"${r === mb.role ? ' selected' : ''}>${esc(ROLE_LABEL[r])}</option>`).join('')}</select>
+        <button class="btn alt sm" type="submit">Đổi</button></form>` : `<span class="badge">${esc(ROLE_LABEL[mb.role] ?? mb.role)}</span>`}</td>
+    <td class="muted">${dt(mb.created_at)}</td>
+    <td class="right">${canWrite ? `<form method="POST" action="${base}/${esc(mb.user_id)}/remove"><button class="btn warn sm" type="submit">Gỡ</button></form>` : ''}</td>
+  </tr>`).join('');
+  return layout('Nhân sự', ctx, `<h1>Nhân sự cửa hàng</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice?.invited ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0">
+      <strong>Đã mời ${esc(notice.invited)}.</strong> Gửi link này cho họ để đặt mật khẩu & tham gia (sống 7 ngày):
+      <br><code style="word-break:break-all">${esc(notice.acceptUrl ?? notice.token)}</code></div>` : ''}
+    <div class="card"><table><thead><tr><th>Email</th><th>Vai trò</th><th>Tham gia</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${canWrite ? `<div class="card"><h2 style="margin-top:0">Mời thành viên</h2>
+      <p class="muted" style="font-size:.85rem">Thao tác nhân sự cần xác nhận lại mật khẩu (step-up).</p>
+      <form method="POST" action="${base}/invite">
+        <div class="grid2">
+          <div><label>Email</label><input name="email" type="email" required></div>
+          <div><label>Vai trò</label><select name="role">${INVITE_ROLES.map((r) => `<option value="${r}">${esc(ROLE_LABEL[r])}</option>`).join('')}</select></div>
+        </div>
+        <button class="btn" type="submit" style="margin-top:10px">Mời</button>
+      </form></div>` : '<p class="muted">Chỉ chủ shop mới mời / đổi vai trò / gỡ thành viên.</p>'}`);
+}
+
+// Interstitial step-up: mang theo hành động đang chờ (hidden) → xác nhận mật khẩu → chạy tiếp.
+export function renderStepUp(ctx, shopId, action, params, err) {
+  const base = `/shops/${esc(shopId)}/members`;
+  const label = { invite: 'mời thành viên', role: 'đổi vai trò', remove: 'gỡ thành viên' }[action] ?? action;
+  const hidden = Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('');
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận mật khẩu</h1>
+    <p class="muted">Thao tác nhạy cảm (${esc(label)}) cần xác thực lại. Nhập mật khẩu của bạn để tiếp tục.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${base}/step-up">
+      <input type="hidden" name="__action" value="${esc(action)}">${hidden}
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận & tiếp tục</button>
+    </form>
+    <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
+}
+
+// ── Chấp nhận lời mời (CÔNG KHAI — người được mời chưa có phiên) ──────────────
+export function renderInviteAccept(token, err) {
+  return layout('Chấp nhận lời mời', {}, `<div class="center"><div class="card">
+    <h1>Tham gia cửa hàng</h1>
+    <p class="muted">Bạn được mời làm nhân sự. Đặt mật khẩu để tạo tài khoản và tham gia.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="/invite/accept">
+      <input type="hidden" name="token" value="${esc(token)}">
+      <label>Mật khẩu (tối thiểu 10 ký tự)</label><input name="password" type="password" required minlength="10" autocomplete="new-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Tạo tài khoản & tham gia</button>
+    </form>
+    <p class="muted" style="font-size:.82rem;margin-top:10px">Email này đã có tài khoản? <a href="/login">Đăng nhập</a> trước rồi mở lại link mời.</p>
+  </div></div>`);
+}
+
+export function renderInviteDone(kind) {
+  const T = {
+    created: ['Đã tham gia cửa hàng 🎉', 'Tài khoản của bạn đã được tạo và bạn đã tham gia cửa hàng. Đăng nhập để bắt đầu.'],
+    joined: ['Đã tham gia cửa hàng 🎉', 'Bạn đã tham gia cửa hàng. Đăng nhập để bắt đầu.'],
+    login_required: ['Cần đăng nhập trước', 'Email này đã có tài khoản. Hãy đăng nhập bằng tài khoản đó rồi mở lại link mời để tham gia.'],
+  }[kind] ?? ['Lời mời', ''];
+  return layout('Lời mời', {}, `<div class="center"><div class="card">
+    <h1>${esc(T[0])}</h1><p class="muted">${esc(T[1])}</p>
+    <a class="btn" href="/login">Đăng nhập</a></div></div>`);
 }
 
 export function renderError(ctx, msg) {

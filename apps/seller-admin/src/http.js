@@ -14,8 +14,12 @@ export function parseCookies(req) {
   return out;
 }
 
+// Ảnh sản phẩm phục vụ từ CDN/MinIO (MEDIA_PUBLIC_BASE) → thêm origin đó vào img-src,
+// nếu không CSP chặn ảnh. Origin đó PHẢI khớp CSP ở edge (Caddyfile) vì trình duyệt
+// áp GIAO hai policy.
+const MEDIA_ORIGIN = (() => { try { return new URL(process.env.MEDIA_PUBLIC_BASE ?? '').origin; } catch { return ''; } })();
 // CSP nghiêm: admin-web là SSR form thuần, KHÔNG script → chống XSS mạnh. no-store: có PII.
-const CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+const CSP = `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:${MEDIA_ORIGIN ? ' ' + MEDIA_ORIGIN : ''}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
 export function sendHtml(res, status, html, setCookies = []) {
   const headers = {
     'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
@@ -34,11 +38,55 @@ export function redirect(res, location, setCookies = []) {
 
 export function readForm(req) {
   return new Promise((resolve, reject) => {
-    let size = 0; const chunks = [];
-    req.on('data', (c) => { size += c.length; if (size > 32 * 1024) { reject(Object.assign(new Error('body quá lớn'), { statusCode: 413 })); req.destroy(); return; } chunks.push(c); });
-    req.on('end', () => { const p = new URLSearchParams(Buffer.concat(chunks).toString('utf8')); const o = {}; for (const [k, v] of p) o[k] = v; resolve(o); });
+    let size = 0; const chunks = []; let over = false;
+    // Vượt trần: NGỪNG tích luỹ (chặn RAM) nhưng KHÔNG destroy socket — nếu destroy,
+    // response lỗi ghi vào socket chết = no-op im lặng (handler mất trang báo lỗi).
+    req.on('data', (c) => { if (over) return; size += c.length; if (size > 32 * 1024) { over = true; reject(Object.assign(new Error('body quá lớn'), { statusCode: 413 })); return; } chunks.push(c); });
+    req.on('end', () => { if (over) return; const p = new URLSearchParams(Buffer.concat(chunks).toString('utf8')); const o = {}; for (const [k, v] of p) o[k] = v; resolve(o); });
     req.on('error', reject);
   });
+}
+
+// Đọc toàn bộ body thô thành Buffer, có trần kích thước (413 nếu vượt).
+export function readRawBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = []; let over = false;
+    // Xem readForm: ngừng tích luỹ khi vượt, KHÔNG destroy để handler còn ghi được trang lỗi.
+    req.on('data', (c) => { if (over) return; size += c.length; if (size > maxBytes) { over = true; reject(Object.assign(new Error('body quá lớn'), { statusCode: 413 })); return; } chunks.push(c); });
+    req.on('end', () => { if (!over) resolve(Buffer.concat(chunks)); });
+    req.on('error', reject);
+  });
+}
+
+// Bóc MỘT file từ multipart/form-data (không framework). Trả {filename, bytes} của
+// part đầu tiên có filename, hoặc null. Xử lý nhị phân bằng Buffer.indexOf trên boundary.
+export async function readMultipartFile(req, maxBytes = 10 * 1024 * 1024) {
+  const ct = req.headers['content-type'] || '';
+  const m = /multipart\/form-data;\s*boundary=(?:"([^"]+)"|([^;]+))/i.exec(ct);
+  if (!m) return null;
+  const token = (m[1] || m[2]).trim();
+  const dash = Buffer.from('--' + token);        // boundary MỞ ĐẦU: có thể không có CRLF phía trước
+  const delim = Buffer.from('\r\n--' + token);   // ranh giới GIỮA các part (RFC 2046: CRLF + --boundary)
+  const body = await readRawBody(req, maxBytes);
+  let pos = body.indexOf(dash);
+  if (pos === -1) return null;
+  pos += dash.length;
+  while (pos < body.length) {
+    if (body[pos] === 0x2d && body[pos + 1] === 0x2d) break;          // "--" → boundary kết thúc
+    if (body[pos] === 0x0d && body[pos + 1] === 0x0a) pos += 2;       // bỏ CRLF sau dòng boundary
+    const hEnd = body.indexOf('\r\n\r\n', pos, 'latin1');
+    if (hEnd === -1) break;
+    const headers = body.slice(pos, hEnd).toString('latin1');
+    const cStart = hEnd + 4;
+    // Tìm ĐÚNG "\r\n--boundary" → không khớp nhầm token boundary nằm giữa byte ảnh.
+    const next = body.indexOf(delim, cStart);
+    if (next === -1) break;
+    const bytes = body.slice(cStart, next);                          // delim đã gồm CRLF, không trừ 2
+    const fn = /filename="([^"]*)"/i.exec(headers);
+    if (fn && fn[1]) return { filename: fn[1], bytes };
+    pos = next + delim.length;
+  }
+  return null;
 }
 
 // CSRF: POST đổi trạng thái phải có Origin thuộc allowlist (Origin của chính admin).

@@ -98,6 +98,9 @@ jobs:
           run dbtest "buyer checkout UI (form flow)"    node apps/checkout/test/buyer-flow.e2e.mjs
           run dbtest "admin web (login/MFA/quản đơn)"   node apps/seller-admin/test/admin-flow.e2e.mjs
           run dbtest "admin web (sản phẩm/tồn kho)"     node apps/seller-admin/test/admin-products.e2e.mjs
+          run dbtest "admin web (upload ảnh sản phẩm)"  node apps/seller-admin/test/admin-media.e2e.mjs
+          run dbtest "admin web (trang nội dung)"       node apps/seller-admin/test/admin-content.e2e.mjs
+          run dbtest "admin web (tài khoản/nhân sự)"    node apps/seller-admin/test/admin-account.e2e.mjs
           run dbtest "thanh toán QR + webhook"          node apps/payment/test/e2e.mjs
           run dbtest "vận chuyển + email"               node apps/worker/test/e2e.mjs
           [ "$fail" = 0 ] && echo "=== TẤT CẢ E2E XANH ===" || echo "=== CÓ SUITE ĐỎ ==="

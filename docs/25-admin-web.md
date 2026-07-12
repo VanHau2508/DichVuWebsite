@@ -2,8 +2,14 @@
 
 > **Trạng thái: ĐÃ CHẠY.** admin-flow e2e **22/22** (đăng nhập có/không MFA, guard phiên
 > nửa vời, cô lập chéo shop, CSRF, vòng đời đơn confirm→ship→deliver + cancel + chuyển sai);
-> admin-products e2e **18/18** (tạo→sửa→đăng bán→điều chỉnh tồn→thêm/xoá biến thể→lưu trữ→xoá,
-> chặn tồn âm, chặn xoá biến thể cuối, cô lập chéo shop, CSRF). Mutation `verify-admin` 3/3
+> admin-products e2e **19/19** (tạo→sửa→đăng bán→điều chỉnh tồn→thêm/xoá biến thể→lưu trữ→xoá,
+> chặn tồn âm, chặn xoá biến thể cuối, giữ input khi sửa lỗi, cô lập chéo shop, CSRF);
+> admin-media e2e **9/9** (upload multipart→re-encode WebP, hiện/xoá ảnh, chặn file giả dạng ảnh,
+> ảnh >10MB → trang lỗi thân thiện, CSRF, cô lập chéo shop); admin-content e2e **18/18** (tạo
+> trang→5 loại section→sửa/↑↓/xoá→meta→đăng/khôi phục revision→xem trước→xoá, cô lập, CSRF).
+> admin-account e2e **17/17** (bật MFA: enroll→activate, mã sai chặn, mã khôi phục; nhân sự:
+> mời/đổi vai trò/gỡ qua **step-up** interstitial, sai mật khẩu chặn, guard owner cuối, CSRF,
+> cô lập). Mutation `verify-admin` 3/3
 > (bỏ kiểm Origin → e2e đỏ). Rà soát đối kháng (auth/session/csrf/xss/ss-rf/dos): CSRF/redirect/
 > SSRF/header-injection đều đứng; sửa 1 MED (nội suy thô `order_number`/`qty` → `esc`) + 1 LOW
 > (thiếu `orders`/`lines` → `[]` thay vì 500). Không hồi quy stack.
@@ -97,6 +103,65 @@ cuối), tồn không âm/không dưới mức đang giữ chỗ — BFF chỉ f
 (`owner`/`admin` thấy cả hai; `catalog_manager` chỉ Sản phẩm; `order_manager` chỉ Đơn hàng) —
 `seller` mới là nơi cưỡng chế quyền `catalog.*`/`orders.*`.
 
+## 4c. Ảnh sản phẩm (upload, KHÔNG JS)
+
+Thử thách: endpoint media của `seller` nhận **byte ảnh THÔ** làm body (sniff magic byte,
+re-encode WebP), còn `<form>` HTML gửi **multipart/form-data**. Không có JS để PUT presigned.
+Giải: BFF tự **bóc file khỏi multipart** (`readMultipartFile` trong `http.js`, parser nhị phân
+thuần bằng `Buffer.indexOf` trên boundary — không thêm dependency) rồi **forward byte thô**
+tới `seller` (`sellerUpload`, timeout 30s vì sharp re-encode).
+
+- `POST /shops/:id/products/:pid/media` — form file (JPEG/PNG/WebP/GIF ≤10MB) → 303 chi tiết.
+- `POST /shops/:id/products/:pid/media/:mediaId/delete` — xoá ảnh → 303.
+- Chi tiết SP fetch danh sách ảnh **song song** với tồn kho; hiện lưới thumbnail + form upload.
+- Bảo mật ảnh do `seller` giữ: **sniff magic byte** (không tin Content-Type), bản gốc vào
+  bucket PRIVATE, **re-encode WebP strip payload**, chỉ WebP sạch mới lên bucket PUBLIC.
+
+⚠️ **CSP img-src**: ảnh phục vụ từ `MEDIA_PUBLIC_BASE` (CDN) → thêm origin đó vào `img-src`
+của app (`http.js`) **và** của edge (`Caddyfile`, `https://cdn.nentang.vn`) — phải khớp vì
+trình duyệt áp GIAO. Dev dùng `http://minio:9000` (chỉ tải được trong Docker, không từ host).
+
+## 4d. Trang nội dung (CMS có phiên bản, KHÔNG JS)
+
+Mô hình versioned: `pages.blocks` = **DRAFT** (sửa tự do) → **publish** snapshot vào
+`page_revisions` (bản #N+1) + trỏ `published_revision_id`; storefront chỉ render bản đã đăng;
+**rollback** = trỏ published về revision cũ (không đụng draft). Section là **text-only, typed**
+(tiêu đề / đoạn / danh sách / trích dẫn / đường kẻ) — storefront escape khi render.
+
+- `GET /pages` danh sách · `GET /pages/new` + `POST /pages` tạo (nháp) · `GET /pages/:id`
+  trình sửa · `POST /pages/:id` lưu meta (**→ PATCH** title/menu/SEO; slug bất biến).
+- **Section**: `POST .../blocks` thêm · `POST .../blocks/:bid/edit` (**→ PATCH**) sửa ·
+  `POST .../blocks/:bid/delete` xoá · **kéo–thả bằng ↑/↓**: `POST .../blocks/:bid/moveup|movedown`
+  → BFF lấy page, hoán vị 2 id trong mảng order, gọi endpoint `reorder` (backend đòi order
+  là **hoán vị đúng** của tập id hiện có → không lén thêm/bớt block).
+- `POST .../publish` đăng · `POST .../rollback` {revision} khôi phục · `POST .../preview`
+  tạo link xem trước (token sống ~30 phút) — **render trực tiếp** (không redirect) để hiện link
+  chứa token; trang admin `no-referrer` nên token không rò qua Referer.
+- `blockBody(form)`: gộp form → block theo type (list: mỗi dòng 1 mục; divider: không field).
+- Chỉ `owner`/`admin` thấy tab **Trang nội dung** (`content.*`) — `seller` cưỡng chế quyền.
+
+## 4e. Tài khoản (bảo mật) + Nhân sự (step-up)
+
+**Tài khoản** (`/account`, theo người dùng, không theo shop):
+- **Bật MFA**: `POST /account/mfa/enroll` (auth trả `{secret, otpauth_url}`) → hiện khoá cho
+  người dùng thêm vào app xác thực → `POST /account/mfa/activate {code}` → hiện **mã khôi phục**
+  (một lần). Sai mã: giữ nguyên bước 2 (secret round-trip qua hidden field), không enroll lại.
+- **Đổi mật khẩu**: chỉ qua email — `POST /account/password/forgot` (thông điệp mờ, không lộ
+  email tồn tại). Backend chưa có đổi tại chỗ / tắt MFA.
+
+**Nhân sự** (`/shops/:id/members`, tab; xem = owner/admin, **sửa = owner**):
+- List, **mời** (email + vai trò ≠ owner → trả **link chấp nhận** `${ADMIN_ORIGIN}/invite/accept?token=…`
+  sống 7 ngày để gửi cho người được mời), **đổi vai trò** (không có option owner — nhất quán với
+  mời; owner read-only), **gỡ**. `seller` cưỡng chế `members.write=owner` + guard **không bỏ owner cuối**.
+- **Trang chấp nhận lời mời** (`GET/POST /invite/accept`, CÔNG KHAI — người được mời chưa có phiên):
+  đặt mật khẩu → `auth /auth/invitations/accept` tạo tài khoản + membership (nhánh (a) tạo mới,
+  (b) claim tài khoản chưa xác minh, (c) email đã xác minh phải đăng nhập trước). POST vẫn qua
+  sameOrigin; token single-use; `no-referrer`+`no-store` để không rò token.
+- **Step-up** (bắt buộc cho mọi thao tác sửa): xác thực lại bằng **mật khẩu** (không phải MFA →
+  hoạt động cả khi chưa bật MFA). Chưa step-up → **interstitial** mang hành động đang chờ trong
+  hidden field → nhập mật khẩu → `POST /auth/step-up` → chạy tiếp hành động; cửa sổ 5 phút nên
+  các thao tác kế tiếp không hỏi lại. Backend `seller` vẫn tự kiểm step-up (BFF chỉ là UX gate).
+
 ## 5. Header / CSP
 
 `http.js` đặt trên MỌI phản hồi: `Content-Security-Policy: default-src 'none'; style-src
@@ -113,13 +178,16 @@ edge → app là nguồn duy nhất.
 
 ```
 apps/seller-admin/
-  src/http.js     esc, cookie, sendHtml (CSP), redirect(303), readForm, sameOrigin (CSRF)
-  src/api.js      call() → forward cookie + Origin admin; authApi/sellerApi/platformApi; loadSession
+  src/http.js     esc, cookie, sendHtml (CSP + img-src CDN), redirect, readForm/readMultipartFile, sameOrigin
+  src/api.js      call() → forward cookie + Origin admin; authApi/sellerApi/sellerUpload/platformApi; loadSession
   src/pages.js    layout + tabs + renderLogin/Mfa/Dashboard/Orders/OrderDetail
                   + renderProducts/ProductNew/ProductDetail/Error (esc mọi giá trị động)
-  src/server.js   router + handler: auth, dashboard, orders, sản phẩm/biến thể/tồn kho
+  src/server.js   router + handler: auth, dashboard, đơn, sản phẩm/tồn/ảnh, trang nội dung
   test/admin-flow.e2e.mjs       22 kiểm (login/MFA/đơn)
-  test/admin-products.e2e.mjs   18 kiểm (sản phẩm/tồn kho)
+  test/admin-products.e2e.mjs   19 kiểm (sản phẩm/tồn kho)
+  test/admin-media.e2e.mjs      9 kiểm (upload/xoá ảnh)
+  test/admin-content.e2e.mjs    19 kiểm (trang nội dung có phiên bản)
+  test/admin-account.e2e.mjs    22 kiểm (tài khoản MFA + nhân sự/step-up + chấp nhận lời mời)
   Dockerfile      node pinned digest, non-root, healthcheck /healthz
 scripts/verify-admin.sh     mutation: bỏ kiểm Origin → e2e đỏ
 infra/compose.dev.yml       service seller-admin (:3001) + route Caddyfile.dev admin.localtest
@@ -132,12 +200,14 @@ infra/compose.prod.yml      service seller-admin (mem 160m) + Caddyfile admin.ne
 docker compose -f infra/compose.dev.yml up -d --build
 docker compose -f infra/compose.dev.yml exec -T dbtest node apps/seller-admin/test/admin-flow.e2e.mjs
 docker compose -f infra/compose.dev.yml exec -T dbtest node apps/seller-admin/test/admin-products.e2e.mjs
+docker compose -f infra/compose.dev.yml exec -T dbtest node apps/seller-admin/test/admin-media.e2e.mjs
+docker compose -f infra/compose.dev.yml exec -T dbtest node apps/seller-admin/test/admin-content.e2e.mjs
+docker compose -f infra/compose.dev.yml exec -T dbtest node apps/seller-admin/test/admin-account.e2e.mjs
 bash scripts/verify-admin.sh
 ```
 
 ## 8. Còn lại (fast-follow)
 
-- Màn quản **trang nội dung** trên admin (kéo–thả section — backend Ngày 11 đã có).
-- **Ảnh sản phẩm** trên admin (upload media — backend `seller` đã có, chỉ thiếu UI upload).
-- Mời nhân sự shop (invitations) + đổi mật khẩu / bật MFA từ trong admin.
-- Đếm giỏ / ảnh sản phẩm ở buyer UI (docs/24 §8).
+- Tắt/đổi thiết bị MFA + đổi mật khẩu tại chỗ (backend `auth` chưa có endpoint).
+- Sắp xếp thứ tự ảnh / chọn ảnh đại diện (backend chưa có reorder — cần thêm).
+- Ảnh trong giỏ / đếm giỏ phía checkout (docs/24 §8). *(Storefront ĐÃ hiện ảnh sản phẩm.)*

@@ -277,6 +277,8 @@ services:
       ADMIN_ORIGIN: https://${ADMIN_DOMAIN:-admin.nentang.vn}
       # CSRF của chính admin: chỉ nhận POST từ Origin của mình.
       ALLOWED_ORIGINS: https://${ADMIN_DOMAIN:-admin.nentang.vn}
+      # Ảnh SP phục vụ từ CDN → origin thêm vào CSP img-src; PHẢI khớp img-src ở Caddyfile.
+      MEDIA_PUBLIC_BASE: ${MEDIA_PUBLIC_BASE:?}
       PORT: "3001"
     deploy: { resources: { limits: { memory: 160m } } }
     depends_on:

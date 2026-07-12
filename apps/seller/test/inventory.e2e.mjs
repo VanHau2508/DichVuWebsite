@@ -50,7 +50,8 @@ async function makeStaff() {
   await owner.query(`INSERT INTO platform_staff (user_id,role) VALUES ($1,'admin')`, [await uidOf(email)]);
   while (counterFor(Date.now()) <= c) await sleep(1000);
   cookie = await login(email, password);
-  await rq(AUTH, 'POST', '/auth/mfa/verify', { cookie, body: { code: totp(key, {}) }, origin: OA });
+  // A6: mfa/verify ROTATE token → lấy cookie mới
+  cookie = ck((await rq(AUTH, 'POST', '/auth/mfa/verify', { cookie, body: { code: totp(key, {}) }, origin: OA })).sc) ?? cookie;
   return cookie;
 }
 

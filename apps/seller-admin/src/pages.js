@@ -407,6 +407,7 @@ export function renderPageEditor(ctx, shopId, p, err, notice, form) {
 // ── Tài khoản (bảo mật) ──────────────────────────────────────────────────────
 export function renderAccount(info) {
   const { email, mfa_enabled, enroll, recovery_codes, notice, err } = info;
+  const sessions = info.sessions ?? [];
   let mfaCard;
   if (recovery_codes) {
     mfaCard = `<div class="card"><h2 style="margin-top:0">✅ Đã bật xác thực 2 lớp</h2>
@@ -449,6 +450,15 @@ export function renderAccount(info) {
         <p class="muted" style="font-size:.82rem;margin:0 0 6px">Quên mật khẩu hiện tại? Gửi link đặt lại qua email:</p>
         <form method="POST" action="/account/password/forgot"><button class="btn alt sm" type="submit">Gửi link đặt lại</button></form>
       </div></div>
+    ${sessions.length ? `<div class="card"><h2 style="margin-top:0">Phiên đăng nhập</h2>
+      <p class="muted" style="font-size:.82rem">Thiết bị/trình duyệt đang đăng nhập vào tài khoản. Thu hồi phiên lạ nếu thấy nghi ngờ.</p>
+      <table><tbody>${sessions.map((s) => `<tr>
+        <td>${s.current ? badge('active', 'Thiết bị này') : '<span class="muted">Thiết bị khác</span>'}</td>
+        <td class="muted" style="font-size:.8rem">${esc((s.user_agent ?? '').slice(0, 70) || '—')}<br>${esc(s.ip ?? '')} · ${dt(s.last_seen_at)}</td>
+        <td style="text-align:right">${s.current ? '' : `<form method="POST" action="/account/sessions/revoke"><input type="hidden" name="session_id" value="${esc(s.id)}"><button class="btn warn sm" type="submit">Thu hồi</button></form>`}</td>
+      </tr>`).join('')}</tbody></table>
+      ${sessions.filter((s) => !s.current).length ? `<form method="POST" action="/account/sessions/revoke-others" style="margin-top:10px"><button class="btn warn sm" type="submit">Đăng xuất mọi thiết bị KHÁC</button></form>` : ''}
+    </div>` : ''}
     <a class="btn alt" href="/">← Bảng điều khiển</a>`);
 }
 

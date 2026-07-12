@@ -287,12 +287,13 @@ async function mfaVerify(req, res, body, ctx) {
     return send(res, 401, { error: 'mã không đúng' });
   }
 
-  // Nâng phiên nửa vời thành đầy đủ + kéo dài hạn.
-  await db.query(
-    `UPDATE sessions SET mfa_satisfied = true, expires_at = $1 WHERE id = $2`,
-    [new Date(Date.now() + SESSION_TTL_MS), session.id],
-  );
-  setSessionCookie(res, parseCookies(req)[SESSION_COOKIE], Math.floor(SESSION_TTL_MS / 1000));
+  // ROTATE token: cấp phiên MỚI (đầy đủ) TRƯỚC rồi thu hồi phiên NỬA-VỜI. Chống session
+  // fixation — kẻ cố định token nửa-vời trước MFA KHÔNG cưỡi được sang phiên đầy đủ.
+  // Tạo-trước/thu-hồi-sau (best-effort): nếu createSession lỗi → phiên nửa-vời còn nguyên
+  // (user thử lại), KHÔNG bao giờ để user mất phiên mà không có phiên thay thế.
+  const rotated = await createSession(user.id, { mfaSatisfied: true, ip: ctx.ip, ua: ctx.ua, ttlMs: SESSION_TTL_MS });
+  await db.query('UPDATE sessions SET revoked_at = now() WHERE id = $1', [session.id]).catch(() => {});
+  setSessionCookie(res, rotated.token, Math.floor(SESSION_TTL_MS / 1000));
   await resetRate(redis, `rl:mfa:${user.id}`);
   await audit('user.mfa_verified', { userId: user.id, ip: ctx.ip, ua: ctx.ua });
   return send(res, 200, { ok: true });
@@ -389,6 +390,15 @@ async function mfaActivate(req, res, body, ctx) {
   }
 
   await audit('user.mfa_enabled', { userId: user.id, ip: ctx.ip, ua: ctx.ua });
+  // ROTATE token sau khi BẬT MFA — BEST-EFFORT: mã khôi phục (chỉ hiện MỘT lần) PHẢI
+  // được trả về dù rotate lỗi, và KHÔNG được đăng xuất người dùng. Tạo phiên mới TRƯỚC;
+  // chỉ khi tạo được mới thu hồi phiên cũ + đổi cookie. Tạo lỗi → giữ phiên cũ (in-txn đã
+  // đặt mfa_satisfied=true) và VẪN trả mã khôi phục (nếu không, mã mất vĩnh viễn — hash đã lưu).
+  const rotated = await createSession(user.id, { mfaSatisfied: true, ip: ctx.ip, ua: ctx.ua, ttlMs: SESSION_TTL_MS }).catch(() => null);
+  if (rotated) {
+    await db.query('UPDATE sessions SET revoked_at = now() WHERE id = $1', [session.id]).catch(() => {});
+    setSessionCookie(res, rotated.token, Math.floor(SESSION_TTL_MS / 1000));
+  }
   return send(res, 200, { ok: true, recovery_codes: codes });
 }
 
@@ -399,6 +409,49 @@ async function logout(req, res, body, ctx) {
   }
   clearSessionCookie(res);
   return send(res, 200, { ok: true });
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+// Liệt kê phiên đang sống của CHÍNH mình (thiết bị/lần đăng nhập).
+async function listSessions(req, res, body, ctx) {
+  if (!isFullyAuthed(ctx.auth)) return send(res, 401, { error: 'cần đăng nhập đầy đủ' });
+  const { user, session } = ctx.auth;
+  const { rows } = await db.query(
+    `SELECT id, ip::text AS ip, user_agent, created_at, last_seen_at
+       FROM sessions
+      WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()
+      ORDER BY last_seen_at DESC`,
+    [user.id],
+  );
+  return send(res, 200, { sessions: rows.map((r) => ({ ...r, current: r.id === session.id })) });
+}
+
+// Thu hồi MỘT phiên theo id — CHỈ phiên CỦA MÌNH (user_id scope). Thu hồi phiên hiện tại
+// = tự đăng xuất (được phép). Phiên khác → request kế tiếp của nó 401.
+async function revokeSession(req, res, body, ctx) {
+  if (!isFullyAuthed(ctx.auth)) return send(res, 401, { error: 'cần đăng nhập đầy đủ' });
+  const { user, session } = ctx.auth;
+  const sid = String(body.session_id ?? '');
+  if (!UUID_RE.test(sid)) return send(res, 400, { error: 'session_id không hợp lệ' });
+  const r = await db.query(
+    'UPDATE sessions SET revoked_at = now() WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL',
+    [sid, user.id],
+  );
+  if (r.rowCount === 1) await audit('user.session_revoked', { userId: user.id, ip: ctx.ip, ua: ctx.ua, metadata: { sid, self: sid === session.id } });
+  return send(res, 200, { ok: true, revoked: r.rowCount });
+}
+
+// Thu hồi MỌI phiên KHÁC (giữ phiên hiện tại) — "đăng xuất mọi thiết bị khác".
+async function revokeOtherSessions(req, res, body, ctx) {
+  if (!isFullyAuthed(ctx.auth)) return send(res, 401, { error: 'cần đăng nhập đầy đủ' });
+  const { user, session } = ctx.auth;
+  const r = await db.query(
+    'UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND id != $2 AND revoked_at IS NULL',
+    [user.id, session.id],
+  );
+  await audit('user.sessions_revoked_others', { userId: user.id, ip: ctx.ip, ua: ctx.ua, metadata: { revoked: r.rowCount } });
+  return send(res, 200, { ok: true, revoked: r.rowCount });
 }
 
 async function me(req, res, body, ctx) {
@@ -673,6 +726,9 @@ const ROUTES = {
   'POST /auth/password/change': changePassword,
   'POST /auth/logout': logout,
   'GET /auth/me': me,
+  'GET /auth/sessions': listSessions,
+  'POST /auth/sessions/revoke': revokeSession,
+  'POST /auth/sessions/revoke-others': revokeOtherSessions,
   'POST /auth/step-up': stepUp,
   'POST /auth/password/forgot': forgot,
   'POST /auth/password/reset': resetPassword,

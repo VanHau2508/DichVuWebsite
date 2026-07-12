@@ -51,7 +51,8 @@ async function makeStaff() {
   while (counterFor(Date.now()) <= c) await sleep(1000);
   r = await rq(AUTH, 'POST', '/auth/login', { body: { email, password }, origin: OA });
   cookie = ck(r.sc);
-  await rq(AUTH, 'POST', '/auth/mfa/verify', { cookie, body: { code: totp(key, {}) }, origin: OA });
+  // A6: mfa/verify ROTATE token → lấy cookie mới
+  cookie = ck((await rq(AUTH, 'POST', '/auth/mfa/verify', { cookie, body: { code: totp(key, {}) }, origin: OA })).sc) ?? cookie;
   return cookie;
 }
 

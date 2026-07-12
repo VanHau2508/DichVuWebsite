@@ -125,6 +125,12 @@ mutate pwchangerevoke "đổi mật khẩu tại chỗ KHÔNG thu hồi phiên K
 mutate mfadisable "tắt MFA KHÔNG xác minh mã (yếu tố hiện tại)" \
   "sed -i 's|let ok = verifyTotp(secret, code, {}) !== null;|let ok = true;|' $SRC/server.js"
 
+mutate rotate "KHÔNG rotate token sau MFA (nâng tại chỗ → session fixation)" \
+  "sed -i \"s|SET revoked_at = now() WHERE id = \\\$1', \\[session.id\\]).catch|SET mfa_satisfied = true WHERE id = \\\$1', [session.id]).catch|\" $SRC/server.js"
+
+mutate sessscope "thu hồi phiên KHÔNG giới hạn theo user (thu hồi được phiên người khác)" \
+  "sed -i 's|WHERE id = \$1 AND user_id = \$2 AND revoked_at IS NULL|WHERE id = \$1 AND revoked_at IS NULL|' $SRC/server.js"
+
 # ─────────────────────────────────────────────────────────────────────────────
 sect "2. Trạng thái sau khi hoàn nguyên"
 restore

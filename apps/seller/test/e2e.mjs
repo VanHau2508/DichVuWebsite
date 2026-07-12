@@ -64,6 +64,8 @@ async function makeStaff() {
   r = await rq(AUTH, 'POST', '/auth/login', { body: { email: u.email, password: u.password }, origin: OA });
   let cookie = ck(r.sc);
   r = await rq(AUTH, 'POST', '/auth/mfa/verify', { cookie, body: { code: totp(key, {}) }, origin: OA });
+  // A6: mfa/verify ROTATE token → lấy cookie mới
+  cookie = ck(r.sc) ?? cookie;
   return { ...u, cookie };
 }
 

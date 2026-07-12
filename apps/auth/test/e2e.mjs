@@ -95,7 +95,7 @@ async function main() {
   r.status === 401 && !r.json?.mfa_required ? ok('sai mật khẩu → 401 chung chung') : bad('sai mật khẩu không bị chặn đúng', r.raw);
 
   r = await req('POST', '/auth/login', { body: { email, password } });
-  const cookie = tokenFromSetCookie(r.setCookie);
+  let cookie = tokenFromSetCookie(r.setCookie);
   r.status === 200 && cookie ? ok('đúng mật khẩu → 200 + cookie phiên') : bad('đăng nhập đúng thất bại', r.raw);
 
   // ── 2. Thuộc tính cookie ───────────────────────────────────────────────────
@@ -137,6 +137,10 @@ async function main() {
   const recovery = r.json?.recovery_codes;
   r.status === 200 && Array.isArray(recovery) && recovery.length === 10
     ? ok('kích hoạt bằng mã đúng → nhận 10 mã khôi phục') : bad('kích hoạt lỗi', r.raw);
+  // A6: activate ROTATE token → cập nhật cookie đầy đủ mới (token cũ đã bị thu hồi).
+  const cookieAfterAct = tokenFromSetCookie(r.setCookie);
+  cookieAfterAct && cookieAfterAct !== cookie ? ok('mfa/activate ROTATE token') : bad('activate không rotate', r.raw);
+  cookie = cookieAfterAct ?? cookie;
   let usedCounter = act.counter;
 
   // ── 6. Đăng nhập hai bước ──────────────────────────────────────────────────
@@ -157,9 +161,14 @@ async function main() {
   r = await req('POST', '/auth/mfa/verify', { cookie: halfCookie, body: { code: v1.code } });
   r.status === 200 ? ok('mfa/verify mã mới → phiên đầy đủ') : bad('mfa/verify lỗi', r.raw);
   usedCounter = v1.counter;
+  const fullCookie1 = tokenFromSetCookie(r.setCookie);
 
+  // A6 ROTATE (chống session fixation): token nửa-vời CŨ phải CHẾT; token MỚI hoạt động.
+  fullCookie1 && fullCookie1 !== halfCookie ? ok('mfa/verify ROTATE token (cookie mới ≠ nửa-vời)') : bad('verify không rotate token', r.raw);
   r = await req('GET', '/auth/me', { cookie: halfCookie });
-  r.status === 200 ? ok('sau verify, /auth/me hoạt động') : bad('phiên chưa nâng cấp', r.raw);
+  r.status === 401 ? ok('token nửa-vời CŨ chết sau rotate (chống fixation)') : bad('token nửa-vời cũ vẫn sống — LỖ HỔNG fixation', r.raw);
+  r = await req('GET', '/auth/me', { cookie: fullCookie1 });
+  r.status === 200 ? ok('sau verify, token MỚI (rotated) hoạt động') : bad('phiên rotated không dùng được', r.raw);
 
   // ── 7. Chống replay TOTP ───────────────────────────────────────────────────
   sect('7. Chống replay TOTP');
@@ -194,10 +203,11 @@ async function main() {
   // Dựng một phiên ĐẦY ĐỦ (qua MFA). Dùng phiên nửa vời ở đây sẽ khiến bài
   // "reset thu hồi phiên" pass giả: /auth/me từ chối phiên nửa vời dù có reset hay không.
   r = await req('POST', '/auth/login', { body: { email, password } });
-  const fullCookie = tokenFromSetCookie(r.setCookie);
+  const halfC5 = tokenFromSetCookie(r.setCookie);
   const v2 = await freshCodeAfter(usedCounter);
-  r = await req('POST', '/auth/mfa/verify', { cookie: fullCookie, body: { code: v2.code } });
+  r = await req('POST', '/auth/mfa/verify', { cookie: halfC5, body: { code: v2.code } });
   usedCounter = v2.counter;
+  const fullCookie = tokenFromSetCookie(r.setCookie) ?? halfC5; // A6: cookie rotated sau verify
   r = await req('GET', '/auth/me', { cookie: fullCookie });
   r.status === 200 ? ok('có phiên ĐẦY ĐỦ trước khi reset (điều kiện của bài test)') : bad('không dựng được phiên đầy đủ', r.raw);
 
@@ -234,13 +244,15 @@ async function main() {
   await redis.flushdb(); // dọn rate-limit tích luỹ từ các bước trên
   const cpEmail = `cp-${uniq()}@a.vn`, cpPw = 'cp passphrase strong', cpNew = 'new cp passphrase 99';
   await req('POST', '/auth/register', { body: { email: cpEmail, password: cpPw } });
-  const cpCookie = tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: cpEmail, password: cpPw } })).setCookie);
+  let cpCookie = tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: cpEmail, password: cpPw } })).setCookie);
   const cpKey = base32Decode((await req('POST', '/auth/mfa/enroll', { cookie: cpCookie })).json.secret);
   const cpC0 = counterFor(Date.now());
-  await req('POST', '/auth/mfa/activate', { cookie: cpCookie, body: { code: totp(cpKey, {}) } });
+  // A6: activate ROTATE → giữ cookie thiết bị 1 mới.
+  cpCookie = tokenFromSetCookie((await req('POST', '/auth/mfa/activate', { cookie: cpCookie, body: { code: totp(cpKey, {}) } })).setCookie) ?? cpCookie;
   while (counterFor(Date.now()) <= cpC0) await sleep(1000); // sang bước mới để verify thiết bị 2 (chống replay)
-  const cpCookie2 = tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: cpEmail, password: cpPw } })).setCookie);
-  await req('POST', '/auth/mfa/verify', { cookie: cpCookie2, body: { code: totp(cpKey, {}) } });
+  let cpCookie2 = tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: cpEmail, password: cpPw } })).setCookie);
+  // A6: verify ROTATE → cpCookie2 = phiên đầy đủ "thiết bị 2" (để test đổi mk thu hồi phiên khác).
+  cpCookie2 = tokenFromSetCookie((await req('POST', '/auth/mfa/verify', { cookie: cpCookie2, body: { code: totp(cpKey, {}) } })).setCookie) ?? cpCookie2;
 
   let rr = await req('POST', '/auth/password/change', { cookie: cpCookie, body: { current_password: 'sai het roi', new_password: cpNew } });
   rr.status === 401 ? ok('đổi mk: mật khẩu hiện tại sai → 401') : bad('current sai được chấp nhận', rr.raw);
@@ -261,6 +273,37 @@ async function main() {
   const loginNoMfa = await req('POST', '/auth/login', { body: { email: cpEmail, password: cpNew } });
   meOff === false && loginNoMfa.status === 200 && loginNoMfa.json?.mfa_required === false
     ? ok('sau tắt MFA: mfa_enabled false + đăng nhập không hỏi mã') : bad('tắt MFA không thực', `off=${meOff} login=${JSON.stringify(loginNoMfa.json)}`);
+
+  // ── 10c. Liệt kê + thu hồi phiên (A6) ──────────────────────────────────────
+  sect('10c. Liệt kê + thu hồi phiên');
+  await redis.flushdb();
+  const sEmail = `sess-${uniq()}@a.vn`, sPw = 'session passphrase strong';
+  await req('POST', '/auth/register', { body: { email: sEmail, password: sPw } });
+  const sA = tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: sEmail, password: sPw } })).setCookie); // thiết bị A
+  const sB = tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: sEmail, password: sPw } })).setCookie); // thiết bị B
+  let rs = await req('GET', '/auth/sessions', { cookie: sA });
+  const sessList = rs.json?.sessions ?? [];
+  rs.status === 200 && sessList.length === 2 ? ok('liệt kê 2 phiên đang sống') : bad('liệt kê phiên sai', rs.raw);
+  sessList.filter((x) => x.current).length === 1 ? ok('đánh dấu ĐÚNG một phiên hiện tại') : bad('cờ current sai', JSON.stringify(sessList));
+  const idB = sessList.find((x) => !x.current)?.id;
+  rs = await req('POST', '/auth/sessions/revoke', { cookie: sA, body: { session_id: idB } });
+  rs.status === 200 && rs.json?.revoked === 1 ? ok('thu hồi phiên khác → revoked:1') : bad('thu hồi lỗi', rs.raw);
+  (await req('GET', '/auth/me', { cookie: sB })).status === 401 ? ok('phiên B bị thu hồi → 401') : bad('phiên B vẫn sống sau thu hồi');
+  (await req('GET', '/auth/me', { cookie: sA })).status === 200 ? ok('phiên A (hiện tại) vẫn sống') : bad('phiên A chết oan');
+  // Cô lập: KHÔNG thu hồi được phiên NGƯỜI KHÁC (scope user_id).
+  const oEmail = `other-${uniq()}@a.vn`;
+  await req('POST', '/auth/register', { body: { email: oEmail, password: sPw } });
+  const oCookie = tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: oEmail, password: sPw } })).setCookie);
+  const oId = ((await req('GET', '/auth/sessions', { cookie: oCookie })).json?.sessions ?? [])[0]?.id;
+  rs = await req('POST', '/auth/sessions/revoke', { cookie: sA, body: { session_id: oId } });
+  rs.json?.revoked === 0 && (await req('GET', '/auth/me', { cookie: oCookie })).status === 200
+    ? ok('KHÔNG thu hồi được phiên người khác (scope user_id)') : bad('thu hồi được phiên user khác — LỖ HỔNG', rs.raw);
+  // revoke-others: giữ phiên hiện tại, thu hồi mọi phiên còn lại.
+  const sC = tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: sEmail, password: sPw } })).setCookie);
+  rs = await req('POST', '/auth/sessions/revoke-others', { cookie: sA });
+  rs.status === 200 ? ok(`revoke-others → thu hồi ${rs.json?.revoked} phiên khác`) : bad('revoke-others lỗi', rs.raw);
+  (await req('GET', '/auth/me', { cookie: sC })).status === 401 && (await req('GET', '/auth/me', { cookie: sA })).status === 200
+    ? ok('revoke-others: phiên khác chết, phiên hiện tại sống') : bad('revoke-others sai');
 
   // ── 11. Rate limit đăng nhập ───────────────────────────────────────────────
   sect('11. Rate limit đăng nhập (theo tài khoản)');

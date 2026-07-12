@@ -66,6 +66,8 @@ async function fullLogin(email, password, totpKey, afterCounter) {
     const code = totp(totpKey, {});
     const used = counterFor(Date.now());
     r = await req(AUTH, 'POST', '/auth/mfa/verify', { body: { code }, cookie, origin: ORIGIN_AUTH });
+    // A6: mfa/verify ROTATE token → lấy cookie mới
+    cookie = cookieFrom(r.setCookie) ?? cookie;
     return { cookie, ok: r.status === 200, usedCounter: used };
   }
   return { cookie, ok: r.status === 200, usedCounter: afterCounter };

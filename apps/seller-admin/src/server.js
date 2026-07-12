@@ -363,36 +363,53 @@ async function blockMove(res, me, cookie, shopId, pid, bid, dir) {
 }
 
 // ── account (bảo mật cá nhân) ─────────────────────────────────────────────────
-const accountPage = (res, me, extra = {}) => sendHtml(res, extra.err ? 400 : 200, V.renderAccount({ email: me.email, mfa_enabled: me.mfa_enabled, ...extra }));
+async function accountPage(res, me, cookie, extra = {}) {
+  // Nạp danh sách phiên đang sống (best-effort — lỗi thì trang vẫn hiện phần còn lại).
+  let sessions = [];
+  if (cookie) { try { const r = await authApi('GET', '/auth/sessions', { cookie }); if (r.status === 200) sessions = r.json?.sessions ?? []; } catch { /* ignore */ } }
+  return sendHtml(res, extra.err ? 400 : 200, V.renderAccount({ email: me.email, mfa_enabled: me.mfa_enabled, sessions, ...extra }));
+}
 
 async function mfaEnrollStart(res, me, cookie) {
   const r = await authApi('POST', '/auth/mfa/enroll', { cookie });
-  if (r.status === 200) return accountPage(res, me, { enroll: r.json });
-  return accountPage(res, me, { err: r.status === 409 ? 'MFA đã bật rồi.' : (r.json?.error ?? 'Không bật được MFA.') });
+  if (r.status === 200) return accountPage(res, me, cookie, { enroll: r.json });
+  return accountPage(res, me, cookie, { err: r.status === 409 ? 'MFA đã bật rồi.' : (r.json?.error ?? 'Không bật được MFA.') });
 }
 async function mfaActivate(req, res, me, cookie) {
   const f = await readForm(req);
   const r = await authApi('POST', '/auth/mfa/activate', { cookie, body: { code: String(f.code ?? '').replace(/\s/g, '') } });
-  if (r.status === 200) return accountPage(res, me, { recovery_codes: r.json?.recovery_codes ?? [], notice: 'Đã bật MFA thành công.' });
+  // A6: activate ROTATE token → auth trả cookie phiên mới; relay để trình duyệt theo phiên mới.
+  const setC = r.status === 200 ? (r.setCookie ?? []) : [];
+  if (r.status === 200) return sendHtml(res, 200, V.renderAccount({ email: me.email, mfa_enabled: me.mfa_enabled, sessions: [], recovery_codes: r.json?.recovery_codes ?? [], notice: 'Đã bật MFA thành công.' }), setC);
   // Sai mã: giữ nguyên bước 2 (secret còn nguyên, chưa xác nhận) để thử lại — không phải enroll lại.
-  return accountPage(res, me, { enroll: { secret: f.secret, otpauth_url: f.otpauth }, err: r.json?.error ?? 'Mã không đúng, thử lại.' });
+  return accountPage(res, me, cookie, { enroll: { secret: f.secret, otpauth_url: f.otpauth }, err: r.json?.error ?? 'Mã không đúng, thử lại.' });
 }
-async function passwordForgot(res, me) {
+async function passwordForgot(res, me, cookie) {
   // Không cần cookie; luôn trả thông điệp mờ (không lộ email có tồn tại hay không).
   await authApi('POST', '/auth/password/forgot', { body: { email: me.email } }).catch(() => {});
-  return accountPage(res, me, { notice: 'Đã gửi link đặt lại mật khẩu về email của bạn (nếu email hợp lệ).' });
+  return accountPage(res, me, cookie, { notice: 'Đã gửi link đặt lại mật khẩu về email của bạn (nếu email hợp lệ).' });
 }
 async function passwordChange(req, res, me, cookie) {
   const f = await readForm(req);
   const r = await authApi('POST', '/auth/password/change', { cookie, body: { current_password: String(f.current_password ?? ''), new_password: String(f.new_password ?? '') } });
-  if (r.status === 200) return accountPage(res, me, { notice: 'Đã đổi mật khẩu. Các thiết bị khác đã bị đăng xuất.' });
-  return accountPage(res, me, { err: r.json?.error ?? 'Không đổi được mật khẩu.' });
+  if (r.status === 200) return accountPage(res, me, cookie, { notice: 'Đã đổi mật khẩu. Các thiết bị khác đã bị đăng xuất.' });
+  return accountPage(res, me, cookie, { err: r.json?.error ?? 'Không đổi được mật khẩu.' });
+}
+// Thu hồi một phiên (form gửi session_id) / mọi phiên khác.
+async function sessionRevoke(req, res, me, cookie) {
+  const f = await readForm(req);
+  await authApi('POST', '/auth/sessions/revoke', { cookie, body: { session_id: String(f.session_id ?? '') } });
+  return accountPage(res, me, cookie, { notice: 'Đã thu hồi phiên.' });
+}
+async function sessionRevokeOthers(res, me, cookie) {
+  await authApi('POST', '/auth/sessions/revoke-others', { cookie });
+  return accountPage(res, me, cookie, { notice: 'Đã đăng xuất mọi thiết bị khác.' });
 }
 async function mfaDisableSubmit(req, res, me, cookie) {
   const f = await readForm(req);
   const r = await authApi('POST', '/auth/mfa/disable', { cookie, body: { code: String(f.code ?? '').replace(/\s/g, '') } });
-  if (r.status === 200) return accountPage(res, me, { mfa_enabled: false, notice: 'Đã tắt MFA.' });
-  return accountPage(res, me, { err: r.json?.error ?? 'Không tắt được MFA.' });
+  if (r.status === 200) return accountPage(res, me, cookie, { mfa_enabled: false, notice: 'Đã tắt MFA.' });
+  return accountPage(res, me, cookie, { err: r.json?.error ?? 'Không tắt được MFA.' });
 }
 
 // ── chấp nhận lời mời (CÔNG KHAI: người được mời chưa đăng nhập) ───────────────
@@ -543,12 +560,14 @@ async function handle(req, res, url, p) {
     if (p === '/' && req.method === 'GET') return dashboard(res, me, cookie);
 
     // Tài khoản (cá nhân, không theo shop).
-    if (p === '/account' && req.method === 'GET') return accountPage(res, me);
+    if (p === '/account' && req.method === 'GET') return accountPage(res, me, cookie);
     if (p === '/account/mfa/enroll' && req.method === 'POST') return mfaEnrollStart(res, me, cookie);
     if (p === '/account/mfa/activate' && req.method === 'POST') return mfaActivate(req, res, me, cookie);
     if (p === '/account/mfa/disable' && req.method === 'POST') return mfaDisableSubmit(req, res, me, cookie);
-    if (p === '/account/password/forgot' && req.method === 'POST') return passwordForgot(res, me);
+    if (p === '/account/password/forgot' && req.method === 'POST') return passwordForgot(res, me, cookie);
     if (p === '/account/password/change' && req.method === 'POST') return passwordChange(req, res, me, cookie);
+    if (p === '/account/sessions/revoke' && req.method === 'POST') return sessionRevoke(req, res, me, cookie);
+    if (p === '/account/sessions/revoke-others' && req.method === 'POST') return sessionRevokeOthers(res, me, cookie);
 
     let m;
     if ((m = new RegExp(`^/shops/${UUID}/orders$`).exec(p)) && req.method === 'GET') return ordersList(res, me, cookie, m[1], url.searchParams);

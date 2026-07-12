@@ -41,7 +41,7 @@ async function adm(method, path, { cookie, origin, form } = {}) {
   if (origin) h.origin = origin;
   if (cookie) h.cookie = `__Host-session=${cookie}`;
   const r = await fetch(ADMIN + path, { method, headers: h, redirect: 'manual', body: form !== undefined ? new URLSearchParams(form).toString() : undefined });
-  return { status: r.status, location: r.headers.get('location'), body: await r.text() };
+  return { status: r.status, location: r.headers.get('location'), sc: r.headers.getSetCookie(), body: await r.text() };
 }
 const login = async (email, password) => ck((await rq(AUTH, 'POST', '/auth/login', { body: { email, password }, origin: OA })).sc);
 const uidOf = async (email) => (await owner.query('SELECT id FROM users WHERE email=$1', [email])).rows[0]?.id ?? null;
@@ -58,7 +58,8 @@ async function makeStaff() {
   await owner.query(`INSERT INTO platform_staff (user_id,role) VALUES ($1,'admin')`, [await uidOf(email)]);
   while (counterFor(Date.now()) <= c) await sleep(1000);
   cookie = await login(email, password);
-  await rq(AUTH, 'POST', '/auth/mfa/verify', { cookie, body: { code: totp(key, {}) }, origin: OA });
+  // A6: mfa/verify ROTATE token → lấy cookie mới
+  cookie = ck((await rq(AUTH, 'POST', '/auth/mfa/verify', { cookie, body: { code: totp(key, {}) }, origin: OA })).sc) ?? cookie;
   return cookie;
 }
 async function makeShopOwner(staffCookie, slug) {
@@ -91,8 +92,18 @@ async function main() {
   r.status >= 400 && /không đúng/.test(r.body) && /Kích hoạt MFA/.test(r.body) ? ok('mã sai → lỗi, vẫn ở bước kích hoạt (giữ secret)') : bad('mã sai không chặn', String(r.status));
 
   r = await adm('POST', '/account/mfa/activate', { cookie: A.cookie, origin: OADM, form: { code: totp(key, {}), secret, otpauth } });
+  // A6: activate ROTATE token → BFF relay cookie mới; cập nhật để các bước sau còn phiên hợp lệ.
+  const rotated = ck(r.sc);
+  rotated && rotated !== A.cookie ? ok('BFF activate relay cookie ROTATED') : bad('BFF không relay cookie rotated sau activate', String(r.status));
+  A.cookie = rotated ?? A.cookie;
   const meMfa = (await rq(AUTH, 'GET', '/auth/me', { cookie: A.cookie })).json.mfa_enabled;
   r.status === 200 && /Đã bật MFA/.test(r.body) && /<code>/.test(r.body) && meMfa === true ? ok('mã đúng → bật MFA + hiện mã khôi phục, /auth/me mfa_enabled') : bad('activate lỗi', `${r.status} me=${meMfa}`);
+
+  // A6: trang tài khoản hiện phần "Phiên đăng nhập" + thao tác thu hồi qua BFF.
+  r = await adm('GET', '/account', { cookie: A.cookie });
+  /Phiên đăng nhập/.test(r.body) && /Thiết bị này/.test(r.body) ? ok('trang tài khoản: phần "Phiên đăng nhập" (thiết bị hiện tại)') : bad('thiếu phần phiên đăng nhập', r.body.slice(0, 200));
+  r = await adm('POST', '/account/sessions/revoke-others', { cookie: A.cookie, origin: OADM });
+  r.status === 200 && (await rq(AUTH, 'GET', '/auth/me', { cookie: A.cookie })).status === 200 ? ok('revoke-others qua BFF → OK, phiên hiện tại còn sống') : bad('revoke-others BFF lỗi', String(r.status));
 
   r = await adm('POST', '/account/password/forgot', { cookie: A.cookie, origin: OADM });
   r.status === 200 && /đặt lại mật khẩu/.test(r.body) ? ok('gửi link đặt lại mật khẩu → thông báo') : bad('forgot lỗi', String(r.status));

@@ -74,10 +74,13 @@ async function sepayWebhook(req, res, body) {
   // Tài khoản NHẬN tiền mà SePay báo. Bắt buộc để chống "đánh dấu hộ" đơn shop khác.
   const rcvAccount = String(body.subAccount ?? body.accountNumber ?? '').replace(/\s/g, '');
 
+  // Mask tài khoản trong log — KHÔNG lộ số tài khoản đầy đủ (chỉ 4 số cuối).
+  const mask = (a) => { const s = String(a ?? ''); return s ? '****' + s.slice(-4) : '(none)'; };
+
   const result = await withTxn(async (c) => {
     // Tra đơn theo payment_ref (payment_read USING(true) — không cần context).
     const order = (await c.query(
-      `SELECT id, shop_id, total_vnd, payment_status, qr_account FROM orders WHERE payment_ref = $1`, [ref],
+      `SELECT id, shop_id, total_vnd, order_number, customer_email, payment_status, qr_account FROM orders WHERE payment_ref = $1`, [ref],
     )).rows[0];
     if (!order) return { matched: false, reason: 'order_not_found' };
 
@@ -86,15 +89,15 @@ async function sepayWebhook(req, res, body) {
     // ref đơn shop khác để đánh dấu paid hộ (rà soát bảo mật Ngày 14).
     const want = String(order.qr_account ?? '').replace(/\s/g, '');
     if (!want || rcvAccount !== want) {
-      log('warn', 'payment_account_mismatch', { ref, rcvAccount, want });
+      log('warn', 'payment_account_mismatch', { ref, rcvAccount: mask(rcvAccount), want: mask(want) });
       return { matched: false, reason: 'account_mismatch' };
     }
 
     // Đặt context = shop của đơn cho các ghi tiếp theo (RLS scoped).
     await c.query(`SELECT set_config('app.shop_id', $1, true)`, [order.shop_id]);
 
-    const enough = amount >= Number(order.total_vnd);
-    const status = enough ? 'received' : 'underpaid';
+    // status per-txn = giao dịch NÀY có đủ tổng đơn một mình không (bản ghi lịch sử).
+    const status = amount >= Number(order.total_vnd) ? 'received' : 'underpaid';
 
     // Ghi sổ giao dịch — UNIQUE(provider, event_id) chặn replay.
     const ins = await c.query(
@@ -105,16 +108,28 @@ async function sepayWebhook(req, res, body) {
     );
     if (ins.rows.length === 0) return { matched: true, duplicate: true }; // replay → idempotent
 
+    // GỘP nhiều giao dịch: đủ tiền = TỔNG mọi giao dịch của đơn ≥ tổng đơn (khách có
+    // thể chuyển làm nhiều lần). Bao gồm giao dịch vừa chèn.
+    const cumulative = Number((await c.query(`SELECT coalesce(sum(amount_vnd), 0)::bigint AS s FROM payment_transactions WHERE order_id = $1`, [order.id])).rows[0].s);
+    const enough = cumulative >= Number(order.total_vnd);
+
     let paid = false;
     if (enough && order.payment_status !== 'paid') {
-      await c.query(
+      const upd = await c.query(
         `UPDATE orders SET payment_status = 'paid', paid_at = now(), status = 'confirmed'
           WHERE id = $1 AND payment_status <> 'paid'`, [order.id],
       );
-      paid = true;
+      paid = upd.rowCount === 1;
+      // Phát order.paid TRONG cùng transaction → worker gửi biên nhận. Chỉ khi có email.
+      if (paid && order.customer_email) {
+        await c.query(
+          `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.paid', $1)`,
+          [{ to: order.customer_email, order_number: Number(order.order_number), total_vnd: Number(order.total_vnd) }],
+        );
+      }
     }
-    log('info', 'payment_processed', { ref, amount, enough, paid });
-    return { matched: true, paid, status, order_id: order.id };
+    log('info', 'payment_processed', { ref, amount, cumulative, enough, paid });
+    return { matched: true, paid, status, cumulative, order_id: order.id };
   });
 
   return send(res, 200, result);

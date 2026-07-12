@@ -105,9 +105,10 @@ async function setupProduct(shop, price, stock) {
   return vid;
 }
 // Đặt đơn QR, trả {orderNum, ref, total, qr, lookupToken}.
-async function placeQrOrder(shop, vid, qty = 1) {
+async function placeQrOrder(shop, vid, qty = 1, email = null) {
   const cart = (await co(shop.host, 'POST', '/cart/items', { body: { variant_id: vid, qty } })).cartToken;
-  const r = await co(shop.host, 'POST', '/checkout', { body: { customer: { name: 'Khach', phone: '0901234567' }, payment_method: 'qr' }, cartToken: cart, idemKey: `k-${uniq()}` });
+  const customer = { name: 'Khach', phone: '0901234567', ...(email ? { email } : {}) };
+  const r = await co(shop.host, 'POST', '/checkout', { body: { customer, payment_method: 'qr' }, cartToken: cart, idemKey: `k-${uniq()}` });
   return { orderNum: r.json?.order_number, ref: r.json?.payment_ref, total: r.json?.total_vnd, qr: r.json?.qr_string, lookupToken: r.json?.lookup_token, status: r.status, raw: r.raw };
 }
 const orderStatus = (host, num, token) => co(host, 'GET', `/checkout/order?number=${num}&token=${encodeURIComponent(token)}`);
@@ -167,6 +168,22 @@ async function main() {
   // Đúng đủ tiền sau đó → paid.
   r = await webhook({ id: `evt-${uniq()}`, transferType: 'in', transferAmount: o2.total, content: `ck ${o2.ref}`, transactionDate: '2026-07-11 10:06:00' });
   r.json.paid === true ? ok('sau đó chuyển ĐỦ → paid') : bad('đủ tiền không paid', r.raw);
+
+  // ── 5b. GỘP nhiều giao dịch → đủ tổng thì paid + phát order.paid ────────────
+  sect('5b. Gộp nhiều giao dịch (partial payments)');
+  const email5b = `buyer5b-${uniq()}@test.local`; // duy nhất mỗi lần chạy → đếm order.paid chính xác
+  const o3 = await placeQrOrder(A, vid, 1, email5b);
+  const half = Math.floor(o3.total / 2);
+  r = await webhook({ id: `evt-${uniq()}`, transferType: 'in', transferAmount: half, content: `ck ${o3.ref}`, transactionDate: '2026-07-11 12:00:00' });
+  r.json.paid === false ? ok('lần 1 (nửa tiền) → CHƯA paid') : bad('nửa tiền đã paid', r.raw);
+  r = await webhook({ id: `evt-${uniq()}`, transferType: 'in', transferAmount: o3.total - half, content: `ck ${o3.ref}`, transactionDate: '2026-07-11 12:01:00' });
+  r.json.paid === true && r.json.cumulative === o3.total ? ok(`lần 2 (phần còn lại) → GỘP đủ ${o3.total} → paid`) : bad('gộp không paid', r.raw);
+  r = await orderStatus(A.host, o3.orderNum, o3.lookupToken);
+  r.json?.payment_status === 'paid' ? ok('đơn → paid sau khi gộp đủ tổng') : bad('gộp không đặt paid', r.raw);
+  // Đếm theo EMAIL (duy nhất mỗi lần chạy) — order_number chỉ duy nhất trong 1 shop,
+  // outbox tích luỹ qua nhiều lần chạy nên đếm theo order_number sẽ đụng.
+  const paidBox = await owner.query(`SELECT count(*)::int n FROM outbox WHERE topic='order.paid' AND payload->>'to' = $1`, [email5b]);
+  paidBox.rows[0].n === 1 ? ok('phát MỘT sự kiện order.paid (email biên nhận)') : bad(`có ${paidBox.rows[0].n} order.paid`, '');
 
   // ── 6. Replay (trùng provider_event_id) ────────────────────────────────────
   sect('6. Chống replay');

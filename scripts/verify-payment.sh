@@ -55,9 +55,13 @@ sect "1. Gỡ từng lớp phòng thủ webhook"
 mutate apikey "bỏ xác thực API key webhook" \
   "sed -i 's|if (!timingSafeEq(req.headers\[.authorization.\] ?? .., \`Apikey \${SEPAY_KEY}\`)) {|if (false) {|' $SRV"
 
-# Bỏ đối chiếu số tiền → thiếu tiền vẫn paid.
-mutate amount "bỏ đối chiếu số tiền (thiếu tiền vẫn paid)" \
-  "sed -i 's|const enough = amount >= Number(order.total_vnd);|const enough = true;|' $SRV"
+# Bỏ đối chiếu số tiền (tổng gộp) → thiếu tiền vẫn paid.
+mutate amount "bỏ đối chiếu số tiền gộp (thiếu tiền vẫn paid)" \
+  "sed -i 's|const enough = cumulative >= Number(order.total_vnd);|const enough = true;|' $SRV"
+
+# Đủ tiền nhưng KHÔNG phát order.paid → mất email biên nhận (test 5b bắt).
+mutate paid "đủ tiền nhưng không phát order.paid (mất biên nhận)" \
+  "sed -i 's|if (paid && order.customer_email) {|if (false \&\& order.customer_email) {|' $SRV"
 
 # Bỏ chống replay → xử lý lại giao dịch trùng (nhiều dòng sổ).
 mutate replay "bỏ chống replay (ON CONFLICT DO NOTHING → DO UPDATE)" \

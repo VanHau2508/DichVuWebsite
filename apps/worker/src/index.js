@@ -50,6 +50,12 @@ function compose(topic, p) {
       text: `Chào ${p.customer_name || 'bạn'},\n\nĐơn hàng #${p.order_number} đã được ghi nhận.\nTổng: ${money(p.total_vnd)} — Thanh toán: ${p.payment_method === 'qr' ? 'chuyển khoản QR' : 'COD'}.\n\nCảm ơn bạn!`,
     };
   }
+  if (topic === 'order.paid') {
+    return {
+      subject: `Đã nhận thanh toán đơn #${p.order_number}`,
+      text: `Chào ${p.customer_name || 'bạn'},\n\nChúng tôi đã nhận đủ thanh toán cho đơn hàng #${p.order_number} (${money(p.total_vnd)}).\nĐơn của bạn đang được xử lý.\n\nCảm ơn bạn!`,
+    };
+  }
   if (topic === 'order.status_changed') {
     const label = { confirmed: 'đã xác nhận', shipped: 'đang giao', delivered: 'đã giao', cancelled: 'đã huỷ' }[p.status] ?? p.status;
     return {

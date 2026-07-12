@@ -24,6 +24,7 @@ a{color:#2563eb}.wrap{max-width:560px;margin:0 auto;padding:16px}
 h1{font-size:1.25rem;margin:.2em 0}h2{font-size:1rem;margin:1em 0 .4em}
 .row{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid #f3f4f6}
 .row:last-child{border-bottom:0}.muted{color:#6b7280;font-size:.9rem}.right{text-align:right}
+.it{display:flex;gap:10px}.cthumb{width:52px;height:52px;object-fit:cover;border-radius:8px;border:1px solid #eee;flex:0 0 auto;background:#f3f4f6}.cthumb.ph{border-style:dashed}
 .tot{display:flex;justify-content:space-between;padding:6px 0}.tot.grand{font-weight:700;font-size:1.1rem;border-top:2px solid #eee;margin-top:6px;padding-top:10px}
 .btn{display:block;width:100%;text-align:center;background:#111827;color:#fff;border:0;border-radius:10px;padding:14px;font-size:1rem;font-weight:600;text-decoration:none;cursor:pointer}
 .btn.alt{background:#fff;color:#111827;border:1px solid #d1d5db}
@@ -50,7 +51,9 @@ function page(title, shopName, bodyHtml, extraHead = '') {
 // Mọi thao tác đổi giỏ là POST form (sameOrigin chỉ chặn được POST/PATCH, KHÔNG chặn
 // GET → không dùng link GET để sửa, tránh CSRF qua <img>/prefetch).
 const itemsBlock = (items) => items.map((it) => `
-  <div class="row"><div>
+  <div class="row"><div class="it">
+    ${it.image ? `<img class="cthumb" src="${esc(it.image)}" alt="" loading="lazy" width="52" height="52">` : '<div class="cthumb ph"></div>'}
+    <div>
     <div>${esc(it.product_title)}${it.variant_title ? ` — <span class="muted">${esc(it.variant_title)}</span>` : ''}</div>
     <div class="muted">${money(it.unit_price_vnd)} / sp</div>
     <form method="POST" action="/cart/update" class="qty" style="margin-top:6px">
@@ -62,7 +65,7 @@ const itemsBlock = (items) => items.map((it) => `
       <input type="hidden" name="variant_id" value="${esc(it.variant_id)}"><input type="hidden" name="qty" value="0">
       <button class="qtybtn" type="submit" style="width:auto;color:#b91c1c">Xoá</button>
     </form>
-  </div><div class="right"><strong>${money(it.line_total_vnd)}</strong></div></div>`).join('');
+  </div></div><div class="right"><strong>${money(it.line_total_vnd)}</strong></div></div>`).join('');
 
 const totalsBlock = (s) => `
   <div class="tot"><span class="muted">Tạm tính</span><span>${money(s.subtotal_vnd)}</span></div>

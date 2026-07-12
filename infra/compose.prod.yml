@@ -204,6 +204,7 @@ services:
       APP_ENV: production
       DATABASE_URL: postgres://app_checkout:${APP_CHECKOUT_PASSWORD:?}@postgres:5432/app
       SHIP_FEE_VND: ${SHIP_FEE_VND:-30000}
+      MEDIA_PUBLIC_BASE: ${MEDIA_PUBLIC_BASE:?}   # ảnh thumbnail trong giỏ (img-src CSP)
       PORT: "3060"
     deploy: { resources: { limits: { memory: 192m } } }
     depends_on:

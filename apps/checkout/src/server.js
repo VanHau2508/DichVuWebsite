@@ -22,6 +22,8 @@ import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrS
 
 const PORT = Number(process.env.PORT ?? 3060);
 const SHIP_FEE = Number(process.env.SHIP_FEE_VND ?? 30000);
+const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? 'http://minio:9000/media-public';
+const imgUrl = (key) => (key ? `${MEDIA_PUBLIC_BASE}/${key}` : null);
 const CART_TTL_DAYS = 30;
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
 
@@ -58,7 +60,8 @@ async function findCart(c, token) {
 
 async function summarize(c, cartId) {
   const items = (await c.query(
-    `SELECT ci.variant_id, ci.qty, v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title, p.slug
+    `SELECT ci.variant_id, ci.qty, v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title, p.slug,
+            (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key
        FROM cart_items ci JOIN variants v ON v.id = ci.variant_id JOIN products p ON p.id = v.product_id
       WHERE ci.cart_id = $1 ORDER BY ci.created_at`, [cartId],
   )).rows;
@@ -66,7 +69,7 @@ async function summarize(c, cartId) {
   const out = items.map((it) => {
     const unit = Number(it.price_vnd); // GIÁ THẬT từ variants
     subtotal += unit * it.qty;
-    return { variant_id: it.variant_id, product_title: it.product_title, variant_title: it.variant_title, sku: it.sku, unit_price_vnd: unit, qty: it.qty, line_total_vnd: unit * it.qty };
+    return { variant_id: it.variant_id, product_title: it.product_title, variant_title: it.variant_title, sku: it.sku, unit_price_vnd: unit, qty: it.qty, line_total_vnd: unit * it.qty, image: imgUrl(it.image_key) };
   });
   return { items: out, subtotal_vnd: subtotal, shipping_vnd: out.length ? SHIP_FEE : 0, total_vnd: subtotal + (out.length ? SHIP_FEE : 0) };
 }

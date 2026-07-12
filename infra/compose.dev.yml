@@ -223,6 +223,8 @@ services:
       # app_checkout: vai trò CÔNG KHAI ghi đơn; RLS tenant-scoped, KHÔNG đụng users.
       DATABASE_URL: postgres://app_checkout:devpassword@postgres:5432/app
       SHIP_FEE_VND: "30000"
+      # Ảnh thumbnail trong giỏ (origin thêm vào CSP img-src — xem http.js).
+      MEDIA_PUBLIC_BASE: http://minio:9000/media-public
       PORT: "3060"
     volumes:
       - ../apps/checkout/src:/app/src:ro

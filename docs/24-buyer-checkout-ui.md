@@ -58,9 +58,19 @@ công"; tra cứu bình thường → tiêu đề "Đơn hàng #X". Sai số/mã
 và không xác nhận đơn tồn tại** (chống dò). Thiếu tham số → về form (không ngõ cụt). Link "Tra
 cứu đơn" ở header storefront. e2e §9 phủ: form, tra cứu đúng, banner khi vừa đặt, sai mã không lộ.
 
+## 5b. Ảnh thumbnail trong giỏ (0024)
+
+Giỏ hiện ảnh đại diện mỗi sản phẩm. `app_checkout` (role tối thiểu) được cấp `SELECT media`
++ policy `checkout_media` (CHỈ `status='ready'` + tenant-scoped, y hệt `store_media`). `summarize()`
+join ảnh `position` nhỏ nhất; `renderCart` hiện `<img class="cthumb">`. CSP `img-src` thêm origin
+`MEDIA_PUBLIC_BASE` (edge Caddy catch-all không đặt CSP cho shop domain → chỉ app CSP). e2e buyer-flow
+kiểm thumbnail + CSP.
+
 ## 6. Còn thiếu (fast-follow)
 
 - Chỉ báo số lượng giỏ ở header (cần đọc giỏ — app_store không có; hoặc thêm JS nhẹ sau).
 - Nâng cấp JS tuỳ chọn: ajax thêm giỏ (không rời trang), poll trạng thái QR bằng JS thay meta-refresh.
-- Ảnh sản phẩm/biến thể trong giỏ; chọn nhiều thuộc tính (size/màu) rõ hơn.
+- Ảnh trong trang KẾT QUẢ đơn (order_lines snapshot — cần join thêm); chọn nhiều thuộc tính rõ hơn.
 - Theme của shop cho trang checkout (cần cấp app_checkout đọc themes, hoặc storefront render).
+- Siết `GRANT SELECT media` xuống mức cột (ẩn `original_key` — key bucket private) cho CẢ
+  `app_checkout` lẫn `app_store` (hiện cùng grant cả bảng như nhau) — defense-in-depth, theo mẫu 0018.

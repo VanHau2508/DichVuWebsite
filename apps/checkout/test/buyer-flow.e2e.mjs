@@ -8,6 +8,7 @@
  */
 
 import http from 'node:http';
+import zlib from 'node:zlib';
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
@@ -91,13 +92,22 @@ async function setupProduct(shop, title, slug, price, stock) {
   await rq(SELLER, 'POST', `/shops/${shop.shopId}/variants/${vid}/inventory/adjust`, { body: { delta: stock, reason: 'nhập' }, cookie: shop.cookie, origin: OS });
   return { productId: r.json.id, slug, vid };
 }
+// PNG 1x1 hợp lệ (sharp giải mã được) để upload ảnh sản phẩm.
+function makePng() {
+  const crc = (b) => { let c = ~0; for (let i = 0; i < b.length; i++) { c ^= b[i]; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xEDB88320 & -(c & 1)); } return (~c) >>> 0; };
+  const chunk = (t, d) => { const l = Buffer.alloc(4); l.writeUInt32BE(d.length); const T = Buffer.from(t); const cc = Buffer.alloc(4); cc.writeUInt32BE(crc(Buffer.concat([T, d]))); return Buffer.concat([l, T, d, cc]); };
+  const ih = Buffer.alloc(13); ih.writeUInt32BE(1, 0); ih.writeUInt32BE(1, 4); ih[8] = 8; ih[9] = 2;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ih), chunk('IDAT', zlib.deflateSync(Buffer.from([0, 200, 50, 50]))), chunk('IEND', Buffer.alloc(0))]);
+}
+const uploadImage = (shop, productId) => fetch(SELLER + `/shops/${shop.shopId}/products/${productId}/media`, { method: 'POST', headers: { cookie: `__Host-session=${shop.cookie}`, origin: OS, 'content-type': 'application/octet-stream' }, body: makePng() });
 
 async function main() {
   const staff = await makeStaff();
   const A = await makeShopOwner(staff, `buy-${uniq()}`);
   const XSSNAME = `<script>alert(1)</script>Áo`;
   const prod = await setupProduct(A, XSSNAME, `sp-${uniq()}`, 150000, 10);
-  ok('dựng shop + sản phẩm (tồn 10)');
+  await uploadImage(A, prod.productId); // để kiểm thumbnail trong giỏ
+  ok('dựng shop + sản phẩm (tồn 10) + ảnh');
 
   // ── 1. Trang sản phẩm có form thêm giỏ ─────────────────────────────────────
   sect('1. Trang sản phẩm (storefront) — nút thêm giỏ');
@@ -117,6 +127,8 @@ async function main() {
   r = await co({ host: A.host, path: '/cart', accept: 'text/html', cartCookie: cart });
   r.status === 200 && r.body.includes('Giỏ hàng') && r.body.includes('/cart/update') && r.body.includes('/checkout')
     ? ok('GET /cart (html) → trang giỏ có item + nút thanh toán') : bad('trang giỏ lỗi', String(r.status));
+  /<img class="cthumb" src="[^"]*media-public/.test(r.body) && /img-src[^;]*media-public|img-src[^;]*minio/.test(r.headers['content-security-policy'] ?? '')
+    ? ok('giỏ hiện thumbnail ảnh SP + CSP img-src cho phép') : bad('thiếu thumbnail/CSP trong giỏ', r.body.match(/cthumb[\s\S]{0,80}/)?.[0]);
   !r.body.includes('<script>alert(1)') ? ok('tên trong giỏ được escape') : bad('XSS trong giỏ');
   const rjson = await co({ host: A.host, path: '/cart', accept: 'application/json', cartCookie: cart });
   { let j = null; try { j = JSON.parse(rjson.body); } catch {} j && j.total_vnd === 180000 ? ok('GET /cart (json) vẫn trả API (total=150k+30k ship)') : bad('content-negotiation JSON hỏng', rjson.body.slice(0,120)); }

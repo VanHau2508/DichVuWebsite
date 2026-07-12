@@ -419,7 +419,11 @@ export function renderAccount(info) {
   } else if (mfa_enabled) {
     mfaCard = `<div class="card"><h2 style="margin-top:0">Xác thực 2 lớp (MFA)</h2>
       <p>${badge('active', 'Đang bật')} — tài khoản đã được bảo vệ bằng MFA.</p>
-      <p class="muted" style="font-size:.84rem">Đổi/tắt thiết bị MFA chưa hỗ trợ trong giao diện này.</p></div>`;
+      <form method="POST" action="/account/mfa/disable" style="margin-top:8px">
+        <label>Tắt MFA — nhập mã 6 số (hoặc mã khôi phục) để xác nhận</label>
+        <input name="code" inputmode="numeric" autocomplete="one-time-code" required placeholder="123456" style="max-width:220px">
+        <button class="btn warn" type="submit" style="margin-top:8px">Tắt MFA</button>
+      </form></div>`;
   } else {
     mfaCard = `<div class="card"><h2 style="margin-top:0">Xác thực 2 lớp (MFA)</h2>
       <p class="muted">Bảo vệ tài khoản bằng mã 6 số đổi liên tục. Nên bật — nhất là với chủ shop.</p>
@@ -430,9 +434,16 @@ export function renderAccount(info) {
     ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
     <div class="card"><h2 style="margin-top:0">Thông tin</h2><p>Email: <strong>${esc(email)}</strong></p></div>
     ${mfaCard}
-    <div class="card"><h2 style="margin-top:0">Mật khẩu</h2>
-      <p class="muted">Đổi mật khẩu qua email: gửi link đặt lại về hộp thư của bạn.</p>
-      <form method="POST" action="/account/password/forgot"><button class="btn alt" type="submit">Gửi link đặt lại mật khẩu</button></form></div>
+    <div class="card"><h2 style="margin-top:0">Đổi mật khẩu</h2>
+      <form method="POST" action="/account/password/change">
+        <label>Mật khẩu hiện tại</label><input name="current_password" type="password" required autocomplete="current-password">
+        <label>Mật khẩu mới (tối thiểu 10 ký tự)</label><input name="new_password" type="password" required minlength="10" autocomplete="new-password">
+        <button class="btn" type="submit" style="margin-top:10px">Đổi mật khẩu</button>
+      </form>
+      <div style="margin-top:12px;border-top:1px solid #eee;padding-top:10px">
+        <p class="muted" style="font-size:.82rem;margin:0 0 6px">Quên mật khẩu hiện tại? Gửi link đặt lại qua email:</p>
+        <form method="POST" action="/account/password/forgot"><button class="btn alt sm" type="submit">Gửi link đặt lại</button></form>
+      </div></div>
     <a class="btn alt" href="/">← Bảng điều khiển</a>`);
 }
 

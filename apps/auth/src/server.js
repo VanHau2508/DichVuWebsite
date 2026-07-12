@@ -443,6 +443,73 @@ async function stepUp(req, res, body, ctx) {
   return send(res, 200, { ok: true });
 }
 
+// Đổi mật khẩu TẠI CHỖ: xác minh mật khẩu hiện tại → đặt mật khẩu mới → THU HỒI mọi
+// phiên KHÁC (đá thiết bị khác), giữ phiên hiện tại.
+async function changePassword(req, res, body, ctx) {
+  if (!isFullyAuthed(ctx.auth)) return send(res, 401, { error: 'cần đăng nhập đầy đủ' });
+  const { user, session } = ctx.auth;
+  const rl = await hit(redis, `rl:pwchange:${user.id}`, { limit: 10, windowSec: 900 });
+  if (!rl.allowed) return send(res, 429, { error: 'quá nhiều lần thử' }, { 'retry-after': String(rl.retryAfterSec) });
+
+  const { rows } = await db.query(`SELECT password_hash FROM users WHERE id = $1`, [user.id]);
+  const ok = await verifyPassword(rows[0]?.password_hash ?? DUMMY_HASH, String(body.current_password ?? ''));
+  if (!ok) {
+    await audit('user.password_change_failed', { userId: user.id, ip: ctx.ip, ua: ctx.ua });
+    return send(res, 401, { error: 'mật khẩu hiện tại không đúng' });
+  }
+  if (!validPassword(body.new_password)) return send(res, 400, { error: 'mật khẩu mới tối thiểu 10 ký tự' });
+
+  const hash = await hashPassword(body.new_password);
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [hash, user.id]);
+    // Đổi mật khẩu → THU HỒI mọi phiên KHÁC (giữ phiên hiện tại đang thao tác).
+    await client.query(`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND id != $2 AND revoked_at IS NULL`, [user.id, session.id]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+
+  await resetRate(redis, `rl:pwchange:${user.id}`);
+  await audit('user.password_changed', { userId: user.id, ip: ctx.ip, ua: ctx.ua });
+  return send(res, 200, { ok: true });
+}
+
+// Tắt MFA: xác minh YẾU TỐ HIỆN TẠI (mã TOTP hoặc mã khôi phục) — mật khẩu KHÔNG đủ
+// (không để kẻ chỉ có mật khẩu gỡ lớp 2). app_auth không DELETE được mfa_totp → vô
+// hiệu bằng confirmed_at=NULL + tắt cờ + huỷ mã khôi phục còn lại.
+async function mfaDisable(req, res, body, ctx) {
+  if (!isFullyAuthed(ctx.auth)) return send(res, 401, { error: 'cần đăng nhập đầy đủ' });
+  const { user } = ctx.auth;
+  if (!user.mfaEnabled) return send(res, 400, { error: 'MFA chưa bật' });
+  const code = String(body.code ?? '').replace(/\s/g, '');
+
+  const rl = await hit(redis, `rl:mfadisable:${user.id}`, { limit: 10, windowSec: 300 });
+  if (!rl.allowed) return send(res, 429, { error: 'quá nhiều lần thử mã' }, { 'retry-after': String(rl.retryAfterSec) });
+
+  const { rows } = await db.query(`SELECT secret_enc FROM mfa_totp WHERE user_id = $1 AND confirmed_at IS NOT NULL`, [user.id]);
+  if (rows.length === 0) return send(res, 400, { error: 'MFA chưa cấu hình' });
+  const secret = base32Decode(open(rows[0].secret_enc, MFA_ENC_KEY));
+  let ok = verifyTotp(secret, code, {}) !== null;
+  if (!ok) ok = await consumeRecoveryCode(user.id, code); // cho phép mã khôi phục
+  if (!ok) {
+    await audit('user.mfa_disable_failed', { userId: user.id, ip: ctx.ip, ua: ctx.ua });
+    return send(res, 401, { error: 'mã không đúng' });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`UPDATE users SET mfa_enabled = false WHERE id = $1`, [user.id]);
+    await client.query(`UPDATE mfa_totp SET confirmed_at = NULL, last_counter = NULL WHERE user_id = $1`, [user.id]);
+    await client.query(`UPDATE mfa_recovery_codes SET used_at = now() WHERE user_id = $1 AND used_at IS NULL`, [user.id]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
+
+  await resetRate(redis, `rl:mfadisable:${user.id}`);
+  await audit('user.mfa_disabled', { userId: user.id, ip: ctx.ip, ua: ctx.ua });
+  return send(res, 200, { ok: true });
+}
+
 async function forgot(req, res, body, ctx) {
   const email = String(body.email ?? '').toLowerCase().trim();
 
@@ -603,6 +670,8 @@ const ROUTES = {
   'POST /auth/mfa/verify': mfaVerify,
   'POST /auth/mfa/enroll': mfaEnroll,
   'POST /auth/mfa/activate': mfaActivate,
+  'POST /auth/mfa/disable': mfaDisable,
+  'POST /auth/password/change': changePassword,
   'POST /auth/logout': logout,
   'GET /auth/me': me,
   'POST /auth/step-up': stepUp,

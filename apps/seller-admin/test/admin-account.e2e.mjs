@@ -164,6 +164,24 @@ async function main() {
   r = await adm('GET', `/shops/${Bo.shopId}/members`, { cookie: A.cookie });
   r.status === 403 ? ok('owner A xem nhân sự shop B → 403') : bad('rò nhân sự chéo shop', String(r.status));
 
+  // ── 5. Đổi mật khẩu + tắt MFA (qua admin) ──────────────────────────────────
+  sect('5. Đổi mật khẩu & tắt MFA');
+  const newPw = 'chu shop moi manh 2026';
+  r = await adm('POST', '/account/password/change', { cookie: A.cookie, origin: OADM, form: { current_password: 'sai het roi', new_password: newPw } });
+  r.status >= 400 && /hiện tại không đúng/.test(r.body) ? ok('đổi mk sai mật khẩu hiện tại → chặn') : bad('đổi mk sai không chặn', String(r.status));
+  r = await adm('POST', '/account/password/change', { cookie: A.cookie, origin: OADM, form: { current_password: A.password, new_password: newPw } });
+  r.status === 200 && /Đã đổi mật khẩu/.test(r.body) ? ok('đổi mật khẩu thành công') : bad('đổi mk lỗi', String(r.status));
+  const oldL = await rq(AUTH, 'POST', '/auth/login', { body: { email: A.email, password: A.password }, origin: OA });
+  const newL = await rq(AUTH, 'POST', '/auth/login', { body: { email: A.email, password: newPw }, origin: OA });
+  oldL.status === 401 && newL.status === 200 ? ok('mật khẩu cũ vô hiệu, mật khẩu mới được chấp nhận') : bad('đổi mk không thực', `${oldL.status}/${newL.status}`);
+  r = await adm('GET', '/account', { cookie: A.cookie });
+  r.status === 200 ? ok('phiên hiện tại vẫn sống sau đổi mật khẩu') : bad('phiên bị đá sau đổi mk', String(r.status));
+  r = await adm('POST', '/account/mfa/disable', { cookie: A.cookie, origin: OADM, form: { code: '000000' } });
+  r.status >= 400 && /không đúng/.test(r.body) ? ok('tắt MFA mã sai → chặn') : bad('tắt MFA mã sai không chặn', String(r.status));
+  r = await adm('POST', '/account/mfa/disable', { cookie: A.cookie, origin: OADM, form: { code: totp(key, {}) } });
+  const meOff = (await rq(AUTH, 'GET', '/auth/me', { cookie: A.cookie })).json?.mfa_enabled;
+  r.status === 200 && /Đã tắt MFA/.test(r.body) && meOff === false ? ok('tắt MFA thành công → mfa_enabled false') : bad('tắt MFA lỗi', `${r.status} ${meOff}`);
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

@@ -229,6 +229,39 @@ async function main() {
   r = await req('POST', '/auth/login', { body: { email, password: newPassword } });
   r.status === 200 && r.json?.mfa_required ? ok('mật khẩu MỚI đăng nhập được (vẫn hỏi MFA)') : bad('mật khẩu mới lỗi', r.raw);
 
+  // ── 10b. Đổi mật khẩu tại chỗ + tắt MFA ────────────────────────────────────
+  sect('10b. Đổi mật khẩu tại chỗ + tắt MFA');
+  await redis.flushdb(); // dọn rate-limit tích luỹ từ các bước trên
+  const cpEmail = `cp-${uniq()}@a.vn`, cpPw = 'cp passphrase strong', cpNew = 'new cp passphrase 99';
+  await req('POST', '/auth/register', { body: { email: cpEmail, password: cpPw } });
+  const cpCookie = tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: cpEmail, password: cpPw } })).setCookie);
+  const cpKey = base32Decode((await req('POST', '/auth/mfa/enroll', { cookie: cpCookie })).json.secret);
+  const cpC0 = counterFor(Date.now());
+  await req('POST', '/auth/mfa/activate', { cookie: cpCookie, body: { code: totp(cpKey, {}) } });
+  while (counterFor(Date.now()) <= cpC0) await sleep(1000); // sang bước mới để verify thiết bị 2 (chống replay)
+  const cpCookie2 = tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: cpEmail, password: cpPw } })).setCookie);
+  await req('POST', '/auth/mfa/verify', { cookie: cpCookie2, body: { code: totp(cpKey, {}) } });
+
+  let rr = await req('POST', '/auth/password/change', { cookie: cpCookie, body: { current_password: 'sai het roi', new_password: cpNew } });
+  rr.status === 401 ? ok('đổi mk: mật khẩu hiện tại sai → 401') : bad('current sai được chấp nhận', rr.raw);
+  rr = await req('POST', '/auth/password/change', { cookie: cpCookie, body: { current_password: cpPw, new_password: cpNew } });
+  rr.status === 200 ? ok('đổi mk: current đúng → 200') : bad('đổi mk lỗi', rr.raw);
+  const meCur = (await req('GET', '/auth/me', { cookie: cpCookie })).status;
+  const meOther = (await req('GET', '/auth/me', { cookie: cpCookie2 })).status;
+  meCur === 200 && meOther === 401 ? ok('đổi mk giữ phiên hiện tại, THU HỒI phiên khác') : bad('revoke phiên sai', `cur=${meCur} other=${meOther}`);
+  const oldL = await req('POST', '/auth/login', { body: { email: cpEmail, password: cpPw } });
+  const newL = await req('POST', '/auth/login', { body: { email: cpEmail, password: cpNew } });
+  oldL.status === 401 && newL.status === 200 ? ok('mật khẩu cũ vô hiệu, mật khẩu mới dùng được') : bad('đổi mk không thực', `${oldL.status}/${newL.status}`);
+
+  rr = await req('POST', '/auth/mfa/disable', { cookie: cpCookie, body: { code: '000000' } });
+  rr.status === 401 ? ok('tắt MFA: mã sai → 401 (mật khẩu không đủ để tắt lớp 2)') : bad('mã sai tắt được MFA', rr.raw);
+  rr = await req('POST', '/auth/mfa/disable', { cookie: cpCookie, body: { code: totp(cpKey, {}) } });
+  rr.status === 200 ? ok('tắt MFA: mã đúng → 200') : bad('tắt MFA lỗi', rr.raw);
+  const meOff = (await req('GET', '/auth/me', { cookie: cpCookie })).json?.mfa_enabled;
+  const loginNoMfa = await req('POST', '/auth/login', { body: { email: cpEmail, password: cpNew } });
+  meOff === false && loginNoMfa.status === 200 && loginNoMfa.json?.mfa_required === false
+    ? ok('sau tắt MFA: mfa_enabled false + đăng nhập không hỏi mã') : bad('tắt MFA không thực', `off=${meOff} login=${JSON.stringify(loginNoMfa.json)}`);
+
   // ── 11. Rate limit đăng nhập ───────────────────────────────────────────────
   sect('11. Rate limit đăng nhập (theo tài khoản)');
   await redis.flushdb();

@@ -149,8 +149,14 @@ Mô hình versioned: `pages.blocks` = **DRAFT** (sửa tự do) → **publish** 
 - **Bật MFA**: `POST /account/mfa/enroll` (auth trả `{secret, otpauth_url}`) → hiện khoá cho
   người dùng thêm vào app xác thực → `POST /account/mfa/activate {code}` → hiện **mã khôi phục**
   (một lần). Sai mã: giữ nguyên bước 2 (secret round-trip qua hidden field), không enroll lại.
-- **Đổi mật khẩu**: chỉ qua email — `POST /account/password/forgot` (thông điệp mờ, không lộ
-  email tồn tại). Backend chưa có đổi tại chỗ / tắt MFA.
+- **Tắt MFA** (auth `/auth/mfa/disable`): xác minh **YẾU TỐ HIỆN TẠI** — mã TOTP hoặc mã khôi
+  phục (mật khẩu KHÔNG đủ để gỡ lớp 2). app_auth không DELETE được `mfa_totp` → vô hiệu bằng
+  `confirmed_at=NULL` + tắt cờ + huỷ mã khôi phục còn lại.
+- **Đổi mật khẩu tại chỗ** (auth `/auth/password/change`): xác minh mật khẩu hiện tại → đặt mới →
+  **THU HỒI mọi phiên KHÁC** (giữ phiên đang thao tác). Vẫn giữ nút "quên mật khẩu → gửi link
+  qua email" (`/account/password/forgot`, thông điệp mờ) làm dự phòng.
+- Mutation `verify-auth`: +3 (bỏ kiểm mật khẩu hiện tại / bỏ thu hồi phiên / bỏ xác minh mã tắt
+  MFA) → auth e2e đỏ.
 
 **Nhân sự** (`/shops/:id/members`, tab; xem = owner/admin, **sửa = owner**):
 - List, **mời** (email + vai trò ≠ owner → trả **link chấp nhận** `${ADMIN_ORIGIN}/invite/accept?token=…`
@@ -190,7 +196,7 @@ apps/seller-admin/
   test/admin-products.e2e.mjs   19 kiểm (sản phẩm/tồn kho)
   test/admin-media.e2e.mjs      14 kiểm (upload/xoá ảnh + thứ tự/ảnh đại diện)
   test/admin-content.e2e.mjs    19 kiểm (trang nội dung có phiên bản)
-  test/admin-account.e2e.mjs    22 kiểm (tài khoản MFA + nhân sự/step-up + chấp nhận lời mời)
+  test/admin-account.e2e.mjs    28 kiểm (MFA on/off + đổi mật khẩu + nhân sự/step-up + chấp nhận lời mời)
   Dockerfile      node pinned digest, non-root, healthcheck /healthz
 scripts/verify-admin.sh     mutation: bỏ kiểm Origin → e2e đỏ
 infra/compose.dev.yml       service seller-admin (:3001) + route Caddyfile.dev admin.localtest
@@ -211,5 +217,5 @@ bash scripts/verify-admin.sh
 
 ## 8. Còn lại (fast-follow)
 
-- Tắt/đổi thiết bị MFA + đổi mật khẩu tại chỗ (backend `auth` chưa có endpoint).
-- Ảnh trong giỏ / đếm giỏ phía checkout (docs/24 §8). *(Storefront ĐÃ hiện ảnh SP + thứ tự.)*
+- Đếm giỏ ở header storefront (chéo service — cần app_store đọc giỏ hoặc thêm JS nhẹ).
+- Ảnh trong trang KẾT QUẢ đơn (order_lines snapshot — cần join media). *(Giỏ ĐÃ có thumbnail.)*

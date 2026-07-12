@@ -381,6 +381,18 @@ async function passwordForgot(res, me) {
   await authApi('POST', '/auth/password/forgot', { body: { email: me.email } }).catch(() => {});
   return accountPage(res, me, { notice: 'Đã gửi link đặt lại mật khẩu về email của bạn (nếu email hợp lệ).' });
 }
+async function passwordChange(req, res, me, cookie) {
+  const f = await readForm(req);
+  const r = await authApi('POST', '/auth/password/change', { cookie, body: { current_password: String(f.current_password ?? ''), new_password: String(f.new_password ?? '') } });
+  if (r.status === 200) return accountPage(res, me, { notice: 'Đã đổi mật khẩu. Các thiết bị khác đã bị đăng xuất.' });
+  return accountPage(res, me, { err: r.json?.error ?? 'Không đổi được mật khẩu.' });
+}
+async function mfaDisableSubmit(req, res, me, cookie) {
+  const f = await readForm(req);
+  const r = await authApi('POST', '/auth/mfa/disable', { cookie, body: { code: String(f.code ?? '').replace(/\s/g, '') } });
+  if (r.status === 200) return accountPage(res, me, { mfa_enabled: false, notice: 'Đã tắt MFA.' });
+  return accountPage(res, me, { err: r.json?.error ?? 'Không tắt được MFA.' });
+}
 
 // ── chấp nhận lời mời (CÔNG KHAI: người được mời chưa đăng nhập) ───────────────
 function inviteAcceptPage(res, url) {
@@ -494,7 +506,9 @@ async function handle(req, res, url, p) {
     if (p === '/account' && req.method === 'GET') return accountPage(res, me);
     if (p === '/account/mfa/enroll' && req.method === 'POST') return mfaEnrollStart(res, me, cookie);
     if (p === '/account/mfa/activate' && req.method === 'POST') return mfaActivate(req, res, me, cookie);
+    if (p === '/account/mfa/disable' && req.method === 'POST') return mfaDisableSubmit(req, res, me, cookie);
     if (p === '/account/password/forgot' && req.method === 'POST') return passwordForgot(res, me);
+    if (p === '/account/password/change' && req.method === 'POST') return passwordChange(req, res, me, cookie);
 
     let m;
     if ((m = new RegExp(`^/shops/${UUID}/orders$`).exec(p)) && req.method === 'GET') return ordersList(res, me, cookie, m[1], url.searchParams);

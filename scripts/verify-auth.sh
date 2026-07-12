@@ -116,6 +116,15 @@ mutate revoke "đổi mật khẩu KHÔNG thu hồi phiên đang sống" \
 mutate halfsession "phiên nửa vời (chưa qua MFA) được coi là đầy đủ" \
   "sed -i 's|return ctx \&\& (!ctx.user.mfaEnabled \|\| ctx.session.mfaSatisfied);|return !!ctx;|' $SRC/server.js"
 
+mutate pwchange "đổi mật khẩu KHÔNG kiểm mật khẩu hiện tại" \
+  "sed -i \"s|return send(res, 401, { error: 'mật khẩu hiện tại không đúng' });|return send(res, 200, { ok: true });|\" $SRC/server.js"
+
+mutate pwchangerevoke "đổi mật khẩu tại chỗ KHÔNG thu hồi phiên KHÁC" \
+  "sed -i 's|AND id != \$2 AND revoked_at IS NULL|AND id != \$2 AND false|' $SRC/server.js"
+
+mutate mfadisable "tắt MFA KHÔNG xác minh mã (yếu tố hiện tại)" \
+  "sed -i 's|let ok = verifyTotp(secret, code, {}) !== null;|let ok = true;|' $SRC/server.js"
+
 # ─────────────────────────────────────────────────────────────────────────────
 sect "2. Trạng thái sau khi hoàn nguyên"
 restore

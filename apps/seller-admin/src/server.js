@@ -8,8 +8,8 @@
  * Bảo mật: CSP không script; mọi POST đổi trạng thái + sameOrigin (Origin thuộc allowlist).
  */
 import http from 'node:http';
-import { parseCookies, readForm, readMultipartFile, sendHtml, redirect, sameOrigin, SESSION_COOKIE } from './http.js';
-import { authApi, sellerApi, sellerUpload, loadSession } from './api.js';
+import { parseCookies, readForm, readMultipartFile, sendHtml, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
+import { authApi, sellerApi, sellerUpload, sellerDownload, loadSession } from './api.js';
 import * as V from './pages.js';
 import { runReq, makeLog, health } from './obs.js';
 
@@ -477,6 +477,45 @@ async function memberStepUp(req, res, me, cookie, shopId) {
   return redirect(res, `/shops/${shopId}/members`);
 }
 
+// ── Xuất dữ liệu (owner + step-up) ───────────────────────────────────────────
+async function exportPage(res, me, cookie, shopId, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'export');
+  return sendHtml(res, err ? 400 : 200, V.renderExport(ctx, shopId, notice, err));
+}
+async function doExport(res, me, cookie, shopId) {
+  // Timeout dài (dựng ZIP + nén + putObject) — mặc định 8s có thể ngắt sớm shop lớn.
+  const r = await sellerApi('POST', `/shops/${shopId}/export`, { cookie, body: {}, timeoutMs: 30000 });
+  if (r.status !== 200) return exportPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không tạo được bản xuất.');
+  return exportPage(res, me, cookie, shopId, { token: r.json.token, expires_in: r.json.expires_in, counts: r.json.counts, bytes: r.json.bytes }, null);
+}
+async function exportStepUpPage(res, me, cookie, shopId, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'export');
+  return sendHtml(res, err ? 401 : 200, V.renderExportStepUp(ctx, shopId, err));
+}
+// POST tạo bản xuất → chưa step-up thì hiện interstitial mật khẩu.
+async function exportCreate(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  return steppedUp(me) ? doExport(res, me, cookie, shopId) : exportStepUpPage(res, me, cookie, shopId, null);
+}
+async function exportStepUp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) return exportStepUpPage(res, me, cookie, shopId, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.');
+  return doExport(res, me, cookie, shopId);
+}
+async function exportDownload(res, me, cookie, shopId, token) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerDownload(`/shops/${shopId}/export/download?token=${encodeURIComponent(token)}`, { cookie });
+  if (r.status === 200) return sendDownload(res, r.bytes, { filename: 'nentang-export.zip', contentType: r.contentType });
+  // Lỗi (hết hạn / sai token / 403) → về trang xuất kèm thông báo (giải mã JSON lỗi từ bytes).
+  let msg = 'Không tải được — link có thể đã hết hạn.';
+  try { const j = JSON.parse(r.bytes.toString('utf8')); if (j?.error) msg = j.error; } catch {}
+  return exportPage(res, me, cookie, shopId, null, msg);
+}
+
 // ── router ───────────────────────────────────────────────────────────────────
 // Dispatch tách riêng và được AWAIT ở dưới: nếu handler async reject (throw/timeout),
 // `return handler(...)` trần sẽ THOÁT try/catch (rejection nằm ngoài scope) → treo
@@ -554,6 +593,12 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/members/step-up$`).exec(p)) && req.method === 'POST') return memberStepUp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/members/${UUID}/role$`).exec(p)) && req.method === 'POST') return memberRole(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/members/${UUID}/remove$`).exec(p)) && req.method === 'POST') return memberRemove(res, me, cookie, m[1], m[2]);
+
+    // Xuất dữ liệu (owner).
+    if ((m = new RegExp(`^/shops/${UUID}/export$`).exec(p)) && req.method === 'GET') return exportPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/export$`).exec(p)) && req.method === 'POST') return exportCreate(res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/export/step-up$`).exec(p)) && req.method === 'POST') return exportStepUp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/export/download$`).exec(p)) && req.method === 'GET') return exportDownload(res, me, cookie, m[1], url.searchParams.get('token') ?? '');
 
     return sendHtml(res, 404, V.renderError({ user: me }, 'Không tìm thấy trang.'));
 }

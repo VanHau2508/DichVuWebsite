@@ -36,6 +36,22 @@ export function redirect(res, location, setCookies = []) {
   res.writeHead(303, headers); res.end();
 }
 
+// Tải file nhị phân (ZIP export). LUÔN attachment (không bao giờ inline — hợp CSP
+// default-src 'none'); no-store vì chứa PII; nosniff. filename làm sạch CR/LF/nháy để
+// không chèn header. Ghi Buffer trực tiếp.
+export function sendDownload(res, buf, { filename = 'download.zip', contentType } = {}) {
+  const safe = String(filename).replace(/[\r\n"\\]/g, '_');
+  res.writeHead(200, {
+    'content-type': contentType || 'application/octet-stream',
+    'content-disposition': `attachment; filename="${safe}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    'content-length': buf.length,
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+  });
+  res.end(buf);
+}
+
 export function readForm(req) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = []; let over = false;

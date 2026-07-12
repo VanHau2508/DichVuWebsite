@@ -24,11 +24,12 @@ import { withTenant, audit } from './db.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const MAX_UPLOAD = 10 * 1024 * 1024; // 10MB
-const BUCKET_PRIVATE = process.env.MEDIA_BUCKET_PRIVATE ?? 'media-private';
+// Bucket private + client MinIO dùng lại cho export (A4) — CHỈ một nguồn cấu hình.
+export const BUCKET_PRIVATE = process.env.MEDIA_BUCKET_PRIVATE ?? 'media-private';
 const BUCKET_PUBLIC = process.env.MEDIA_BUCKET_PUBLIC ?? 'media-public';
 const PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? 'http://minio:9000/media-public';
 
-const minio = new MinioClient({
+export const minio = new MinioClient({
   endPoint: process.env.MINIO_ENDPOINT ?? 'minio',
   port: Number(process.env.MINIO_PORT ?? 9000),
   useSSL: false,
@@ -57,6 +58,17 @@ export async function initMedia() {
       ],
     }),
   );
+  // Bản xuất dữ liệu (A4) nằm bucket PRIVATE dưới prefix exports/ — chứa PII. Lifecycle
+  // tự XOÁ sau 1 ngày để KHÔNG lưu PII vô hạn (link tải chỉ sống 15'; đây là dọn kho).
+  // CHỈ prefix exports/ — ảnh gốc (prefix staging/) KHÔNG bị đụng. Non-fatal nếu MinIO
+  // chưa hỗ trợ lifecycle (log cảnh báo, không chặn khởi động).
+  try {
+    await minio.setBucketLifecycle(BUCKET_PRIVATE, {
+      Rule: [{ ID: 'expire-exports', Status: 'Enabled', Filter: { Prefix: 'exports/' }, Expiration: { Days: 1 } }],
+    });
+  } catch (e) {
+    process.stderr.write(JSON.stringify({ level: 'warn', event: 'export_lifecycle_failed', message: e.message }) + '\n');
+  }
 }
 
 /**

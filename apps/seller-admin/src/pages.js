@@ -51,6 +51,7 @@ const CATALOG_ROLES = new Set(['owner', 'admin', 'catalog_manager']);
 const ORDER_ROLES = new Set(['owner', 'admin', 'order_manager']);
 const CONTENT_ROLES = new Set(['owner', 'admin']);
 const MEMBER_READ_ROLES = new Set(['owner', 'admin']); // xem nhân sự; SỬA chỉ owner (seller cưỡng chế)
+const EXPORT_ROLES = new Set(['owner']); // xuất dữ liệu: CHỈ chủ shop (seller cưỡng chế perm 'export')
 const ROLE_LABEL = { owner: 'Chủ shop', admin: 'Quản trị', catalog_manager: 'Quản lý sản phẩm', order_manager: 'Quản lý đơn' };
 const INVITE_ROLES = ['admin', 'catalog_manager', 'order_manager']; // KHÔNG mời owner qua đây
 const PSTATUS = { draft: 'Nháp', active: 'Đang bán', archived: 'Lưu trữ' };
@@ -65,7 +66,8 @@ function shopTabs(ctx) {
   const t = tab(`${base}/orders`, 'Đơn hàng', ctx.active === 'orders', ORDER_ROLES.has(ctx.role))
           + tab(`${base}/products`, 'Sản phẩm', ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
           + tab(`${base}/pages`, 'Trang nội dung', ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
-          + tab(`${base}/members`, 'Nhân sự', ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role));
+          + tab(`${base}/members`, 'Nhân sự', ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role))
+          + tab(`${base}/export`, 'Xuất dữ liệu', ctx.active === 'export', EXPORT_ROLES.has(ctx.role));
   return t ? `<nav class="tabs">${t}</nav>` : '';
 }
 
@@ -492,6 +494,49 @@ export function renderStepUp(ctx, shopId, action, params, err) {
       <input type="hidden" name="__action" value="${esc(action)}">${hidden}
       <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
       <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận & tiếp tục</button>
+    </form>
+    <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
+}
+
+// ── Xuất dữ liệu (owner) ─────────────────────────────────────────────────────
+export function renderExport(ctx, shopId, notice, err) {
+  const base = `/shops/${esc(shopId)}`;
+  if (ctx.role !== 'owner') {
+    return layout('Xuất dữ liệu', ctx, `<h1>Xuất dữ liệu</h1>
+      <div class="card"><p class="muted">Chỉ <strong>chủ cửa hàng</strong> mới xuất được dữ liệu.</p></div>`);
+  }
+  const N = (n) => new Intl.NumberFormat('vi-VN').format(Number(n ?? 0));
+  const dl = notice ? `<div class="card ok">
+      <h2>Bản xuất đã sẵn sàng</h2>
+      <p class="muted">Gồm ${N(notice.counts?.products)} sản phẩm · ${N(notice.counts?.orders)} đơn · ${N(notice.counts?.customers)} khách · ${N(Math.round((notice.bytes ?? 0) / 1024))} KB.</p>
+      <p><a class="btn" href="${base}/export/download?token=${esc(notice.token)}">⬇ Tải ZIP</a></p>
+      <p class="muted">Link tải HẾT HẠN sau ${Math.round((notice.expires_in ?? 0) / 60)} phút. Hết hạn thì tạo bản xuất mới.</p>
+    </div>` : '';
+  return layout('Xuất dữ liệu', ctx, `
+    <h1>Xuất dữ liệu</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${dl}
+    <div class="card">
+      <p>Tải toàn bộ dữ liệu cửa hàng dạng ZIP nhiều tệp CSV: sản phẩm, biến thể (kèm tồn kho),
+         đơn hàng, chi tiết đơn, khách hàng (suy từ đơn) và danh mục ảnh.</p>
+      <p class="muted">Thao tác nhạy cảm — sẽ yêu cầu xác nhận lại mật khẩu. Bản xuất chứa
+         thông tin khách hàng, hãy giữ tệp cẩn thận.</p>
+      <form method="POST" action="${base}/export">
+        <button class="btn" type="submit">Tạo bản xuất</button>
+      </form>
+    </div>`);
+}
+
+export function renderExportStepUp(ctx, shopId, err) {
+  const base = `/shops/${esc(shopId)}/export`;
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận mật khẩu</h1>
+    <p class="muted">Xuất dữ liệu là thao tác nhạy cảm — nhập mật khẩu của bạn để tiếp tục.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${base}/step-up">
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận & tạo bản xuất</button>
     </form>
     <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
   </div></div>`);

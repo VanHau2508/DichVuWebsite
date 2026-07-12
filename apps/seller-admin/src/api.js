@@ -10,7 +10,7 @@ const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
 const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
 const ADMIN_ORIGIN = process.env.ADMIN_ORIGIN ?? 'https://admin.nentang.vn';
 
-async function call(base, method, path, { cookie, body, rawBody, timeoutMs = 8000 } = {}) {
+async function call(base, method, path, { cookie, body, rawBody, binary, timeoutMs = 8000 } = {}) {
   const headers = { origin: ADMIN_ORIGIN };
   // Forward request-id → log backend cùng correlation với request admin (lần vết xuyên service).
   const rid = requestId();
@@ -26,6 +26,11 @@ async function call(base, method, path, { cookie, body, rawBody, timeoutMs = 800
     payload = JSON.stringify(body);
   }
   const r = await fetch(base + path, { method, headers, body: payload, signal: AbortSignal.timeout(timeoutMs) });
+  if (binary) {
+    // Tải nhị phân (ZIP export): GIỮ NGUYÊN bytes (r.text() sẽ hỏng UTF-8) + forward header tải.
+    const bytes = Buffer.from(await r.arrayBuffer());
+    return { status: r.status, bytes, contentType: r.headers.get('content-type'), contentDisposition: r.headers.get('content-disposition'), setCookie: r.headers.getSetCookie() };
+  }
   const t = await r.text(); let j = null; try { j = t ? JSON.parse(t) : null; } catch {}
   return { status: r.status, json: j, setCookie: r.headers.getSetCookie() };
 }
@@ -35,6 +40,8 @@ export const sellerApi = (m, p, o) => call(SELLER, m, p, o);
 export const platformApi = (m, p, o) => call(PLATFORM, m, p, o);
 // Upload ảnh: byte thô + timeout dài hơn (seller re-encode WebP bằng sharp, tốn thời gian).
 export const sellerUpload = (path, { cookie, bytes }) => call(SELLER, 'POST', path, { cookie, rawBody: bytes, timeoutMs: 30000 });
+// Tải file (ZIP export): GET nhị phân, timeout dài hơn (seller dựng ZIP + đọc MinIO).
+export const sellerDownload = (path, { cookie }) => call(SELLER, 'GET', path, { cookie, binary: true, timeoutMs: 30000 });
 
 /** Nạp phiên: gọi /auth/me. Trả {state:'ok'|'mfa'|'anon', me?}. */
 export async function loadSession(cookie) {

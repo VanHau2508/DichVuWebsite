@@ -89,10 +89,12 @@ async function uploadMedia(res, ctx, body, params) {
   const setup = await withTenant(ctx.shopId, async (c) => {
     const p = await c.query(`SELECT 1 FROM products WHERE id = $1 AND deleted_at IS NULL`, [productId]);
     if (p.rows.length === 0) return null;
+    // Ảnh mới nối vào CUỐI (position = max+1) → không giành chỗ ảnh đại diện hiện có.
+    const pos = (await c.query(`SELECT coalesce(max(position), -1) + 1 AS p FROM media WHERE product_id = $1 AND deleted_at IS NULL`, [productId])).rows[0].p;
     await c.query(
-      `INSERT INTO media (id, shop_id, product_id, status, original_key, content_type, size_bytes)
-       VALUES ($1, current_shop_id(), $2, 'pending', $3, $4, $5)`,
-      [mediaId, productId, originalKey, detected, buf.length],
+      `INSERT INTO media (id, shop_id, product_id, status, original_key, content_type, size_bytes, position)
+       VALUES ($1, current_shop_id(), $2, 'pending', $3, $4, $5, $6)`,
+      [mediaId, productId, originalKey, detected, buf.length, pos],
     );
     return true;
   });
@@ -130,8 +132,8 @@ async function listMedia(res, ctx, _body, params) {
   const productId = params[1];
   const rows = await withTenant(ctx.shopId, async (c) => {
     const r = await c.query(
-      `SELECT id, status, public_key, width, height, created_at
-         FROM media WHERE product_id = $1 AND deleted_at IS NULL ORDER BY created_at`,
+      `SELECT id, status, public_key, width, height, position, created_at
+         FROM media WHERE product_id = $1 AND deleted_at IS NULL ORDER BY position, created_at`,
       [productId],
     );
     return r.rows;
@@ -160,8 +162,30 @@ async function deleteMedia(res, ctx, _body, params) {
   return send(res, 200, { ok: true });
 }
 
+// Kết quả sắp thứ tự ảnh (kéo–thả / đặt ảnh đại diện): order PHẢI là hoán vị đúng
+// của tập id ảnh hiện có (đủ số, đủ tập, không lặp) → không lén thêm/bớt qua reorder.
+async function reorderMedia(res, ctx, body, params) {
+  const productId = params[1];
+  const order = body.order;
+  if (!Array.isArray(order) || order.some((x) => typeof x !== 'string')) return send(res, 400, { error: 'order phải là mảng id' });
+  const out = await withTenant(ctx.shopId, async (c) => {
+    // FOR UPDATE: hai reorder đồng thời không giẫm nhau.
+    const rows = (await c.query(`SELECT id FROM media WHERE product_id = $1 AND deleted_at IS NULL ORDER BY position, created_at FOR UPDATE`, [productId])).rows;
+    const ids = new Set(rows.map((r) => r.id));
+    if (order.length !== rows.length || new Set(order).size !== order.length || order.some((id) => !ids.has(id))) return { code: 422 };
+    for (let i = 0; i < order.length; i++) {
+      await c.query(`UPDATE media SET position = $1 WHERE id = $2 AND product_id = $3`, [i, order[i], productId]);
+    }
+    await audit(c, 'media.reordered', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId } });
+    return { code: 200 };
+  });
+  if (out.code === 422) return send(res, 422, { error: 'order phải là hoán vị đúng của ảnh hiện có' });
+  return send(res, 200, { ok: true });
+}
+
 export const MEDIA_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/products/${UUID}/media$`), perm: 'catalog.write', raw: true, fn: (res, ctx, b, p) => uploadMedia(res, ctx, b, p) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/products/${UUID}/media/reorder$`), perm: 'catalog.write', fn: (res, ctx, b, p) => reorderMedia(res, ctx, b, p) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/products/${UUID}/media$`), perm: 'catalog.read', fn: (res, ctx, b, p) => listMedia(res, ctx, b, p) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/media/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => deleteMedia(res, ctx, b, p) },
 ];

@@ -131,7 +131,7 @@ const server = http.createServer(async (req, res) => {
       const productGrid = (whereJoin = '', args = []) =>
         c.query(
           `SELECT p.id, p.slug, p.title, p.price_vnd,
-                  (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.created_at LIMIT 1) AS image_key
+                  (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key
              FROM products p ${whereJoin} ORDER BY p.created_at DESC LIMIT 50`,
           args,
         ).then((r) => r.rows.map((p) => ({ ...p, image: imgUrl(p.image_key) })));
@@ -144,7 +144,7 @@ const server = http.createServer(async (req, res) => {
         )).rows[0];
         if (!p) return { ...base, notFound: true };
         p.variants = (await c.query(`SELECT id, title, sku, price_vnd FROM variants WHERE product_id = $1 ORDER BY position`, [p.id])).rows;
-        const media = (await c.query(`SELECT public_key FROM media WHERE product_id = $1 ORDER BY created_at`, [p.id])).rows;
+        const media = (await c.query(`SELECT public_key FROM media WHERE product_id = $1 ORDER BY position, created_at`, [p.id])).rows;
         p.media = media.map((m) => ({ url: imgUrl(m.public_key) }));
         return { ...base, product: p };
       }

@@ -145,6 +145,26 @@ async function main() {
   r = await admUpload(`/shops/${Bo.shopId}/products/${RANDOM_UUID()}/media`, { cookie: A.cookie, origin: OADM, bytes: PNG, type: 'image/png', filename: 'x.png' });
   r.status === 403 ? ok('upload vào shop B → 403 (cô lập chéo shop)') : bad('rò upload chéo shop', String(r.status));
 
+  // ── 5. Sắp thứ tự & ảnh đại diện ───────────────────────────────────────────
+  sect('5. Thứ tự & ảnh đại diện');
+  await admUpload(M('/media'), { cookie: A.cookie, origin: OADM, bytes: PNG, type: 'image/png', filename: 'a.png' });
+  await admUpload(M('/media'), { cookie: A.cookie, origin: OADM, bytes: PNG, type: 'image/png', filename: 'b.png' });
+  let mm = (await sget(A.shopId, A.cookie, `/products/${pid}/media`)).json.media;
+  const okOrder = mm.length === 2 && mm[0].position === 0 && mm[1].position === 1;
+  okOrder ? ok('upload 2 ảnh → position 0,1 (ảnh đầu = đại diện)') : bad('thứ tự upload sai', JSON.stringify(mm.map((m) => m.position)));
+  const [m0, m1] = mm;
+  r = await adm('POST', M(`/media/${m1.id}/primary`), { cookie: A.cookie, origin: OADM });
+  mm = (await sget(A.shopId, A.cookie, `/products/${pid}/media`)).json.media;
+  r.status === 303 && mm[0].id === m1.id ? ok('★ đặt ảnh 2 làm ảnh chính → lên đầu') : bad('set primary lỗi', `${r.status} ${mm[0].id === m1.id}`);
+  r = await adm('GET', M(''), { cookie: A.cookie });
+  /Ảnh chính/.test(r.body) ? ok('chi tiết SP đánh dấu “Ảnh chính”') : bad('không có nhãn ảnh chính', '');
+  r = await adm('POST', M(`/media/${m1.id}/movedown`), { cookie: A.cookie, origin: OADM });
+  mm = (await sget(A.shopId, A.cookie, `/products/${pid}/media`)).json.media;
+  r.status === 303 && mm[0].id === m0.id ? ok('→ đẩy ảnh chính xuống → ảnh kia lên đầu') : bad('movedown lỗi', String(r.status));
+  // reorder không phải hoán vị đúng → 422 (không lén thêm/bớt)
+  r = await adm('POST', M(`/media/${RANDOM_UUID()}/moveup`), { cookie: A.cookie, origin: OADM });
+  r.status === 303 ? ok('move ảnh không tồn tại → no-op (303)') : bad('move id lạ lỗi', String(r.status));
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

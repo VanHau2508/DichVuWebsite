@@ -116,6 +116,9 @@ tới `seller` (`sellerUpload`, timeout 30s vì sharp re-encode).
 - Chi tiết SP fetch danh sách ảnh **song song** với tồn kho; hiện lưới thumbnail + form upload.
 - Bảo mật ảnh do `seller` giữ: **sniff magic byte** (không tin Content-Type), bản gốc vào
   bucket PRIVATE, **re-encode WebP strip payload**, chỉ WebP sạch mới lên bucket PUBLIC.
+- **Thứ tự + ảnh đại diện** (0023 `media.position`): ← → đổi thứ tự, ★ đặt ảnh chính (đưa lên
+  đầu) — không JS, gọi `POST .../media/reorder` (backend đòi **hoán vị đúng** tập id).
+  Ảnh `position` nhỏ nhất = đại diện → storefront lấy cho lưới; trang SP hiện theo thứ tự.
 
 ⚠️ **CSP img-src**: ảnh phục vụ từ `MEDIA_PUBLIC_BASE` (CDN) → thêm origin đó vào `img-src`
 của app (`http.js`) **và** của edge (`Caddyfile`, `https://cdn.nentang.vn`) — phải khớp vì
@@ -185,7 +188,7 @@ apps/seller-admin/
   src/server.js   router + handler: auth, dashboard, đơn, sản phẩm/tồn/ảnh, trang nội dung
   test/admin-flow.e2e.mjs       22 kiểm (login/MFA/đơn)
   test/admin-products.e2e.mjs   19 kiểm (sản phẩm/tồn kho)
-  test/admin-media.e2e.mjs      9 kiểm (upload/xoá ảnh)
+  test/admin-media.e2e.mjs      14 kiểm (upload/xoá ảnh + thứ tự/ảnh đại diện)
   test/admin-content.e2e.mjs    19 kiểm (trang nội dung có phiên bản)
   test/admin-account.e2e.mjs    22 kiểm (tài khoản MFA + nhân sự/step-up + chấp nhận lời mời)
   Dockerfile      node pinned digest, non-root, healthcheck /healthz
@@ -209,5 +212,4 @@ bash scripts/verify-admin.sh
 ## 8. Còn lại (fast-follow)
 
 - Tắt/đổi thiết bị MFA + đổi mật khẩu tại chỗ (backend `auth` chưa có endpoint).
-- Sắp xếp thứ tự ảnh / chọn ảnh đại diện (backend chưa có reorder — cần thêm).
-- Ảnh trong giỏ / đếm giỏ phía checkout (docs/24 §8). *(Storefront ĐÃ hiện ảnh sản phẩm.)*
+- Ảnh trong giỏ / đếm giỏ phía checkout (docs/24 §8). *(Storefront ĐÃ hiện ảnh SP + thứ tự.)*

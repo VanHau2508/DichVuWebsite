@@ -218,6 +218,24 @@ async function mediaDelete(res, me, cookie, shopId, pid, mediaId) {
   return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không xoá được ảnh.');
 }
 
+// Sắp thứ tự ảnh (← → / ★ đại diện) — không JS: lấy thứ tự hiện tại, tính order mới,
+// gọi endpoint reorder (backend đòi hoán vị đúng). ★ primary = đưa ảnh lên đầu.
+async function mediaMove(res, me, cookie, shopId, pid, mediaId, action) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const editor = `/shops/${shopId}/products/${pid}`;
+  const mr = await sellerApi('GET', `/shops/${shopId}/products/${pid}/media`, { cookie });
+  if (mr.status !== 200) return productDetail(res, me, cookie, shopId, pid, 'Không tải được ảnh.');
+  const ids = (mr.json?.media ?? []).map((m) => m.id);
+  const i = ids.indexOf(mediaId);
+  if (i === -1) return redirect(res, editor);
+  let order;
+  if (action === 'primary') order = [mediaId, ...ids.filter((x) => x !== mediaId)];
+  else { const j = action === 'moveup' ? i - 1 : i + 1; if (j < 0 || j >= ids.length) return redirect(res, editor); order = ids.slice(); [order[i], order[j]] = [order[j], order[i]]; }
+  const r = await sellerApi('POST', `/shops/${shopId}/products/${pid}/media/reorder`, { cookie, body: { order } });
+  if (r.status === 200) return redirect(res, editor);
+  return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không đổi được thứ tự ảnh.');
+}
+
 // ── content page handlers ─────────────────────────────────────────────────────
 // Trang có phiên bản: pages.blocks = DRAFT; publish snapshot vào page_revisions.
 // Section text-only, đã typed; `seller` validate + cưỡng chế content.read/write.
@@ -496,6 +514,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants/${UUID}/inventory$`).exec(p)) && req.method === 'POST') return inventoryAdjust(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/media$`).exec(p)) && req.method === 'POST') return mediaUpload(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/media/${UUID}/delete$`).exec(p)) && req.method === 'POST') return mediaDelete(res, me, cookie, m[1], m[2], m[3]);
+    if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/media/${UUID}/(moveup|movedown|primary)$`).exec(p)) && req.method === 'POST') return mediaMove(res, me, cookie, m[1], m[2], m[3], m[4]);
 
     // Trang nội dung.
     if ((m = new RegExp(`^/shops/${UUID}/pages$`).exec(p)) && req.method === 'GET') return pagesList(res, me, cookie, m[1]);

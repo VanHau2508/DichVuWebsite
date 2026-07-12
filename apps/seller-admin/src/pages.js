@@ -38,7 +38,9 @@ input[type=file]{width:auto;padding:8px;background:#f9fafb;border:1px dashed #cb
 .media-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px}
 .thumb{margin:0;width:120px}.thumb img{width:120px;height:120px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;display:block}
 .thumb .ph{width:120px;height:120px;border-radius:8px;border:1px dashed #cbd5e1;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:.82rem;background:#f9fafb;text-align:center}
-.thumb form{margin-top:5px;text-align:center}
+.thumb .prim{font-size:.72rem;text-align:center;color:#065f46;font-weight:600;margin-top:3px}
+.thumb-act{display:flex;gap:3px;justify-content:center;flex-wrap:wrap;margin-top:4px}.thumb-act form{margin:0}
+.thumb-act .btn.sm{padding:4px 7px;font-size:.8rem}
 .badge.published{background:#d1fae5;color:#065f46}
 .block{border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin:8px 0;background:#fafafa}
 .block textarea{background:#fff}code{background:#f3f4f6;padding:2px 5px;border-radius:4px;font-size:.85rem}`;
@@ -225,9 +227,15 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media) {
   const f = form ?? {}; // khi lưu lỗi: ưu tiên giá trị vừa nhập để không nuốt sửa đổi
   const val = (k) => esc(f[k] ?? p[k] ?? '');
   const imgs = media ?? [];
-  const thumb = (m) => `<figure class="thumb">
+  const thumb = (m, i) => `<figure class="thumb">
     ${m.status === 'ready' && m.url ? `<img src="${esc(m.url)}" alt="Ảnh sản phẩm" loading="lazy" width="120" height="120">` : `<div class="ph">${esc(m.status === 'failed' ? 'lỗi xử lý' : 'đang xử lý…')}</div>`}
-    <form method="POST" action="${base}/media/${esc(m.id)}/delete"><button class="btn warn sm" type="submit">Xoá</button></form>
+    ${i === 0 && m.status === 'ready' ? '<div class="prim">★ Ảnh chính</div>' : ''}
+    <div class="thumb-act">
+      ${i > 0 ? `<form method="POST" action="${base}/media/${esc(m.id)}/moveup"><button class="btn alt sm" type="submit" title="Sang trái">←</button></form>` : ''}
+      ${i < imgs.length - 1 ? `<form method="POST" action="${base}/media/${esc(m.id)}/movedown"><button class="btn alt sm" type="submit" title="Sang phải">→</button></form>` : ''}
+      ${i > 0 ? `<form method="POST" action="${base}/media/${esc(m.id)}/primary"><button class="btn alt sm" type="submit" title="Đặt làm ảnh chính">★</button></form>` : ''}
+      <form method="POST" action="${base}/media/${esc(m.id)}/delete"><button class="btn warn sm" type="submit" title="Xoá">✕</button></form>
+    </div>
   </figure>`;
   const statusBtn = p.status === 'active'
     ? `<form method="POST" action="${base}/archive"><button class="btn alt sm" type="submit">Ẩn (lưu trữ)</button></form>`
@@ -274,7 +282,7 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media) {
       </form>
     </div>
     <div class="card"><h2 style="margin-top:0">Hình ảnh</h2>
-      ${imgs.length ? `<div class="media-grid">${imgs.map(thumb).join('')}</div>` : '<p class="muted">Chưa có ảnh nào.</p>'}
+      ${imgs.length ? `<div class="media-grid">${imgs.map((m, i) => thumb(m, i)).join('')}</div>` : '<p class="muted">Chưa có ảnh nào.</p>'}
       <form method="POST" enctype="multipart/form-data" action="${base}/media" class="inline">
         <input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif" required aria-label="Chọn ảnh">
         <button class="btn alt sm" type="submit">Tải ảnh lên</button>

@@ -60,6 +60,18 @@ mutate statemachine seller 3040 "bỏ kiểm state machine khi ship" \
 mutate consume seller 3040 "bỏ consume on_hand khi ship" \
   "sed -i 's@const nextOnHand = Math.max(0, lvl.on_hand - ln.qty);@const nextOnHand = lvl.on_hand;@' $ORD"
 
+# COD mark-paid: bỏ chặn "chỉ COD" → đơn QR bị đánh dấu paid thủ công (né đối soát webhook).
+mutate codonly seller 3040 "bỏ chặn 'chỉ COD' khi mark-paid (QR né webhook)" \
+  "sed -i \"s@if (o.payment_method !== 'cod') return { code: 409, msg: 'chỉ đơn COD mới đánh dấu đã nhận tiền thủ công' };@if (false) return { code: 409 };@\" $ORD"
+
+# COD mark-paid: không ghi audit đúng hành động → không truy vết được ai thu tiền.
+mutate paidaudit seller 3040 "mark-paid KHÔNG ghi audit order.marked_paid" \
+  "sed -i \"s@await audit(c, 'order.marked_paid'@await audit(c, 'order.noop'@\" $ORD"
+
+# COD mark-paid: bỏ guard idempotent → đánh dấu paid nhiều lần (phát biên nhận trùng).
+mutate paidonce seller 3040 "mark-paid KHÔNG idempotent (đánh dấu lại vẫn 200)" \
+  "sed -i \"s@WHERE id = \\\$1 AND payment_status <> 'paid'@WHERE id = \\\$1@\" $ORD"
+
 sect "2. Trạng thái sau khi hoàn nguyên"
 restore; $COMPOSE restart seller checkout >/dev/null 2>&1; wait_svc seller 3040; wait_svc checkout 3060
 run_e2e && ok "e2e xanh trở lại" || bad "e2e còn đỏ — chưa hoàn nguyên đúng!"

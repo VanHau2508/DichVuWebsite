@@ -136,6 +136,38 @@ async function cancelOrder(res, ctx, _body, params) {
   return send(res, 200, { ok: true, status: 'cancelled' });
 }
 
+// Đánh dấu ĐÃ NHẬN TIỀN cho đơn COD (thu tiền mặt khi giao). CHỈ COD — đơn QR do
+// webhook đối soát đặt paid; KHÔNG có đường nào cho người dùng tự đặt QR paid (bất
+// biến chống gian lận "đã trả"). Idempotent: guard payment_status<>'paid'.
+async function markPaid(res, ctx, _body, params) {
+  const orderId = params[1];
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const o = (await c.query(
+      `SELECT id, order_number, payment_method, payment_status, customer_email, total_vnd
+         FROM orders WHERE id = $1 FOR UPDATE`, [orderId],
+    )).rows[0];
+    if (!o) return { code: 404 };
+    if (o.payment_method !== 'cod') return { code: 409, msg: 'chỉ đơn COD mới đánh dấu đã nhận tiền thủ công' };
+    const upd = await c.query(
+      `UPDATE orders SET payment_status = 'paid', paid_at = now()
+        WHERE id = $1 AND payment_status <> 'paid'`, [orderId],
+    );
+    if (upd.rowCount !== 1) return { code: 409, msg: 'đơn đã thanh toán' };
+    await audit(c, 'order.marked_paid', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId } });
+    // Biên nhận cho khách (giống QR): phát order.paid TRONG cùng transaction.
+    if (o.customer_email) {
+      await c.query(
+        `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.paid', $1)`,
+        [{ to: o.customer_email, order_number: Number(o.order_number), total_vnd: Number(o.total_vnd) }],
+      );
+    }
+    return { code: 200 };
+  });
+  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy đơn' });
+  if (out.code === 409) return send(res, 409, { error: out.msg });
+  return send(res, 200, { ok: true, payment_status: 'paid' });
+}
+
 const confirmOrder = makeTransition(['pending'], 'confirmed', null, 'order.confirmed');
 const deliverOrder = makeTransition(['shipped'], 'delivered', 'delivered_at', 'order.delivered');
 
@@ -146,4 +178,5 @@ export const ORDER_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/ship$`), perm: 'orders.write', fn: (res, ctx, b, p) => shipOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/deliver$`), perm: 'orders.write', fn: (res, ctx, b, p) => deliverOrder(res, ctx, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/cancel$`), perm: 'orders.write', fn: (res, ctx, b, p) => cancelOrder(res, ctx, b, p) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid$`), perm: 'orders.write', fn: (res, ctx, b, p) => markPaid(res, ctx, b, p) },
 ];

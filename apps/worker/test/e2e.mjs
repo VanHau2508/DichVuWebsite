@@ -118,6 +118,8 @@ const reserved = async (vid) => (await owner.query('SELECT reserved FROM invento
 const onHand = async (vid) => (await owner.query('SELECT on_hand FROM inventory_levels WHERE variant_id=$1', [vid])).rows[0]?.on_hand;
 const shipLedger = async (vid) => (await owner.query(`SELECT coalesce(sum(delta),0)::int s, count(*)::int n FROM inventory_ledger WHERE variant_id=$1 AND kind='ship'`, [vid])).rows[0];
 const orderStatus = async (id) => (await owner.query('SELECT status FROM orders WHERE id=$1', [id])).rows[0]?.status;
+const payStatus = async (id) => (await owner.query('SELECT payment_status FROM orders WHERE id=$1', [id])).rows[0]?.payment_status;
+const auditCount = async (action, oid) => (await owner.query(`SELECT count(*)::int n FROM audit_logs WHERE action=$1 AND metadata->>'orderId'=$2`, [action, oid])).rows[0].n;
 const orderIdOf = async (shopId, num) => (await owner.query('SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2', [shopId, num])).rows[0]?.id;
 
 async function main() {
@@ -182,6 +184,26 @@ async function main() {
   r = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oid2}/cancel`, { cookie: A.cookie, origin: OS });
   const resAfter = await reserved(vid);
   r.status === 200 && resAfter === resBefore - 3 ? ok(`huỷ đơn → reserve giảm ${resBefore}→${resAfter} (trả chỗ đã giữ)`) : bad('huỷ không release reserve', `${resBefore}→${resAfter}`);
+
+  // ── 4b. COD đánh dấu ĐÃ NHẬN TIỀN → order.paid + audit ─────────────────────
+  sect('4b. COD đánh dấu đã nhận tiền (mark-paid)');
+  await mpClear();
+  const oc = await placeOrder(A, vid, `cod-${uniq()}@kh.vn`, 1); // COD mặc định, có email
+  const oidc = await orderIdOf(A.shopId, oc.orderNum);
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oidc}/mark-paid`, { cookie: A.cookie, origin: OS });
+  r.status === 200 && r.json.payment_status === 'paid' ? ok('COD mark-paid → payment_status paid') : bad('mark-paid lỗi', r.raw);
+  (await payStatus(oidc)) === 'paid' ? ok('đơn COD → paid trong DB') : bad('COD chưa paid trong DB');
+  (await waitEmail(`Đã nhận thanh toán đơn #${oc.orderNum}`)) ? ok('email "đã nhận thanh toán" (order.paid)') : bad('không có email order.paid');
+  (await auditCount('order.marked_paid', oidc)) >= 1 ? ok('ghi audit order.marked_paid') : bad('thiếu audit mark-paid');
+  // Idempotent: đánh dấu lần 2 → 409 (không phát email trùng).
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oidc}/mark-paid`, { cookie: A.cookie, origin: OS });
+  r.status === 409 ? ok('mark-paid lần 2 → 409 (đã thanh toán)') : bad('mark-paid không idempotent', r.raw);
+  // Đơn QR KHÔNG cho đánh dấu thủ công — chỉ webhook đối soát đặt paid (chống gian lận).
+  const oqm = await placeOrder(A, vid, `qrm-${uniq()}@kh.vn`, 1);
+  const oidqm = await orderIdOf(A.shopId, oqm.orderNum);
+  await owner.query(`UPDATE orders SET payment_method='qr' WHERE id=$1`, [oidqm]);
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oidqm}/mark-paid`, { cookie: A.cookie, origin: OS });
+  r.status === 409 ? ok('mark-paid đơn QR → 409 (chỉ COD; QR do webhook)') : bad('QR cho đánh dấu thủ công — LỖ HỔNG', r.raw);
 
   // ── 5. Dead-letter cho email bounce ────────────────────────────────────────
   sect('5. Dead-letter (email bounce vĩnh viễn)');

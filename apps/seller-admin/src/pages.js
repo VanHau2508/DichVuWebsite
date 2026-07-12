@@ -147,13 +147,16 @@ export function renderOrderDetail(ctx, shopId, o, err) {
       <div><label>Đơn vị VC</label><input name="carrier" maxlength="40" style="width:120px" placeholder="GHN..."></div>
       <button class="btn sm" type="submit">Giao hàng</button></form>` + act('cancel', 'Huỷ đơn', 'btn warn sm');
   else if (o.status === 'shipped') actions = act('deliver', 'Đã giao xong');
+  // Đơn COD chưa thu tiền → nút "Đã nhận tiền" (độc lập với trạng thái giao hàng).
+  // Đơn QR do webhook đối soát tự đặt paid — KHÔNG hiện nút thủ công.
+  const payAction = (o.payment_method === 'cod' && o.payment_status !== 'paid') ? act('mark-paid', 'Đã nhận tiền (COD)') : '';
   return layout(`Đơn #${o.order_number}`, ctx, `
     <a class="muted" href="/shops/${esc(shopId)}/orders">← Danh sách đơn</a>
     <h1>Đơn hàng #${esc(o.order_number)}</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <div class="card"><span class="pill">${badge(o.status, STATUS[o.status] ?? o.status)}</span>
       <span class="pill">${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} ${esc(o.payment_method?.toUpperCase() ?? '')}</span>
-      <div class="actions">${actions || '<span class="muted">Không có thao tác.</span>'}</div></div>
+      <div class="actions">${(actions + payAction) || '<span class="muted">Không có thao tác.</span>'}</div></div>
     <div class="card"><h2>Sản phẩm</h2><table><tbody>
       ${(o.lines ?? []).map((l) => `<tr><td>${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span></td><td class="muted">${money(l.unit_price_vnd)} × ${esc(l.qty)}</td><td style="text-align:right">${money(Number(l.unit_price_vnd) * l.qty)}</td></tr>`).join('')}
     </tbody></table>

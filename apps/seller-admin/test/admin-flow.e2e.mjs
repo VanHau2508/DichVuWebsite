@@ -135,6 +135,7 @@ async function placeOrder(shop, vid) {
   return { orderNumber, orderId };
 }
 const statusOf = async (shopId, orderId) => (await owner.query('SELECT status FROM orders WHERE shop_id=$1 AND id=$2', [shopId, orderId])).rows[0]?.status;
+const payOf = async (shopId, orderId) => (await owner.query('SELECT payment_status FROM orders WHERE shop_id=$1 AND id=$2', [shopId, orderId])).rows[0]?.payment_status;
 
 async function main() {
   const staff = await makeStaff();
@@ -185,6 +186,14 @@ async function main() {
 
   r = await adm('POST', `/shops/${A.shopId}/orders/${o1.orderId}/deliver`, { cookie: cookieA, origin: OADM });
   (r.status === 303 && await statusOf(A.shopId, o1.orderId) === 'delivered') ? ok('deliver → 303 + DB delivered') : bad('deliver lỗi', `${r.status} ${await statusOf(A.shopId, o1.orderId)}`);
+
+  // COD thu tiền: đơn o1 đã giao nhưng chưa trả (COD) → nút "Đã nhận tiền" + mark-paid qua BFF.
+  r = await adm('GET', `/shops/${A.shopId}/orders/${o1.orderId}`, { cookie: cookieA });
+  r.body.includes('Đã nhận tiền') ? ok('đơn COD chưa trả: hiện nút "Đã nhận tiền"') : bad('thiếu nút mark-paid COD', r.body.slice(0, 200));
+  r = await adm('POST', `/shops/${A.shopId}/orders/${o1.orderId}/mark-paid`, { cookie: cookieA, origin: OADM });
+  (r.status === 303 && await payOf(A.shopId, o1.orderId) === 'paid') ? ok('mark-paid → 303 + DB paid') : bad('mark-paid BFF lỗi', `${r.status} ${await payOf(A.shopId, o1.orderId)}`);
+  r = await adm('GET', `/shops/${A.shopId}/orders/${o1.orderId}`, { cookie: cookieA });
+  !r.body.includes('Đã nhận tiền') ? ok('đơn đã trả: ẩn nút "Đã nhận tiền"') : bad('nút mark-paid vẫn hiện sau khi trả');
 
   r = await adm('POST', `/shops/${A.shopId}/orders/${o2.orderId}/cancel`, { cookie: cookieA, origin: OADM });
   (r.status === 303 && await statusOf(A.shopId, o2.orderId) === 'cancelled') ? ok('cancel → 303 + DB cancelled') : bad('cancel lỗi', `${r.status} ${await statusOf(A.shopId, o2.orderId)}`);

@@ -17,6 +17,18 @@ warn() { printf '  %sWARN%s %s\n' "$YEL" "$RST" "$1"; }
 flag() { issues=$((issues+1)); printf '  %sFLAG%s %s\n' "$RED" "$RST" "$1"; }
 sect() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
+# ── 0. Chốt layout: "không quét được ≠ sạch" ─────────────────────────────────
+# Mọi scan dưới glob cứng apps/*/src packages/*/src infra/ với `2>/dev/null || true`
+# rồi test rỗng. Nếu cây src bị ĐỔI TÊN / DI CHUYỂN, glob khớp 0 file → grep im lặng
+# → mọi mục báo "sạch" GIẢ. Chốt trước: phải thấy đủ cây src mong đợi mới quét.
+na=$(ls -d apps/*/src 2>/dev/null | wc -l)
+np=$(ls -d packages/*/src 2>/dev/null | wc -l)
+if [ "$na" -lt 8 ] || [ "$np" -lt 1 ] || [ ! -d infra ]; then
+  printf '%sFATAL%s layout src đổi? thấy %d apps/*/src, %d packages/*/src, infra=%s — KHÔNG quét được ≠ SẠCH\n' \
+    "$RED" "$RST" "$na" "$np" "$([ -d infra ] && echo yes || echo NO)"
+  exit 1
+fi
+
 # ── 1. Dependency scan (npm audit, mức high+) ────────────────────────────────
 sect "1. Dependency scan (npm audit --audit-level=high)"
 for pkg in apps/*/package.json packages/*/package.json; do

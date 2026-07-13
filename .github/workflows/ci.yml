@@ -31,11 +31,27 @@ jobs:
       # Mọi module test này chỉ dùng node builtins → không cần npm install.
       - name: Chạy unit test
         run: |
-          node --test \
-            packages/auth/test/*.test.js \
-            apps/tls-authorize/test/*.test.js \
-            apps/checkout/test/vietqr.test.js \
-            apps/seller/test/rbac.test.js
+          shopt -s nullglob
+          # "rỗng = xanh giả" — chốt theo TỪNG NGUỒN, không chỉ tổng:
+          #  - mỗi thư mục test PHẢI còn ≥1 file (đổi tên/di chuyển cả dir → glob về 0 → FAIL).
+          #    Guard cũ "-ge 4" là TỔNG 4 mẫu nên mất trọn dir packages/auth/test vẫn đủ 4 → xanh giả.
+          #  - file lẻ (nullglob KHÔNG rút vì không có ký tự glob) PHẢI thực sự tồn tại → test -f.
+          #  - tổng ≥ số thật hôm nay (7) để mất-ròng dù 1 file cũng đỏ.
+          for d in packages/auth/test apps/tls-authorize/test; do
+            g=("$d"/*.test.js)
+            [ "${#g[@]}" -ge 1 ] || { echo "thiếu unit test trong $d/ (đổi tên/di chuyển?)"; exit 1; }
+          done
+          for f in apps/checkout/test/vietqr.test.js apps/seller/test/rbac.test.js; do
+            [ -f "$f" ] || { echo "thiếu unit test $f"; exit 1; }
+          done
+          files=(packages/auth/test/*.test.js apps/tls-authorize/test/*.test.js \
+                 apps/checkout/test/vietqr.test.js apps/seller/test/rbac.test.js)
+          [ "${#files[@]}" -ge 7 ] || { echo "chỉ thấy ${#files[@]} unit test (<7) — nghi mất file"; exit 1; }
+          node --test "${files[@]}"
+
+      # Quét bảo mật TĨNH ở MỌI commit (dependency/secret/PII/pattern). Fail nếu có phát hiện.
+      - name: Quét bảo mật tĩnh (security-scan)
+        run: bash scripts/security-scan.sh
 
   e2e:
     name: E2E (docker stack)
@@ -53,7 +69,7 @@ jobs:
 
       - name: Chờ services healthy + migrate xong
         run: |
-          need="postgres redis minio mailpit auth platform seller seller-admin checkout payment worker storefront"
+          need="postgres redis minio mailpit auth platform seller seller-admin checkout payment worker storefront caddy"
           ok=0
           for _ in $(seq 1 72); do
             bad=""
@@ -81,7 +97,10 @@ jobs:
             if $C exec -T "$cont" "$@"; then echo "PASS  $desc"; else echo "FAIL  $desc"; fail=1; fi
             echo "::endgroup::"
           }
-          run dbtest "cô lập tenant + bất biến schema"  sh -c 'node --test test/*.test.js'
+          # Glob test/*.test.js trong dbtest (3 suite: tenant-isolation, storefront-isolation,
+          # schema-invariants). Chốt ≥3 TRƯỚC khi chạy: mất-ròng 1 suite (vd storefront-isolation
+          # — KHÔNG verify-*.sh nào phủ) sẽ đỏ, không chạy phần còn lại rồi báo xanh giả.
+          run dbtest "cô lập tenant + bất biến schema"  sh -c 'n=$(ls test/*.test.js 2>/dev/null | wc -l); [ "$n" -ge 3 ] || { echo "chỉ $n db test (<3) — nghi mất file"; exit 1; }; node --test test/*.test.js'
           run auth   "auth (MFA / step-up)"             node apps/auth/test/e2e.mjs
           run dbtest "chống chiếm shop (P0-4)"          node apps/platform/test/invitation-takeover.e2e.mjs
           run dbtest "onboarding shop"                  node apps/platform/test/e2e.mjs
@@ -119,6 +138,11 @@ jobs:
       - name: Smoke readiness/liveness
         run: bash scripts/smoke-readiness.sh
 
+      # On-demand TLS: chứng minh cơ chế TỪ CHỐI (domain chưa verified → không cấp cert),
+      # chống flood, phục vụ cert đã cache khi DB chết. Chạy trong container toolbox.
+      - name: Smoke TLS (Caddy on-demand + ask)
+        run: bash scripts/smoke-tls.sh
+
       - name: Log services khi lỗi
         if: failure()
         run: $C logs --no-color --tail 200
@@ -142,7 +166,7 @@ jobs:
 
       - name: Chờ services healthy
         run: |
-          need="postgres redis minio mailpit auth platform seller seller-admin checkout payment worker storefront"
+          need="postgres redis minio mailpit auth platform seller seller-admin checkout payment worker storefront caddy"
           ok=0
           for _ in $(seq 1 72); do
             bad=""
@@ -156,12 +180,22 @@ jobs:
           [ "$ok" = 1 ] || { echo "TIMEOUT"; $C ps; exit 1; }
 
       # Gỡ từng lớp phòng thủ → e2e phải chuyển đỏ; script tự hoàn nguyên (trap).
-      - name: Mutation testing
+      # GLOB mọi verify-*.sh (không hardcode danh sách → thêm script mới TỰ chạy, không trôi
+      # sót media/checkout/platform như trước). "rỗng = xanh giả": nếu tìm được quá ít script
+      # (đổi tên/di chuyển) → FAIL thay vì lặp 0 lần rồi báo xanh.
+      - name: Mutation testing (full — mọi verify-*.sh)
         run: |
+          shopt -s nullglob
+          scripts=(scripts/verify-*.sh)
+          echo "Tìm thấy ${#scripts[@]} verify script"
+          # Sàn = SỐ THẬT hôm nay (19), không để hở: sàn cũ 15 cho mất-ròng tới 4 script mutation
+          # mà vẫn qua. Thêm script mới → đếm tăng, vẫn qua; xoá/đổi tên → đếm giảm <19 → FAIL.
+          [ "${#scripts[@]}" -ge 19 ] || { echo "CHỈ ${#scripts[@]} verify script (<19) — nghi mất script (rỗng=xanh giả)"; exit 1; }
           fail=0
-          for h in tenant-isolation auth invitation seller catalog fulfillment storefront content preview seo blocks admin payment export domains readiness; do
-            echo "::group::verify-$h"
-            if bash "scripts/verify-$h.sh"; then echo "PASS  verify-$h"; else echo "FAIL  verify-$h"; fail=1; fi
+          for s in "${scripts[@]}"; do
+            name=$(basename "$s" .sh)
+            echo "::group::$name"
+            if bash "$s"; then echo "PASS  $name"; else echo "FAIL  $name"; fail=1; fi
             echo "::endgroup::"
           done
           exit $fail

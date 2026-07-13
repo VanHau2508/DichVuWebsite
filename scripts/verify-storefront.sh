@@ -60,8 +60,10 @@ mutate escape "bỏ escape < > (XSS)" \
 mutate token "bỏ sanitize token (CSS injection)" \
   "sed -i 's@if (okColor || okFont || okSize) out\[k\] = v;@out[k] = v;@' $THM"
 
+# resolveShop (A5) có 2 chỗ verified_at: subquery primary_host + WHERE chính (d.verified_at).
+# Phải gỡ WHERE CHÍNH (d.verified_at) mới cho domain chưa-verify route → e2e §domain đỏ.
 mutate verified "bỏ lọc domain đã verified (chống chiếm domain)" \
-  "sed -i 's|AND verified_at IS NOT NULL||' $SRV"
+  "sed -i 's|AND d.verified_at IS NOT NULL||' $SRV"
 
 mutate tenant "bỏ set tenant context (RLS mất cô lập app_store)" \
   "sed -i \"s|set_config('app.shop_id'|set_config('app.nothing'|\" $SRV"

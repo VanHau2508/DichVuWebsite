@@ -22,8 +22,9 @@ bad()  { fail=$((fail+1)); printf '  %sFAIL%s %s\n' "$RED" "$RST" "$1"; return 0
 sect() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 cp "$SSRC/server.js" "$BAK/seller.js"
+cp "$SSRC/db.js" "$BAK/seller-db.js"
 cp "$ASRC/server.js" "$BAK/auth.js"
-restore() { cp "$BAK/seller.js" "$SSRC/server.js"; cp "$BAK/auth.js" "$ASRC/server.js"; }
+restore() { cp "$BAK/seller.js" "$SSRC/server.js"; cp "$BAK/seller-db.js" "$SSRC/db.js"; cp "$BAK/auth.js" "$ASRC/server.js"; }
 trap 'restore; rm -rf "$BAK"' EXIT INT TERM
 
 wait_svc() {
@@ -47,7 +48,7 @@ mutate() {
   if [ -n "$FILTER" ] && ! grep -qw "$name" <<<"$FILTER"; then return 0; fi
   restore
   eval "$patch"
-  if diff -q "$BAK/seller.js" "$SSRC/server.js" >/dev/null && diff -q "$BAK/auth.js" "$ASRC/server.js" >/dev/null; then
+  if diff -q "$BAK/seller.js" "$SSRC/server.js" >/dev/null && diff -q "$BAK/seller-db.js" "$SSRC/db.js" >/dev/null && diff -q "$BAK/auth.js" "$ASRC/server.js" >/dev/null; then
     bad "$desc — patch không đổi gì (anchor sai)"; return
   fi
   if ! restart "$svc" "$port"; then bad "$desc — $svc không khởi động lại"; restore; restart "$svc" "$port"; return; fi
@@ -75,8 +76,9 @@ mutate stepup seller 3040 "tắt yêu cầu step-up" \
 mutate member seller 3040 "tắt kiểm tra thành viên (cô lập tầng dịch vụ)" \
   "sed -i \"s|if (!membership) return send(res, 404, { error: 'không tìm thấy' });|if (false) return;|\" $SSRC/server.js"
 
+# withTenant (set_config app.shop_id) sống trong db.js (tách từ Ngày 8), KHÔNG ở server.js.
 mutate tenant seller 3040 "đặt sai tenant context (RLS mất cô lập app_rw)" \
-  "sed -i \"s|set_config('app.shop_id'|set_config('app.nothing'|\" $SSRC/server.js"
+  "sed -i \"s|set_config('app.shop_id'|set_config('app.nothing'|\" $SSRC/db.js"
 
 mutate lastowner seller 3040 "bỏ chặn owner-cuối-cùng" \
   "sed -i 's|if (rows\[0\].n <= 1) return { code: 409 };|if (false) return { code: 409 };|' $SSRC/server.js"

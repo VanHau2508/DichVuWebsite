@@ -88,8 +88,10 @@ mutate csrf platform 3030 "tắt kiểm tra Origin (CSRF)" \
 mutate suspend platform 3030 "suspend cho phép ở mọi trạng thái (bỏ điều kiện)" \
   "sed -i \"s|AND status IN ('onboarding','active') AND deleted_at IS NULL|AND deleted_at IS NULL|\" $PSRC/server.js"
 
-mutate invonce auth 3020 "lời mời dùng được nhiều lần (bỏ claim atomic)" \
-  "sed -i 's|if (claimed.rowCount !== 1) {|if (false) {|' $ASRC/server.js"
+# LƯU Ý (đã bỏ mutation "invonce"): bỏ atomic accepted_at của lời mời KHÔNG phải lỗ hổng
+# bảo mật — accept trùng cùng token chỉ re-accept CHO CÙNG user (unique users/memberships +
+# kết quả idempotent chặn double-membership), nên e2e đúng là XANH. Bất biến P0-4 (chiếm shop)
+# do scripts/verify-invitation.sh canh (invitation-takeover.e2e.mjs), đúng chỗ hơn.
 
 sect "2. Trạng thái sau khi hoàn nguyên"
 restore

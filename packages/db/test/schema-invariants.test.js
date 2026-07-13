@@ -130,27 +130,34 @@ describe('Row-Level Security', () => {
     assert.equal(rows[0].relforcerowsecurity, true);
   });
 
-  test('mỗi bảng tenant có ĐÚNG MỘT policy cho app_rw', async () => {
+  test('không LỆNH nào của bảng tenant bị ≥2 policy PERMISSIVE app_rw phủ (OR nới quyền)', async () => {
     // Đây là bất biến bảo mật, không phải thẩm mỹ.
     //
-    // Policy PERMISSIVE được OR với nhau. Thêm `CREATE POLICY lax ON products
-    // FOR INSERT TO app_rw WITH CHECK (true)` là vô hiệu hoá hoàn toàn
-    // tenant_isolation — dù policy gốc vẫn còn nguyên đó, trông rất vô hại.
+    // Policy PERMISSIVE phủ CÙNG MỘT LỆNH thì OR với nhau. Thêm `CREATE POLICY lax
+    // ON products FOR INSERT TO app_rw WITH CHECK (true)` vô hiệu hoá tenant_isolation
+    // cho INSERT — dù policy gốc còn nguyên đó, trông rất vô hại.
     //
-    // Đã kiểm chứng bằng mutation testing: đúng lỗ hổng này lọt qua mọi test
-    // metadata khác mà ta từng viết.
+    // Kiểm theo TỪNG LỆNH (không phải TỔNG policy mỗi bảng): cho phép tách read/write
+    // HỢP LỆ theo lệnh — vd export_artifacts (0026): FOR INSERT + FOR SELECT, KHÔNG
+    // UPDATE/DELETE (bản ghi bất biến). Hai policy khác LỆNH KHÔNG bao giờ OR với nhau,
+    // nên đó không phải lỗ hổng. Chỉ ≥2 policy permissive cùng phủ MỘT lệnh mới là nới quyền.
+    //
+    // Đã kiểm chứng bằng mutation testing: đúng lỗ hổng "policy permissive thứ hai" này.
     const { rows } = await owner.query(`
       WITH tenant_tables AS (${TENANT_TABLES})
-      SELECT t.table_name, count(p.policyname) AS n,
-             array_agg(p.policyname) FILTER (WHERE p.policyname IS NOT NULL) AS policies
+      SELECT t.table_name, c.cmd,
+             array_agg(p.policyname ORDER BY p.policyname) AS policies
       FROM tenant_tables t
-      LEFT JOIN pg_policies p
-        ON p.schemaname = 'public' AND p.tablename = t.table_name AND 'app_rw' = ANY(p.roles)
-      GROUP BY t.table_name
+      CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) AS c(cmd)
+      JOIN pg_policies p
+        ON p.schemaname = 'public' AND p.tablename = t.table_name
+        AND 'app_rw' = ANY(p.roles) AND p.permissive = 'PERMISSIVE'
+        AND (p.cmd = c.cmd OR p.cmd = 'ALL')
+      GROUP BY t.table_name, c.cmd
+      HAVING count(*) > 1
     `);
-    const wrong = rows.filter((r) => Number(r.n) !== 1);
     assert.deepEqual(
-      wrong.map((r) => `${r.table_name}: ${r.n} policy ${JSON.stringify(r.policies)}`),
+      rows.map((r) => `${r.table_name} ${r.cmd}: ${JSON.stringify(r.policies)}`),
       [],
     );
   });

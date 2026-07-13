@@ -32,20 +32,22 @@
 | P0-5 vòng đời tồn kho | ✅ Xong | ship consume + ledger + worker hết hạn |
 | P0-6 DB creds ngoài migration | ✅ Xong | provision role qua script/secret |
 | P0-7 build tái lập | ✅ Xong | lockfile + `npm ci` + pin digest |
-| P0-1 prod edge routing | 🟡 **Một phần** | admin.nentang.vn ✅; **thiếu host webhook** (`hooks→payment`) + **thiếu edge integration test** |
-| P0-8 prod deploy + DR | 🟡 **Code only** | compose.prod + script deploy/backup/PITR có; **chưa deploy/drill thật** (cần tài nguyên) |
-| P1 MFA/session | 🟡 Một phần | bật/tắt MFA + đổi mk ✅ (phiên này); **thiếu rotate token sau MFA + trang session list/revoke** |
-| P1 readiness/liveness | ❌ | `/healthz` còn nông (luôn 200, không kiểm DB/Redis) |
-| P1 payment lifecycle | ❌/🟡 | thiếu `order.paid` outbox + email paid + COD mark-paid + gộp nhiều giao dịch + mask log |
-| P1 data export | ❌ | chưa có endpoint export ZIP/CSV/media |
-| P1 custom domain | 🟡 | bảng `domains`+`is_primary` có; **thiếu API add/challenge/verify-TXT/primary/revoke + UI** |
-| P1 CI gates | 🟡 | thiếu security-scan/TLS-smoke/edge trong Actions; mutation nightly thiếu vài script |
+| P0-1 prod edge routing | ✅ **Xong (A1)** | host webhook `hooks→payment` + edge integration test đi QUA Caddy trong CI |
+| P0-8 prod deploy + DR | 🟡 **Code only** | compose.prod + script deploy/backup/PITR có; **chưa deploy/drill thật** (cần tài nguyên → Tuần B) |
+| P1 MFA/session | ✅ **Xong (A6)** | rotate token sau MFA + trang liệt kê/thu hồi phiên; bật/tắt MFA + đổi mk (trước đó) |
+| P1 readiness/liveness | ✅ **Xong (A2)** | tách `/livez` (process) vs `/readyz` (DB+Redis) + request-id mọi service |
+| P1 payment lifecycle | ✅ **Xong (A3a/A3b)** | `order.paid` outbox + email paid + gộp nhiều giao dịch + COD mark-paid + mask log |
+| P1 data export | ✅ **Xong (A4)** | export ZIP/CSV/media + step-up + audit + link tải hết hạn |
+| P1 custom domain | ✅ **Xong (A5)** | API add/challenge/verify-TXT/primary/revoke + worker verify TXT + UI |
+| P1 CI gates | ✅ **Xong (A7)** | security-scan + smoke-TLS + edge + full mutation glob vào Actions; vá "rỗng=xanh giả" |
 | Tuần 3 prod ops/DR drill | ❌ | cần VPS/offsite/alert thật |
 | Tuần 4 UAT + pilot | ❌ | cần shop thật + deploy thật |
 
-**Kết luận thẳng:** Lộ trình 30 ngày **~45–55%** theo số ngày. **Mọi blocker kỹ thuật lõi
-(P0-2…P0-7) đã đóng**, và phần UI đã **vượt** kế hoạch. Phần còn lại chủ yếu là **vận hành
-production + một cụm P1 + UAT/pilot**, trong đó nhiều mục **cần tài nguyên của bạn**.
+**Kết luận thẳng (cập nhật 2026-07-13):** **TUẦN A XONG HẾT** (A1–A7, mỗi mục commit riêng +
+kiểm chứng qua CI thật — xem §Tuần A). **Mọi blocker kỹ thuật lõi (P0-1…P0-8 code-side) đã đóng**,
+UI đã **vượt** kế hoạch, và CI **xanh thật** trên commit sạch (unit+e2e mỗi push; mutation
+**19/19 verify-*.sh xanh** qua dispatch). Phần còn lại **hoàn toàn là vận hành production +
+UAT/pilot** (Tuần B–D) — **cần tài nguyên của bạn**, không còn việc code-side nào chặn.
 
 ## 2. Ranh giới: tôi code được ngay vs cần bạn
 
@@ -63,40 +65,50 @@ production + một cụm P1 + UAT/pilot**, trong đó nhiều mục **cần tài
 > Mỗi "ngày" = một lô có **GATE kiểm chứng được**. Với 1 người code, vài ngày có thể dồn/tách.
 > Ngày nào **cần bạn** được đánh dấu 🔑.
 
-### Tuần A — đóng nốt blocker code (không cần tài nguyên ngoài)
+### Tuần A — ✅ XONG HẾT (đóng nốt blocker code, không cần tài nguyên ngoài)
 
-**A1 · Prod edge + webhook host + edge test**
+> **Hoàn tất 2026-07-13.** Cả 7 mục: commit riêng + verify-first + harness mutation + rà soát
+> đối kháng (workflow). Kiểm chứng CUỐI qua CI thật: **unit + e2e xanh mỗi push** (run #19),
+> **mutation 19/19 verify-*.sh xanh** qua `workflow_dispatch` (run #18). Thứ tự thực làm:
+> **A1 → A3a → A3b → A2 → A4 → A6 → A5 → A7**. Đã đẩy lên `origin/main`.
+>
+> Hai lỗi latent mà chính gate A7 lôi ra (đều đã sửa + kiểm chứng): (1) bất biến schema
+> "1 policy/bảng" gắn cờ nhầm `export_artifacts` (tách read/write hợp lệ theo lệnh) → sửa
+> đếm theo TỪNG LỆNH (`9723659`); (2) test smoke-TLS chống-flood flaky do undici gộp kết nối
+> → bắn song song thật + poll log (`a750281`).
+
+**A1 · Prod edge + webhook host + edge test** — ✅ `12e7ecf`
 Caddyfile: thêm `hooks.nentang.vn /webhooks/sepay → payment`; rà route admin/storefront/checkout.
 Viết **integration test đi QUA Caddy** (không chỉ gọi service nội bộ) trong CI.
 *Gate:* webhook SePay + admin + storefront + checkout đến đúng service **qua edge** trong test.
 
-**A2 · Readiness/liveness + request-id**
+**A2 · Readiness/liveness + request-id** — ✅ `be889b6`
 Tách `/livez` (process) vs `/readyz` (DB+Redis+migration version). Thêm correlation-id vào log.
 *Gate:* tắt Postgres → `/readyz` 503, `/livez` 200; mọi log có request-id.
 
-**A3 · Payment lifecycle khép kín**
+**A3 · Payment lifecycle khép kín** — ✅ `dbaf66c` (A3a: gộp giao dịch + order.paid + mask) + `b6de9ff` (A3b: COD mark-paid)
 `order.paid` qua outbox → email "đã thanh toán"; **gộp nhiều giao dịch** thiếu tiền tới đủ tổng;
 COD **mark-paid** có RBAC + audit; **mask log** tài chính (chỉ last4/hash).
 *Gate (mutation):* bỏ mask → e2e đỏ; QR đủ tiền → `order.paid` + email; COD mark-paid ghi audit.
 
-**A4 · Data export**
+**A4 · Data export** — ✅ `a9dd28f`
 Export products/variants/orders/customers + media manifest (ZIP/CSV). Owner + **step-up** +
 audit + **link tải hết hạn**.
 *Gate:* owner export → tải ZIP hợp lệ; non-owner/không step-up → chặn.
 
-**A5 · Custom domain tự phục vụ**
+**A5 · Custom domain tự phục vụ** — ✅ `cd8a13c`
 API add/challenge/status/primary/revoke + **worker verify TXT** + UI admin.
 *Gate:* thêm domain → verify TXT → phục vụ qua Caddy on-demand TLS trên staging; revoke → chết.
 
-**A6 · Session hardening**
+**A6 · Session hardening** — ✅ `985cc06`
 Rotate session token sau MFA verify/activate; trang **liệt kê + thu hồi phiên khác**.
 *Gate (mutation):* bỏ rotate → e2e đỏ; revoke phiên khác → phiên đó 401.
 
-**A7 · CI đóng đủ cổng**
-Đưa security-scan + smoke-TLS + edge integration + full mutation vào Actions; sửa "rỗng = xanh giả".
+**A7 · CI đóng đủ cổng** — ✅ `cc009d2` (+ fix latent do gate lôi ra: `9723659`, `a750281`)
+Đưa security-scan + smoke-TLS + edge integration + full mutation (GLOB mọi verify-*.sh) vào Actions; sửa "rỗng = xanh giả".
 *Gate:* CI chạy security/TLS/edge/e2e/mutation trên commit sạch, đỏ đúng khi gỡ 1 lớp.
 
-*Gate tuần A:* mọi P0-1/P1 code-side đóng; CI xanh thật trên commit sạch.
+*Gate tuần A:* ✅ **ĐẠT** — mọi P0-1/P1 code-side đóng; CI xanh thật (unit+e2e run #19, mutation 19/19 run #18).
 
 ### Tuần B — production ops + DR (🔑 cần tài nguyên bạn)
 
@@ -128,12 +140,13 @@ Rotate session token sau MFA verify/activate; trang **liệt kê + thu hồi phi
 
 ---
 
-## 4. Đề xuất bắt đầu
+## 4. Trạng thái & bước tiếp
 
-Vì phần **cần tài nguyên của bạn** (Tuần B–D) chưa sẵn, nên bắt đầu ngay **Tuần A** (đóng nốt
-blocker code) — đề xuất thứ tự theo giá trị/rủi ro: **A1 edge+webhook → A3 payment lifecycle →
-A2 readiness → A4 export → A6 session → A5 domain → A7 CI**. Mỗi mục xong sẽ verify + review
-đối kháng + commit riêng như các mục vừa rồi.
+**Tuần A ✅ XONG** (A1→A3a→A3b→A2→A4→A6→A5→A7, đúng thứ tự đề xuất; mỗi mục verify + review
+đối kháng + commit riêng; kiểm chứng cuối qua CI thật). Đã đẩy lên `origin/main`, CI xanh
+(unit+e2e mỗi push; mutation 19/19 qua dispatch).
 
-Song song, bạn chuẩn bị dần: VPS + floating IP, tài khoản offsite, SMTP relay, token alert,
-tên miền — để Tuần B khởi động được ngay.
+**Bước tiếp = Tuần B (🔑 CẦN TÀI NGUYÊN CỦA BẠN):** VPS + **floating IP**, tài khoản **offsite
+S3/B2**, **SMTP relay** thật, token **alert** (Telegram/Zalo), **tên miền** + DNS. Có đủ những
+thứ này thì **B1 (deploy thật)** khởi động được ngay. Chưa có cũng **không còn việc code-side
+nào chặn** — Tuần A đã đóng hết blocker kỹ thuật lõi.

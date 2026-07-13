@@ -70,6 +70,8 @@ services:
   mailpit:
     image: axllent/mailpit:v1.21
     restart: unless-stopped
+    ports:
+      - "8025:8025"      # Mailpit web UI (xem email dev): http://localhost:8025
     environment:
       MP_SMTP_AUTH_ACCEPT_ANY: "true"
       MP_SMTP_AUTH_ALLOW_INSECURE: "true"

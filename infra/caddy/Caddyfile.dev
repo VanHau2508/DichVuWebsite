@@ -81,6 +81,24 @@ shop.localtest {
 	}
 }
 
+# ── Tên miền con onboarding của nền tảng (*.nentang.vn) — cert nội bộ wildcard ──
+# Prod: đây là wildcard DNS-01 (Let's Encrypt). Dev: CA nội bộ ký cert wildcard,
+# KHÔNG on-demand → KHÔNG qua `ask` (ask CHẶN *.nentang.vn vì isReserved coi đó là
+# tên miền nền tảng, không cấp on-demand). Nhờ vậy storefront của shop mới tạo
+# (subdomain onboarding <slug>.nentang.vn) MỞ ĐƯỢC ở local. Cùng logic tách
+# /cart* → checkout, còn lại → storefront như catch-all.
+*.nentang.vn {
+	tls internal
+	import security_headers
+	@checkout path /cart /cart/* /checkout /checkout/*
+	handle @checkout {
+		reverse_proxy checkout:3060
+	}
+	handle {
+		reverse_proxy storefront:3050
+	}
+}
+
 # ── Catch-all: mọi hostname lạ ───────────────────────────────────────────────
 # Site block không có hostname → khớp mọi Host. Vì không biết trước tên miền,
 # Caddy BẮT BUỘC phải dùng on-demand TLS. Mỗi handshake tới một domain chưa có

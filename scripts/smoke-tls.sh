@@ -218,22 +218,50 @@ sect "6. Chống flood tra cứu database"
 
 # Caddy ≥2.8 đã gỡ `interval`/`burst` khỏi on_demand_tls, nên nó hỏi `ask` ở
 # MỌI handshake tới hostname chưa có chứng chỉ. Hostname ngẫu nhiên = cache-miss
-# = một query Postgres. Token bucket trong tls-authorize phải chặn được.
+# = một query Postgres. Token bucket (capacity 40, nạp 20/s) trong tls-authorize
+# phải chặn được.
+#
+# Nạp CACHE cho một khách thật TRƯỚC khi flood: restart ở mục 5 đã xoá cache, và cert
+# trên đĩa khiến Caddy không hỏi lại nên shopa.test đang KHÔNG nằm trong cache. Cache
+# dương cho phép khẳng định cuối ("khách thật miễn nhiễm flood") TẤT ĐỊNH — cache hit
+# bỏ qua token bucket nên luôn 200 dù bucket đã cạn.
+ask shopa.test >/dev/null
+
+# Phải bắn SONG SONG THẬT. global fetch (undici) gộp kết nối keep-alive nên trên runner
+# CHẬM, 120 request bị rải ra ≤20/s = đúng tốc độ nạp lại → bucket KHÔNG BAO GIỜ cạn.
+# ĐÓ là nguồn flaky: xanh máy nhanh, đỏ máy chậm (cùng commit). Dùng http thô +
+# agent:false = mỗi request một socket riêng, tất cả tới CÙNG LÚC → tryTake (đồng bộ)
+# rút sạch 40 token trước khi kịp nạp lại → ~160/200 request CHẮC CHẮN bị bóp, không
+# phụ thuộc tốc độ máy.
 $COMPOSE exec -T tls-authorize node -e '
+  const http = require("http");
   const reqs = [];
-  for (let i = 0; i < 120; i++) {
-    reqs.push(fetch("http://127.0.0.1:3010/internal/tls/authorize?domain=flood" + i + ".test"));
+  for (let i = 0; i < 200; i++) {
+    reqs.push(new Promise((resolve) => {
+      const r = http.get(
+        { host: "127.0.0.1", port: 3010, agent: false,
+          path: "/internal/tls/authorize?domain=flood" + i + ".test" },
+        (res) => { res.resume(); res.on("end", resolve); });
+      r.on("error", resolve);
+    }));
   }
   Promise.all(reqs).then(() => console.log("done"));
 ' >/dev/null 2>&1
 
-if $COMPOSE logs --since 30s tls-authorize 2>&1 | grep -q '"source":"rate_limited"'; then
-  ok "flood 120 hostname lạ → token bucket chặn trước khi chạm database"
-else
-  bad "flood 120 hostname lạ → KHÔNG có log rate_limited; mọi request đều query Postgres"
-fi
+# `docker logs` có độ trễ flush; grep một-phát dễ hụt dòng vừa in (nguồn flaky thứ hai).
+# Chờ tối đa 10s (20×0.5s), qua NGAY khi thấy dòng rate_limited đầu tiên.
+found=0
+for _ in $(seq 20); do
+  if $COMPOSE logs --since 60s tls-authorize 2>&1 | grep -q '"source":"rate_limited"'; then
+    found=1; break
+  fi
+  sleep 0.5
+done
+[ "$found" -eq 1 ] \
+  && ok "flood 200 hostname lạ → token bucket chặn trước khi chạm database" \
+  || bad "flood 200 hostname lạ → KHÔNG có log rate_limited; mọi request đều query Postgres"
 
-# Khách hàng thật nằm trong cache, không tiêu token → không bị vạ lây.
+# Khách thật ĐÃ trong cache: cache hit bỏ qua token bucket → không bị vạ lây dù bucket cạn.
 got="$(ask shopa.test)"
 [ "$got" = "200" ] && ok "trong lúc flood, khách đã cache vẫn được phục vụ" \
                    || bad "khách đã cache bị vạ lây, trả $got"

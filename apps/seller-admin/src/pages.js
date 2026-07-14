@@ -86,6 +86,7 @@ const IC_HOME = ic('<path d="M3 9l1-5h16l1 5"/><path d="M4 9v10a1 1 0 0 0 1 1h14
 const IC_ORDER = ic('<path d="M5 4h14v16l-3-2-2 2-2-2-2 2-3-2z"/><path d="M9 9h6"/><path d="M9 13h6"/>');
 const IC_BOX = ic('<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/>');
 const IC_TAG = ic('<path d="M3 7v5.6a2 2 0 0 0 .6 1.4l7 7a2 2 0 0 0 2.8 0l5.6-5.6a2 2 0 0 0 0-2.8l-7-7A2 2 0 0 0 12.6 5H7a4 4 0 0 0-4 4z"/><circle cx="7.5" cy="9.5" r="1.3"/>');
+const IC_NEWS = ic('<path d="M4 5h11a2 2 0 0 1 2 2v11a2 2 0 0 0 2-2V9"/><path d="M4 5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h13"/><path d="M7 9h6M7 12h6M7 15h4"/>');
 const IC_FILE = ic('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9 12h6"/><path d="M9 16h6"/>');
 const IC_USERS = ic('<circle cx="9" cy="8" r="3"/><path d="M4 20v-1a5 5 0 0 1 10 0v1"/><path d="M17 8a3 3 0 0 1 0 6"/><path d="M20 20v-1a4 4 0 0 0-3-3.8"/>');
 const IC_GLOBE = ic('<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18"/>');
@@ -105,6 +106,7 @@ function sideNav(ctx) {
           + it(`${base}/products`, 'Sản phẩm', IC_BOX, ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/categories`, 'Danh mục', IC_TAG, ctx.active === 'categories', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/pages`, 'Trang nội dung', IC_FILE, ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
+          + it(`${base}/blog`, 'Blog', IC_NEWS, ctx.active === 'blog', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/members`, 'Nhân sự', IC_USERS, ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role))
           + it(`${base}/domains`, 'Tên miền', IC_GLOBE, ctx.active === 'domains', DOMAIN_ROLES.has(ctx.role))
           + it(`${base}/payment`, 'Thanh toán', IC_CARD, ctx.active === 'payment', PAYMENT_ROLES.has(ctx.role))
@@ -563,6 +565,46 @@ export function renderCategories(ctx, shopId, data, notice, err) {
       ? `<table><thead><tr><th>Tên · thứ tự</th><th>Slug</th><th></th></tr></thead><tbody>${rows}</tbody></table>
          <p class="muted" style="margin-top:10px;font-size:.85rem">Gán sản phẩm vào danh mục ở <strong>trang chi tiết từng sản phẩm</strong> (mục "Danh mục").</p>`
       : '<p class="muted">Chưa có danh mục. Thêm ở trên để nhóm sản phẩm + hiện trên storefront.</p>'}</div>`);
+}
+
+// Blog: danh sách bài viết.
+export function renderBlogList(ctx, shopId, data) {
+  const base = `/shops/${esc(shopId)}`;
+  const posts = data?.posts ?? [];
+  const rows = posts.map((p) => `<tr>
+    <td><a href="${base}/blog/${esc(p.id)}">${esc(p.title)}</a><div class="muted" style="font-size:.8rem">/blog/${esc(p.slug)}</div></td>
+    <td>${badge(p.status, p.status === 'published' ? 'Đã đăng' : 'Nháp')}</td>
+    <td class="muted">${p.published_at ? dt(p.published_at) : dt(p.updated_at)}</td></tr>`).join('');
+  return layout('Blog', ctx, `
+    <div class="toolbar"><h1 style="margin:0">Blog / Tin tức</h1><a class="btn" href="${base}/blog/new">+ Viết bài</a></div>
+    <div class="card">${posts.length
+      ? `<table><thead><tr><th>Bài viết</th><th>Trạng thái</th><th>Cập nhật</th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<p class="muted">Chưa có bài viết. Bấm “Viết bài” — bài đã đăng hiện ở <code>/blog</code> trên storefront (tốt cho SEO & marketing).</p>'}</div>`);
+}
+// Blog: soạn/sửa bài. publish/gỡ/xoá TÁCH khỏi form chính (không lồng form).
+export function renderBlogEditor(ctx, shopId, post, err) {
+  const base = `/shops/${esc(shopId)}/blog`;
+  const p = post ?? {};
+  const isNew = !p.id;
+  const action = isNew ? base : `${base}/${esc(p.id)}`;
+  const manage = isNew ? '' : `<div class="card"><div class="actions">
+    ${p.status === 'published'
+      ? `<form method="POST" action="${base}/${esc(p.id)}/unpublish"><button class="btn alt" type="submit">Gỡ đăng</button></form>`
+      : `<form method="POST" action="${base}/${esc(p.id)}/publish"><button class="btn" type="submit">Đăng bài</button></form>`}
+    <form method="POST" action="${base}/${esc(p.id)}/delete"><button class="btn warn" type="submit">Xoá bài</button></form>
+  </div></div>`;
+  return layout(isNew ? 'Viết bài' : `Sửa bài`, ctx, `
+    <a class="muted" href="${base}">← Blog</a>
+    <div class="toolbar"><h1 style="margin:0">${isNew ? 'Viết bài mới' : esc(p.title)}</h1>${isNew ? '' : badge(p.status, p.status === 'published' ? 'Đã đăng' : 'Nháp')}</div>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <div class="card"><form method="POST" action="${action}">
+      <label>Tiêu đề</label><input name="title" required maxlength="200" value="${esc(p.title ?? '')}">
+      <label>Đường dẫn (slug)</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" value="${esc(p.slug ?? '')}" placeholder="meo-chon-ghe-sofa">
+      <label>Tóm tắt (hiện ở danh sách blog)</label><textarea name="excerpt" maxlength="500" rows="2">${esc(p.excerpt ?? '')}</textarea>
+      <label>Nội dung</label><textarea name="body" rows="14" maxlength="50000" placeholder="Viết nội dung bài… (cách dòng để tách đoạn)">${esc(p.body ?? '')}</textarea>
+      <div class="actions" style="margin-top:12px"><button class="btn" type="submit">${isNew ? 'Tạo bài (nháp)' : 'Lưu thay đổi'}</button></div>
+    </form></div>
+    ${manage}`);
 }
 
 // Nhập sản phẩm hàng loạt từ CSV (onboard concierge nhanh). Mỗi dòng = 1 sản phẩm.

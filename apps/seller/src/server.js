@@ -27,6 +27,7 @@ import { PAYMENT_CONFIG_ROUTES } from './payment-config.js';
 import { ORDER_ROUTES } from './orders.js';
 import { DASHBOARD_ROUTES } from './dashboard.js';
 import { CONTENT_ROUTES } from './content.js';
+import { BLOG_ROUTES } from './blog.js';
 import { EXPORT_ROUTES } from './export.js';
 import { DOMAIN_ROUTES } from './domains.js';
 import { runReq, makeLog, health } from './obs.js';
@@ -223,6 +224,7 @@ const ROUTES = [
   ...ORDER_ROUTES,
   ...DASHBOARD_ROUTES,
   ...CONTENT_ROUTES,
+  ...BLOG_ROUTES,
   ...EXPORT_ROUTES,
   ...DOMAIN_ROUTES,
 ];

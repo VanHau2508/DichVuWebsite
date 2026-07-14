@@ -15,7 +15,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import pg from 'pg';
-import { renderHome, renderProduct, renderPage, renderSearch, renderMaintenance, renderNotFound } from './theme.js';
+import { renderHome, renderProduct, renderPage, renderSearch, renderBlogList, renderBlogPost, renderMaintenance, renderNotFound } from './theme.js';
 import { runReq, makeLog, health } from './obs.js';
 
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
@@ -132,12 +132,14 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         const prods = (await c.query(`SELECT slug FROM products ORDER BY created_at DESC LIMIT 5000`)).rows;
         const cats = (await c.query(`SELECT slug FROM categories ORDER BY position LIMIT 200`)).rows;
         const pages = (await c.query(`SELECT p.slug FROM pages p JOIN page_revisions pr ON pr.id = p.published_revision_id LIMIT 1000`)).rows;
-        return { prods, cats, pages };
+        const blog = (await c.query(`SELECT slug FROM blog_posts WHERE status = 'published' ORDER BY published_at DESC LIMIT 2000`)).rows;
+        return { prods, cats, pages, blog };
       });
       if (!sm) return sendHtml(res, 404, renderNotFound());
       const escXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const loc = (path) => `  <url><loc>${escXml(`https://${host}${path}`)}</loc></url>`;
-      const urls = [loc('/'), ...sm.cats.map((c) => loc(`/c/${c.slug}`)), ...sm.prods.map((p) => loc(`/p/${p.slug}`)), ...sm.pages.map((p) => loc(`/pages/${p.slug}`))];
+      const urls = [loc('/'), ...sm.cats.map((c) => loc(`/c/${c.slug}`)), ...sm.prods.map((p) => loc(`/p/${p.slug}`)), ...sm.pages.map((p) => loc(`/pages/${p.slug}`)),
+        ...(sm.blog.length ? [loc('/blog'), ...sm.blog.map((b) => loc(`/blog/${b.slug}`))] : [])];
       const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
       res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': CACHE_PUBLIC });
       return res.end(xml);
@@ -160,7 +162,8 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
           WHERE p.menu_position IS NOT NULL
           ORDER BY p.menu_position, pr.title LIMIT 20`,
       )).rows;
-      const base = { shop, theme, categories, menu };
+      const hasBlog = Number((await c.query(`SELECT count(*)::int n FROM blog_posts WHERE status = 'published'`)).rows[0].n) > 0;
+      const base = { shop, theme, categories, menu, hasBlog };
 
       const productGrid = async (whereJoin = '', args = [], offset = 0) => {
         const total = Number((await c.query(`SELECT count(*)::int n FROM products p ${whereJoin}`, args)).rows[0].n);
@@ -243,6 +246,18 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         return { ...base, page: doc };
       }
 
+      // Blog: /blog (danh sách bài published) + /blog/:slug (bài). RLS store_blog lọc published.
+      if (url.pathname === '/blog') {
+        const posts = (await c.query(`SELECT slug, title, excerpt, published_at FROM blog_posts WHERE status = 'published' ORDER BY published_at DESC LIMIT 50`)).rows;
+        return { ...base, blog: 'list', posts };
+      }
+      const bm = /^\/blog\/([a-z0-9-]+)$/.exec(url.pathname);
+      if (bm) {
+        const post = (await c.query(`SELECT slug, title, excerpt, body, published_at FROM blog_posts WHERE slug = $1 AND status = 'published'`, [bm[1]])).rows[0];
+        if (!post) return { ...base, notFound: true };
+        return { ...base, blog: 'post', post };
+      }
+
       // Trang chủ: CHỈ path '/'. Path lạ → 404 (không render home cho mọi thứ).
       if (url.pathname !== '/') return { ...base, notFound: true };
       const { products, total } = await productGrid('', [], offset);
@@ -252,7 +267,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     if (data.notFound) return sendHtml(res, 404, renderNotFound(), { shopSlug: data.shop?.slug });
     if (data.suspended) return sendHtml(res, 503, renderMaintenance(data.shop.name), { shopSlug: data.shop.slug });
 
-    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '' };
+    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '', hasBlog: data.hasBlog };
     const canonical = host ? `https://${host}${url.pathname}` : null; // URL sạch (không kèm query)
     if (data.page) {
       // Preview → banner cảnh báo + no-store/noindex; published → cache CDN như thường.
@@ -260,6 +275,8 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       return sendHtml(res, 200, renderPage(ctx, data.page, { canonical }), { shopSlug: data.shop.slug, cache: true });
     }
     if (data.product) return sendHtml(res, 200, renderProduct(ctx, data.product, { canonical }), { shopSlug: data.shop.slug, cache: true });
+    if (data.blog === 'list') return sendHtml(res, 200, renderBlogList(ctx, data.posts ?? [], { canonical }), { shopSlug: data.shop.slug, cache: true });
+    if (data.blog === 'post') return sendHtml(res, 200, renderBlogPost(ctx, data.post, { canonical }), { shopSlug: data.shop.slug, cache: true });
     if (data.search) return sendHtml(res, 200, renderSearch(ctx, { canonical }), { shopSlug: data.shop.slug });
     return sendHtml(res, 200, renderHome(ctx, { canonical }), { shopSlug: data.shop.slug, cache: true });
   } catch (err) {

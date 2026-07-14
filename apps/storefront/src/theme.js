@@ -76,6 +76,7 @@ export function tokensToCss(tokens) {
 }
 
 const money = (vnd) => new Intl.NumberFormat('vi-VN').format(Number(vnd)) + '₫';
+const fmtDate = (d) => { try { return d ? new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(d)) : ''; } catch { return ''; } };
 
 // ── icon SVG nội tuyến (an toàn với CSP: là markup, không phải tài nguyên ngoài) ──
 const I_CART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="20" r="1"/><circle cx="17" cy="20" r="1"/><path d="M2 3h2l2.4 12.3a1 1 0 0 0 1 .8h8.7a1 1 0 0 0 1-.8L21 7H5.6"/></svg>';
@@ -113,6 +114,7 @@ const SECTIONS = {
     </form>
     <nav class="hnav">
       ${ctx.categories.slice(0, 4).map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}
+      ${ctx.hasBlog ? '<a href="/blog">Blog</a>' : ''}
       <a href="/checkout/lookup">Tra cứu đơn</a>
       <a href="/cart" class="cart"><span class="i">${I_CART}</span>Giỏ hàng</a>
     </nav>
@@ -140,9 +142,8 @@ const SECTIONS = {
 
   footer: (props, ctx) => {
     const menu = ctx.menu ?? [];
-    const nav = menu.length
-      ? `<nav class="ftr-nav">${menu.map((pg) => `<a href="/pages/${esc(pg.slug)}">${esc(pg.title)}</a>`).join('')}</nav>`
-      : '';
+    const links = (ctx.hasBlog ? '<a href="/blog">Blog</a>' : '') + menu.map((pg) => `<a href="/pages/${esc(pg.slug)}">${esc(pg.title)}</a>`).join('');
+    const nav = links ? `<nav class="ftr-nav">${links}</nav>` : '';
     const s = ctx.shop;
     const bits = [
       s.business_address ? esc(s.business_address) : '',
@@ -212,6 +213,16 @@ h1,h2,h3{font-family:var(--font-heading);font-weight:600;letter-spacing:-.01em;l
 .pg-btn:hover{border-color:var(--color-primary);color:var(--color-primary)}
 .pg-btn.off{color:#c9ced6;pointer-events:none}
 .pg-info{color:var(--color-muted);font-size:.88rem}
+.blog-list{display:grid;gap:18px;max-width:760px}
+.blog-card{border:1px solid var(--color-border);border-radius:14px;padding:20px 24px;background:var(--color-bg);transition:border-color .12s,box-shadow .12s}
+.blog-card:hover{border-color:var(--color-primary);box-shadow:0 6px 20px -12px rgba(36,99,235,.3)}
+.blog-card h2{margin:0 0 4px;font-size:1.28rem;font-weight:700;line-height:1.3}
+.blog-card h2 a{color:var(--color-text)}.blog-card h2 a:hover{color:var(--color-primary)}
+.blog-date{color:var(--color-muted);font-size:.84rem;margin:0 0 10px}
+.blog-card p{color:var(--color-muted);margin:0 0 12px;line-height:1.7}
+.blog-more{color:var(--color-primary);font-weight:600;font-size:.92rem}
+.blog-post{max-width:720px}.blog-post h1{margin:10px 0 2px;font-size:1.9rem}
+.blog-post p{line-height:1.85;color:var(--color-text);margin:0 0 18px}
 .card{display:flex;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:12px;overflow:hidden;transition:transform .12s,box-shadow .12s,border-color .12s}
 .card:hover{transform:translateY(-3px);border-color:#c9dcff;box-shadow:0 8px 24px rgba(36,99,235,.10)}
 .card .thumb{aspect-ratio:1;background:var(--color-surface);overflow:hidden}
@@ -361,6 +372,42 @@ export function renderSearch(ctx, { canonical = null } = {}) {
     canonical, ogTitle: q ? `Tìm "${q}"` : 'Tìm kiếm', siteName: ctx.shop.name, robots: 'noindex, follow',
   });
   return page(`${q ? `Tìm "${q}"` : 'Tìm kiếm'} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
+}
+
+/** Blog: danh sách bài published. */
+export function renderBlogList(ctx, posts, { canonical = null } = {}) {
+  const items = (posts ?? []).length
+    ? posts.map((p) => `<article class="blog-card">
+        <h2><a href="/blog/${esc(p.slug)}">${esc(p.title)}</a></h2>
+        <div class="blog-date">${esc(fmtDate(p.published_at))}</div>
+        ${p.excerpt ? `<p>${esc(p.excerpt)}</p>` : ''}
+        <a class="blog-more" href="/blog/${esc(p.slug)}">Đọc tiếp →</a>
+      </article>`).join('')
+    : '<p class="empty">Chưa có bài viết nào.</p>';
+  const body = `${SECTIONS.header({}, ctx)}
+    <main class="wrap section">
+      <div class="section-h"><h2>Blog</h2></div>
+      <div class="blog-list">${items}</div>
+    </main>${SECTIONS.footer({}, ctx)}`;
+  const head = metaHead({ description: `Bài viết & tin tức từ ${ctx.shop.name}`, canonical, ogTitle: `Blog — ${ctx.shop.name}`, siteName: ctx.shop.name });
+  return page(`Blog — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
+}
+
+/** Blog: một bài. body TEXT → tách đoạn theo dòng trống, esc + <br> cho xuống dòng đơn. */
+export function renderBlogPost(ctx, post, { canonical = null } = {}) {
+  const paras = String(post.body ?? '').split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean)
+    .map((para) => `<p>${esc(para).replace(/\n/g, '<br>')}</p>`).join('');
+  const body = `${SECTIONS.header({}, ctx)}
+    <main class="wrap content blog-post">
+      <div class="crumb"><a href="/">Trang chủ</a> / <a href="/blog">Blog</a> / ${esc(post.title)}</div>
+      <h1>${esc(post.title)}</h1>
+      <div class="blog-date">${esc(fmtDate(post.published_at))}</div>
+      ${paras || ''}
+      <p style="margin-top:36px"><a class="btn btn-primary" href="/blog">← Về Blog</a></p>
+    </main>${SECTIONS.footer({}, ctx)}`;
+  const desc = post.excerpt ? String(post.excerpt) : String(post.body ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const head = metaHead({ description: desc, canonical, ogTitle: post.title, ogType: 'article', siteName: ctx.shop.name });
+  return page(`${post.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
 }
 
 // Banner preview: tĩnh, không nội suy dữ liệu shop → an toàn. Nổi bật để không ai

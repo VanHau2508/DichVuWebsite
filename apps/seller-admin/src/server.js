@@ -261,6 +261,54 @@ async function productImport(req, res, me, cookie, shopId) {
   return productImportPage(res, me, cookie, shopId, { ...r.json, total: rows.length }, null);
 }
 
+// ── Blog ─────────────────────────────────────────────────────────────────────
+async function blogList(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('GET', `/shops/${shopId}/blog`, { cookie });
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'blog');
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được blog.'));
+  return sendHtml(res, 200, V.renderBlogList(ctx, shopId, r.json));
+}
+async function blogNew(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'blog');
+  return sendHtml(res, 200, V.renderBlogEditor(ctx, shopId, null, null));
+}
+async function blogEditor(res, me, cookie, shopId, id, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('GET', `/shops/${shopId}/blog/${id}`, { cookie });
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'blog');
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tìm thấy bài viết.'));
+  return sendHtml(res, err ? 400 : 200, V.renderBlogEditor(ctx, shopId, r.json, err));
+}
+const blogForm = (f) => ({ title: String(f.title ?? '').trim(), slug: String(f.slug ?? '').toLowerCase().trim(), excerpt: String(f.excerpt ?? ''), body: String(f.body ?? '') });
+async function blogCreate(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const body = blogForm(await readForm(req));
+  const r = await sellerApi('POST', `/shops/${shopId}/blog`, { cookie, body });
+  if (r.status === 201) return redirect(res, `/shops/${shopId}/blog/${r.json.id}`);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'blog');
+  return sendHtml(res, 400, V.renderBlogEditor(ctx, shopId, body, r.json?.error ?? 'Không tạo được bài.')); // body không có id → form "mới" giữ giá trị
+}
+async function blogUpdate(req, res, me, cookie, shopId, id) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const body = blogForm(await readForm(req));
+  const r = await sellerApi('PATCH', `/shops/${shopId}/blog/${id}`, { cookie, body });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/blog/${id}`);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'blog');
+  return sendHtml(res, 400, V.renderBlogEditor(ctx, shopId, { ...body, id, status: 'draft' }, r.json?.error ?? 'Không lưu được bài.'));
+}
+async function blogStatus(res, me, cookie, shopId, id, action) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  await sellerApi('POST', `/shops/${shopId}/blog/${id}/${action}`, { cookie, body: {} });
+  return redirect(res, `/shops/${shopId}/blog/${id}`);
+}
+async function blogDelete(res, me, cookie, shopId, id) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  await sellerApi('DELETE', `/shops/${shopId}/blog/${id}`, { cookie });
+  return redirect(res, `/shops/${shopId}/blog`);
+}
+
 // ── Danh mục ─────────────────────────────────────────────────────────────────
 async function categoriesPage(res, me, cookie, shopId, notice, err) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -969,6 +1017,14 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/products/import$`).exec(p)) && req.method === 'GET') return productImportPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/products/import$`).exec(p)) && req.method === 'POST') return productImport(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/categories$`).exec(p)) && req.method === 'POST') return productCategoriesSave(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/blog$`).exec(p)) && req.method === 'GET') return blogList(res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/blog/new$`).exec(p)) && req.method === 'GET') return blogNew(res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/blog$`).exec(p)) && req.method === 'POST') return blogCreate(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/blog/${UUID}/publish$`).exec(p)) && req.method === 'POST') return blogStatus(res, me, cookie, m[1], m[2], 'publish');
+    if ((m = new RegExp(`^/shops/${UUID}/blog/${UUID}/unpublish$`).exec(p)) && req.method === 'POST') return blogStatus(res, me, cookie, m[1], m[2], 'unpublish');
+    if ((m = new RegExp(`^/shops/${UUID}/blog/${UUID}/delete$`).exec(p)) && req.method === 'POST') return blogDelete(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/blog/${UUID}$`).exec(p)) && req.method === 'GET') return blogEditor(res, me, cookie, m[1], m[2], null);
+    if ((m = new RegExp(`^/shops/${UUID}/blog/${UUID}$`).exec(p)) && req.method === 'POST') return blogUpdate(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/categories$`).exec(p)) && req.method === 'GET') return categoriesPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/categories$`).exec(p)) && req.method === 'POST') return categoryCreate(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/categories/${UUID}/delete$`).exec(p)) && req.method === 'POST') return categoryDelete(res, me, cookie, m[1], m[2]);

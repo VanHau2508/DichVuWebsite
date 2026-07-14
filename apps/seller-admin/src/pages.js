@@ -145,11 +145,24 @@ export function layout(title, ctx, body) {
 
 // Trang "Giao diện": chủ shop (theme.write) chọn màu thương hiệu → lưu vào theme tokens.
 // Không JS: dùng <input type="color"> gốc của trình duyệt. Storefront sanitize khi render.
-const THEME_FIELDS = [
-  { key: 'color.primary', label: 'Màu chủ đạo', hint: 'Nút, link, giá', def: '#2463eb' },
+export const THEME_COLORS = [
+  { key: 'color.primary', label: 'Màu chủ đạo', hint: 'Nút, giá', def: '#2463eb' },
+  { key: 'color.accent', label: 'Màu nhấn', hint: 'Link, điểm nhấn nhỏ', def: '#007bff' },
   { key: 'color.hero-bg', label: 'Nền dải hero', hint: 'Dải lớn đầu trang chủ', def: '#eef4ff' },
-  { key: 'color.text', label: 'Màu chữ chính', hint: 'Tiêu đề, nội dung', def: '#111827' },
-  { key: 'color.surface', label: 'Màu nền phụ', hint: 'Ô ảnh, chân trang', def: '#f9fafb' },
+  { key: 'color.text', label: 'Màu chữ', hint: 'Tiêu đề, nội dung', def: '#111827' },
+  { key: 'color.surface', label: 'Nền phụ', hint: 'Ô ảnh, chân trang', def: '#f9fafb' },
+];
+export const THEME_FONTS = [
+  { v: '', label: 'Mặc định (hiện đại)' },
+  { v: 'Georgia, serif', label: 'Georgia — serif cổ điển' },
+  { v: 'Arial, sans-serif', label: 'Arial' },
+  { v: 'Verdana, sans-serif', label: 'Verdana — dễ đọc' },
+  { v: 'Tahoma, sans-serif', label: 'Tahoma' },
+];
+export const THEME_RADII = [
+  { v: '8px', label: 'Nhỏ — vuông vắn' },
+  { v: '12px', label: 'Vừa — mặc định' },
+  { v: '18px', label: 'Lớn — bo tròn' },
 ];
 function themeVal(tokens, key, def) {
   if (tokens && typeof tokens === 'object') {
@@ -159,27 +172,44 @@ function themeVal(tokens, key, def) {
   }
   return def;
 }
+const sectionProps = (layout, name) => (Array.isArray(layout) ? layout.find((s) => s && s.section === name)?.props : null) ?? {};
 export function renderTheme(ctx, theme, notice) {
   const tokens = theme?.tokens ?? {};
-  const rows = THEME_FIELDS.map((f) => {
+  const hero = sectionProps(theme?.layout, 'hero');
+  const grid = sectionProps(theme?.layout, 'product_grid');
+  const curFont = themeVal(tokens, 'font.body', '');
+  const curRadius = themeVal(tokens, 'radius', '12px');
+  const colorRow = (f) => {
     const raw = themeVal(tokens, f.key, f.def);
     const hex = /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : f.def;
-    return `<div style="display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid #f1f2f4">
-      <input type="color" name="${esc(f.key)}" value="${esc(hex)}" aria-label="${esc(f.label)}" style="width:52px;height:40px;padding:2px;border-radius:8px;flex:0 0 auto;cursor:pointer">
-      <div><div style="font-weight:600;font-size:.95rem">${esc(f.label)}</div><div class="muted" style="font-size:.84rem">${esc(f.hint)}</div></div>
+    return `<div style="display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid #f1f2f4">
+      <input type="color" name="${esc(f.key)}" value="${esc(hex)}" aria-label="${esc(f.label)}" style="width:50px;height:38px;padding:2px;border-radius:8px;flex:0 0 auto;cursor:pointer">
+      <div><div style="font-weight:600;font-size:.94rem">${esc(f.label)}</div><div class="muted" style="font-size:.83rem">${esc(f.hint)}</div></div>
       <code style="margin-left:auto">${esc(hex)}</code></div>`;
-  }).join('');
+  };
+  const opt = (list, cur) => list.map((o) => `<option value="${esc(o.v)}"${o.v === cur ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
   return layout('Giao diện', ctx, `<h1>Giao diện cửa hàng</h1>
     ${notice ? `<div class="card" style="border-color:#93c5fd;background:#eff6ff;color:#1e40af">${esc(notice)}</div>` : ''}
-    <div class="card">
-      <p class="muted">Chọn màu thương hiệu cho <strong>trang bán hàng</strong>. Bấm ô màu để chọn; lưu là áp dụng ngay cho website của bạn.</p>
-      <form method="POST" action="/shops/${esc(ctx.shopId)}/theme">
-        ${rows}
-        <div class="actions"><button class="btn" type="submit">Lưu giao diện</button>
-          <button class="btn alt" type="submit" name="reset" value="1">Khôi phục mặc định</button></div>
-      </form>
-    </div>
-    <a class="btn alt" href="/shops/${esc(ctx.shopId)}/orders" style="margin-top:12px">← Quay lại</a>`);
+    <form method="POST" action="/shops/${esc(ctx.shopId)}/theme">
+      <div class="card"><h2 style="margin-top:0">Màu sắc thương hiệu</h2>
+        ${THEME_COLORS.map(colorRow).join('')}
+      </div>
+      <div class="card"><h2 style="margin-top:0">Kiểu chữ & bo góc</h2>
+        <div class="grid2">
+          <div><label>Kiểu chữ</label><select name="font">${opt(THEME_FONTS, curFont)}</select></div>
+          <div><label>Bo góc</label><select name="radius">${opt(THEME_RADII, curRadius)}</select></div>
+        </div>
+      </div>
+      <div class="card"><h2 style="margin-top:0">Nội dung trang chủ (dải hero)</h2>
+        <label>Dòng nhãn nhỏ</label><input name="hero_eyebrow" maxlength="60" value="${esc(hero.eyebrow ?? '')}" placeholder="Cửa hàng chính thức">
+        <label>Tiêu đề lớn</label><input name="hero_title" maxlength="120" value="${esc(hero.title ?? '')}" placeholder="(để trống = tên cửa hàng)">
+        <label>Mô tả</label><textarea name="hero_subtitle" maxlength="300" rows="2" placeholder="(để trống = câu mặc định)">${esc(hero.subtitle ?? '')}</textarea>
+        <label>Tiêu đề khu sản phẩm</label><input name="grid_title" maxlength="80" value="${esc(grid.title ?? '')}" placeholder="Sản phẩm nổi bật">
+      </div>
+      <div class="card actions"><button class="btn" type="submit">Lưu giao diện</button>
+        <button class="btn alt" type="submit" name="reset" value="1">Khôi phục mặc định</button>
+        <a class="btn alt" href="/shops/${esc(ctx.shopId)}/overview">← Quay lại</a></div>
+    </form>`);
 }
 
 // Cài đặt / Hồ sơ cửa hàng (shop.write = owner/admin). Tên + liên hệ + địa chỉ.

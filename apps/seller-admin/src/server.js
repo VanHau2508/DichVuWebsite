@@ -810,17 +810,31 @@ async function themePage(res, me, cookie, shopId, ok) {
 async function themeSave(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
-  // Giữ layout hiện tại (PUT ghi đè cả tokens+layout); chỉ đổi màu.
-  const cur = await sellerApi('GET', `/shops/${shopId}/theme`, { cookie });
-  const layout = cur.status === 200 ? cur.json?.layout : undefined;
-  const tokens = {};
+  // reset → tokens/layout rỗng (storefront dùng mặc định). Storefront sanitize khi render nên
+  // PUT chỉ cần dựng đúng cấu trúc; giá trị lạ sẽ bị bỏ lúc render.
+  let tokens = {}, layout = [];
   if (!f.reset) {
     const HEX = /^#[0-9a-fA-F]{6}$/;
-    for (const k of ['color.primary', 'color.hero-bg', 'color.text', 'color.surface']) {
+    for (const k of ['color.primary', 'color.accent', 'color.hero-bg', 'color.text', 'color.surface']) {
       const v = String(f[k] ?? ''); if (HEX.test(v)) tokens[k] = v;
     }
-    // dẫn xuất: accent + hover theo màu chủ đạo (đồng bộ link/nút).
-    if (tokens['color.primary']) { tokens['color.accent'] = tokens['color.primary']; tokens['color.primary-dark'] = tokens['color.primary']; }
+    if (tokens['color.primary']) tokens['color.primary-dark'] = tokens['color.primary']; // màu hover nút
+    const font = String(f.font ?? '').trim();
+    if (font) { tokens['font.body'] = font; tokens['font.heading'] = font; }
+    const radius = String(f.radius ?? '').trim();
+    if (/^\d{1,4}px$/.test(radius)) tokens['radius'] = radius;
+    // layout: giữ cấu trúc chuẩn, chỉ nạp props hero + tiêu đề khu sản phẩm.
+    const heroProps = {};
+    const eb = String(f.hero_eyebrow ?? '').trim(); if (eb) heroProps.eyebrow = eb.slice(0, 60);
+    const ht = String(f.hero_title ?? '').trim(); if (ht) heroProps.title = ht.slice(0, 120);
+    const hs = String(f.hero_subtitle ?? '').trim(); if (hs) heroProps.subtitle = hs.slice(0, 300);
+    const gt = String(f.grid_title ?? '').trim();
+    layout = [
+      { section: 'header', props: {} },
+      { section: 'hero', props: heroProps },
+      { section: 'product_grid', props: gt ? { title: gt.slice(0, 80) } : {} },
+      { section: 'footer', props: {} },
+    ];
   }
   const r = await sellerApi('PUT', `/shops/${shopId}/theme`, { cookie, body: { tokens, layout } });
   return redirect(res, `/shops/${shopId}/theme?ok=${r.status === 200 ? 1 : 0}`);

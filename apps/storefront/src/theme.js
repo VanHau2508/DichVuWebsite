@@ -121,7 +121,7 @@ const SECTIONS = {
   </div></header>`,
 
   hero: (props, ctx) => `<section class="hero"><div class="wrap">
-    <p class="eyebrow">Cửa hàng chính thức</p>
+    <p class="eyebrow">${esc(props.eyebrow || 'Cửa hàng chính thức')}</p>
     <h1>${esc(props.title || ctx.shop.name)}</h1>
     <p>${esc(props.subtitle || 'Mua sắm dễ dàng — giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.')}</p>
     <a class="btn btn-primary" href="#san-pham">Xem sản phẩm</a>

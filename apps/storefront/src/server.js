@@ -118,7 +118,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const shopId = resolved.shopId;
 
     const data = await withStore(shopId, async (c) => {
-      const shopRes = await c.query(`SELECT slug, name, status FROM shops WHERE id = current_shop_id()`);
+      const shopRes = await c.query(`SELECT slug, name, status, contact_email, contact_phone, business_address FROM shops WHERE id = current_shop_id()`);
       const shop = shopRes.rows[0];
       if (!shop) return { notFound: true }; // terminated/deleted (RLS)
       if (shop.status === 'suspended') return { shop, suspended: true };
@@ -138,10 +138,13 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       const productGrid = (whereJoin = '', args = []) =>
         c.query(
           `SELECT p.id, p.slug, p.title, p.price_vnd,
-                  (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key
+                  (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
+                  (SELECT coalesce(sum(il.on_hand - il.reserved), 0)
+                     FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
+                    WHERE v.product_id = p.id) AS available
              FROM products p ${whereJoin} ORDER BY p.created_at DESC LIMIT 50`,
           args,
-        ).then((r) => r.rows.map((p) => ({ ...p, image: imgUrl(p.image_key) })));
+        ).then((r) => r.rows.map((p) => ({ ...p, image: imgUrl(p.image_key), available: Number(p.available) })));
 
       // Trang chi tiết sản phẩm: /p/:slug
       const pm = /^\/p\/([a-z0-9-]+)$/.exec(url.pathname);
@@ -150,7 +153,11 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
           `SELECT id, slug, title, description, price_vnd FROM products WHERE slug = $1`, [pm[1]],
         )).rows[0];
         if (!p) return { ...base, notFound: true };
-        p.variants = (await c.query(`SELECT id, title, sku, price_vnd FROM variants WHERE product_id = $1 ORDER BY position`, [p.id])).rows;
+        // available = on_hand - reserved (KHỚP checkout: không có dòng inventory = 0 = hết hàng).
+        p.variants = (await c.query(
+          `SELECT v.id, v.title, v.sku, v.price_vnd, coalesce(il.on_hand - il.reserved, 0) AS available
+             FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
+            WHERE v.product_id = $1 ORDER BY v.position`, [p.id])).rows;
         const media = (await c.query(`SELECT public_key FROM media WHERE product_id = $1 ORDER BY position, created_at`, [p.id])).rows;
         p.media = media.map((m) => ({ url: imgUrl(m.public_key) }));
         return { ...base, product: p };

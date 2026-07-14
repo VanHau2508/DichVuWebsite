@@ -18,16 +18,20 @@ export function esc(s) {
     .replace(QUOT, '&quot;').replace(APOS, '&#39;');
 }
 
+// Bảng màu MẶC ĐỊNH (phong cách Haravan — xanh dương). Mỗi shop tự override được các
+// token này (sanitizeTokens chỉ nhận hex hợp lệ) → website cá nhân đổi màu thương hiệu.
 export const DEFAULT_TOKENS = {
-  'color.primary': '#111827', // than chì: tiêu đề, nút, giá
-  'color.accent': '#0f766e',  // xanh ngọc: nhấn nhỏ, hover, viền trích dẫn
+  'color.primary': '#2463eb',      // xanh dương: CTA, thương hiệu, giá
+  'color.primary-dark': '#1e4bcc', // hover nút chính
+  'color.accent': '#007bff',       // xanh sáng: link, nhấn nhỏ
   'color.bg': '#ffffff',
-  'color.surface': '#f6f7f8', // nền hero/section nhạt + ô ảnh trống
-  'color.text': '#1f2430',
+  'color.surface': '#f9fafb',      // xám nhạt: ô ảnh trống, nền phụ
+  'color.hero-bg': '#eef4ff',      // xanh dương RẤT nhạt: hero + dải nổi bật
+  'color.text': '#111827',
   'color.muted': '#6b7280',
-  'color.border': '#e6e8eb',
-  'font.heading': 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
-  'font.body': 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+  'color.border': '#eceef1',
+  'font.heading': 'Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+  'font.body': 'Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
   radius: '12px',
   spacing: '16px',
 };
@@ -102,15 +106,18 @@ const SECTIONS = {
       ? `<div class="chips"><a class="chip" href="/">Tất cả</a>${ctx.categories.map((c) => `<a class="chip" href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}</div>`
       : '';
     const cards = ctx.products.length
-      ? ctx.products.map((p) => `
-        <a class="card" href="/p/${esc(p.slug)}">
-          <div class="thumb">${p.image ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy">` : `<span class="ph">${I_IMG}</span>`}</div>
+      ? ctx.products.map((p) => {
+        const out = Number(p.available) <= 0;
+        return `
+        <a class="card${out ? ' is-out' : ''}" href="/p/${esc(p.slug)}">
+          <div class="thumb">${out ? '<span class="soldout-tag">Hết hàng</span>' : ''}${p.image ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy">` : `<span class="ph">${I_IMG}</span>`}</div>
           <div class="body">
             <div class="name">${esc(p.title)}</div>
             <div class="price">${money(p.price_vnd)}</div>
             <span class="cta">Xem chi tiết →</span>
           </div>
-        </a>`).join('')
+        </a>`;
+      }).join('')
       : '<p class="empty">Cửa hàng chưa có sản phẩm nào.</p>';
     return `<section class="section" id="san-pham"><div class="wrap">
       <div class="section-h"><h2>${esc(props.title || 'Sản phẩm')}</h2></div>
@@ -124,8 +131,15 @@ const SECTIONS = {
     const nav = menu.length
       ? `<nav class="ftr-nav">${menu.map((pg) => `<a href="/pages/${esc(pg.slug)}">${esc(pg.title)}</a>`).join('')}</nav>`
       : '';
+    const s = ctx.shop;
+    const bits = [
+      s.business_address ? esc(s.business_address) : '',
+      s.contact_phone ? `ĐT: ${esc(s.contact_phone)}` : '',
+      s.contact_email ? `Email: ${esc(s.contact_email)}` : '',
+    ].filter(Boolean);
+    const contact = bits.length ? `<div class="ftr-contact">${bits.join(' · ')}</div>` : '';
     return `<footer class="ftr"><div class="wrap">
-      <div>${nav}<div class="copy">© ${esc(ctx.shop.name)}</div></div>
+      <div>${nav}${contact}<div class="copy">© ${esc(ctx.shop.name)}</div></div>
       <div class="badges"><span>${I_TRUCK}Giao toàn quốc</span><span>${I_SHIELD}COD · QR</span></div>
     </div></footer>`;
   },
@@ -151,66 +165,77 @@ const DEFAULT_LAYOUT = [
 const STYLE = `*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
 body{margin:0;font-family:var(--font-body);color:var(--color-text);background:var(--color-bg);line-height:1.55;-webkit-font-smoothing:antialiased}
 a{color:inherit;text-decoration:none}img{max-width:100%;display:block}
-h1,h2,h3{font-family:var(--font-heading);font-weight:700;letter-spacing:-.01em;line-height:1.25;color:var(--color-text)}
+h1,h2,h3{font-family:var(--font-heading);font-weight:600;letter-spacing:-.01em;line-height:1.25;color:var(--color-text)}
 .wrap{max-width:1120px;margin:0 auto;padding:0 20px}
 .i{display:inline-flex}.i svg,.cart svg{width:18px;height:18px}
 .hdr{position:sticky;top:0;z-index:20;background:var(--color-bg);border-bottom:1px solid var(--color-border)}
-.hdr .wrap{display:flex;align-items:center;justify-content:space-between;min-height:60px;gap:16px}
-.brand{font-family:var(--font-heading);font-weight:700;font-size:1.15rem;letter-spacing:-.02em;color:var(--color-text);white-space:nowrap}
-.hnav{display:flex;align-items:center;gap:22px;font-size:.92rem;flex-wrap:wrap}
-.hnav a{color:var(--color-muted);transition:color .15s}.hnav a:hover{color:var(--color-text)}
-.hnav .cart{display:inline-flex;align-items:center;gap:6px;color:var(--color-text);font-weight:600}
-.hero{background:var(--color-surface);border-bottom:1px solid var(--color-border)}
-.hero .wrap{max-width:760px;padding:56px 20px;text-align:center}
-.hero .eyebrow{color:var(--color-accent);font-weight:600;font-size:.78rem;letter-spacing:.05em;text-transform:uppercase;margin:0 0 10px}
-.hero h1{margin:0 0 12px;font-size:2rem}.hero p{margin:0 0 22px;color:var(--color-muted);font-size:1.02rem}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-family:var(--font-body);font-size:.95rem;font-weight:600;padding:11px 20px;border-radius:var(--radius);border:1px solid transparent;cursor:pointer;transition:transform .06s,opacity .15s,background .15s;line-height:1}
-.btn:active{transform:translateY(1px)}.btn svg{width:17px;height:17px}
-.btn-primary{background:var(--color-primary);color:#fff}.btn-primary:hover{opacity:.9}
-.section{padding:40px 0}.section-h{display:flex;align-items:baseline;justify-content:space-between;margin:0 0 18px}.section-h h2{margin:0;font-size:1.35rem}
-.chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 22px}
-.chip{border:1px solid var(--color-border);border-radius:999px;padding:6px 15px;font-size:.85rem;color:var(--color-muted);transition:.15s}
-.chip:hover{border-color:var(--color-text);color:var(--color-text)}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:18px}
+.hdr .wrap{display:flex;align-items:center;justify-content:space-between;min-height:64px;gap:16px}
+.brand{font-family:var(--font-heading);font-weight:700;font-size:1.2rem;letter-spacing:-.02em;color:var(--color-text);white-space:nowrap}
+.hnav{display:flex;align-items:center;gap:24px;font-size:.92rem;flex-wrap:wrap}
+.hnav a{color:var(--color-muted);transition:color .15s}.hnav a:hover{color:var(--color-primary)}
+.hnav .cart{display:inline-flex;align-items:center;gap:6px;color:var(--color-text);font-weight:500}.hnav .cart:hover{color:var(--color-primary)}
+.hero{background:var(--color-hero-bg)}
+.hero .wrap{max-width:780px;padding:64px 20px;text-align:center}
+.hero .eyebrow{color:var(--color-primary);font-weight:600;font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;margin:0 0 12px}
+.hero h1{margin:0 0 14px;font-size:2.4rem;font-weight:600}.hero p{margin:0 0 26px;color:#3d5067;font-size:1.05rem}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-family:var(--font-body);font-size:1rem;font-weight:500;min-height:48px;padding:12px 26px;border-radius:999px;border:1px solid transparent;cursor:pointer;transition:background .15s,opacity .15s,transform .06s;line-height:1}
+.btn:active{transform:translateY(1px)}.btn svg{width:18px;height:18px}
+.btn-primary{background:var(--color-primary);color:#fff}.btn-primary:hover{background:var(--color-primary-dark)}
+.btn-ghost{background:#fff;color:var(--color-text);border-color:var(--color-text)}.btn-ghost:hover{background:var(--color-surface)}
+.section{padding:44px 0}.section-h{display:flex;align-items:baseline;justify-content:space-between;margin:0 0 20px}.section-h h2{margin:0;font-size:1.4rem}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 24px}
+.chip{border:1px solid var(--color-border);border-radius:999px;padding:7px 16px;font-size:.86rem;color:var(--color-muted);transition:.15s}
+.chip:hover{border-color:var(--color-primary);color:var(--color-primary);background:var(--color-hero-bg)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:20px}
 .empty{color:var(--color-muted);padding:20px 0}
-.card{display:flex;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--radius);overflow:hidden;transition:transform .12s,box-shadow .12s,border-color .12s}
-.card:hover{transform:translateY(-3px);border-color:#d1d5db;box-shadow:0 8px 24px rgba(17,24,39,.07)}
+.card{display:flex;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:12px;overflow:hidden;transition:transform .12s,box-shadow .12s,border-color .12s}
+.card:hover{transform:translateY(-3px);border-color:#c9dcff;box-shadow:0 8px 24px rgba(36,99,235,.10)}
 .card .thumb{aspect-ratio:1;background:var(--color-surface);overflow:hidden}
 .card .thumb img{width:100%;height:100%;object-fit:cover}
 .card .thumb .ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#c4c8cf}.card .thumb .ph svg{width:34px;height:34px}
-.card .body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px;flex:1}
+.card .body{padding:13px 15px 15px;display:flex;flex-direction:column;gap:6px;flex:1}
 .card .name{font-size:.92rem;color:var(--color-text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.6em}
-.card .price{font-weight:700;color:var(--color-text);font-size:1.04rem;margin-top:auto}
-.card .cta{font-size:.8rem;color:var(--color-accent);font-weight:600}
-.pd{padding:26px 20px 48px}
-.crumb{font-size:.85rem;color:var(--color-muted);margin:0 0 18px}.crumb a:hover{color:var(--color-text)}
-.pd-grid{display:grid;grid-template-columns:1fr 1fr;gap:36px;align-items:start}
+.card .price{font-weight:700;color:var(--color-text);font-size:1.05rem;margin-top:auto}
+.card .cta{font-size:.82rem;color:var(--color-primary);font-weight:600}
+.pd{padding:28px 20px 52px}
+.crumb{font-size:.85rem;color:var(--color-muted);margin:0 0 20px}.crumb a:hover{color:var(--color-primary)}
+.pd-grid{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:start}
 .pd-media{display:flex;flex-direction:column;gap:12px}
-.pd-media .main{aspect-ratio:1;background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius);overflow:hidden;display:flex;align-items:center;justify-content:center;color:#c4c8cf}
+.pd-media .main{aspect-ratio:1;background:var(--color-surface);border:1px solid var(--color-border);border-radius:16px;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#c4c8cf}
 .pd-media .main img{width:100%;height:100%;object-fit:cover}.pd-media .main svg{width:56px;height:56px}
 .pd-media .thumbs{display:flex;gap:10px;flex-wrap:wrap}
-.pd-media .thumbs img{width:72px;height:72px;object-fit:cover;border:1px solid var(--color-border);border-radius:10px}
-.pd-info h1{margin:0 0 10px;font-size:1.7rem}
-.pd-info .price{font-size:1.55rem;font-weight:700;color:var(--color-text);margin:0 0 18px}
-.pd-info .desc{color:#4b5563;line-height:1.75;margin:0 0 22px;white-space:pre-line}
-.addcart{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 20px}
-.addcart select,.addcart input{padding:11px 12px;border:1px solid var(--color-border);border-radius:var(--radius);font-size:.95rem;font-family:inherit;background:var(--color-bg);color:var(--color-text)}
-.addcart input[type=number]{width:84px;text-align:center}.addcart .btn-primary{padding:12px 24px}
-.trust{display:flex;gap:20px;flex-wrap:wrap;color:var(--color-muted);font-size:.85rem;border-top:1px solid var(--color-border);padding-top:16px}
-.trust span{display:inline-flex;align-items:center;gap:6px}.trust svg{width:16px;height:16px}
-.content{max-width:720px;margin:0 auto;padding:36px 20px 56px}
-.content h1{font-size:1.9rem;margin:0 0 .6em}.content h2{margin:1.5em 0 .4em;font-size:1.3rem}
-.content p{line-height:1.75;margin:0 0 1.1em;color:#374151}.content ul{line-height:1.75;padding-left:1.3em;margin:0 0 1.1em}
-.content blockquote{margin:1.4em 0;padding:.4em 0 .4em 1.1em;border-left:3px solid var(--color-accent);color:var(--color-muted);font-style:italic}
+.pd-media .thumbs img{width:74px;height:74px;object-fit:cover;border:1px solid var(--color-border);border-radius:10px}
+.pd-info h1{margin:0 0 12px;font-size:1.9rem;font-weight:600}
+.pd-info .price{font-size:1.7rem;font-weight:700;color:var(--color-primary);margin:0 0 20px}
+.pd-info .desc{color:#3d5067;line-height:1.75;margin:0 0 24px;white-space:pre-line}
+.addcart{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:0 0 22px}
+.addcart select,.addcart input{padding:12px 14px;border:1px solid #d6d6d6;border-radius:12px;font-size:1rem;font-family:inherit;background:var(--color-bg);color:var(--color-text)}
+.addcart select:focus,.addcart input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px rgba(36,99,235,.12)}
+.addcart input[type=number]{width:88px;text-align:center}
+.stock{display:inline-block;font-size:.9rem;font-weight:600;padding:5px 12px;border-radius:999px;margin:0 0 18px}
+.stock.in{background:var(--color-hero-bg);color:var(--color-primary-dark)}
+.stock.low{background:#fff7ed;color:#c2410c}
+.stock.out{background:#fef2f2;color:#b91c1c}
+.soldout-note{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:12px;padding:14px 16px;font-weight:600;margin:0 0 22px}
+.card .thumb{position:relative}
+.card .soldout-tag{position:absolute;top:8px;left:8px;z-index:1;background:rgba(17,24,39,.82);color:#fff;font-size:.76rem;font-weight:600;padding:4px 10px;border-radius:999px}
+.card.is-out .thumb img{opacity:.55;filter:grayscale(.3)}
+.trust{display:flex;gap:22px;flex-wrap:wrap;color:var(--color-muted);font-size:.85rem;border-top:1px solid var(--color-border);padding-top:18px}
+.trust span{display:inline-flex;align-items:center;gap:6px}.trust svg{width:16px;height:16px;color:var(--color-primary)}
+.content{max-width:720px;margin:0 auto;padding:40px 20px 60px}
+.content h1{font-size:2rem;margin:0 0 .6em;font-weight:600}.content h2{margin:1.6em 0 .4em;font-size:1.3rem}
+.content p{line-height:1.8;margin:0 0 1.1em;color:#3d5067}.content ul{line-height:1.8;padding-left:1.3em;margin:0 0 1.1em}
+.content blockquote{margin:1.4em 0;padding:.4em 0 .4em 1.1em;border-left:3px solid var(--color-primary);color:var(--color-muted);font-style:italic}
 .content blockquote cite{display:block;margin-top:.5em;font-size:.88em;font-style:normal}
 .content hr{border:0;border-top:1px solid var(--color-border);margin:2em 0}
-.ftr{border-top:1px solid var(--color-border);background:var(--color-surface);margin-top:24px}
-.ftr .wrap{padding:28px 20px;display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between;color:var(--color-muted);font-size:.88rem}
-.ftr-nav{display:flex;flex-wrap:wrap;gap:18px;margin:0 0 6px}.ftr-nav a:hover{color:var(--color-text)}
-.ftr .badges{display:flex;gap:18px;flex-wrap:wrap}.ftr .badges span{display:inline-flex;align-items:center;gap:6px}.ftr .badges svg{width:16px;height:16px}
-.center-msg{max-width:520px;margin:80px auto;text-align:center;padding:0 20px}.center-msg h1{font-size:1.6rem;margin:0 0 10px}.center-msg p{color:var(--color-muted)}
+.ftr{border-top:1px solid var(--color-border);background:var(--color-surface);margin-top:28px}
+.ftr .wrap{padding:32px 20px;display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between;color:var(--color-muted);font-size:.88rem}
+.ftr-nav{display:flex;flex-wrap:wrap;gap:20px;margin:0 0 6px}.ftr-nav a:hover{color:var(--color-primary)}
+.ftr-contact{font-size:.85rem;color:var(--color-muted);margin:0 0 6px;line-height:1.6}
+.ftr .badges{display:flex;gap:20px;flex-wrap:wrap}.ftr .badges span{display:inline-flex;align-items:center;gap:6px}.ftr .badges svg{width:16px;height:16px;color:var(--color-primary)}
+.center-msg{max-width:520px;margin:80px auto;text-align:center;padding:0 20px}.center-msg h1{font-size:1.7rem;margin:0 0 10px;font-weight:600}.center-msg p{color:var(--color-muted)}
 .preview-banner{position:sticky;top:0;z-index:30;background:#b45309;color:#fff;padding:10px 20px;font-weight:600;text-align:center;font-size:.9rem}
-@media(max-width:720px){.pd-grid{grid-template-columns:1fr;gap:22px}.hero h1{font-size:1.6rem}.hero .wrap{padding:40px 20px}.hnav{gap:14px;font-size:.85rem}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.pd-info h1{font-size:1.4rem}}`;
+@media(max-width:720px){.pd-grid{grid-template-columns:1fr;gap:24px}.hero h1{font-size:1.8rem}.hero .wrap{padding:44px 20px}.hnav{gap:14px;font-size:.85rem}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.pd-info h1{font-size:1.5rem}}`;
 
 function page(title, tokens, bodyHtml, head = '') {
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
@@ -235,14 +260,30 @@ export function renderProduct(ctx, p) {
   const thumbs = media.length > 1
     ? `<div class="thumbs">${media.slice(0, 6).map((m) => `<img src="${esc(m.url)}" alt="${esc(p.title)}" loading="lazy">`).join('')}</div>`
     : '';
-  const options = p.variants.map((v) => `<option value="${esc(v.id)}">${esc(v.title ?? v.sku)} — ${money(v.price_vnd)}</option>`).join('');
+  // Tồn kho: available = on_hand - reserved (KHỚP checkout). ≤0 = hết. Tổng để xác định
+  // sản phẩm còn bán được không; per-variant để vô hiệu lựa chọn đã hết.
+  const av = (v) => Math.max(0, Number(v.available) || 0);
+  const totalAvail = p.variants.reduce((s, v) => s + av(v), 0);
+  const maxAvail = p.variants.reduce((m, v) => Math.max(m, av(v)), 0);
+  const soldOut = totalAvail <= 0;
+  const single = p.variants.length === 1;
+  const stockBadge = soldOut
+    ? '<div class="stock out">Hết hàng</div>'
+    : (single && maxAvail <= 5 ? `<div class="stock low">Chỉ còn ${maxAvail}</div>` : '<div class="stock in">Còn hàng</div>');
+  const options = p.variants.map((v) => {
+    const a = av(v);
+    return `<option value="${esc(v.id)}"${a <= 0 ? ' disabled' : ''}>${esc(v.title ?? v.sku)} — ${money(v.price_vnd)}${a <= 0 ? ' (hết hàng)' : ''}</option>`;
+  }).join('');
   // action=/cart/add tới checkout service (cùng origin qua Caddy) → form-action 'self' cho phép.
-  const addForm = p.variants.length ? `
+  const qtyMax = Math.min(1000, maxAvail || 1);
+  const addForm = !p.variants.length ? '' : (soldOut
+    ? '<div class="soldout-note">Sản phẩm tạm hết hàng. Vui lòng quay lại sau.</div>'
+    : `
     <form class="addcart" method="POST" action="/cart/add">
       ${p.variants.length > 1 ? `<select name="variant_id" aria-label="Phân loại">${options}</select>` : `<input type="hidden" name="variant_id" value="${esc(p.variants[0].id)}">`}
-      <input type="number" name="qty" value="1" min="1" max="1000" inputmode="numeric" aria-label="Số lượng">
+      <input type="number" name="qty" value="1" min="1" max="${qtyMax}" inputmode="numeric" aria-label="Số lượng">
       <button class="btn btn-primary" type="submit">${I_CART}Thêm vào giỏ</button>
-    </form>` : '';
+    </form>`);
   const body = `${SECTIONS.header({}, ctx)}
     <main class="wrap pd">
       <div class="crumb"><a href="/">Trang chủ</a> / ${esc(p.title)}</div>
@@ -251,6 +292,7 @@ export function renderProduct(ctx, p) {
         <div class="pd-info">
           <h1>${esc(p.title)}</h1>
           <div class="price">${money(p.price_vnd)}</div>
+          ${stockBadge}
           ${addForm}
           ${p.description ? `<div class="desc">${esc(p.description)}</div>` : ''}
           <div class="trust"><span>${I_TRUCK}Giao hàng toàn quốc</span><span>${I_SHIELD}Thanh toán COD hoặc QR</span></div>

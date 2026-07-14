@@ -44,6 +44,11 @@ const DOMAINVERIFY_SWEEP_MS = Number(process.env.DOMAINVERIFY_SWEEP_MS ?? 60000)
 const DOMAINVERIFY_PREFIX = process.env.DOMAINVERIFY_PREFIX ?? '_nentang-verify';
 // Quá hạn này mà CHƯA verify → xoá (giải phóng hostname toàn cục, chống squat). 7 ngày.
 const DOMAINVERIFY_GIVEUP_HOURS = Number(process.env.DOMAINVERIFY_GIVEUP_HOURS ?? 168);
+// Pool RIÊNG cho vòng đời thuê bao (role app_billing cực hẹp — 0033). Thiếu env → tắt.
+const BILLING_URL = process.env.DATABASE_URL_BILLING;
+const billingDb = BILLING_URL ? new pg.Pool({ connectionString: BILLING_URL, max: 2 }) : null;
+const SUBSCRIPTION_SWEEP_MS = Number(process.env.SUBSCRIPTION_SWEEP_MS ?? 3600000); // 1 giờ
+const SUBSCRIPTION_GRACE_DAYS = Number(process.env.SUBSCRIPTION_GRACE_DAYS ?? 7);
 const dnsResolver = new Resolver({ timeout: 3000, tries: 2 });
 // DOMAINVERIFY_RESOLVER (dev/e2e): host[:port] của DNS stub. setServers cần IP literal nên
 // phân giải host→IP một lần lúc khởi động (Docker DNS). Prod để trống → dùng resolver hệ thống.
@@ -207,9 +212,50 @@ async function sweepDomainVerify() {
   return verified;
 }
 
+// ── sweep: vòng đời thuê bao ──────────────────────────────────────────────────
+// trial/active hết current_period_end → past_due. past_due quá ân hạn → cancelled + TREO
+// shop (status='suspended' — tái dùng chốt storefront). Cross-shop qua app_billing (0033).
+// Idempotent (guard status trong WHERE). DB lỗi → chỉ bỏ nhịp (không unhandledRejection).
+// Sub past_due VẪN phục vụ storefront (ân hạn); chỉ khi cancelled mới treo.
+async function sweepSubscriptions() {
+  if (!billingDb) return { past_due: 0, cancelled: 0 };
+  let c;
+  try {
+    c = await billingDb.connect();
+    await c.query('BEGIN');
+    const pd = await c.query(
+      `UPDATE subscriptions SET status = 'past_due'
+        WHERE status IN ('trial','active') AND current_period_end IS NOT NULL AND current_period_end < now()`);
+    const cancelled = (await c.query(
+      `UPDATE subscriptions SET status = 'cancelled'
+        WHERE status = 'past_due' AND current_period_end IS NOT NULL
+          AND current_period_end < now() - ($1 || ' days')::interval
+        RETURNING shop_id`, [String(SUBSCRIPTION_GRACE_DAYS)])).rows;
+    for (const row of cancelled) {
+      // Treo shop CHỈ khi (a) đang onboarding/active (guard DƯƠNG như platform suspend — KHÔNG
+      // hạ 'terminated'/'suspended' bằng phủ định <>'suspended'), và (b) shop KHÔNG còn sub nào
+      // khác đang phục vụ (đa-sub: đừng treo shop có sub mới active/trial/past_due còn hiệu lực).
+      await c.query(
+        `UPDATE shops SET status = 'suspended'
+          WHERE id = $1 AND status IN ('onboarding','active')
+            AND NOT EXISTS (SELECT 1 FROM subscriptions s2 WHERE s2.shop_id = $1 AND s2.status IN ('trial','active','past_due'))`,
+        [row.shop_id],
+      );
+    }
+    await c.query('COMMIT');
+    if (pd.rowCount || cancelled.length) log('info', 'subscriptions_swept', { past_due: pd.rowCount, cancelled: cancelled.length });
+    return { past_due: pd.rowCount, cancelled: cancelled.length };
+  } catch (e) {
+    if (c) await c.query('ROLLBACK').catch(() => {});
+    log('error', 'subscription_sweep_error', { message: e.message });
+    return { past_due: 0, cancelled: 0 };
+  } finally { if (c) c.release(); }
+}
+
 const timer = setInterval(poll, POLL_MS);
 const expiryTimer = expiryDb ? setInterval(sweepExpired, EXPIRY_SWEEP_MS) : null;
 const domainTimer = domainDb ? setInterval(sweepDomainVerify, DOMAINVERIFY_SWEEP_MS) : null;
+const billingTimer = billingDb ? setInterval(sweepSubscriptions, SUBSCRIPTION_SWEEP_MS) : null;
 
 // ── HTTP: health + stats (cho e2e kiểm dead-letter) ──────────────────────────
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -233,6 +279,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ verified: n }));
   }
+  // Kích hoạt quét vòng đời thuê bao ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/subscription-sweep' && req.method === 'POST') {
+    const r = await sweepSubscriptions();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   res.writeHead(404); res.end();
 }));
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
@@ -242,8 +294,9 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     clearInterval(timer);
     if (expiryTimer) clearInterval(expiryTimer);
     if (domainTimer) clearInterval(domainTimer);
+    if (billingTimer) clearInterval(billingTimer);
     await worker.close().catch(() => {});
     await queue.close().catch(() => {});
-    server.close(async () => { await db.end().catch(() => {}); await expiryDb?.end().catch(() => {}); await domainDb?.end().catch(() => {}); process.exit(0); });
+    server.close(async () => { await db.end().catch(() => {}); await expiryDb?.end().catch(() => {}); await domainDb?.end().catch(() => {}); await billingDb?.end().catch(() => {}); process.exit(0); });
   });
 }

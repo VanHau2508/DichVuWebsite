@@ -276,6 +276,10 @@ services:
       DATABASE_URL_DOMAINVERIFY: postgres://app_domainverify:devpassword@postgres:5432/app
       DOMAINVERIFY_SWEEP_MS: "60000"
       DOMAINVERIFY_RESOLVER: dns-stub:5353
+      # Pool riêng, role hẹp: vòng đời thuê bao — past_due/cancelled + treo shop (0033).
+      DATABASE_URL_BILLING: postgres://app_billing:devpassword@postgres:5432/app
+      SUBSCRIPTION_SWEEP_MS: "3600000"
+      SUBSCRIPTION_GRACE_DAYS: "7"
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       SMTP_HOST: mailpit

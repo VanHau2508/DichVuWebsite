@@ -21,7 +21,7 @@ import { can, permsFor, ROLES } from './rbac.js';
 import { db, withTenant, audit } from './db.js';
 import { CATALOG_ROUTES } from './catalog.js';
 import { INVENTORY_ROUTES } from './inventory.js';
-import { MEDIA_ROUTES, initMedia } from './media.js';
+import { MEDIA_ROUTES, initMedia, mediaPublicUrl } from './media.js';
 import { THEME_ADMIN_ROUTES } from './theme.js';
 import { PAYMENT_CONFIG_ROUTES } from './payment-config.js';
 import { ORDER_ROUTES } from './orders.js';
@@ -81,13 +81,15 @@ async function getShop(res, ctx) {
   const row = await withTenant(ctx.shopId, async (c) => {
     const { rows } = await c.query(
       `SELECT id, slug, name, status, locale, currency, timezone,
-              contact_email, contact_phone, business_address
+              contact_email, contact_phone, business_address,
+              ship_fee_vnd, free_ship_threshold_vnd, logo_key
          FROM shops WHERE id = $1`,
       [ctx.shopId],
     );
     return rows[0];
   });
   if (!row) return send(res, 404, { error: 'không tìm thấy' }); // RLS che shop khác
+  row.logo_url = mediaPublicUrl(row.logo_key); // BFF hiển thị khỏi phụ thuộc env
   return send(res, 200, row);
 }
 
@@ -103,11 +105,20 @@ async function updateShopProfile(res, ctx, body) {
   const address = String(body.business_address ?? '').trim();
   if (address.length > 500) return send(res, 400, { error: 'địa chỉ quá dài' });
 
+  // Phí vận chuyển (VND): '' → null (dùng mặc định nền tảng). Số nguyên >= 0, có trần.
+  const MAX_SHIP = 10_000_000, MAX_THRESH = 1_000_000_000;
+  const parseMoney = (v) => { const t = String(v ?? '').replace(/[^\d]/g, ''); return t === '' ? null : Number.parseInt(t, 10); };
+  const shipFee = parseMoney(body.ship_fee_vnd);
+  if (shipFee != null && (!Number.isInteger(shipFee) || shipFee < 0 || shipFee > MAX_SHIP)) return send(res, 400, { error: 'phí ship không hợp lệ' });
+  const freeThreshold = parseMoney(body.free_ship_threshold_vnd);
+  if (freeThreshold != null && (!Number.isInteger(freeThreshold) || freeThreshold < 0 || freeThreshold > MAX_THRESH)) return send(res, 400, { error: 'ngưỡng miễn phí ship không hợp lệ' });
+
   await withTenant(ctx.shopId, async (c) => {
     await c.query(
-      `UPDATE shops SET name = $1, contact_email = $2, contact_phone = $3, business_address = $4
+      `UPDATE shops SET name = $1, contact_email = $2, contact_phone = $3, business_address = $4,
+              ship_fee_vnd = $5, free_ship_threshold_vnd = $6
         WHERE id = current_shop_id()`,
-      [name, email || null, phone || null, address || null],
+      [name, email || null, phone || null, address || null, shipFee, freeThreshold],
     );
     await audit(c, 'shop.profile_updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: {} });
   });

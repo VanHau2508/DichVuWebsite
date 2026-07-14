@@ -25,6 +25,25 @@ async function listOrders(res, ctx, _b, _p, query) {
   const where = [];
   const args = [];
   if (['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'].includes(status)) { args.push(status); where.push(`status = $${args.length}`); }
+  // Tìm: mã đơn (nếu q toàn số) hoặc tên/điện thoại khách (ILIKE, escape wildcard).
+  const q = (query.get('q') ?? '').trim().slice(0, 100);
+  if (q) {
+    const like = '%' + q.replace(/[%_\\]/g, '\\$&') + '%';
+    if (/^\d{1,15}$/.test(q)) {
+      args.push(Number(q)); const on = args.length;
+      args.push(like); const lk = args.length;
+      where.push(`(order_number = $${on} OR customer_phone ILIKE $${lk} OR customer_name ILIKE $${lk})`);
+    } else {
+      args.push(like); const lk = args.length;
+      where.push(`(customer_name ILIKE $${lk} OR customer_phone ILIKE $${lk})`);
+    }
+  }
+  // Khoảng ngày (theo created_at, biên [from, to] tính cả ngày to).
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const from = (query.get('from') ?? '').trim();
+  const to = (query.get('to') ?? '').trim();
+  if (DATE_RE.test(from)) { args.push(from); where.push(`created_at >= $${args.length}::date`); }
+  if (DATE_RE.test(to)) { args.push(to); where.push(`created_at < ($${args.length}::date + 1)`); }
   const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const data = await withTenant(ctx.shopId, async (c) => {
     const total = (await c.query(`SELECT count(*)::int n FROM orders ${whereSql}`, args)).rows[0].n;
@@ -143,11 +162,14 @@ async function markPaid(res, ctx, _body, params) {
   const orderId = params[1];
   const out = await withTenant(ctx.shopId, async (c) => {
     const o = (await c.query(
-      `SELECT id, order_number, payment_method, payment_status, customer_email, total_vnd
+      `SELECT id, order_number, payment_method, payment_status, status, customer_email, total_vnd
          FROM orders WHERE id = $1 FOR UPDATE`, [orderId],
     )).rows[0];
     if (!o) return { code: 404 };
     if (o.payment_method !== 'cod') return { code: 409, msg: 'chỉ đơn COD mới đánh dấu đã nhận tiền thủ công' };
+    // 'refunded'/'cancelled' là TERMINAL: không cho đánh dấu đã-trả (khớp markPaidQr) — nếu
+    // không, mark-paid (perm orders.write, không step-up) có thể ĐẢO NGƯỢC một lệnh hoàn tiền.
+    if (['cancelled', 'refunded'].includes(o.status)) return { code: 409, msg: 'đơn đã huỷ/hoàn, không thể đánh dấu đã nhận tiền' };
     const upd = await c.query(
       `UPDATE orders SET payment_status = 'paid', paid_at = now()
         WHERE id = $1 AND payment_status <> 'paid'`, [orderId],
@@ -202,6 +224,40 @@ async function markPaidQr(res, ctx, _body, params) {
   return send(res, 200, { ok: true, payment_status: 'paid' });
 }
 
+// Hoàn tiền / hoàn đơn: đơn ĐÃ THANH TOÁN → payment_status='refunded' + status='refunded'.
+// Perm 'refund' (owner/admin) + STEP-UP. Tồn kho:
+//   - pending/confirmed (còn GIỮ reserve, chưa giao) → GIẢI PHÓNG reserve (đơn không thực
+//     hiện nữa, trả chỗ cho khách khác).
+//   - shipped/delivered (hàng đã rời kho) / cancelled (reserve đã trả lúc huỷ) → KHÔNG đụng
+//     tồn; chủ shop tự nhập lại kho nếu khách trả hàng (tránh giả định "hoàn = luôn trả hàng").
+// Idempotent: guard status<>'refunded' + payment_status='paid'.
+async function refundOrder(res, ctx, _body, params) {
+  const orderId = params[1];
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const o = (await c.query(
+      `SELECT id, order_number, status, payment_status, customer_email, total_vnd
+         FROM orders WHERE id = $1 FOR UPDATE`, [orderId],
+    )).rows[0];
+    if (!o) return { code: 404 };
+    if (o.payment_status !== 'paid') return { code: 409, msg: 'chỉ hoàn được đơn đã thanh toán' };
+    if (o.status === 'refunded') return { code: 409, msg: 'đơn đã hoàn tiền' };
+    if (['pending', 'confirmed'].includes(o.status)) {
+      const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1`, [orderId])).rows;
+      for (const ln of lines) {
+        await c.query(`UPDATE inventory_levels SET reserved = GREATEST(0, reserved - $2), updated_at = now() WHERE variant_id = $1`, [ln.variant_id, ln.qty]);
+      }
+    }
+    await c.query(`UPDATE orders SET status = 'refunded', payment_status = 'refunded' WHERE id = $1`, [orderId]);
+    o.status = 'refunded';
+    await audit(c, 'order.refunded', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, total_vnd: Number(o.total_vnd) } });
+    await statusEvent(c, o); // email báo khách: trạng thái = refunded
+    return { code: 200 };
+  });
+  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy đơn' });
+  if (out.code === 409) return send(res, 409, { error: out.msg });
+  return send(res, 200, { ok: true, status: 'refunded', payment_status: 'refunded' });
+}
+
 const confirmOrder = makeTransition(['pending'], 'confirmed', null, 'order.confirmed');
 const deliverOrder = makeTransition(['shipped'], 'delivered', 'delivered_at', 'order.delivered');
 
@@ -214,4 +270,5 @@ export const ORDER_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/cancel$`), perm: 'orders.write', fn: (res, ctx, b, p) => cancelOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid$`), perm: 'orders.write', fn: (res, ctx, b, p) => markPaid(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr$`), perm: 'payment.write', stepUp: true, fn: (res, ctx, b, p) => markPaidQr(res, ctx, b, p) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/refund$`), perm: 'refund', stepUp: true, fn: (res, ctx, b, p) => refundOrder(res, ctx, b, p) },
 ];

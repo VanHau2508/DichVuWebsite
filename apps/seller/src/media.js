@@ -140,6 +140,43 @@ async function uploadMedia(res, ctx, body, params) {
   }
 }
 
+// URL công khai từ key (dùng chung; getShop build logo_url tránh phụ thuộc env ở BFF).
+export const mediaPublicUrl = (key) => (key ? `${PUBLIC_BASE}/${key}` : null);
+
+// Logo cửa hàng: media CẤP-SHOP. Cùng bất biến bảo mật ảnh sản phẩm (sniff magic byte,
+// re-encode WebP strip payload, chỉ WebP lên PUBLIC). Không giữ bản gốc (logo chỉ branding).
+// Thay logo cũ thì xoá object cũ. Perm 'shop.write' (owner/admin) — khai ở route.
+async function uploadLogo(res, ctx, body) {
+  const buf = body;
+  if (!Buffer.isBuffer(buf) || buf.length === 0) return send(res, 400, { error: 'thiếu dữ liệu ảnh' });
+  if (!sniffImage(buf)) return send(res, 400, { error: 'không phải ảnh hợp lệ (JPEG/PNG/WebP/GIF)' });
+  const publicKey = `${ctx.shopId}/logo-${crypto.randomUUID()}.webp`;
+  try {
+    const { data } = await sharp(buf).rotate()
+      .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 88 }).toBuffer({ resolveWithObject: true });
+    await minio.putObject(BUCKET_PUBLIC, publicKey, data, data.length, { 'Content-Type': 'image/webp' });
+  } catch { return send(res, 422, { error: 'xử lý ảnh thất bại' }); }
+  const old = await withTenant(ctx.shopId, async (c) => {
+    const prev = (await c.query(`SELECT logo_key FROM shops WHERE id = current_shop_id()`)).rows[0]?.logo_key ?? null;
+    await c.query(`UPDATE shops SET logo_key = $1 WHERE id = current_shop_id()`, [publicKey]);
+    await audit(c, 'shop.logo_updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: {} });
+    return prev;
+  });
+  if (old && old !== publicKey) await minio.removeObject(BUCKET_PUBLIC, old).catch(() => {});
+  return send(res, 200, { ok: true, logo_key: publicKey, url: mediaPublicUrl(publicKey) });
+}
+async function deleteLogo(res, ctx) {
+  const old = await withTenant(ctx.shopId, async (c) => {
+    const prev = (await c.query(`SELECT logo_key FROM shops WHERE id = current_shop_id()`)).rows[0]?.logo_key ?? null;
+    await c.query(`UPDATE shops SET logo_key = NULL WHERE id = current_shop_id()`);
+    await audit(c, 'shop.logo_removed', { actorId: ctx.user.id, ip: ctx.ip, metadata: {} });
+    return prev;
+  });
+  if (old) await minio.removeObject(BUCKET_PUBLIC, old).catch(() => {});
+  return send(res, 200, { ok: true });
+}
+
 async function listMedia(res, ctx, _body, params) {
   const productId = params[1];
   const rows = await withTenant(ctx.shopId, async (c) => {
@@ -200,4 +237,6 @@ export const MEDIA_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/products/${UUID}/media/reorder$`), perm: 'catalog.write', fn: (res, ctx, b, p) => reorderMedia(res, ctx, b, p) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/products/${UUID}/media$`), perm: 'catalog.read', fn: (res, ctx, b, p) => listMedia(res, ctx, b, p) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/media/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => deleteMedia(res, ctx, b, p) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/logo$`), perm: 'shop.write', raw: true, fn: (res, ctx, b) => uploadLogo(res, ctx, b) },
+  { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/logo$`), perm: 'shop.write', fn: (res, ctx) => deleteLogo(res, ctx) },
 ];

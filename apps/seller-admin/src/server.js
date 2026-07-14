@@ -133,6 +133,16 @@ async function platformStatus(res, me, cookie, shopId, action) {
   const okMsg = action === 'suspend' ? 'Đã tạm khoá cửa hàng.' : 'Đã mở lại cửa hàng.';
   return platformShopDetail(res, me, cookie, shopId, r.status === 200 ? { notice: okMsg } : { err: r.json?.error ?? 'Thao tác không thực hiện được.' });
 }
+async function platformRenew(req, res, me, cookie, shopId) {
+  const f = await readForm(req);
+  const body = { months: String(f.months ?? '1') };
+  if (f.plan_code) body.plan_code = String(f.plan_code);
+  const r = await platformApi('POST', `/ops/shops/${shopId}/subscription/renew`, { cookie, body });
+  if (isDenied(r.status)) return platDenied(res, me);
+  return platformShopDetail(res, me, cookie, shopId, r.status === 200
+    ? { notice: `Đã ghi nhận thu — gia hạn ${body.months} tháng${body.plan_code ? ` (gói ${body.plan_code})` : ''}, mở lại shop nếu đang khoá.` }
+    : { err: r.json?.error ?? 'Không gia hạn được.' });
+}
 
 async function overviewPage(res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -892,6 +902,7 @@ async function handle(req, res, url, p) {
     if ((pm = new RegExp(`^/platform/shops/${UUID}$`).exec(p)) && req.method === 'GET') return platformShopDetail(res, me, cookie, pm[1]);
     if ((pm = new RegExp(`^/platform/shops/${UUID}/invite$`).exec(p)) && req.method === 'POST') return platformInvite(req, res, me, cookie, pm[1]);
     if ((pm = new RegExp(`^/platform/shops/${UUID}/(suspend|restore)$`).exec(p)) && req.method === 'POST') return platformStatus(res, me, cookie, pm[1], pm[2]);
+    if ((pm = new RegExp(`^/platform/shops/${UUID}/renew$`).exec(p)) && req.method === 'POST') return platformRenew(req, res, me, cookie, pm[1]);
 
     // Tài khoản (cá nhân, không theo shop).
     if (p === '/account' && req.method === 'GET') return accountPage(res, me, cookie);

@@ -170,7 +170,7 @@ async function listShops(req, res) {
 async function getShop(req, res, shopId) {
   const { rows } = await db.query(
     `SELECT s.id, s.slug, s.name, s.status, s.locale, s.currency, s.timezone, s.created_at,
-            d.hostname AS subdomain, sub.plan_code, sub.status AS sub_status
+            d.hostname AS subdomain, sub.plan_code, sub.status AS sub_status, sub.current_period_end
        FROM shops s
        LEFT JOIN domains d ON d.shop_id = s.id AND d.is_primary
        LEFT JOIN subscriptions sub ON sub.shop_id = s.id
@@ -179,6 +179,44 @@ async function getShop(req, res, shopId) {
   );
   if (rows.length === 0) return send(res, 404, { error: 'không tìm thấy shop' });
   return send(res, 200, rows[0]);
+}
+
+// Ghi nhận đã THU thuê bao: sub → active + gia hạn kỳ (từ mốc lớn hơn giữa now và kỳ cũ,
+// cộng dồn), đổi gói nếu chọn, và MỞ LẠI shop nếu đang suspended (guard: chỉ suspended→active,
+// KHÔNG un-terminate). Thu tiền THỦ CÔNG (chưa cổng recurring) — đúng mô hình concierge.
+async function renewSubscription(req, res, shopId, staff, ip, body) {
+  const months = Math.min(Math.max(parseInt(body.months ?? '1', 10) || 1, 1), 24);
+  const planCode = body.plan_code ? String(body.plan_code).trim() : null;
+  if (planCode) {
+    const p = await db.query('SELECT code FROM plans WHERE code = $1 AND active', [planCode]);
+    if (p.rows.length === 0) return send(res, 400, { error: 'gói dịch vụ không hợp lệ' });
+  }
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const sub = await client.query(`SELECT 1 FROM subscriptions WHERE shop_id = $1`, [shopId]);
+    if (sub.rows.length === 0) { await client.query('ROLLBACK'); return send(res, 404, { error: 'không tìm thấy thuê bao của shop' }); }
+    await client.query(
+      `UPDATE subscriptions SET status = 'active',
+              plan_code = COALESCE($2, plan_code),
+              current_period_end = GREATEST(COALESCE(current_period_end, now()), now()) + ($3 || ' months')::interval
+        WHERE shop_id = $1`,
+      [shopId, planCode, String(months)],
+    );
+    await client.query(`UPDATE shops SET status = 'active' WHERE id = $1 AND status = 'suspended'`, [shopId]);
+    await client.query(
+      `INSERT INTO audit_logs (shop_id, actor_type, actor_id, action, ip, metadata)
+       VALUES ($1, 'platform_staff', $2, 'subscription.renewed', $3, $4)`,
+      [shopId, staff.user.id, ip, { months, plan_code: planCode }],
+    );
+    await client.query('COMMIT');
+    return send(res, 200, { ok: true, months });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 async function inviteOwner(req, res, body, staff, shopId, ip) {
@@ -239,6 +277,7 @@ const ROUTES = [
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/invitations$`), fn: (req, res, b, s, ip, p) => inviteOwner(req, res, b, s, p[0], ip) },
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/suspend$`), fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'suspend', s, ip, b) },
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/restore$`), fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'restore', s, ip, b) },
+  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/subscription/renew$`), fn: (req, res, b, s, ip, p) => renewSubscription(req, res, p[0], s, ip, b) },
 ];
 
 const server = http.createServer((req, res) => runReq(req, res, async () => {

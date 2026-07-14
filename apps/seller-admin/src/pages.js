@@ -290,8 +290,18 @@ export function renderPlatformShopDetail(ctx, shop, { notice = null, err = null,
       <table style="margin-top:12px"><tbody>
         <tr><td class="muted">Subdomain</td><td><code>${esc(shop.subdomain ?? '')}</code></td></tr>
         <tr><td class="muted">Slug</td><td>${esc(shop.slug)}</td></tr>
+        <tr><td class="muted">Kỳ thuê bao đến</td><td>${shop.current_period_end ? dt(shop.current_period_end) : '<span class="muted">chưa đặt</span>'}</td></tr>
         <tr><td class="muted">Tạo</td><td>${dt(shop.created_at)}</td></tr>
       </tbody></table>
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0">Ghi nhận thu thuê bao / Gia hạn</h2>
+      <p class="muted" style="font-size:.85rem">Khi chủ shop đã trả tiền: chọn số kỳ → thuê bao chuyển <strong>active</strong>, gia hạn kỳ, và <strong>mở lại</strong> shop nếu đang khoá vì nợ. (Thu tiền thủ công — chưa cổng recurring.)</p>
+      <form method="POST" action="${base}/renew" class="actions" style="align-items:end;flex-wrap:wrap">
+        <div><label>Số tháng</label><select name="months">${[1, 3, 6, 12].map((m) => `<option value="${m}">${m} tháng</option>`).join('')}</select></div>
+        <div><label>Đổi gói (tuỳ chọn)</label><select name="plan_code"><option value="">— Giữ gói hiện tại —</option>${PLANS.map((p) => `<option value="${p.code}"${shop.plan_code === p.code ? ' selected' : ''}>${esc(p.label)}</option>`).join('')}</select></div>
+        <button class="btn" type="submit">Ghi nhận thu + gia hạn</button>
+      </form>
     </div>
     <div class="card"><h2 style="margin-top:0">Mời chủ shop (owner)</h2>
       <p class="muted" style="font-size:.85rem">Tạo link mời để chủ shop đặt mật khẩu + nhận cửa hàng (concierge — chưa gửi email tự động).</p>

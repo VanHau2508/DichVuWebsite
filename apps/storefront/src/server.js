@@ -16,6 +16,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import pg from 'pg';
 import { renderHome, renderProduct, renderPage, renderSearch, renderBlogList, renderBlogPost, renderMaintenance, renderNotFound } from './theme.js';
+import { renderLanding } from './landing.js';
 import { runReq, makeLog, health } from './obs.js';
 
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
@@ -77,6 +78,14 @@ function normalizeHost(raw) {
 
 const CACHE_PUBLIC = 'public, s-maxage=60, stale-while-revalidate=300';
 const PAGE_SIZE = 24; // sản phẩm mỗi trang (lưới trang chủ / danh mục / tìm kiếm)
+// Host GỐC nền tảng → trang CÔNG TY (marketing/bảng giá), KHÔNG phải shop nào.
+const ROOT_HOSTS = new Set((process.env.PLATFORM_ROOT_HOSTS ?? 'nentang.vn,www.nentang.vn')
+  .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+const LANDING_CFG = {
+  contactEmail: process.env.PLATFORM_CONTACT_EMAIL ?? 'lienhe@nentang.vn',
+  contactPhone: process.env.PLATFORM_CONTACT_PHONE ?? '',
+  brand: process.env.PLATFORM_BRAND ?? 'Nền Tảng',
+};
 
 function sendHtml(res, status, html, { shopSlug, cache, preview } = {}) {
   const headers = {
@@ -108,6 +117,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
 
   try {
     const host = normalizeHost(req.headers.host);
+    // Host GỐC nền tảng (nentang.vn) → trang công ty, không resolve shop.
+    if (host && ROOT_HOSTS.has(host)) {
+      if (url.pathname === '/robots.txt') { res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': CACHE_PUBLIC }); return res.end('User-agent: *\nAllow: /\n'); }
+      if (url.pathname === '/') return sendHtml(res, 200, renderLanding(LANDING_CFG), { cache: true });
+      return sendHtml(res, 404, renderNotFound());
+    }
     const resolved = host ? await resolveShop(host) : null;
     if (!resolved) return sendHtml(res, 404, renderNotFound());
     // A5: host phụ (không phải tên miền chính) → 301 sang tên miền chính. Một shop có thể

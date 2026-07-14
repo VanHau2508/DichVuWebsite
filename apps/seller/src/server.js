@@ -25,6 +25,7 @@ import { MEDIA_ROUTES, initMedia } from './media.js';
 import { THEME_ADMIN_ROUTES } from './theme.js';
 import { PAYMENT_CONFIG_ROUTES } from './payment-config.js';
 import { ORDER_ROUTES } from './orders.js';
+import { DASHBOARD_ROUTES } from './dashboard.js';
 import { CONTENT_ROUTES } from './content.js';
 import { EXPORT_ROUTES } from './export.js';
 import { DOMAIN_ROUTES } from './domains.js';
@@ -79,13 +80,38 @@ async function whoami(res, ctx) {
 async function getShop(res, ctx) {
   const row = await withTenant(ctx.shopId, async (c) => {
     const { rows } = await c.query(
-      `SELECT id, slug, name, status, locale, currency, timezone FROM shops WHERE id = $1`,
+      `SELECT id, slug, name, status, locale, currency, timezone,
+              contact_email, contact_phone, business_address
+         FROM shops WHERE id = $1`,
       [ctx.shopId],
     );
     return rows[0];
   });
   if (!row) return send(res, 404, { error: 'không tìm thấy' }); // RLS che shop khác
   return send(res, 200, row);
+}
+
+// Sửa hồ sơ cửa hàng (shop.write = owner/admin). Tên + liên hệ + địa chỉ hiển thị storefront.
+async function updateShopProfile(res, ctx, body) {
+  const name = String(body.name ?? '').trim();
+  if (name.length < 1 || name.length > 200) return send(res, 400, { error: 'tên cửa hàng không hợp lệ (1–200 ký tự)' });
+  const email = body.contact_email != null ? String(body.contact_email).trim() : '';
+  if (email && !EMAIL_RE.test(email)) return send(res, 400, { error: 'email liên hệ không hợp lệ' });
+  if (email.length > 200) return send(res, 400, { error: 'email quá dài' });
+  const phone = String(body.contact_phone ?? '').trim();
+  if (phone.length > 40) return send(res, 400, { error: 'số điện thoại quá dài' });
+  const address = String(body.business_address ?? '').trim();
+  if (address.length > 500) return send(res, 400, { error: 'địa chỉ quá dài' });
+
+  await withTenant(ctx.shopId, async (c) => {
+    await c.query(
+      `UPDATE shops SET name = $1, contact_email = $2, contact_phone = $3, business_address = $4
+        WHERE id = current_shop_id()`,
+      [name, email || null, phone || null, address || null],
+    );
+    await audit(c, 'shop.profile_updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: {} });
+  });
+  return send(res, 200, { ok: true });
 }
 
 async function listMembers(res, ctx) {
@@ -173,6 +199,7 @@ const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/whoami$`), perm: null, fn: (res, ctx) => whoami(res, ctx) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}$`), perm: null, fn: (res, ctx) => getShop(res, ctx) },
+  { m: 'PATCH', re: new RegExp(`^/shops/${UUID}$`), perm: 'shop.write', fn: (res, ctx, b) => updateShopProfile(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/members$`), perm: 'members.read', fn: (res, ctx) => listMembers(res, ctx) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/members/invite$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b) => inviteMember(res, ctx, b) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/members/${UUID}/role$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b, p) => changeRole(res, ctx, p[1], b) },
@@ -183,6 +210,7 @@ const ROUTES = [
   ...THEME_ADMIN_ROUTES,
   ...PAYMENT_CONFIG_ROUTES,
   ...ORDER_ROUTES,
+  ...DASHBOARD_ROUTES,
   ...CONTENT_ROUTES,
   ...EXPORT_ROUTES,
   ...DOMAIN_ROUTES,

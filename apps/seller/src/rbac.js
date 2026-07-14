@@ -18,6 +18,7 @@ export const ALL_PERMS = [
   'members.write',
   'domain.write',
   'payment.write',
+  'shop.write',
   'export',
 ];
 
@@ -28,7 +29,7 @@ export const ALL_PERMS = [
 //   - Order Manager: chỉ đơn hàng.
 const ROLE_PERMS = {
   owner: new Set(ALL_PERMS),
-  admin: new Set(['catalog.read', 'catalog.write', 'orders.read', 'orders.write', 'refund', 'theme.write', 'content.read', 'content.write', 'members.read']),
+  admin: new Set(['catalog.read', 'catalog.write', 'orders.read', 'orders.write', 'refund', 'theme.write', 'shop.write', 'content.read', 'content.write', 'members.read']),
   catalog_manager: new Set(['catalog.read', 'catalog.write']),
   order_manager: new Set(['orders.read', 'orders.write']),
 };

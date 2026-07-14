@@ -168,6 +168,40 @@ async function markPaid(res, ctx, _body, params) {
   return send(res, 200, { ok: true, payment_status: 'paid' });
 }
 
+// Xác nhận TAY đơn QR đã nhận tiền — FALLBACK khi feed đối soát (SePay) vắng/chưa nối.
+// Khác markPaid (COD, orders.write): đây là NỚI bất biến "QR chỉ webhook đặt paid" nên
+// khoá chặt hơn — perm 'payment.write' (chỉ owner) + STEP-UP + audit RIÊNG (đánh dấu
+// manual để phân biệt với webhook đối soát). Chỉ chủ shop tự nhận rủi ro "tiền đã về".
+async function markPaidQr(res, ctx, _body, params) {
+  const orderId = params[1];
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const o = (await c.query(
+      `SELECT id, order_number, payment_method, payment_status, status, customer_email, total_vnd
+         FROM orders WHERE id = $1 FOR UPDATE`, [orderId],
+    )).rows[0];
+    if (!o) return { code: 404 };
+    if (o.payment_method !== 'qr') return { code: 409, msg: 'chỉ đơn QR mới xác nhận tay tại đây' };
+    if (['cancelled', 'refunded'].includes(o.status)) return { code: 409, msg: 'đơn đã huỷ/hoàn, không thể xác nhận thanh toán' };
+    const upd = await c.query(
+      `UPDATE orders SET payment_status = 'paid', paid_at = now()
+        WHERE id = $1 AND payment_status <> 'paid'`, [orderId],
+    );
+    if (upd.rowCount !== 1) return { code: 409, msg: 'đơn đã thanh toán' };
+    await audit(c, 'order.qr_marked_paid_manual', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, manual: true } });
+    // Biên nhận cho khách (giống webhook): phát order.paid TRONG cùng transaction.
+    if (o.customer_email) {
+      await c.query(
+        `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.paid', $1)`,
+        [{ to: o.customer_email, order_number: Number(o.order_number), total_vnd: Number(o.total_vnd) }],
+      );
+    }
+    return { code: 200 };
+  });
+  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy đơn' });
+  if (out.code === 409) return send(res, 409, { error: out.msg });
+  return send(res, 200, { ok: true, payment_status: 'paid' });
+}
+
 const confirmOrder = makeTransition(['pending'], 'confirmed', null, 'order.confirmed');
 const deliverOrder = makeTransition(['shipped'], 'delivered', 'delivered_at', 'order.delivered');
 
@@ -179,4 +213,5 @@ export const ORDER_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/deliver$`), perm: 'orders.write', fn: (res, ctx, b, p) => deliverOrder(res, ctx, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/cancel$`), perm: 'orders.write', fn: (res, ctx, b, p) => cancelOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid$`), perm: 'orders.write', fn: (res, ctx, b, p) => markPaid(res, ctx, b, p) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr$`), perm: 'payment.write', stepUp: true, fn: (res, ctx, b, p) => markPaidQr(res, ctx, b, p) },
 ];

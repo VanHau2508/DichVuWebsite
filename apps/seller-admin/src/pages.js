@@ -9,41 +9,61 @@ const dt = (s) => { try { return new Intl.DateTimeFormat('vi-VN', { day: '2-digi
 const STATUS = { pending: 'Chờ xử lý', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn' };
 const PAY = { unpaid: 'Chưa trả', paid: 'Đã trả' };
 
-const STYLE = `*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#111827;background:#f3f4f6;line-height:1.5}
-a{color:#2563eb;text-decoration:none}.top{background:#111827;color:#fff}.top .in{max-width:920px;margin:0 auto;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px}
-.top a{color:#fff}.top .brand{font-weight:700}.top form{display:inline}.top button{background:transparent;color:#d1d5db;border:0;cursor:pointer;font:inherit}
-.wrap{max-width:920px;margin:0 auto;padding:16px}
-.card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin:12px 0}
-h1{font-size:1.35rem}h2{font-size:1.05rem;margin:1em 0 .4em}
-table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px 8px;border-bottom:1px solid #f0f0f0;font-size:.92rem}
-th{color:#6b7280;font-weight:600}tr:hover td{background:#fafafa}
-.btn{display:inline-block;background:#111827;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:.95rem;font-weight:600;cursor:pointer;text-decoration:none}
-.btn.alt{background:#fff;color:#111827;border:1px solid #d1d5db}.btn.warn{background:#fff;color:#b91c1c;border:1px solid #fca5a5}.btn.sm{padding:7px 12px;font-size:.9rem}
-label{display:block;font-size:.9rem;margin:10px 0 4px;font-weight:600}
-input,select,textarea{width:100%;padding:11px;border:1px solid #d1d5db;border-radius:8px;font-size:1rem;font-family:inherit}
-textarea{min-height:76px;resize:vertical}
-.center{max-width:380px;margin:48px auto}.err{background:#fef2f2;border:1px solid #fca5a5;color:#b91c1c;border-radius:8px;padding:10px;margin:8px 0}
-.badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:.82rem;font-weight:600;background:#e5e7eb;color:#374151}
+const STYLE = `*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#1f2430;background:#f6f7f8;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:#0f766e;text-decoration:none}a:hover{text-decoration:underline}
+h1{font-size:1.4rem;letter-spacing:-.01em;margin:0 0 .6em}h2{font-size:1.05rem;margin:0 0 .5em;font-weight:600}
+.authwrap{padding:20px}.center{max-width:400px;margin:56px auto}
+.shell{display:flex;min-height:100vh}
+.side{width:232px;flex:0 0 232px;background:#fff;border-right:1px solid #e6e8eb;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.side-brand{padding:17px 20px;font-weight:700;font-size:1.02rem;color:#111827;border-bottom:1px solid #e6e8eb;display:flex;align-items:center;gap:9px}.side-brand svg{width:20px;height:20px}
+.side-shop{padding:13px 20px 4px;font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:#9ca3af}
+.side-nav{padding:4px 12px 12px;display:flex;flex-direction:column;gap:2px;flex:1}
+.side-nav a{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:9px;color:#4b5563;font-size:.92rem;font-weight:500}
+.side-nav a:hover{background:#f6f7f8;color:#111827;text-decoration:none}
+.side-nav a.on{background:#eaf4f1;color:#0f766e;font-weight:600}.side-nav a svg{width:18px;height:18px;flex:0 0 auto}
+.side-user{border-top:1px solid #e6e8eb;padding:12px 16px}.side-user .email{color:#6b7280;font-size:.82rem;display:block;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-user button{background:#fff;border:1px solid #d8dbe0;border-radius:9px;padding:8px 12px;font:inherit;font-size:.85rem;cursor:pointer;color:#111827;width:100%}.side-user button:hover{background:#f6f7f8}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.tbar{background:#fff;border-bottom:1px solid #e6e8eb;padding:14px 26px;display:flex;justify-content:space-between;align-items:center;gap:12px;position:sticky;top:0;z-index:10}
+.tbar .brand{font-weight:700;color:#111827;display:flex;align-items:center;gap:8px}.tbar .brand svg{width:20px;height:20px}
+.tbar .acc{font-size:.88rem;color:#6b7280;display:flex;align-items:center;gap:14px}.tbar .acc form{display:inline;margin:0}
+.tbar .acc button{background:transparent;border:0;color:#6b7280;cursor:pointer;font:inherit}.tbar .acc button:hover{color:#111827}
+.content{padding:26px;max-width:1000px;margin:0 auto;width:100%;flex:1}
+.card{background:#fff;border:1px solid #e6e8eb;border-radius:12px;padding:18px 20px;margin:14px 0}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:11px 10px;border-bottom:1px solid #f1f2f4;font-size:.92rem}
+th{color:#6b7280;font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.02em}tr:last-child td{border-bottom:0}tbody tr:hover td{background:#fafbfc}
+.btn{display:inline-flex;align-items:center;gap:7px;justify-content:center;background:#111827;color:#fff;border:0;border-radius:10px;padding:10px 18px;font-size:.92rem;font-weight:600;cursor:pointer;text-decoration:none;transition:opacity .15s,transform .06s}
+.btn:hover{opacity:.9;text-decoration:none}.btn:active{transform:translateY(1px)}.btn svg{width:16px;height:16px}
+.btn.alt{background:#fff;color:#111827;border:1px solid #d8dbe0}.btn.alt:hover{background:#f6f7f8;opacity:1}
+.btn.warn{background:#fff;color:#b91c1c;border:1px solid #f0a6a6}.btn.warn:hover{background:#fef2f2;opacity:1}
+.btn.sm{padding:7px 13px;font-size:.86rem;border-radius:8px}
+label{display:block;font-size:.86rem;margin:12px 0 5px;font-weight:600;color:#374151}
+input,select,textarea{width:100%;padding:11px 12px;border:1px solid #d8dbe0;border-radius:10px;font-size:1rem;font-family:inherit;color:#1f2430;background:#fff}
+input:focus,select:focus,textarea:focus{outline:none;border-color:#0f766e;box-shadow:0 0 0 3px rgba(15,118,110,.12)}
+textarea{min-height:80px;resize:vertical}
+.err{background:#fef2f2;border:1px solid #f0a6a6;color:#b91c1c;border-radius:10px;padding:11px 14px;margin:10px 0}
+.badge{display:inline-block;padding:3px 11px;border-radius:999px;font-size:.8rem;font-weight:600;background:#eef0f2;color:#4b5563}
 .badge.pending{background:#fef3c7;color:#92400e}.badge.confirmed{background:#dbeafe;color:#1e40af}.badge.shipped{background:#e0e7ff;color:#3730a3}
-.badge.delivered{background:#d1fae5;color:#065f46}.badge.cancelled{background:#fee2e2;color:#991b1b}.badge.paid{background:#d1fae5;color:#065f46}.badge.unpaid{background:#f3f4f6;color:#6b7280}
-.muted{color:#6b7280}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.filters{display:flex;gap:8px;align-items:end;flex-wrap:wrap}.filters>div{flex:0 0 auto}
-.pill{display:inline-block;margin-right:6px}nav.tabs{margin:2px 0 14px;border-bottom:1px solid #e5e7eb;display:flex;gap:6px}
-nav.tabs a{margin-right:8px;padding:8px 2px;color:#6b7280}nav.tabs a.on{border-bottom:2px solid #111827;font-weight:600;color:#111827}
-.badge.active{background:#d1fae5;color:#065f46}.badge.draft{background:#fef3c7;color:#92400e}.badge.archived{background:#e5e7eb;color:#4b5563}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}@media(max-width:560px){.grid2{grid-template-columns:1fr}}
+.badge.delivered{background:#d1fae5;color:#065f46}.badge.cancelled{background:#fee2e2;color:#991b1b}.badge.paid{background:#d1fae5;color:#065f46}.badge.unpaid{background:#eef0f2;color:#6b7280}
+.badge.active{background:#d1fae5;color:#065f46}.badge.draft{background:#fef3c7;color:#92400e}.badge.archived{background:#eef0f2;color:#4b5563}.badge.published{background:#d1fae5;color:#065f46}
+.muted{color:#6b7280}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.filters{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.filters>div{flex:0 0 auto}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}@media(max-width:560px){.grid2{grid-template-columns:1fr}}
 .inline{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}.inline input{width:auto}
-.num{font-variant-numeric:tabular-nums}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.num{font-variant-numeric:tabular-nums}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
 .stock{font-weight:600}.stock.low{color:#b45309}.stock.zero{color:#b91c1c}
-input[type=file]{width:auto;padding:8px;background:#f9fafb;border:1px dashed #cbd5e1}
+input[type=file]{width:auto;padding:9px;background:#f6f7f8;border:1px dashed #cbd5e1}
 .media-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px}
-.thumb{margin:0;width:120px}.thumb img{width:120px;height:120px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;display:block}
-.thumb .ph{width:120px;height:120px;border-radius:8px;border:1px dashed #cbd5e1;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:.82rem;background:#f9fafb;text-align:center}
+.thumb{margin:0;width:120px}.thumb img{width:120px;height:120px;object-fit:cover;border-radius:10px;border:1px solid #e6e8eb;display:block}
+.thumb .ph{width:120px;height:120px;border-radius:10px;border:1px dashed #cbd5e1;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:.82rem;background:#f6f7f8;text-align:center}
 .thumb .prim{font-size:.72rem;text-align:center;color:#065f46;font-weight:600;margin-top:3px}
 .thumb-act{display:flex;gap:3px;justify-content:center;flex-wrap:wrap;margin-top:4px}.thumb-act form{margin:0}
 .thumb-act .btn.sm{padding:4px 7px;font-size:.8rem}
-.badge.published{background:#d1fae5;color:#065f46}
-.block{border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin:8px 0;background:#fafafa}
-.block textarea{background:#fff}code{background:#f3f4f6;padding:2px 5px;border-radius:4px;font-size:.85rem}`;
+.block{border:1px solid #e6e8eb;border-radius:10px;padding:12px;margin:8px 0;background:#fafbfc}
+.block textarea{background:#fff}code{background:#f1f2f4;padding:2px 6px;border-radius:5px;font-size:.85rem}.pill{display:inline-block;margin-right:6px}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 18px}
+.metric{background:#fff;border:1px solid #e6e8eb;border-radius:12px;padding:14px 16px}.metric .l{font-size:.8rem;color:#6b7280;margin-bottom:4px}.metric .v{font-size:1.5rem;font-weight:700;letter-spacing:-.01em}
+@media(max-width:760px){.shell{flex-direction:column}.side{width:100%;flex:none;height:auto;position:static}.side-nav{flex-direction:row;flex-wrap:wrap}.content{padding:16px}.tbar{padding:12px 16px}}`;
 
 const badge = (kind, label) => `<span class="badge ${esc(kind)}">${esc(label)}</span>`;
 // Vai trò nào thấy tab nào (backend mới là nơi cưỡng chế; đây chỉ để ẩn/hiện cho gọn).
@@ -59,28 +79,55 @@ const PSTATUS = { draft: 'Nháp', active: 'Đang bán', archived: 'Lưu trữ' }
 const PGSTATUS = { draft: 'Nháp', published: 'Đã đăng' };
 const BTYPE = { heading: 'Tiêu đề', paragraph: 'Đoạn văn', list: 'Danh sách', quote: 'Trích dẫn', divider: 'Đường kẻ' };
 
-// Tab điều hướng trong 1 shop (Đơn hàng / Sản phẩm) — chỉ hiện tab vai trò được phép.
-function shopTabs(ctx) {
+// Icon nội tuyến (markup → hợp CSP, không tải resource ngoài).
+const ic = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+const IC_HOME = ic('<path d="M3 9l1-5h16l1 5"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/><path d="M3 9h18"/>');
+const IC_ORDER = ic('<path d="M5 4h14v16l-3-2-2 2-2-2-2 2-3-2z"/><path d="M9 9h6"/><path d="M9 13h6"/>');
+const IC_BOX = ic('<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/>');
+const IC_FILE = ic('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9 12h6"/><path d="M9 16h6"/>');
+const IC_USERS = ic('<circle cx="9" cy="8" r="3"/><path d="M4 20v-1a5 5 0 0 1 10 0v1"/><path d="M17 8a3 3 0 0 1 0 6"/><path d="M20 20v-1a4 4 0 0 0-3-3.8"/>');
+const IC_GLOBE = ic('<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18"/>');
+const IC_DOWN = ic('<path d="M12 4v10"/><path d="M8 12l4 4 4-4"/><path d="M5 20h14"/>');
+
+// Điều hướng dọc trong 1 shop (sidebar) — chỉ hiện mục vai trò được phép.
+function sideNav(ctx) {
   if (!ctx.shopId) return '';
   const base = `/shops/${esc(ctx.shopId)}`;
-  const tab = (href, label, on, show) => (show ? `<a href="${href}"${on ? ' class="on"' : ''}>${label}</a>` : '');
-  const t = tab(`${base}/orders`, 'Đơn hàng', ctx.active === 'orders', ORDER_ROLES.has(ctx.role))
-          + tab(`${base}/products`, 'Sản phẩm', ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
-          + tab(`${base}/pages`, 'Trang nội dung', ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
-          + tab(`${base}/members`, 'Nhân sự', ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role))
-          + tab(`${base}/domains`, 'Tên miền', ctx.active === 'domains', DOMAIN_ROLES.has(ctx.role))
-          + tab(`${base}/export`, 'Xuất dữ liệu', ctx.active === 'export', EXPORT_ROLES.has(ctx.role));
-  return t ? `<nav class="tabs">${t}</nav>` : '';
+  const it = (href, label, icon, on, show) => (show ? `<a href="${href}"${on ? ' class="on"' : ''}>${icon}<span>${label}</span></a>` : '');
+  const t = it(`${base}/orders`, 'Đơn hàng', IC_ORDER, ctx.active === 'orders', ORDER_ROLES.has(ctx.role))
+          + it(`${base}/products`, 'Sản phẩm', IC_BOX, ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
+          + it(`${base}/pages`, 'Trang nội dung', IC_FILE, ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
+          + it(`${base}/members`, 'Nhân sự', IC_USERS, ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role))
+          + it(`${base}/domains`, 'Tên miền', IC_GLOBE, ctx.active === 'domains', DOMAIN_ROLES.has(ctx.role))
+          + it(`${base}/export`, 'Xuất dữ liệu', IC_DOWN, ctx.active === 'export', EXPORT_ROLES.has(ctx.role));
+  return `<nav class="side-nav">${t}</nav>`;
 }
 
 export function layout(title, ctx, body) {
-  const top = ctx.user ? `<div class="top"><div class="in">
-    <span><a class="brand" href="/">⚙ Quản trị</a>${ctx.shopName ? ` · ${esc(ctx.shopName)}` : ''}</span>
-    <span class="muted" style="color:#9ca3af"><a href="/account" style="color:#d1d5db" title="Tài khoản">${esc(ctx.user.email)}</a>
-      <form method="POST" action="/logout" style="margin-left:10px"><button type="submit">Đăng xuất</button></form></span>
-  </div></div>` : '';
-  return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex"><title>${esc(title)}</title><style>${STYLE}</style></head><body>${top}<main class="wrap">${shopTabs(ctx)}${body}</main></body></html>`;
+  const head = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>${esc(title)}</title><style>${STYLE}</style></head><body>`;
+  if (!ctx.user) return `${head}<div class="authwrap">${body}</div></body></html>`;
+  const logout = `<form method="POST" action="/logout"><button type="submit">Đăng xuất</button></form>`;
+  if (ctx.shopId) {
+    return `${head}<div class="shell">
+      <aside class="side">
+        <a class="side-brand" href="/">${IC_HOME}Quản trị</a>
+        ${ctx.shopName ? `<div class="side-shop">${esc(ctx.shopName)}</div>` : ''}
+        ${sideNav(ctx)}
+        <div class="side-user"><span class="email">${esc(ctx.user.email)}</span>${logout}</div>
+      </aside>
+      <div class="main">
+        <header class="tbar"><span class="brand">${esc(ctx.shopName || 'Quản trị')}</span>
+          <span class="acc"><a href="/account">Tài khoản</a></span></header>
+        <div class="content">${body}</div>
+      </div>
+    </div></body></html>`;
+  }
+  return `${head}<div class="main">
+    <header class="tbar"><a class="brand" href="/">${IC_HOME}Quản trị</a>
+      <span class="acc"><a href="/account">${esc(ctx.user.email)}</a>${logout}</span></header>
+    <div class="content">${body}</div>
+  </div></body></html>`;
 }
 
 export function renderLogin(err) {

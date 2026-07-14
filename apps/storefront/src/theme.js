@@ -86,7 +86,7 @@ const I_SHIELD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 // ── section renderers (nhận dữ liệu ĐÃ đọc, escape khi render) ────────────────
 const SECTIONS = {
   header: (props, ctx) => `<header class="hdr"><div class="wrap">
-    <a href="/" class="brand">${esc(ctx.shop.name)}</a>
+    <a href="/" class="brand">${ctx.shop.logo_url ? `<img src="${esc(ctx.shop.logo_url)}" alt="${esc(ctx.shop.name)}" class="brand-logo">` : esc(ctx.shop.name)}</a>
     <nav class="hnav">
       ${ctx.categories.slice(0, 4).map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}
       <a href="/checkout/lookup">Tra cứu đơn</a>
@@ -170,7 +170,8 @@ h1,h2,h3{font-family:var(--font-heading);font-weight:600;letter-spacing:-.01em;l
 .i{display:inline-flex}.i svg,.cart svg{width:18px;height:18px}
 .hdr{position:sticky;top:0;z-index:20;background:var(--color-bg);border-bottom:1px solid var(--color-border)}
 .hdr .wrap{display:flex;align-items:center;justify-content:space-between;min-height:64px;gap:16px}
-.brand{font-family:var(--font-heading);font-weight:700;font-size:1.2rem;letter-spacing:-.02em;color:var(--color-text);white-space:nowrap}
+.brand{font-family:var(--font-heading);font-weight:700;font-size:1.2rem;letter-spacing:-.02em;color:var(--color-text);white-space:nowrap;display:inline-flex;align-items:center}
+.brand-logo{max-height:40px;max-width:180px;width:auto;display:block}
 .hnav{display:flex;align-items:center;gap:24px;font-size:.92rem;flex-wrap:wrap}
 .hnav a{color:var(--color-muted);transition:color .15s}.hnav a:hover{color:var(--color-primary)}
 .hnav .cart{display:inline-flex;align-items:center;gap:6px;color:var(--color-text);font-weight:500}.hnav .cart:hover{color:var(--color-primary)}

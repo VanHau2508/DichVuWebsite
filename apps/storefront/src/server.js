@@ -118,9 +118,10 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const shopId = resolved.shopId;
 
     const data = await withStore(shopId, async (c) => {
-      const shopRes = await c.query(`SELECT slug, name, status, contact_email, contact_phone, business_address FROM shops WHERE id = current_shop_id()`);
+      const shopRes = await c.query(`SELECT slug, name, status, contact_email, contact_phone, business_address, logo_key FROM shops WHERE id = current_shop_id()`);
       const shop = shopRes.rows[0];
       if (!shop) return { notFound: true }; // terminated/deleted (RLS)
+      shop.logo_url = imgUrl(shop.logo_key); // header hiện logo nếu có
       if (shop.status === 'suspended') return { shop, suspended: true };
 
       const theme = (await c.query(`SELECT tokens, layout FROM themes WHERE shop_id = current_shop_id()`)).rows[0] ?? null;

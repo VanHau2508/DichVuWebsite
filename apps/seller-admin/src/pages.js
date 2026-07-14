@@ -190,6 +190,17 @@ export function renderShopSettings(ctx, shopId, shop, notice, err) {
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
     <div class="card">
+      <h2 style="margin-top:0">Logo cửa hàng</h2>
+      ${s.logo_url
+        ? `<div style="margin-bottom:10px"><img src="${esc(s.logo_url)}" alt="Logo cửa hàng" style="max-height:64px;max-width:220px;border:1px solid #eceef1;border-radius:8px;padding:6px;background:#fff"></div>`
+        : '<p class="muted" style="margin-top:0">Chưa có logo — hiện tên cửa hàng ở đầu trang. Tải ảnh JPEG/PNG/WebP.</p>'}
+      <form method="POST" action="${base}/logo" enctype="multipart/form-data" class="actions" style="align-items:center">
+        <input type="file" name="file" accept="image/*" required>
+        <button class="btn" type="submit">${s.logo_url ? 'Đổi logo' : 'Tải logo'}</button>
+      </form>
+      ${s.logo_url ? `<form method="POST" action="${base}/logo/remove" style="margin-top:8px"><button class="btn alt sm" type="submit">Gỡ logo</button></form>` : ''}
+    </div>
+    <div class="card">
       <p class="muted" style="margin-top:0">Thông tin liên hệ hiển thị ở <strong>chân trang cửa hàng</strong> để khách tin tưởng và liên hệ.</p>
       <form method="POST" action="${base}/settings">
         <label>Tên cửa hàng</label>
@@ -200,7 +211,16 @@ export function renderShopSettings(ctx, shopId, shop, notice, err) {
         <input name="contact_phone" value="${esc(s.contact_phone ?? '')}" maxlength="40" placeholder="0912 345 678">
         <label>Địa chỉ kinh doanh</label>
         <textarea name="business_address" maxlength="500" rows="2" placeholder="Số 12, Trần Duy Hưng, Cầu Giấy, Hà Nội">${esc(s.business_address ?? '')}</textarea>
-        <div class="actions" style="margin-top:12px"><button class="btn" type="submit">Lưu hồ sơ</button></div>
+
+        <h2 style="margin:22px 0 4px;font-size:1.05rem">Phí vận chuyển</h2>
+        <p class="muted" style="margin:0 0 10px;font-size:.85rem">Phí ship áp cho mỗi đơn (tính tự động lúc thanh toán). Để trống = dùng mặc định nền tảng.</p>
+        <div class="actions" style="align-items:end;flex-wrap:wrap">
+          <div><label>Phí ship (VND)</label><input name="ship_fee_vnd" value="${esc(s.ship_fee_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="30000" style="width:150px"></div>
+          <div><label>Miễn phí ship từ (VND)</label><input name="free_ship_threshold_vnd" value="${esc(s.free_ship_threshold_vnd ?? '')}" inputmode="numeric" maxlength="10" placeholder="để trống = không" style="width:200px"></div>
+        </div>
+        <p class="muted" style="font-size:.8rem;margin:6px 0 0">VD: phí 30.000đ, miễn phí từ 500.000đ → đơn ≥ 500k được free ship.</p>
+
+        <div class="actions" style="margin-top:16px"><button class="btn" type="submit">Lưu cài đặt</button></div>
       </form>
     </div>
     <div class="card"><p class="muted" style="margin:0;font-size:.85rem">Tên miền cửa hàng: <code>${esc(s.slug ?? '')}.nentang.vn</code>.
@@ -287,16 +307,21 @@ export function renderOrders(ctx, shopId, data, filter) {
     <td style="text-align:right"><strong>${money(o.total_vnd)}</strong></td></tr>`).join('');
   const total = data.total ?? orders.length;
   const off = filter.offset, lim = filter.limit;
+  const qenc = encodeURIComponent(filter.q ?? '');
+  const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&offset=${o}`;
   return layout('Đơn hàng', ctx, `<h1>Đơn hàng</h1>
     <div class="card"><form method="GET" class="filters">
+      <div style="flex:1 1 200px"><label>Tìm (mã đơn / tên / SĐT)</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="123, Nguyễn…, 09…"></div>
       <div><label>Trạng thái</label><select name="status">${STATUSES.map((s) => `<option value="${s}"${s === filter.status ? ' selected' : ''}>${s ? (STATUS[s] ?? s) : 'Tất cả'}</option>`).join('')}</select></div>
+      <div><label>Từ ngày</label><input type="date" name="from" value="${esc(filter.from ?? '')}"></div>
+      <div><label>Đến ngày</label><input type="date" name="to" value="${esc(filter.to ?? '')}"></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
     <div class="card">${orders.length ? `<table><thead><tr><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Khách</th><th>Thời gian</th><th style="text-align:right">Tổng</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="muted" style="margin-top:12px">${total} đơn ·
-        ${off > 0 ? `<a href="?status=${esc(filter.status)}&offset=${Math.max(0, off - lim)}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
-        ${off + lim < total ? `<a href="?status=${esc(filter.status)}&offset=${off + lim}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
-      </div>` : '<p class="muted">Không có đơn nào.</p>'}</div>
+        ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
+        ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
+      </div>` : '<p class="muted">Không tìm thấy đơn nào khớp bộ lọc.</p>'}</div>
     <a class="btn alt" href="/">← Về bảng điều khiển</a>`);
 }
 
@@ -316,13 +341,19 @@ export function renderOrderDetail(ctx, shopId, o, err) {
   let payAction = '';
   if (o.payment_method === 'cod' && unpaidLive) payAction = act('mark-paid', 'Đã nhận tiền (COD)');
   else if (o.payment_method === 'qr' && unpaidLive && ctx.role === 'owner') payAction = act('mark-paid-qr', 'Đã nhận tiền (QR) — xác nhận tay', 'btn warn sm');
+  // Hoàn tiền: đơn ĐÃ thanh toán, chưa hoàn — owner/admin (perm 'refund' + step-up).
+  const refundAction = (o.payment_status === 'paid' && o.status !== 'refunded' && ['owner', 'admin'].includes(ctx.role))
+    ? act('refund', 'Hoàn tiền', 'btn warn sm') : '';
   return layout(`Đơn #${o.order_number}`, ctx, `
-    <a class="muted" href="/shops/${esc(shopId)}/orders">← Danh sách đơn</a>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+      <a class="muted" href="/shops/${esc(shopId)}/orders">← Danh sách đơn</a>
+      <a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/print" target="_blank" rel="noopener">🖨 In đơn</a>
+    </div>
     <h1>Đơn hàng #${esc(o.order_number)}</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <div class="card"><span class="pill">${badge(o.status, STATUS[o.status] ?? o.status)}</span>
       <span class="pill">${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} ${esc(o.payment_method?.toUpperCase() ?? '')}</span>
-      <div class="actions">${(actions + payAction) || '<span class="muted">Không có thao tác.</span>'}</div></div>
+      <div class="actions">${(actions + payAction + refundAction) || '<span class="muted">Không có thao tác.</span>'}</div></div>
     <div class="card"><h2>Sản phẩm</h2><table><tbody>
       ${(o.lines ?? []).map((l) => `<tr><td>${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span></td><td class="muted">${money(l.unit_price_vnd)} × ${esc(l.qty)}</td><td style="text-align:right">${money(Number(l.unit_price_vnd) * l.qty)}</td></tr>`).join('')}
     </tbody></table>
@@ -333,6 +364,53 @@ export function renderOrderDetail(ctx, shopId, o, err) {
       ${o.shipping_address ? `<p class="muted">${esc(typeof o.shipping_address === 'object' ? (o.shipping_address.line ?? JSON.stringify(o.shipping_address)) : o.shipping_address)}</p>` : ''}
       ${(o.shipments ?? []).map((s) => `<p class="muted">Vận đơn: <strong>${esc(s.tracking_number)}</strong> ${esc(s.carrier ?? '')} (${esc(s.status)})</p>`).join('')}
       <p class="muted">Tạo: ${dt(o.created_at)}</p></div>`);
+}
+
+// Trang IN đơn — HTML độc lập, tối ưu in (không sidebar, no-JS). User bấm Ctrl+P.
+export function renderOrderPrint(shopId, shop, o) {
+  const s = shop ?? {};
+  const lines = o.lines ?? [];
+  const addr = o.shipping_address
+    ? (typeof o.shipping_address === 'object' ? (o.shipping_address.line ?? JSON.stringify(o.shipping_address)) : o.shipping_address)
+    : '';
+  const contact = [s.business_address, s.contact_phone ? `ĐT: ${s.contact_phone}` : '', s.contact_email ? `Email: ${s.contact_email}` : '']
+    .filter(Boolean).map(esc).join(' · ');
+  const ship = (o.shipments ?? [])[0];
+  const ST = { pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn tiền' };
+  const PT = { unpaid: 'Chưa thanh toán', pending: 'Chờ thanh toán', paid: 'Đã thanh toán', refunded: 'Đã hoàn tiền' };
+  const CSS = `*{box-sizing:border-box}body{font-family:system-ui,'Segoe UI',sans-serif;color:#111827;margin:0;padding:24px;font-size:14px;line-height:1.5}
+.doc{max-width:720px;margin:0 auto}.hd{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:2px solid #111827;padding-bottom:12px;margin-bottom:16px}
+.shop{font-size:1.35rem;font-weight:700}.contact{color:#6b7280;font-size:.82rem;margin-top:3px}.ord{text-align:right}.no{font-size:1.2rem;font-weight:700}.ord .d{color:#6b7280;font-size:.85rem}
+.tags{margin:0 0 14px}.tag{display:inline-block;border:1px solid #d1d5db;border-radius:6px;padding:3px 10px;font-size:.82rem;margin-right:8px}
+.cust{background:#f9fafb;border:1px solid #eceef1;border-radius:8px;padding:12px 14px;margin-bottom:16px}.cust b{display:inline-block;min-width:60px}
+table{width:100%;border-collapse:collapse;margin-bottom:14px}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #eceef1}th{font-size:.8rem;color:#6b7280;text-transform:uppercase;letter-spacing:.03em}
+td.r,th.r{text-align:right}.tot{margin-left:auto;width:260px}.tot .row{display:flex;justify-content:space-between;padding:4px 0}.tot .g{font-weight:700;font-size:1.1rem;border-top:2px solid #111827;padding-top:8px;margin-top:4px}
+.foot{margin-top:24px;color:#6b7280;font-size:.82rem}.noprint a{color:#2463eb}
+@media print{.noprint{display:none}body{padding:0}}`;
+  return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>Đơn #${esc(o.order_number)} — ${esc(s.name ?? '')}</title><style>${CSS}</style></head><body>
+  <div class="doc">
+    <div class="hd">
+      <div><div class="shop">${esc(s.name ?? 'Cửa hàng')}</div>${contact ? `<div class="contact">${contact}</div>` : ''}</div>
+      <div class="ord"><div class="no">Đơn #${esc(o.order_number)}</div><div class="d">${dt(o.created_at)}</div></div>
+    </div>
+    <div class="tags"><span class="tag">${esc(ST[o.status] ?? o.status)}</span><span class="tag">${esc(PT[o.payment_status] ?? o.payment_status)} · ${esc(o.payment_method?.toUpperCase() ?? '')}</span></div>
+    <div class="cust">
+      <div><b>Khách:</b> ${esc(o.customer_name ?? '')} ${o.customer_phone ? `· ${esc(o.customer_phone)}` : ''}${o.customer_email ? ` · ${esc(o.customer_email)}` : ''}</div>
+      ${addr ? `<div style="margin-top:4px"><b>Giao tới:</b> ${esc(addr)}</div>` : ''}
+      ${ship ? `<div style="margin-top:4px"><b>Vận đơn:</b> ${esc(ship.tracking_number ?? '')} ${esc(ship.carrier ?? '')}</div>` : ''}
+    </div>
+    <table><thead><tr><th>Sản phẩm</th><th class="r">Đơn giá</th><th class="r">SL</th><th class="r">Thành tiền</th></tr></thead><tbody>
+      ${lines.map((l) => `<tr><td>${esc(l.title_snapshot)}${l.sku_snapshot ? ` <span style="color:#6b7280">(${esc(l.sku_snapshot)})</span>` : ''}</td><td class="r">${money(l.unit_price_vnd)}</td><td class="r">${esc(l.qty)}</td><td class="r">${money(Number(l.unit_price_vnd) * l.qty)}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="tot">
+      <div class="row"><span>Tạm tính</span><span>${money(o.subtotal_vnd)}</span></div>
+      <div class="row"><span>Phí vận chuyển</span><span>${Number(o.shipping_vnd) === 0 ? 'Miễn phí' : money(o.shipping_vnd)}</span></div>
+      <div class="row g"><span>Tổng cộng</span><span>${money(o.total_vnd)}</span></div>
+    </div>
+    <div class="foot noprint"><a href="/shops/${esc(shopId)}/orders/${esc(o.id)}">← Quay lại</a> · Nhấn <strong>Ctrl+P</strong> (hoặc ⌘P) để in / lưu PDF.</div>
+  </div>
+</body></html>`;
 }
 
 // ── Sản phẩm & tồn kho ───────────────────────────────────────────────────────
@@ -871,6 +949,22 @@ export function renderOrderPayStepUp(ctx, shopId, oid, err) {
     <form method="POST" action="${base}/mark-paid-qr/step-up">
       <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
       <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận đã nhận tiền</button>
+    </form>
+    <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
+}
+// Interstitial cho hoàn tiền (thao tác nhạy cảm — mang theo mã đơn).
+export function renderRefundStepUp(ctx, shopId, oid, err) {
+  const base = `/shops/${esc(shopId)}/orders/${esc(oid)}`;
+  return layout('Xác nhận hoàn tiền', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận hoàn tiền</h1>
+    <p class="muted">Bạn sẽ đánh dấu đơn này <strong>ĐÃ HOÀN TIỀN</strong> cho khách. Hãy đảm bảo
+      đã thực sự chuyển/trả tiền. Nếu đơn <strong>chưa giao</strong>, hàng sẽ được trả lại kho.
+      Thao tác không thể hoàn tác — nhập mật khẩu để tiếp tục.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${base}/refund/step-up">
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn warn" type="submit" style="width:100%;margin-top:12px">Xác nhận hoàn tiền</button>
     </form>
     <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
   </div></div>`);

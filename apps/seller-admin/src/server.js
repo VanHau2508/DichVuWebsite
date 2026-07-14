@@ -101,12 +101,20 @@ async function overviewPage(res, me, cookie, shopId) {
 async function ordersList(res, me, cookie, shopId, q) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const status = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'].includes(q.get('status')) ? q.get('status') : '';
+  const search = (q.get('q') ?? '').trim().slice(0, 100);
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const from = DATE_RE.test((q.get('from') ?? '').trim()) ? q.get('from').trim() : '';
+  const to = DATE_RE.test((q.get('to') ?? '').trim()) ? q.get('to').trim() : '';
   const limit = 20, offset = Math.max(0, parseInt(q.get('offset') ?? '0', 10) || 0);
-  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) }); if (status) qs.set('status', status);
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (status) qs.set('status', status);
+  if (search) qs.set('q', search);
+  if (from) qs.set('from', from);
+  if (to) qs.set('to', to);
   const r = await sellerApi('GET', `/shops/${shopId}/orders?${qs}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được đơn hàng.'));
-  return sendHtml(res, 200, V.renderOrders(ctx, shopId, r.json, { status, limit, offset }));
+  return sendHtml(res, 200, V.renderOrders(ctx, shopId, r.json, { status, q: search, from, to, limit, offset }));
 }
 
 async function orderDetail(res, me, cookie, shopId, oid, err) {
@@ -115,6 +123,19 @@ async function orderDetail(res, me, cookie, shopId, oid, err) {
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tìm thấy đơn.'));
   return sendHtml(res, err ? 409 : 200, V.renderOrderDetail(ctx, shopId, r.json, err));
+}
+
+async function orderPrint(res, me, cookie, shopId, oid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const [ro, rs] = await Promise.all([
+    sellerApi('GET', `/shops/${shopId}/orders/${oid}`, { cookie }),
+    sellerApi('GET', `/shops/${shopId}`, { cookie }),
+  ]);
+  if (ro.status !== 200) {
+    const ctx = shopCtx(me, shopId, rs.json?.name ?? null, 'orders');
+    return sendHtml(res, ro.status, V.renderError(ctx, ro.json?.error ?? 'Không tìm thấy đơn.'));
+  }
+  return sendHtml(res, 200, V.renderOrderPrint(shopId, rs.status === 200 ? rs.json : {}, ro.json));
 }
 
 async function orderAction(req, res, me, cookie, shopId, oid, action) {
@@ -741,6 +762,22 @@ async function settingsPage(res, me, cookie, shopId, notice, err) {
   const shop = r.status === 200 ? r.json : {};
   return sendHtml(res, err ? 400 : 200, V.renderShopSettings(ctx, shopId, shop, notice, err));
 }
+async function logoUpload(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  let file, tooBig = false;
+  try { file = await readMultipartFile(req); } catch (e) { tooBig = e.statusCode === 413; }
+  if (tooBig) return settingsPage(res, me, cookie, shopId, null, 'Ảnh quá lớn (tối đa 10MB).');
+  if (!file?.bytes?.length) return settingsPage(res, me, cookie, shopId, null, 'Chưa chọn ảnh logo hợp lệ.');
+  const r = await sellerUpload(`/shops/${shopId}/logo`, { cookie, bytes: file.bytes });
+  if (r.status !== 200) return settingsPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không tải được logo.');
+  return settingsPage(res, me, cookie, shopId, 'Đã cập nhật logo cửa hàng.', null);
+}
+async function logoRemove(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('DELETE', `/shops/${shopId}/logo`, { cookie });
+  if (r.status !== 200) return settingsPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không gỡ được logo.');
+  return settingsPage(res, me, cookie, shopId, 'Đã gỡ logo.', null);
+}
 async function settingsSave(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
@@ -749,10 +786,36 @@ async function settingsSave(req, res, me, cookie, shopId) {
     contact_email: String(f.contact_email ?? '').trim(),
     contact_phone: String(f.contact_phone ?? '').trim(),
     business_address: String(f.business_address ?? '').trim(),
+    ship_fee_vnd: String(f.ship_fee_vnd ?? '').trim(),
+    free_ship_threshold_vnd: String(f.free_ship_threshold_vnd ?? '').trim(),
   };
   const r = await sellerApi('PATCH', `/shops/${shopId}`, { cookie, body });
   if (r.status === 200) return settingsPage(res, me, cookie, shopId, 'Đã lưu hồ sơ cửa hàng.', null);
   return settingsPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không lưu được hồ sơ.');
+}
+
+// ── Hoàn tiền (refund = owner/admin; step-up) ────────────────────────────────
+async function doRefund(res, me, cookie, shopId, oid) {
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/refund`, { cookie, body: {} });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}`);
+  return orderDetail(res, me, cookie, shopId, oid, r.json?.error ?? 'Không hoàn tiền được.');
+}
+async function refundConfirm(res, me, cookie, shopId, oid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (!['owner', 'admin'].includes(roleFor(me, shopId))) return orderDetail(res, me, cookie, shopId, oid, 'Chỉ chủ cửa hàng hoặc quản trị mới hoàn tiền.');
+  if (steppedUp(me)) return doRefund(res, me, cookie, shopId, oid);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+  return sendHtml(res, 200, V.renderRefundStepUp(ctx, shopId, oid, null));
+}
+async function refundStepUp(req, res, me, cookie, shopId, oid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+    return sendHtml(res, 401, V.renderRefundStepUp(ctx, shopId, oid, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.'));
+  }
+  return doRefund(res, me, cookie, shopId, oid);
 }
 
 async function handle(req, res, url, p) {
@@ -791,9 +854,12 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/overview$`).exec(p)) && req.method === 'GET') return overviewPage(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders$`).exec(p)) && req.method === 'GET') return ordersList(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}$`).exec(p)) && req.method === 'GET') return orderDetail(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/print$`).exec(p)) && req.method === 'GET') return orderPrint(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/(confirm|ship|cancel|deliver|mark-paid)$`).exec(p)) && req.method === 'POST') return orderAction(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr$`).exec(p)) && req.method === 'POST') return markPaidQrConfirm(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr/step-up$`).exec(p)) && req.method === 'POST') return markPaidQrStepUp(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/refund$`).exec(p)) && req.method === 'POST') return refundConfirm(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/refund/step-up$`).exec(p)) && req.method === 'POST') return refundStepUp(req, res, me, cookie, m[1], m[2]);
 
     // Sản phẩm & tồn kho.
     if ((m = new RegExp(`^/shops/${UUID}/products$`).exec(p)) && req.method === 'GET') return productsList(res, me, cookie, m[1], url.searchParams);
@@ -856,6 +922,8 @@ async function handle(req, res, url, p) {
     // Cài đặt / hồ sơ cửa hàng (shop.write = owner/admin).
     if ((m = new RegExp(`^/shops/${UUID}/settings$`).exec(p)) && req.method === 'GET') return settingsPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/settings$`).exec(p)) && req.method === 'POST') return settingsSave(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/logo$`).exec(p)) && req.method === 'POST') return logoUpload(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/logo/remove$`).exec(p)) && req.method === 'POST') return logoRemove(res, me, cookie, m[1]);
 
     // Giao diện (theme.write = owner/admin).
     if ((m = new RegExp(`^/shops/${UUID}/theme$`).exec(p)) && req.method === 'GET') return themePage(res, me, cookie, m[1], url.searchParams.get('ok'));

@@ -342,7 +342,8 @@ services:
       # Origin gắn vào request nội bộ: PHẢI thuộc ALLOWED_ORIGINS của auth/seller/platform.
       ADMIN_ORIGIN: https://admin.nentang.vn
       # CSRF của chính admin: nhận POST từ Origin admin (prod + host dev).
-      ALLOWED_ORIGINS: https://admin.nentang.vn,https://admin.localtest
+      # :8443 vì Caddy dev map 8443:443 → trình duyệt gửi Origin có cổng.
+      ALLOWED_ORIGINS: https://admin.nentang.vn,https://admin.localtest,https://admin.localtest:8443
       # Ảnh SP phục vụ từ đây → origin được thêm vào CSP img-src (xem http.js).
       MEDIA_PUBLIC_BASE: http://minio:9000/media-public
       PORT: "3001"

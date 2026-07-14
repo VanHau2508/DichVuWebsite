@@ -10,7 +10,7 @@ const STATUS = { pending: 'Chờ xử lý', confirmed: 'Đã xác nhận', shipp
 const PAY = { unpaid: 'Chưa trả', paid: 'Đã trả' };
 
 const STYLE = `*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#1f2430;background:#f6f7f8;line-height:1.55;-webkit-font-smoothing:antialiased}
-a{color:#0f766e;text-decoration:none}a:hover{text-decoration:underline}
+a{color:#2463eb;text-decoration:none}a:hover{text-decoration:underline}
 h1{font-size:1.4rem;letter-spacing:-.01em;margin:0 0 .6em}h2{font-size:1.05rem;margin:0 0 .5em;font-weight:600}
 .authwrap{padding:20px}.center{max-width:400px;margin:56px auto}
 .shell{display:flex;min-height:100vh}
@@ -20,7 +20,7 @@ h1{font-size:1.4rem;letter-spacing:-.01em;margin:0 0 .6em}h2{font-size:1.05rem;m
 .side-nav{padding:4px 12px 12px;display:flex;flex-direction:column;gap:2px;flex:1}
 .side-nav a{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:9px;color:#4b5563;font-size:.92rem;font-weight:500}
 .side-nav a:hover{background:#f6f7f8;color:#111827;text-decoration:none}
-.side-nav a.on{background:#eaf4f1;color:#0f766e;font-weight:600}.side-nav a svg{width:18px;height:18px;flex:0 0 auto}
+.side-nav a.on{background:#eef4ff;color:#2463eb;font-weight:600}.side-nav a svg{width:18px;height:18px;flex:0 0 auto}
 .side-user{border-top:1px solid #e6e8eb;padding:12px 16px}.side-user .email{color:#6b7280;font-size:.82rem;display:block;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .side-user button{background:#fff;border:1px solid #d8dbe0;border-radius:9px;padding:8px 12px;font:inherit;font-size:.85rem;cursor:pointer;color:#111827;width:100%}.side-user button:hover{background:#f6f7f8}
 .main{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -32,14 +32,14 @@ h1{font-size:1.4rem;letter-spacing:-.01em;margin:0 0 .6em}h2{font-size:1.05rem;m
 .card{background:#fff;border:1px solid #e6e8eb;border-radius:12px;padding:18px 20px;margin:14px 0}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:11px 10px;border-bottom:1px solid #f1f2f4;font-size:.92rem}
 th{color:#6b7280;font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.02em}tr:last-child td{border-bottom:0}tbody tr:hover td{background:#fafbfc}
-.btn{display:inline-flex;align-items:center;gap:7px;justify-content:center;background:#111827;color:#fff;border:0;border-radius:10px;padding:10px 18px;font-size:.92rem;font-weight:600;cursor:pointer;text-decoration:none;transition:opacity .15s,transform .06s}
-.btn:hover{opacity:.9;text-decoration:none}.btn:active{transform:translateY(1px)}.btn svg{width:16px;height:16px}
+.btn{display:inline-flex;align-items:center;gap:7px;justify-content:center;background:#2463eb;color:#fff;border:0;border-radius:10px;padding:10px 18px;font-size:.92rem;font-weight:500;cursor:pointer;text-decoration:none;transition:background .15s,transform .06s}
+.btn:hover{background:#1e4bcc;text-decoration:none}.btn:active{transform:translateY(1px)}.btn svg{width:16px;height:16px}
 .btn.alt{background:#fff;color:#111827;border:1px solid #d8dbe0}.btn.alt:hover{background:#f6f7f8;opacity:1}
 .btn.warn{background:#fff;color:#b91c1c;border:1px solid #f0a6a6}.btn.warn:hover{background:#fef2f2;opacity:1}
 .btn.sm{padding:7px 13px;font-size:.86rem;border-radius:8px}
 label{display:block;font-size:.86rem;margin:12px 0 5px;font-weight:600;color:#374151}
 input,select,textarea{width:100%;padding:11px 12px;border:1px solid #d8dbe0;border-radius:10px;font-size:1rem;font-family:inherit;color:#1f2430;background:#fff}
-input:focus,select:focus,textarea:focus{outline:none;border-color:#0f766e;box-shadow:0 0 0 3px rgba(15,118,110,.12)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:#2463eb;box-shadow:0 0 0 3px rgba(36,99,235,.12)}
 textarea{min-height:80px;resize:vertical}
 .err{background:#fef2f2;border:1px solid #f0a6a6;color:#b91c1c;border-radius:10px;padding:11px 14px;margin:10px 0}
 .badge{display:inline-block;padding:3px 11px;border-radius:999px;font-size:.8rem;font-weight:600;background:#eef0f2;color:#4b5563}
@@ -73,6 +73,7 @@ const CONTENT_ROLES = new Set(['owner', 'admin']);
 const MEMBER_READ_ROLES = new Set(['owner', 'admin']); // xem nhân sự; SỬA chỉ owner (seller cưỡng chế)
 const EXPORT_ROLES = new Set(['owner']); // xuất dữ liệu: CHỈ chủ shop (seller cưỡng chế perm 'export')
 const DOMAIN_ROLES = new Set(['owner']); // tên miền: CHỈ chủ shop (seller cưỡng chế 'domain.write')
+const PAYMENT_ROLES = new Set(['owner']); // thanh toán: CHỈ chủ shop (seller cưỡng chế 'payment.write' + step-up)
 const ROLE_LABEL = { owner: 'Chủ shop', admin: 'Quản trị', catalog_manager: 'Quản lý sản phẩm', order_manager: 'Quản lý đơn' };
 const INVITE_ROLES = ['admin', 'catalog_manager', 'order_manager']; // KHÔNG mời owner qua đây
 const PSTATUS = { draft: 'Nháp', active: 'Đang bán', archived: 'Lưu trữ' };
@@ -88,18 +89,26 @@ const IC_FILE = ic('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9
 const IC_USERS = ic('<circle cx="9" cy="8" r="3"/><path d="M4 20v-1a5 5 0 0 1 10 0v1"/><path d="M17 8a3 3 0 0 1 0 6"/><path d="M20 20v-1a4 4 0 0 0-3-3.8"/>');
 const IC_GLOBE = ic('<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18"/>');
 const IC_DOWN = ic('<path d="M12 4v10"/><path d="M8 12l4 4 4-4"/><path d="M5 20h14"/>');
+const IC_PALETTE = ic('<circle cx="13.5" cy="6.5" r="1.2"/><circle cx="17" cy="10" r="1.2"/><circle cx="8.5" cy="7" r="1.2"/><circle cx="6.5" cy="11.5" r="1.2"/><path d="M12 3a9 9 0 1 0 0 18 1.8 1.8 0 0 0 1.8-1.8 1.8 1.8 0 0 1 1.8-1.8H17a4 4 0 0 0 4-4 9 9 0 0 0-9-8.4z"/>');
+const IC_CARD = ic('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/><path d="M7 15h4"/>');
+const IC_CHART = ic('<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7" y="12" width="3" height="5"/><rect x="12" y="8" width="3" height="9"/><rect x="17" y="5" width="3" height="12"/>');
+const IC_GEAR = ic('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>');
 
 // Điều hướng dọc trong 1 shop (sidebar) — chỉ hiện mục vai trò được phép.
 function sideNav(ctx) {
   if (!ctx.shopId) return '';
   const base = `/shops/${esc(ctx.shopId)}`;
   const it = (href, label, icon, on, show) => (show ? `<a href="${href}"${on ? ' class="on"' : ''}>${icon}<span>${label}</span></a>` : '');
-  const t = it(`${base}/orders`, 'Đơn hàng', IC_ORDER, ctx.active === 'orders', ORDER_ROLES.has(ctx.role))
+  const t = it(`${base}/overview`, 'Tổng quan', IC_CHART, ctx.active === 'overview', ORDER_ROLES.has(ctx.role))
+          + it(`${base}/orders`, 'Đơn hàng', IC_ORDER, ctx.active === 'orders', ORDER_ROLES.has(ctx.role))
           + it(`${base}/products`, 'Sản phẩm', IC_BOX, ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/pages`, 'Trang nội dung', IC_FILE, ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/members`, 'Nhân sự', IC_USERS, ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role))
           + it(`${base}/domains`, 'Tên miền', IC_GLOBE, ctx.active === 'domains', DOMAIN_ROLES.has(ctx.role))
-          + it(`${base}/export`, 'Xuất dữ liệu', IC_DOWN, ctx.active === 'export', EXPORT_ROLES.has(ctx.role));
+          + it(`${base}/payment`, 'Thanh toán', IC_CARD, ctx.active === 'payment', PAYMENT_ROLES.has(ctx.role))
+          + it(`${base}/export`, 'Xuất dữ liệu', IC_DOWN, ctx.active === 'export', EXPORT_ROLES.has(ctx.role))
+          + it(`${base}/theme`, 'Giao diện', IC_PALETTE, ctx.active === 'theme', CONTENT_ROLES.has(ctx.role))
+          + it(`${base}/settings`, 'Cài đặt', IC_GEAR, ctx.active === 'settings', CONTENT_ROLES.has(ctx.role));
   return `<nav class="side-nav">${t}</nav>`;
 }
 
@@ -130,6 +139,74 @@ export function layout(title, ctx, body) {
   </div></body></html>`;
 }
 
+// Trang "Giao diện": chủ shop (theme.write) chọn màu thương hiệu → lưu vào theme tokens.
+// Không JS: dùng <input type="color"> gốc của trình duyệt. Storefront sanitize khi render.
+const THEME_FIELDS = [
+  { key: 'color.primary', label: 'Màu chủ đạo', hint: 'Nút, link, giá', def: '#2463eb' },
+  { key: 'color.hero-bg', label: 'Nền dải hero', hint: 'Dải lớn đầu trang chủ', def: '#eef4ff' },
+  { key: 'color.text', label: 'Màu chữ chính', hint: 'Tiêu đề, nội dung', def: '#111827' },
+  { key: 'color.surface', label: 'Màu nền phụ', hint: 'Ô ảnh, chân trang', def: '#f9fafb' },
+];
+function themeVal(tokens, key, def) {
+  if (tokens && typeof tokens === 'object') {
+    if (typeof tokens[key] === 'string') return tokens[key];
+    const [a, b] = key.split('.');
+    if (tokens[a] && typeof tokens[a][b] === 'string') return tokens[a][b];
+  }
+  return def;
+}
+export function renderTheme(ctx, theme, notice) {
+  const tokens = theme?.tokens ?? {};
+  const rows = THEME_FIELDS.map((f) => {
+    const raw = themeVal(tokens, f.key, f.def);
+    const hex = /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : f.def;
+    return `<div style="display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid #f1f2f4">
+      <input type="color" name="${esc(f.key)}" value="${esc(hex)}" aria-label="${esc(f.label)}" style="width:52px;height:40px;padding:2px;border-radius:8px;flex:0 0 auto;cursor:pointer">
+      <div><div style="font-weight:600;font-size:.95rem">${esc(f.label)}</div><div class="muted" style="font-size:.84rem">${esc(f.hint)}</div></div>
+      <code style="margin-left:auto">${esc(hex)}</code></div>`;
+  }).join('');
+  return layout('Giao diện', ctx, `<h1>Giao diện cửa hàng</h1>
+    ${notice ? `<div class="card" style="border-color:#93c5fd;background:#eff6ff;color:#1e40af">${esc(notice)}</div>` : ''}
+    <div class="card">
+      <p class="muted">Chọn màu thương hiệu cho <strong>trang bán hàng</strong>. Bấm ô màu để chọn; lưu là áp dụng ngay cho website của bạn.</p>
+      <form method="POST" action="/shops/${esc(ctx.shopId)}/theme">
+        ${rows}
+        <div class="actions"><button class="btn" type="submit">Lưu giao diện</button>
+          <button class="btn alt" type="submit" name="reset" value="1">Khôi phục mặc định</button></div>
+      </form>
+    </div>
+    <a class="btn alt" href="/shops/${esc(ctx.shopId)}/orders" style="margin-top:12px">← Quay lại</a>`);
+}
+
+// Cài đặt / Hồ sơ cửa hàng (shop.write = owner/admin). Tên + liên hệ + địa chỉ.
+export function renderShopSettings(ctx, shopId, shop, notice, err) {
+  const base = `/shops/${esc(shopId)}`;
+  if (!CONTENT_ROLES.has(ctx.role)) {
+    return layout('Cài đặt', ctx, `<h1>Cài đặt cửa hàng</h1><div class="card"><p class="muted">Chỉ <strong>chủ cửa hàng</strong> hoặc <strong>quản trị</strong> mới sửa hồ sơ.</p></div>`);
+  }
+  const s = shop ?? {};
+  return layout('Cài đặt cửa hàng', ctx, `
+    <h1>Cài đặt cửa hàng</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
+    <div class="card">
+      <p class="muted" style="margin-top:0">Thông tin liên hệ hiển thị ở <strong>chân trang cửa hàng</strong> để khách tin tưởng và liên hệ.</p>
+      <form method="POST" action="${base}/settings">
+        <label>Tên cửa hàng</label>
+        <input name="name" value="${esc(s.name ?? '')}" required maxlength="200" placeholder="Nhà Xinh Décor">
+        <label>Email liên hệ</label>
+        <input name="contact_email" type="email" value="${esc(s.contact_email ?? '')}" maxlength="200" placeholder="lienhe@cuahang.vn">
+        <label>Số điện thoại</label>
+        <input name="contact_phone" value="${esc(s.contact_phone ?? '')}" maxlength="40" placeholder="0912 345 678">
+        <label>Địa chỉ kinh doanh</label>
+        <textarea name="business_address" maxlength="500" rows="2" placeholder="Số 12, Trần Duy Hưng, Cầu Giấy, Hà Nội">${esc(s.business_address ?? '')}</textarea>
+        <div class="actions" style="margin-top:12px"><button class="btn" type="submit">Lưu hồ sơ</button></div>
+      </form>
+    </div>
+    <div class="card"><p class="muted" style="margin:0;font-size:.85rem">Tên miền cửa hàng: <code>${esc(s.slug ?? '')}.nentang.vn</code>.
+      Đổi bảng màu ở <a href="${base}/theme">Giao diện</a>; tên miền riêng ở <a href="${base}/domains">Tên miền</a>.</p></div>`);
+}
+
 export function renderLogin(err) {
   return layout('Đăng nhập', {}, `<div class="center"><div class="card"><h1>Đăng nhập quản trị</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
@@ -150,13 +227,47 @@ export function renderMfa(err) {
     </form></div></div>`);
 }
 
+// Tổng quan cửa hàng (GĐ2): KPI doanh thu + đơn theo trạng thái + bán chạy.
+export function renderOverview(ctx, shopId, s) {
+  const base = `/shops/${esc(shopId)}`;
+  const st = s?.status ?? {};
+  const rev = s?.revenue ?? {};
+  const metric = (label, value, sub = '') => `<div class="metric"><div class="l">${esc(label)}</div><div class="v">${value}</div>${sub ? `<div class="l" style="margin:4px 0 0">${sub}</div>` : ''}</div>`;
+  // Ô trạng thái đơn (bấm vào lọc danh sách đơn theo trạng thái).
+  const S = [
+    { k: 'pending', label: 'Chờ xác nhận' }, { k: 'confirmed', label: 'Đã xác nhận' },
+    { k: 'shipped', label: 'Đang giao' }, { k: 'delivered', label: 'Đã giao' }, { k: 'cancelled', label: 'Đã huỷ' },
+  ];
+  const statusCards = S.map((x) => `<a class="metric" style="text-decoration:none;color:inherit;display:block" href="${base}/orders?status=${x.k}">
+      <div class="l">${esc(x.label)}</div><div class="v">${esc(st[x.k] ?? 0)}</div></a>`).join('');
+  const top = (s?.top_products ?? []);
+  const topRows = top.map((t) => `<tr><td>${esc(t.title)} <span class="muted" style="font-size:.8rem">${esc(t.sku ?? '')}</span></td>
+      <td class="num right">${esc(t.qty)}</td><td class="num right"><strong>${money(t.revenue)}</strong></td></tr>`).join('');
+  return layout('Tổng quan', ctx, `
+    <h1>Tổng quan</h1>
+    <div class="metrics">
+      ${metric('Doanh thu hôm nay', money(rev.today ?? 0), `${esc(s?.orders_today ?? 0)} đơn mới`)}
+      ${metric('Doanh thu 7 ngày', money(rev.d7 ?? 0))}
+      ${metric('Cần thu tiền', esc(s?.unpaid ?? 0) + ' đơn', 'chưa thanh toán')}
+      ${metric('Tổng đã thu', money(rev.all ?? 0), 'từ trước tới nay')}
+    </div>
+    <div class="card"><h2 style="margin-top:0">Đơn theo trạng thái</h2>
+      <div class="metrics" style="margin-bottom:0">${statusCards}</div>
+      <p class="muted" style="font-size:.82rem;margin-bottom:0">Bấm vào một ô để xem danh sách đơn ở trạng thái đó.</p></div>
+    <div class="card"><h2 style="margin-top:0">Bán chạy 30 ngày</h2>
+      ${top.length ? `<table><thead><tr><th>Sản phẩm</th><th class="right">Đã bán</th><th class="right">Doanh thu</th></tr></thead><tbody>${topRows}</tbody></table>`
+        : '<p class="muted">Chưa có đơn đã thanh toán trong 30 ngày.</p>'}</div>
+    <p class="muted" style="font-size:.82rem">Doanh thu chỉ tính đơn <strong>đã thanh toán</strong>; mốc ngày theo giờ Việt Nam.</p>`);
+}
+
 export function renderDashboard(ctx, shops) {
   return layout('Bảng điều khiển', ctx, `<h1>Cửa hàng của bạn</h1>
     ${shops.length ? shops.map((s) => `<div class="card">
       <h2 style="margin:0">${esc(s.name || s.shop_id)}</h2>
       <p class="muted">Vai trò: ${esc(s.role)}${s.status && s.status !== 'active' ? ` · <strong>${esc(s.status)}</strong>` : ''}</p>
       <div class="actions">
-        ${ORDER_ROLES.has(s.role) ? `<a class="btn" href="/shops/${esc(s.shop_id)}/orders">Quản lý đơn hàng</a>` : ''}
+        ${ORDER_ROLES.has(s.role) ? `<a class="btn" href="/shops/${esc(s.shop_id)}/overview">Tổng quan</a>` : ''}
+        ${ORDER_ROLES.has(s.role) ? `<a class="btn alt" href="/shops/${esc(s.shop_id)}/orders">Quản lý đơn hàng</a>` : ''}
         ${CATALOG_ROLES.has(s.role) ? `<a class="btn alt" href="/shops/${esc(s.shop_id)}/products">Quản lý sản phẩm</a>` : ''}
         ${CONTENT_ROLES.has(s.role) ? `<a class="btn alt" href="/shops/${esc(s.shop_id)}/pages">Trang nội dung</a>` : ''}
         ${MEMBER_READ_ROLES.has(s.role) ? `<a class="btn alt" href="/shops/${esc(s.shop_id)}/members">Nhân sự</a>` : ''}
@@ -199,8 +310,12 @@ export function renderOrderDetail(ctx, shopId, o, err) {
       <button class="btn sm" type="submit">Giao hàng</button></form>` + act('cancel', 'Huỷ đơn', 'btn warn sm');
   else if (o.status === 'shipped') actions = act('deliver', 'Đã giao xong');
   // Đơn COD chưa thu tiền → nút "Đã nhận tiền" (độc lập với trạng thái giao hàng).
-  // Đơn QR do webhook đối soát tự đặt paid — KHÔNG hiện nút thủ công.
-  const payAction = (o.payment_method === 'cod' && o.payment_status !== 'paid') ? act('mark-paid', 'Đã nhận tiền (COD)') : '';
+  // Đơn QR: webhook đối soát tự đặt paid. Nút xác nhận TAY chỉ hiện cho CHỦ SHOP
+  // (owner) làm fallback khi feed vắng — sẽ đòi xác nhận lại mật khẩu (step-up).
+  const unpaidLive = o.payment_status !== 'paid' && !['cancelled', 'refunded'].includes(o.status);
+  let payAction = '';
+  if (o.payment_method === 'cod' && unpaidLive) payAction = act('mark-paid', 'Đã nhận tiền (COD)');
+  else if (o.payment_method === 'qr' && unpaidLive && ctx.role === 'owner') payAction = act('mark-paid-qr', 'Đã nhận tiền (QR) — xác nhận tay', 'btn warn sm');
   return layout(`Đơn #${o.order_number}`, ctx, `
     <a class="muted" href="/shops/${esc(shopId)}/orders">← Danh sách đơn</a>
     <h1>Đơn hàng #${esc(o.order_number)}</h1>
@@ -237,7 +352,8 @@ export function renderProducts(ctx, shopId, data, filter) {
     <td class="muted">${dt(p.created_at)}</td></tr>`).join('');
   return layout('Sản phẩm', ctx, `
     <div class="toolbar"><h1 style="margin:0">Sản phẩm</h1>
-      <a class="btn" href="/shops/${esc(shopId)}/products/new">+ Thêm sản phẩm</a></div>
+      <span class="actions"><a class="btn alt" href="/shops/${esc(shopId)}/products/import">⬆ Nhập CSV</a>
+      <a class="btn" href="/shops/${esc(shopId)}/products/new">+ Thêm sản phẩm</a></span></div>
     <div class="card"><form method="GET" class="filters">
       <div style="flex:1 1 200px"><label>Tìm theo tên</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="Ghế sofa…"></div>
       <div><label>Trạng thái</label><select name="status">${PSTATUSES.map((s) => `<option value="${s}"${s === filter.status ? ' selected' : ''}>${s ? (PSTATUS[s] ?? s) : 'Tất cả'}</option>`).join('')}</select></div>
@@ -248,6 +364,47 @@ export function renderProducts(ctx, shopId, data, filter) {
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
       </div>` : '<p class="muted">Chưa có sản phẩm. Bấm “+ Thêm sản phẩm” để tạo.</p>'}</div>`);
+}
+
+// Nhập sản phẩm hàng loạt từ CSV (onboard concierge nhanh). Mỗi dòng = 1 sản phẩm.
+export function renderProductImport(ctx, shopId, result, err) {
+  const base = `/shops/${esc(shopId)}/products`;
+  const sample = 'title,price_vnd,sku,stock,status,description\nGhế sofa vải 3 chỗ,4990000,SOFA-01,8,active,Ghế sofa phòng khách\nĐèn ngủ để bàn,390000,DEN-01,40,active,';
+  let resultCard = '';
+  if (result) {
+    const errRows = (result.errors ?? []).map((e) => `<tr><td>${esc(e.line)}</td><td>${esc(e.title || '(trống)')}</td><td class="muted">${esc(e.error)}</td></tr>`).join('');
+    resultCard = `<div class="card ${result.failed ? '' : 'ok'}" style="${result.failed ? 'border-color:#fcd34d;background:#fffbeb' : ''}">
+      <h2 style="margin-top:0">Kết quả nhập</h2>
+      <p><strong style="color:#059669">${esc(result.created)}</strong> sản phẩm đã tạo${result.failed ? ` · <strong style="color:#b45309">${esc(result.failed)}</strong> dòng lỗi (bỏ qua)` : ''} trên tổng ${esc(result.total ?? '')} dòng.</p>
+      ${errRows ? `<table><thead><tr><th>Dòng</th><th>Sản phẩm</th><th>Lỗi</th></tr></thead><tbody>${errRows}</tbody></table>` : ''}
+      ${result.created ? `<p style="margin-bottom:0"><a class="btn alt sm" href="${base}">Xem danh sách sản phẩm →</a></p>` : ''}
+    </div>`;
+  }
+  return layout('Nhập sản phẩm CSV', ctx, `
+    <a class="muted" href="${base}">← Danh sách sản phẩm</a>
+    <h1>Nhập sản phẩm từ CSV</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${resultCard}
+    <div class="card">
+      <p>Tải lên tệp <strong>CSV</strong> (UTF-8) — mỗi dòng là một sản phẩm với một biến thể. Cột:</p>
+      <ul class="muted" style="line-height:1.9">
+        <li><code>title</code> — tên sản phẩm <em>(bắt buộc)</em></li>
+        <li><code>price_vnd</code> — giá bán, số nguyên VND, ví dụ <code>4990000</code> <em>(bắt buộc)</em></li>
+        <li><code>sku</code> — mã hàng, duy nhất trong shop <em>(bắt buộc)</em></li>
+        <li><code>stock</code> — tồn kho ban đầu (mặc định 0)</li>
+        <li><code>status</code> — <code>active</code> để bán ngay, hoặc <code>draft</code> (mặc định)</li>
+        <li><code>description</code>, <code>slug</code> — tùy chọn (slug tự tạo từ tên nếu bỏ trống)</li>
+      </ul>
+      <p class="muted" style="font-size:.85rem">Dòng đầu tiên phải là hàng tiêu đề. Tối đa 1000 dòng/lần. Trùng SKU/slug sẽ bị bỏ qua và báo ở kết quả.</p>
+      <form method="POST" action="${base}/import" enctype="multipart/form-data" class="actions" style="align-items:center">
+        <input type="file" name="file" accept=".csv,text/csv" required>
+        <button class="btn" type="submit">Nhập sản phẩm</button>
+      </form>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Mẫu CSV</h2>
+      <pre style="overflow-x:auto;background:#f9fafb;border:1px solid #eceef1;border-radius:8px;padding:12px;font-size:.82rem">${esc(sample)}</pre>
+      <p class="muted" style="font-size:.82rem;margin-bottom:0">Sao chép vào một tệp <code>.csv</code>, sửa dữ liệu rồi tải lên. Có thể mở/soạn bằng Excel hay Google Sheets (lưu dạng CSV UTF-8).</p>
+    </div>`);
 }
 
 export function renderProductNew(ctx, shopId, err, f = {}) {
@@ -651,6 +808,69 @@ export function renderDomainStepUp(ctx, shopId, action, params, err) {
       <input type="hidden" name="__action" value="${esc(action)}">${hidden}
       <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
       <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận & tiếp tục</button>
+    </form>
+    <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
+}
+
+// ── Thanh toán (owner + step-up) ─────────────────────────────────────────────
+// Cấu hình tài khoản ngân hàng NHẬN TIỀN qua VietQR. Tiền vào THẲNG tài khoản shop;
+// nền tảng chỉ đối soát. Vài BIN napas phổ biến để chủ shop tra nhanh.
+const BANK_HINT = 'VD BIN napas: Vietcombank 970436 · Techcombank 970407 · MB 970422 · ACB 970416 · VietinBank 970415 · BIDV 970418 · VPBank 970432 · Agribank 970405 · Sacombank 970403 · TPBank 970423';
+export function renderPayment(ctx, shopId, cfg, notice, err) {
+  const base = `/shops/${esc(shopId)}`;
+  if (ctx.role !== 'owner') {
+    return layout('Thanh toán', ctx, `<h1>Thanh toán</h1><div class="card"><p class="muted">Chỉ <strong>chủ cửa hàng</strong> mới cấu hình tài khoản nhận tiền.</p></div>`);
+  }
+  const c = cfg ?? {};
+  const on = c.qr_enabled === true;
+  return layout('Thanh toán', ctx, `
+    <h1>Thanh toán</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
+    <div class="card">
+      <p class="muted" style="margin-top:0">Khai báo tài khoản ngân hàng của cửa hàng để nhận tiền qua <strong>VietQR</strong>.
+        Khi bật, trang thanh toán sẽ hiện mã QR chuyển tiền <strong>thẳng vào tài khoản của bạn</strong>.
+        Nền tảng không giữ tiền hộ.</p>
+      <p class="muted" style="font-size:.85rem">Thao tác nhạy cảm — lưu sẽ yêu cầu xác nhận lại mật khẩu.</p>
+      <form method="POST" action="${base}/payment" class="actions" style="align-items:end;flex-wrap:wrap">
+        <div><label>Mã ngân hàng (BIN napas, 6 số)</label><input name="bank_bin" value="${esc(c.bank_bin ?? '')}" inputmode="numeric" pattern="\\d{6}" maxlength="6" placeholder="970436" style="width:150px"></div>
+        <div><label>Số tài khoản</label><input name="account_number" value="${esc(c.account_number ?? '')}" inputmode="numeric" pattern="\\d{6,19}" maxlength="19" placeholder="0011002222" style="width:200px"></div>
+        <div><label>Tên chủ tài khoản</label><input name="account_name" value="${esc(c.account_name ?? '')}" maxlength="100" placeholder="NGUYEN VAN A" style="width:240px"></div>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:600"><input type="checkbox" name="qr_enabled" value="1"${on ? ' checked' : ''} style="width:auto">Bật nhận tiền QR</label>
+        <button class="btn" type="submit">Lưu</button>
+      </form>
+      <p class="muted" style="font-size:.8rem;margin-bottom:0">${esc(BANK_HINT)}</p>
+    </div>
+    <div class="card"><p class="muted" style="margin:0"><strong>${on ? '✅ Đang bật' : '⏸ Đang tắt'}</strong> nhận tiền QR.
+      ${on ? 'Khách có thể chọn chuyển khoản QR khi đặt hàng.' : 'Bật ở trên để khách thanh toán bằng QR; hiện chỉ có COD (thu tiền mặt khi giao).'}</p></div>`);
+}
+export function renderPaymentStepUp(ctx, shopId, form, err) {
+  const base = `/shops/${esc(shopId)}/payment`;
+  const f = form ?? {};
+  const hidden = ['bank_bin', 'account_number', 'account_name', 'qr_enabled'].map((k) => `<input type="hidden" name="${k}" value="${esc(f[k] ?? '')}">`).join('');
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận mật khẩu</h1>
+    <p class="muted">Đổi cấu hình nhận tiền là thao tác nhạy cảm — nhập mật khẩu của bạn để tiếp tục.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${base}/step-up">${hidden}
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận & lưu</button>
+    </form>
+    <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
+}
+// Interstitial cho "xác nhận tay đơn QR đã nhận tiền" (mang theo mã đơn).
+export function renderOrderPayStepUp(ctx, shopId, oid, err) {
+  const base = `/shops/${esc(shopId)}/orders/${esc(oid)}`;
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận đã nhận tiền</h1>
+    <p class="muted">Bạn xác nhận đã nhận được tiền chuyển khoản cho đơn này. Đây là thao tác nhạy cảm
+      (đánh dấu đã thanh toán thủ công) — nhập mật khẩu để tiếp tục. Chỉ làm khi bạn ĐÃ kiểm tra tiền về tài khoản.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${base}/mark-paid-qr/step-up">
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận đã nhận tiền</button>
     </form>
     <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
   </div></div>`);

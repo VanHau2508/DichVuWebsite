@@ -28,6 +28,33 @@ const shopNameOf = async (shopId, cookie) => { try { return (await sellerApi('GE
 const shopCtx = (me, shopId, shopName, active) => ({ user: me, shopName, shopId, role: roleFor(me, shopId), active });
 // VND từ form: '' → null (backend báo 400), còn lại → số (âm cũng để backend chặn).
 const parseVnd = (s) => { const t = String(s ?? '').replace(/[^\d-]/g, ''); return t === '' ? null : Number(t); };
+// Parser CSV tối giản (RFC-4180): ô có ngoặc kép, phẩy/xuống-dòng trong ô, "" thoát,
+// CRLF/LF, bỏ BOM. Trả mảng object theo hàng tiêu đề (tên cột chuẩn hoá thường).
+function parseCsv(text) {
+  let s = String(text ?? '');
+  if (s.charCodeAt(0) === 0xfeff) s = s.slice(1);
+  const rows = []; let row = [], field = '', inQ = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inQ) {
+      if (ch === '"') { if (s[i + 1] === '"') { field += '"'; i++; } else inQ = false; } else field += ch;
+    } else if (ch === '"') inQ = true;
+    else if (ch === ',') { row.push(field); field = ''; }
+    else if (ch === '\r') { /* bỏ */ }
+    else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else field += ch;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  if (rows.length === 0) return [];
+  const headers = rows[0].map((h) => h.trim().toLowerCase());
+  const out = [];
+  for (let r = 1; r < rows.length; r++) {
+    if (rows[r].length === 1 && rows[r][0].trim() === '') continue; // dòng trống
+    const obj = {}; headers.forEach((h, idx) => { obj[h] = rows[r][idx] ?? ''; });
+    out.push(obj);
+  }
+  return out;
+}
 const denyShop = (res, me) => sendHtml(res, 403, V.renderError({ user: me }, 'Bạn không có quyền với cửa hàng này.'));
 // Step-up: thao tác nhân sự cần xác thực lại (mật khẩu) gần đây. Khớp cửa sổ 5' của seller.
 const STEP_UP_MS = 5 * 60 * 1000;
@@ -61,6 +88,14 @@ async function dashboard(res, me, cookie) {
     shops.push({ shop_id: mem.shop_id, role: mem.role, name: r.json?.name, status: r.json?.status });
   }
   return sendHtml(res, 200, V.renderDashboard({ user: me }, shops));
+}
+
+async function overviewPage(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'overview');
+  const r = await sellerApi('GET', `/shops/${shopId}/stats`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được số liệu tổng quan.'));
+  return sendHtml(res, 200, V.renderOverview(ctx, shopId, r.json));
 }
 
 async function ordersList(res, me, cookie, shopId, q) {
@@ -128,6 +163,27 @@ async function productCreate(req, res, me, cookie, shopId) {
   const r = await sellerApi('POST', `/shops/${shopId}/products`, { cookie, body });
   if (r.status === 201) return redirect(res, `/shops/${shopId}/products/${r.json.id}`);
   return productNew(res, me, cookie, shopId, r.json?.error ?? 'Không tạo được sản phẩm.', f);
+}
+
+// Nhập sản phẩm hàng loạt từ CSV: đọc file (multipart) → parse → forward mảng rows tới
+// seller (validate + tạo từng dòng, thành công một phần) → render kết quả.
+async function productImportPage(res, me, cookie, shopId, result, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'products');
+  return sendHtml(res, err ? 400 : 200, V.renderProductImport(ctx, shopId, result, err));
+}
+async function productImport(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  let file, tooBig = false;
+  try { file = await readMultipartFile(req); } catch (e) { tooBig = e.statusCode === 413; }
+  if (tooBig) return productImportPage(res, me, cookie, shopId, null, 'Tệp quá lớn (tối đa 10MB).');
+  if (!file?.bytes?.length) return productImportPage(res, me, cookie, shopId, null, 'Chưa chọn tệp CSV hợp lệ.');
+  const rows = parseCsv(file.bytes.toString('utf8'));
+  if (rows.length === 0) return productImportPage(res, me, cookie, shopId, null, 'Tệp không có dòng dữ liệu (cần hàng tiêu đề + ít nhất 1 dòng).');
+  if (rows.length > 1000) return productImportPage(res, me, cookie, shopId, null, 'Tối đa 1000 dòng mỗi lần nhập.');
+  const r = await sellerApi('POST', `/shops/${shopId}/products/import`, { cookie, body: { rows } });
+  if (r.status !== 200) return productImportPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không nhập được — kiểm tra quyền hoặc định dạng tệp.');
+  return productImportPage(res, me, cookie, shopId, { ...r.json, total: rows.length }, null);
 }
 
 async function productDetail(res, me, cookie, shopId, pid, err, form) {
@@ -583,6 +639,122 @@ async function domainStepUp(req, res, me, cookie, shopId) {
 // Dispatch tách riêng và được AWAIT ở dưới: nếu handler async reject (throw/timeout),
 // `return handler(...)` trần sẽ THOÁT try/catch (rejection nằm ngoài scope) → treo
 // request / unhandledRejection. Bọc `await handle(...)` để catch bắt được mọi lỗi.
+// ── Giao diện (theme.write = owner/admin; storefront sanitize khi render) ─────
+async function themePage(res, me, cookie, shopId, ok) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'theme');
+  const r = await sellerApi('GET', `/shops/${shopId}/theme`, { cookie });
+  const theme = r.status === 200 ? r.json : { tokens: {} };
+  return sendHtml(res, 200, V.renderTheme(ctx, theme, ok === '1' ? 'Đã lưu — mở trang bán hàng để xem thay đổi.' : null));
+}
+async function themeSave(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  // Giữ layout hiện tại (PUT ghi đè cả tokens+layout); chỉ đổi màu.
+  const cur = await sellerApi('GET', `/shops/${shopId}/theme`, { cookie });
+  const layout = cur.status === 200 ? cur.json?.layout : undefined;
+  const tokens = {};
+  if (!f.reset) {
+    const HEX = /^#[0-9a-fA-F]{6}$/;
+    for (const k of ['color.primary', 'color.hero-bg', 'color.text', 'color.surface']) {
+      const v = String(f[k] ?? ''); if (HEX.test(v)) tokens[k] = v;
+    }
+    // dẫn xuất: accent + hover theo màu chủ đạo (đồng bộ link/nút).
+    if (tokens['color.primary']) { tokens['color.accent'] = tokens['color.primary']; tokens['color.primary-dark'] = tokens['color.primary']; }
+  }
+  const r = await sellerApi('PUT', `/shops/${shopId}/theme`, { cookie, body: { tokens, layout } });
+  return redirect(res, `/shops/${shopId}/theme?ok=${r.status === 200 ? 1 : 0}`);
+}
+
+// ── Thanh toán (payment.write = owner; PUT payment-config đòi step-up) ────────
+async function paymentPage(res, me, cookie, shopId, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'payment');
+  if (roleFor(me, shopId) !== 'owner') return sendHtml(res, 200, V.renderPayment(ctx, shopId, null, null, null));
+  const r = await sellerApi('GET', `/shops/${shopId}/payment-config`, { cookie });
+  const cfg = r.status === 200 ? r.json : {};
+  return sendHtml(res, err ? 400 : 200, V.renderPayment(ctx, shopId, cfg, notice, err));
+}
+// Chuẩn hoá form (giữ nguyên qua interstitial step-up): chỉ số cho bin/account.
+function paymentForm(f) {
+  return {
+    bank_bin: String(f.bank_bin ?? '').replace(/\D/g, '').slice(0, 6),
+    account_number: String(f.account_number ?? '').replace(/\D/g, '').slice(0, 19),
+    account_name: String(f.account_name ?? '').trim().slice(0, 100),
+    qr_enabled: (f.qr_enabled === '1' || f.qr_enabled === 'on') ? '1' : '',
+  };
+}
+async function doPaymentSave(res, me, cookie, shopId, form) {
+  const body = { bank_bin: form.bank_bin, account_number: form.account_number, account_name: form.account_name, qr_enabled: form.qr_enabled === '1' };
+  const r = await sellerApi('PUT', `/shops/${shopId}/payment-config`, { cookie, body });
+  if (r.status === 200) return paymentPage(res, me, cookie, shopId, 'Đã lưu cấu hình thanh toán.', null);
+  return paymentPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không lưu được cấu hình.');
+}
+async function paymentStepUpPage(res, me, cookie, shopId, form, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'payment');
+  return sendHtml(res, err ? 401 : 200, V.renderPaymentStepUp(ctx, shopId, form, err));
+}
+async function paymentSave(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const form = paymentForm(await readForm(req));
+  return steppedUp(me) ? doPaymentSave(res, me, cookie, shopId, form) : paymentStepUpPage(res, me, cookie, shopId, form, null);
+}
+async function paymentStepUp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const form = paymentForm(f);
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) return paymentStepUpPage(res, me, cookie, shopId, form, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.');
+  return doPaymentSave(res, me, cookie, shopId, form);
+}
+
+// ── Xác nhận TAY đơn QR đã nhận tiền (payment.write = owner; step-up) ─────────
+async function doMarkPaidQr(res, me, cookie, shopId, oid) {
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/mark-paid-qr`, { cookie, body: {} });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}`);
+  return orderDetail(res, me, cookie, shopId, oid, r.json?.error ?? 'Không xác nhận được thanh toán.');
+}
+async function markPaidQrConfirm(res, me, cookie, shopId, oid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (roleFor(me, shopId) !== 'owner') return orderDetail(res, me, cookie, shopId, oid, 'Chỉ chủ cửa hàng mới xác nhận thanh toán QR thủ công.');
+  if (steppedUp(me)) return doMarkPaidQr(res, me, cookie, shopId, oid);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+  return sendHtml(res, 200, V.renderOrderPayStepUp(ctx, shopId, oid, null));
+}
+async function markPaidQrStepUp(req, res, me, cookie, shopId, oid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+    return sendHtml(res, 401, V.renderOrderPayStepUp(ctx, shopId, oid, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.'));
+  }
+  return doMarkPaidQr(res, me, cookie, shopId, oid);
+}
+
+// ── Cài đặt / Hồ sơ cửa hàng (shop.write = owner/admin) ──────────────────────
+async function settingsPage(res, me, cookie, shopId, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'settings');
+  const r = await sellerApi('GET', `/shops/${shopId}`, { cookie });
+  const shop = r.status === 200 ? r.json : {};
+  return sendHtml(res, err ? 400 : 200, V.renderShopSettings(ctx, shopId, shop, notice, err));
+}
+async function settingsSave(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const body = {
+    name: String(f.name ?? '').trim(),
+    contact_email: String(f.contact_email ?? '').trim(),
+    contact_phone: String(f.contact_phone ?? '').trim(),
+    business_address: String(f.business_address ?? '').trim(),
+  };
+  const r = await sellerApi('PATCH', `/shops/${shopId}`, { cookie, body });
+  if (r.status === 200) return settingsPage(res, me, cookie, shopId, 'Đã lưu hồ sơ cửa hàng.', null);
+  return settingsPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không lưu được hồ sơ.');
+}
+
 async function handle(req, res, url, p) {
     if (req.method === 'POST' && !sameOrigin(req, ALLOWED)) return sendHtml(res, 403, V.renderError({}, 'Yêu cầu không hợp lệ (origin).'));
     const cookie = parseCookies(req)[SESSION_COOKIE];
@@ -616,14 +788,19 @@ async function handle(req, res, url, p) {
     if (p === '/account/sessions/revoke-others' && req.method === 'POST') return sessionRevokeOthers(res, me, cookie);
 
     let m;
+    if ((m = new RegExp(`^/shops/${UUID}/overview$`).exec(p)) && req.method === 'GET') return overviewPage(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders$`).exec(p)) && req.method === 'GET') return ordersList(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}$`).exec(p)) && req.method === 'GET') return orderDetail(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/(confirm|ship|cancel|deliver|mark-paid)$`).exec(p)) && req.method === 'POST') return orderAction(req, res, me, cookie, m[1], m[2], m[3]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr$`).exec(p)) && req.method === 'POST') return markPaidQrConfirm(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr/step-up$`).exec(p)) && req.method === 'POST') return markPaidQrStepUp(req, res, me, cookie, m[1], m[2]);
 
     // Sản phẩm & tồn kho.
     if ((m = new RegExp(`^/shops/${UUID}/products$`).exec(p)) && req.method === 'GET') return productsList(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/products$`).exec(p)) && req.method === 'POST') return productCreate(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/products/new$`).exec(p)) && req.method === 'GET') return productNew(res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/products/import$`).exec(p)) && req.method === 'GET') return productImportPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/products/import$`).exec(p)) && req.method === 'POST') return productImport(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'GET') return productDetail(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'POST') return productUpdate(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/(publish|archive)$`).exec(p)) && req.method === 'POST') return productStatus(res, me, cookie, m[1], m[2], m[3]);
@@ -670,6 +847,19 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/domains$`).exec(p)) && req.method === 'POST') return domainAdd(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/domains/step-up$`).exec(p)) && req.method === 'POST') return domainStepUp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/domains/${UUID}/(primary|revoke)$`).exec(p)) && req.method === 'POST') return domainAction(res, me, cookie, m[1], m[2], m[3]);
+
+    // Thanh toán (payment.write = owner + step-up).
+    if ((m = new RegExp(`^/shops/${UUID}/payment$`).exec(p)) && req.method === 'GET') return paymentPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/payment$`).exec(p)) && req.method === 'POST') return paymentSave(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/payment/step-up$`).exec(p)) && req.method === 'POST') return paymentStepUp(req, res, me, cookie, m[1]);
+
+    // Cài đặt / hồ sơ cửa hàng (shop.write = owner/admin).
+    if ((m = new RegExp(`^/shops/${UUID}/settings$`).exec(p)) && req.method === 'GET') return settingsPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/settings$`).exec(p)) && req.method === 'POST') return settingsSave(req, res, me, cookie, m[1]);
+
+    // Giao diện (theme.write = owner/admin).
+    if ((m = new RegExp(`^/shops/${UUID}/theme$`).exec(p)) && req.method === 'GET') return themePage(res, me, cookie, m[1], url.searchParams.get('ok'));
+    if ((m = new RegExp(`^/shops/${UUID}/theme$`).exec(p)) && req.method === 'POST') return themeSave(req, res, me, cookie, m[1]);
 
     return sendHtml(res, 404, V.renderError({ user: me }, 'Không tìm thấy trang.'));
 }

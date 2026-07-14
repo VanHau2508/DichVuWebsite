@@ -38,6 +38,14 @@ function conflictMessage(err) {
   return 'trùng dữ liệu';
 }
 
+// ── ép giới hạn gói (max_products) ───────────────────────────────────────────
+// Đọc gói của shop (subscriptions → plans) trong tenant context. NULL = không giới hạn.
+async function planMaxProducts(c) {
+  const r = await c.query(`SELECT pl.max_products FROM subscriptions s JOIN plans pl ON pl.code = s.plan_code WHERE s.shop_id = current_shop_id()`);
+  return r.rows[0]?.max_products ?? null;
+}
+const catalogCount = async (c) => (await c.query(`SELECT count(*)::int n FROM products WHERE deleted_at IS NULL`)).rows[0].n;
+
 // ── products ─────────────────────────────────────────────────────────────────
 
 async function createProduct(res, ctx, body) {
@@ -63,6 +71,9 @@ async function createProduct(res, ctx, body) {
 
   try {
     const out = await withTenant(ctx.shopId, async (c) => {
+      // Ép giới hạn gói: đã đạt max_products → chặn (nâng gói để thêm).
+      const max = await planMaxProducts(c);
+      if (max != null && (await catalogCount(c)) >= max) return { over: max };
       const p = await c.query(
         `INSERT INTO products (shop_id, slug, title, description, price_vnd, status)
          VALUES (current_shop_id(), $1, $2, $3, $4, $5) RETURNING id`,
@@ -89,9 +100,10 @@ async function createProduct(res, ctx, body) {
       }
 
       await audit(c, 'product.created', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, slug } });
-      return productId;
+      return { productId };
     });
-    return send(res, 201, { id: out, slug, status });
+    if (out.over != null) return send(res, 403, { error: `đã đạt giới hạn gói (${out.over} sản phẩm). Nâng gói để thêm sản phẩm.` });
+    return send(res, 201, { id: out.productId, slug, status });
   } catch (err) {
     if (err.code === '23505') return send(res, 409, { error: conflictMessage(err) });
     if (err.code === '23503') return send(res, 400, { error: 'danh mục không hợp lệ' });
@@ -128,7 +140,7 @@ async function listProducts(res, ctx, _body, _params, query) {
         LIMIT ${limit} OFFSET ${offset}`,
       args,
     );
-    return { total: total.rows[0].n, products: rows.rows };
+    return { total: total.rows[0].n, products: rows.rows, catalog_count: await catalogCount(c), max_products: await planMaxProducts(c) };
   });
   return send(res, 200, { ...data, limit, offset });
 }
@@ -321,6 +333,8 @@ async function importProducts(res, ctx, body) {
   if (rows.length === 0) return send(res, 400, { error: 'không có dòng nào để nhập' });
   if (rows.length > IMPORT_MAX_ROWS) return send(res, 413, { error: `tối đa ${IMPORT_MAX_ROWS} dòng mỗi lần nhập` });
 
+  // Ép giới hạn gói: đọc max + số SP hiện có một lần; chặn khi chạm trần trong lúc nhập.
+  const cap = await withTenant(ctx.shopId, async (c) => ({ max: await planMaxProducts(c), count: await catalogCount(c) }));
   const seen = new Set(); // tránh slug trùng NGAY trong batch
   let created = 0;
   const errors = [];
@@ -340,6 +354,8 @@ async function importProducts(res, ctx, body) {
     if (!validPrice(priceVnd)) { errors.push({ line, title, error: 'giá không hợp lệ' }); continue; }
     if (!validSku(sku)) { errors.push({ line, title, error: 'SKU trống hoặc quá dài' }); continue; }
     if (!isInt(stock) || stock < 0) { errors.push({ line, title, error: 'tồn kho không hợp lệ' }); continue; }
+
+    if (cap.max != null && cap.count + created >= cap.max) { errors.push({ line, title, error: `vượt giới hạn gói (${cap.max} sản phẩm)` }); continue; }
 
     let slug = String(r.slug ?? '').toLowerCase().trim();
     if (!validSlug(slug)) slug = slugify(title);

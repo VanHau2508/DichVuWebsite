@@ -83,10 +83,34 @@ const I_IMG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke
 const I_TRUCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h11v9H3z"/><path d="M14 9h4l3 3v3h-7z"/><circle cx="7" cy="18" r="1.5"/><circle cx="17" cy="18" r="1.5"/></svg>';
 const I_SHIELD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v5c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>';
 
+// Thẻ sản phẩm dùng chung (lưới trang chủ / danh mục / tìm kiếm). Escape mọi field người bán.
+function productCards(products) {
+  return products.map((p) => {
+    const out = Number(p.available) <= 0;
+    return `<a class="card${out ? ' is-out' : ''}" href="/p/${esc(p.slug)}">
+          <div class="thumb">${out ? '<span class="soldout-tag">Hết hàng</span>' : ''}${p.image ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy">` : `<span class="ph">${I_IMG}</span>`}</div>
+          <div class="body"><div class="name">${esc(p.title)}</div><div class="price">${money(p.price_vnd)}</div><span class="cta">Xem chi tiết →</span></div>
+        </a>`;
+  }).join('');
+}
+// Phân trang ← Trước / Sau → từ pageInfo {total, offset, pageSize, basePath}.
+function pager(pi) {
+  if (!pi || pi.total <= pi.pageSize) return '';
+  const cur = Math.floor(pi.offset / pi.pageSize) + 1;
+  const last = Math.max(1, Math.ceil(pi.total / pi.pageSize));
+  const link = (n) => esc(`${pi.basePath}${pi.basePath.includes('?') ? '&' : '?'}page=${n}`);
+  const prev = cur > 1 ? `<a class="pg-btn" href="${link(cur - 1)}">← Trước</a>` : '<span class="pg-btn off">← Trước</span>';
+  const next = cur < last ? `<a class="pg-btn" href="${link(cur + 1)}">Sau →</a>` : '<span class="pg-btn off">Sau →</span>';
+  return `<nav class="pager">${prev}<span class="pg-info">Trang ${cur}/${last}</span>${next}</nav>`;
+}
+
 // ── section renderers (nhận dữ liệu ĐÃ đọc, escape khi render) ────────────────
 const SECTIONS = {
   header: (props, ctx) => `<header class="hdr"><div class="wrap">
     <a href="/" class="brand">${ctx.shop.logo_url ? `<img src="${esc(ctx.shop.logo_url)}" alt="${esc(ctx.shop.name)}" class="brand-logo">` : esc(ctx.shop.name)}</a>
+    <form class="hsearch" method="GET" action="/search" role="search">
+      <input name="q" value="${esc(ctx.query ?? '')}" placeholder="Tìm sản phẩm…" aria-label="Tìm sản phẩm">
+    </form>
     <nav class="hnav">
       ${ctx.categories.slice(0, 4).map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}
       <a href="/checkout/lookup">Tra cứu đơn</a>
@@ -105,24 +129,12 @@ const SECTIONS = {
     const chips = ctx.categories.length
       ? `<div class="chips"><a class="chip" href="/">Tất cả</a>${ctx.categories.map((c) => `<a class="chip" href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}</div>`
       : '';
-    const cards = ctx.products.length
-      ? ctx.products.map((p) => {
-        const out = Number(p.available) <= 0;
-        return `
-        <a class="card${out ? ' is-out' : ''}" href="/p/${esc(p.slug)}">
-          <div class="thumb">${out ? '<span class="soldout-tag">Hết hàng</span>' : ''}${p.image ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy">` : `<span class="ph">${I_IMG}</span>`}</div>
-          <div class="body">
-            <div class="name">${esc(p.title)}</div>
-            <div class="price">${money(p.price_vnd)}</div>
-            <span class="cta">Xem chi tiết →</span>
-          </div>
-        </a>`;
-      }).join('')
-      : '<p class="empty">Cửa hàng chưa có sản phẩm nào.</p>';
+    const cards = ctx.products.length ? productCards(ctx.products) : '<p class="empty">Cửa hàng chưa có sản phẩm nào.</p>';
     return `<section class="section" id="san-pham"><div class="wrap">
       <div class="section-h"><h2>${esc(props.title || 'Sản phẩm')}</h2></div>
       ${chips}
       <div class="grid">${cards}</div>
+      ${pager(ctx.pageInfo)}
     </div></section>`;
   },
 
@@ -189,6 +201,17 @@ h1,h2,h3{font-family:var(--font-heading);font-weight:600;letter-spacing:-.01em;l
 .chip:hover{border-color:var(--color-primary);color:var(--color-primary);background:var(--color-hero-bg)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:20px}
 .empty{color:var(--color-muted);padding:20px 0}
+.hsearch{flex:1 1 180px;max-width:280px;margin:0 8px}
+.hsearch input{width:100%;padding:9px 14px;border:1px solid var(--color-border);border-radius:999px;font-size:.9rem;font-family:inherit;background:var(--color-surface);color:var(--color-text)}
+.hsearch input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px rgba(36,99,235,.12)}
+.searchbar{display:flex;gap:10px;margin:0 0 24px;max-width:520px}
+.searchbar input{flex:1;padding:12px 16px;border:1px solid var(--color-border);border-radius:999px;font-size:1rem;font-family:inherit;background:var(--color-bg);color:var(--color-text)}
+.searchbar input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px rgba(36,99,235,.12)}
+.pager{display:flex;align-items:center;justify-content:center;gap:16px;margin:32px 0 8px}
+.pg-btn{padding:9px 18px;border:1px solid var(--color-border);border-radius:999px;color:var(--color-text);font-size:.9rem}
+.pg-btn:hover{border-color:var(--color-primary);color:var(--color-primary)}
+.pg-btn.off{color:#c9ced6;pointer-events:none}
+.pg-info{color:var(--color-muted);font-size:.88rem}
 .card{display:flex;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:12px;overflow:hidden;transition:transform .12s,box-shadow .12s,border-color .12s}
 .card:hover{transform:translateY(-3px);border-color:#c9dcff;box-shadow:0 8px 24px rgba(36,99,235,.10)}
 .card .thumb{aspect-ratio:1;background:var(--color-surface);overflow:hidden}
@@ -246,16 +269,20 @@ function page(title, tokens, bodyHtml, head = '') {
 }
 
 /** Render trang chủ theo layout của theme (hoặc mặc định). */
-export function renderHome(ctx) {
+export function renderHome(ctx, { canonical = null } = {}) {
   const layout = Array.isArray(ctx.theme?.layout) && ctx.theme.layout.length ? ctx.theme.layout : DEFAULT_LAYOUT;
   const body = layout
     .map((s) => (SECTIONS[s.section] ? SECTIONS[s.section](s.props ?? {}, ctx) : ''))
     .join('\n');
-  return page(ctx.shop.name, ctx.theme?.tokens, body);
+  const head = metaHead({
+    description: `${ctx.shop.name} — cửa hàng trực tuyến. Giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.`,
+    canonical, ogTitle: ctx.shop.name, siteName: ctx.shop.name,
+  });
+  return page(ctx.shop.name, ctx.theme?.tokens, body, head);
 }
 
 /** Render trang chi tiết sản phẩm + form "thêm vào giỏ" (POST thuần, không JS). */
-export function renderProduct(ctx, p) {
+export function renderProduct(ctx, p, { canonical = null } = {}) {
   const media = Array.isArray(p.media) ? p.media : [];
   const main = media.length ? `<img src="${esc(media[0].url)}" alt="${esc(p.title)}">` : I_IMG;
   const thumbs = media.length > 1
@@ -285,22 +312,55 @@ export function renderProduct(ctx, p) {
       <input type="number" name="qty" value="1" min="1" max="${qtyMax}" inputmode="numeric" aria-label="Số lượng">
       <button class="btn btn-primary" type="submit">${I_CART}Thêm vào giỏ</button>
     </form>`);
+  // Structured data qua MICRODATA (itemprop) — CSP-sạch, không cần <script> (default-src 'none').
+  const availability = soldOut ? 'https://schema.org/OutOfStock' : 'https://schema.org/InStock';
+  const priceAttr = esc(String(Number(p.price_vnd)));
   const body = `${SECTIONS.header({}, ctx)}
-    <main class="wrap pd">
-      <div class="crumb"><a href="/">Trang chủ</a> / ${esc(p.title)}</div>
+    <main class="wrap pd" itemscope itemtype="https://schema.org/Product">
+      <div class="crumb"><a href="/">Trang chủ</a> / <span itemprop="name">${esc(p.title)}</span></div>
+      ${media.length ? `<meta itemprop="image" content="${esc(media[0].url)}">` : ''}
       <div class="pd-grid">
         <div class="pd-media"><div class="main">${main}</div>${thumbs}</div>
         <div class="pd-info">
           <h1>${esc(p.title)}</h1>
-          <div class="price">${money(p.price_vnd)}</div>
+          <div class="price" itemprop="offers" itemscope itemtype="https://schema.org/Offer">
+            <span itemprop="price" content="${priceAttr}">${money(p.price_vnd)}</span>
+            <meta itemprop="priceCurrency" content="VND"><link itemprop="availability" href="${availability}">
+          </div>
           ${stockBadge}
           ${addForm}
-          ${p.description ? `<div class="desc">${esc(p.description)}</div>` : ''}
+          ${p.description ? `<div class="desc" itemprop="description">${esc(p.description)}</div>` : ''}
           <div class="trust"><span>${I_TRUCK}Giao hàng toàn quốc</span><span>${I_SHIELD}Thanh toán COD hoặc QR</span></div>
         </div>
       </div>
     </main>${SECTIONS.footer({}, ctx)}`;
-  return page(`${p.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body);
+  const desc = p.description ? String(p.description).replace(/\s+/g, ' ').trim().slice(0, 200) : `${p.title} — ${ctx.shop.name}`;
+  const ogImg = media.length ? `<meta property="og:image" content="${esc(media[0].url)}"><meta name="twitter:image" content="${esc(media[0].url)}">` : '';
+  const head = metaHead({ description: desc, canonical, ogTitle: p.title, ogType: 'product', siteName: ctx.shop.name }) + ogImg;
+  return page(`${p.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
+}
+
+/** Trang kết quả tìm kiếm. Trang KQ tìm không nên index (robots noindex,follow). */
+export function renderSearch(ctx, { canonical = null } = {}) {
+  const q = ctx.query ?? '';
+  const count = ctx.pageInfo?.total ?? ctx.products.length;
+  const results = ctx.products.length
+    ? `<div class="grid">${productCards(ctx.products)}</div>${pager(ctx.pageInfo)}`
+    : `<p class="empty">${q ? `Không tìm thấy sản phẩm nào cho “${esc(q)}”.` : 'Nhập từ khoá để tìm sản phẩm.'}</p>`;
+  const body = `${SECTIONS.header({}, ctx)}
+    <main class="wrap section">
+      <div class="section-h"><h2>${q ? `Kết quả tìm “${esc(q)}”` : 'Tìm kiếm'}</h2>${q ? `<p class="muted">${esc(count)} sản phẩm</p>` : ''}</div>
+      <form class="searchbar" method="GET" action="/search" role="search">
+        <input name="q" value="${esc(q)}" placeholder="Tìm sản phẩm…" aria-label="Tìm sản phẩm">
+        <button class="btn btn-primary" type="submit">Tìm</button>
+      </form>
+      ${results}
+    </main>${SECTIONS.footer({}, ctx)}`;
+  const head = metaHead({
+    description: q ? `Kết quả tìm kiếm cho "${q}" tại ${ctx.shop.name}` : `Tìm sản phẩm tại ${ctx.shop.name}`,
+    canonical, ogTitle: q ? `Tìm "${q}"` : 'Tìm kiếm', siteName: ctx.shop.name, robots: 'noindex, follow',
+  });
+  return page(`${q ? `Tìm "${q}"` : 'Tìm kiếm'} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
 }
 
 // Banner preview: tĩnh, không nội suy dữ liệu shop → an toàn. Nổi bật để không ai

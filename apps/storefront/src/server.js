@@ -15,7 +15,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import pg from 'pg';
-import { renderHome, renderProduct, renderPage, renderMaintenance, renderNotFound } from './theme.js';
+import { renderHome, renderProduct, renderPage, renderSearch, renderMaintenance, renderNotFound } from './theme.js';
 import { runReq, makeLog, health } from './obs.js';
 
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
@@ -76,6 +76,7 @@ function normalizeHost(raw) {
 }
 
 const CACHE_PUBLIC = 'public, s-maxage=60, stale-while-revalidate=300';
+const PAGE_SIZE = 24; // sản phẩm mỗi trang (lưới trang chủ / danh mục / tìm kiếm)
 
 function sendHtml(res, status, html, { shopSlug, cache, preview } = {}) {
   const headers = {
@@ -117,6 +118,31 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     }
     const shopId = resolved.shopId;
 
+    // robots.txt — cho phép index, chặn giỏ/checkout, trỏ sitemap của shop.
+    if (url.pathname === '/robots.txt') {
+      const body = `User-agent: *\nAllow: /\nDisallow: /cart\nDisallow: /checkout\nSitemap: https://${host}/sitemap.xml\n`;
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': CACHE_PUBLIC });
+      return res.end(body);
+    }
+    // sitemap.xml — trang chủ + danh mục + sản phẩm active + trang nội dung published.
+    // RLS (app_store) tự lọc active/published → chỉ URL công khai lọt vào sitemap.
+    if (url.pathname === '/sitemap.xml') {
+      const sm = await withStore(shopId, async (c) => {
+        if (!(await c.query(`SELECT 1 FROM shops WHERE id = current_shop_id() AND status <> 'suspended'`)).rows[0]) return null;
+        const prods = (await c.query(`SELECT slug FROM products ORDER BY created_at DESC LIMIT 5000`)).rows;
+        const cats = (await c.query(`SELECT slug FROM categories ORDER BY position LIMIT 200`)).rows;
+        const pages = (await c.query(`SELECT p.slug FROM pages p JOIN page_revisions pr ON pr.id = p.published_revision_id LIMIT 1000`)).rows;
+        return { prods, cats, pages };
+      });
+      if (!sm) return sendHtml(res, 404, renderNotFound());
+      const escXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const loc = (path) => `  <url><loc>${escXml(`https://${host}${path}`)}</loc></url>`;
+      const urls = [loc('/'), ...sm.cats.map((c) => loc(`/c/${c.slug}`)), ...sm.prods.map((p) => loc(`/p/${p.slug}`)), ...sm.pages.map((p) => loc(`/pages/${p.slug}`))];
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
+      res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': CACHE_PUBLIC });
+      return res.end(xml);
+    }
+
     const data = await withStore(shopId, async (c) => {
       const shopRes = await c.query(`SELECT slug, name, status, contact_email, contact_phone, business_address, logo_key FROM shops WHERE id = current_shop_id()`);
       const shop = shopRes.rows[0];
@@ -136,16 +162,21 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       )).rows;
       const base = { shop, theme, categories, menu };
 
-      const productGrid = (whereJoin = '', args = []) =>
-        c.query(
+      const productGrid = async (whereJoin = '', args = [], offset = 0) => {
+        const total = Number((await c.query(`SELECT count(*)::int n FROM products p ${whereJoin}`, args)).rows[0].n);
+        const rows = (await c.query(
           `SELECT p.id, p.slug, p.title, p.price_vnd,
                   (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
                   (SELECT coalesce(sum(il.on_hand - il.reserved), 0)
                      FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
                     WHERE v.product_id = p.id) AS available
-             FROM products p ${whereJoin} ORDER BY p.created_at DESC LIMIT 50`,
+             FROM products p ${whereJoin} ORDER BY p.created_at DESC LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
           args,
-        ).then((r) => r.rows.map((p) => ({ ...p, image: imgUrl(p.image_key), available: Number(p.available) })));
+        )).rows.map((p) => ({ ...p, image: imgUrl(p.image_key), available: Number(p.available) }));
+        return { products: rows, total };
+      };
+      const pageNo = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
+      const offset = (pageNo - 1) * PAGE_SIZE;
 
       // Trang chi tiết sản phẩm: /p/:slug
       const pm = /^\/p\/([a-z0-9-]+)$/.exec(url.pathname);
@@ -169,10 +200,21 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       if (cm) {
         const cat = (await c.query(`SELECT id, name FROM categories WHERE slug = $1`, [cm[1]])).rows[0];
         if (!cat) return { ...base, notFound: true };
-        const products = await productGrid(
-          `JOIN product_categories pc ON pc.product_id = p.id WHERE pc.category_id = $1`, [cat.id],
+        const { products, total } = await productGrid(
+          `JOIN product_categories pc ON pc.product_id = p.id WHERE pc.category_id = $1`, [cat.id], offset,
         );
-        return { ...base, products, home: true, heroTitle: cat.name };
+        return { ...base, products, home: true, heroTitle: cat.name, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: `/c/${cm[1]}` } };
+      }
+
+      // Tìm kiếm: /search?q=... (ILIKE theo tên; RLS store_products lọc active).
+      if (url.pathname === '/search') {
+        const q = (url.searchParams.get('q') ?? '').trim().slice(0, 100);
+        let products = [], total = 0;
+        if (q) {
+          const like = '%' + q.replace(/[%_\\]/g, '\\$&') + '%';
+          ({ products, total } = await productGrid(`WHERE p.title ILIKE $1`, [like], offset));
+        }
+        return { ...base, products, search: true, query: q, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: `/search?q=${encodeURIComponent(q)}` } };
       }
 
       // Trang nội dung/chính sách: /pages/:slug. CHỈ bản published (RLS store_pages
@@ -203,23 +245,23 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
 
       // Trang chủ: CHỈ path '/'. Path lạ → 404 (không render home cho mọi thứ).
       if (url.pathname !== '/') return { ...base, notFound: true };
-      const products = await productGrid();
-      return { ...base, products, home: true };
+      const { products, total } = await productGrid('', [], offset);
+      return { ...base, products, home: true, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: '/' } };
     });
 
     if (data.notFound) return sendHtml(res, 404, renderNotFound(), { shopSlug: data.shop?.slug });
     if (data.suspended) return sendHtml(res, 503, renderMaintenance(data.shop.name), { shopSlug: data.shop.slug });
 
-    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [] };
+    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '' };
+    const canonical = host ? `https://${host}${url.pathname}` : null; // URL sạch (không kèm query)
     if (data.page) {
-      // Canonical = URL sạch của trang (KHÔNG kèm query → không lộ token preview). Prod luôn https.
-      const canonical = host ? `https://${host}${url.pathname}` : null;
       // Preview → banner cảnh báo + no-store/noindex; published → cache CDN như thường.
       if (data.preview) return sendHtml(res, 200, renderPage(ctx, data.page, { preview: true, canonical }), { shopSlug: data.shop.slug, preview: true });
       return sendHtml(res, 200, renderPage(ctx, data.page, { canonical }), { shopSlug: data.shop.slug, cache: true });
     }
-    if (data.product) return sendHtml(res, 200, renderProduct(ctx, data.product), { shopSlug: data.shop.slug, cache: true });
-    return sendHtml(res, 200, renderHome(ctx), { shopSlug: data.shop.slug, cache: true });
+    if (data.product) return sendHtml(res, 200, renderProduct(ctx, data.product, { canonical }), { shopSlug: data.shop.slug, cache: true });
+    if (data.search) return sendHtml(res, 200, renderSearch(ctx, { canonical }), { shopSlug: data.shop.slug });
+    return sendHtml(res, 200, renderHome(ctx, { canonical }), { shopSlug: data.shop.slug, cache: true });
   } catch (err) {
     log('error', 'render_error', { path: url.pathname, message: err.message, stack: err.stack });
     if (!res.headersSent) sendHtml(res, 500, renderNotFound());

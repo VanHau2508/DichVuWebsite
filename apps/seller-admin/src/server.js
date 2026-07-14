@@ -8,7 +8,7 @@
  * Bảo mật: CSP không script; mọi POST đổi trạng thái + sameOrigin (Origin thuộc allowlist).
  */
 import http from 'node:http';
-import { parseCookies, readForm, readMultipartFile, sendHtml, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
+import { parseCookies, readForm, readFormAll, readMultipartFile, sendHtml, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
 import { authApi, sellerApi, platformApi, sellerUpload, sellerDownload, loadSession } from './api.js';
 import * as V from './pages.js';
 import { runReq, makeLog, health } from './obs.js';
@@ -261,6 +261,41 @@ async function productImport(req, res, me, cookie, shopId) {
   return productImportPage(res, me, cookie, shopId, { ...r.json, total: rows.length }, null);
 }
 
+// ── Danh mục ─────────────────────────────────────────────────────────────────
+async function categoriesPage(res, me, cookie, shopId, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('GET', `/shops/${shopId}/categories`, { cookie });
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'categories');
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được danh mục.'));
+  return sendHtml(res, err ? 400 : 200, V.renderCategories(ctx, shopId, r.json, notice, err));
+}
+async function categoryCreate(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await sellerApi('POST', `/shops/${shopId}/categories`, { cookie, body: { name: String(f.name ?? '').trim(), slug: String(f.slug ?? '').toLowerCase().trim() } });
+  return categoriesPage(res, me, cookie, shopId, r.status === 201 ? 'Đã thêm danh mục.' : null, r.status === 201 ? null : (r.json?.error ?? 'Không thêm được danh mục.'));
+}
+async function categoryUpdate(req, res, me, cookie, shopId, cid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const body = { name: String(f.name ?? '').trim() };
+  const pos = parseInt(f.position ?? '', 10); if (Number.isInteger(pos)) body.position = pos;
+  const r = await sellerApi('PATCH', `/shops/${shopId}/categories/${cid}`, { cookie, body });
+  return categoriesPage(res, me, cookie, shopId, r.status === 200 ? 'Đã lưu danh mục.' : null, r.status === 200 ? null : (r.json?.error ?? 'Không lưu được danh mục.'));
+}
+async function categoryDelete(res, me, cookie, shopId, cid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('DELETE', `/shops/${shopId}/categories/${cid}`, { cookie });
+  return categoriesPage(res, me, cookie, shopId, r.status === 200 ? 'Đã xoá danh mục.' : null, r.status === 200 ? null : (r.json?.error ?? 'Không xoá được danh mục.'));
+}
+async function productCategoriesSave(req, res, me, cookie, shopId, pid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const params = await readFormAll(req);
+  const r = await sellerApi('PUT', `/shops/${shopId}/products/${pid}/categories`, { cookie, body: { category_ids: params.getAll('category_ids') } });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/products/${pid}`);
+  return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không lưu được danh mục.');
+}
+
 async function productDetail(res, me, cookie, shopId, pid, err, form) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const r = await sellerApi('GET', `/shops/${shopId}/products/${pid}`, { cookie });
@@ -277,8 +312,10 @@ async function productDetail(res, me, cookie, shopId, pid, err, form) {
   }));
   const loadMedia = sellerApi('GET', `/shops/${shopId}/products/${pid}/media`, { cookie })
     .then((mr) => (mr.status === 200 ? (mr.json?.media ?? []) : [])).catch(() => []);
-  const [, media] = await Promise.all([loadLevels, loadMedia]);
-  return sendHtml(res, err ? 409 : 200, V.renderProductDetail(ctx, shopId, r.json, levels, err, form, media));
+  const loadCats = sellerApi('GET', `/shops/${shopId}/categories`, { cookie })
+    .then((cr) => (cr.status === 200 ? (cr.json?.categories ?? []) : [])).catch(() => []);
+  const [, media, cats] = await Promise.all([loadLevels, loadMedia, loadCats]);
+  return sendHtml(res, err ? 409 : 200, V.renderProductDetail(ctx, shopId, r.json, levels, err, form, media, cats));
 }
 
 async function productUpdate(req, res, me, cookie, shopId, pid) {
@@ -931,6 +968,11 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/products/new$`).exec(p)) && req.method === 'GET') return productNew(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/products/import$`).exec(p)) && req.method === 'GET') return productImportPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/products/import$`).exec(p)) && req.method === 'POST') return productImport(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/categories$`).exec(p)) && req.method === 'POST') return productCategoriesSave(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/categories$`).exec(p)) && req.method === 'GET') return categoriesPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/categories$`).exec(p)) && req.method === 'POST') return categoryCreate(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/categories/${UUID}/delete$`).exec(p)) && req.method === 'POST') return categoryDelete(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/categories/${UUID}$`).exec(p)) && req.method === 'POST') return categoryUpdate(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'GET') return productDetail(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'POST') return productUpdate(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/(publish|archive)$`).exec(p)) && req.method === 'POST') return productStatus(res, me, cookie, m[1], m[2], m[3]);

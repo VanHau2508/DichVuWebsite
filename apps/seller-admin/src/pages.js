@@ -85,6 +85,7 @@ const ic = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 const IC_HOME = ic('<path d="M3 9l1-5h16l1 5"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/><path d="M3 9h18"/>');
 const IC_ORDER = ic('<path d="M5 4h14v16l-3-2-2 2-2-2-2 2-3-2z"/><path d="M9 9h6"/><path d="M9 13h6"/>');
 const IC_BOX = ic('<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/>');
+const IC_TAG = ic('<path d="M3 7v5.6a2 2 0 0 0 .6 1.4l7 7a2 2 0 0 0 2.8 0l5.6-5.6a2 2 0 0 0 0-2.8l-7-7A2 2 0 0 0 12.6 5H7a4 4 0 0 0-4 4z"/><circle cx="7.5" cy="9.5" r="1.3"/>');
 const IC_FILE = ic('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9 12h6"/><path d="M9 16h6"/>');
 const IC_USERS = ic('<circle cx="9" cy="8" r="3"/><path d="M4 20v-1a5 5 0 0 1 10 0v1"/><path d="M17 8a3 3 0 0 1 0 6"/><path d="M20 20v-1a4 4 0 0 0-3-3.8"/>');
 const IC_GLOBE = ic('<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18"/>');
@@ -102,6 +103,7 @@ function sideNav(ctx) {
   const t = it(`${base}/overview`, 'Tổng quan', IC_CHART, ctx.active === 'overview', ORDER_ROLES.has(ctx.role))
           + it(`${base}/orders`, 'Đơn hàng', IC_ORDER, ctx.active === 'orders', ORDER_ROLES.has(ctx.role))
           + it(`${base}/products`, 'Sản phẩm', IC_BOX, ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
+          + it(`${base}/categories`, 'Danh mục', IC_TAG, ctx.active === 'categories', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/pages`, 'Trang nội dung', IC_FILE, ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/members`, 'Nhân sự', IC_USERS, ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role))
           + it(`${base}/domains`, 'Tên miền', IC_GLOBE, ctx.active === 'domains', DOMAIN_ROLES.has(ctx.role))
@@ -532,6 +534,37 @@ export function renderProducts(ctx, shopId, data, filter) {
       </div>` : '<p class="muted">Chưa có sản phẩm. Bấm “+ Thêm sản phẩm” để tạo.</p>'}</div>`);
 }
 
+// Quản lý danh mục: tạo/sửa/xoá + (gán sản phẩm ở trang chi tiết SP). Hiện storefront /c/:slug.
+export function renderCategories(ctx, shopId, data, notice, err) {
+  const base = `/shops/${esc(shopId)}`;
+  const cats = data?.categories ?? [];
+  const rows = cats.map((c) => `<tr>
+    <td><form method="POST" action="${base}/categories/${esc(c.id)}" style="display:flex;gap:8px;align-items:center;margin:0">
+      <input name="name" value="${esc(c.name)}" maxlength="200" required aria-label="Tên danh mục" style="flex:1;min-width:140px">
+      <input name="position" type="number" value="${esc(c.position)}" min="0" style="width:66px" aria-label="Thứ tự" title="Thứ tự hiển thị">
+      <button class="btn alt sm" type="submit">Lưu</button>
+    </form></td>
+    <td class="muted"><code>${esc(c.slug)}</code></td>
+    <td style="text-align:right"><form method="POST" action="${base}/categories/${esc(c.id)}/delete" style="display:inline;margin:0"><button class="btn warn sm" type="submit">Xoá</button></form></td>
+  </tr>`).join('');
+  return layout('Danh mục', ctx, `
+    <h1>Danh mục sản phẩm</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
+    <div class="card"><h2 style="margin-top:0">Thêm danh mục</h2>
+      <form method="POST" action="${base}/categories" class="actions" style="align-items:end;flex-wrap:wrap">
+        <div><label>Tên</label><input name="name" required maxlength="200" placeholder="Ghế sofa"></div>
+        <div><label>Đường dẫn (slug)</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" placeholder="ghe-sofa"></div>
+        <button class="btn" type="submit">Thêm danh mục</button>
+      </form>
+      <p class="muted" style="font-size:.82rem;margin-bottom:0">Slug là đường dẫn trên storefront: <code>/c/&lt;slug&gt;</code>. Chỉ chữ thường, số, gạch ngang.</p>
+    </div>
+    <div class="card">${cats.length
+      ? `<table><thead><tr><th>Tên · thứ tự</th><th>Slug</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+         <p class="muted" style="margin-top:10px;font-size:.85rem">Gán sản phẩm vào danh mục ở <strong>trang chi tiết từng sản phẩm</strong> (mục "Danh mục").</p>`
+      : '<p class="muted">Chưa có danh mục. Thêm ở trên để nhóm sản phẩm + hiện trên storefront.</p>'}</div>`);
+}
+
 // Nhập sản phẩm hàng loạt từ CSV (onboard concierge nhanh). Mỗi dòng = 1 sản phẩm.
 export function renderProductImport(ctx, shopId, result, err) {
   const base = `/shops/${esc(shopId)}/products`;
@@ -599,8 +632,10 @@ export function renderProductNew(ctx, shopId, err, f = {}) {
     </form>`);
 }
 
-export function renderProductDetail(ctx, shopId, p, levels, err, form, media) {
+export function renderProductDetail(ctx, shopId, p, levels, err, form, media, cats) {
   const base = `/shops/${esc(shopId)}/products/${esc(p.id)}`;
+  const catIds = new Set(p.category_ids ?? []);
+  const catList = cats ?? [];
   const f = form ?? {}; // khi lưu lỗi: ưu tiên giá trị vừa nhập để không nuốt sửa đổi
   const val = (k) => esc(f[k] ?? p[k] ?? '');
   const imgs = media ?? [];
@@ -657,6 +692,14 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media) {
         <div><label>Giá (VND)</label><input name="price_vnd" type="number" min="0" step="1000" required style="width:140px"></div>
         <button class="btn alt sm" type="submit">Thêm biến thể</button>
       </form>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Danh mục</h2>
+      ${catList.length
+        ? `<form method="POST" action="${base}/categories">
+            <div style="display:flex;flex-wrap:wrap;gap:10px 20px">${catList.map((c) => `<label style="display:inline-flex;align-items:center;gap:7px;font-size:.92rem"><input type="checkbox" name="category_ids" value="${esc(c.id)}"${catIds.has(c.id) ? ' checked' : ''}> ${esc(c.name)}</label>`).join('')}</div>
+            <button class="btn alt sm" type="submit" style="margin-top:12px">Lưu danh mục</button>
+          </form>`
+        : `<p class="muted">Chưa có danh mục. Tạo ở trang <a href="/shops/${esc(shopId)}/categories">Danh mục</a> rồi quay lại gán.</p>`}
     </div>
     <div class="card"><h2 style="margin-top:0">Hình ảnh</h2>
       ${imgs.length ? `<div class="media-grid">${imgs.map((m, i) => thumb(m, i)).join('')}</div>` : '<p class="muted">Chưa có ảnh nào.</p>'}

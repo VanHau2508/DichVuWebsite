@@ -315,6 +315,63 @@ async function createCategory(res, ctx, body) {
   }
 }
 
+async function updateCategory(res, ctx, body, params) {
+  const catId = params[1];
+  const sets = [], args = [];
+  if (body.name !== undefined) { const n = String(body.name).trim(); if (n.length < 1 || n.length > 200) return send(res, 400, { error: 'tên danh mục không hợp lệ' }); args.push(n); sets.push(`name = $${args.length}`); }
+  if (body.position !== undefined && isInt(body.position)) { args.push(body.position); sets.push(`position = $${args.length}`); }
+  if (!sets.length) return send(res, 400, { error: 'không có gì để cập nhật' });
+  args.push(catId);
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const r = await c.query(`UPDATE categories SET ${sets.join(', ')} WHERE id = $${args.length} AND deleted_at IS NULL`, args);
+    if (r.rowCount === 0) return { code: 404 };
+    await audit(c, 'category.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: { catId } });
+    return { code: 200 };
+  });
+  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy danh mục' });
+  return send(res, 200, { ok: true });
+}
+
+async function deleteCategory(res, ctx, _body, params) {
+  const catId = params[1];
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const r = await c.query(`UPDATE categories SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, [catId]);
+    if (r.rowCount === 0) return { code: 404 };
+    await c.query(`DELETE FROM product_categories WHERE category_id = $1`, [catId]); // gỡ gán (giữ sản phẩm)
+    await audit(c, 'category.deleted', { actorId: ctx.user.id, ip: ctx.ip, metadata: { catId } });
+    return { code: 200 };
+  });
+  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy danh mục' });
+  return send(res, 200, { ok: true });
+}
+
+// Đặt LẠI toàn bộ danh mục của một sản phẩm (thay thế tập). Composite FK (shop_id,
+// category_id) chặn gán danh mục shop khác → 23503.
+async function setProductCategories(res, ctx, body, params) {
+  const productId = params[1];
+  const ids = Array.isArray(body.category_ids) ? [...new Set(body.category_ids.filter((x) => typeof x === 'string'))] : [];
+  try {
+    const out = await withTenant(ctx.shopId, async (c) => {
+      const p = await c.query(`SELECT 1 FROM products WHERE id = $1 AND deleted_at IS NULL`, [productId]);
+      if (p.rows.length === 0) return { code: 404 };
+      await c.query(`DELETE FROM product_categories WHERE product_id = $1`, [productId]);
+      for (const catId of ids) {
+        await c.query(
+          `INSERT INTO product_categories (shop_id, product_id, category_id) VALUES (current_shop_id(), $1, $2) ON CONFLICT DO NOTHING`,
+          [productId, catId],
+        );
+      }
+      await audit(c, 'product.categories_set', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, n: ids.length } });
+      return { code: 200 };
+    });
+    if (out.code === 404) return send(res, 404, { error: 'không tìm thấy sản phẩm' });
+    return send(res, 200, { ok: true });
+  } catch (err) {
+    if (err.code === '23503') return send(res, 400, { error: 'danh mục không hợp lệ' });
+    throw err;
+  }
+}
+
 // ── Nhập sản phẩm hàng loạt (BFF đã parse CSV → mảng rows). Mỗi dòng = 1 sản phẩm
 // + 1 biến thể + tồn ban đầu, trong MỘT transaction RIÊNG → thành công một phần +
 // báo lỗi từng dòng. Dùng để onboard concierge nhanh (khỏi gõ tay từng SKU). ──
@@ -412,4 +469,7 @@ export const CATALOG_ROUTES = [
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/products/${UUID}/variants/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => deleteVariant(res, ctx, b, p) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/categories$`), perm: 'catalog.read', fn: (res, ctx) => listCategories(res, ctx) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/categories$`), perm: 'catalog.write', fn: (res, ctx, b) => createCategory(res, ctx, b) },
+  { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/categories/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => updateCategory(res, ctx, b, p) },
+  { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/categories/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => deleteCategory(res, ctx, b, p) },
+  { m: 'PUT', re: new RegExp(`^/shops/${UUID}/products/${UUID}/categories$`), perm: 'catalog.write', fn: (res, ctx, b, p) => setProductCategories(res, ctx, b, p) },
 ];

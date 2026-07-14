@@ -63,6 +63,17 @@ export function readForm(req) {
   });
 }
 
+// Như readForm nhưng GIỮ mọi giá trị của key trùng (checkbox nhiều) → trả URLSearchParams
+// để handler dùng .getAll('name'). readForm thường ghi đè, mất lựa chọn nhiều.
+export function readFormAll(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = []; let over = false;
+    req.on('data', (c) => { if (over) return; size += c.length; if (size > 64 * 1024) { over = true; reject(Object.assign(new Error('body quá lớn'), { statusCode: 413 })); return; } chunks.push(c); });
+    req.on('end', () => { if (over) return; resolve(new URLSearchParams(Buffer.concat(chunks).toString('utf8'))); });
+    req.on('error', reject);
+  });
+}
+
 // Đọc toàn bộ body thô thành Buffer, có trần kích thước (413 nếu vượt).
 export function readRawBody(req, maxBytes) {
   return new Promise((resolve, reject) => {

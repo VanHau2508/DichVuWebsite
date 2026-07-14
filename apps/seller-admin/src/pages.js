@@ -227,6 +227,80 @@ export function renderShopSettings(ctx, shopId, shop, notice, err) {
       Đổi bảng màu ở <a href="${base}/theme">Giao diện</a>; tên miền riêng ở <a href="${base}/domains">Tên miền</a>.</p></div>`);
 }
 
+// ── Console nền tảng (super-admin, chỉ platform_staff) ───────────────────────
+// Gate ẩn: seller-admin không biết ai là staff → mọi handler gọi platformApi; platform
+// requireStaff (introspect + platform_staff + MFA) tự chặn (403 → renderPlatformDenied).
+const PLANS = [
+  { code: 'platform', label: 'Platform — 990.000đ/tháng · 100 SP' },
+  { code: 'care', label: 'Care — 2.490.000đ/tháng · 100 SP' },
+  { code: 'growth', label: 'Growth — 5.900.000đ/tháng · 500 SP' },
+];
+const PLAT_STATUS = { onboarding: 'Đang thiết lập', active: 'Đang hoạt động', suspended: 'Tạm khoá' };
+
+export function renderPlatformDenied(ctx) {
+  return layout('Console nền tảng', ctx, `<h1>Console nền tảng</h1>
+    <div class="card"><p class="muted">Khu vực này chỉ dành cho <strong>nhân viên nền tảng</strong> (đã bật MFA). Tài khoản của bạn không có quyền.</p>
+    <a class="btn alt" href="/">← Về bảng điều khiển</a></div>`);
+}
+export function renderPlatformShops(ctx, shops) {
+  const rows = (shops ?? []).map((s) => `<tr>
+    <td><a href="/platform/shops/${esc(s.id)}">${esc(s.name)}</a><div class="muted" style="font-size:.8rem">${esc(s.subdomain ?? s.slug)}</div></td>
+    <td>${badge(s.status, PLAT_STATUS[s.status] ?? s.status)}</td>
+    <td>${esc(s.plan_code ?? '—')} <span class="muted">${esc(s.sub_status ?? '')}</span></td>
+    <td class="muted">${dt(s.created_at)}</td></tr>`).join('');
+  return layout('Console nền tảng', ctx, `
+    <div class="toolbar"><h1 style="margin:0">Console nền tảng</h1>
+      <a class="btn" href="/platform/new">+ Tạo cửa hàng</a></div>
+    <div class="card">${(shops ?? []).length ? `<table><thead><tr><th>Cửa hàng</th><th>Trạng thái</th><th>Gói</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table>
+      <p class="muted" style="margin-top:10px">${shops.length} cửa hàng.</p>` : '<p class="muted">Chưa có cửa hàng nào. Bấm “Tạo cửa hàng”.</p>'}</div>`);
+}
+export function renderPlatformShopNew(ctx, err, f = {}) {
+  return layout('Tạo cửa hàng', ctx, `
+    <a class="muted" href="/platform">← Console nền tảng</a>
+    <h1>Tạo cửa hàng mới</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <div class="card"><form method="POST" action="/platform">
+      <label>Tên cửa hàng</label><input name="name" value="${esc(f.name ?? '')}" required maxlength="200" placeholder="Nhà Xinh Décor">
+      <label>Subdomain (slug)</label><input name="slug" value="${esc(f.slug ?? '')}" required pattern="[a-z0-9-]+" maxlength="40" placeholder="nha-xinh">
+      <div class="muted" style="font-size:.82rem;margin:2px 0 8px">→ <code>&lt;slug&gt;.nentang.vn</code> (chỉ a-z, 0-9, gạch ngang)</div>
+      <label>Gói dịch vụ</label><select name="plan_code">${PLANS.map((p) => `<option value="${p.code}"${f.plan_code === p.code ? ' selected' : ''}>${esc(p.label)}</option>`).join('')}</select>
+      <div class="actions" style="margin-top:14px"><button class="btn" type="submit">Tạo cửa hàng</button></div>
+    </form></div>`);
+}
+export function renderPlatformShopDetail(ctx, shop, { notice = null, err = null, invite = null } = {}) {
+  const base = `/platform/shops/${esc(shop.id)}`;
+  const inviteCard = invite ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0">
+    <h2 style="margin-top:0">Link mời đã tạo</h2>
+    <p class="muted">Gửi link này cho chủ shop <strong>${esc(invite.email)}</strong> để họ đặt mật khẩu và nhận cửa hàng. Hết hạn ${dt(invite.expires_at)}.</p>
+    <p><code style="word-break:break-all">${esc(invite.url)}</code></p></div>` : '';
+  const statusForm = shop.status === 'suspended'
+    ? `<form method="POST" action="${base}/restore" style="display:inline"><button class="btn sm" type="submit">Mở lại</button></form>`
+    : `<form method="POST" action="${base}/suspend" style="display:inline"><button class="btn warn sm" type="submit">Tạm khoá</button></form>`;
+  return layout(`Cửa hàng ${shop.name}`, ctx, `
+    <a class="muted" href="/platform">← Console nền tảng</a>
+    <h1>${esc(shop.name)}</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
+    ${inviteCard}
+    <div class="card">
+      <span class="pill">${badge(shop.status, PLAT_STATUS[shop.status] ?? shop.status)}</span>
+      <span class="pill">Gói ${esc(shop.plan_code ?? '—')} · ${esc(shop.sub_status ?? '')}</span>
+      <div class="actions" style="margin-top:10px">${statusForm}
+        <a class="btn alt sm" href="https://${esc(shop.subdomain ?? '')}" target="_blank" rel="noopener">Mở storefront ↗</a></div>
+      <table style="margin-top:12px"><tbody>
+        <tr><td class="muted">Subdomain</td><td><code>${esc(shop.subdomain ?? '')}</code></td></tr>
+        <tr><td class="muted">Slug</td><td>${esc(shop.slug)}</td></tr>
+        <tr><td class="muted">Tạo</td><td>${dt(shop.created_at)}</td></tr>
+      </tbody></table>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Mời chủ shop (owner)</h2>
+      <p class="muted" style="font-size:.85rem">Tạo link mời để chủ shop đặt mật khẩu + nhận cửa hàng (concierge — chưa gửi email tự động).</p>
+      <form method="POST" action="${base}/invite" class="actions" style="align-items:end">
+        <div><label>Email chủ shop</label><input name="email" type="email" required placeholder="chushop@email.com" style="width:260px"></div>
+        <button class="btn" type="submit">Tạo link mời</button>
+      </form></div>`);
+}
+
 export function renderLogin(err) {
   return layout('Đăng nhập', {}, `<div class="center"><div class="card"><h1>Đăng nhập quản trị</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
@@ -280,8 +354,9 @@ export function renderOverview(ctx, shopId, s) {
     <p class="muted" style="font-size:.82rem">Doanh thu chỉ tính đơn <strong>đã thanh toán</strong>; mốc ngày theo giờ Việt Nam.</p>`);
 }
 
-export function renderDashboard(ctx, shops) {
+export function renderDashboard(ctx, shops, isStaff = false) {
   return layout('Bảng điều khiển', ctx, `<h1>Cửa hàng của bạn</h1>
+    ${isStaff ? `<div class="card" style="background:#eef4ff;border-color:#93c5fd"><strong>Nhân viên nền tảng</strong> · <a href="/platform">Mở Console nền tảng →</a></div>` : ''}
     ${shops.length ? shops.map((s) => `<div class="card">
       <h2 style="margin:0">${esc(s.name || s.shop_id)}</h2>
       <p class="muted">Vai trò: ${esc(s.role)}${s.status && s.status !== 'active' ? ` · <strong>${esc(s.status)}</strong>` : ''}</p>
@@ -428,10 +503,13 @@ export function renderProducts(ctx, shopId, data, filter) {
     <td class="num right">${money(p.price_vnd)}</td>
     <td class="num right">${p.variant_count}</td>
     <td class="muted">${dt(p.created_at)}</td></tr>`).join('');
+  const mx = d.max_products, cc = d.catalog_count;
+  const capLine = mx != null ? `<p class="muted" style="margin:-6px 0 14px">Đã dùng <strong>${esc(cc)}/${esc(mx)}</strong> sản phẩm theo gói.${cc >= mx ? ' <strong style="color:#b45309">Đã đạt giới hạn — nâng gói để thêm.</strong>' : ''}</p>` : '';
   return layout('Sản phẩm', ctx, `
     <div class="toolbar"><h1 style="margin:0">Sản phẩm</h1>
       <span class="actions"><a class="btn alt" href="/shops/${esc(shopId)}/products/import">⬆ Nhập CSV</a>
       <a class="btn" href="/shops/${esc(shopId)}/products/new">+ Thêm sản phẩm</a></span></div>
+    ${capLine}
     <div class="card"><form method="GET" class="filters">
       <div style="flex:1 1 200px"><label>Tìm theo tên</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="Ghế sofa…"></div>
       <div><label>Trạng thái</label><select name="status">${PSTATUSES.map((s) => `<option value="${s}"${s === filter.status ? ' selected' : ''}>${s ? (PSTATUS[s] ?? s) : 'Tất cả'}</option>`).join('')}</select></div>

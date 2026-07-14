@@ -9,7 +9,7 @@
  */
 import http from 'node:http';
 import { parseCookies, readForm, readMultipartFile, sendHtml, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
-import { authApi, sellerApi, sellerUpload, sellerDownload, loadSession } from './api.js';
+import { authApi, sellerApi, platformApi, sellerUpload, sellerDownload, loadSession } from './api.js';
 import * as V from './pages.js';
 import { runReq, makeLog, health } from './obs.js';
 
@@ -87,7 +87,51 @@ async function dashboard(res, me, cookie) {
     const r = await sellerApi('GET', `/shops/${mem.shop_id}`, { cookie });
     shops.push({ shop_id: mem.shop_id, role: mem.role, name: r.json?.name, status: r.json?.status });
   }
-  return sendHtml(res, 200, V.renderDashboard({ user: me }, shops));
+  // Phát hiện nhân viên nền tảng: platform requireStaff trả 403 cho người thường (rẻ),
+  // 200 cho staff → hiện link Console. Một lượt gọi nội bộ/lần vào dashboard.
+  const staff = await platformApi('GET', '/ops/shops', { cookie }).catch(() => ({ status: 0 }));
+  return sendHtml(res, 200, V.renderDashboard({ user: me }, shops, staff.status === 200));
+}
+
+// ── Console nền tảng (super-admin) — gate ẩn qua platform requireStaff ────────
+const platCtx = (me) => ({ user: me }); // không shopId → layout đơn (không sidebar shop)
+const platDenied = (res, me) => sendHtml(res, 403, V.renderPlatformDenied(platCtx(me)));
+const isDenied = (st) => st === 401 || st === 403;
+async function platformShops(res, me, cookie) {
+  const r = await platformApi('GET', '/ops/shops', { cookie });
+  if (r.status !== 200) return platDenied(res, me);
+  return sendHtml(res, 200, V.renderPlatformShops(platCtx(me), r.json?.shops ?? []));
+}
+function platformShopNew(res, me, err, form) {
+  return sendHtml(res, err ? 400 : 200, V.renderPlatformShopNew(platCtx(me), err, form));
+}
+async function platformCreate(req, res, me, cookie) {
+  const f = await readForm(req);
+  const body = { name: String(f.name ?? '').trim(), slug: String(f.slug ?? '').toLowerCase().trim(), plan_code: String(f.plan_code ?? '').trim() };
+  const r = await platformApi('POST', '/ops/shops', { cookie, body });
+  if (r.status === 201) return redirect(res, `/platform/shops/${r.json.id}`);
+  if (isDenied(r.status)) return platDenied(res, me);
+  return platformShopNew(res, me, r.json?.error ?? 'Không tạo được cửa hàng.', f);
+}
+async function platformShopDetail(res, me, cookie, shopId, opts = {}) {
+  const r = await platformApi('GET', `/ops/shops/${shopId}`, { cookie });
+  if (isDenied(r.status)) return platDenied(res, me);
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError({ user: me }, r.json?.error ?? 'Không tìm thấy cửa hàng.'));
+  return sendHtml(res, 200, V.renderPlatformShopDetail(platCtx(me), r.json, opts));
+}
+async function platformInvite(req, res, me, cookie, shopId) {
+  const f = await readForm(req);
+  const r = await platformApi('POST', `/ops/shops/${shopId}/invitations`, { cookie, body: { email: String(f.email ?? '').trim(), role: 'owner' } });
+  if (isDenied(r.status)) return platDenied(res, me);
+  if (r.status !== 201) return platformShopDetail(res, me, cookie, shopId, { err: r.json?.error ?? 'Không tạo được lời mời.' });
+  const invite = { email: String(f.email ?? '').trim(), url: `${ADMIN_ORIGIN}/invite/accept?token=${encodeURIComponent(r.json.token)}`, expires_at: r.json.expires_at };
+  return platformShopDetail(res, me, cookie, shopId, { invite, notice: 'Đã tạo link mời — sao chép gửi cho chủ shop.' });
+}
+async function platformStatus(res, me, cookie, shopId, action) {
+  const r = await platformApi('POST', `/ops/shops/${shopId}/${action}`, { cookie, body: {} });
+  if (isDenied(r.status)) return platDenied(res, me);
+  const okMsg = action === 'suspend' ? 'Đã tạm khoá cửa hàng.' : 'Đã mở lại cửa hàng.';
+  return platformShopDetail(res, me, cookie, shopId, r.status === 200 ? { notice: okMsg } : { err: r.json?.error ?? 'Thao tác không thực hiện được.' });
 }
 
 async function overviewPage(res, me, cookie, shopId) {
@@ -839,6 +883,15 @@ async function handle(req, res, url, p) {
     const me = sess.me;
 
     if (p === '/' && req.method === 'GET') return dashboard(res, me, cookie);
+
+    // Console nền tảng (chỉ platform_staff — gate ẩn qua platform requireStaff).
+    let pm;
+    if (p === '/platform' && req.method === 'GET') return platformShops(res, me, cookie);
+    if (p === '/platform/new' && req.method === 'GET') return platformShopNew(res, me, null, {});
+    if (p === '/platform' && req.method === 'POST') return platformCreate(req, res, me, cookie);
+    if ((pm = new RegExp(`^/platform/shops/${UUID}$`).exec(p)) && req.method === 'GET') return platformShopDetail(res, me, cookie, pm[1]);
+    if ((pm = new RegExp(`^/platform/shops/${UUID}/invite$`).exec(p)) && req.method === 'POST') return platformInvite(req, res, me, cookie, pm[1]);
+    if ((pm = new RegExp(`^/platform/shops/${UUID}/(suspend|restore)$`).exec(p)) && req.method === 'POST') return platformStatus(res, me, cookie, pm[1], pm[2]);
 
     // Tài khoản (cá nhân, không theo shop).
     if (p === '/account' && req.method === 'GET') return accountPage(res, me, cookie);

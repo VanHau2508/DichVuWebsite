@@ -22,7 +22,10 @@ import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrS
 import { runReq, makeLog, health } from './obs.js';
 
 const PORT = Number(process.env.PORT ?? 3060);
-const SHIP_FEE = Number(process.env.SHIP_FEE_VND ?? 30000);
+// Mặc định phí ship nền tảng (shop chưa cấu hình → dùng số này). Dùng `??` không đủ:
+// SHIP_FEE_VND='' (env để trống) lọt qua `??` rồi Number('')===0 → free-ship âm thầm toàn
+// nền tảng. Chỉ nhận số hữu hạn; rỗng/không hợp lệ → 30000.
+const SHIP_FEE = (() => { const r = process.env.SHIP_FEE_VND; return (r != null && r !== '' && Number.isFinite(Number(r))) ? Number(r) : 30000; })();
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? 'http://minio:9000/media-public';
 const imgUrl = (key) => (key ? `${MEDIA_PUBLIC_BASE}/${key}` : null);
 const CART_TTL_DAYS = 30;
@@ -59,6 +62,21 @@ async function findCart(c, token) {
   return r.rows[0] ?? null;
 }
 
+// Phí ship theo shop (đọc trong tenant context). NULL → mặc định nền tảng (tương thích
+// ngược). Dùng CHUNG cho summarize (hiển thị) và createOrderTx (tính đơn) → luôn khớp.
+async function shopShipping(c) {
+  const s = (await c.query(`SELECT ship_fee_vnd, free_ship_threshold_vnd FROM shops WHERE id = current_shop_id()`)).rows[0] ?? {};
+  return {
+    fee: s.ship_fee_vnd != null ? Number(s.ship_fee_vnd) : SHIP_FEE,
+    threshold: s.free_ship_threshold_vnd != null ? Number(s.free_ship_threshold_vnd) : null,
+  };
+}
+function computeShipping(cfg, subtotal, hasItems) {
+  if (!hasItems) return 0;
+  if (cfg.threshold != null && subtotal >= cfg.threshold) return 0; // đủ ngưỡng miễn phí ship
+  return cfg.fee;
+}
+
 async function summarize(c, cartId) {
   const items = (await c.query(
     `SELECT ci.variant_id, ci.qty, v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title, p.slug,
@@ -72,7 +90,8 @@ async function summarize(c, cartId) {
     subtotal += unit * it.qty;
     return { variant_id: it.variant_id, product_title: it.product_title, variant_title: it.variant_title, sku: it.sku, unit_price_vnd: unit, qty: it.qty, line_total_vnd: unit * it.qty, image: imgUrl(it.image_key) };
   });
-  return { items: out, subtotal_vnd: subtotal, shipping_vnd: out.length ? SHIP_FEE : 0, total_vnd: subtotal + (out.length ? SHIP_FEE : 0) };
+  const shipping = computeShipping(await shopShipping(c), subtotal, out.length > 0);
+  return { items: out, subtotal_vnd: subtotal, shipping_vnd: shipping, total_vnd: subtotal + shipping };
 }
 
 // Tên shop (cho header trang HTML). app_checkout có SELECT shops (policy checkout_shop).
@@ -235,7 +254,7 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       subtotal += unit * it.qty;
       lines.push({ variant_id: it.variant_id, title: it.product_title + (it.variant_title ? ` - ${it.variant_title}` : ''), sku: it.sku, unit, qty: it.qty });
     }
-    const shipping = SHIP_FEE, discount = 0, total = subtotal + shipping - discount;
+    const shipping = computeShipping(await shopShipping(c), subtotal, items.length > 0), discount = 0, total = subtotal + shipping - discount;
 
     // QR: cần cấu hình ngân hàng của shop + mã đối soát duy nhất.
     let paymentRef = null;

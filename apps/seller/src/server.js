@@ -30,6 +30,7 @@ import { CONTENT_ROUTES } from './content.js';
 import { BLOG_ROUTES } from './blog.js';
 import { EXPORT_ROUTES } from './export.js';
 import { DOMAIN_ROUTES } from './domains.js';
+import { COUPON_ROUTES } from './coupons.js';
 import { runReq, makeLog, health } from './obs.js';
 
 const MAX_UPLOAD = 10 * 1024 * 1024;
@@ -227,6 +228,7 @@ const ROUTES = [
   ...BLOG_ROUTES,
   ...EXPORT_ROUTES,
   ...DOMAIN_ROUTES,
+  ...COUPON_ROUTES,
 ];
 
 const server = http.createServer((req, res) => runReq(req, res, async () => {

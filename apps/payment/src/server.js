@@ -1,15 +1,19 @@
 /**
- * Payment — nhận webhook đối soát chuyển khoản (SePay/Casso), đánh dấu đơn đã trả.
+ * Payment — nhận webhook đối soát chuyển khoản (SePay), đánh dấu đơn đã trả.
  *
- * Đây là endpoint CÔNG KHAI được nhà cung cấp gọi. Bất biến bảo mật (ADR-007):
- *   - Xác thực API key (timing-safe). Sai key → 401, KHÔNG đụng đơn.
- *   - Đối chiếu SỐ TIỀN: chỉ đủ tiền mới paid; thiếu → ghi 'underpaid', KHÔNG paid.
+ * HAI đường:
+ *   - POST /webhooks/sepay          — key TOÀN NỀN TẢNG (SEPAY_WEBHOOK_KEY), tìm đơn
+ *     theo payment_ref xuyên shop, khớp tài khoản nhận. (Mô hình 1 tài khoản nền tảng.)
+ *   - POST /webhooks/sepay/<token>  — PER-SHOP: mỗi shop có token webhook riêng (bí mật,
+ *     lưu hash). SePay của CHÍNH shop gọi URL này → resolve đúng shop → khớp đơn TRONG
+ *     shop đó. Mô hình "tiền vào thẳng tài khoản shop". Giao dịch không khớp → hàng đợi.
+ *
+ * Bất biến bảo mật (ADR-007) — GIỮ NGUYÊN cho cả hai đường:
+ *   - Xác thực (key toàn cục / token per-shop, timing-safe / hash). Sai → 401, KHÔNG đụng đơn.
+ *   - Đối chiếu SỐ TIỀN: chỉ đủ tiền mới paid; thiếu → 'underpaid', KHÔNG paid.
  *   - provider_event_id UNIQUE → replay/trùng bị bỏ qua (idempotent).
- *   - CHỈ webhook này (hoặc thao tác thủ công seller) mới đặt paid. KHÔNG có endpoint
- *     nào cho trình duyệt tự đánh dấu paid.
- *
- * KHÔNG resolve theo Host: nhà cung cấp gọi một URL nền tảng cố định. Tìm đơn theo
- * payment_ref (duy nhất toàn nền tảng) qua vai trò app_payment (đọc cột KHÔNG-PII).
+ *   - Ràng buộc TÀI KHOẢN nhận (qr_account) — chống "đánh dấu hộ" đơn shop khác.
+ *   - CHỈ webhook này (hoặc thao tác thủ công seller) mới đặt paid.
  */
 
 import http from 'node:http';
@@ -48,107 +52,138 @@ async function withTxn(fn) {
 }
 
 const REF_RE = /NTG[0-9A-F]{12}/;
+const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
+const norm = (a) => String(a ?? '').replace(/\s/g, '');
+const mask = (a) => { const s = String(a ?? ''); return s ? '****' + s.slice(-4) : '(none)'; };
 
-async function sepayWebhook(req, res, body) {
-  // 1) Xác thực API key trước MỌI thứ.
-  if (!timingSafeEq(req.headers['authorization'] ?? '', `Apikey ${SEPAY_KEY}`)) {
-    return send(res, 401, { error: 'unauthorized' });
-  }
-
+// Parse + validate các trường SePay chung. Trả {ok:true,...} | {ok:false,status,error} | {skip}.
+function parseEvent(body) {
   const eventId = String(body.id ?? '');
   const amount = Number(body.transferAmount ?? body.amount ?? NaN);
   const content = String(body.content ?? '');
   const transferType = body.transferType; // 'in' = tiền vào
-  if (!eventId || !Number.isFinite(amount) || amount < 0) return send(res, 400, { error: 'payload không hợp lệ' });
-
-  // Chỉ xử lý giao dịch TIỀN VÀO.
-  if (transferType && transferType !== 'in') return send(res, 200, { matched: false, reason: 'not_incoming' });
-
-  // Timestamp bất thường (tương lai xa) → từ chối. Replay cũ đã có UNIQUE chặn.
+  if (!eventId || !Number.isFinite(amount) || amount < 0) return { ok: false, status: 400, error: 'payload không hợp lệ' };
+  if (transferType && transferType !== 'in') return { skip: 'not_incoming' };
   const t = body.transactionDate ? Date.parse(body.transactionDate) : NaN;
-  if (Number.isFinite(t) && t > Date.now() + 86400000) return send(res, 400, { error: 'timestamp bất thường' });
-
+  if (Number.isFinite(t) && t > Date.now() + 86400000) return { ok: false, status: 400, error: 'timestamp bất thường' };
+  const rcvAccount = norm(body.subAccount || body.accountNumber || ''); // '' rỗng → fallback (SePay có thể gửi subAccount rỗng)
   const m = REF_RE.exec(content.toUpperCase());
-  if (!m) return send(res, 200, { matched: false, reason: 'no_ref' });
-  const ref = m[0];
+  return { ok: true, eventId, amount, content, rcvAccount, ref: m ? m[0] : null };
+}
 
-  // Tài khoản NHẬN tiền mà SePay báo. Bắt buộc để chống "đánh dấu hộ" đơn shop khác.
-  const rcvAccount = String(body.subAccount ?? body.accountNumber ?? '').replace(/\s/g, '');
+// Ghi sổ giao dịch + cộng dồn + đánh dấu paid. GIẢ ĐỊNH: context shop đã set, order đã
+// tìm thấy trong shop, tài khoản đã khớp. UNIQUE(provider,event_id) chặn replay.
+async function creditOrder(c, order, { eventId, amount, content, rcvAccount, body }) {
+  const status = amount >= Number(order.total_vnd) ? 'received' : 'underpaid';
+  // Idempotency theo (shop_id, provider, event_id) — per-shop (0036). Replay cùng shop → bỏ qua.
+  const ins = await c.query(
+    `INSERT INTO payment_transactions (shop_id, order_id, provider, provider_event_id, amount_vnd, status, raw)
+     VALUES (current_shop_id(), $1, 'sepay', $2, $3, $4, $5)
+     ON CONFLICT (shop_id, provider, provider_event_id) DO NOTHING RETURNING id`,
+    [order.id, eventId, amount, status, body],
+  );
+  if (ins.rows.length === 0) return { matched: true, duplicate: true }; // replay → idempotent
+  // Đơn KHÔNG còn "sống" (đã huỷ/hết hạn/hoàn) → KHÔNG tự xác nhận lại: tồn kho đã trả, sống
+  // lại sẽ oversell + gửi email nhầm. Vẫn ghi giao dịch (tiền đã vào) + đẩy vào hàng đợi đối
+  // soát để owner hoàn tiền / xử lý tay.
+  if (order.status !== 'pending') {
+    await persistUnmatched(c, { eventId, amount, content, rcvAccount, reason: 'order_not_live', body });
+    log('warn', 'payment_on_dead_order', { ref: order.payment_ref ?? '(n/a)', order_status: order.status, amount });
+    return { matched: true, paid: false, reason: 'order_not_live', order_id: order.id };
+  }
+  // Đủ tiền = TỔNG mọi giao dịch của đơn ≥ tổng đơn (khách có thể chuyển nhiều lần).
+  const cumulative = Number((await c.query(`SELECT coalesce(sum(amount_vnd), 0)::bigint AS s FROM payment_transactions WHERE order_id = $1`, [order.id])).rows[0].s);
+  const enough = cumulative >= Number(order.total_vnd);
+  let paid = false;
+  if (enough && order.payment_status !== 'paid') {
+    const upd = await c.query(
+      `UPDATE orders SET payment_status = 'paid', paid_at = now(), status = 'confirmed'
+        WHERE id = $1 AND payment_status <> 'paid' AND status = 'pending'`, [order.id],
+    );
+    paid = upd.rowCount === 1;
+    if (paid && order.customer_email) {
+      await c.query(
+        `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.paid', $1)`,
+        [{ to: order.customer_email, order_number: Number(order.order_number), total_vnd: Number(order.total_vnd) }],
+      );
+    }
+  }
+  log('info', 'payment_processed', { ref: order.payment_ref ?? '(n/a)', amount, cumulative, enough, paid });
+  return { matched: true, paid, status, cumulative, order_id: order.id };
+}
 
-  // Mask tài khoản trong log — KHÔNG lộ số tài khoản đầy đủ (chỉ 4 số cuối).
-  const mask = (a) => { const s = String(a ?? ''); return s ? '****' + s.slice(-4) : '(none)'; };
+// Ghi hàng đợi giao dịch CHƯA khớp (idempotent theo shop). Context shop đã set.
+async function persistUnmatched(c, { eventId, amount, content, rcvAccount, reason, body }) {
+  await c.query(
+    `INSERT INTO unmatched_transfers (shop_id, provider, provider_event_id, amount_vnd, content, received_account, reason, raw)
+     VALUES (current_shop_id(), 'sepay', $1, $2, $3, $4, $5, $6)
+     ON CONFLICT (shop_id, provider, provider_event_id) DO NOTHING`,
+    [eventId, amount, content, rcvAccount || null, reason, body],
+  );
+}
+
+const ORDER_COLS = 'id, shop_id, status, total_vnd, order_number, customer_email, payment_status, payment_ref, qr_account';
+
+// ── Webhook SePay hợp nhất (Authorization: Apikey <key>) ─────────────────────
+// Xác thực bằng HEADER (không để bí mật trên URL). Phân biệt:
+//   - key == SEPAY_KEY (toàn nền tảng): tra đơn XUYÊN shop theo ref (mô hình 1 tài khoản).
+//   - ngược lại: key = TOKEN bí mật của shop → resolve shop → cô lập trong shop đó (per-shop).
+//   - không khớp cả hai → 401, KHÔNG đụng đơn.
+async function sepayWebhook(req, res, body) {
+  const km = /^Apikey (.+)$/s.exec(req.headers['authorization'] ?? '');
+  const key = km ? km[1] : '';
+  if (!key) return send(res, 401, { error: 'unauthorized' });
+  const ev = parseEvent(body);
+  if (!ev.ok && !ev.skip) return send(res, ev.status, { error: ev.error });
+  const isGlobal = timingSafeEq(key, SEPAY_KEY);
 
   const result = await withTxn(async (c) => {
-    // Tra đơn theo payment_ref (payment_read USING(true) — không cần context).
-    const order = (await c.query(
-      `SELECT id, shop_id, total_vnd, order_number, customer_email, payment_status, qr_account FROM orders WHERE payment_ref = $1`, [ref],
-    )).rows[0];
-    if (!order) return { matched: false, reason: 'order_not_found' };
+    let scoped = false; // per-shop: context = shop của token (dùng cho hàng đợi + cô lập đơn)
+    if (!isGlobal) {
+      const cfg = (await c.query(`SELECT shop_id FROM shop_payment_config WHERE sepay_token_hash = $1 AND sepay_enabled`, [sha256(key)])).rows[0];
+      if (!cfg) return { unauthorized: true };
+      await c.query(`SELECT set_config('app.shop_id', $1, true)`, [cfg.shop_id]);
+      scoped = true;
+    }
+    if (ev.skip) return { matched: false, reason: ev.skip };
+    if (!ev.ref) { if (scoped) await persistUnmatched(c, { ...ev, reason: 'no_ref', body }); return { matched: false, reason: 'no_ref' }; }
 
-    // Ràng buộc tài khoản: tiền phải vào ĐÚNG tài khoản của shop sở hữu đơn.
-    // Không có ràng buộc này, kẻ tấn công chuyển tiền vào tài khoản CỦA MÌNH kèm
-    // ref đơn shop khác để đánh dấu paid hộ (rà soát bảo mật Ngày 14).
-    const want = String(order.qr_account ?? '').replace(/\s/g, '');
-    if (!want || rcvAccount !== want) {
-      log('warn', 'payment_account_mismatch', { ref, rcvAccount: mask(rcvAccount), want: mask(want) });
+    // Global: tra xuyên shop. Per-shop: cô lập trong shop + KHOÁ HÀNG (gộp giao dịch đồng
+    // thời không đọc thiếu → không kẹt đơn ở unpaid khi khách chuyển làm nhiều lần).
+    const order = (await c.query(
+      scoped
+        ? `SELECT ${ORDER_COLS} FROM orders WHERE payment_ref = $1 AND shop_id = current_shop_id() FOR UPDATE`
+        : `SELECT ${ORDER_COLS} FROM orders WHERE payment_ref = $1`,
+      [ev.ref],
+    )).rows[0];
+    if (!order) { if (scoped) await persistUnmatched(c, { ...ev, reason: 'order_not_found', body }); return { matched: false, reason: 'order_not_found' }; }
+    if (isGlobal) await c.query(`SELECT set_config('app.shop_id', $1, true)`, [order.shop_id]);
+
+    const want = norm(order.qr_account);
+    if (!want || ev.rcvAccount !== want) {
+      log('warn', 'payment_account_mismatch', { ref: ev.ref, rcvAccount: mask(ev.rcvAccount), want: mask(want) });
+      if (scoped) await persistUnmatched(c, { ...ev, reason: 'account_mismatch', body });
       return { matched: false, reason: 'account_mismatch' };
     }
-
-    // Đặt context = shop của đơn cho các ghi tiếp theo (RLS scoped).
-    await c.query(`SELECT set_config('app.shop_id', $1, true)`, [order.shop_id]);
-
-    // status per-txn = giao dịch NÀY có đủ tổng đơn một mình không (bản ghi lịch sử).
-    const status = amount >= Number(order.total_vnd) ? 'received' : 'underpaid';
-
-    // Ghi sổ giao dịch — UNIQUE(provider, event_id) chặn replay.
-    const ins = await c.query(
-      `INSERT INTO payment_transactions (shop_id, order_id, provider, provider_event_id, amount_vnd, status, raw)
-       VALUES (current_shop_id(), $1, 'sepay', $2, $3, $4, $5)
-       ON CONFLICT (provider, provider_event_id) DO NOTHING RETURNING id`,
-      [order.id, eventId, amount, status, body],
-    );
-    if (ins.rows.length === 0) return { matched: true, duplicate: true }; // replay → idempotent
-
-    // GỘP nhiều giao dịch: đủ tiền = TỔNG mọi giao dịch của đơn ≥ tổng đơn (khách có
-    // thể chuyển làm nhiều lần). Bao gồm giao dịch vừa chèn.
-    const cumulative = Number((await c.query(`SELECT coalesce(sum(amount_vnd), 0)::bigint AS s FROM payment_transactions WHERE order_id = $1`, [order.id])).rows[0].s);
-    const enough = cumulative >= Number(order.total_vnd);
-
-    let paid = false;
-    if (enough && order.payment_status !== 'paid') {
-      const upd = await c.query(
-        `UPDATE orders SET payment_status = 'paid', paid_at = now(), status = 'confirmed'
-          WHERE id = $1 AND payment_status <> 'paid'`, [order.id],
-      );
-      paid = upd.rowCount === 1;
-      // Phát order.paid TRONG cùng transaction → worker gửi biên nhận. Chỉ khi có email.
-      if (paid && order.customer_email) {
-        await c.query(
-          `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.paid', $1)`,
-          [{ to: order.customer_email, order_number: Number(order.order_number), total_vnd: Number(order.total_vnd) }],
-        );
-      }
-    }
-    log('info', 'payment_processed', { ref, amount, cumulative, enough, paid });
-    return { matched: true, paid, status, cumulative, order_id: order.id };
+    return creditOrder(c, order, { eventId: ev.eventId, amount: ev.amount, content: ev.content, rcvAccount: ev.rcvAccount, body });
   });
 
+  if (result.unauthorized) return send(res, 401, { error: 'unauthorized' });
   return send(res, 200, result);
 }
 
 const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
   if (await health(url.pathname, res, { db: () => db.query('SELECT 1') })) return;
-  if (req.method === 'POST' && url.pathname === '/webhooks/sepay') {
-    try {
-      const body = await readJson(req);
-      return await sepayWebhook(req, res, body);
-    } catch (err) {
-      const st = err.statusCode ?? 500;
-      if (st >= 500) log('error', 'webhook_error', { message: err.message, stack: err.stack });
-      if (!res.headersSent) send(res, st, { error: st >= 500 ? 'lỗi hệ thống' : err.message });
-      return;
+  try {
+    if (req.method === 'POST' && url.pathname === '/webhooks/sepay') {
+      return await sepayWebhook(req, res, await readJson(req));
     }
+  } catch (err) {
+    const st = err.statusCode ?? 500;
+    if (st >= 500) log('error', 'webhook_error', { message: err.message, stack: err.stack });
+    if (!res.headersSent) send(res, st, { error: st >= 500 ? 'lỗi hệ thống' : err.message });
+    return;
   }
   return send(res, 404, { error: 'not found' });
 }));

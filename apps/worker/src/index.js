@@ -142,7 +142,7 @@ async function sweepExpired() {
     c = await expiryDb.connect(); // connect() TRONG try — DB sập không làm crash worker
     await c.query('BEGIN');
     const orders = (await c.query(
-      `SELECT id, shop_id FROM orders
+      `SELECT id, shop_id, coupon_code FROM orders
         WHERE payment_method = 'qr' AND payment_status = 'unpaid' AND status = 'pending'
           AND created_at < now() - ($1 || ' minutes')::interval
         ORDER BY id LIMIT 200 FOR UPDATE SKIP LOCKED`,
@@ -158,6 +158,10 @@ async function sweepExpired() {
         );
       }
       await c.query(`UPDATE orders SET status = 'cancelled', cancelled_at = now() WHERE id = $1`, [o.id]);
+      // Đơn hết hạn = chưa trả → hoàn lại 1 lượt coupon (đã tăng lúc tạo đơn).
+      if (o.coupon_code) {
+        await c.query(`UPDATE coupons SET used_count = GREATEST(used_count - 1, 0) WHERE shop_id = $1 AND upper(code) = upper($2)`, [o.shop_id, o.coupon_code]);
+      }
     }
     await c.query('COMMIT');
     if (orders.length) log('info', 'orders_expired', { n: orders.length });

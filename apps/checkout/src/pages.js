@@ -76,8 +76,21 @@ const itemsBlock = (items) => items.map((it) => `
 
 const totalsBlock = (s) => `
   <div class="tot"><span class="muted">Tạm tính</span><span>${money(s.subtotal_vnd)}</span></div>
+  ${s.discount_vnd ? `<div class="tot"><span class="muted">Giảm giá${s.coupon_code ? ` (${esc(s.coupon_code)})` : ''}</span><span style="color:#0e9f6e">−${money(s.discount_vnd)}</span></div>` : ''}
   <div class="tot"><span class="muted">Phí giao hàng</span><span>${money(s.shipping_vnd)}</span></div>
   <div class="tot grand"><span>Tổng cộng</span><span>${money(s.total_vnd)}</span></div>`;
+
+// Ô nhập mã giảm giá trên trang giỏ (no-JS: POST /cart/coupon → PRG). Rỗng = gỡ mã.
+const couponBlock = (s) => `<div class="card">
+  ${s.coupon_code
+    ? `<div class="tot"><span>Mã <strong>${esc(s.coupon_code)}</strong> — giảm ${money(s.discount_vnd)}</span>
+        <form method="POST" action="/cart/coupon" style="margin:0"><input type="hidden" name="code" value=""><button class="qtybtn" type="submit" style="width:auto;color:#b91c1c">Gỡ</button></form></div>`
+    : `<form method="POST" action="/cart/coupon" class="qty" style="margin:0">
+        <input name="code" placeholder="Mã giảm giá" maxlength="40" aria-label="Mã giảm giá" style="text-transform:uppercase">
+        <button class="qtybtn" type="submit" style="width:auto">Áp dụng</button>
+      </form>`}
+  ${s.coupon_error ? `<div class="muted" style="color:#b91c1c;margin-top:8px">${esc(s.coupon_error)}</div>` : ''}
+</div>`;
 
 export function renderError(shopName, msg) {
   return page('Có lỗi', shopName, `<div class="card empty"><h1>Rất tiếc</h1><p>${esc(msg)}</p>
@@ -102,6 +115,7 @@ export function renderCart(shopName, s) {
   }
   return page('Giỏ hàng', shopName, `<h1>Giỏ hàng</h1>
     <div class="card">${itemsBlock(s.items)}</div>
+    ${couponBlock(s)}
     <div class="card">${totalsBlock(s)}</div>
     <a class="btn" href="/checkout">Thanh toán</a>
     <a class="btn alt" href="/" style="margin-top:8px">Tiếp tục mua sắm</a>`);

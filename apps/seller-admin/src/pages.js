@@ -110,6 +110,7 @@ const IC_PALETTE = ic('<circle cx="13.5" cy="6.5" r="1.2"/><circle cx="17" cy="1
 const IC_CARD = ic('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/><path d="M7 15h4"/>');
 const IC_CHART = ic('<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7" y="12" width="3" height="5"/><rect x="12" y="8" width="3" height="9"/><rect x="17" y="5" width="3" height="12"/>');
 const IC_GEAR = ic('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>');
+const IC_TICKET = ic('<path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2 2 2 0 0 0 0 4 2 2 0 0 1-2 2H5a2 2 0 0 1-2-2 2 2 0 0 0 0-4z"/><path d="M13 6v2M13 12v2M13 16v2"/>');
 
 // Điều hướng dọc trong 1 shop (sidebar) — chỉ hiện mục vai trò được phép.
 function sideNav(ctx) {
@@ -120,6 +121,7 @@ function sideNav(ctx) {
           + it(`${base}/orders`, 'Đơn hàng', IC_ORDER, ctx.active === 'orders', ORDER_ROLES.has(ctx.role))
           + it(`${base}/products`, 'Sản phẩm', IC_BOX, ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/categories`, 'Danh mục', IC_TAG, ctx.active === 'categories', CATALOG_ROLES.has(ctx.role))
+          + it(`${base}/coupons`, 'Khuyến mãi', IC_TICKET, ctx.active === 'coupons', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/pages`, 'Trang nội dung', IC_FILE, ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/blog`, 'Blog', IC_NEWS, ctx.active === 'blog', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/members`, 'Nhân sự', IC_USERS, ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role))
@@ -624,6 +626,42 @@ export function renderCategories(ctx, shopId, data, notice, err) {
       : '<p class="muted">Chưa có danh mục. Thêm ở trên để nhóm sản phẩm + hiện trên storefront.</p>'}</div>`);
 }
 
+// Khuyến mãi: mã giảm giá (% hoặc số tiền), điều kiện đơn tối thiểu / lượt / hết hạn.
+export function renderCoupons(ctx, shopId, data, notice, err) {
+  const base = `/shops/${esc(shopId)}`;
+  const cps = data?.coupons ?? [];
+  const fmtVal = (c) => c.kind === 'percent' ? `${esc(c.value)}%` : money(c.value);
+  const rows = cps.map((c) => `<tr>
+    <td><code>${esc(c.code)}</code></td>
+    <td>Giảm ${fmtVal(c)}${Number(c.min_subtotal_vnd) > 0 ? `<div class="muted" style="font-size:.8rem">đơn từ ${money(c.min_subtotal_vnd)}</div>` : ''}</td>
+    <td class="num">${esc(c.used_count)}${c.max_uses != null ? `/${esc(c.max_uses)}` : ''}</td>
+    <td class="muted">${c.expires_at ? dt(c.expires_at) : '—'}</td>
+    <td>${badge(c.active ? 'active' : 'archived', c.active ? 'Đang bật' : 'Tắt')}</td>
+    <td style="text-align:right"><div class="thumb-act" style="justify-content:flex-end">
+      <form method="POST" action="${base}/coupons/${esc(c.id)}/toggle" style="margin:0"><input type="hidden" name="active" value="${c.active ? '' : '1'}"><button class="btn alt sm" type="submit">${c.active ? 'Tắt' : 'Bật'}</button></form>
+      <form method="POST" action="${base}/coupons/${esc(c.id)}/delete" style="margin:0"><button class="btn warn sm" type="submit">Xoá</button></form>
+    </div></td></tr>`).join('');
+  return layout('Khuyến mãi', ctx, `
+    <h1>Khuyến mãi</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
+    <div class="card"><h2 style="margin-top:0">Tạo mã giảm giá</h2>
+      <form method="POST" action="${base}/coupons" class="filters" style="align-items:end">
+        <div><label>Mã (khách nhập ở giỏ)</label><input name="code" required maxlength="40" placeholder="GIAM10" style="text-transform:uppercase;width:150px"></div>
+        <div><label>Loại</label><select name="kind"><option value="percent">% phần trăm</option><option value="fixed">Số tiền (đ)</option></select></div>
+        <div><label>Giá trị</label><input name="value" type="number" min="1" required placeholder="10" style="width:110px"></div>
+        <div><label>Đơn tối thiểu (đ)</label><input name="min_subtotal_vnd" type="number" min="0" placeholder="0" style="width:130px"></div>
+        <div><label>Số lượt (trống=∞)</label><input name="max_uses" type="number" min="1" placeholder="∞" style="width:110px"></div>
+        <div><label>Hết hạn (trống=∞)</label><input name="expires_at" type="date" style="width:150px"></div>
+        <button class="btn" type="submit">Tạo</button>
+      </form>
+      <p class="muted" style="font-size:.82rem;margin-bottom:0">Giảm trên <strong>tạm tính</strong> (không giảm phí ship). Khách nhập mã ở trang giỏ hàng.</p>
+    </div>
+    <div class="card">${cps.length
+      ? `<table><thead><tr><th>Mã</th><th>Ưu đãi</th><th>Đã dùng</th><th>Hết hạn</th><th>Trạng thái</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<p class="muted">Chưa có mã giảm giá. Tạo ở trên để chạy khuyến mãi.</p>'}</div>`);
+}
+
 // Blog: danh sách bài viết.
 export function renderBlogList(ctx, shopId, data) {
   const base = `/shops/${esc(shopId)}`;
@@ -1125,7 +1163,8 @@ export function renderDomainStepUp(ctx, shopId, action, params, err) {
 // Cấu hình tài khoản ngân hàng NHẬN TIỀN qua VietQR. Tiền vào THẲNG tài khoản shop;
 // nền tảng chỉ đối soát. Vài BIN napas phổ biến để chủ shop tra nhanh.
 const BANK_HINT = 'VD BIN napas: Vietcombank 970436 · Techcombank 970407 · MB 970422 · ACB 970416 · VietinBank 970415 · BIDV 970418 · VPBank 970432 · Agribank 970405 · Sacombank 970403 · TPBank 970423';
-export function renderPayment(ctx, shopId, cfg, notice, err) {
+const RECONCILE_REASON = { no_ref: 'Thiếu mã đối soát', order_not_found: 'Không thấy đơn', account_mismatch: 'Sai tài khoản nhận' };
+export function renderPayment(ctx, shopId, cfg, notice, err, sepay = null, reconcile = null, tokenInfo = null) {
   const base = `/shops/${esc(shopId)}`;
   if (ctx.role !== 'owner') {
     return layout('Thanh toán', ctx, `<h1>Thanh toán</h1><div class="card"><p class="muted">Chỉ <strong>chủ cửa hàng</strong> mới cấu hình tài khoản nhận tiền.</p></div>`);
@@ -1136,6 +1175,14 @@ export function renderPayment(ctx, shopId, cfg, notice, err) {
     <h1>Thanh toán</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
+    ${tokenInfo ? `<div class="card" style="background:#eef4ff;border-color:#93c5fd">
+      <h2 style="margin-top:0">✅ Đã bật SePay — lưu API Key ngay</h2>
+      <p class="muted" style="margin-top:0">Mở <strong>SePay → Cấu hình → Webhooks</strong>, tạo webhook mới với thông tin dưới đây. <strong>API Key chỉ hiện MỘT LẦN</strong> — không lưu lại thì phải tạo mới.</p>
+      <label>URL webhook</label>
+      <code style="display:block;word-break:break-all;padding:11px 12px;background:#fff;border:1px solid #d8dbe0;border-radius:8px">${esc(tokenInfo.webhook_url)}</code>
+      <label>API Key (SePay gửi qua header Authorization)</label>
+      <code style="display:block;word-break:break-all;padding:11px 12px;background:#fff;border:1px solid #d8dbe0;border-radius:8px">${esc(tokenInfo.api_key)}</code>
+    </div>` : ''}
     <div class="card">
       <p class="muted" style="margin-top:0">Khai báo tài khoản ngân hàng của cửa hàng để nhận tiền qua <strong>VietQR</strong>.
         Khi bật, trang thanh toán sẽ hiện mã QR chuyển tiền <strong>thẳng vào tài khoản của bạn</strong>.
@@ -1151,7 +1198,45 @@ export function renderPayment(ctx, shopId, cfg, notice, err) {
       <p class="muted" style="font-size:.8rem;margin-bottom:0">${esc(BANK_HINT)}</p>
     </div>
     <div class="card"><p class="muted" style="margin:0"><strong>${on ? '✅ Đang bật' : '⏸ Đang tắt'}</strong> nhận tiền QR.
-      ${on ? 'Khách có thể chọn chuyển khoản QR khi đặt hàng.' : 'Bật ở trên để khách thanh toán bằng QR; hiện chỉ có COD (thu tiền mặt khi giao).'}</p></div>`);
+      ${on ? 'Khách có thể chọn chuyển khoản QR khi đặt hàng.' : 'Bật ở trên để khách thanh toán bằng QR; hiện chỉ có COD (thu tiền mặt khi giao).'}</p></div>
+    ${renderSepayCard(base, sepay)}
+    ${renderReconcileCard(base, reconcile)}`);
+}
+// Thẻ "Tự đối soát (SePay)": kết nối SePay của shop để tự đánh dấu đơn đã trả.
+function renderSepayCard(base, sepay) {
+  const s = sepay ?? {};
+  const son = s.sepay_enabled === true;
+  const hasBank = s.has_bank === true;
+  const enableForm = `<form method="POST" action="${base}/payment/sepay" style="margin:0"><input type="hidden" name="__op" value="enable"><button class="btn" type="submit"${hasBank ? '' : ' disabled'}>${son ? 'Tạo lại token' : 'Bật SePay'}</button></form>`;
+  const disableForm = son ? `<form method="POST" action="${base}/payment/sepay" style="margin:0"><input type="hidden" name="__op" value="disable"><button class="btn warn" type="submit">Tắt SePay</button></form>` : '';
+  return `<div class="card">
+    <h2 style="margin-top:0">Tự đối soát (SePay)</h2>
+    <p class="muted">Kết nối tài khoản <strong>SePay</strong> của bạn (miễn phí) để đơn tự chuyển sang "đã thanh toán" ngay khi tiền vào — khỏi bấm tay. Tiền vẫn vào <strong>thẳng tài khoản của bạn</strong>; SePay chỉ báo cho hệ thống biết giao dịch đã tới.</p>
+    ${hasBank ? '' : '<p class="muted" style="font-size:.85rem;color:#b45309">Hãy khai tài khoản ngân hàng nhận tiền ở trên trước khi bật SePay.</p>'}
+    <p style="margin:0 0 12px"><strong>${son ? '✅ Đang bật' : '⏸ Đang tắt'}</strong>${son && s.token_prefix ? ` · token <code>${esc(s.token_prefix)}…</code>` : ''}</p>
+    <div class="actions" style="margin-top:0">${enableForm}${disableForm}</div>
+    <p class="muted" style="font-size:.8rem;margin-bottom:0">Thao tác nhạy cảm — cần xác nhận lại mật khẩu.</p>
+  </div>`;
+}
+// Thẻ "Giao dịch chưa khớp": tiền vào nhưng không tự khớp đơn → owner đối chiếu tay.
+function renderReconcileCard(base, reconcile) {
+  const rows = Array.isArray(reconcile) ? reconcile : [];
+  const pending = rows.filter((t) => !t.resolved_at);
+  const body = rows.length
+    ? `<table><thead><tr><th>Thời gian</th><th>Số tiền</th><th>Nội dung</th><th>TK nhận</th><th>Lý do</th><th></th></tr></thead><tbody>${rows.map((t) => `<tr>
+        <td class="muted" style="font-size:.85rem">${dt(t.created_at)}</td>
+        <td class="num"><strong>${money(t.amount_vnd)}</strong></td>
+        <td class="muted" style="max-width:220px;font-size:.85rem">${esc(t.content ?? '')}</td>
+        <td class="muted">${esc(t.received_account ?? '')}</td>
+        <td>${t.resolved_at ? '<span class="badge">Đã xử lý</span>' : `<span class="badge cancelled">${esc(RECONCILE_REASON[t.reason] ?? t.reason)}</span>`}</td>
+        <td style="text-align:right">${t.resolved_at ? '' : `<form method="POST" action="${base}/payment/reconcile/${esc(t.id)}/resolve" style="margin:0"><button class="btn alt sm" type="submit">Đã xử lý</button></form>`}</td>
+      </tr>`).join('')}</tbody></table>`
+    : '<p class="muted" style="margin:0">Chưa có giao dịch nào cần đối soát tay.</p>';
+  return `<div class="card">
+    <h2 style="margin-top:0">Giao dịch chưa khớp${pending.length ? ` <span class="badge cancelled">${pending.length}</span>` : ''}</h2>
+    <p class="muted">Tiền vào nhưng hệ thống không tự khớp được đơn (thiếu mã đối soát, không thấy đơn, hoặc sai tài khoản). Kiểm tra và đối chiếu tay; bấm "Đã xử lý" khi xong.</p>
+    ${body}
+  </div>`;
 }
 export function renderPaymentStepUp(ctx, shopId, form, err) {
   const base = `/shops/${esc(shopId)}/payment`;
@@ -1164,6 +1249,23 @@ export function renderPaymentStepUp(ctx, shopId, form, err) {
     <form method="POST" action="${base}/step-up">${hidden}
       <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
       <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận & lưu</button>
+    </form>
+    <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
+}
+// Interstitial step-up cho thao tác SePay (bật/tắt token) và đối soát tay.
+export function renderSepayStepUp(ctx, shopId, op, txnId, err) {
+  const base = `/shops/${esc(shopId)}/payment`;
+  const label = op === 'disable' ? 'tắt SePay' : op === 'resolve' ? 'đánh dấu giao dịch đã xử lý' : 'bật / tạo lại token SePay';
+  const action = op === 'resolve' ? `${base}/reconcile/${esc(txnId)}/resolve/step-up` : `${base}/sepay/step-up`;
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận mật khẩu</h1>
+    <p class="muted">Thao tác nhạy cảm (${esc(label)}) cần xác thực lại. Nhập mật khẩu để tiếp tục.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${action}">
+      ${op !== 'resolve' ? `<input type="hidden" name="__op" value="${esc(op)}">` : ''}
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận & tiếp tục</button>
     </form>
     <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
   </div></div>`);

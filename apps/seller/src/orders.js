@@ -136,7 +136,7 @@ async function shipOrder(res, ctx, body, params) {
 async function cancelOrder(res, ctx, _body, params) {
   const orderId = params[1];
   const out = await withTenant(ctx.shopId, async (c) => {
-    const o = (await c.query(`SELECT id, status, order_number, customer_email FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
+    const o = (await c.query(`SELECT id, status, payment_status, coupon_code, order_number, customer_email FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
     if (!o) return { code: 404 };
     if (!['pending', 'confirmed'].includes(o.status)) return { code: 409, cur: o.status };
     // RELEASE reserve: trả lại tồn đã giữ chỗ lúc checkout.
@@ -145,6 +145,10 @@ async function cancelOrder(res, ctx, _body, params) {
       await c.query(`UPDATE inventory_levels SET reserved = GREATEST(0, reserved - $2), updated_at = now() WHERE variant_id = $1`, [ln.variant_id, ln.qty]);
     }
     await c.query(`UPDATE orders SET status = 'cancelled', cancelled_at = now() WHERE id = $1`, [orderId]);
+    // Hoàn lại lượt coupon CHỈ khi đơn CHƯA trả (đơn đã trả = lượt dùng thật).
+    if (o.coupon_code && o.payment_status !== 'paid') {
+      await c.query(`UPDATE coupons SET used_count = GREATEST(used_count - 1, 0) WHERE shop_id = current_shop_id() AND upper(code) = upper($1)`, [o.coupon_code]);
+    }
     o.status = 'cancelled';
     await audit(c, 'order.cancelled', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId } });
     await statusEvent(c, o);

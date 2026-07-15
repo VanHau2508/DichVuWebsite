@@ -77,6 +77,28 @@ function computeShipping(cfg, subtotal, hasItems) {
   return cfg.fee;
 }
 
+// Giảm giá thực từ coupon theo subtotal. Cap ≤ subtotal (chỉ giảm hàng, không giảm ship,
+// total không âm). percent làm tròn xuống.
+function couponDiscount(cp, subtotal) {
+  const raw = cp.kind === 'percent' ? Math.floor(subtotal * Number(cp.value) / 100) : Number(cp.value);
+  return Math.max(0, Math.min(raw, subtotal));
+}
+// Validate mã của shop hiện tại theo subtotal. Trả {code,kind,value,discount} hoặc null (không áp được).
+async function resolveCoupon(c, code, subtotal) {
+  if (!code) return null;
+  const cp = (await c.query(
+    `SELECT code, kind, value, min_subtotal_vnd, max_uses, used_count FROM coupons
+      WHERE shop_id = current_shop_id() AND upper(code) = upper($1) AND active
+        AND (starts_at IS NULL OR starts_at <= now()) AND (expires_at IS NULL OR expires_at > now())`,
+    [String(code).trim()],
+  )).rows[0];
+  if (!cp) return null;
+  if (subtotal < Number(cp.min_subtotal_vnd)) return null;
+  if (cp.max_uses != null && cp.used_count >= cp.max_uses) return null;
+  const discount = couponDiscount(cp, subtotal);
+  return discount > 0 ? { code: cp.code, kind: cp.kind, value: Number(cp.value), discount } : null;
+}
+
 async function summarize(c, cartId) {
   const items = (await c.query(
     `SELECT ci.variant_id, ci.qty, v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title, p.slug,
@@ -91,7 +113,11 @@ async function summarize(c, cartId) {
     return { variant_id: it.variant_id, product_title: it.product_title, variant_title: it.variant_title, sku: it.sku, unit_price_vnd: unit, qty: it.qty, line_total_vnd: unit * it.qty, image: imgUrl(it.image_key) };
   });
   const shipping = computeShipping(await shopShipping(c), subtotal, out.length > 0);
-  return { items: out, subtotal_vnd: subtotal, shipping_vnd: shipping, total_vnd: subtotal + shipping };
+  // Mã giảm giá đang áp trên giỏ — re-validate theo subtotal hiện tại (mã hết hạn/không đủ đơn → bỏ qua).
+  const cc = (await c.query(`SELECT coupon_code FROM carts WHERE id = $1`, [cartId])).rows[0]?.coupon_code;
+  const coupon = cc ? await resolveCoupon(c, cc, subtotal) : null;
+  const discount = coupon?.discount ?? 0;
+  return { items: out, subtotal_vnd: subtotal, shipping_vnd: shipping, discount_vnd: discount, coupon_code: coupon?.code ?? null, total_vnd: subtotal - discount + shipping };
 }
 
 // Tên shop (cho header trang HTML). app_checkout có SELECT shops (policy checkout_shop).
@@ -185,6 +211,28 @@ async function setItemQty(req, res, body, ctx) {  // API JSON
   return send(res, 200, summary);
 }
 
+// Áp / gỡ mã giảm giá trên giỏ. code rỗng = gỡ. Lưu mã lên giỏ; summarize tự validate theo
+// subtotal → total (đã giảm) được chốt lúc tạo đơn. Hỗ trợ cả form (trang giỏ) lẫn JSON (API).
+async function applyCouponCore(c, token, code) {
+  const cart = await findCart(c, token);
+  if (!cart) fail(404, 'giỏ hàng không tồn tại');
+  const clean = String(code ?? '').trim().toUpperCase().slice(0, 40);
+  await c.query(`UPDATE carts SET coupon_code = $2, updated_at = now() WHERE id = $1`, [cart.id, clean || null]);
+  const summary = await summarize(c, cart.id);
+  return { summary, tried: clean, applied: !!(clean && summary.coupon_code) };
+}
+async function applyCouponForm(req, res, form, ctx) {  // form trang giỏ → 303 /cart (hoặc render lỗi)
+  const token = parseCookies(req)[CART_COOKIE];
+  try {
+    const out = await withTenant(ctx.shopId, (c) => applyCouponCore(c, token, form.code));
+    if (out.tried && !out.applied) return sendHtml(res, 200, renderCart(await getShopName(ctx.shopId), { ...out.summary, coupon_error: 'Mã không hợp lệ, hết hạn, hết lượt, hoặc chưa đủ điều kiện đơn.' }));
+    return redirect(res, '/cart');
+  } catch (err) {
+    if (err.statusCode) return sendHtml(res, err.statusCode, renderError(await getShopName(ctx.shopId), err.body?.error ?? 'Không áp được mã.'));
+    throw err;
+  }
+}
+
 async function updateItemForm(req, res, form, ctx) {  // form giỏ (cập nhật/xoá) → 303 /cart
   const variantId = String(form.variant_id ?? ''), qty = parseInt(form.qty ?? '', 10);
   if (!UUID_RE.test(variantId) || !isInt(qty) || qty < 0 || qty > 1000) return sendHtml(res, 400, renderError(await getShopName(ctx.shopId), 'Yêu cầu không hợp lệ.'));
@@ -254,7 +302,24 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       subtotal += unit * it.qty;
       lines.push({ variant_id: it.variant_id, title: it.product_title + (it.variant_title ? ` - ${it.variant_title}` : ''), sku: it.sku, unit, qty: it.qty });
     }
-    const shipping = computeShipping(await shopShipping(c), subtotal, items.length > 0), discount = 0, total = subtotal + shipping - discount;
+    const shipping = computeShipping(await shopShipping(c), subtotal, items.length > 0);
+    // Mã giảm giá: RE-VALIDATE lúc tạo đơn (subtotal đã chốt) + giành 1 lượt NGUYÊN TỬ. Đua 2
+    // đơn dùng lượt cuối → chỉ 1 đơn thắng (UPDATE khoá hàng coupon). Hết lượt → bỏ giảm (đơn
+    // vẫn tạo, khách trả đủ) thay vì chặn checkout.
+    let discount = 0, couponCode = null;
+    const cc = (await c.query(`SELECT coupon_code FROM carts WHERE id = $1`, [cart.id])).rows[0]?.coupon_code;
+    if (cc) {
+      const cp = await resolveCoupon(c, cc, subtotal);
+      if (cp) {
+        const claim = await c.query(
+          `UPDATE coupons SET used_count = used_count + 1
+            WHERE shop_id = current_shop_id() AND code = $1 AND active
+              AND (max_uses IS NULL OR used_count < max_uses) RETURNING id`, [cp.code],
+        );
+        if (claim.rowCount === 1) { discount = cp.discount; couponCode = cp.code; }
+      }
+    }
+    const total = subtotal - discount + shipping;
 
     // QR: cần cấu hình ngân hàng của shop + mã đối soát duy nhất.
     let paymentRef = null;
@@ -279,9 +344,9 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     const order = (await c.query(
       `INSERT INTO orders (shop_id, order_number, status, payment_status, payment_method,
          customer_name, customer_phone, customer_email, shipping_address,
-         subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, lookup_token_hash, payment_ref, qr_account)
-       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
-      [num, paymentMethod, name, phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount],
+         subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, lookup_token_hash, payment_ref, qr_account, coupon_code)
+       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
+      [num, paymentMethod, name, phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount, couponCode],
     )).rows[0];
     for (const ln of lines) {
       await c.query(
@@ -302,7 +367,7 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       );
     }
 
-    const response = { order_number: Number(num), subtotal_vnd: subtotal, shipping_vnd: shipping, total_vnd: total, status: 'pending', payment_status: 'unpaid', payment_method: paymentMethod, lookup_token: lookupToken };
+    const response = { order_number: Number(num), subtotal_vnd: subtotal, shipping_vnd: shipping, discount_vnd: discount, coupon_code: couponCode, total_vnd: total, status: 'pending', payment_status: 'unpaid', payment_method: paymentMethod, lookup_token: lookupToken };
     if (paymentMethod === 'qr') { response.payment_ref = paymentRef; response.qr_string = qrString; }
     await c.query(`UPDATE idempotency_keys SET status = 'completed', response_code = 201, response_body = $2 WHERE key = $1`, [idemKey, response]);
     log('info', 'order_created', { orderNumber: Number(num), total });
@@ -407,6 +472,7 @@ const ROUTES = [
   { m: 'PATCH', p: '/cart/items', fn: setItemQty },
   { m: 'POST', p: '/cart/add', fn: addItemForm, form: true },
   { m: 'POST', p: '/cart/update', fn: updateItemForm, form: true },
+  { m: 'POST', p: '/cart/coupon', fn: applyCouponForm, form: true },
   { m: 'POST', p: '/checkout', fn: checkout },
   { m: 'POST', p: '/checkout/place', fn: checkoutPlace, form: true },
   { m: 'GET', p: '/checkout', fn: getCheckoutPage },

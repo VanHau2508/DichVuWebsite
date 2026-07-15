@@ -336,6 +336,33 @@ async function categoryDelete(res, me, cookie, shopId, cid) {
   const r = await sellerApi('DELETE', `/shops/${shopId}/categories/${cid}`, { cookie });
   return categoriesPage(res, me, cookie, shopId, r.status === 200 ? 'Đã xoá danh mục.' : null, r.status === 200 ? null : (r.json?.error ?? 'Không xoá được danh mục.'));
 }
+
+// ── Khuyến mãi (mã giảm giá; catalog.write) ──────────────────────────────────
+async function couponsPage(res, me, cookie, shopId, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'coupons');
+  const r = await sellerApi('GET', `/shops/${shopId}/coupons`, { cookie });
+  if (r.status !== 200 && r.status !== 400) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được khuyến mãi.'));
+  return sendHtml(res, err ? 400 : 200, V.renderCoupons(ctx, shopId, r.status === 200 ? r.json : {}, notice, err));
+}
+async function couponCreate(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const body = { code: f.code, kind: f.kind, value: f.value, min_subtotal_vnd: f.min_subtotal_vnd, max_uses: f.max_uses, expires_at: f.expires_at };
+  const r = await sellerApi('POST', `/shops/${shopId}/coupons`, { cookie, body });
+  return couponsPage(res, me, cookie, shopId, r.status === 201 ? 'Đã tạo mã giảm giá.' : null, r.status === 201 ? null : (r.json?.error ?? 'Không tạo được mã.'));
+}
+async function couponToggle(req, res, me, cookie, shopId, id) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  await sellerApi('PATCH', `/shops/${shopId}/coupons/${id}`, { cookie, body: { active: f.active === '1' } });
+  return redirect(res, `/shops/${shopId}/coupons`);
+}
+async function couponDelete(req, res, me, cookie, shopId, id) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  await sellerApi('DELETE', `/shops/${shopId}/coupons/${id}`, { cookie });
+  return redirect(res, `/shops/${shopId}/coupons`);
+}
 async function productCategoriesSave(req, res, me, cookie, shopId, pid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const params = await readFormAll(req);
@@ -841,13 +868,70 @@ async function themeSave(req, res, me, cookie, shopId) {
 }
 
 // ── Thanh toán (payment.write = owner; PUT payment-config đòi step-up) ────────
-async function paymentPage(res, me, cookie, shopId, notice, err) {
+async function paymentPage(res, me, cookie, shopId, notice, err, tokenInfo = null) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'payment');
   if (roleFor(me, shopId) !== 'owner') return sendHtml(res, 200, V.renderPayment(ctx, shopId, null, null, null));
-  const r = await sellerApi('GET', `/shops/${shopId}/payment-config`, { cookie });
-  const cfg = r.status === 200 ? r.json : {};
-  return sendHtml(res, err ? 400 : 200, V.renderPayment(ctx, shopId, cfg, notice, err));
+  const [cfgR, sepayR, recR] = await Promise.all([
+    sellerApi('GET', `/shops/${shopId}/payment-config`, { cookie }),
+    sellerApi('GET', `/shops/${shopId}/payment/sepay`, { cookie }),
+    sellerApi('GET', `/shops/${shopId}/payment/reconcile`, { cookie }),
+  ]);
+  const cfg = cfgR.status === 200 ? cfgR.json : {};
+  const sepay = sepayR.status === 200 ? sepayR.json : null;
+  const reconcile = recR.status === 200 ? (recR.json?.transfers ?? []) : [];
+  return sendHtml(res, err ? 400 : 200, V.renderPayment(ctx, shopId, cfg, notice, err, sepay, reconcile, tokenInfo));
+}
+// SePay per-shop: bật/tắt token (step-up) + đối soát tay giao dịch chưa khớp (step-up).
+async function doSepayOp(res, me, cookie, shopId, op) {
+  if (op === 'disable') {
+    const r = await sellerApi('POST', `/shops/${shopId}/payment/sepay/disable`, { cookie, body: {} });
+    return paymentPage(res, me, cookie, shopId, r.status === 200 ? 'Đã tắt SePay.' : null, r.status === 200 ? null : (r.json?.error ?? 'Không tắt được SePay.'));
+  }
+  const r = await sellerApi('POST', `/shops/${shopId}/payment/sepay/enable`, { cookie, body: {} });
+  if (r.status === 200) return paymentPage(res, me, cookie, shopId, null, null, { webhook_url: r.json.webhook_url, api_key: r.json.api_key });
+  return paymentPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không bật được SePay.');
+}
+async function sepayOp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (roleFor(me, shopId) !== 'owner') return paymentPage(res, me, cookie, shopId, null, 'Chỉ chủ cửa hàng.');
+  const f = await readForm(req);
+  const op = f.__op === 'disable' ? 'disable' : 'enable';
+  if (steppedUp(me)) return doSepayOp(res, me, cookie, shopId, op);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'payment');
+  return sendHtml(res, 200, V.renderSepayStepUp(ctx, shopId, op, null, null));
+}
+async function sepayStepUp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const op = f.__op === 'disable' ? 'disable' : 'enable';
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'payment');
+    return sendHtml(res, 401, V.renderSepayStepUp(ctx, shopId, op, null, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.'));
+  }
+  return doSepayOp(res, me, cookie, shopId, op);
+}
+async function doReconcileResolve(res, me, cookie, shopId, txnId) {
+  const r = await sellerApi('POST', `/shops/${shopId}/payment/reconcile/${txnId}/resolve`, { cookie, body: {} });
+  return paymentPage(res, me, cookie, shopId, r.status === 200 ? 'Đã đánh dấu giao dịch đã xử lý.' : null, r.status === 200 ? null : (r.json?.error ?? 'Không xử lý được.'));
+}
+async function reconcileResolve(req, res, me, cookie, shopId, txnId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (roleFor(me, shopId) !== 'owner') return paymentPage(res, me, cookie, shopId, null, 'Chỉ chủ cửa hàng.');
+  if (steppedUp(me)) return doReconcileResolve(res, me, cookie, shopId, txnId);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'payment');
+  return sendHtml(res, 200, V.renderSepayStepUp(ctx, shopId, 'resolve', txnId, null));
+}
+async function reconcileResolveStepUp(req, res, me, cookie, shopId, txnId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'payment');
+    return sendHtml(res, 401, V.renderSepayStepUp(ctx, shopId, 'resolve', txnId, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.'));
+  }
+  return doReconcileResolve(res, me, cookie, shopId, txnId);
 }
 // Chuẩn hoá form (giữ nguyên qua interstitial step-up): chỉ số cho bin/account.
 function paymentForm(f) {
@@ -1043,6 +1127,10 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/categories$`).exec(p)) && req.method === 'POST') return categoryCreate(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/categories/${UUID}/delete$`).exec(p)) && req.method === 'POST') return categoryDelete(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/categories/${UUID}$`).exec(p)) && req.method === 'POST') return categoryUpdate(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/coupons$`).exec(p)) && req.method === 'GET') return couponsPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/coupons$`).exec(p)) && req.method === 'POST') return couponCreate(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/coupons/${UUID}/toggle$`).exec(p)) && req.method === 'POST') return couponToggle(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/coupons/${UUID}/delete$`).exec(p)) && req.method === 'POST') return couponDelete(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'GET') return productDetail(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'POST') return productUpdate(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/(publish|archive)$`).exec(p)) && req.method === 'POST') return productStatus(res, me, cookie, m[1], m[2], m[3]);
@@ -1094,6 +1182,10 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/payment$`).exec(p)) && req.method === 'GET') return paymentPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/payment$`).exec(p)) && req.method === 'POST') return paymentSave(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/payment/step-up$`).exec(p)) && req.method === 'POST') return paymentStepUp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/payment/sepay$`).exec(p)) && req.method === 'POST') return sepayOp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/payment/sepay/step-up$`).exec(p)) && req.method === 'POST') return sepayStepUp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/payment/reconcile/${UUID}/resolve$`).exec(p)) && req.method === 'POST') return reconcileResolve(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/payment/reconcile/${UUID}/resolve/step-up$`).exec(p)) && req.method === 'POST') return reconcileResolveStepUp(req, res, me, cookie, m[1], m[2]);
 
     // Cài đặt / hồ sơ cửa hàng (shop.write = owner/admin).
     if ((m = new RegExp(`^/shops/${UUID}/settings$`).exec(p)) && req.method === 'GET') return settingsPage(res, me, cookie, m[1], null, null);

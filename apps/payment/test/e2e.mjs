@@ -63,12 +63,35 @@ function co(host, method, path, { body, cartToken, idemKey } = {}) {
     req.on('error', reject); if (data) req.write(data); req.end();
   });
 }
+// POST form urlencoded tới checkout (cho endpoint không-JS như /cart/coupon).
+function coForm(host, path, formObj, cartToken) {
+  const data = new URLSearchParams(formObj).toString();
+  return new Promise((resolve, reject) => {
+    const headers = { host, origin: `https://${host}`, 'content-type': 'application/x-www-form-urlencoded', 'content-length': Buffer.byteLength(data) };
+    if (cartToken) headers['cookie'] = `__Host-cart=${cartToken}`;
+    const req = http.request({ hostname: CO.hostname, port: CO.port, path, method: 'POST', headers }, (res) => {
+      let b = ''; res.on('data', (d) => (b += d)); res.on('end', () => resolve({ status: res.statusCode, raw: b, location: res.headers.location }));
+    });
+    req.on('error', reject); if (data) req.write(data); req.end();
+  });
+}
+
 // Webhook SePay: kèm Authorization: Apikey <key>. Mặc định tài khoản nhận ĐÚNG của shop.
 const ACC = '0011002345678';
 async function webhook(body, { key = KEY } = {}) {
   const full = { accountNumber: ACC, ...body }; // body override được (test tài khoản sai)
   const r = await fetch(`${PAYMENT}/webhooks/sepay`, {
     method: 'POST', headers: { 'content-type': 'application/json', authorization: `Apikey ${key}` }, body: JSON.stringify(full),
+  });
+  const t = await r.text(); let j = null; try { j = t ? JSON.parse(t) : null; } catch {}
+  return { status: r.status, json: j, raw: t };
+}
+
+// Webhook PER-SHOP: token = API Key gửi qua header Authorization (URL cố định /webhooks/sepay).
+async function webhookPerShop(token, body) {
+  const full = { accountNumber: ACC, ...body };
+  const r = await fetch(`${PAYMENT}/webhooks/sepay`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Apikey ${token}` }, body: JSON.stringify(full),
   });
   const t = await r.text(); let j = null; try { j = t ? JSON.parse(t) : null; } catch {}
   return { status: r.status, json: j, raw: t };
@@ -117,7 +140,7 @@ const orderStatus = (host, num, token) => co(host, 'GET', `/checkout/order?numbe
 async function main() {
   const staff = await makeStaff();
   const A = await makeShopOwner(staff, `pay-${uniq()}`);
-  const vid = await setupProduct(A, 250000, 10);
+  const vid = await setupProduct(A, 250000, 40); // đủ tồn cho nhiều đơn (webhook + coupon)
 
   // ── 1. Cấu hình thanh toán (step-up) ───────────────────────────────────────
   sect('1. Cấu hình thanh toán QR (step-up)');
@@ -206,6 +229,123 @@ async function main() {
   const vidB = await setupProduct(Bs, 50000, 5);
   const ob = await placeQrOrder(Bs, vidB);
   ob.status === 400 ? ok('checkout QR khi shop chưa bật thanh toán → 400') : bad('cho checkout qr không cấu hình', ob.raw);
+
+  // ── 9. SePay PER-SHOP (mỗi shop token riêng, tiền vào thẳng tài khoản shop) ─────
+  sect('9. SePay PER-SHOP');
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/payment/sepay/enable`, { cookie: A.cookie, origin: OS });
+  const tokenA = r.json?.token;
+  r.status === 200 && tokenA && r.json.api_key === tokenA && r.json.webhook_url?.endsWith('/webhooks/sepay') ? ok('bật SePay → API key (token) + URL webhook cố định (hiện 1 lần)') : bad('bật sepay lỗi', r.raw);
+
+  const o9 = await placeQrOrder(A, vid, 1, `b9-${uniq()}@t.local`);
+  r = await webhookPerShop(tokenA, { id: `evt-${uniq()}`, transferType: 'in', transferAmount: o9.total, content: `ck ${o9.ref}`, transactionDate: '2026-07-12 09:00:00' });
+  r.status === 200 && r.json.paid === true ? ok('webhook per-shop (token đúng, đủ tiền) → paid') : bad('per-shop không paid', r.raw);
+
+  r = await webhookPerShop('deadbeef'.repeat(6), { id: `evt-${uniq()}`, transferType: 'in', transferAmount: o9.total, content: `ck ${o9.ref}` });
+  r.status === 401 ? ok('token sai → 401 (không đụng đơn)') : bad('token sai vẫn xử lý', r.raw);
+
+  const noRefId = `evt-noref-${uniq()}`;
+  r = await webhookPerShop(tokenA, { id: noRefId, transferType: 'in', transferAmount: 123000, content: 'chuyen tien khong co ma dinh danh' });
+  r.status === 200 && r.json.reason === 'no_ref' ? ok('không có mã ref → matched:false (no_ref)') : bad('no_ref sai', r.raw);
+  let q = await owner.query(`SELECT reason FROM unmatched_transfers WHERE shop_id=$1 AND provider_event_id=$2`, [A.shopId, noRefId]);
+  q.rows[0]?.reason === 'no_ref' ? ok('giao dịch chưa khớp được GHI vào hàng đợi (no_ref)') : bad('không ghi hàng đợi', JSON.stringify(q.rows));
+
+  // CÔ LẬP CHÉO SHOP: ref của shop B post vào token shop A → order_not_found, đơn B không đổi.
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: Bs.password }, cookie: Bs.cookie, origin: OA });
+  await rq(SELLER, 'PUT', `/shops/${Bs.shopId}/payment-config`, { body: { bank_bin: '970415', account_number: '0022003456789', account_name: 'SHOP B', qr_enabled: true }, cookie: Bs.cookie, origin: OS });
+  const oB = await placeQrOrder(Bs, vidB);
+  r = await webhookPerShop(tokenA, { id: `evt-${uniq()}`, transferType: 'in', transferAmount: oB.total, content: `ck ${oB.ref}`, accountNumber: '0022003456789' });
+  r.status === 200 && r.json.matched === false && r.json.reason === 'order_not_found' ? ok('ref shop B gửi vào token shop A → order_not_found (cô lập chéo shop)') : bad('CẤN CHÉO SHOP — LỖ HỔNG', r.raw);
+  r = await orderStatus(Bs.host, oB.orderNum, oB.lookupToken);
+  r.json?.payment_status === 'unpaid' ? ok('đơn shop B vẫn UNPAID (token shop A không đụng tới)') : bad('đơn B bị đánh dấu hộ', r.raw);
+
+  // Sai tài khoản nhận trên đường per-shop → account_mismatch + vào hàng đợi.
+  const oam = await placeQrOrder(A, vid);
+  const amId = `evt-am-${uniq()}`;
+  r = await webhookPerShop(tokenA, { id: amId, transferType: 'in', transferAmount: oam.total, content: `ck ${oam.ref}`, accountNumber: '9999999999' });
+  r.status === 200 && r.json.reason === 'account_mismatch' ? ok('sai tài khoản nhận (per-shop) → account_mismatch, không paid') : bad('account_mismatch per-shop sai', r.raw);
+  q = await owner.query(`SELECT reason FROM unmatched_transfers WHERE shop_id=$1 AND provider_event_id=$2`, [A.shopId, amId]);
+  q.rows[0]?.reason === 'account_mismatch' ? ok('giao dịch sai tài khoản GHI vào hàng đợi') : bad('account_mismatch không ghi hàng đợi');
+
+  // #1: tiền vào đơn ĐÃ HUỶ/hết hạn → KHÔNG sống lại (chống oversell) → hàng đợi order_not_live.
+  const oDead = await placeQrOrder(A, vid);
+  await owner.query(`UPDATE orders SET status='cancelled' WHERE payment_ref=$1`, [oDead.ref]); // mô phỏng sweep hết hạn
+  const deadId = `evt-dead-${uniq()}`;
+  r = await webhookPerShop(tokenA, { id: deadId, transferType: 'in', transferAmount: oDead.total, content: `ck ${oDead.ref}`, transactionDate: '2026-07-12 10:00:00' });
+  r.status === 200 && r.json.reason === 'order_not_live' && r.json.paid === false ? ok('tiền vào đơn đã huỷ → order_not_live, KHÔNG sống lại (chống oversell)') : bad('đơn huỷ bị sống lại — LỖ HỔNG', r.raw);
+  r = await orderStatus(A.host, oDead.orderNum, oDead.lookupToken);
+  r.json?.status === 'cancelled' && r.json?.payment_status !== 'paid' ? ok('đơn vẫn HUỶ, không bị confirm/paid') : bad('đơn huỷ bị confirm/paid', r.raw);
+  q = await owner.query(`SELECT reason FROM unmatched_transfers WHERE shop_id=$1 AND provider_event_id=$2`, [A.shopId, deadId]);
+  q.rows[0]?.reason === 'order_not_live' ? ok('giao dịch vào đơn huỷ GHI vào hàng đợi (order_not_live)') : bad('order_not_live không ghi hàng đợi');
+
+  // Tắt SePay → token cũ bị thu hồi (401).
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/payment/sepay/disable`, { cookie: A.cookie, origin: OS });
+  const od = await placeQrOrder(A, vid);
+  r = await webhookPerShop(tokenA, { id: `evt-${uniq()}`, transferType: 'in', transferAmount: od.total, content: `ck ${od.ref}` });
+  r.status === 401 ? ok('sau khi TẮT SePay: token cũ → 401 (thu hồi)') : bad('token vẫn dùng sau disable', r.raw);
+  r = await orderStatus(A.host, od.orderNum, od.lookupToken);
+  r.json?.payment_status === 'unpaid' ? ok('đơn vẫn UNPAID sau webhook với token đã thu hồi') : bad('token thu hồi vẫn paid', r.raw);
+
+  // ── 10. Mã giảm giá (coupon) — đụng đường tiền: total giảm → QR khớp ───────────
+  sect('10. Mã giảm giá (coupon)');
+  let cr = await rq(SELLER, 'POST', `/shops/${A.shopId}/coupons`, { body: { code: 'GIAM10', kind: 'percent', value: 10 }, cookie: A.cookie, origin: OS });
+  cr.status === 201 ? ok('tạo coupon GIAM10 (giảm 10%)') : bad('tạo coupon lỗi', cr.raw);
+  cr = await rq(SELLER, 'POST', `/shops/${A.shopId}/coupons`, { body: { code: 'GIAM10', kind: 'fixed', value: 5000 }, cookie: A.cookie, origin: OS });
+  cr.status === 409 ? ok('trùng mã → 409') : bad('mã trùng không chặn', cr.raw);
+
+  // Giỏ 2×250k=500k, áp mã (nhập thường → server viết HOA), checkout QR.
+  const cart10 = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 2 } })).cartToken;
+  const cf = await coForm(A.host, '/cart/coupon', { code: 'giam10' }, cart10);
+  cf.status === 303 ? ok('áp mã → 303 (PRG về giỏ)') : bad('áp mã lỗi', String(cf.status));
+  let oco = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'qr' }, cartToken: cart10, idemKey: `k-${uniq()}` });
+  oco.json?.discount_vnd === 50000 && oco.json?.coupon_code === 'GIAM10' && oco.json?.total_vnd === 500000 - 50000 + oco.json.shipping_vnd
+    ? ok(`đơn giảm 50.000đ, tổng=${oco.json.total_vnd} (đã trừ giảm + ship)`) : bad('đơn không giảm đúng', JSON.stringify(oco.json));
+  oco.json?.qr_string?.includes(String(oco.json.total_vnd)) ? ok('VietQR mang SỐ TIỀN ĐÃ GIẢM (đường tiền khớp)') : bad('QR không khớp tổng đã giảm', oco.json?.qr_string);
+  let uc = await owner.query(`SELECT used_count FROM coupons WHERE shop_id=$1 AND code='GIAM10'`, [A.shopId]);
+  uc.rows[0]?.used_count === 1 ? ok('used_count tăng 1 sau khi đặt đơn') : bad(`used_count=${uc.rows[0]?.used_count}`);
+
+  // Mã sai → không giảm.
+  const cbad = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
+  await coForm(A.host, '/cart/coupon', { code: 'KHONGCOMA' }, cbad);
+  oco = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'cod' }, cartToken: cbad, idemKey: `k-${uniq()}` });
+  oco.json?.discount_vnd === 0 ? ok('mã sai → không giảm (đơn vẫn tạo)') : bad('mã sai vẫn giảm', JSON.stringify(oco.json));
+
+  // Đơn tối thiểu 1tr, giỏ 250k → không áp.
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/coupons`, { body: { code: 'MIN1TR', kind: 'fixed', value: 100000, min_subtotal_vnd: 1000000 }, cookie: A.cookie, origin: OS });
+  const cmin = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
+  await coForm(A.host, '/cart/coupon', { code: 'MIN1TR' }, cmin);
+  oco = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'cod' }, cartToken: cmin, idemKey: `k-${uniq()}` });
+  oco.json?.discount_vnd === 0 ? ok('chưa đủ đơn tối thiểu → không giảm') : bad('giảm dù chưa đủ đơn', JSON.stringify(oco.json));
+
+  // max_uses=1: lần 2 hết lượt.
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/coupons`, { body: { code: 'CHI1LAN', kind: 'fixed', value: 20000, max_uses: 1 }, cookie: A.cookie, origin: OS });
+  const cu1 = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
+  await coForm(A.host, '/cart/coupon', { code: 'CHI1LAN' }, cu1);
+  let u = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'cod' }, cartToken: cu1, idemKey: `k-${uniq()}` });
+  u.json?.discount_vnd === 20000 ? ok('CHI1LAN lần 1 → giảm 20.000') : bad('lần 1 không giảm', JSON.stringify(u.json));
+  const cu2 = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
+  await coForm(A.host, '/cart/coupon', { code: 'CHI1LAN' }, cu2);
+  u = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'cod' }, cartToken: cu2, idemKey: `k-${uniq()}` });
+  u.json?.discount_vnd === 0 ? ok('CHI1LAN hết lượt lần 2 → không giảm (không vượt max_uses)') : bad('vượt max_uses', JSON.stringify(u.json));
+
+  // Hoàn lượt coupon khi HUỶ đơn chưa trả (chống đốt lượt bằng đơn chưa thanh toán).
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/coupons`, { body: { code: 'HOAN1', kind: 'fixed', value: 10000, max_uses: 1 }, cookie: A.cookie, origin: OS });
+  const ch = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
+  await coForm(A.host, '/cart/coupon', { code: 'HOAN1' }, ch);
+  const oh = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'cod' }, cartToken: ch, idemKey: `k-${uniq()}` });
+  oh.json?.discount_vnd === 10000 ? ok('HOAN1 dùng lần 1 → giảm 10.000 (used_count=1)') : bad('HOAN1 không giảm', JSON.stringify(oh.json));
+  const ohId = (await owner.query(`SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, oh.json.order_number])).rows[0].id;
+  const cres = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${ohId}/cancel`, { cookie: A.cookie, origin: OS });
+  cres.status === 200 ? ok('huỷ đơn dùng coupon (chưa trả) → 200') : bad('huỷ đơn lỗi', cres.raw);
+  const ucr = await owner.query(`SELECT used_count FROM coupons WHERE shop_id=$1 AND code='HOAN1'`, [A.shopId]);
+  ucr.rows[0]?.used_count === 0 ? ok('huỷ đơn chưa trả → HOÀN lại lượt coupon (used_count=0)') : bad(`used_count=${ucr.rows[0]?.used_count} sau huỷ (chưa hoàn)`);
+
+  // CÔ LẬP CHÉO SHOP: coupon của A không áp cho giỏ shop B.
+  const cB = (await co(Bs.host, 'POST', '/cart/items', { body: { variant_id: vidB, qty: 1 } })).cartToken;
+  await coForm(Bs.host, '/cart/coupon', { code: 'GIAM10' }, cB);
+  u = await co(Bs.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'cod' }, cartToken: cB, idemKey: `k-${uniq()}` });
+  u.json?.discount_vnd === 0 && !u.json?.coupon_code ? ok('coupon shop A KHÔNG áp cho đơn shop B (cô lập chéo shop)') : bad('CẤN CHÉO SHOP coupon', JSON.stringify(u.json));
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

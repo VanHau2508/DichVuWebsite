@@ -83,6 +83,9 @@ const I_CART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 const I_IMG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-5-5L5 20"/></svg>';
 const I_TRUCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h11v9H3z"/><path d="M14 9h4l3 3v3h-7z"/><circle cx="7" cy="18" r="1.5"/><circle cx="17" cy="18" r="1.5"/></svg>';
 const I_SHIELD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v5c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>';
+const I_RETURN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.2-9.3L3 6"/></svg>';
+const I_BADGE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l2.4 1.8 3 .1.9 2.9 2.4 1.8-.9 2.9.9 2.9-2.4 1.8-.9 2.9-3 .1L12 22l-2.4-1.8-3-.1-.9-2.9L3.3 15.4l.9-2.9-.9-2.9 2.4-1.8.9-2.9 3-.1z"/><path d="M9 12l2 2 4-4"/></svg>';
+const I_WALLET = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h13v4"/><path d="M3 7v10a2 2 0 0 0 2 2h14a1 1 0 0 0 1-1v-3"/><path d="M21 11v4h-4a2 2 0 0 1 0-4z"/></svg>';
 
 // Thẻ sản phẩm dùng chung (lưới trang chủ / danh mục / tìm kiếm). Escape mọi field người bán.
 function productCards(products) {
@@ -105,6 +108,16 @@ function pager(pi) {
   return `<nav class="pager">${prev}<span class="pg-info">Trang ${cur}/${last}</span>${next}</nav>`;
 }
 
+// Dải "vì sao chọn chúng tôi" — mặc định 4 cam kết. Shop có thể override qua props.items
+// (nhưng text luôn escape khi render). icon chọn từ FEAT_ICON, giá trị lạ → khiên mặc định.
+const FEAT_ICON = { truck: I_TRUCK, return: I_RETURN, badge: I_BADGE, wallet: I_WALLET, shield: I_SHIELD };
+const DEFAULT_FEATURES = [
+  { icon: 'truck', title: 'Giao hàng toàn quốc', desc: 'Nhận hàng tận nơi, nhanh chóng khắp 63 tỉnh thành.' },
+  { icon: 'return', title: 'Đổi trả trong 7 ngày', desc: 'Chưa ưng ý? Đổi hoặc trả dễ dàng, không rắc rối.' },
+  { icon: 'badge', title: 'Cam kết chính hãng', desc: 'Sản phẩm đúng mô tả, chất lượng đảm bảo.' },
+  { icon: 'wallet', title: 'Thanh toán an toàn', desc: 'COD khi nhận hàng hoặc chuyển khoản QR tiện lợi.' },
+];
+
 // ── section renderers (nhận dữ liệu ĐÃ đọc, escape khi render) ────────────────
 const SECTIONS = {
   header: (props, ctx) => `<header class="hdr"><div class="wrap">
@@ -120,12 +133,48 @@ const SECTIONS = {
     </nav>
   </div></header>`,
 
-  hero: (props, ctx) => `<section class="hero"><div class="wrap">
-    <p class="eyebrow">${esc(props.eyebrow || 'Cửa hàng chính thức')}</p>
-    <h1>${esc(props.title || ctx.shop.name)}</h1>
-    <p>${esc(props.subtitle || 'Mua sắm dễ dàng — giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.')}</p>
-    <a class="btn btn-primary" href="#san-pham">Xem sản phẩm</a>
-  </div></section>`,
+  hero: (props, ctx) => {
+    // Cột phải: sản phẩm đầu tiên CÓ ẢNH làm visual (giờ ảnh hiển thị được qua same-origin).
+    // Không có ảnh nào → panel trang trí (icon) → hero vẫn cân đối, không vỡ layout.
+    const feat = (Array.isArray(ctx.products) ? ctx.products : []).find((p) => p.image);
+    const visual = feat
+      ? `<a class="hero-media" href="/p/${esc(feat.slug)}">
+          <img src="${esc(feat.image)}" alt="${esc(feat.title)}">
+          <span class="hero-card"><span class="hc-name">${esc(feat.title)}</span><span class="hc-price">${money(feat.price_vnd)}</span></span>
+        </a>`
+      : `<div class="hero-media deco" aria-hidden="true">${I_SHIELD}</div>`;
+    const ghost = (Array.isArray(ctx.categories) && ctx.categories.length)
+      ? '<a class="btn btn-ghost" href="#bo-suu-tap">Bộ sưu tập</a>' : '';
+    return `<section class="hero"><div class="hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow">${esc(props.eyebrow || 'Cửa hàng chính thức')}</p>
+        <h1>${esc(props.title || ctx.shop.name)}</h1>
+        <p>${esc(props.subtitle || 'Mua sắm dễ dàng — giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.')}</p>
+        <div class="hero-cta"><a class="btn btn-primary" href="#san-pham">Xem sản phẩm</a>${ghost}</div>
+      </div>
+      ${visual}
+    </div></section>`;
+  },
+
+  features: (props, ctx) => {
+    const items = (Array.isArray(props.items) && props.items.length ? props.items : DEFAULT_FEATURES).slice(0, 4);
+    return `<section class="features"><div class="wrap">
+      <div class="feat-grid">${items.map((f) => `<div class="feat-item">
+        <span class="feat-ic">${FEAT_ICON[f.icon] || I_SHIELD}</span>
+        <div><div class="feat-t">${esc(f.title)}</div><div class="feat-d">${esc(f.desc)}</div></div>
+      </div>`).join('')}</div>
+    </div></section>`;
+  },
+
+  // Bộ sưu tập: tái sử dụng danh mục của shop → tile lớn dẫn tới /c/:slug. Rỗng nếu chưa có danh mục.
+  collections: (props, ctx) => {
+    const cats = Array.isArray(ctx.categories) ? ctx.categories.slice(0, 8) : [];
+    if (!cats.length) return '';
+    return `<section class="section collections" id="bo-suu-tap"><div class="wrap">
+      <div class="section-h"><h2>${esc(props.title || 'Mua theo bộ sưu tập')}</h2></div>
+      <div class="coll-grid">${cats.map((c) => `<a class="coll-tile" href="/c/${esc(c.slug)}"><span class="coll-name">${esc(c.name)}</span><span class="coll-go">Xem tất cả →</span></a>`).join('')}</div>
+    </div></section>`;
+  },
 
   product_grid: (props, ctx) => {
     const chips = ctx.categories.length
@@ -188,26 +237,53 @@ h1,h2,h3{font-family:var(--font-heading);font-weight:600;letter-spacing:-.01em;l
 .hnav{display:flex;align-items:center;gap:24px;font-size:.92rem;flex-wrap:wrap}
 .hnav a{color:var(--color-muted);transition:color .15s}.hnav a:hover{color:var(--color-primary)}
 .hnav .cart{display:inline-flex;align-items:center;gap:6px;color:var(--color-text);font-weight:500}.hnav .cart:hover{color:var(--color-primary)}
-.hero{background:var(--color-hero-bg)}
-.hero .wrap{max-width:780px;padding:64px 20px;text-align:center}
-.hero .eyebrow{color:var(--color-primary);font-weight:600;font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;margin:0 0 12px}
-.hero h1{margin:0 0 14px;font-size:2.4rem;font-weight:600}.hero p{margin:0 0 26px;color:#3d5067;font-size:1.05rem}
+.hero{background:var(--color-hero-bg);position:relative;overflow:hidden}
+.hero::before,.hero::after{content:"";position:absolute;border-radius:50%;filter:blur(64px);z-index:0;pointer-events:none}
+.hero::before{width:340px;height:340px;top:-130px;left:-90px;background:color-mix(in srgb,var(--color-primary) 22%,transparent)}
+.hero::after{width:300px;height:300px;bottom:-140px;right:-70px;background:color-mix(in srgb,var(--color-accent) 18%,transparent)}
+.hero-grid{position:relative;z-index:1;max-width:1120px;margin:0 auto;padding:60px 20px;display:grid;grid-template-columns:1.05fr .95fr;gap:44px;align-items:center}
+.hero-copy .eyebrow{display:inline-block;color:var(--color-primary);font-weight:700;font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;margin:0 0 14px;padding:5px 13px;border-radius:999px;background:color-mix(in srgb,var(--color-primary) 12%,transparent)}
+.hero-copy h1{margin:0 0 14px;font-size:clamp(2rem,3.4vw,3rem);font-weight:700;letter-spacing:-.02em;line-height:1.12}
+.hero-copy p{margin:0;color:color-mix(in srgb,var(--color-text) 72%,var(--color-bg));font-size:1.08rem;line-height:1.6;max-width:46ch}
+.hero-cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:26px}
+.hero-media{position:relative;display:block;border-radius:22px;overflow:hidden;aspect-ratio:4/3;border:1px solid var(--color-border);box-shadow:0 34px 60px -34px rgba(17,24,39,.45)}
+.hero-media img{width:100%;height:100%;object-fit:cover;transition:transform .4s}
+.hero-media:hover img{transform:scale(1.04)}
+.hero-card{position:absolute;left:14px;right:14px;bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:rgba(255,255,255,.94);border-radius:13px;padding:11px 15px}
+.hc-name{font-weight:600;font-size:.92rem;color:#111827;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.hc-price{font-weight:700;color:color-mix(in srgb,var(--color-primary) 68%,#111827);white-space:nowrap}
+.hero-media.deco{display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--color-primary) 10%,var(--color-bg));color:var(--color-primary);box-shadow:none}
+.hero-media.deco svg{width:88px;height:88px;opacity:.85}
+@media(max-width:820px){.hero-grid{grid-template-columns:1fr;gap:26px;padding:40px 20px;text-align:center}.hero-copy p{max-width:none}.hero-cta{justify-content:center}.hero-media{max-width:440px;width:100%;margin:0 auto}}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-family:var(--font-body);font-size:1rem;font-weight:500;min-height:48px;padding:12px 26px;border-radius:999px;border:1px solid transparent;cursor:pointer;transition:background .15s,opacity .15s,transform .06s;line-height:1}
 .btn:active{transform:translateY(1px)}.btn svg{width:18px;height:18px}
-.btn-primary{background:var(--color-primary);color:#fff}.btn-primary:hover{background:var(--color-primary-dark)}
-.btn-ghost{background:#fff;color:var(--color-text);border-color:var(--color-text)}.btn-ghost:hover{background:var(--color-surface)}
+.btn-primary{background:var(--color-primary);color:#fff}.btn-primary:hover{background:color-mix(in srgb,var(--color-primary) 86%,#000)}
+.btn-ghost{background:var(--color-bg);color:var(--color-text);border-color:var(--color-text)}.btn-ghost:hover{background:var(--color-surface)}
 .section{padding:44px 0}.section-h{display:flex;align-items:baseline;justify-content:space-between;margin:0 0 20px}.section-h h2{margin:0;font-size:1.4rem}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 24px}
 .chip{border:1px solid var(--color-border);border-radius:999px;padding:7px 16px;font-size:.86rem;color:var(--color-muted);transition:.15s}
 .chip:hover{border-color:var(--color-primary);color:var(--color-primary);background:var(--color-hero-bg)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:20px}
 .empty{color:var(--color-muted);padding:20px 0}
+.features{background:var(--color-surface);border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border)}
+.features .wrap{padding:30px 20px}
+.feat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:24px}
+.feat-item{display:flex;align-items:flex-start;gap:14px}
+.feat-ic{flex:0 0 auto;width:46px;height:46px;border-radius:13px;background:var(--color-hero-bg);color:var(--color-primary);display:flex;align-items:center;justify-content:center}
+.feat-ic svg{width:23px;height:23px}
+.feat-t{font-weight:600;font-size:.98rem;color:var(--color-text);margin-bottom:3px}
+.feat-d{font-size:.85rem;color:var(--color-muted);line-height:1.5}
+.coll-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:14px}
+.coll-tile{display:flex;flex-direction:column;justify-content:flex-end;gap:4px;min-height:104px;padding:16px 18px;border-radius:15px;background:var(--color-hero-bg);border:1px solid var(--color-border);transition:transform .12s,box-shadow .12s,border-color .12s}
+.coll-tile:hover{transform:translateY(-2px);border-color:var(--color-primary);box-shadow:0 10px 24px -14px color-mix(in srgb,var(--color-primary) 40%,transparent)}
+.coll-name{font-family:var(--font-heading);font-weight:600;font-size:1.02rem;color:var(--color-text);line-height:1.3}
+.coll-go{font-size:.8rem;font-weight:600;color:var(--color-primary)}
 .hsearch{flex:1 1 180px;max-width:280px;margin:0 8px}
 .hsearch input{width:100%;padding:9px 14px;border:1px solid var(--color-border);border-radius:999px;font-size:.9rem;font-family:inherit;background:var(--color-surface);color:var(--color-text)}
-.hsearch input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px rgba(36,99,235,.12)}
+.hsearch input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 22%,transparent)}
 .searchbar{display:flex;gap:10px;margin:0 0 24px;max-width:520px}
 .searchbar input{flex:1;padding:12px 16px;border:1px solid var(--color-border);border-radius:999px;font-size:1rem;font-family:inherit;background:var(--color-bg);color:var(--color-text)}
-.searchbar input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px rgba(36,99,235,.12)}
+.searchbar input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 22%,transparent)}
 .pager{display:flex;align-items:center;justify-content:center;gap:16px;margin:32px 0 8px}
 .pg-btn{padding:9px 18px;border:1px solid var(--color-border);border-radius:999px;color:var(--color-text);font-size:.9rem}
 .pg-btn:hover{border-color:var(--color-primary);color:var(--color-primary)}
@@ -215,7 +291,7 @@ h1,h2,h3{font-family:var(--font-heading);font-weight:600;letter-spacing:-.01em;l
 .pg-info{color:var(--color-muted);font-size:.88rem}
 .blog-list{display:grid;gap:18px;max-width:760px}
 .blog-card{border:1px solid var(--color-border);border-radius:14px;padding:20px 24px;background:var(--color-bg);transition:border-color .12s,box-shadow .12s}
-.blog-card:hover{border-color:var(--color-primary);box-shadow:0 6px 20px -12px rgba(36,99,235,.3)}
+.blog-card:hover{border-color:var(--color-primary);box-shadow:0 6px 20px -12px color-mix(in srgb,var(--color-primary) 32%,transparent)}
 .blog-card h2{margin:0 0 4px;font-size:1.28rem;font-weight:700;line-height:1.3}
 .blog-card h2 a{color:var(--color-text)}.blog-card h2 a:hover{color:var(--color-primary)}
 .blog-date{color:var(--color-muted);font-size:.84rem;margin:0 0 10px}
@@ -224,7 +300,7 @@ h1,h2,h3{font-family:var(--font-heading);font-weight:600;letter-spacing:-.01em;l
 .blog-post{max-width:720px}.blog-post h1{margin:10px 0 2px;font-size:1.9rem}
 .blog-post p{line-height:1.85;color:var(--color-text);margin:0 0 18px}
 .card{display:flex;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:12px;overflow:hidden;transition:transform .12s,box-shadow .12s,border-color .12s}
-.card:hover{transform:translateY(-3px);border-color:#c9dcff;box-shadow:0 8px 24px rgba(36,99,235,.10)}
+.card:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--color-primary) 32%,var(--color-border));box-shadow:0 8px 24px color-mix(in srgb,var(--color-primary) 12%,transparent)}
 .card .thumb{aspect-ratio:1;background:var(--color-surface);overflow:hidden}
 .card .thumb img{width:100%;height:100%;object-fit:cover}
 .card .thumb .ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#c4c8cf}.card .thumb .ph svg{width:34px;height:34px}
@@ -242,13 +318,13 @@ h1,h2,h3{font-family:var(--font-heading);font-weight:600;letter-spacing:-.01em;l
 .pd-media .thumbs img{width:74px;height:74px;object-fit:cover;border:1px solid var(--color-border);border-radius:10px}
 .pd-info h1{margin:0 0 12px;font-size:1.9rem;font-weight:600}
 .pd-info .price{font-size:1.7rem;font-weight:700;color:var(--color-primary);margin:0 0 20px}
-.pd-info .desc{color:#3d5067;line-height:1.75;margin:0 0 24px;white-space:pre-line}
+.pd-info .desc{color:color-mix(in srgb,var(--color-text) 72%,var(--color-bg));line-height:1.75;margin:0 0 24px;white-space:pre-line}
 .addcart{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:0 0 22px}
 .addcart select,.addcart input{padding:12px 14px;border:1px solid #d6d6d6;border-radius:12px;font-size:1rem;font-family:inherit;background:var(--color-bg);color:var(--color-text)}
-.addcart select:focus,.addcart input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px rgba(36,99,235,.12)}
+.addcart select:focus,.addcart input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 22%,transparent)}
 .addcart input[type=number]{width:88px;text-align:center}
 .stock{display:inline-block;font-size:.9rem;font-weight:600;padding:5px 12px;border-radius:999px;margin:0 0 18px}
-.stock.in{background:var(--color-hero-bg);color:var(--color-primary-dark)}
+.stock.in{background:var(--color-hero-bg);color:color-mix(in srgb,var(--color-primary) 82%,#000)}
 .stock.low{background:#fff7ed;color:#c2410c}
 .stock.out{background:#fef2f2;color:#b91c1c}
 .soldout-note{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:12px;padding:14px 16px;font-weight:600;margin:0 0 22px}
@@ -259,7 +335,7 @@ h1,h2,h3{font-family:var(--font-heading);font-weight:600;letter-spacing:-.01em;l
 .trust span{display:inline-flex;align-items:center;gap:6px}.trust svg{width:16px;height:16px;color:var(--color-primary)}
 .content{max-width:720px;margin:0 auto;padding:40px 20px 60px}
 .content h1{font-size:2rem;margin:0 0 .6em;font-weight:600}.content h2{margin:1.6em 0 .4em;font-size:1.3rem}
-.content p{line-height:1.8;margin:0 0 1.1em;color:#3d5067}.content ul{line-height:1.8;padding-left:1.3em;margin:0 0 1.1em}
+.content p{line-height:1.8;margin:0 0 1.1em;color:color-mix(in srgb,var(--color-text) 72%,var(--color-bg))}.content ul{line-height:1.8;padding-left:1.3em;margin:0 0 1.1em}
 .content blockquote{margin:1.4em 0;padding:.4em 0 .4em 1.1em;border-left:3px solid var(--color-primary);color:var(--color-muted);font-style:italic}
 .content blockquote cite{display:block;margin-top:.5em;font-size:.88em;font-style:normal}
 .content hr{border:0;border-top:1px solid var(--color-border);margin:2em 0}
@@ -270,7 +346,7 @@ h1,h2,h3{font-family:var(--font-heading);font-weight:600;letter-spacing:-.01em;l
 .ftr .badges{display:flex;gap:20px;flex-wrap:wrap}.ftr .badges span{display:inline-flex;align-items:center;gap:6px}.ftr .badges svg{width:16px;height:16px;color:var(--color-primary)}
 .center-msg{max-width:520px;margin:80px auto;text-align:center;padding:0 20px}.center-msg h1{font-size:1.7rem;margin:0 0 10px;font-weight:600}.center-msg p{color:var(--color-muted)}
 .preview-banner{position:sticky;top:0;z-index:30;background:#b45309;color:#fff;padding:10px 20px;font-weight:600;text-align:center;font-size:.9rem}
-@media(max-width:720px){.pd-grid{grid-template-columns:1fr;gap:24px}.hero h1{font-size:1.8rem}.hero .wrap{padding:44px 20px}.hnav{gap:14px;font-size:.85rem}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.pd-info h1{font-size:1.5rem}}`;
+@media(max-width:720px){.pd-grid{grid-template-columns:1fr;gap:24px}.hnav{gap:14px;font-size:.85rem}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.pd-info h1{font-size:1.5rem}}`;
 
 function page(title, tokens, bodyHtml, head = '') {
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
@@ -279,9 +355,28 @@ function page(title, tokens, bodyHtml, head = '') {
 <body>${bodyHtml}</body></html>`;
 }
 
+// Chèn dải "cam kết" (sau hero) và "bộ sưu tập" (trước lưới sản phẩm) nếu layout đã lưu
+// chưa có — để cả theme cũ (lưu trước khi có 2 khối này) vẫn hiển thị trang chủ giàu hơn.
+function withHomeSections(layout) {
+  const has = (name) => layout.some((s) => s && s.section === name);
+  const out = layout.slice();
+  if (!has('features')) {
+    const hi = out.findIndex((s) => s && s.section === 'hero');
+    out.splice(hi >= 0 ? hi + 1 : 1, 0, { section: 'features', props: {} });
+  }
+  if (!has('collections')) {
+    // Chèn NGAY TRƯỚC lưới sản phẩm; nếu layout không có product_grid thì bỏ qua
+    // (không nhét collections xuống sau footer).
+    const gi = out.findIndex((s) => s && s.section === 'product_grid');
+    if (gi >= 0) out.splice(gi, 0, { section: 'collections', props: {} });
+  }
+  return out;
+}
+
 /** Render trang chủ theo layout của theme (hoặc mặc định). */
 export function renderHome(ctx, { canonical = null } = {}) {
-  const layout = Array.isArray(ctx.theme?.layout) && ctx.theme.layout.length ? ctx.theme.layout : DEFAULT_LAYOUT;
+  const base = Array.isArray(ctx.theme?.layout) && ctx.theme.layout.length ? ctx.theme.layout : DEFAULT_LAYOUT;
+  const layout = withHomeSections(base);
   const body = layout
     .map((s) => (SECTIONS[s.section] ? SECTIONS[s.section](s.props ?? {}, ctx) : ''))
     .join('\n');
@@ -346,7 +441,10 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
       </div>
     </main>${SECTIONS.footer({}, ctx)}`;
   const desc = p.description ? String(p.description).replace(/\s+/g, ' ').trim().slice(0, 200) : `${p.title} — ${ctx.shop.name}`;
-  const ogImg = media.length ? `<meta property="og:image" content="${esc(media[0].url)}"><meta name="twitter:image" content="${esc(media[0].url)}">` : '';
+  // og:image PHẢI tuyệt đối. media[0].url có thể tương đối (/media-public/..) → ghép origin shop.
+  const absUrl = (u) => (u ? (/^https?:\/\//i.test(u) ? u : `${ctx.origin || ''}${u}`) : '');
+  const ogSrc = media.length ? absUrl(media[0].url) : '';
+  const ogImg = ogSrc ? `<meta property="og:image" content="${esc(ogSrc)}"><meta name="twitter:image" content="${esc(ogSrc)}">` : '';
   const head = metaHead({ description: desc, canonical, ogTitle: p.title, ogType: 'product', siteName: ctx.shop.name }) + ogImg;
   return page(`${p.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
 }

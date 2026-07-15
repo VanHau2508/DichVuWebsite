@@ -88,6 +88,19 @@ cdn.nentang.vn {
 	}
 }
 
+# ── Trang CÔNG TY (apex nentang.vn + www) — landing marketing ────────────────
+# `*.nentang.vn` KHÔNG khớp apex (chỉ subdomain 1 nhãn). Nếu thiếu block này, apex
+# rơi vào catch-all on-demand → `ask` từ chối (isReserved coi nentang.vn là tên miền
+# nền tảng) → handshake hỏng → https://nentang.vn KHÔNG mở được. Đã biết trước ⇒ DNS-01.
+# storefront thấy host ∈ PLATFORM_ROOT_HOSTS → render landing (không phải shop).
+nentang.vn, www.nentang.vn {
+	tls {
+		dns cloudflare {env.CF_API_TOKEN}
+	}
+	import security_headers
+	reverse_proxy storefront:3050
+}
+
 # ── Storefront trên subdomain nền tảng ───────────────────────────────────────
 # Wildcard ⇒ bắt buộc DNS-01 ⇒ bắt buộc plugin cloudflare.
 *.nentang.vn {

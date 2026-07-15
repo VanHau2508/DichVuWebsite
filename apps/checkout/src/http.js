@@ -24,10 +24,10 @@ export function send(res, status, body, headers = {}) {
 
 // CSP nghiêm cho trang giỏ/checkout: KHÔNG script (form thuần, không JS) → chống XSS
 // mạnh; style nội tuyến cho phép (một khối <style> tĩnh của ta). no-store: trang có PII/giá.
-// Ảnh giỏ phục vụ từ MEDIA_PUBLIC_BASE (CDN) → thêm origin đó vào img-src, nếu không CSP chặn.
-// Default KHỚP server.js: env luôn được set ở dev/prod, nhưng nếu thiếu thì cả ảnh (server.js)
-// lẫn img-src (đây) cùng trỏ minio → không lệch (ảnh hiện được thay vì bị CSP chặn im lặng).
-const MEDIA_ORIGIN = (() => { try { return new URL(process.env.MEDIA_PUBLIC_BASE ?? 'http://minio:9000/media-public').origin; } catch { return ''; } })();
+// Ảnh giỏ phục vụ từ MEDIA_PUBLIC_BASE. Mặc định TƯƠNG ĐỐI (/media-public) → cùng origin
+// → new URL(...) ném lỗi → MEDIA_ORIGIN='' → CSP chỉ 'self' (đủ, vì ảnh same-origin). Nếu
+// prod đặt base tuyệt đối (CDN) thì origin đó được thêm vào img-src. KHỚP default server.js.
+const MEDIA_ORIGIN = (() => { try { return new URL(process.env.MEDIA_PUBLIC_BASE ?? '/media-public').origin; } catch { return ''; } })();
 const HTML_CSP = `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:${MEDIA_ORIGIN ? ' ' + MEDIA_ORIGIN : ''}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
 export function sendHtml(res, status, html, headers = {}) {
   res.writeHead(status, {

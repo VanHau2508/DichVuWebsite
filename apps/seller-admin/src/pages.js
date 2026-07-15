@@ -46,11 +46,12 @@ textarea{min-height:80px;resize:vertical}
 .badge.pending{background:#fef3c7;color:#92400e}.badge.confirmed{background:#dbeafe;color:#1e40af}.badge.shipped{background:#e0e7ff;color:#3730a3}
 .badge.delivered{background:#d1fae5;color:#065f46}.badge.cancelled{background:#fee2e2;color:#991b1b}.badge.paid{background:#d1fae5;color:#065f46}.badge.unpaid{background:#eef0f2;color:#6b7280}
 .badge.active{background:#d1fae5;color:#065f46}.badge.draft{background:#fef3c7;color:#92400e}.badge.archived{background:#eef0f2;color:#4b5563}.badge.published{background:#d1fae5;color:#065f46}
+.badge.onboarding{background:#dbeafe;color:#1e40af}.badge.suspended{background:#fee2e2;color:#991b1b}.badge.closed{background:#eef0f2;color:#4b5563}
 .muted{color:#6b7280}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .filters{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.filters>div{flex:0 0 auto}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}@media(max-width:560px){.grid2{grid-template-columns:1fr}}
 .inline{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}.inline input{width:auto}
-.num{font-variant-numeric:tabular-nums}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.num{font-variant-numeric:tabular-nums}.right{text-align:right}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
 .stock{font-weight:600}.stock.low{color:#b45309}.stock.zero{color:#b91c1c}
 input[type=file]{width:auto;padding:9px;background:#f6f7f8;border:1px dashed #cbd5e1}
 .media-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px}
@@ -63,6 +64,19 @@ input[type=file]{width:auto;padding:9px;background:#f6f7f8;border:1px dashed #cb
 .block textarea{background:#fff}code{background:#f1f2f4;padding:2px 6px;border-radius:5px;font-size:.85rem}.pill{display:inline-block;margin-right:6px}
 .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:0 0 18px}
 .metric{background:#fff;border:1px solid #e6e8eb;border-radius:12px;padding:14px 16px}.metric .l{font-size:.8rem;color:#6b7280;margin-bottom:4px}.metric .v{font-size:1.5rem;font-weight:700;letter-spacing:-.01em}
+.dash-hero{background:linear-gradient(120deg,#eef4ff 0%,#f6f7f8 70%);border:1px solid #e0e7f3;border-radius:16px;padding:26px 28px;margin:0 0 20px}
+.dash-hero .eyebrow{font-size:.74rem;text-transform:uppercase;letter-spacing:.07em;color:#2463eb;font-weight:700;margin:0 0 2px}
+.dash-hero h1{margin:0 0 4px}.dash-hero p{margin:0;color:#4b5563}
+.staffbar{background:#eef4ff;border:1px solid #93c5fd;border-radius:12px;padding:12px 16px;margin:0 0 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.shop-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.shop-card{background:#fff;border:1px solid #e6e8eb;border-radius:14px;padding:18px 20px;display:flex;flex-direction:column;gap:16px;color:inherit;text-decoration:none;transition:box-shadow .14s,transform .1s,border-color .14s}
+.shop-card:hover{box-shadow:0 12px 30px -18px rgba(36,99,235,.4);border-color:#c9dcff;transform:translateY(-2px);text-decoration:none}
+.sc-head{display:flex;align-items:flex-start;gap:13px}
+.sc-avatar{flex:0 0 auto;width:46px;height:46px;border-radius:12px;background:#eef4ff;color:#2463eb;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.28rem}
+.sc-name{font-weight:700;font-size:1.06rem;color:#111827;line-height:1.25}
+.sc-meta{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:5px}.sc-meta .role{color:#6b7280;font-size:.82rem}
+.sc-go{margin-top:auto;color:#2463eb;font-weight:600;font-size:.92rem;display:inline-flex;align-items:center;gap:6px}
+.sc-go .arr{transition:transform .14s}.shop-card:hover .sc-go .arr{transform:translateX(4px)}
 @media(max-width:760px){.shell{flex-direction:column}.side{width:100%;flex:none;height:auto;position:static}.side-nav{flex-direction:row;flex-wrap:wrap}.content{padding:16px}.tbar{padding:12px 16px}}`;
 
 const badge = (kind, label) => `<span class="badge ${esc(kind)}">${esc(label)}</span>`;
@@ -78,6 +92,7 @@ const ROLE_LABEL = { owner: 'Chủ shop', admin: 'Quản trị', catalog_manager
 const INVITE_ROLES = ['admin', 'catalog_manager', 'order_manager']; // KHÔNG mời owner qua đây
 const PSTATUS = { draft: 'Nháp', active: 'Đang bán', archived: 'Lưu trữ' };
 const PGSTATUS = { draft: 'Nháp', published: 'Đã đăng' };
+const SHOP_STATUS = { onboarding: 'Đang thiết lập', active: 'Đang hoạt động', suspended: 'Tạm ngưng', closed: 'Đã đóng' };
 const BTYPE = { heading: 'Tiêu đề', paragraph: 'Đoạn văn', list: 'Danh sách', quote: 'Trích dẫn', divider: 'Đường kẻ' };
 
 // Icon nội tuyến (markup → hợp CSP, không tải resource ngoài).
@@ -399,19 +414,31 @@ export function renderOverview(ctx, shopId, s) {
 }
 
 export function renderDashboard(ctx, shops, isStaff = false) {
-  return layout('Bảng điều khiển', ctx, `<h1>Cửa hàng của bạn</h1>
-    ${isStaff ? `<div class="card" style="background:#eef4ff;border-color:#93c5fd"><strong>Nhân viên nền tảng</strong> · <a href="/platform">Mở Console nền tảng →</a></div>` : ''}
-    ${shops.length ? shops.map((s) => `<div class="card">
-      <h2 style="margin:0">${esc(s.name || s.shop_id)}</h2>
-      <p class="muted">Vai trò: ${esc(s.role)}${s.status && s.status !== 'active' ? ` · <strong>${esc(s.status)}</strong>` : ''}</p>
-      <div class="actions">
-        ${ORDER_ROLES.has(s.role) ? `<a class="btn" href="/shops/${esc(s.shop_id)}/overview">Tổng quan</a>` : ''}
-        ${ORDER_ROLES.has(s.role) ? `<a class="btn alt" href="/shops/${esc(s.shop_id)}/orders">Quản lý đơn hàng</a>` : ''}
-        ${CATALOG_ROLES.has(s.role) ? `<a class="btn alt" href="/shops/${esc(s.shop_id)}/products">Quản lý sản phẩm</a>` : ''}
-        ${CONTENT_ROLES.has(s.role) ? `<a class="btn alt" href="/shops/${esc(s.shop_id)}/pages">Trang nội dung</a>` : ''}
-        ${MEMBER_READ_ROLES.has(s.role) ? `<a class="btn alt" href="/shops/${esc(s.shop_id)}/members">Nhân sự</a>` : ''}
+  const initial = (name) => esc((String(name || '?').trim()[0] || '?').toUpperCase());
+  const shopCard = (s) => {
+    const nm = s.name || s.shop_id;
+    const stLabel = SHOP_STATUS[s.status] || s.status;
+    // Cả thẻ là 1 link → tới trang đầu tiên vai trò được phép (owner/admin/order → Tổng quan).
+    const home = ORDER_ROLES.has(s.role) ? 'overview' : CATALOG_ROLES.has(s.role) ? 'products' : MEMBER_READ_ROLES.has(s.role) ? 'members' : 'overview';
+    return `<a class="shop-card" href="/shops/${esc(s.shop_id)}/${home}">
+      <div class="sc-head">
+        <div class="sc-avatar">${initial(s.name)}</div>
+        <div><div class="sc-name">${esc(nm)}</div>
+          <div class="sc-meta">${s.status ? badge(s.status, stLabel) : ''}<span class="role">${esc(ROLE_LABEL[s.role] || s.role)}</span></div></div>
       </div>
-    </div>`).join('') : `<div class="card"><p class="muted">Bạn chưa thuộc cửa hàng nào.</p></div>`}`);
+      <div class="sc-go">Vào quản lý <span class="arr">→</span></div>
+    </a>`;
+  };
+  const n = shops.length;
+  return layout('Bảng điều khiển', ctx, `
+    <div class="dash-hero">
+      <p class="eyebrow">Bảng điều khiển</p>
+      <h1>Xin chào 👋</h1>
+      <p>${n ? `Bạn đang quản lý ${n} cửa hàng — chọn một để tiếp tục.` : 'Chào mừng bạn đến với trang quản trị.'}</p>
+    </div>
+    ${isStaff ? `<div class="staffbar"><span><strong>Nhân viên nền tảng</strong> · Bạn có quyền truy cập Console vận hành.</span><a class="btn sm" href="/platform">Mở Console →</a></div>` : ''}
+    ${n ? `<div class="shop-grid">${shops.map(shopCard).join('')}</div>`
+        : `<div class="card"><h2 style="margin-top:0">Chưa có cửa hàng</h2><p class="muted" style="margin:0">Bạn chưa được thêm vào cửa hàng nào. Liên hệ nền tảng để được cấp cửa hàng, hoặc nhờ chủ shop mời bạn vào bằng email này.</p></div>`}`);
 }
 
 const STATUSES = ['', 'pending', 'confirmed', 'shipped', 'delivered', 'cancelled'];

@@ -17,12 +17,16 @@ import crypto from 'node:crypto';
 import pg from 'pg';
 import { renderHome, renderProduct, renderPage, renderSearch, renderBlogList, renderBlogPost, renderMaintenance, renderNotFound } from './theme.js';
 import { renderLanding } from './landing.js';
+import { renderAbout, renderSupport, renderTerms, renderBlogList as renderCoBlogList, renderBlogPost as renderCoBlogPost, findPost, companyPaths } from './company.js';
 import { runReq, makeLog, health } from './obs.js';
 
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
 const PORT = Number(process.env.PORT ?? 3050);
-const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? 'http://minio:9000/media-public';
+// Base URL ảnh public. Mặc định TƯƠNG ĐỐI (/media-public) → cùng origin với trang shop
+// (Caddy proxy path này về MinIO) → CSP 'self' cho phép, trình duyệt tới được. Prod có
+// thể đặt tuyệt đối (vd https://cdn.nentang.vn/media-public) qua env → MEDIA_ORIGIN vào CSP.
+const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
 
 // CSP cho storefront công khai (lớp phòng thủ XSS thứ hai sau escape HTML).
@@ -119,8 +123,22 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const host = normalizeHost(req.headers.host);
     // Host GỐC nền tảng (nentang.vn) → trang công ty, không resolve shop.
     if (host && ROOT_HOSTS.has(host)) {
-      if (url.pathname === '/robots.txt') { res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': CACHE_PUBLIC }); return res.end('User-agent: *\nAllow: /\n'); }
+      if (url.pathname === '/robots.txt') { res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': CACHE_PUBLIC }); return res.end(`User-agent: *\nAllow: /\nSitemap: https://${host}/sitemap.xml\n`); }
+      if (url.pathname === '/sitemap.xml') {
+        const base = `https://${host}`;
+        const urls = ['/', ...companyPaths()].map((p) => `<url><loc>${base}${p}</loc></url>`).join('');
+        res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': CACHE_PUBLIC });
+        return res.end(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`);
+      }
       if (url.pathname === '/') return sendHtml(res, 200, renderLanding(LANDING_CFG), { cache: true });
+      if (url.pathname === '/gioi-thieu') return sendHtml(res, 200, renderAbout(LANDING_CFG), { cache: true });
+      if (url.pathname === '/ho-tro') return sendHtml(res, 200, renderSupport(LANDING_CFG), { cache: true });
+      if (url.pathname === '/dieu-khoan') return sendHtml(res, 200, renderTerms(LANDING_CFG), { cache: true });
+      if (url.pathname === '/blog') return sendHtml(res, 200, renderCoBlogList(LANDING_CFG), { cache: true });
+      if (url.pathname.startsWith('/blog/')) {
+        const post = findPost(decodeURIComponent(url.pathname.slice('/blog/'.length)));
+        if (post) return sendHtml(res, 200, renderCoBlogPost(LANDING_CFG, post), { cache: true });
+      }
       return sendHtml(res, 404, renderNotFound());
     }
     const resolved = host ? await resolveShop(host) : null;
@@ -282,7 +300,10 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     if (data.notFound) return sendHtml(res, 404, renderNotFound(), { shopSlug: data.shop?.slug });
     if (data.suspended) return sendHtml(res, 503, renderMaintenance(data.shop.name), { shopSlug: data.shop.slug });
 
-    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '', hasBlog: data.hasBlog };
+    // origin tuyệt đối của shop (từ host request) → dựng URL tuyệt đối cho og:image,
+    // vì bộ quét mạng xã hội KHÔNG hiểu ảnh đường-dẫn-tương-đối (/media-public/...).
+    const origin = host ? `https://${host}` : '';
+    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '', hasBlog: data.hasBlog, origin };
     const canonical = host ? `https://${host}${url.pathname}` : null; // URL sạch (không kèm query)
     if (data.page) {
       // Preview → banner cảnh báo + no-store/noindex; published → cache CDN như thường.

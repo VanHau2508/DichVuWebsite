@@ -21,7 +21,7 @@ const EXPORT_TTL_MIN = 15;
 // Trần tổng dòng: chặn OOM + giới hạn chuỗi V8 (~536M ký tự) + thời gian nén cho shop
 // khổng lồ. Vượt trần → 413 (shop lớn cần xuất bất đồng bộ — ngoài phạm vi MVP).
 const EXPORT_MAX_ROWS = Number(process.env.EXPORT_MAX_ROWS ?? 200000);
-const PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? 'http://minio:9000/media-public';
+const PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 const genToken = () => crypto.randomBytes(32).toString('base64url');
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 

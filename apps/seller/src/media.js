@@ -27,7 +27,7 @@ const MAX_UPLOAD = 10 * 1024 * 1024; // 10MB
 // Bucket private + client MinIO dùng lại cho export (A4) — CHỈ một nguồn cấu hình.
 export const BUCKET_PRIVATE = process.env.MEDIA_BUCKET_PRIVATE ?? 'media-private';
 const BUCKET_PUBLIC = process.env.MEDIA_BUCKET_PUBLIC ?? 'media-public';
-const PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? 'http://minio:9000/media-public';
+const PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 
 export const minio = new MinioClient({
   endPoint: process.env.MINIO_ENDPOINT ?? 'minio',

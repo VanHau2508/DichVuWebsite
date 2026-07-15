@@ -26,7 +26,7 @@ const PORT = Number(process.env.PORT ?? 3060);
 // SHIP_FEE_VND='' (env để trống) lọt qua `??` rồi Number('')===0 → free-ship âm thầm toàn
 // nền tảng. Chỉ nhận số hữu hạn; rỗng/không hợp lệ → 30000.
 const SHIP_FEE = (() => { const r = process.env.SHIP_FEE_VND; return (r != null && r !== '' && Number.isFinite(Number(r))) ? Number(r) : 30000; })();
-const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? 'http://minio:9000/media-public';
+const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 const imgUrl = (key) => (key ? `${MEDIA_PUBLIC_BASE}/${key}` : null);
 const CART_TTL_DAYS = 30;
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10 });

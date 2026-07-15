@@ -128,7 +128,9 @@ async function main() {
   r = await co({ host: A.host, path: '/cart', accept: 'text/html', cartCookie: cart });
   r.status === 200 && r.body.includes('Giỏ hàng') && r.body.includes('/cart/update') && r.body.includes('/checkout')
     ? ok('GET /cart (html) → trang giỏ có item + nút thanh toán') : bad('trang giỏ lỗi', String(r.status));
-  /<img class="cthumb" src="[^"]*media-public/.test(r.body) && /img-src[^;]*media-public|img-src[^;]*minio/.test(r.headers['content-security-policy'] ?? '')
+  // Ảnh phục vụ same-origin (/media-public) → CSP 'self' cho phép; nếu prod đặt CDN tuyệt đối
+  // thì origin đó có trong img-src. Chấp nhận cả hai: 'self' HOẶC origin media rõ ràng.
+  /<img class="cthumb" src="[^"]*media-public/.test(r.body) && /img-src[^;]*('self'|media-public|minio|https?:)/.test(r.headers['content-security-policy'] ?? '')
     ? ok('giỏ hiện thumbnail ảnh SP + CSP img-src cho phép') : bad('thiếu thumbnail/CSP trong giỏ', r.body.match(/cthumb[\s\S]{0,80}/)?.[0]);
   !r.body.includes('<script>alert(1)') ? ok('tên trong giỏ được escape') : bad('XSS trong giỏ');
   const rjson = await co({ host: A.host, path: '/cart', accept: 'application/json', cartCookie: cart });

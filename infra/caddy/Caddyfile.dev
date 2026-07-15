@@ -53,7 +53,14 @@ auth.localtest {
 admin.localtest {
 	tls internal
 	import security_headers
-	reverse_proxy seller-admin:3001
+	# Ảnh public (logo, ảnh SP) phục vụ CÙNG origin admin → CSP 'self' cho phép, trình
+	# duyệt tới được (khác với minio:9000 nội bộ). Bucket public đọc ẩn danh (initMedia).
+	handle /media-public/* {
+		reverse_proxy minio:9000
+	}
+	handle {
+		reverse_proxy seller-admin:3001
+	}
 }
 
 # ── Webhook thanh toán (host riêng, cert nội bộ) ─────────────────────────────
@@ -76,6 +83,24 @@ shop.localtest {
 	handle @checkout {
 		reverse_proxy checkout:3060
 	}
+	handle /media-public/* {
+		reverse_proxy minio:9000
+	}
+	handle {
+		reverse_proxy storefront:3050
+	}
+}
+
+# ── Trang CÔNG TY (apex nentang.vn + www) — landing marketing của nền tảng ──────
+# storefront nhận ra host ∈ PLATFORM_ROOT_HOSTS → render landing (không phải shop).
+# Khối apex RIÊNG vì `*.nentang.vn` chỉ khớp subdomain 1 nhãn, KHÔNG khớp apex.
+# Local: thêm `127.0.0.1 nentang.vn www.nentang.vn` vào hosts để mở https://nentang.vn:8443
+nentang.vn, www.nentang.vn {
+	tls internal
+	import security_headers
+	handle /media-public/* {
+		reverse_proxy minio:9000
+	}
 	handle {
 		reverse_proxy storefront:3050
 	}
@@ -93,6 +118,9 @@ shop.localtest {
 	@checkout path /cart /cart/* /checkout /checkout/*
 	handle @checkout {
 		reverse_proxy checkout:3060
+	}
+	handle /media-public/* {
+		reverse_proxy minio:9000
 	}
 	handle {
 		reverse_proxy storefront:3050
@@ -117,6 +145,9 @@ https:// {
 	@checkout path /cart /cart/* /checkout /checkout/*
 	handle @checkout {
 		reverse_proxy checkout:3060
+	}
+	handle /media-public/* {
+		reverse_proxy minio:9000
 	}
 	handle {
 		reverse_proxy storefront:3050

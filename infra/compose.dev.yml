@@ -203,7 +203,7 @@ services:
       MINIO_SECRET_KEY: minioadmin123
       MEDIA_BUCKET_PRIVATE: media-private
       MEDIA_BUCKET_PUBLIC: media-public
-      MEDIA_PUBLIC_BASE: http://minio:9000/media-public
+      MEDIA_PUBLIC_BASE: /media-public
     volumes:
       # Mount PHẢI khớp CMD (node src/server.js → /app/src). Xem docs/09 §6.
       - ../apps/seller/src:/app/src:ro
@@ -229,7 +229,7 @@ services:
       DATABASE_URL: postgres://app_checkout:devpassword@postgres:5432/app
       SHIP_FEE_VND: "30000"
       # Ảnh thumbnail trong giỏ (origin thêm vào CSP img-src — xem http.js).
-      MEDIA_PUBLIC_BASE: http://minio:9000/media-public
+      MEDIA_PUBLIC_BASE: /media-public
       PORT: "3060"
     volumes:
       - ../apps/checkout/src:/app/src:ro
@@ -320,7 +320,7 @@ services:
     environment:
       # app_store: vai trò CÔNG KHAI chỉ đọc; RLS chỉ cho thấy active/ready.
       DATABASE_URL: postgres://app_store:devpassword@postgres:5432/app
-      MEDIA_PUBLIC_BASE: http://minio:9000/media-public
+      MEDIA_PUBLIC_BASE: /media-public
       PORT: "3050"
     volumes:
       # Mount PHẢI khớp CMD (node src/server.js → /app/src).
@@ -349,7 +349,7 @@ services:
       # :8443 vì Caddy dev map 8443:443 → trình duyệt gửi Origin có cổng.
       ALLOWED_ORIGINS: https://admin.nentang.vn,https://admin.localtest,https://admin.localtest:8443
       # Ảnh SP phục vụ từ đây → origin được thêm vào CSP img-src (xem http.js).
-      MEDIA_PUBLIC_BASE: http://minio:9000/media-public
+      MEDIA_PUBLIC_BASE: /media-public
       PORT: "3001"
     volumes:
       # Mount PHẢI khớp CMD (node src/server.js → /app/src) cho mutation testing.
@@ -391,7 +391,7 @@ services:
       MAILPIT_URL: http://mailpit:8025
       SEPAY_WEBHOOK_KEY: dev-sepay-secret-key-12345
       DATABASE_URL_CHECKOUT: postgres://app_checkout:devpassword@postgres:5432/app
-      MEDIA_PUBLIC_BASE: http://minio:9000/media-public
+      MEDIA_PUBLIC_BASE: /media-public
       MEDIA_PRIVATE_BASE: http://minio:9000/media-private
     volumes:
       - ../packages/db/test:/work/test:ro

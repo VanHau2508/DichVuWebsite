@@ -17,6 +17,10 @@ const AUTH = process.env.AUTH_URL ?? 'http://auth:3020';
 const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
 const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
 const PRIV_BASE = process.env.MEDIA_PRIVATE_BASE ?? 'http://minio:9000/media-private';
+// URL ảnh public giờ TƯƠNG ĐỐI (/media-public/..) để hiển thị same-origin ở trình duyệt.
+// Test chạy trong docker net → phải ghép origin nội bộ MinIO mới fetch xác minh được.
+const MEDIA_ORIGIN_INTERNAL = (() => { try { return new URL(PRIV_BASE).origin; } catch { return 'http://minio:9000'; } })();
+const absMedia = (u) => (u && /^https?:\/\//i.test(u) ? u : `${MEDIA_ORIGIN_INTERNAL}${u ?? ''}`);
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 3 });
 
@@ -99,7 +103,7 @@ async function main() {
 
   // Ảnh public phải là WebP (re-encode), truy cập ẨN DANH được.
   if (u.json?.url) {
-    const pub = await fetch(u.json.url);
+    const pub = await fetch(absMedia(u.json.url));
     const bytes = Buffer.from(await pub.arrayBuffer());
     const isWebp = bytes.slice(0, 4).toString('latin1') === 'RIFF' && bytes.slice(8, 12).toString('latin1') === 'WEBP';
     pub.status === 200 && isWebp ? ok('ảnh public truy cập ẩn danh được VÀ là WebP (đã re-encode)') : bad('ảnh public sai', `status=${pub.status} webp=${isWebp}`);
@@ -110,6 +114,17 @@ async function main() {
   const originalKey = `staging/${A.shopId}/${mediaId}`;
   const priv = await fetch(`${PRIV_BASE}/${originalKey}`);
   priv.status === 403 || priv.status === 401 ? ok(`bản gốc bucket private → ${priv.status} (ẩn danh bị chặn)`) : bad('bản gốc private truy cập được', `status=${priv.status}`);
+
+  // Same-origin media an toàn: bucket public CHỈ cho ĐỌC ẩn danh, KHÔNG cho GHI ẩn danh.
+  // Ảnh giờ phục vụ cùng origin trang shop → nếu ghi ẩn danh được, kẻ tấn công nhét
+  // HTML/JS vào origin đó → XSS. Bất biến này (chỉ s3:GetObject cho Principal '*') là
+  // lá chắn duy nhất, nên khoá bằng test hồi quy.
+  const anonPut = await fetch(`${MEDIA_ORIGIN_INTERNAL}/media-public/${A.shopId}/anon-xss-${uniq()}.html`, {
+    method: 'PUT', headers: { 'content-type': 'text/html' }, body: '<script>alert(1)</script>',
+  }).catch(() => ({ status: 0 }));
+  [401, 403, 405].includes(anonPut.status)
+    ? ok(`ghi ẩn danh vào bucket public → ${anonPut.status} (bị chặn — không nhét được HTML/JS)`)
+    : bad('GHI ẩn danh vào bucket public THÀNH CÔNG (nguy cơ XSS same-origin)', `status=${anonPut.status}`);
 
   // ── 3. Không tin Content-Type: file rác giả dạng ảnh ───────────────────────
   sect('3. Magic byte, không tin Content-Type');
@@ -122,7 +137,7 @@ async function main() {
   const polyglot = Buffer.concat([PNG_1x1, Buffer.from(marker)]); // PNG hợp lệ + rác đuôi
   u = await upload(A.shopId, productId, A.cookie, polyglot, 'image/png');
   if (u.status === 201 && u.json.url) {
-    const bytes = Buffer.from(await (await fetch(u.json.url)).arrayBuffer());
+    const bytes = Buffer.from(await (await fetch(absMedia(u.json.url))).arrayBuffer());
     !bytes.toString('latin1').includes(marker)
       ? ok('WebP đầu ra KHÔNG chứa payload nhúng (re-encode đã strip)')
       : bad('payload nhúng sống sót qua re-encode', 'marker còn trong output');

@@ -239,6 +239,9 @@ services:
       # DOMAINVERIFY_RESOLVER — đó chỉ cho stub e2e).
       DATABASE_URL_DOMAINVERIFY: postgres://app_domainverify:${APP_DOMAINVERIFY_PASSWORD:?}@postgres:5432/app
       DOMAINVERIFY_SWEEP_MS: ${DOMAINVERIFY_SWEEP_MS:-60000}
+      # Khép kín vòng bill: quét thuê bao quá hạn → past_due → cancelled + đình chỉ shop.
+      # (Bỏ dòng này = TẮT tự đình chỉ; team quản lý thuê bao tay qua Console.)
+      DATABASE_URL_BILLING: postgres://app_billing:${APP_BILLING_PASSWORD:?}@postgres:5432/app
       PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
       REDIS_HOST: redis
       REDIS_PORT: "6379"
@@ -265,6 +268,11 @@ services:
       APP_ENV: production
       DATABASE_URL: postgres://app_store:${APP_STORE_PASSWORD:?}@postgres:5432/app
       MEDIA_PUBLIC_BASE: ${MEDIA_PUBLIC_BASE:?}
+      # Trang CÔNG TY trên apex nentang.vn (landing + Giới thiệu/Hỗ trợ/Điều khoản/Blog).
+      PLATFORM_ROOT_HOSTS: ${PLATFORM_ROOT_HOSTS:-nentang.vn,www.nentang.vn}
+      PLATFORM_BRAND: ${PLATFORM_BRAND:-Nền Tảng}
+      PLATFORM_CONTACT_EMAIL: ${PLATFORM_CONTACT_EMAIL:-lienhe@nentang.vn}
+      PLATFORM_CONTACT_PHONE: ${PLATFORM_CONTACT_PHONE:-}
       PORT: "3050"
     deploy: { resources: { limits: { memory: 256m } } }
     depends_on:

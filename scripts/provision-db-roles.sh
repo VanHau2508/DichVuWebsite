@@ -19,7 +19,7 @@
 set -euo pipefail
 : "${PGADMIN_URL:?cần PGADMIN_URL (kết nối owner/superuser để ALTER ROLE)}"
 
-ROLES=(app_rw app_tls app_auth app_platform app_store app_checkout app_payment app_worker app_expiry app_domainverify)
+ROLES=(app_rw app_tls app_auth app_platform app_store app_checkout app_payment app_worker app_expiry app_domainverify app_billing)
 set=0 skip=0
 for r in "${ROLES[@]}"; do
   var="$(echo "$r" | tr '[:lower:]' '[:upper:]')_PASSWORD"   # app_rw → APP_RW_PASSWORD

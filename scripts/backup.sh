@@ -29,7 +29,12 @@ ok() { printf '  %s✔%s %s\n' "$GRN" "$RST" "$1"; }
 warn() { printf '  %s!%s %s\n' "$RED" "$RST" "$1"; }
 
 offsite() { # đẩy một đường dẫn ra offsite; THIẾU offsite = fail (backup cục-bộ-only KHÔNG là DR)
-  if [ -n "${OFFSITE_CMD:-}" ]; then $OFFSITE_CMD "$1" "${OFFSITE_DEST:-}" && ok "offsite: $1"; return; fi
+  if [ -n "${OFFSITE_CMD:-}" ]; then
+    # Đẩy THẤT BẠI phải FATAL: không "xanh giả" + KHÔNG prune local (giữ lịch sử để cứu).
+    if $OFFSITE_CMD "$1" "${OFFSITE_DEST:-}"; then ok "offsite: $1"; return 0; fi
+    printf '%s✖ offsite đẩy THẤT BẠI: %s — DỪNG (không prune local, exit≠0 cho monitor).%s\n' "$RED" "$1" "$RST" >&2
+    exit 1
+  fi
   if [ "${ALLOW_LOCAL_ONLY_BACKUP:-}" = "1" ]; then warn "OFFSITE_CMD trống — CHỈ cục bộ (đã opt-in ALLOW_LOCAL_ONLY_BACKUP)"; return; fi
   printf '%s✖ OFFSITE_CMD trống — backup CHỈ cục bộ, KHÔNG đủ DR.%s\n' "$RED" "$RST" >&2
   printf '   Cấu hình OFFSITE_CMD, hoặc đặt ALLOW_LOCAL_ONLY_BACKUP=1 nếu CỐ Ý chấp nhận rủi ro.\n' >&2

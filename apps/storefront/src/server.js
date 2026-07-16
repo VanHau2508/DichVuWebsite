@@ -14,6 +14,7 @@
 
 import http from 'node:http';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import pg from 'pg';
 import { renderHome, renderProduct, renderPage, renderSearch, renderBlogList, renderBlogPost, renderMaintenance, renderNotFound } from './theme.js';
 import { renderLanding } from './landing.js';
@@ -115,9 +116,24 @@ function sendHtml(res, status, html, { shopSlug, cache, preview } = {}) {
   res.end(html);
 }
 
+// Phông chữ tự-host (Be Vietnam Pro, giấy phép OFL) — nạp sẵn vào RAM, phục vụ
+// /fonts/*.woff2 SAME-ORIGIN (CSP font-src 'self' cho phép). Tên file có version →
+// cache 1 năm immutable. Map key = tên file whitelist sẵn → không lo path traversal.
+const FONTS = (() => {
+  const dir = new URL('./fonts/', import.meta.url);
+  const m = new Map();
+  try { for (const f of fs.readdirSync(dir)) if (f.endsWith('.woff2')) m.set(f, fs.readFileSync(new URL(f, dir))); } catch {}
+  return m;
+})();
+
 const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
   if (await health(url.pathname, res, { db: () => db.query('SELECT 1') })) return;
+  if (url.pathname.startsWith('/fonts/')) {
+    const buf = FONTS.get(url.pathname.slice(7));
+    if (buf) { res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'public, max-age=31536000, immutable' }); return res.end(buf); }
+    res.writeHead(404); return res.end();
+  }
 
   try {
     const host = normalizeHost(req.headers.host);

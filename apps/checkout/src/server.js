@@ -14,6 +14,7 @@
  */
 
 import http from 'node:http';
+import fs from 'node:fs';
 import crypto from 'node:crypto';
 import pg from 'pg';
 import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE } from './http.js';
@@ -649,9 +650,22 @@ const ROUTES = [
   { m: 'POST', p: '/checkout/review', fn: submitReviewForm, form: true },
 ];
 
+// Phông Be Vietnam Pro (OFL) tự-host — /fonts/*.woff2 same-origin (CSP font-src 'self').
+const FONTS = (() => {
+  const dir = new URL('./fonts/', import.meta.url);
+  const m = new Map();
+  try { for (const f of fs.readdirSync(dir)) if (f.endsWith('.woff2')) m.set(f, fs.readFileSync(new URL(f, dir))); } catch {}
+  return m;
+})();
+
 const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
   if (await health(url.pathname, res, { db: () => db.query('SELECT 1') })) return;
+  if (url.pathname.startsWith('/fonts/')) {
+    const buf = FONTS.get(url.pathname.slice(7));
+    if (buf) { res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'public, max-age=31536000, immutable' }); return res.end(buf); }
+    res.writeHead(404); return res.end();
+  }
 
   const route = ROUTES.find((r) => r.m === req.method && r.p === url.pathname);
   if (!route) return send(res, 404, { error: 'không tìm thấy' });

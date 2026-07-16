@@ -8,6 +8,9 @@
 import { send } from './http.js';
 import { withTenant, audit } from './db.js';
 
+// Base URL ảnh public (giống storefront) — dựng thumbnail dòng hàng trong chi tiết đơn.
+const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
+
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 
 async function statusEvent(c, order, extra = {}) {
@@ -69,7 +72,16 @@ async function getOrder(res, ctx, _b, params) {
          FROM orders WHERE id = $1`, [orderId],
     )).rows[0];
     if (!o) return null;
-    o.lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
+    // Ảnh dòng hàng: ưu tiên ảnh RIÊNG của biến thể, không có thì lấy ảnh CHÍNH của sản phẩm.
+    o.lines = (await c.query(
+      `SELECT ol.title_snapshot, ol.sku_snapshot, ol.unit_price_vnd, ol.qty,
+              (SELECT m.public_key FROM media m
+                 JOIN variants v ON v.product_id = m.product_id
+                WHERE v.id = ol.variant_id AND m.status = 'ready' AND m.deleted_at IS NULL
+                  AND (m.variant_id = ol.variant_id OR m.variant_id IS NULL)
+                ORDER BY (m.variant_id IS NOT NULL) DESC, m.position, m.created_at LIMIT 1) AS image_key
+         FROM order_lines ol WHERE ol.order_id = $1`, [o.id]
+    )).rows.map(({ image_key, ...l }) => ({ ...l, image_url: image_key ? `${MEDIA_PUBLIC_BASE}/${image_key}` : null }));
     o.shipments = (await c.query(`SELECT carrier, tracking_number, status, provider, carrier_fee_vnd, provider_status FROM shipments WHERE order_id = $1`, [o.id])).rows;
     return o;
   });

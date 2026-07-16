@@ -50,7 +50,7 @@ admin.nentang.vn {
 	import security_headers
 	# img-src gồm cdn.nentang.vn để hiện ảnh SP trong admin. PHẢI khớp MEDIA_PUBLIC_BASE
 	# (origin) mà seller-admin tự đặt — trình duyệt áp GIAO hai policy.
-	header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data: https://cdn.nentang.vn; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+	header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://cdn.nentang.vn; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 	header Cache-Control "private, no-store"
 	reverse_proxy seller-admin:3001
 }

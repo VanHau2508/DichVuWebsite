@@ -10,8 +10,8 @@
 import { esc, I, mailtoHref, sitePage } from './site.js';
 
 const COMPANY_CSS = `.blog-grid{display:grid;gap:24px;grid-template-columns:repeat(3,1fr)}
-.bcard{background:var(--card);border:1px solid var(--bd);border-radius:18px;overflow:hidden;display:flex;flex-direction:column;transition:transform .12s,box-shadow .12s,border-color .12s}
-.bcard:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--pri) 30%,var(--bd));box-shadow:0 18px 40px -24px color-mix(in srgb,var(--pri) 50%,transparent)}
+.bcard{background:color-mix(in srgb,var(--card) 88%,transparent);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);border:1px solid var(--bd);border-radius:20px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 1px 2px rgba(13,21,38,.05);transition:transform .3s cubic-bezier(.2,.7,.2,1),box-shadow .3s,border-color .3s}
+.bcard:hover{transform:translateY(-6px);border-color:color-mix(in srgb,var(--pri) 34%,var(--bd));box-shadow:0 30px 60px -32px color-mix(in srgb,var(--pri) 55%,transparent)}
 .bcard-img{height:150px;display:grid;place-items:center;color:rgba(255,255,255,.92)}.bcard-img svg{width:44px;height:44px}
 .bcard-body{padding:22px;display:flex;flex-direction:column;flex:1}
 .btag{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--pri);margin-bottom:8px}
@@ -23,23 +23,26 @@ const COMPANY_CSS = `.blog-grid{display:grid;gap:24px;grid-template-columns:repe
 .post-meta{display:flex;align-items:center;gap:16px;color:var(--mut);font-size:.9rem;margin-top:8px;justify-content:center;flex-wrap:wrap}
 .post-meta span{display:inline-flex;align-items:center;gap:6px}.post-meta svg{width:15px;height:15px}
 .support-grid{display:grid;gap:18px;grid-template-columns:repeat(2,1fr);max-width:860px;margin:0 auto 8px}
-.scard{display:flex;gap:16px;background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:22px 24px}
-.scard .sic{width:46px;height:46px;flex:none;border-radius:12px;background:color-mix(in srgb,var(--pri) 12%,transparent);color:var(--pri);display:grid;place-items:center}.scard .sic svg{width:24px;height:24px}
+.scard{display:flex;gap:16px;background:color-mix(in srgb,var(--card) 88%,transparent);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);border:1px solid var(--bd);border-radius:18px;padding:24px 26px;box-shadow:0 1px 2px rgba(13,21,38,.05);transition:transform .3s cubic-bezier(.2,.7,.2,1),box-shadow .3s,border-color .3s}
+.scard:hover{transform:translateY(-6px);border-color:color-mix(in srgb,var(--pri) 30%,var(--bd));box-shadow:0 26px 52px -30px color-mix(in srgb,var(--pri) 50%,transparent)}
+.scard .sic{width:48px;height:48px;flex:none;border-radius:14px;background:linear-gradient(135deg,color-mix(in srgb,var(--pri) 18%,transparent),color-mix(in srgb,var(--pri2) 16%,transparent));color:var(--pri);display:grid;place-items:center;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--pri) 22%,transparent)}.scard .sic svg{width:24px;height:24px}
 .scard h3{margin:0 0 5px;font-size:1.08rem}.scard p{margin:0;color:var(--mut);font-size:.93rem;line-height:1.6}
 .values{display:grid;gap:22px;grid-template-columns:repeat(3,1fr);margin:0}
-.value .vic{width:50px;height:50px;border-radius:14px;background:color-mix(in srgb,var(--pri) 12%,transparent);color:var(--pri);display:grid;place-items:center;margin-bottom:14px}.value .vic svg{width:25px;height:25px}
+.value{background:color-mix(in srgb,var(--card) 88%,transparent);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);border:1px solid var(--bd);border-radius:20px;padding:28px 26px;box-shadow:0 1px 2px rgba(13,21,38,.05);transition:transform .3s cubic-bezier(.2,.7,.2,1),box-shadow .3s,border-color .3s}
+.value:hover{transform:translateY(-6px);border-color:color-mix(in srgb,var(--pri) 30%,var(--bd));box-shadow:0 26px 52px -30px color-mix(in srgb,var(--pri) 50%,transparent)}
+.value .vic{width:52px;height:52px;border-radius:15px;background:linear-gradient(135deg,color-mix(in srgb,var(--pri) 18%,transparent),color-mix(in srgb,var(--pri2) 16%,transparent));color:var(--pri);display:grid;place-items:center;margin-bottom:16px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--pri) 22%,transparent)}.value .vic svg{width:25px;height:25px}
 .value h3{margin:0 0 6px;font-size:1.12rem}.value p{margin:0;color:var(--mut);font-size:.95rem;line-height:1.65}
 .note{max-width:760px;margin:28px auto 0;background:color-mix(in srgb,var(--pri) 7%,var(--card));border:1px solid color-mix(in srgb,var(--pri) 22%,var(--bd));border-radius:14px;padding:16px 20px;color:var(--soft);font-size:.92rem;line-height:1.6}
 @media(max-width:820px){.blog-grid,.values{grid-template-columns:1fr}.support-grid{grid-template-columns:1fr}}`;
 
 // Dải CTA cuối trang, dùng lại cho mọi trang công ty.
-const ctaBlock = (contactEmail) => `<section class="cta-final"><div class="wrap"><div class="cta-box">
+const ctaBlock = (contactEmail) => `<section class="cta-final"><div class="wrap"><div class="cta-box reveal">
   <h2>Sẵn sàng mở cửa hàng của bạn?</h2>
   <p>Liên hệ để chúng tôi dựng website cho bạn — thường trong vài ngày.</p>
   <a class="btn btn-primary" href="${mailtoHref(contactEmail, 'Tôi muốn mở cửa hàng')}" aria-label="Liên hệ mở cửa hàng (gửi email)">Liên hệ ngay ${I.arrow}</a>
 </div></div></section>`;
 
-const pageHero = (eyebrow, title, sub) => `<header class="page-hero"><div class="wrap">
+const pageHero = (eyebrow, title, sub) => `<header class="page-hero"><span class="orb o1" aria-hidden="true"></span><span class="orb o2" aria-hidden="true"></span><span class="orb o3" aria-hidden="true"></span><div class="wrap">
   <p class="eyebrow">${eyebrow}</p><h1>${esc(title)}</h1>${sub ? `<p class="sub">${esc(sub)}</p>` : ''}
 </div></header>`;
 
@@ -60,7 +63,7 @@ export function renderAbout(cfg = {}) {
     <h2>Chúng tôi tin điều gì</h2>
   </div>
   <div class="content" style="max-width:1000px"><div class="values" style="margin-top:18px">
-    ${VALUES.map((v) => `<div class="value"><div class="vic">${v.icon}</div><h3>${esc(v.t)}</h3><p>${esc(v.d)}</p></div>`).join('')}
+    ${VALUES.map((v) => `<div class="value reveal"><div class="vic">${v.icon}</div><h3>${esc(v.t)}</h3><p>${esc(v.d)}</p></div>`).join('')}
   </div></div>
   <div class="content" style="margin-top:44px">
     <h2>Chúng tôi làm gì cho bạn</h2>
@@ -93,11 +96,11 @@ export function renderSupport(cfg = {}) {
   const body = `${pageHero(`${I.headset}Trung tâm hỗ trợ`, 'Chúng tôi luôn ở đây khi bạn cần', 'Chọn chủ đề bên dưới hoặc liên hệ trực tiếp — có người thật hỗ trợ bạn.')}
 <section class="sec" style="padding-bottom:40px"><div class="wrap">
   <div class="support-grid">
-    ${SUPPORT_CATS.map((c) => `<div class="scard"><div class="sic">${c.icon}</div><div><h3>${esc(c.t)}</h3><p>${esc(c.d)}</p></div></div>`).join('')}
+    ${SUPPORT_CATS.map((c) => `<div class="scard reveal"><div class="sic">${c.icon}</div><div><h3>${esc(c.t)}</h3><p>${esc(c.d)}</p></div></div>`).join('')}
   </div>
 </div></section>
 <section class="sec" style="padding-top:0"><div class="wrap">
-  <div class="sec-head"><p class="kick">Hỏi đáp nhanh</p><h2>Câu hỏi thường gặp</h2></div>
+  <div class="sec-head reveal"><p class="kick">Hỏi đáp nhanh</p><h2>Câu hỏi thường gặp</h2></div>
   <div class="faq">${SUPPORT_FAQS.map((f) => `<details><summary>${esc(f.q)}</summary><div class="ans">${esc(f.a)}</div></details>`).join('')}</div>
   <div class="note" style="text-align:center">Không tìm thấy câu trả lời? Gửi email cho chúng tôi tại <a href="${mailtoHref(contactEmail, 'Cần hỗ trợ')}">${esc(contactEmail)}</a> — chúng tôi phản hồi sớm nhất.</div>
 </div></section>
@@ -203,7 +206,7 @@ const renderBlocks = (blocks) => blocks.map((b) => {
 
 export function renderBlogList(cfg = {}) {
   const { contactEmail = 'lienhe@nentang.vn' } = cfg;
-  const cards = POSTS.map((p, i) => `<article class="bcard">
+  const cards = POSTS.map((p, i) => `<article class="bcard reveal">
     <div class="bcard-img" style="background:linear-gradient(135deg,${GRAD[i % GRAD.length]})">${I.book}</div>
     <div class="bcard-body">
       <div class="btag">${esc(p.tag)}</div>

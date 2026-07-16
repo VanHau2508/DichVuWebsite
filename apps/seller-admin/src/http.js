@@ -19,7 +19,7 @@ export function parseCookies(req) {
 // áp GIAO hai policy.
 const MEDIA_ORIGIN = (() => { try { return new URL(process.env.MEDIA_PUBLIC_BASE ?? '').origin; } catch { return ''; } })();
 // CSP nghiêm: admin-web là SSR form thuần, KHÔNG script → chống XSS mạnh. no-store: có PII.
-const CSP = `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:${MEDIA_ORIGIN ? ' ' + MEDIA_ORIGIN : ''}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
+const CSP = `default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:${MEDIA_ORIGIN ? ' ' + MEDIA_ORIGIN : ''}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
 export function sendHtml(res, status, html, setCookies = []) {
   const headers = {
     'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',

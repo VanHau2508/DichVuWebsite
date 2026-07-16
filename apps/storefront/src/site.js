@@ -41,12 +41,26 @@ export const I = {
   gift: ic('<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M5 12v9h14v-9"/><path d="M12 8v13"/><path d="M12 8S10.5 3 8.5 3 6 6 8 8m4 0s1.5-5 3.5-5S18 6 16 8"/>'),
 };
 
+// Phông Be Vietnam Pro (giấy phép OFL) TỰ-HOST: @font-face trỏ /fonts/*.woff2 — storefront
+// phục vụ same-origin nên CSP font-src 'self' cho phép (KHÔNG tải CDN ngoài). font-display:swap
+// → hiện chữ ngay bằng phông hệ thống rồi đổi sang. Xuất khẩu để theme.js (shop) dùng chung.
+export const FONTFACE = `@font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/bevietnampro-400-vietnamese.woff2) format('woff2');unicode-range:U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB}
+@font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/bevietnampro-400-latin-ext.woff2) format('woff2');unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/bevietnampro-400-latin.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:600;font-display:swap;src:url(/fonts/bevietnampro-600-vietnamese.woff2) format('woff2');unicode-range:U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB}
+@font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:600;font-display:swap;src:url(/fonts/bevietnampro-600-latin-ext.woff2) format('woff2');unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:600;font-display:swap;src:url(/fonts/bevietnampro-600-latin.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/bevietnampro-800-vietnamese.woff2) format('woff2');unicode-range:U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB}
+@font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/bevietnampro-800-latin-ext.woff2) format('woff2');unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/bevietnampro-800-latin.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}`;
+
 // ── CSS nền dùng chung (biến màu, nút, nav, footer, section, FAQ, typography bài viết) ──
-export const BASE_CSS = `*{box-sizing:border-box}
+export const BASE_CSS = `${FONTFACE}
+*{box-sizing:border-box}
 :root{--bg:#ffffff;--surf:#f5f8fd;--card:#ffffff;--ink:#0d1526;--soft:#3f4d66;--mut:#59647a;--bd:#e6ebf3;--pri:#2463eb;--prid:#1b48c0;--pri2:#7c3aed;--brand:#2463eb;--brand2:#7c3aed;--brandd:#1b48c0;--wash:#eef4ff;--good:#0e9f6e}
 @media(prefers-color-scheme:dark){:root{--bg:#0a0e1a;--surf:#131b2e;--card:#1b2440;--ink:#eef1f9;--soft:#c2cadd;--mut:#8a94ab;--bd:#28324c;--pri:#5b8cff;--prid:#7ba0ff;--pri2:#a78bfa;--wash:#161f38;--good:#34d399}}
 html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
-body{margin:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--bg);line-height:1.6;-webkit-font-smoothing:antialiased}
+body{margin:0;font-family:'Be Vietnam Pro',system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--bg);line-height:1.6;-webkit-font-smoothing:antialiased}
 a{text-decoration:none;color:inherit}svg{display:block}
 .wrap{max-width:1140px;margin:0 auto;padding:0 24px}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:13px 26px;border-radius:12px;font-weight:600;font-size:1rem;cursor:pointer;border:1.5px solid transparent;transition:transform .1s,background .14s,box-shadow .14s;white-space:nowrap}
@@ -71,9 +85,18 @@ a{text-decoration:none;color:inherit}svg{display:block}
 .sec-head p{color:var(--mut);font-size:1.06rem;margin:0}
 .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:.8rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--prid);background:color-mix(in srgb,var(--pri) 16%,var(--bg));padding:7px 15px;border-radius:999px;margin:0 0 20px}
 .eyebrow svg{width:15px;height:15px}
-.page-hero{text-align:center;padding:60px 0 6px;background:radial-gradient(60% 60% at 50% -10%,color-mix(in srgb,var(--pri) 12%,transparent),transparent 70%)}
-.page-hero h1{font-size:clamp(2rem,4.2vw,3.1rem);font-weight:800;letter-spacing:-.025em;margin:0 0 14px;text-wrap:balance}
-.page-hero .sub{color:var(--mut);font-size:1.12rem;max-width:620px;margin:0 auto}
+.page-hero{position:relative;overflow:hidden;isolation:isolate;text-align:center;padding:72px 0 12px;background:var(--bg)}
+.page-hero::before{content:"";position:absolute;inset:0;z-index:-3;background:radial-gradient(52% 46% at 12% -14%,color-mix(in srgb,var(--pri) 20%,transparent),transparent 70%),radial-gradient(48% 42% at 108% -4%,color-mix(in srgb,var(--pri2) 18%,transparent),transparent 68%),radial-gradient(60% 62% at 50% -20%,color-mix(in srgb,var(--pri) 12%,transparent),transparent 72%)}
+.page-hero::after{content:"";position:absolute;inset:0;z-index:-3;opacity:.5;background-image:radial-gradient(color-mix(in srgb,var(--ink) 8%,transparent) 1px,transparent 1.4px);background-size:24px 24px;-webkit-mask-image:radial-gradient(70% 60% at 50% 18%,#000,transparent 82%);mask-image:radial-gradient(70% 60% at 50% 18%,#000,transparent 82%)}
+.page-hero .wrap{position:relative;z-index:1}
+.page-hero .orb{position:absolute;z-index:-2;border-radius:50%;filter:blur(46px);opacity:.5;pointer-events:none}
+.page-hero .orb.o1{width:300px;height:300px;background:radial-gradient(circle,color-mix(in srgb,var(--pri) 55%,transparent),transparent 70%);top:-96px;left:-64px}
+.page-hero .orb.o2{width:260px;height:260px;background:radial-gradient(circle,color-mix(in srgb,var(--pri2) 50%,transparent),transparent 70%);top:-56px;right:-50px}
+.page-hero .orb.o3{width:200px;height:200px;background:radial-gradient(circle,color-mix(in srgb,var(--good) 34%,transparent),transparent 70%);bottom:-70px;left:42%}
+.page-hero h1{font-size:clamp(2rem,4.2vw,3.1rem);font-weight:800;letter-spacing:-.025em;line-height:1.12;margin:0 0 14px;text-wrap:balance}
+.page-hero h1 .g{color:var(--pri)}
+@supports((-webkit-background-clip:text) or (background-clip:text)){.page-hero h1 .g{background:linear-gradient(100deg,var(--pri),var(--pri2) 55%,var(--pri));-webkit-background-clip:text;background-clip:text;color:transparent}}
+.page-hero .sub{color:var(--mut);font-size:1.12rem;max-width:620px;margin:0 auto;text-wrap:balance}
 .content{max-width:760px;margin:0 auto}
 .content h2{font-size:1.5rem;font-weight:800;letter-spacing:-.01em;margin:1.9em 0 .5em}
 .content h2:first-child{margin-top:0}
@@ -111,6 +134,18 @@ footer{background:var(--surf);border-top:1px solid var(--bd);padding:56px 0 30px
 a:focus-visible,.btn:focus-visible,summary:focus-visible,.ind:focus-visible,details:focus-visible{outline:3px solid var(--pri);outline-offset:2px;border-radius:8px}
 .skip{position:absolute;left:12px;top:-70px;z-index:60;background:var(--brand);color:#fff;padding:11px 18px;border-radius:10px;font-weight:600;transition:top .16s}
 .skip:focus{top:12px}
+/* Tiết lộ khi cuộn (dùng chung cho landing + trang công ty) — CHỈ bật khi trình duyệt HỖ TRỢ
+   scroll-timeline & KHÔNG giảm chuyển động. Nếu không hỗ trợ/giảm chuyển động: nội dung HIỆN
+   đầy đủ (opacity mặc định = 1, không kẹt ẩn). Quả cầu phát sáng trôi nhẹ ở .page-hero. */
+@media(prefers-reduced-motion:no-preference){@supports(animation-timeline:view()){
+.reveal{opacity:0;transform:translateY(42px);animation:reveal-in both;animation-timeline:view();animation-range:entry 4% cover 32%}
+@keyframes reveal-in{to{opacity:1;transform:none}}
+}
+.page-hero .orb{animation:po-drift 18s ease-in-out infinite}
+.page-hero .orb.o2{animation-duration:22s;animation-direction:reverse}
+.page-hero .orb.o3{animation-duration:26s}
+@keyframes po-drift{0%,100%{transform:translate(0,0)}33%{transform:translate(22px,-18px)}66%{transform:translate(-16px,14px)}}
+}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important;animation:none!important}}`;
 
 // Liên kết điều hướng — TUYỆT ĐỐI (/#...) để dùng chung mọi trang; ở "/" trình duyệt chỉ

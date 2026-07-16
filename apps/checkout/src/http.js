@@ -28,7 +28,7 @@ export function send(res, status, body, headers = {}) {
 // → new URL(...) ném lỗi → MEDIA_ORIGIN='' → CSP chỉ 'self' (đủ, vì ảnh same-origin). Nếu
 // prod đặt base tuyệt đối (CDN) thì origin đó được thêm vào img-src. KHỚP default server.js.
 const MEDIA_ORIGIN = (() => { try { return new URL(process.env.MEDIA_PUBLIC_BASE ?? '/media-public').origin; } catch { return ''; } })();
-const HTML_CSP = `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:${MEDIA_ORIGIN ? ' ' + MEDIA_ORIGIN : ''}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
+const HTML_CSP = `default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:${MEDIA_ORIGIN ? ' ' + MEDIA_ORIGIN : ''}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
 export function sendHtml(res, status, html, headers = {}) {
   res.writeHead(status, {
     'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',

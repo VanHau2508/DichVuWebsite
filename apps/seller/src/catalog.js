@@ -17,6 +17,9 @@ import crypto from 'node:crypto';
 import { send } from './http.js';
 import { withTenant, audit } from './db.js';
 
+// Base URL ảnh public (giống storefront) — dựng URL thumbnail cho danh sách SP trong admin.
+const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
+
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
 const MAX_PRICE = 100_000_000_000; // 100 tỷ VND — chặn tràn/nhập nhầm
@@ -134,14 +137,21 @@ async function listProducts(res, ctx, _body, _params, query) {
     const total = await c.query(`SELECT count(*)::int AS n FROM products p WHERE ${whereSql}`, args);
     const rows = await c.query(
       `SELECT p.id, p.slug, p.title, p.price_vnd, p.status, p.created_at,
-              (SELECT count(*)::int FROM variants v WHERE v.product_id = p.id) AS variant_count
+              (SELECT count(*)::int FROM variants v WHERE v.product_id = p.id) AS variant_count,
+              (SELECT m.public_key FROM media m
+                 WHERE m.product_id = p.id AND m.status = 'ready' AND m.deleted_at IS NULL
+                 ORDER BY m.position, m.created_at LIMIT 1) AS image_key
          FROM products p
         WHERE ${whereSql}
         ORDER BY p.created_at DESC
         LIMIT ${limit} OFFSET ${offset}`,
       args,
     );
-    return { total: total.rows[0].n, products: rows.rows, catalog_count: await catalogCount(c), max_products: await planMaxProducts(c) };
+    // image_key → image_url (ảnh chính) để admin hiện thumbnail; bỏ image_key khỏi payload.
+    const products = rows.rows.map(({ image_key, ...p }) => ({
+      ...p, image_url: image_key ? `${MEDIA_PUBLIC_BASE}/${image_key}` : null,
+    }));
+    return { total: total.rows[0].n, products, catalog_count: await catalogCount(c), max_products: await planMaxProducts(c) };
   });
   return send(res, 200, { ...data, limit, offset });
 }

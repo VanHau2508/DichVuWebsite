@@ -27,6 +27,19 @@ const PORT = Number(process.env.PORT ?? 3060);
 // nền tảng. Chỉ nhận số hữu hạn; rỗng/không hợp lệ → 30000.
 const SHIP_FEE = (() => { const r = process.env.SHIP_FEE_VND; return (r != null && r !== '' && Number.isFinite(Number(r))) ? Number(r) : 30000; })();
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
+// Chống đơn ảo: trần số đơn CHƯA XỬ LÝ (pending, 24h) theo NGUỒN (hash IP) và theo SĐT.
+// Đủ rộng cho khách thật (kể cả IP dùng chung), đủ chặt để chặn spam 100 đơn.
+const MAX_PENDING_PER_IP = Number(process.env.MAX_PENDING_ORDERS_PER_IP) || 30;
+const MAX_PENDING_PER_PHONE = Number(process.env.MAX_PENDING_ORDERS_PER_PHONE) || 8;
+// Hash IP có PEPPER bí mật (HMAC) → không đảo ngược được nếu DB lộ (IPv4 nhỏ, sha256 trần dò ra).
+const IP_PEPPER = process.env.ORDER_HASH_PEPPER || 'nentang-order-ip-v1';
+const hashIp = (ip) => crypto.createHmac('sha256', IP_PEPPER).update('oip:' + ip).digest('hex');
+// Chuẩn hoá SĐT về 1 dạng (chỉ số, +84→0) → '091 234', '+8491...', '0912...' tính là MỘT.
+function canonPhone(p) {
+  let d = String(p ?? '').replace(/\D/g, '');
+  if (d.startsWith('84') && d.length > 9) d = '0' + d.slice(2);
+  return d.length >= 8 ? d : null;
+}
 const imgUrl = (key) => (key ? `${MEDIA_PUBLIC_BASE}/${key}` : null);
 const CART_TTL_DAYS = 30;
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
@@ -178,14 +191,15 @@ async function addItem(req, res, body, ctx) {  // API JSON
   return send(res, 200, result.summary);
 }
 
-async function addItemForm(req, res, form, ctx) {  // form từ trang sản phẩm → 303 /cart
+async function addItemForm(req, res, form, ctx) {  // form từ trang sản phẩm → 303 /cart (hoặc /checkout nếu "Mua ngay")
   const variantId = String(form.variant_id ?? ''), qty = parseInt(form.qty ?? '1', 10);
   if (!UUID_RE.test(variantId) || !isInt(qty) || qty < 1 || qty > 1000) return sendHtml(res, 400, renderError(await getShopName(ctx.shopId), 'Yêu cầu không hợp lệ.'));
+  const buyNow = form.buynow != null && form.buynow !== '';
   const token = parseCookies(req)[CART_COOKIE];
   try {
     const result = await withTenant(ctx.shopId, (c) => cartAddCore(c, token, variantId, qty));
     if (result.newToken) setCartCookie(res, result.newToken, CART_TTL_DAYS * 86400);
-    return redirect(res, '/cart');
+    return redirect(res, buyNow ? '/checkout' : '/cart'); // "Mua ngay" → thẳng trang thanh toán
   } catch (err) {
     if (err.statusCode) return sendHtml(res, err.statusCode, renderError(await getShopName(ctx.shopId), err.body?.error ?? 'Không thêm được vào giỏ.'));
     throw err;
@@ -255,11 +269,14 @@ function parseOrderInput(raw) {
   const address = raw.address && typeof raw.address === 'object' ? raw.address : null;
   const paymentMethod = raw.payment_method ?? 'cod';
   if (name.length < 1 || name.length > 120 || /[\r\n]/.test(name)) return { error: 'tên người nhận không hợp lệ' };
-  if (!/^[0-9+\s.-]{8,20}$/.test(phone)) return { error: 'số điện thoại không hợp lệ' };
+  // Định dạng hợp lệ VÀ phải chuẩn hoá được về ≥8 CHỮ SỐ. Chuỗi kiểu "1.2.3.4.5.6" qua regex
+  // nhưng <8 số → canonPhone=null; nếu lọt sẽ vô hiệu hoá trần theo-SĐT. Chuẩn hoá luôn ở đây.
+  const phoneCanon = canonPhone(phone);
+  if (!/^[0-9+\s.-]{8,20}$/.test(phone) || !phoneCanon) return { error: 'số điện thoại không hợp lệ' };
   // Email đi thẳng tới worker→nodemailer. Validate chặt + cấm CR/LF (chống header/SMTP injection).
   if (email !== null && (email.length > 254 || /[\r\n\s]/.test(email) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) return { error: 'email không hợp lệ' };
   if (!['cod', 'qr'].includes(paymentMethod)) return { error: 'phương thức thanh toán không hợp lệ' };
-  return { name, phone, email, address, paymentMethod };
+  return { name, phone: phoneCanon, email, address, paymentMethod }; // phone đã chuẩn hoá → trần theo-SĐT luôn khớp
 }
 
 // Lõi tạo đơn (transaction). Ném fail() khi lỗi nghiệp vụ → withTenant ROLLBACK.
@@ -289,6 +306,24 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
         WHERE ci.cart_id = $1 ORDER BY ci.created_at`, [cart.id],
     )).rows;
     if (items.length === 0) fail(400, 'giỏ hàng trống');
+
+    // ── Chống ĐƠN ẢO: TRẦN ĐỒNG THỜI số đơn CHƯA XỬ LÝ (pending) theo NGUỒN (hash IP) + SĐT.
+    // KHOÁ TUẦN TỰ theo nguồn (advisory lock tx-scoped, thứ tự cố định IP→SĐT chống deadlock)
+    // TRƯỚC khi đếm → đếm+chèn NGUYÊN TỬ, chống đua nhiều checkout cùng lúc lách trần.
+    const ipHash = ctx.ip ? hashIp(ctx.ip) : null;
+    const phoneCanon = canonPhone(phone);
+    if (ctx.ip) await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, ['oip:' + ctx.ip]);
+    if (phoneCanon) await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, ['oph:' + phoneCanon]);
+    if (ipHash) {
+      const nIp = Number((await c.query(
+        `SELECT count(*)::int n FROM orders WHERE shop_id = current_shop_id() AND client_ip_hash = $1 AND status = 'pending'`, [ipHash])).rows[0].n);
+      if (nIp >= MAX_PENDING_PER_IP) fail(429, 'Quá nhiều đơn chưa xử lý từ mạng/kết nối này. Vui lòng liên hệ cửa hàng hoặc thử lại sau.');
+    }
+    if (phoneCanon) {
+      const nPh = Number((await c.query(
+        `SELECT count(*)::int n FROM orders WHERE shop_id = current_shop_id() AND customer_phone = $1 AND status = 'pending'`, [phoneCanon])).rows[0].n);
+      if (nPh >= MAX_PENDING_PER_PHONE) fail(429, 'Số điện thoại này có quá nhiều đơn chưa xử lý. Vui lòng liên hệ cửa hàng.');
+    }
 
     // Khoá tồn + reserve + snapshot. Giá lấy từ variants (server-side).
     let subtotal = 0;
@@ -344,9 +379,9 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     const order = (await c.query(
       `INSERT INTO orders (shop_id, order_number, status, payment_status, payment_method,
          customer_name, customer_phone, customer_email, shipping_address,
-         subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, lookup_token_hash, payment_ref, qr_account, coupon_code)
-       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
-      [num, paymentMethod, name, phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount, couponCode],
+         subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, lookup_token_hash, payment_ref, qr_account, coupon_code, client_ip_hash)
+       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id`,
+      [num, paymentMethod, name, phoneCanon ?? phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount, couponCode, ipHash],
     )).rows[0];
     for (const ln of lines) {
       await c.query(

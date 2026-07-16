@@ -206,6 +206,10 @@ services:
       APP_ENV: production
       DATABASE_URL: postgres://app_checkout:${APP_CHECKOUT_PASSWORD:?}@postgres:5432/app
       SHIP_FEE_VND: ${SHIP_FEE_VND:-30000}
+      # Chống đơn ảo: trần đơn CHƯA xử lý theo nguồn (hash IP) + theo SĐT khi đặt.
+      MAX_PENDING_ORDERS_PER_IP: ${MAX_PENDING_ORDERS_PER_IP:-30}
+      MAX_PENDING_ORDERS_PER_PHONE: ${MAX_PENDING_ORDERS_PER_PHONE:-8}
+      ORDER_HASH_PEPPER: ${ORDER_HASH_PEPPER:?}   # PEPPER băm IP khách (HMAC) — bắt buộc ở prod
       MEDIA_PUBLIC_BASE: ${MEDIA_PUBLIC_BASE:?}   # ảnh thumbnail trong giỏ (img-src CSP)
       PORT: "3060"
     deploy: { resources: { limits: { memory: 192m } } }
@@ -234,6 +238,7 @@ services:
       DATABASE_URL: postgres://app_worker:${APP_WORKER_PASSWORD:?}@postgres:5432/app
       DATABASE_URL_EXPIRY: postgres://app_expiry:${APP_EXPIRY_PASSWORD:?}@postgres:5432/app
       ORDER_EXPIRY_MINUTES: ${ORDER_EXPIRY_MINUTES:-30}
+      COD_EXPIRY_DAYS: ${COD_EXPIRY_DAYS:-7}   # đơn COD chưa xác nhận quá N ngày → tự huỷ (chống đơn ảo)
       EXPIRY_SWEEP_MS: ${EXPIRY_SWEEP_MS:-60000}
       # Xác minh custom domain qua DNS TXT (A5). Prod dùng DNS hệ thống (KHÔNG đặt
       # DOMAINVERIFY_RESOLVER — đó chỉ cho stub e2e).

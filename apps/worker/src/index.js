@@ -35,6 +35,9 @@ const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 4 });
 const EXPIRY_URL = process.env.DATABASE_URL_EXPIRY;
 const expiryDb = EXPIRY_URL ? new pg.Pool({ connectionString: EXPIRY_URL, max: 2 }) : null;
 const ORDER_EXPIRY_MINUTES = Number(process.env.ORDER_EXPIRY_MINUTES ?? 30);
+// Đơn COD 'pending' quá lâu mà shop chưa xác nhận → tự huỷ, trả tồn (chống đơn ảo giữ kho).
+// Dài hơn QR nhiều (QR chờ chuyển khoản; COD chờ shop xử lý) — mặc định 7 ngày.
+const COD_EXPIRY_DAYS = Number(process.env.COD_EXPIRY_DAYS ?? 7);
 const EXPIRY_SWEEP_MS = Number(process.env.EXPIRY_SWEEP_MS ?? 60000);
 // Pool RIÊNG cho xác minh custom domain qua DNS TXT (role app_domainverify cực hẹp — 0027).
 // Thiếu env → tắt tính năng. Resolver DNS tách được (DOMAINVERIFY_RESOLVER) để e2e trỏ stub.
@@ -143,10 +146,12 @@ async function sweepExpired() {
     await c.query('BEGIN');
     const orders = (await c.query(
       `SELECT id, shop_id, coupon_code FROM orders
-        WHERE payment_method = 'qr' AND payment_status = 'unpaid' AND status = 'pending'
-          AND created_at < now() - ($1 || ' minutes')::interval
+        WHERE status = 'pending' AND (
+              (payment_method = 'qr'  AND payment_status = 'unpaid' AND created_at < now() - ($1 || ' minutes')::interval)
+           OR (payment_method = 'cod' AND payment_status = 'unpaid' AND created_at < now() - ($2 || ' days')::interval)
+        )
         ORDER BY id LIMIT 200 FOR UPDATE SKIP LOCKED`,
-      [String(ORDER_EXPIRY_MINUTES)],
+      [String(ORDER_EXPIRY_MINUTES), String(COD_EXPIRY_DAYS)],
     )).rows;
     for (const o of orders) {
       const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;

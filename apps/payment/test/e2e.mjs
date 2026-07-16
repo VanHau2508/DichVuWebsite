@@ -19,6 +19,7 @@ const AUTH = process.env.AUTH_URL ?? 'http://auth:3020';
 const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
 const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
 const PAYMENT = process.env.PAYMENT_URL ?? 'http://payment:3070';
+const WORKER = process.env.WORKER_URL ?? 'http://worker:3080';
 const CO = new URL(process.env.CHECKOUT_URL ?? 'http://checkout:3060');
 const KEY = process.env.SEPAY_WEBHOOK_KEY ?? 'dev-sepay-secret-key-12345';
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
@@ -30,6 +31,7 @@ const ok = (m) => { pass++; console.log(`  ${G}PASS${X} ${m}`); };
 const bad = (m, d) => { fail++; console.log(`  ${R}FAIL${X} ${m}`); if (d) console.log(`       ${D}${d}${X}`); };
 const sect = (m) => console.log(`\n${B}${m}${X}`);
 const uniq = () => Math.random().toString(36).slice(2, 10);
+const phone = () => '09' + String(Math.floor(Math.random() * 1e8)).padStart(8, '0'); // SĐT numeric duy nhất (tránh trần per-phone)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ck = (sc) => { for (const c of sc ?? []) { const m = /^__Host-session=([^;]*)/.exec(c); if (m) return m[1]; } return null; };
 
@@ -131,7 +133,7 @@ async function setupProduct(shop, price, stock) {
 // Đặt đơn QR, trả {orderNum, ref, total, qr, lookupToken}.
 async function placeQrOrder(shop, vid, qty = 1, email = null) {
   const cart = (await co(shop.host, 'POST', '/cart/items', { body: { variant_id: vid, qty } })).cartToken;
-  const customer = { name: 'Khach', phone: '0901234567', ...(email ? { email } : {}) };
+  const customer = { name: 'Khach', phone: phone(), ...(email ? { email } : {}) };
   const r = await co(shop.host, 'POST', '/checkout', { body: { customer, payment_method: 'qr' }, cartToken: cart, idemKey: `k-${uniq()}` });
   return { orderNum: r.json?.order_number, ref: r.json?.payment_ref, total: r.json?.total_vnd, qr: r.json?.qr_string, lookupToken: r.json?.lookup_token, status: r.status, raw: r.raw };
 }
@@ -298,7 +300,7 @@ async function main() {
   const cart10 = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 2 } })).cartToken;
   const cf = await coForm(A.host, '/cart/coupon', { code: 'giam10' }, cart10);
   cf.status === 303 ? ok('áp mã → 303 (PRG về giỏ)') : bad('áp mã lỗi', String(cf.status));
-  let oco = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'qr' }, cartToken: cart10, idemKey: `k-${uniq()}` });
+  let oco = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: phone() }, payment_method: 'qr' }, cartToken: cart10, idemKey: `k-${uniq()}` });
   oco.json?.discount_vnd === 50000 && oco.json?.coupon_code === 'GIAM10' && oco.json?.total_vnd === 500000 - 50000 + oco.json.shipping_vnd
     ? ok(`đơn giảm 50.000đ, tổng=${oco.json.total_vnd} (đã trừ giảm + ship)`) : bad('đơn không giảm đúng', JSON.stringify(oco.json));
   oco.json?.qr_string?.includes(String(oco.json.total_vnd)) ? ok('VietQR mang SỐ TIỀN ĐÃ GIẢM (đường tiền khớp)') : bad('QR không khớp tổng đã giảm', oco.json?.qr_string);
@@ -308,32 +310,32 @@ async function main() {
   // Mã sai → không giảm.
   const cbad = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
   await coForm(A.host, '/cart/coupon', { code: 'KHONGCOMA' }, cbad);
-  oco = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'cod' }, cartToken: cbad, idemKey: `k-${uniq()}` });
+  oco = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: phone() }, payment_method: 'cod' }, cartToken: cbad, idemKey: `k-${uniq()}` });
   oco.json?.discount_vnd === 0 ? ok('mã sai → không giảm (đơn vẫn tạo)') : bad('mã sai vẫn giảm', JSON.stringify(oco.json));
 
   // Đơn tối thiểu 1tr, giỏ 250k → không áp.
   await rq(SELLER, 'POST', `/shops/${A.shopId}/coupons`, { body: { code: 'MIN1TR', kind: 'fixed', value: 100000, min_subtotal_vnd: 1000000 }, cookie: A.cookie, origin: OS });
   const cmin = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
   await coForm(A.host, '/cart/coupon', { code: 'MIN1TR' }, cmin);
-  oco = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'cod' }, cartToken: cmin, idemKey: `k-${uniq()}` });
+  oco = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: phone() }, payment_method: 'cod' }, cartToken: cmin, idemKey: `k-${uniq()}` });
   oco.json?.discount_vnd === 0 ? ok('chưa đủ đơn tối thiểu → không giảm') : bad('giảm dù chưa đủ đơn', JSON.stringify(oco.json));
 
   // max_uses=1: lần 2 hết lượt.
   await rq(SELLER, 'POST', `/shops/${A.shopId}/coupons`, { body: { code: 'CHI1LAN', kind: 'fixed', value: 20000, max_uses: 1 }, cookie: A.cookie, origin: OS });
   const cu1 = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
   await coForm(A.host, '/cart/coupon', { code: 'CHI1LAN' }, cu1);
-  let u = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'cod' }, cartToken: cu1, idemKey: `k-${uniq()}` });
+  let u = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: phone() }, payment_method: 'cod' }, cartToken: cu1, idemKey: `k-${uniq()}` });
   u.json?.discount_vnd === 20000 ? ok('CHI1LAN lần 1 → giảm 20.000') : bad('lần 1 không giảm', JSON.stringify(u.json));
   const cu2 = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
   await coForm(A.host, '/cart/coupon', { code: 'CHI1LAN' }, cu2);
-  u = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'cod' }, cartToken: cu2, idemKey: `k-${uniq()}` });
+  u = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: phone() }, payment_method: 'cod' }, cartToken: cu2, idemKey: `k-${uniq()}` });
   u.json?.discount_vnd === 0 ? ok('CHI1LAN hết lượt lần 2 → không giảm (không vượt max_uses)') : bad('vượt max_uses', JSON.stringify(u.json));
 
   // Hoàn lượt coupon khi HUỶ đơn chưa trả (chống đốt lượt bằng đơn chưa thanh toán).
   await rq(SELLER, 'POST', `/shops/${A.shopId}/coupons`, { body: { code: 'HOAN1', kind: 'fixed', value: 10000, max_uses: 1 }, cookie: A.cookie, origin: OS });
   const ch = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
   await coForm(A.host, '/cart/coupon', { code: 'HOAN1' }, ch);
-  const oh = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'cod' }, cartToken: ch, idemKey: `k-${uniq()}` });
+  const oh = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: phone() }, payment_method: 'cod' }, cartToken: ch, idemKey: `k-${uniq()}` });
   oh.json?.discount_vnd === 10000 ? ok('HOAN1 dùng lần 1 → giảm 10.000 (used_count=1)') : bad('HOAN1 không giảm', JSON.stringify(oh.json));
   const ohId = (await owner.query(`SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, oh.json.order_number])).rows[0].id;
   const cres = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${ohId}/cancel`, { cookie: A.cookie, origin: OS });
@@ -344,8 +346,44 @@ async function main() {
   // CÔ LẬP CHÉO SHOP: coupon của A không áp cho giỏ shop B.
   const cB = (await co(Bs.host, 'POST', '/cart/items', { body: { variant_id: vidB, qty: 1 } })).cartToken;
   await coForm(Bs.host, '/cart/coupon', { code: 'GIAM10' }, cB);
-  u = await co(Bs.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: '0901234567' }, payment_method: 'cod' }, cartToken: cB, idemKey: `k-${uniq()}` });
+  u = await co(Bs.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: phone() }, payment_method: 'cod' }, cartToken: cB, idemKey: `k-${uniq()}` });
   u.json?.discount_vnd === 0 && !u.json?.coupon_code ? ok('coupon shop A KHÔNG áp cho đơn shop B (cô lập chéo shop)') : bad('CẤN CHÉO SHOP coupon', JSON.stringify(u.json));
+
+  // ── 11. Chống ĐƠN ẢO (griefing) — 3 lớp ────────────────────────────────────
+  sect('11. Chống đơn ảo');
+  // Lớp 2: trần 8 đơn CHƯA xử lý / 1 SĐT → đơn thứ 9 bị chặn.
+  const spamPhone = phone();
+  let placed = 0, blocked = false;
+  for (let i = 0; i < 9; i++) {
+    const cart = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
+    const r = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'Spam', phone: spamPhone }, payment_method: 'cod' }, cartToken: cart, idemKey: `k-${uniq()}` });
+    if (r.status === 201) placed++; else if (r.status === 429) { blocked = true; break; }
+  }
+  placed === 8 && blocked ? ok('trần 8 đơn/SĐT chưa xử lý → đơn thứ 9 bị chặn 429 (chống spam)') : bad(`per-phone limit sai: placed=${placed} blocked=${blocked}`);
+
+  // Lớp 2 (biên): SĐT qua regex nhưng <8 CHỮ SỐ ("1.2.3.4.5.6") → PHẢI bị từ chối, không được
+  // lọt để vô hiệu hoá trần theo-SĐT (canonPhone=null). Chống lách trần bằng SĐT rác.
+  const cbadphone = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
+  const rbad = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'X', phone: '1.2.3.4.5.6' }, payment_method: 'cod' }, cartToken: cbadphone, idemKey: `k-${uniq()}` });
+  rbad.status === 400 ? ok('SĐT <8 chữ số (rác) → 400, không lọt qua trần theo-SĐT') : bad(`SĐT rác lọt: status=${rbad.status}`, JSON.stringify(rbad.json));
+
+  // Lớp 3: cờ "cùng nguồn" cho chủ shop — đếm SĐT KHÁC NHAU cùng 1 nguồn (đơn e2e cùng IP dbtest,
+  // nhiều SĐT khác nhau → same_ip_phones cao). Đếm SĐT phân biệt (không phải số đơn thô).
+  const ol = await rq(SELLER, 'GET', `/shops/${A.shopId}/orders`, { cookie: A.cookie });
+  (ol.json?.orders ?? []).some((o) => Number(o.same_ip_phones) >= 3)
+    ? ok('seller trả cờ same_ip_phones (cảnh báo nhiều SĐT cùng nguồn mạng)') : bad('thiếu cờ same_ip_phones', JSON.stringify(ol.json?.orders?.[0]));
+
+  // Lớp 1: đơn COD 'pending' quá 7 ngày → worker TỰ HUỶ + trả tồn.
+  const cexp = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
+  const oExp = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: phone() }, payment_method: 'cod' }, cartToken: cexp, idemKey: `k-${uniq()}` });
+  const expId = (await owner.query(`SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, oExp.json.order_number])).rows[0].id;
+  const resvBefore = Number((await owner.query(`SELECT reserved FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].reserved);
+  await owner.query(`UPDATE orders SET created_at = now() - interval '8 days' WHERE id=$1`, [expId]); // giả lập đơn cũ
+  await fetch(`${WORKER}/internal/expire-sweep`, { method: 'POST' });
+  const oe = (await owner.query(`SELECT status FROM orders WHERE id=$1`, [expId])).rows[0];
+  oe.status === 'cancelled' ? ok('đơn COD quá 7 ngày chưa xử lý → worker TỰ HUỶ') : bad(`COD expiry sai: status=${oe.status}`);
+  const resvAfter = Number((await owner.query(`SELECT reserved FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].reserved);
+  resvAfter === resvBefore - 1 ? ok('huỷ tự động → TRẢ LẠI tồn kho (reserve −1)') : bad(`reserve: trước=${resvBefore} sau=${resvAfter}`);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

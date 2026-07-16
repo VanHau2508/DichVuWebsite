@@ -48,8 +48,11 @@ async function listOrders(res, ctx, _b, _p, query) {
   const data = await withTenant(ctx.shopId, async (c) => {
     const total = (await c.query(`SELECT count(*)::int n FROM orders ${whereSql}`, args)).rows[0].n;
     const rows = (await c.query(
-      `SELECT id, order_number, status, payment_status, payment_method, total_vnd, customer_name, created_at
-         FROM orders ${whereSql} ORDER BY order_number DESC LIMIT ${limit} OFFSET ${offset}`, args,
+      `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.total_vnd, o.customer_name, o.created_at,
+              (SELECT count(DISTINCT o2.customer_phone)::int FROM orders o2
+                 WHERE o2.shop_id = current_shop_id() AND o2.client_ip_hash = o.client_ip_hash
+                   AND o2.client_ip_hash IS NOT NULL AND o2.status = 'pending') AS same_ip_phones
+         FROM orders o ${whereSql} ORDER BY o.order_number DESC LIMIT ${limit} OFFSET ${offset}`, args,
     )).rows;
     return { total, orders: rows };
   });

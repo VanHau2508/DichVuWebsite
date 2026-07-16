@@ -117,6 +117,10 @@ function startStubs() {
         if (stub.ghtkMode !== 'ok') { res.statusCode = 422; return res.end(JSON.stringify({ success: false, message: 'hãng từ chối (stub)' })); }
         return res.end(JSON.stringify({ success: true, order: { label: `S1.A2.${Math.floor(Math.random() * 1e7)}`, fee: 22000 } }));
       }
+      if (req.url.startsWith('/services/shipment/fee') && req.method === 'GET') {
+        if (req.headers.token !== 'ghtk-token-cua-shop-a-123') { res.statusCode = 401; return res.end(JSON.stringify({ success: false, message: 'sai token' })); }
+        return res.end(JSON.stringify({ success: true, fee: { name: 'Nội quận', fee: 15000, insurance_fee: 0 } }));
+      }
       if (req.url.startsWith('/services/shipment/v2/') && req.method === 'GET') {
         return res.end(JSON.stringify({ success: true, order: { status: stub.ghtkStatus } }));
       }
@@ -171,6 +175,10 @@ async function main() {
     ? ok('GET /shipping: connected, token KHÔNG lộ trong response') : bad('token lộ hoặc chưa connected', r.raw);
   const enc = (await owner.query(`SELECT token_enc FROM shop_shipping_config WHERE shop_id=$1`, [A.shopId])).rows[0].token_enc;
   !enc.includes('ghtk-token') && enc.split('.').length === 3 ? ok('token trong DB đã MÃ HOÁ (iv.tag.ct)') : bad('token DB plaintext!', enc.slice(0, 40));
+
+  // Kiểm tra kết nối (0đ): gọi API tính phí, KHÔNG tạo đơn.
+  r = await a.get('/shipping/test');
+  r.status === 200 && r.json.ok && r.json.fee === 15000 ? ok('kiểm tra kết nối → phí thử 15.000 (token hợp lệ, 0 tạo đơn)') : bad('test kết nối lỗi', r.raw);
 
   // ── 2. Tạo vận đơn qua hãng ─────────────────────────────────────────────────
   sect('2. Tạo vận đơn GHTK (COD thu hộ + consume tồn)');

@@ -1509,8 +1509,11 @@ export function renderShipping(ctx, shopId, cfg, err, ok) {
     ? `<div class="card" style="border-color:#86efac;background:#f0fdf4"><strong>✓ Đã kết nối ${esc((c.provider ?? '').toUpperCase())}</strong>
         <span class="muted"> · token ${esc(c.token_prefix ?? '')}…</span>
         <p class="muted" style="margin:8px 0 0">Điểm lấy hàng: ${esc([p.name, p.phone].filter(Boolean).join(' · '))}<br>${esc([p.address, p.ward, p.district, p.province].filter(Boolean).join(', '))}</p>
-        <form method="POST" action="${base}" style="margin-top:10px"><input type="hidden" name="__op" value="disconnect">
-          <button class="btn warn sm" type="submit">Ngắt kết nối</button></form>
+        <div class="actions" style="margin-top:10px">
+          <a class="btn alt sm" href="${base}/test">Kiểm tra kết nối (0đ)</a>
+          <form method="POST" action="${base}"><input type="hidden" name="__op" value="disconnect"><button class="btn warn sm" type="submit">Ngắt kết nối</button></form>
+        </div>
+        <p class="muted" style="font-size:.8rem;margin:8px 0 0">"Kiểm tra kết nối" chỉ hỏi phí ship của hãng — KHÔNG tạo đơn, KHÔNG tốn tiền.</p>
       </div>` : '';
   return layout('Vận chuyển', ctx, `<h1>Vận chuyển</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}

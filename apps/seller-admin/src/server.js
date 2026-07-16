@@ -271,6 +271,16 @@ async function shippingPage(res, me, cookie, shopId, ok, err) {
   if (r.status !== 200) return sendHtml(res, 502, V.renderError(ctx, r.json?.error ?? 'Không tải được cấu hình vận chuyển.'));
   return sendHtml(res, err ? 400 : 200, V.renderShipping(ctx, shopId, r.json, err, ok));
 }
+// Kiểm tra kết nối hãng (gọi API tính phí — 0đ, không tạo đơn).
+async function shippingTest(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('GET', `/shops/${shopId}/shipping/test`, { cookie });
+  if (r.status === 200) {
+    const fee = r.json.fee != null ? ` — phí thử nội quận (500g): ${new Intl.NumberFormat('vi-VN').format(r.json.fee)}đ` : ' — token hợp lệ';
+    return shippingPage(res, me, cookie, shopId, `✓ Kết nối ${String(r.json.provider ?? '').toUpperCase()} thành công${fee}. Tích hợp đã chạy thật.`, null);
+  }
+  return shippingPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không kết nối được hãng.');
+}
 async function doShippingOp(res, me, cookie, shopId, form) {
   if (form.__op === 'disconnect') {
     const r = await sellerApi('DELETE', `/shops/${shopId}/shipping`, { cookie });
@@ -1413,6 +1423,7 @@ async function handle(req, res, url, p) {
 
     // Vận chuyển hãng (shop.write = owner/admin + step-up ở seller).
     if ((m = new RegExp(`^/shops/${UUID}/shipping$`).exec(p)) && req.method === 'GET') return shippingPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/shipping/test$`).exec(p)) && req.method === 'GET') return shippingTest(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/shipping$`).exec(p)) && req.method === 'POST') return shippingOp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/shipping/step-up$`).exec(p)) && req.method === 'POST') return shippingStepUp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/carrier-shipment$`).exec(p)) && req.method === 'POST') return carrierShipment(req, res, me, cookie, m[1], m[2]);

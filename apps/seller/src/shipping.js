@@ -19,7 +19,7 @@
 import { send } from './http.js';
 import { withTenant, audit } from './db.js';
 import { seal, open } from './secretbox.js';
-import { carrierCreate, CarrierError } from './carriers.js';
+import { carrierCreate, carrierTest, CarrierError } from './carriers.js';
 import { consumeAndShip } from './orders.js';
 import { can } from './rbac.js';
 
@@ -69,6 +69,28 @@ async function connectShipping(res, ctx, body) {
     await audit(c, 'shipping.connected', { actorId: ctx.user.id, ip: ctx.ip, metadata: { provider } });
   });
   return send(res, 200, { ok: true, provider, token_prefix: prefix });
+}
+
+// KIỂM TRA KẾT NỐI: dùng token ĐÃ lưu, gọi API tính phí (GHTK) / danh mục (GHN) — 0đ, KHÔNG
+// tạo đơn. Xác nhận token hợp lệ + tích hợp chạy thật trước khi tạo vận đơn thật đầu tiên.
+async function testShipping(res, ctx) {
+  if (!KEY_OK) return send(res, 503, { error: 'nền tảng chưa bật tích hợp vận chuyển' });
+  const cfg = await withTenant(ctx.shopId, async (c) =>
+    (await c.query(`SELECT provider, token_enc, ghn_shop_id, pickup, enabled FROM shop_shipping_config WHERE shop_id = current_shop_id()`)).rows[0]);
+  if (!cfg?.enabled) return send(res, 400, { error: 'shop chưa kết nối hãng vận chuyển' });
+  const p = cfg.pickup ?? {};
+  if (!p.province || !p.district) return send(res, 400, { error: 'thiếu tỉnh/quận điểm lấy hàng — cập nhật lại kết nối' });
+  try {
+    const token = open(cfg.token_enc, ENC_KEY);
+    // Mẫu: giao NỘI QUẬN (đích = chính điểm lấy hàng) → tên tỉnh/quận chắc chắn hợp lệ.
+    const r = await carrierTest(cfg.provider, { token, ghnShopId: cfg.ghn_shop_id }, {
+      pickup: p, toProvince: p.province, toDistrict: p.district, weightGram: 500, value: 0,
+    });
+    return send(res, 200, { ok: true, provider: cfg.provider, fee: r.fee });
+  } catch (e) {
+    if (e instanceof CarrierError) return send(res, 502, { ok: false, error: e.message });
+    throw e;
+  }
 }
 
 async function disconnectShipping(res, ctx) {
@@ -226,6 +248,7 @@ async function reconcileShipment(res, ctx, body, params) {
 
 export const SHIPPING_ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/shipping$`), perm: 'orders.read', fn: (res, ctx) => getShipping(res, ctx) },
+  { m: 'GET', re: new RegExp(`^/shops/${UUID}/shipping/test$`), perm: 'orders.read', fn: (res, ctx) => testShipping(res, ctx) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/carrier-reconcile$`), perm: 'orders.write', fn: (res, ctx, b, p) => reconcileShipment(res, ctx, b, p) },
   { m: 'PUT', re: new RegExp(`^/shops/${UUID}/shipping$`), perm: 'shop.write', stepUp: true, fn: (res, ctx, b) => connectShipping(res, ctx, b) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/shipping$`), perm: 'shop.write', stepUp: true, fn: (res, ctx) => disconnectShipping(res, ctx) },

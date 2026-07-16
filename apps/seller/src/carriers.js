@@ -125,6 +125,31 @@ export function carrierCreate(provider, cfg, shipment) {
   if (provider === 'ghtk') return ghtkCreate(cfg, shipment);
   throw new CarrierError('hãng vận chuyển không được hỗ trợ');
 }
+
+// ── KIỂM TRA KẾT NỐI (0đ, KHÔNG tạo đơn) ──────────────────────────────────────
+// GHTK: gọi API TÍNH PHÍ (chỉ hỏi giá) — token sai/thiếu quyền → hãng trả lỗi.
+async function ghtkFee(cfg, s) {
+  const q = new URLSearchParams({
+    pick_province: s.pickup.province, pick_district: s.pickup.district,
+    province: s.toProvince, district: s.toDistrict,
+    weight: String(s.weightGram), value: String(s.value || 0), transport: 'road', deliver_option: 'none',
+  }).toString();
+  const { status, json } = await call(`${GHTK_BASE}/services/shipment/fee?${q}`, { method: 'GET', headers: { Token: cfg.token } });
+  if (status === 401 || status === 403) throw new CarrierError('token GHTK không hợp lệ hoặc chưa được cấp quyền tính phí');
+  if (status !== 200 || json?.success !== true) throw new CarrierError(`GHTK từ chối tính phí: ${json?.message ?? `HTTP ${status}`}`);
+  return { fee: Number(json?.fee?.fee ?? 0) };
+}
+// GHN: token cần ID quận/phường để tính phí → kiểm token đơn giản bằng API danh mục tỉnh.
+async function ghnPing(cfg) {
+  const { status, json } = await call(`${GHN_BASE}/master-data/province`, { method: 'GET', headers: { Token: cfg.token } });
+  if (status !== 200 || json?.code !== 200) throw new CarrierError(`token GHN không hợp lệ: ${json?.message ?? `HTTP ${status}`}`);
+  return { fee: null };
+}
+export function carrierTest(provider, cfg, sample) {
+  if (provider === 'ghtk') return ghtkFee(cfg, sample);
+  if (provider === 'ghn') return ghnPing(cfg);
+  throw new CarrierError('hãng vận chuyển không được hỗ trợ');
+}
 export function carrierStatus(provider, cfg, tracking) {
   if (provider === 'ghn') return ghnStatus(cfg, tracking);
   if (provider === 'ghtk') return ghtkStatus(cfg, tracking);

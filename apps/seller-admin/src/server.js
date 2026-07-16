@@ -8,7 +8,7 @@
  * Bảo mật: CSP không script; mọi POST đổi trạng thái + sameOrigin (Origin thuộc allowlist).
  */
 import http from 'node:http';
-import { parseCookies, readForm, readFormAll, readMultipartFile, sendHtml, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
+import { parseCookies, readForm, readFormAll, readMultipartFile, readMultipartFiles, sendHtml, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
 import { authApi, sellerApi, platformApi, sellerUpload, sellerDownload, loadSession } from './api.js';
 import * as V from './pages.js';
 import { runReq, makeLog, health } from './obs.js';
@@ -445,14 +445,62 @@ async function inventoryAdjust(req, res, me, cookie, shopId, pid, vid) {
 
 async function mediaUpload(req, res, me, cookie, shopId, pid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
-  let file, tooBig = false;
-  try { file = await readMultipartFile(req); } catch (e) { tooBig = e.statusCode === 413; }
-  if (tooBig) return productDetail(res, me, cookie, shopId, pid, 'Ảnh quá lớn (tối đa 10MB).');
-  if (!file?.bytes?.length) return productDetail(res, me, cookie, shopId, pid, 'Chưa chọn ảnh hợp lệ.');
-  // Forward BYTE THÔ tới seller (seller sniff magic byte + re-encode WebP).
-  const r = await sellerUpload(`/shops/${shopId}/products/${pid}/media`, { cookie, bytes: file.bytes });
-  if (r.status === 201) return redirect(res, `/shops/${shopId}/products/${pid}`);
-  return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Tải ảnh thất bại.');
+  let files = [], tooBig = false;
+  // Nhiều ảnh cùng lúc (input multiple). Trần TỔNG 40MB; mỗi ảnh seller vẫn siết ≤10MB.
+  try { files = await readMultipartFiles(req); } catch (e) { tooBig = e.statusCode === 413; }
+  if (tooBig) return productDetail(res, me, cookie, shopId, pid, 'Ảnh quá lớn (tổng tối đa 40MB).');
+  files = files.filter((f) => f.bytes?.length);
+  if (!files.length) return productDetail(res, me, cookie, shopId, pid, 'Chưa chọn ảnh hợp lệ.');
+  // Forward BYTE THÔ từng ảnh tới seller (sniff magic byte + re-encode WebP), tuần tự.
+  let okN = 0, lastErr = null;
+  for (const f of files) {
+    const r = await sellerUpload(`/shops/${shopId}/products/${pid}/media`, { cookie, bytes: f.bytes });
+    if (r.status === 201) okN++; else lastErr = r.json?.error ?? 'Tải ảnh thất bại.';
+  }
+  if (okN === files.length) return redirect(res, `/shops/${shopId}/products/${pid}`);
+  return productDetail(res, me, cookie, shopId, pid, `Đã tải ${okN}/${files.length} ảnh. ${lastErr ?? ''}`.trim());
+}
+
+// Đặt/đổi TRỤC biến thể (Màu/Size…) → seller sinh ma trận. Ô "tên trục" trống = bỏ trục đó.
+async function optionsSave(req, res, me, cookie, shopId, pid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req);
+  const names = f.getAll('opt_name'), vals = f.getAll('opt_values');
+  const options = [];
+  for (let i = 0; i < names.length; i++) {
+    const name = String(names[i] ?? '').trim();
+    if (!name) continue;
+    const values = String(vals[i] ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+    options.push({ name, values });
+  }
+  const r = await sellerApi('PUT', `/shops/${shopId}/products/${pid}/options`, { cookie, body: { options } });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/products/${pid}`);
+  return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không lưu được biến thể.');
+}
+
+// Bảng thông số: textarea mỗi dòng "Tên: Giá trị".
+async function specsSave(req, res, me, cookie, shopId, pid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const specs = String(f.specs ?? '').split(/\r?\n/).map((line) => {
+    const idx = line.indexOf(':');
+    if (idx < 0) return null;
+    const name = line.slice(0, idx).trim(), value = line.slice(idx + 1).trim();
+    return name && value ? { name, value } : null;
+  }).filter(Boolean);
+  const r = await sellerApi('PUT', `/shops/${shopId}/products/${pid}/specs`, { cookie, body: { specs } });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/products/${pid}`);
+  return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không lưu được thông số.');
+}
+
+// Gán 1 ảnh cho 1 biến thể (variant_id rỗng = ảnh chung sản phẩm).
+async function mediaAssignVariant(req, res, me, cookie, shopId, pid, mediaId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const variant_id = String(f.variant_id ?? '').trim() || null;
+  const r = await sellerApi('POST', `/shops/${shopId}/media/${mediaId}/variant`, { cookie, body: { variant_id } });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/products/${pid}`);
+  return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không gán được ảnh cho biến thể.');
 }
 
 async function mediaDelete(res, me, cookie, shopId, pid, mediaId) {
@@ -1135,11 +1183,14 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'POST') return productUpdate(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/(publish|archive)$`).exec(p)) && req.method === 'POST') return productStatus(res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/delete$`).exec(p)) && req.method === 'POST') return productDelete(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/options$`).exec(p)) && req.method === 'POST') return optionsSave(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/specs$`).exec(p)) && req.method === 'POST') return specsSave(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants$`).exec(p)) && req.method === 'POST') return variantAdd(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants/${UUID}/delete$`).exec(p)) && req.method === 'POST') return variantDelete(res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants/${UUID}/inventory$`).exec(p)) && req.method === 'POST') return inventoryAdjust(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/media$`).exec(p)) && req.method === 'POST') return mediaUpload(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/media/${UUID}/delete$`).exec(p)) && req.method === 'POST') return mediaDelete(res, me, cookie, m[1], m[2], m[3]);
+    if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/media/${UUID}/variant$`).exec(p)) && req.method === 'POST') return mediaAssignVariant(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/media/${UUID}/(moveup|movedown|primary)$`).exec(p)) && req.method === 'POST') return mediaMove(res, me, cookie, m[1], m[2], m[3], m[4]);
 
     // Trang nội dung.

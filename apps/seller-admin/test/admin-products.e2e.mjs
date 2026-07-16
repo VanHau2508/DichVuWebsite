@@ -170,6 +170,36 @@ async function main() {
   r = await adm('POST', P(''), { cookie: A.cookie, form: { title: 'x', slug: `x-${uniq()}`, price_vnd: '1000', sku: `X-${uniq()}`, variant_price_vnd: '1000' } }); // KHÔNG Origin
   r.status === 403 ? ok('tạo sản phẩm không Origin → 403 (CSRF)') : bad('tạo thiếu Origin không bị chặn', String(r.status));
 
+  // ── 8. Phân loại đa trục + thông số qua admin (form-encoded, key lặp) ───────
+  sect('8. Phân loại đa trục + thông số (admin)');
+  const axSlug = `ao-${uniq()}`;
+  r = await adm('POST', P(''), { cookie: A.cookie, origin: OADM, form: { title: 'Áo thun', slug: axSlug, price_vnd: '150000', status: 'active', sku: `AO-${uniq()}`, variant_price_vnd: '150000' } });
+  const axPid = pidFrom(r.location);
+  // Form key LẶP: opt_name/opt_values xen kẽ (URLSearchParams giữ thứ tự) — trục 3 để trống.
+  r = await adm('POST', P(`/${axPid}/options`), { cookie: A.cookie, origin: OADM, form: [
+    ['opt_name', 'Màu'], ['opt_values', 'Đỏ, Xanh'],
+    ['opt_name', 'Size'], ['opt_values', 'M, L'],
+    ['opt_name', ''], ['opt_values', ''],
+  ] });
+  const afterOpt = (await sget(A.shopId, A.cookie, `/products/${axPid}`)).json;
+  r.status === 303 && (afterOpt.variants?.length === 4) && (afterOpt.options?.length === 2)
+    ? ok('POST /options (2 trục) → sinh 4 biến thể + 2 trục') : bad('options admin lỗi', `${r.status} v=${afterOpt.variants?.length} o=${afterOpt.options?.length}`);
+  r = await adm('GET', P(`/${axPid}`), { cookie: A.cookie });
+  r.body.includes('value="Màu"') && r.body.includes('value="Size"') && r.body.includes('Đỏ / M')
+    ? ok('chi tiết: ô trục prefill (Màu/Size) + biến thể tổ hợp (Đỏ / M)') : bad('detail options render sai');
+
+  r = await adm('POST', P(`/${axPid}/specs`), { cookie: A.cookie, origin: OADM, form: { specs: 'Chất liệu: Cotton\nXuất xứ: Việt Nam\n(dòng rác không có dấu hai chấm)' } });
+  const afterSpecs = (await sget(A.shopId, A.cookie, `/products/${axPid}`)).json;
+  r.status === 303 && afterSpecs.specs?.length === 2 && afterSpecs.specs[0].name === 'Chất liệu'
+    ? ok('POST /specs textarea → 2 thông số (bỏ dòng rác)') : bad('specs admin lỗi', `${r.status} n=${afterSpecs.specs?.length}`);
+  r = await adm('GET', P(`/${axPid}`), { cookie: A.cookie });
+  r.body.includes('Chất liệu: Cotton') ? ok('chi tiết: textarea thông số prefill') : bad('specs prefill sai');
+
+  // Xoá hết trục (mọi ô tên trống) → options rỗng (sản phẩm về không phân loại).
+  r = await adm('POST', P(`/${axPid}/options`), { cookie: A.cookie, origin: OADM, form: [['opt_name', ''], ['opt_values', ''], ['opt_name', ''], ['opt_values', ''], ['opt_name', ''], ['opt_values', '']] });
+  const cleared = (await sget(A.shopId, A.cookie, `/products/${axPid}`)).json;
+  r.status === 303 && cleared.options?.length === 0 ? ok('xoá hết trục → options rỗng') : bad('clear options lỗi', `o=${cleared.options?.length}`);
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

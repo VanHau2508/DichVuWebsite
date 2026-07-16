@@ -107,8 +107,10 @@ async function main() {
   !r.body.includes('SẢN PHẨM NHÁP BÍ MẬT') ? ok('sản phẩm DRAFT KHÔNG hiện trên storefront') : bad('draft bị lộ');
 
   r.body.includes('--color-primary: #22c55e') ? ok('token hợp lệ (#22c55e) được áp') : bad('token hợp lệ không áp', 'thiếu --color-primary');
-  !r.body.includes('evilrule') && !r.body.includes('display:none')
-    ? ok('token ĐỘC bị sanitize (không breakout CSS)') : bad('token độc breakout', 'body chứa evilrule/display:none');
+  // Token độc `red;}evilrule{display:none` phải bị sanitize: marker `evilrule` KHÔNG được
+  // xuất hiện (display:none là CSS hợp lệ của gallery nên không dùng làm dấu hiệu nữa).
+  !r.body.includes('evilrule')
+    ? ok('token ĐỘC bị sanitize (không breakout CSS)') : bad('token độc breakout', 'body chứa evilrule');
 
   // CSP: lớp phòng thủ XSS thứ hai. Phải chặn script; frame-ancestors none.
   const csp = r.headers['content-security-policy'] ?? '';
@@ -148,6 +150,31 @@ async function main() {
   await rq(PLATFORM, 'POST', `/ops/shops/${A.shopId}/restore`, { cookie: staff, origin: OO });
   r = await sf(A.host, '/');
   r.status === 200 ? ok('restore → storefront hoạt động lại (200)') : bad('restore không phục hồi', String(r.status));
+
+  // ── 6. Trang sản phẩm ĐA TRỤC (chip biến thể + specs + Mua ngay + đổi giá theo biến thể) ──
+  sect('6. Trang sản phẩm đa trục (no-JS)');
+  const axSlug = `axis-${uniq()}`;
+  const axPid = (await mkProduct(A.shopId, A.cookie, { title: 'Thảm đa trục', slug: axSlug, price_vnd: 500000, status: 'active', variants: [{ sku: `AX-${uniq()}`, price_vnd: 500000 }] })).json.id;
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/products/${axPid}/options`, { body: { options: [{ name: 'Màu', values: ['Đỏ', 'Xanh'] }, { name: 'Size', values: ['M', 'L'] }] }, cookie: A.cookie, origin: OS });
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/products/${axPid}/specs`, { body: { specs: [{ name: 'Chất liệu', value: 'Polyester' }] }, cookie: A.cookie, origin: OS });
+  // Đặt tồn + giá RIÊNG cho từng biến thể (để kiểm giá đổi theo ?variant=).
+  const vrows = (await owner.query(`SELECT id, title FROM variants WHERE product_id=$1 ORDER BY position`, [axPid])).rows;
+  for (let i = 0; i < vrows.length; i++) {
+    await owner.query(`UPDATE variants SET price_vnd = $2 WHERE id = $1`, [vrows[i].id, 500000 + i * 10000]);
+    await owner.query(`INSERT INTO inventory_levels (shop_id, variant_id, on_hand) VALUES ($1,$2,50) ON CONFLICT (shop_id,variant_id) DO UPDATE SET on_hand=50`, [A.shopId, vrows[i].id]);
+  }
+  let pr = await sf(A.host, `/p/${axSlug}`);
+  pr.status === 200 ? ok('trang SP đa trục 200') : bad('SP đa trục lỗi', String(pr.status));
+  pr.body.includes('class="chip') && pr.body.includes('>Đỏ<') && pr.body.includes('>Xanh<') && pr.body.includes('Size')
+    ? ok('hiện chip 2 trục (Màu: Đỏ/Xanh + Size)') : bad('thiếu chip trục');
+  pr.body.includes('Mua ngay') && pr.body.includes('name="buynow"') ? ok('nút "Mua ngay" (buynow)') : bad('thiếu Mua ngay');
+  pr.body.includes('class="specs"') && pr.body.includes('Chất liệu') ? ok('bảng thông số hiển thị') : bad('thiếu specs');
+  pr.body.includes('id="gsel-0"') || pr.body.includes('class="pd-media"') ? ok('khối gallery render') : bad('thiếu gallery');
+  // ?variant= biến thể cuối → giá của nó (500000 + 3*10000 = 530.000) + chip đánh dấu.
+  const lastV = vrows[vrows.length - 1].id;
+  pr = await sf(A.host, `/p/${axSlug}?variant=${lastV}`);
+  pr.body.includes('aria-current="true"') ? ok('?variant= → chip đang chọn được đánh dấu') : bad('không đánh dấu chip chọn');
+  pr.body.includes('530.000') ? ok('giá ĐỔI theo biến thể đang chọn (530.000)') : bad('giá không đổi theo biến thể', 'thiếu 530.000');
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

@@ -214,7 +214,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       const pageNo = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
       const offset = (pageNo - 1) * PAGE_SIZE;
 
-      // Trang chi tiết sản phẩm: /p/:slug
+      // Trang chi tiết sản phẩm: /p/:slug (?variant= chọn biến thể — SSR đổi giá/tồn/ảnh).
       const pm = /^\/p\/([a-z0-9-]+)$/.exec(url.pathname);
       if (pm) {
         const p = (await c.query(
@@ -222,12 +222,39 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         )).rows[0];
         if (!p) return { ...base, notFound: true };
         // available = on_hand - reserved (KHỚP checkout: không có dòng inventory = 0 = hết hàng).
-        p.variants = (await c.query(
+        const variants = (await c.query(
           `SELECT v.id, v.title, v.sku, v.price_vnd, coalesce(il.on_hand - il.reserved, 0) AS available
              FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
             WHERE v.product_id = $1 ORDER BY v.position`, [p.id])).rows;
-        const media = (await c.query(`SELECT public_key FROM media WHERE product_id = $1 ORDER BY position, created_at`, [p.id])).rows;
-        p.media = media.map((m) => ({ url: imgUrl(m.public_key) }));
+        // Trục biến thể (Màu/Size...) — RLS store_* chỉ trả option của SP đang bán.
+        p.options = (await c.query(
+          `SELECT o.id, o.name, o.position,
+                  coalesce(json_agg(json_build_object('id', ov.id, 'value', ov.value) ORDER BY ov.position) FILTER (WHERE ov.id IS NOT NULL), '[]') AS values
+             FROM product_options o LEFT JOIN option_values ov ON ov.option_id = o.id
+            WHERE o.product_id = $1 GROUP BY o.id ORDER BY o.position`, [p.id])).rows;
+        // Ánh xạ biến thể → {option_id: value_id} để resolve tổ hợp khi khách đổi 1 trục.
+        const vov = (await c.query(
+          `SELECT vov.variant_id, vov.option_id, vov.option_value_id
+             FROM variant_option_values vov JOIN variants v ON v.id = vov.variant_id WHERE v.product_id = $1`, [p.id])).rows;
+        const vmap = new Map();
+        for (const r of vov) { if (!vmap.has(r.variant_id)) vmap.set(r.variant_id, {}); vmap.get(r.variant_id)[r.option_id] = r.option_value_id; }
+        p.variants = variants.map((v) => ({ ...v, values: vmap.get(v.id) ?? {} }));
+        // Ảnh: kèm variant_id → storefront đổi ảnh theo biến thể (NULL = ảnh chung sản phẩm).
+        p.media = (await c.query(`SELECT public_key, variant_id FROM media WHERE product_id = $1 ORDER BY position, created_at`, [p.id]))
+          .rows.map((m) => ({ url: imgUrl(m.public_key), variant_id: m.variant_id }));
+        p.specs = (await c.query(`SELECT name, value FROM product_specs WHERE product_id = $1 ORDER BY position`, [p.id])).rows;
+        p.category = (await c.query(
+          `SELECT c.slug, c.name FROM product_categories pc JOIN categories c ON c.id = pc.category_id
+            WHERE pc.product_id = $1 ORDER BY c.position LIMIT 1`, [p.id])).rows[0] ?? null;
+        // Sản phẩm liên quan: cùng danh mục, đang bán, khác chính nó (RLS store_products lọc active).
+        p.related = (await c.query(
+          `SELECT DISTINCT p2.id, p2.slug, p2.title, p2.price_vnd,
+                  (SELECT m.public_key FROM media m WHERE m.product_id = p2.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
+                  (SELECT coalesce(sum(il.on_hand - il.reserved), 0) FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id WHERE v.product_id = p2.id) AS available
+             FROM products p2 JOIN product_categories pc2 ON pc2.product_id = p2.id
+            WHERE pc2.category_id IN (SELECT category_id FROM product_categories WHERE product_id = $1) AND p2.id <> $1
+            LIMIT 8`, [p.id])).rows.map((r) => ({ ...r, image: imgUrl(r.image_key), available: Number(r.available) }));
+        p.selectedId = url.searchParams.get('variant');
         return { ...base, product: p };
       }
 

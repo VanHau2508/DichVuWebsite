@@ -181,7 +181,7 @@ async function listMedia(res, ctx, _body, params) {
   const productId = params[1];
   const rows = await withTenant(ctx.shopId, async (c) => {
     const r = await c.query(
-      `SELECT id, status, public_key, width, height, position, created_at
+      `SELECT id, status, public_key, width, height, position, variant_id, created_at
          FROM media WHERE product_id = $1 AND deleted_at IS NULL ORDER BY position, created_at`,
       [productId],
     );
@@ -190,6 +190,28 @@ async function listMedia(res, ctx, _body, params) {
   return send(res, 200, {
     media: rows.map((m) => ({ ...m, url: m.public_key ? `${PUBLIC_BASE}/${m.public_key}` : null })),
   });
+}
+
+// Gán ảnh cho 1 BIẾN THỂ (hoặc bỏ gán = ảnh chung sản phẩm). variant_id=null → ảnh chung.
+// Biến thể phải THUỘC ĐÚNG sản phẩm của ảnh (composite FK cũng chặn chéo shop; check thêm chéo SP).
+async function assignVariant(res, ctx, body, params) {
+  const mediaId = params[1];
+  const variantId = body.variant_id ? String(body.variant_id) : null;
+  if (variantId !== null && !new RegExp(`^${UUID}$`).test(variantId)) return send(res, 400, { error: 'variant_id không hợp lệ' });
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const m = (await c.query(`SELECT product_id FROM media WHERE id = $1 AND deleted_at IS NULL`, [mediaId])).rows[0];
+    if (!m) return { code: 404 };
+    if (variantId) {
+      const v = await c.query(`SELECT 1 FROM variants WHERE id = $1 AND product_id = $2`, [variantId, m.product_id]);
+      if (!v.rows.length) return { code: 400 };
+    }
+    await c.query(`UPDATE media SET variant_id = $1 WHERE id = $2`, [variantId, mediaId]);
+    await audit(c, 'media.variant_assigned', { actorId: ctx.user.id, ip: ctx.ip, metadata: { mediaId, variantId } });
+    return { code: 200 };
+  });
+  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy media' });
+  if (out.code === 400) return send(res, 400, { error: 'biến thể không thuộc sản phẩm này' });
+  return send(res, 200, { ok: true, variant_id: variantId });
 }
 
 async function deleteMedia(res, ctx, _body, params) {
@@ -237,6 +259,7 @@ export const MEDIA_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/products/${UUID}/media/reorder$`), perm: 'catalog.write', fn: (res, ctx, b, p) => reorderMedia(res, ctx, b, p) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/products/${UUID}/media$`), perm: 'catalog.read', fn: (res, ctx, b, p) => listMedia(res, ctx, b, p) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/media/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => deleteMedia(res, ctx, b, p) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/media/${UUID}/variant$`), perm: 'catalog.write', fn: (res, ctx, b, p) => assignVariant(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/logo$`), perm: 'shop.write', raw: true, fn: (res, ctx, b) => uploadLogo(res, ctx, b) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/logo$`), perm: 'shop.write', fn: (res, ctx) => deleteLogo(res, ctx) },
 ];

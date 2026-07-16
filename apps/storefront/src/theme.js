@@ -346,7 +346,41 @@ h1,h2,h3{font-family:var(--font-heading);font-weight:600;letter-spacing:-.01em;l
 .ftr .badges{display:flex;gap:20px;flex-wrap:wrap}.ftr .badges span{display:inline-flex;align-items:center;gap:6px}.ftr .badges svg{width:16px;height:16px;color:var(--color-primary)}
 .center-msg{max-width:520px;margin:80px auto;text-align:center;padding:0 20px}.center-msg h1{font-size:1.7rem;margin:0 0 10px;font-weight:600}.center-msg p{color:var(--color-muted)}
 .preview-banner{position:sticky;top:0;z-index:30;background:#b45309;color:#fff;padding:10px 20px;font-weight:600;text-align:center;font-size:.9rem}
-@media(max-width:720px){.pd-grid{grid-template-columns:1fr;gap:24px}.hnav{gap:14px;font-size:.85rem}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.pd-info h1{font-size:1.5rem}}`;
+/* ── Trang sản phẩm nâng cấp: gallery no-JS (radio+:checked), chip biến thể, specs, lightbox ── */
+.vh{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.pd-media .main{position:relative}
+.pd-media .stack{position:absolute;inset:0}
+.pd-media .slide{display:none;position:absolute;inset:0}
+.pd-media .slide img{width:100%;height:100%;object-fit:cover;cursor:zoom-in}
+${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{display:block}#gsel-${i}:checked~.thumbs .t-${i}{border-color:var(--color-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--color-primary) 30%,transparent)}`).join('')}
+.pd-media .thumbs .th{width:70px;height:70px;border:2px solid var(--color-border);border-radius:10px;overflow:hidden;cursor:pointer;padding:0;background:none;display:block}
+.pd-media .thumbs .th img{width:100%;height:100%;object-fit:cover;display:block;border:0;border-radius:0}
+.lightbox{display:none}
+.lightbox:target{display:flex;position:fixed;inset:0;z-index:50;align-items:center;justify-content:center;background:rgba(17,24,39,.88);padding:20px}
+.lightbox .lb-bg{position:absolute;inset:0}
+.lightbox img{position:relative;max-width:96vw;max-height:92vh;object-fit:contain;border-radius:8px}
+.pd-sku{font-size:.82rem;color:var(--color-muted);margin:-8px 0 12px}
+.opt{margin:0 0 16px}.opt-name{font-size:.85rem;color:var(--color-muted);margin:0 0 8px}
+/* Chip biến thể GIỚI HẠN trong .opt — tránh đè .chip lọc danh mục trang chủ (trùng tên class). */
+.opt .chips{display:flex;gap:8px;flex-wrap:wrap}
+.opt .chip{display:inline-block;padding:8px 14px;border:1px solid var(--color-border);border-radius:10px;font-size:.9rem;color:var(--color-text);background:var(--color-bg);cursor:pointer}
+.opt .chip:hover{border-color:var(--color-primary)}
+.opt .chip.sel{border-color:var(--color-primary);background:var(--color-hero-bg);color:color-mix(in srgb,var(--color-primary) 82%,#000);font-weight:600}
+.opt .chip.out{color:var(--color-muted);text-decoration:line-through}
+.opt .chip.disabled{color:#c4c8cf;background:var(--color-surface);border-style:dashed;cursor:not-allowed;text-decoration:line-through}
+.pd-actions{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:6px 0 22px}
+.pd-actions .qty{padding:12px 14px;border:1px solid #d6d6d6;border-radius:12px;font-size:1rem;font-family:inherit;background:var(--color-bg);color:var(--color-text);width:84px;text-align:center}
+.pd-actions .qty:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 22%,transparent)}
+.btn-alt{background:var(--color-bg);color:var(--color-primary);border:1px solid var(--color-primary)}
+.btn-alt:hover{background:var(--color-hero-bg)}
+.pd-block{margin:40px 0 0;padding:26px 0 0;border-top:1px solid var(--color-border)}
+.pd-block h2{font-size:1.2rem;font-weight:600;margin:0 0 16px}
+.pd-block .desc{color:color-mix(in srgb,var(--color-text) 72%,var(--color-bg));line-height:1.8}
+.pd-block .desc p{margin:0 0 12px}.pd-block .desc ul{margin:0 0 12px;padding-left:1.3em;line-height:1.8}
+.specs{border-collapse:collapse;width:100%;max-width:560px}
+.specs th,.specs td{text-align:left;padding:10px 14px;border:1px solid var(--color-border);font-size:.92rem;vertical-align:top}
+.specs th{background:var(--color-surface);color:var(--color-muted);font-weight:600;width:38%}
+@media(max-width:720px){.pd-grid{grid-template-columns:1fr;gap:24px}.hnav{gap:14px;font-size:.85rem}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.pd-info h1{font-size:1.5rem}.pd-actions .btn{flex:1}}`;
 
 function page(title, tokens, bodyHtml, head = '') {
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
@@ -387,63 +421,128 @@ export function renderHome(ctx, { canonical = null } = {}) {
   return page(ctx.shop.name, ctx.theme?.tokens, body, head);
 }
 
-/** Render trang chi tiết sản phẩm + form "thêm vào giỏ" (POST thuần, không JS). */
-export function renderProduct(ctx, p, { canonical = null } = {}) {
-  const media = Array.isArray(p.media) ? p.media : [];
-  const main = media.length ? `<img src="${esc(media[0].url)}" alt="${esc(p.title)}">` : I_IMG;
-  const thumbs = media.length > 1
-    ? `<div class="thumbs">${media.slice(0, 6).map((m) => `<img src="${esc(m.url)}" alt="${esc(p.title)}" loading="lazy">`).join('')}</div>`
-    : '';
-  // Tồn kho: available = on_hand - reserved (KHỚP checkout). ≤0 = hết. Tổng để xác định
-  // sản phẩm còn bán được không; per-variant để vô hiệu lựa chọn đã hết.
-  const av = (v) => Math.max(0, Number(v.available) || 0);
-  const totalAvail = p.variants.reduce((s, v) => s + av(v), 0);
-  const maxAvail = p.variants.reduce((m, v) => Math.max(m, av(v)), 0);
-  const soldOut = totalAvail <= 0;
-  const single = p.variants.length === 1;
-  const stockBadge = soldOut
-    ? '<div class="stock out">Hết hàng</div>'
-    : (single && maxAvail <= 5 ? `<div class="stock low">Chỉ còn ${maxAvail}</div>` : '<div class="stock in">Còn hàng</div>');
-  const options = p.variants.map((v) => {
-    const a = av(v);
-    return `<option value="${esc(v.id)}"${a <= 0 ? ' disabled' : ''}>${esc(v.title ?? v.sku)} — ${money(v.price_vnd)}${a <= 0 ? ' (hết hàng)' : ''}</option>`;
+// Mô tả có ĐỊNH DẠNG (no-JS, CSP-sạch): tách đoạn theo dòng trống; dòng bắt đầu "- "/"• "
+// gộp thành danh sách. Nội dung ĐỀU esc() (chống XSS) — chỉ thẻ khối do ta sinh.
+function formatDesc(text) {
+  const blocks = String(text).replace(/\r\n?/g, '\n').split(/\n{2,}/);
+  return blocks.map((blk) => {
+    const lines = blk.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return '';
+    if (lines.every((l) => /^[-•]\s+/.test(l))) {
+      return `<ul>${lines.map((l) => `<li>${esc(l.replace(/^[-•]\s+/, ''))}</li>`).join('')}</ul>`;
+    }
+    return `<p>${lines.map((l) => esc(l)).join('<br>')}</p>`;
   }).join('');
-  // action=/cart/add tới checkout service (cùng origin qua Caddy) → form-action 'self' cho phép.
-  const qtyMax = Math.min(1000, maxAvail || 1);
-  const addForm = !p.variants.length ? '' : (soldOut
-    ? '<div class="soldout-note">Sản phẩm tạm hết hàng. Vui lòng quay lại sau.</div>'
-    : `
-    <form class="addcart" method="POST" action="/cart/add">
-      ${p.variants.length > 1 ? `<select name="variant_id" aria-label="Phân loại">${options}</select>` : `<input type="hidden" name="variant_id" value="${esc(p.variants[0].id)}">`}
-      <input type="number" name="qty" value="1" min="1" max="${qtyMax}" inputmode="numeric" aria-label="Số lượng">
-      <button class="btn btn-primary" type="submit">${I_CART}Thêm vào giỏ</button>
-    </form>`);
-  // Structured data qua MICRODATA (itemprop) — CSP-sạch, không cần <script> (default-src 'none').
+}
+
+/** Render trang chi tiết sản phẩm kiểu Shopee (no-JS): gallery bấm đổi ảnh (radio+:checked) +
+ *  phóng to (:target), chọn biến thể ĐA TRỤC đổi giá/tồn/ảnh (SSR ?variant=), bảng thông số,
+ *  sản phẩm liên quan, "Mua ngay". Mọi tương tác chạy bằng HTML+CSS, KHÔNG JavaScript. */
+export function renderProduct(ctx, p, { canonical = null } = {}) {
+  const variants = Array.isArray(p.variants) ? p.variants : [];
+  const options = Array.isArray(p.options) ? p.options : [];
+  const allMedia = Array.isArray(p.media) ? p.media : [];
+  const av = (v) => Math.max(0, Number(v?.available) || 0);
+
+  // Biến thể đang chọn: từ ?variant= (nếu hợp lệ) → biến thể còn hàng đầu tiên → biến thể đầu.
+  const selected = variants.find((v) => v.id === p.selectedId) || variants.find((v) => av(v) > 0) || variants[0] || null;
+
+  // Ảnh gallery cho biến thể đang chọn: ảnh RIÊNG biến thể (nếu có) + ảnh CHUNG sản phẩm.
+  const variantImgs = selected ? allMedia.filter((m) => m.variant_id === selected.id) : [];
+  const commonImgs = allMedia.filter((m) => !m.variant_id);
+  let gallery = [...variantImgs, ...commonImgs];
+  if (!gallery.length) gallery = allMedia;
+  gallery = gallery.slice(0, 8);
+
+  // ── Gallery no-JS: radio ẩn + :checked đổi ảnh chính; bấm ảnh chính mở lightbox (:target).
+  const galleryHtml = gallery.length ? `
+      <div class="pd-media" id="gallery">
+        ${gallery.map((_, i) => `<input class="gsel vh" type="radio" name="gsel" id="gsel-${i}"${i === 0 ? ' checked' : ''} aria-label="Ảnh ${i + 1}">`).join('')}
+        <div class="main"><div class="stack">${gallery.map((m, i) => `<a class="slide s-${i}" href="#lb-${i}" aria-label="Phóng to"><img src="${esc(m.url)}" alt="${esc(p.title)}"${i ? ' loading="lazy"' : ''}></a>`).join('')}</div></div>
+        ${gallery.length > 1 ? `<div class="thumbs">${gallery.map((m, i) => `<label class="th t-${i}" for="gsel-${i}"><img src="${esc(m.url)}" alt="" loading="lazy"></label>`).join('')}</div>` : ''}
+        ${gallery.map((m, i) => `<div class="lightbox" id="lb-${i}"><a class="lb-bg" href="#gallery" aria-label="Đóng"></a><img src="${esc(m.url)}" alt="${esc(p.title)}"></div>`).join('')}
+      </div>` : '<div class="pd-media"><div class="main">' + I_IMG + '</div></div>';
+
+  // ── Bộ chọn phân loại. bySig: chữ ký value_id theo thứ tự trục → biến thể (resolve tổ hợp).
+  const sig = (vals) => options.map((o) => vals?.[o.id] ?? '').join('|');
+  const bySig = new Map(variants.map((v) => [sig(v.values), v]));
+  const link = (vid) => `/p/${encodeURIComponent(p.slug)}?variant=${encodeURIComponent(vid)}`;
+  let selector = '';
+  if (options.length && selected) {
+    selector = options.map((o) => {
+      const chips = o.values.map((val) => {
+        const tv = bySig.get(sig({ ...selected.values, [o.id]: val.id })); // đổi 1 trục, giữ trục khác
+        const isSel = selected.values[o.id] === val.id;
+        if (!tv) return `<span class="chip disabled">${esc(val.value)}</span>`;
+        return `<a class="chip${isSel ? ' sel' : ''}${av(tv) <= 0 ? ' out' : ''}" href="${esc(link(tv.id))}"${isSel ? ' aria-current="true"' : ''}>${esc(val.value)}</a>`;
+      }).join('');
+      return `<div class="opt"><div class="opt-name">${esc(o.name)}</div><div class="chips">${chips}</div></div>`;
+    }).join('');
+  } else if (variants.length > 1) {
+    // Không có trục: mỗi biến thể là 1 chip (một trục ngầm "Phân loại").
+    const chips = variants.map((v) => {
+      const isSel = selected && v.id === selected.id;
+      return `<a class="chip${isSel ? ' sel' : ''}${av(v) <= 0 ? ' out' : ''}" href="${esc(link(v.id))}"${isSel ? ' aria-current="true"' : ''}>${esc(v.title || v.sku)}</a>`;
+    }).join('');
+    selector = `<div class="opt"><div class="opt-name">Phân loại</div><div class="chips">${chips}</div></div>`;
+  }
+
+  const price = selected ? selected.price_vnd : p.price_vnd;
+  const selAvail = selected ? av(selected) : 0;
+  const totalAvail = variants.reduce((s, v) => s + av(v), 0);
+  const soldOut = totalAvail <= 0;
+  const stockBadge = soldOut ? '<div class="stock out">Hết hàng</div>'
+    : selAvail <= 0 ? '<div class="stock out">Phân loại này đã hết</div>'
+    : selAvail <= 5 ? `<div class="stock low">Chỉ còn ${selAvail}</div>`
+    : '<div class="stock in">Còn hàng</div>';
+
+  // Form thêm giỏ + Mua ngay (POST /cart/add tới checkout, cùng origin qua Caddy → form-action 'self').
+  // "Mua ngay" = submit kèm name=buynow → checkout redirect thẳng trang thanh toán.
+  const canBuy = selected && selAvail > 0;
+  const actions = !variants.length ? '' : (canBuy ? `
+          <form class="pd-actions" method="POST" action="/cart/add">
+            <input type="hidden" name="variant_id" value="${esc(selected.id)}">
+            <input class="qty" type="number" name="qty" value="1" min="1" max="${Math.min(1000, selAvail)}" inputmode="numeric" aria-label="Số lượng">
+            <button class="btn btn-alt" type="submit">${I_CART}Thêm vào giỏ</button>
+            <button class="btn btn-primary" type="submit" name="buynow" value="1">Mua ngay</button>
+          </form>`
+    : `<div class="soldout-note">${soldOut ? 'Sản phẩm tạm hết hàng. Vui lòng quay lại sau.' : 'Phân loại đang chọn đã hết. Vui lòng chọn phân loại khác.'}</div>`);
+
+  const skuHtml = selected?.sku ? `<div class="pd-sku">Mã: ${esc(selected.sku)}</div>` : '';
+  const specs = Array.isArray(p.specs) ? p.specs : [];
+  const specsHtml = specs.length ? `<section class="pd-block"><h2>Thông số</h2><table class="specs">${specs.map((s) => `<tr><th>${esc(s.name)}</th><td>${esc(s.value)}</td></tr>`).join('')}</table></section>` : '';
+  const descHtml = p.description ? `<section class="pd-block"><h2>Mô tả sản phẩm</h2><div class="desc" itemprop="description">${formatDesc(p.description)}</div></section>` : '';
+  const related = Array.isArray(p.related) ? p.related : [];
+  const relatedHtml = related.length ? `<section class="pd-block related"><h2>Có thể bạn thích</h2><div class="grid">${productCards(related)}</div></section>` : '';
+  const crumb = `<div class="crumb"><a href="/">Trang chủ</a>${p.category ? ` / <a href="/c/${esc(p.category.slug)}">${esc(p.category.name)}</a>` : ''} / <span>${esc(p.title)}</span></div>`;
+
   const availability = soldOut ? 'https://schema.org/OutOfStock' : 'https://schema.org/InStock';
-  const priceAttr = esc(String(Number(p.price_vnd)));
   const body = `${SECTIONS.header({}, ctx)}
     <main class="wrap pd" itemscope itemtype="https://schema.org/Product">
-      <div class="crumb"><a href="/">Trang chủ</a> / <span itemprop="name">${esc(p.title)}</span></div>
-      ${media.length ? `<meta itemprop="image" content="${esc(media[0].url)}">` : ''}
+      ${crumb}
+      ${gallery.length ? `<meta itemprop="image" content="${esc(gallery[0].url)}">` : ''}
       <div class="pd-grid">
-        <div class="pd-media"><div class="main">${main}</div>${thumbs}</div>
+        ${galleryHtml}
         <div class="pd-info">
-          <h1>${esc(p.title)}</h1>
+          <h1 itemprop="name">${esc(p.title)}</h1>
+          ${skuHtml}
           <div class="price" itemprop="offers" itemscope itemtype="https://schema.org/Offer">
-            <span itemprop="price" content="${priceAttr}">${money(p.price_vnd)}</span>
+            <span itemprop="price" content="${esc(String(Number(price)))}">${money(price)}</span>
             <meta itemprop="priceCurrency" content="VND"><link itemprop="availability" href="${availability}">
           </div>
           ${stockBadge}
-          ${addForm}
-          ${p.description ? `<div class="desc" itemprop="description">${esc(p.description)}</div>` : ''}
+          ${selector}
+          ${actions}
           <div class="trust"><span>${I_TRUCK}Giao hàng toàn quốc</span><span>${I_SHIELD}Thanh toán COD hoặc QR</span></div>
         </div>
       </div>
+      ${descHtml}
+      ${specsHtml}
+      ${relatedHtml}
     </main>${SECTIONS.footer({}, ctx)}`;
   const desc = p.description ? String(p.description).replace(/\s+/g, ' ').trim().slice(0, 200) : `${p.title} — ${ctx.shop.name}`;
-  // og:image PHẢI tuyệt đối. media[0].url có thể tương đối (/media-public/..) → ghép origin shop.
   const absUrl = (u) => (u ? (/^https?:\/\//i.test(u) ? u : `${ctx.origin || ''}${u}`) : '');
-  const ogSrc = media.length ? absUrl(media[0].url) : '';
+  const ogSrc = gallery.length ? absUrl(gallery[0].url) : '';
   const ogImg = ogSrc ? `<meta property="og:image" content="${esc(ogSrc)}"><meta name="twitter:image" content="${esc(ogSrc)}">` : '';
   const head = metaHead({ description: desc, canonical, ogTitle: p.title, ogType: 'product', siteName: ctx.shop.name }) + ogImg;
   return page(`${p.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);

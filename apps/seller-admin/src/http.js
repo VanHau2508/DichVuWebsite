@@ -116,6 +116,37 @@ export async function readMultipartFile(req, maxBytes = 10 * 1024 * 1024) {
   return null;
 }
 
+// Bóc NHIỀU file từ multipart/form-data (upload nhiều ảnh cùng lúc). Trả mảng {filename,
+// bytes} của MỌI part có filename (bỏ part filename rỗng). maxBytes là trần TỔNG body.
+export async function readMultipartFiles(req, maxBytes = 40 * 1024 * 1024) {
+  const ct = req.headers['content-type'] || '';
+  const m = /multipart\/form-data;\s*boundary=(?:"([^"]+)"|([^;]+))/i.exec(ct);
+  if (!m) return [];
+  const token = (m[1] || m[2]).trim();
+  const dash = Buffer.from('--' + token);
+  const delim = Buffer.from('\r\n--' + token);
+  const body = await readRawBody(req, maxBytes);
+  const out = [];
+  let pos = body.indexOf(dash);
+  if (pos === -1) return out;
+  pos += dash.length;
+  while (pos < body.length) {
+    if (body[pos] === 0x2d && body[pos + 1] === 0x2d) break;
+    if (body[pos] === 0x0d && body[pos + 1] === 0x0a) pos += 2;
+    const hEnd = body.indexOf('\r\n\r\n', pos, 'latin1');
+    if (hEnd === -1) break;
+    const headers = body.slice(pos, hEnd).toString('latin1');
+    const cStart = hEnd + 4;
+    const next = body.indexOf(delim, cStart);
+    if (next === -1) break;
+    const bytes = body.slice(cStart, next);
+    const fn = /filename="([^"]*)"/i.exec(headers);
+    if (fn && fn[1] && bytes.length) out.push({ filename: fn[1], bytes });
+    pos = next + delim.length;
+  }
+  return out;
+}
+
 // CSRF: POST đổi trạng thái phải có Origin thuộc allowlist (Origin của chính admin).
 export function sameOrigin(req, allowed) {
   if (req.method === 'GET' || req.method === 'HEAD') return true;

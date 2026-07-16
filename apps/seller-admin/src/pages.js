@@ -446,18 +446,26 @@ export function renderDashboard(ctx, shops, isStaff = false) {
 const STATUSES = ['', 'pending', 'confirmed', 'shipped', 'delivered', 'cancelled'];
 export function renderOrders(ctx, shopId, data, filter) {
   const orders = data.orders ?? [];
-  const rows = orders.map((o) => `<tr>
+  // Cảnh báo khi 1 NGUỒN (mạng/kết nối) có ≥4 SĐT KHÁC NHAU đơn chưa xử lý — dấu hiệu 1 kẻ
+  // giả nhiều khách. Đếm SĐT phân biệt (không đếm số đơn thô) để tránh báo nhầm mạng chung (CGNAT).
+  const SUSPICIOUS_MIN = 4;
+  const flagged = orders.filter((o) => Number(o.same_ip_phones) >= SUSPICIOUS_MIN).length;
+  const rows = orders.map((o) => {
+    const susp = Number(o.same_ip_phones) >= SUSPICIOUS_MIN;
+    return `<tr>
     <td><a href="/shops/${esc(shopId)}/orders/${esc(o.id)}">#${esc(o.order_number)}</a></td>
     <td>${badge(o.status, STATUS[o.status] ?? o.status)}</td>
     <td>${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} <span class="muted">${esc(o.payment_method?.toUpperCase() ?? '')}</span></td>
-    <td>${esc(o.customer_name)}</td>
+    <td>${esc(o.customer_name)}${susp ? ` <span class="badge cancelled" title="Cùng nguồn mạng với ${esc(o.same_ip_phones)} SĐT khác nhau đang chờ xử lý — kiểm tra kẻo đơn ảo">⚠ ${esc(o.same_ip_phones)} SĐT cùng nguồn</span>` : ''}</td>
     <td class="muted">${dt(o.created_at)}</td>
-    <td style="text-align:right"><strong>${money(o.total_vnd)}</strong></td></tr>`).join('');
+    <td style="text-align:right"><strong>${money(o.total_vnd)}</strong></td></tr>`;
+  }).join('');
   const total = data.total ?? orders.length;
   const off = filter.offset, lim = filter.limit;
   const qenc = encodeURIComponent(filter.q ?? '');
   const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&offset=${o}`;
   return layout('Đơn hàng', ctx, `<h1>Đơn hàng</h1>
+    ${flagged ? `<div class="card" style="background:#fef3c7;border-color:#fcd34d;color:#92400e"><strong>⚠ ${flagged} đơn nghi ngờ (đơn ảo?)</strong> — một nguồn mạng có nhiều SĐT khác nhau đang chờ xử lý. Kiểm tra kỹ trước khi giao; <strong>huỷ đơn ảo để trả lại tồn kho</strong>. (Đơn COD không xác nhận sẽ tự huỷ sau ${esc(7)} ngày.)</div>` : ''}
     <div class="card"><form method="GET" class="filters">
       <div style="flex:1 1 200px"><label>Tìm (mã đơn / tên / SĐT)</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="123, Nguyễn…, 09…"></div>
       <div><label>Trạng thái</label><select name="status">${STATUSES.map((s) => `<option value="${s}"${s === filter.status ? ' selected' : ''}>${s ? (STATUS[s] ?? s) : 'Tất cả'}</option>`).join('')}</select></div>
@@ -776,6 +784,11 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
   const f = form ?? {}; // khi lưu lỗi: ưu tiên giá trị vừa nhập để không nuốt sửa đổi
   const val = (k) => esc(f[k] ?? p[k] ?? '');
   const imgs = media ?? [];
+  const variantOpts = (p.variants ?? []).map((v) => ({ id: v.id, label: v.title || v.sku }));
+  // Gán ảnh cho biến thể (chỉ khi có >1 biến thể) → khách chọn biến thể sẽ thấy đúng ảnh.
+  const assignForm = (m) => variantOpts.length > 1 ? `<form method="POST" action="${base}/media/${esc(m.id)}/variant" class="thumb-assign">
+      <select name="variant_id" aria-label="Gán ảnh cho biến thể"><option value="">Ảnh chung</option>${variantOpts.map((v) => `<option value="${esc(v.id)}"${m.variant_id === v.id ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
+      <button class="btn alt sm" type="submit">Gán</button></form>` : '';
   const thumb = (m, i) => `<figure class="thumb">
     ${m.status === 'ready' && m.url ? `<img src="${esc(m.url)}" alt="Ảnh sản phẩm" loading="lazy" width="120" height="120">` : `<div class="ph">${esc(m.status === 'failed' ? 'lỗi xử lý' : 'đang xử lý…')}</div>`}
     ${i === 0 && m.status === 'ready' ? '<div class="prim">★ Ảnh chính</div>' : ''}
@@ -785,7 +798,20 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
       ${i > 0 ? `<form method="POST" action="${base}/media/${esc(m.id)}/primary"><button class="btn alt sm" type="submit" title="Đặt làm ảnh chính">★</button></form>` : ''}
       <form method="POST" action="${base}/media/${esc(m.id)}/delete"><button class="btn warn sm" type="submit" title="Xoá">✕</button></form>
     </div>
+    ${assignForm(m)}
   </figure>`;
+  // Bộ thiết lập TRỤC biến thể (đa trục): 3 ô, mỗi ô = 1 trục + giá trị phân cách bằng dấu phẩy.
+  const optList = p.options ?? [];
+  const optSlots = Array.from({ length: 3 }, (_, i) => {
+    const o = optList[i];
+    const ph = ['Màu', 'Size', 'Chất liệu'][i];
+    const phv = ['Đỏ, Xanh, Vàng', 'M, L, XL', 'Cotton, Lụa'][i];
+    return `<div class="grid2" style="margin-bottom:10px">
+      <div><label>Tên trục ${i + 1}</label><input name="opt_name" maxlength="40" value="${o ? esc(o.name) : ''}" placeholder="${ph}"></div>
+      <div><label>Giá trị (phân cách dấu phẩy)</label><input name="opt_values" maxlength="600" value="${o ? esc(o.values.map((v) => v.value).join(', ')) : ''}" placeholder="${phv}"></div>
+    </div>`;
+  }).join('');
+  const specsText = (p.specs ?? []).map((s) => `${s.name}: ${s.value}`).join('\n');
   const statusBtn = p.status === 'active'
     ? `<form method="POST" action="${base}/archive"><button class="btn alt sm" type="submit">Ẩn (lưu trữ)</button></form>`
     : `<form method="POST" action="${base}/publish"><button class="btn sm" type="submit">${p.status === 'draft' ? 'Đăng bán' : 'Đăng bán lại'}</button></form>`;
@@ -821,13 +847,28 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
         <button class="btn" type="submit" style="margin-top:12px">Lưu thay đổi</button>
       </form>
     </div>
+    <div class="card"><h2 style="margin-top:0">Phân loại (biến thể đa trục)</h2>
+      <p class="muted">Khai báo các <strong>trục</strong> như Màu, Size… mỗi trục nhiều giá trị (phân cách bằng dấu phẩy). Lưu xong hệ thống <strong>tự sinh biến thể cho mọi tổ hợp</strong> (vd Màu×Size), rồi bạn đặt giá/tồn cho từng biến thể ở bảng bên dưới. Để trống tất cả = sản phẩm không phân loại.</p>
+      <form method="POST" action="${base}/options">
+        ${optSlots}
+        <button class="btn sm" type="submit">Lưu phân loại & sinh biến thể</button>
+      </form>
+    </div>
     <div class="card"><h2 style="margin-top:0">Biến thể & tồn kho</h2>
-      <table><thead><tr><th>SKU</th><th class="right">Giá</th><th>Có thể bán</th><th>Điều chỉnh tồn</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-      <h2>Thêm biến thể</h2>
+      <table><thead><tr><th>SKU / Phân loại</th><th class="right">Giá</th><th>Có thể bán</th><th>Điều chỉnh tồn</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <h2>Thêm biến thể lẻ</h2>
+      <p class="muted" style="font-size:.85rem">Dùng khi KHÔNG dùng phân loại đa trục ở trên (thêm tay từng biến thể).</p>
       <form method="POST" action="${base}/variants" class="inline">
         <div><label>SKU</label><input name="sku" required maxlength="64" style="width:160px"></div>
         <div><label>Giá (VND)</label><input name="price_vnd" type="number" min="0" step="1000" required style="width:140px"></div>
         <button class="btn alt sm" type="submit">Thêm biến thể</button>
+      </form>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Thông số kỹ thuật</h2>
+      <form method="POST" action="${base}/specs">
+        <label>Mỗi dòng một thông số, dạng <code>Tên: Giá trị</code></label>
+        <textarea name="specs" rows="5" placeholder="Chất liệu: Polyester&#10;Kích thước: 1m6 x 2m3&#10;Xuất xứ: Việt Nam">${esc(specsText)}</textarea>
+        <button class="btn sm" type="submit" style="margin-top:10px">Lưu thông số</button>
       </form>
     </div>
     <div class="card"><h2 style="margin-top:0">Danh mục</h2>
@@ -841,10 +882,10 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
     <div class="card"><h2 style="margin-top:0">Hình ảnh</h2>
       ${imgs.length ? `<div class="media-grid">${imgs.map((m, i) => thumb(m, i)).join('')}</div>` : '<p class="muted">Chưa có ảnh nào.</p>'}
       <form method="POST" enctype="multipart/form-data" action="${base}/media" class="inline">
-        <input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif" required aria-label="Chọn ảnh">
+        <input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif" multiple required aria-label="Chọn ảnh">
         <button class="btn alt sm" type="submit">Tải ảnh lên</button>
       </form>
-      <p class="muted" style="font-size:.82rem">JPEG / PNG / WebP / GIF, tối đa 10MB. Ảnh gốc được nén lại thành WebP tự động.</p>
+      <p class="muted" style="font-size:.82rem">Chọn <strong>nhiều ảnh cùng lúc</strong>. JPEG / PNG / WebP / GIF, mỗi ảnh tối đa 10MB. Ảnh gốc được nén lại thành WebP tự động. ${variantOpts.length > 1 ? 'Dùng ô "Gán" dưới mỗi ảnh để gắn ảnh cho từng biến thể (khách chọn biến thể sẽ thấy đúng ảnh).' : ''}</p>
     </div>
     <div class="card"><h2 style="margin-top:0">Xoá sản phẩm</h2>
       <p class="muted">Ẩn sản phẩm khỏi cửa hàng (xoá mềm). Đơn hàng cũ không bị ảnh hưởng.</p>

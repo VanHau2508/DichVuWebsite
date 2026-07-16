@@ -426,6 +426,15 @@ async function variantAdd(req, res, me, cookie, shopId, pid) {
   return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không thêm được biến thể.');
 }
 
+// Sửa giá 1 biến thể (ô inline trong bảng biến thể) → seller PATCH.
+async function variantPrice(req, res, me, cookie, shopId, pid, vid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await sellerApi('PATCH', `/shops/${shopId}/products/${pid}/variants/${vid}`, { cookie, body: { price_vnd: parseVnd(f.price_vnd) } });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/products/${pid}`);
+  return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không sửa được giá biến thể.');
+}
+
 async function variantDelete(res, me, cookie, shopId, pid, vid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const r = await sellerApi('DELETE', `/shops/${shopId}/products/${pid}/variants/${vid}`, { cookie });
@@ -1186,6 +1195,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/options$`).exec(p)) && req.method === 'POST') return optionsSave(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/specs$`).exec(p)) && req.method === 'POST') return specsSave(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants$`).exec(p)) && req.method === 'POST') return variantAdd(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants/${UUID}/price$`).exec(p)) && req.method === 'POST') return variantPrice(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants/${UUID}/delete$`).exec(p)) && req.method === 'POST') return variantDelete(res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants/${UUID}/inventory$`).exec(p)) && req.method === 'POST') return inventoryAdjust(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/media$`).exec(p)) && req.method === 'POST') return mediaUpload(req, res, me, cookie, m[1], m[2]);

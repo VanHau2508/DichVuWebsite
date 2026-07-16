@@ -270,6 +270,34 @@ async function addVariant(res, ctx, body, params) {
   }
 }
 
+// Sửa GIÁ / SKU một biến thể (ma trận sinh ra lấy giá sản phẩm — chủ shop chỉnh từng tổ hợp ở đây).
+async function updateVariant(res, ctx, body, params) {
+  const productId = params[1], variantId = params[2];
+  const sets = [], args = [];
+  if (body.price_vnd !== undefined) {
+    if (!validPrice(body.price_vnd)) return send(res, 400, { error: 'giá không hợp lệ' });
+    args.push(body.price_vnd); sets.push(`price_vnd = $${args.length}`);
+  }
+  if (body.sku !== undefined) {
+    if (!validSku(body.sku)) return send(res, 400, { error: 'SKU không hợp lệ' });
+    args.push(String(body.sku).trim()); sets.push(`sku = $${args.length}`);
+  }
+  if (!sets.length) return send(res, 400, { error: 'không có trường nào để cập nhật' });
+  try {
+    const n = await withTenant(ctx.shopId, async (c) => {
+      args.push(variantId, productId);
+      const r = await c.query(`UPDATE variants SET ${sets.join(', ')} WHERE id = $${args.length - 1} AND product_id = $${args.length}`, args);
+      if (r.rowCount === 1) await audit(c, 'variant.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, variantId } });
+      return r.rowCount;
+    });
+    if (n !== 1) return send(res, 404, { error: 'không tìm thấy biến thể' });
+    return send(res, 200, { ok: true });
+  } catch (err) {
+    if (err.code === '23505') return send(res, 409, { error: conflictMessage(err) });
+    throw err;
+  }
+}
+
 async function deleteVariant(res, ctx, _body, params) {
   const productId = params[1];
   const variantId = params[2];
@@ -633,6 +661,7 @@ export const CATALOG_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/products/${UUID}/archive$`), perm: 'catalog.write', fn: (res, ctx, b, p) => setStatus(res, ctx, p[1], 'archived', 'product.archived') },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/products/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => deleteProduct(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/products/${UUID}/variants$`), perm: 'catalog.write', fn: (res, ctx, b, p) => addVariant(res, ctx, b, p) },
+  { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/products/${UUID}/variants/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => updateVariant(res, ctx, b, p) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/products/${UUID}/variants/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => deleteVariant(res, ctx, b, p) },
   { m: 'PUT', re: new RegExp(`^/shops/${UUID}/products/${UUID}/options$`), perm: 'catalog.write', fn: (res, ctx, b, p) => saveProductOptions(res, ctx, b, p) },
   { m: 'PUT', re: new RegExp(`^/shops/${UUID}/products/${UUID}/specs$`), perm: 'catalog.write', fn: (res, ctx, b, p) => setProductSpecs(res, ctx, b, p) },

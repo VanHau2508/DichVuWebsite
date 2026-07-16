@@ -824,7 +824,9 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
   };
   const rows = (p.variants ?? []).map((v) => `<tr>
     <td>${esc(v.sku)}${v.title ? ` <span class="muted">${esc(v.title)}</span>` : ''}</td>
-    <td class="num right">${money(v.price_vnd)}</td>
+    <td class="num right"><form method="POST" action="${base}/variants/${esc(v.id)}/price" class="inline">
+      <input name="price_vnd" type="number" min="0" step="1000" value="${esc(v.price_vnd)}" style="width:110px" aria-label="Giá biến thể (VND)">
+      <button class="btn alt sm" type="submit">Lưu</button></form></td>
     <td>${stock(v.id)}</td>
     <td><form method="POST" action="${base}/variants/${esc(v.id)}/inventory" class="inline">
       <input name="delta" type="number" step="1" required placeholder="+/−" style="width:84px" aria-label="Điều chỉnh tồn">

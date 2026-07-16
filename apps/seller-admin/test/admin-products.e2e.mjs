@@ -101,7 +101,8 @@ async function main() {
   // ── 2. Chi tiết + sửa ──────────────────────────────────────────────────────
   sect('2. Chi tiết & sửa');
   r = await adm('GET', P(`/${pid}`), { cookie: A.cookie });
-  r.status === 200 && r.body.includes('Ghế sofa demo') && /Nháp/.test(r.body) && /4\.990\.000/.test(r.body) ? ok('chi tiết: tên + trạng thái Nháp + giá') : bad('chi tiết sai', r.body.slice(0, 200));
+  // Giá biến thể giờ là Ô SỬA ĐƯỢC (input value=4990000) thay vì text định dạng 4.990.000.
+  r.status === 200 && r.body.includes('Ghế sofa demo') && /Nháp/.test(r.body) && r.body.includes('value="4990000"') ? ok('chi tiết: tên + trạng thái Nháp + ô giá sửa được') : bad('chi tiết sai', r.body.slice(0, 200));
 
   r = await adm('POST', P(`/${pid}`), { cookie: A.cookie, origin: OADM, form: { title: 'Ghế sofa cao cấp', slug, price_vnd: '5290000', description: 'Đã nâng cấp' } });
   const afterEdit = (await sget(A.shopId, A.cookie, `/products/${pid}`)).json;
@@ -187,6 +188,13 @@ async function main() {
   r = await adm('GET', P(`/${axPid}`), { cookie: A.cookie });
   r.body.includes('value="Màu"') && r.body.includes('value="Size"') && r.body.includes('Đỏ / M')
     ? ok('chi tiết: ô trục prefill (Màu/Size) + biến thể tổ hợp (Đỏ / M)') : bad('detail options render sai');
+
+  // Sửa GIÁ một tổ hợp qua ô inline (ma trận sinh ra lấy giá SP — chỉnh từng tổ hợp ở đây).
+  const vAx = afterOpt.variants[0];
+  r = await adm('POST', P(`/${axPid}/variants/${vAx.id}/price`), { cookie: A.cookie, origin: OADM, form: { price_vnd: '175000' } });
+  const vAxAfter = (await sget(A.shopId, A.cookie, `/products/${axPid}`)).json.variants.find((v) => v.id === vAx.id);
+  r.status === 303 && Number(vAxAfter.price_vnd) === 175000
+    ? ok('ô sửa giá biến thể → 303 + DB đổi 175.000') : bad('sửa giá biến thể lỗi', `${r.status} ${vAxAfter?.price_vnd}`);
 
   r = await adm('POST', P(`/${axPid}/specs`), { cookie: A.cookie, origin: OADM, form: { specs: 'Chất liệu: Cotton\nXuất xứ: Việt Nam\n(dòng rác không có dấu hai chấm)' } });
   const afterSpecs = (await sget(A.shopId, A.cookie, `/products/${axPid}`)).json;

@@ -66,6 +66,7 @@ const S = (shopId, cookie) => ({
   get: (p) => rq(SELLER, 'GET', `/shops/${shopId}${p}`, { cookie }),
   post: (p, body) => rq(SELLER, 'POST', `/shops/${shopId}${p}`, { body, cookie, origin: OS }),
   put: (p, body) => rq(SELLER, 'PUT', `/shops/${shopId}${p}`, { body, cookie, origin: OS }),
+  patch: (p, body) => rq(SELLER, 'PATCH', `/shops/${shopId}${p}`, { body, cookie, origin: OS }),
 });
 
 async function main() {
@@ -143,6 +144,17 @@ async function main() {
   r.status === 200 && r.json.count === 2 ? ok('lưu 2 thông số (bỏ dòng trống)') : bad('specs lỗi', r.raw);
   r = await a.get(`/products/${pid}`);
   (r.json.specs ?? []).length === 2 && r.json.specs[0].name === 'Chất liệu' ? ok('getProduct trả specs đúng thứ tự') : bad('specs sai', JSON.stringify(r.json.specs));
+
+  sect('3b. Sửa giá từng biến thể (PATCH — dùng cho tổ hợp ma trận)');
+  const anyV = (await a.get(`/products/${pid}`)).json.variants[0];
+  r = await a.patch(`/products/${pid}/variants/${anyV.id}`, { price_vnd: 777000 });
+  r.status === 200 ? ok('PATCH giá biến thể → 200') : bad('PATCH giá lỗi', r.raw);
+  const vAfter = (await a.get(`/products/${pid}`)).json.variants.find((v) => v.id === anyV.id);
+  Number(vAfter.price_vnd) === 777000 ? ok('giá biến thể đổi thành 777.000') : bad(`giá sai: ${vAfter.price_vnd}`);
+  r = await a.patch(`/products/${pid}/variants/${anyV.id}`, { price_vnd: -5 });
+  r.status === 400 ? ok('giá âm → 400') : bad('không chặn giá âm', r.raw);
+  r = await S(Bs.shopId, Bs.cookie).patch(`/products/${pid}/variants/${anyV.id}`, { price_vnd: 1000 });
+  r.status === 404 ? ok('shop B PATCH giá biến thể shop A → 404 (cô lập)') : bad('rò sửa giá chéo shop', r.raw);
 
   sect('4. Validation + cô lập chéo shop');
   r = await a.put(`/products/${pid}/options`, { options: [{ name: 'A', values: Array.from({ length: 11 }, (_, i) => `a${i}`) }, { name: 'B', values: Array.from({ length: 11 }, (_, i) => `b${i}`) }] });

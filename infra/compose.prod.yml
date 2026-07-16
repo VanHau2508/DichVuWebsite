@@ -253,6 +253,8 @@ services:
       # Poll vận đơn hãng VC (0044): khoá PHẢI khớp seller; sweep mặc định 10 phút.
       SHIPPING_ENC_KEY: ${SHIPPING_ENC_KEY:?}
       TRACKING_SWEEP_MS: ${TRACKING_SWEEP_MS:-600000}
+      # Cảnh báo đường tiền/vận hành → webhook (Slack/Discord/Telegram-bridge). Trống = tắt.
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
       PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
       REDIS_HOST: redis
       REDIS_PORT: "6379"

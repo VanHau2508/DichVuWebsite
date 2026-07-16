@@ -239,6 +239,24 @@ async function main() {
   (await reserved(vid)) === resBeforeFresh && (await orderStatus(oidq2)) === 'pending'
     ? ok('đơn QR còn mới KHÔNG bị hết hạn (giữ reserve + pending)') : bad('sweep hết hạn nhầm đơn mới');
 
+  // ── Cảnh báo ĐƯỜNG TIỀN (ops): giao dịch chưa khớp tồn đọng → đẩy webhook ─────
+  sect('Cảnh báo đường tiền');
+  const alerts = [];
+  const alertStub = http.createServer((rq, rs) => { let b = ''; rq.on('data', (d) => (b += d)); rq.on('end', () => { try { alerts.push(JSON.parse(b)); } catch {} rs.writeHead(200); rs.end('ok'); }); });
+  await new Promise((r) => alertStub.listen(9103, '0.0.0.0', r)); // worker ALERT_WEBHOOK_URL=http://dbtest:9103
+  // Seed 1 giao dịch tiền CHƯA KHỚP, tạo 2h trước (quá ngưỡng 1h) → phải cảnh báo.
+  await owner.query(
+    `INSERT INTO unmatched_transfers (shop_id, provider, provider_event_id, amount_vnd, reason, raw, created_at)
+     VALUES ($1,'sepay',$2,500000,'no_ref','{}'::jsonb, now() - interval '2 hours')`, [A.shopId, `evt-${uniq()}`]);
+  const asweep = await (await fetch(`${WORKER}/internal/alert-sweep`, { method: 'POST' })).json();
+  asweep.metrics.unmatched_old >= 1 && asweep.breaches >= 1
+    ? ok(`sweep phát hiện ${asweep.metrics.unmatched_old} giao dịch chưa khớp >1h → ${asweep.breaches} cảnh báo`)
+    : bad('không phát hiện tiền chưa khớp', JSON.stringify(asweep));
+  await sleep(400); // chờ worker POST webhook
+  alerts.some((a) => /chưa khớp/i.test(a.text ?? ''))
+    ? ok('đã ĐẨY cảnh báo tới webhook (nội dung "tiền chưa khớp")') : bad('webhook không nhận cảnh báo', JSON.stringify(alerts).slice(0, 200));
+  alertStub.close();
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

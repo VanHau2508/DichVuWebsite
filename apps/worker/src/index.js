@@ -474,10 +474,74 @@ async function sweepOutboxGc() {
   } catch (e) { log('error', 'outbox_gc_error', { message: e.message }); return { scrubbed: 0 }; }
 }
 
+// ── sweep: CẢNH BÁO ĐƯỜNG TIỀN + VẬN HÀNH ────────────────────────────────────
+// Đẩy cảnh báo tới ALERT_WEBHOOK_URL (webhook chung — Slack/Discord/Mattermost nhận {text};
+// Telegram/Zalo qua cầu nối) khi: (1) giao dịch tiền CHƯA KHỚP tồn đọng (tiền về, chưa vào
+// đơn — mất doanh thu/khiếu nại); (2) email TỒN ĐỌNG (worker gửi mail kẹt); (3) email
+// dead-letter. Dedup: chỉ báo khi trạng thái ĐỔI hoặc quá ALERT_REPEAT_MS (chống spam).
+const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL ?? '';
+const ALERT_SWEEP_MS = Number(process.env.ALERT_SWEEP_MS ?? 300000);      // 5 phút
+const ALERT_REPEAT_MS = Number(process.env.ALERT_REPEAT_MS ?? 3600000);   // nhắc lại mỗi 1h nếu còn
+const ALERT_UNMATCHED_MAX = Number(process.env.ALERT_UNMATCHED_MAX ?? 1); // ≥N giao dịch chưa khớp >1h
+const ALERT_OUTBOX_MAX = Number(process.env.ALERT_OUTBOX_MAX ?? 20);      // ≥N email tồn >10'
+const ALERT_EMAIL_FAIL_MAX = Number(process.env.ALERT_EMAIL_FAIL_MAX ?? 5);
+let lastAlertState = '', lastAlertAt = 0;
+
+async function postAlert(text, metrics, severity) {
+  if (!ALERT_WEBHOOK_URL) return false;
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 8000);
+  try {
+    const r = await fetch(ALERT_WEBHOOK_URL, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text, content: text, severity, service: 'nentang', metrics }), signal: ac.signal,
+    });
+    return r.ok;
+  } catch (e) { log('error', 'alert_post_error', { message: e.message }); return false; }
+  finally { clearTimeout(t); }
+}
+
+async function sweepMoneyAlerts() {
+  const m = { unmatched_open: 0, unmatched_old: 0, outbox_backlog: 0, email_failed: 0 };
+  if (expiryDb) {
+    try {
+      const r = (await expiryDb.query(`SELECT
+        count(*) FILTER (WHERE resolved_at IS NULL)::int AS open,
+        count(*) FILTER (WHERE resolved_at IS NULL AND created_at < now() - interval '1 hour')::int AS old
+        FROM unmatched_transfers`)).rows[0];
+      m.unmatched_open = r.open; m.unmatched_old = r.old;
+    } catch (e) { log('error', 'alert_unmatched_error', { message: e.message }); }
+  }
+  try {
+    m.outbox_backlog = Number((await db.query(
+      `SELECT count(*)::int n FROM outbox WHERE processed_at IS NULL AND created_at < now() - interval '10 minutes'`)).rows[0].n);
+  } catch (e) { log('error', 'alert_outbox_error', { message: e.message }); }
+  try { m.email_failed = Number((await queue.getJobCounts('failed')).failed ?? 0); } catch {}
+
+  const breaches = [];
+  if (m.unmatched_old >= ALERT_UNMATCHED_MAX) breaches.push(`${m.unmatched_old} giao dịch tiền CHƯA KHỚP quá 1h (tiền về nhưng chưa vào đơn — kiểm hàng đợi đối soát)`);
+  if (m.outbox_backlog >= ALERT_OUTBOX_MAX) breaches.push(`${m.outbox_backlog} email TỒN ĐỌNG >10' (worker gửi mail có thể đang kẹt)`);
+  if (m.email_failed >= ALERT_EMAIL_FAIL_MAX) breaches.push(`${m.email_failed} email gửi THẤT BẠI (dead-letter)`);
+
+  const state = breaches.join(' | ');
+  const now = Date.now();
+  if (state && (state !== lastAlertState || now - lastAlertAt > ALERT_REPEAT_MS)) {
+    const sent = await postAlert(`⚠ NỀN TẢNG — cảnh báo vận hành:\n- ${breaches.join('\n- ')}`, m, 'warning');
+    if (sent) { lastAlertState = state; lastAlertAt = now; }
+    log('warn', 'ops_alert', { breaches: breaches.length, metrics: m, sent });
+  } else if (!state && lastAlertState) {
+    await postAlert('✓ NỀN TẢNG — các cảnh báo vận hành đã hết.', m, 'ok');
+    lastAlertState = ''; lastAlertAt = 0;
+    log('info', 'ops_alert_cleared', {});
+  }
+  return { metrics: m, breaches: breaches.length };
+}
+
 const timer = setInterval(poll, POLL_MS);
 const expiryTimer = expiryDb ? setInterval(sweepExpired, EXPIRY_SWEEP_MS) : null;
 const lowstockTimer = expiryDb ? setInterval(sweepLowStock, LOWSTOCK_SWEEP_MS) : null;
 const outboxGcTimer = setInterval(sweepOutboxGc, OUTBOX_GC_MS);
+const alertTimer = setInterval(sweepMoneyAlerts, ALERT_SWEEP_MS);
 const domainTimer = domainDb ? setInterval(sweepDomainVerify, DOMAINVERIFY_SWEEP_MS) : null;
 const billingTimer = billingDb ? setInterval(sweepSubscriptions, SUBSCRIPTION_SWEEP_MS) : null;
 const trackingTimer = (expiryDb && TRACKING_ON) ? setInterval(sweepTracking, TRACKING_SWEEP_MS) : null;
@@ -528,6 +592,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(r));
   }
+  // Kích hoạt quét cảnh báo đường tiền ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/alert-sweep' && req.method === 'POST') {
+    const r = await sweepMoneyAlerts();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   res.writeHead(404); res.end();
 }));
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
@@ -541,6 +611,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (trackingTimer) clearInterval(trackingTimer);
     if (lowstockTimer) clearInterval(lowstockTimer);
     clearInterval(outboxGcTimer);
+    clearInterval(alertTimer);
     await worker.close().catch(() => {});
     await queue.close().catch(() => {});
     server.close(async () => { await db.end().catch(() => {}); await expiryDb?.end().catch(() => {}); await domainDb?.end().catch(() => {}); await billingDb?.end().catch(() => {}); process.exit(0); });

@@ -21,12 +21,33 @@ set -a; [ -f .env ] && . ./.env; set +a
 C="docker compose -f infra/compose.prod.yml --env-file .env"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/nentang}"
 RET="${BACKUP_RETENTION_DAYS:-14}"
+BACKUP_ENC_KEY="${BACKUP_ENC_KEY:-}"
 MODE="${1:-full}"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 DEST="$BACKUP_DIR/$TS"; mkdir -p "$DEST"
 GRN=$'\033[32m'; RED=$'\033[31m'; RST=$'\033[0m'
 ok() { printf '  %s✔%s %s\n' "$GRN" "$RST" "$1"; }
 warn() { printf '  %s!%s %s\n' "$RED" "$RST" "$1"; }
+
+# MÃ HOÁ tại chỗ TRƯỚC khi rời máy: dump chứa hash mật khẩu + PII khách + KHOÁ TLS. Nếu
+# offsite (S3/B2/box khác) bị lộ mà backup không mã hoá = lộ sạch. Khoá BACKUP_ENC_KEY nằm
+# NGOÀI backup (env/secret manager) → kẻ chiếm được file backup vẫn không đọc được.
+# AES-256-CBC + PBKDF2 (200k vòng) + salt ngẫu nhiên mỗi file. Giải mã: scripts/restore.sh.
+encrypt_file() {
+  local f="$1"
+  [ -s "$f" ] || return 0                       # bỏ qua file rỗng
+  if [ -z "$BACKUP_ENC_KEY" ]; then
+    if [ "${ALLOW_UNENCRYPTED_BACKUP:-}" = "1" ]; then warn "BACKUP_ENC_KEY trống — backup KHÔNG mã hoá (đã opt-in)"; return 0; fi
+    printf '%s✖ BACKUP_ENC_KEY trống — TỪ CHỐI đẩy backup KHÔNG mã hoá (chứa PII + khoá TLS).%s\n' "$RED" "$RST" >&2
+    printf '   Sinh khoá: openssl rand -base64 48 → đặt BACKUP_ENC_KEY trong .env (GIỮ RIÊNG, KHÔNG kèm backup).\n' >&2
+    exit 1
+  fi
+  if openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:BACKUP_ENC_KEY -in "$f" -out "$f.enc"; then
+    rm -f "$f"; ok "mã hoá: $(basename "$f").enc"
+  else
+    printf '%s✖ mã hoá THẤT BẠI: %s — DỪNG (không đẩy plaintext).%s\n' "$RED" "$f" "$RST" >&2; exit 1
+  fi
+}
 
 offsite() { # đẩy một đường dẫn ra offsite; THIẾU offsite = fail (backup cục-bộ-only KHÔNG là DR)
   if [ -n "${OFFSITE_CMD:-}" ]; then
@@ -43,7 +64,7 @@ offsite() { # đẩy một đường dẫn ra offsite; THIẾU offsite = fail (b
 
 # WAL-only: đẩy nhanh, không dump nặng (chạy mỗi vài phút cho RPO nhỏ).
 $C exec -T postgres tar -C /wal-archive -czf - . > "$DEST/wal.tar.gz" 2>/dev/null && ok "WAL archive ($(wc -c <"$DEST/wal.tar.gz") byte)" || warn "WAL archive rỗng/lỗi"
-if [ "$MODE" = "wal" ]; then offsite "$DEST/wal.tar.gz"; echo "backup WAL xong: $DEST"; exit 0; fi
+if [ "$MODE" = "wal" ]; then encrypt_file "$DEST/wal.tar.gz"; offsite "$DEST/wal.tar.gz.enc"; echo "backup WAL xong: $DEST"; exit 0; fi
 
 # Logical dump.
 if $C exec -T postgres pg_dumpall -U app_owner | gzip > "$DEST/logical.sql.gz" && [ -s "$DEST/logical.sql.gz" ]; then
@@ -62,6 +83,8 @@ $C exec -T minio tar -C /data -czf - media-public media-private > "$DEST/media.t
 # Caddy certs.
 docker run --rm -v nentang-prod_caddy_data:/d:ro -w /d alpine tar czf - . > "$DEST/caddy_data.tar.gz" 2>/dev/null && ok "caddy_data (chứng chỉ)" || warn "caddy_data backup lỗi"
 
+# MÃ HOÁ mọi artifact TRƯỚC khi rời máy (chỉ còn *.enc trong $DEST khi đẩy offsite).
+for f in "$DEST"/*; do [ -f "$f" ] && encrypt_file "$f"; done
 offsite "$DEST"
 
 # Retention: backup cục bộ + WAL archive (postgres KHÔNG tự dọn → đầy đĩa nếu bỏ mặc).
@@ -74,3 +97,9 @@ else
   warn "base backup lỗi → GIỮ nguyên WAL archive (không prune) để không mất PITR"
 fi
 printf '%s✔ BACKUP xong%s: %s\n' "$GRN" "$RST" "$DEST"
+
+# DEAD-MAN'S SWITCH: ping dịch vụ giám sát (healthchecks.io...) khi backup CHẠY XONG. Nếu
+# cron backup NGỪNG chạy (VPS chết/crontab hỏng) → không có ping → dịch vụ ngoài báo động.
+if [ -n "${HEALTHCHECK_PING_URL:-}" ]; then
+  curl -fsS -m 10 --retry 3 "$HEALTHCHECK_PING_URL" >/dev/null 2>&1 && ok "đã ping giám sát backup" || warn "ping giám sát backup lỗi"
+fi

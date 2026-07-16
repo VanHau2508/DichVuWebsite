@@ -293,6 +293,8 @@ services:
       GHN_API_BASE: http://dbtest:9101
       GHTK_API_BASE: http://dbtest:9102
       TRACKING_SWEEP_MS: "600000"
+      # Cảnh báo đường tiền → webhook (dev trỏ stub e2e dbtest:9103).
+      ALERT_WEBHOOK_URL: http://dbtest:9103
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       SMTP_HOST: mailpit

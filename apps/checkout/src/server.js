@@ -487,13 +487,14 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     // Outbox: sự kiện email xác nhận đơn — GHI TRONG CÙNG transaction. Rollback →
     // không có dòng này → không email ma (ADR-006). Payload self-contained (worker
     // chỉ đọc outbox, không đụng orders/PII). Chỉ khi có email người mua.
-    if (email) {
-      // link tra cứu: token THÔ nằm trong email khách (họ cần nó) — outbox row cũng chứa
-      // (chấp nhận được: token chỉ mở trang chi tiết 1 đơn của chính khách).
-      const link = ctx.host ? `https://${ctx.host}/checkout/order?number=${Number(num)}&token=${lookupToken}` : undefined;
+    // Phát cho MỌI đơn (kể cả không email): email chỉ gửi khi có `to`, nhưng CHỦ SHOP luôn
+    // nhận thông báo Telegram "đơn mới" (worker định tuyến theo shop_id). link tra cứu: token
+    // THÔ trong email khách (họ cần) — chỉ thêm khi có email.
+    {
+      const link = (email && ctx.host) ? `https://${ctx.host}/checkout/order?number=${Number(num)}&token=${lookupToken}` : undefined;
       await c.query(
         `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.created', $1)`,
-        [{ to: email, order_number: Number(num), total_vnd: total, customer_name: name, payment_method: paymentMethod, ...(link ? { link } : {}) }],
+        [{ ...(email ? { to: email } : {}), order_number: Number(num), total_vnd: total, customer_name: name, payment_method: paymentMethod, ...(link ? { link } : {}) }],
       );
     }
 

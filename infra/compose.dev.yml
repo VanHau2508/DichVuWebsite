@@ -200,6 +200,8 @@ services:
       SHIPPING_ENC_KEY: 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
       GHN_API_BASE: http://dbtest:9101
       GHTK_API_BASE: http://dbtest:9102
+      # Telegram bot username (công khai) để dựng deep-link kết nối.
+      TELEGRAM_BOT_USERNAME: nentang_dev_bot
       # Custom domain (A5): chặn khách chiếm subdomain nền tảng + dựng bản ghi TXT challenge.
       PLATFORM_DOMAIN: nentang.vn
       DOMAINVERIFY_PREFIX: _nentang-verify
@@ -295,6 +297,10 @@ services:
       TRACKING_SWEEP_MS: "600000"
       # Cảnh báo đường tiền → webhook (dev trỏ stub e2e dbtest:9103).
       ALERT_WEBHOOK_URL: http://dbtest:9103
+      # Telegram: bot nền tảng (dev trỏ stub e2e dbtest:9104). Token giả để BẬT tính năng.
+      TELEGRAM_BOT_TOKEN: dev-telegram-token
+      TELEGRAM_API_BASE: http://dbtest:9104
+      TELEGRAM_LINK_SWEEP_MS: "15000"
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       SMTP_HOST: mailpit

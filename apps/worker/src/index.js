@@ -139,11 +139,11 @@ async function poll() {
     c = await db.connect();
     await c.query('BEGIN');
     const rows = (await c.query(
-      `SELECT id, topic, payload FROM outbox WHERE processed_at IS NULL ORDER BY id LIMIT 50 FOR UPDATE SKIP LOCKED`,
+      `SELECT id, shop_id, topic, payload FROM outbox WHERE processed_at IS NULL ORDER BY id LIMIT 50 FOR UPDATE SKIP LOCKED`,
     )).rows;
     for (const r of rows) {
       await queue.add(
-        r.topic, { topic: r.topic, payload: r.payload, outboxId: String(r.id) },
+        r.topic, { topic: r.topic, payload: r.payload, shopId: r.shop_id, outboxId: String(r.id) },
         { jobId: `ob-${r.id}`, attempts: ATTEMPTS, backoff: { type: 'fixed', delay: BACKOFF_MS }, removeOnComplete: { count: 500 }, removeOnFail: false },
       );
     }
@@ -158,7 +158,11 @@ async function poll() {
 
 // ── consumer: queue → email ──────────────────────────────────────────────────
 const worker = new Worker('email', async (job) => {
-  const { topic, payload } = job.data;
+  const { topic, payload, shopId, outboxId } = job.data;
+  // Telegram cho CHỦ SHOP chạy TRƯỚC + ĐỘC LẬP email: nếu email khách lỗi (relay từ chối →
+  // throw → retry → dead-letter), chủ shop VẪN nhận "đơn mới". Idempotent theo outboxId +
+  // tự nuốt lỗi (không throw) → không làm fail/nuốt email.
+  await deliverTelegram(topic, payload, shopId, outboxId);
   // Cờ test: email bounce vĩnh viễn → để kiểm dead-letter (chỉ dev/test).
   if (payload?.to === 'bounce@test.invalid') throw new Error('simulated permanent bounce');
   await deliverNotification(topic, payload);
@@ -479,6 +483,85 @@ async function sweepOutboxGc() {
 // Telegram/Zalo qua cầu nối) khi: (1) giao dịch tiền CHƯA KHỚP tồn đọng (tiền về, chưa vào
 // đơn — mất doanh thu/khiếu nại); (2) email TỒN ĐỌNG (worker gửi mail kẹt); (3) email
 // dead-letter. Dedup: chỉ báo khi trạng thái ĐỔI hoặc quá ALERT_REPEAT_MS (chống spam).
+// ── THÔNG BÁO TELEGRAM (1 bot nền tảng, per-shop chat) ───────────────────────
+// Shop link chat qua deep-link /start <link_code>: worker poll getUpdates → bind chat_id.
+// Sự kiện đơn (mới/thanh toán/huỷ) + sắp hết hàng → bắn tới chat chủ shop. Dev trỏ stub.
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? '';
+const TELEGRAM_API_BASE = (process.env.TELEGRAM_API_BASE ?? 'https://api.telegram.org').replace(/\/+$/, '');
+const TELEGRAM_ON = TELEGRAM_BOT_TOKEN !== '';
+const TELEGRAM_LINK_SWEEP_MS = Number(process.env.TELEGRAM_LINK_SWEEP_MS ?? 15000);
+const ALERT_TELEGRAM_CHAT_ID = process.env.ALERT_TELEGRAM_CHAT_ID ?? ''; // chat NỀN TẢNG nhận cảnh báo tiền
+let tgOffset = 0;
+
+async function tgSend(chatId, text) {
+  if (!TELEGRAM_ON || !chatId) return false;
+  const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 8000);
+  try {
+    const r = await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }), signal: ac.signal });
+    return r.ok;
+  } catch (e) { log('error', 'tg_send_error', { message: e.message }); return false; }
+  finally { clearTimeout(t); }
+}
+
+// Poll getUpdates → xử lý "/start <code>" để BIND chat_id vào shop (tra theo link_code).
+async function sweepTelegramLink() {
+  if (!TELEGRAM_ON || !expiryDb) return { bound: 0 };
+  let updates;
+  const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 12000);
+  try {
+    const r = await fetch(`${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/getUpdates?timeout=0&offset=${tgOffset}`, { signal: ac.signal });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok) return { bound: 0 };
+    updates = j.result ?? [];
+  } catch (e) { log('error', 'tg_getupdates_error', { message: e.message }); return { bound: 0 }; }
+  finally { clearTimeout(t); }
+  let bound = 0;
+  for (const u of updates) {
+    tgOffset = Math.max(tgOffset, Number(u.update_id) + 1); // xác nhận đã xử lý
+    const text = u.message?.text ?? '', chat = u.message?.chat?.id;
+    const mm = /^\/start\s+([A-Za-z0-9_-]{6,40})/.exec(text);
+    if (!mm || chat == null) continue;
+    try {
+      const upd = await expiryDb.query(
+        `UPDATE shop_telegram SET chat_id = $2, linked_at = now(), link_code = NULL WHERE link_code = $1 RETURNING shop_id`,
+        [mm[1], String(chat)]);
+      if (upd.rowCount === 1) { bound++; await tgSend(String(chat), '✅ Đã kết nối! Cửa hàng của bạn sẽ nhận thông báo đơn hàng + vận hành tại đây.'); }
+      else await tgSend(String(chat), 'Mã liên kết không đúng hoặc đã dùng. Vào lại trang Thông báo trong admin để lấy mã mới.');
+    } catch (e) { log('error', 'tg_bind_error', { message: e.message }); }
+  }
+  if (bound) log('info', 'tg_linked', { n: bound });
+  return { bound, checked: updates.length };
+}
+
+// Soạn tin Telegram cho CHỦ SHOP theo sự kiện outbox. null = không báo (vd confirmed/shipped
+// là shop tự thao tác, không cần báo).
+function tgMessageFor(topic, p) {
+  const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + 'đ';
+  if (topic === 'order.created') return `🛒 Đơn MỚI #${p.order_number} — ${money(p.total_vnd)} (${p.payment_method === 'qr' ? 'chờ CK QR' : 'COD'})${p.customer_name ? `\nKhách: ${p.customer_name}` : ''}`;
+  if (topic === 'order.paid') return `💰 Đơn #${p.order_number} ĐÃ THANH TOÁN — ${money(p.total_vnd)}. Chuẩn bị giao hàng.`;
+  if (topic === 'order.status_changed' && p.status === 'cancelled') return `❌ Đơn #${p.order_number} đã huỷ${p.reason === 'expired' ? ' (tự huỷ quá hạn)' : ''}.`;
+  if (topic === 'stock.low') return `📦 ${p.items?.length ?? 0} sản phẩm SẮP HẾT HÀNG (còn ≤ ${p.threshold}). Kiểm kho + nhập thêm.`;
+  return null;
+}
+async function deliverTelegram(topic, payload, shopId, outboxId) {
+  try {
+    if (!TELEGRAM_ON || !expiryDb || !shopId) return;
+    const text = tgMessageFor(topic, payload);
+    if (!text) return;
+    // DEDUP theo outboxId: consumer chạy Telegram TRƯỚC email; nếu email lỗi → job retry →
+    // consumer chạy lại → KHÔNG gửi Telegram TRÙNG. Đánh dấu SAU khi gửi thành công (lỗi gửi
+    // tạm thời vẫn được thử lại qua vòng retry của email). db/queue Redis dùng chung.
+    const rc = outboxId ? await queue.client : null;
+    if (rc && (await rc.get(`tgsent:${outboxId}`))) return;
+    const row = (await expiryDb.query(`SELECT chat_id FROM shop_telegram WHERE shop_id = $1 AND enabled AND chat_id IS NOT NULL`, [shopId])).rows[0];
+    if (!row?.chat_id) return;
+    const sent = await tgSend(row.chat_id, text);
+    if (sent && rc) await rc.set(`tgsent:${outboxId}`, '1', 'EX', 86400);
+  } catch (e) { log('error', 'tg_deliver_error', { message: e.message }); } // KHÔNG throw (không làm fail email)
+}
+
 const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL ?? '';
 const ALERT_SWEEP_MS = Number(process.env.ALERT_SWEEP_MS ?? 300000);      // 5 phút
 const ALERT_REPEAT_MS = Number(process.env.ALERT_REPEAT_MS ?? 3600000);   // nhắc lại mỗi 1h nếu còn
@@ -488,17 +571,22 @@ const ALERT_EMAIL_FAIL_MAX = Number(process.env.ALERT_EMAIL_FAIL_MAX ?? 5);
 let lastAlertState = '', lastAlertAt = 0;
 
 async function postAlert(text, metrics, severity) {
-  if (!ALERT_WEBHOOK_URL) return false;
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), 8000);
-  try {
-    const r = await fetch(ALERT_WEBHOOK_URL, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text, content: text, severity, service: 'nentang', metrics }), signal: ac.signal,
-    });
-    return r.ok;
-  } catch (e) { log('error', 'alert_post_error', { message: e.message }); return false; }
-  finally { clearTimeout(t); }
+  let sent = false;
+  // Ưu tiên Telegram nền tảng (nếu cấu hình) — cảnh báo tiền bắn thẳng vào điện thoại bạn.
+  if (TELEGRAM_ON && ALERT_TELEGRAM_CHAT_ID) sent = (await tgSend(ALERT_TELEGRAM_CHAT_ID, text)) || sent;
+  if (ALERT_WEBHOOK_URL) {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 8000);
+    try {
+      const r = await fetch(ALERT_WEBHOOK_URL, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, content: text, severity, service: 'nentang', metrics }), signal: ac.signal,
+      });
+      sent = r.ok || sent;
+    } catch (e) { log('error', 'alert_post_error', { message: e.message }); }
+    finally { clearTimeout(t); }
+  }
+  return sent;
 }
 
 async function sweepMoneyAlerts() {
@@ -542,6 +630,7 @@ const expiryTimer = expiryDb ? setInterval(sweepExpired, EXPIRY_SWEEP_MS) : null
 const lowstockTimer = expiryDb ? setInterval(sweepLowStock, LOWSTOCK_SWEEP_MS) : null;
 const outboxGcTimer = setInterval(sweepOutboxGc, OUTBOX_GC_MS);
 const alertTimer = setInterval(sweepMoneyAlerts, ALERT_SWEEP_MS);
+const tgLinkTimer = (TELEGRAM_ON && expiryDb) ? setInterval(sweepTelegramLink, TELEGRAM_LINK_SWEEP_MS) : null;
 const domainTimer = domainDb ? setInterval(sweepDomainVerify, DOMAINVERIFY_SWEEP_MS) : null;
 const billingTimer = billingDb ? setInterval(sweepSubscriptions, SUBSCRIPTION_SWEEP_MS) : null;
 const trackingTimer = (expiryDb && TRACKING_ON) ? setInterval(sweepTracking, TRACKING_SWEEP_MS) : null;
@@ -598,6 +687,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(r));
   }
+  // Kích hoạt poll /start Telegram ngay (nội bộ — cho e2e xác định link).
+  if (url.pathname === '/internal/telegram-link-sweep' && req.method === 'POST') {
+    const r = await sweepTelegramLink();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   res.writeHead(404); res.end();
 }));
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
@@ -612,6 +707,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (lowstockTimer) clearInterval(lowstockTimer);
     clearInterval(outboxGcTimer);
     clearInterval(alertTimer);
+    if (tgLinkTimer) clearInterval(tgLinkTimer);
     await worker.close().catch(() => {});
     await queue.close().catch(() => {});
     server.close(async () => { await db.end().catch(() => {}); await expiryDb?.end().catch(() => {}); await domainDb?.end().catch(() => {}); await billingDb?.end().catch(() => {}); process.exit(0); });

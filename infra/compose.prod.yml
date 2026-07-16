@@ -195,6 +195,8 @@ services:
       # Vận chuyển hãng (GHN/GHTK): khoá mã hoá token per-shop (BẮT BUỘC nếu dùng);
       # API base mặc định trỏ hãng THẬT — không đặt lại trừ khi test.
       SHIPPING_ENC_KEY: ${SHIPPING_ENC_KEY:?}
+      # Telegram bot username (công khai) để dựng deep-link kết nối per-shop.
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
     deploy: { resources: { limits: { memory: 384m } } }   # sharp re-encode ảnh
     depends_on:
       postgres: { condition: service_healthy }
@@ -255,6 +257,9 @@ services:
       TRACKING_SWEEP_MS: ${TRACKING_SWEEP_MS:-600000}
       # Cảnh báo đường tiền/vận hành → webhook (Slack/Discord/Telegram-bridge). Trống = tắt.
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      # Bot Telegram nền tảng (thông báo per-shop + cảnh báo tiền). Trống = tắt.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
       PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
       REDIS_HOST: redis
       REDIS_PORT: "6379"

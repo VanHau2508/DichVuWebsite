@@ -252,6 +252,25 @@ async function carrierReconcile(req, res, me, cookie, shopId, oid) {
   return orderDetail(res, me, cookie, shopId, oid, r.json?.error ?? 'Không phục hồi được vận đơn.');
 }
 
+// ── Thông báo Telegram per-shop ───────────────────────────────────────────────
+async function notifyPage(res, me, cookie, shopId, ok, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'notify');
+  const r = await sellerApi('GET', `/shops/${shopId}/telegram`, { cookie });
+  if (r.status !== 200) return sendHtml(res, 502, V.renderError(ctx, r.json?.error ?? 'Không tải được cấu hình thông báo.'));
+  return sendHtml(res, err ? 400 : 200, V.renderNotify(ctx, shopId, r.json, err, ok));
+}
+async function notifyLink(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/telegram/link`, { cookie, body: {} });
+  return r.status === 200 ? redirect(res, `/shops/${shopId}/notify`) : notifyPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không tạo được liên kết.');
+}
+async function notifyUnlink(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('DELETE', `/shops/${shopId}/telegram`, { cookie });
+  return r.status === 200 ? notifyPage(res, me, cookie, shopId, 'Đã ngắt kết nối Telegram.', null) : notifyPage(res, me, cookie, shopId, null, 'Không ngắt được.');
+}
+
 // ── Vận chuyển: trang kết nối hãng (shop.write + step-up ở seller) ────────────
 function shippingForm(f) {
   return {
@@ -1420,6 +1439,11 @@ async function handle(req, res, url, p) {
     // Đánh giá sản phẩm (content.write = owner/admin ở seller).
     if ((m = new RegExp(`^/shops/${UUID}/reviews$`).exec(p)) && req.method === 'GET') return reviewsPage(res, me, cookie, m[1], url.searchParams.get('status'));
     if ((m = new RegExp(`^/shops/${UUID}/reviews/${UUID}/(approve|reject|delete)$`).exec(p)) && req.method === 'POST') return reviewAction(res, me, cookie, m[1], m[2], m[3]);
+
+    // Thông báo Telegram (shop.write = owner/admin ở seller).
+    if ((m = new RegExp(`^/shops/${UUID}/notify$`).exec(p)) && req.method === 'GET') return notifyPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/notify/link$`).exec(p)) && req.method === 'POST') return notifyLink(res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/notify/unlink$`).exec(p)) && req.method === 'POST') return notifyUnlink(res, me, cookie, m[1]);
 
     // Vận chuyển hãng (shop.write = owner/admin + step-up ở seller).
     if ((m = new RegExp(`^/shops/${UUID}/shipping$`).exec(p)) && req.method === 'GET') return shippingPage(res, me, cookie, m[1], null, null);

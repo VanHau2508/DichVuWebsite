@@ -114,6 +114,7 @@ const IC_CHART = ic('<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7" y="12" w
 const IC_GEAR = ic('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>');
 const IC_TICKET = ic('<path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2 2 2 0 0 0 0 4 2 2 0 0 1-2 2H5a2 2 0 0 1-2-2 2 2 0 0 0 0-4z"/><path d="M13 6v2M13 12v2M13 16v2"/>');
 const IC_TRUCK = ic('<path d="M2 6h12v10H2z"/><path d="M14 9h4l3 3v4h-7z"/><circle cx="6" cy="18" r="1.8"/><circle cx="17" cy="18" r="1.8"/>');
+const IC_BELL = ic('<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 20a2 2 0 0 0 4 0"/>');
 const IC_STAR = ic('<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>');
 const IC_HEART = ic('<circle cx="12" cy="8" r="3.5"/><path d="M5 20v-1.5a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6V20"/>');
 
@@ -135,6 +136,7 @@ function sideNav(ctx) {
           + it(`${base}/domains`, 'Tên miền', IC_GLOBE, ctx.active === 'domains', DOMAIN_ROLES.has(ctx.role))
           + it(`${base}/payment`, 'Thanh toán', IC_CARD, ctx.active === 'payment', PAYMENT_ROLES.has(ctx.role))
           + it(`${base}/shipping`, 'Vận chuyển', IC_TRUCK, ctx.active === 'shipping', SHIPPING_ROLES.has(ctx.role))
+          + it(`${base}/notify`, 'Thông báo', IC_BELL, ctx.active === 'notify', SHIPPING_ROLES.has(ctx.role))
           + it(`${base}/export`, 'Xuất dữ liệu', IC_DOWN, ctx.active === 'export', EXPORT_ROLES.has(ctx.role))
           + it(`${base}/theme`, 'Giao diện', IC_PALETTE, ctx.active === 'theme', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/settings`, 'Cài đặt', IC_GEAR, ctx.active === 'settings', CONTENT_ROLES.has(ctx.role));
@@ -1493,6 +1495,39 @@ export function renderReviews(ctx, shopId, data, activeStatus) {
     <p class="muted">Đánh giá khách gửi chỉ hiện trên cửa hàng sau khi bạn <strong>duyệt</strong>. Đang chờ: <strong>${esc(String(data?.pending_count ?? 0))}</strong></p>
     <div class="actions" style="margin-bottom:14px">${tab('pending', 'Chờ duyệt')}${tab('approved', 'Đã duyệt')}${tab('rejected', 'Đã từ chối')}</div>
     ${rows || '<div class="card"><p class="muted">Không có đánh giá nào ở mục này.</p></div>'}`);
+}
+
+// ── Thông báo Telegram per-shop ───────────────────────────────────────────────
+export function renderNotify(ctx, shopId, data, err, ok) {
+  const base = `/shops/${esc(shopId)}/notify`;
+  const d = data ?? {};
+  if (!d.available) {
+    return layout('Thông báo', ctx, `<h1>Thông báo</h1>
+      <div class="card"><p class="muted">Nền tảng chưa bật kênh Telegram. Liên hệ quản trị nền tảng.</p></div>`);
+  }
+  const connected = !!d.connected, pending = !!d.pending;
+  return layout('Thông báo', ctx, `<h1>Thông báo qua Telegram</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${ok ? `<div class="card" style="border-color:#86efac;background:#f0fdf4">${esc(ok)}</div>` : ''}
+    ${connected ? `<div class="card" style="border-color:#86efac;background:#f0fdf4">
+        <strong>✓ Đã kết nối Telegram</strong>
+        <p class="muted" style="margin:8px 0 0">Cửa hàng sẽ nhận tin nhắn khi có: <strong>đơn mới · đã thanh toán · đơn huỷ · sắp hết hàng</strong> — ngay trên điện thoại.</p>
+        <form method="POST" action="${base}/unlink" style="margin-top:10px"><button class="btn warn sm" type="submit">Ngắt kết nối</button></form>
+      </div>` : ''}
+    <div class="card"><h2 style="margin-top:0">${connected ? 'Kết nối lại / đổi máy' : 'Kết nối Telegram'}</h2>
+      <p class="muted">Nhận thông báo đơn hàng + vận hành <strong>tận điện thoại</strong>, không cần mở máy tính. Miễn phí, 3 bước:</p>
+      <ol class="muted" style="line-height:1.9">
+        <li>Bấm nút bên dưới → mở đường link Telegram (cần cài app Telegram)</li>
+        <li>Trong Telegram, bấm <strong>START / BẮT ĐẦU</strong> với bot của nền tảng</li>
+        <li>Quay lại đây <strong>tải lại trang</strong> — sẽ thấy "Đã kết nối"</li>
+      </ol>
+      ${pending && d.deep_link ? `<div class="card" style="background:var(--surface,#f6f7f8)">
+          <p style="margin:0 0 8px"><strong>Mã liên kết đã tạo</strong> — bấm mở Telegram:</p>
+          <a class="btn" href="${esc(d.deep_link)}" target="_blank" rel="noopener">Mở Telegram & bấm START</a>
+          <p class="muted" style="font-size:.82rem;margin:8px 0 0">Đường link: <code>${esc(d.deep_link)}</code> — mã dùng 1 lần, tạo lại nếu hết hạn.</p>
+        </div>` : `<form method="POST" action="${base}/link"><button class="btn" type="submit">Tạo liên kết Telegram</button></form>`}
+    </div>
+    <div class="card"><p class="muted" style="margin:0;font-size:.85rem">Chưa có Telegram? Tải app "Telegram" trên điện thoại (miễn phí) rồi quay lại bước 1. Mỗi nhân sự có thể kết nối máy riêng.</p></div>`);
 }
 
 // ── Vận chuyển hãng (GHN/GHTK) — kết nối per-shop ─────────────────────────────

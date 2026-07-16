@@ -257,6 +257,44 @@ async function main() {
     ? ok('đã ĐẨY cảnh báo tới webhook (nội dung "tiền chưa khớp")') : bad('webhook không nhận cảnh báo', JSON.stringify(alerts).slice(0, 200));
   alertStub.close();
 
+  // ── Thông báo TELEGRAM per-shop (stub Telegram API dbtest:9104) ──────────────
+  sect('Thông báo Telegram per-shop');
+  const tg = { updates: [], sent: [] };
+  const tgStub = http.createServer((rq2, rs2) => {
+    let b = ''; rq2.on('data', (d) => (b += d)); rq2.on('end', () => {
+      rs2.setHeader('content-type', 'application/json');
+      if (/\/getUpdates/.test(rq2.url)) { const out = tg.updates.splice(0); return rs2.end(JSON.stringify({ ok: true, result: out })); }
+      if (/\/sendMessage/.test(rq2.url)) { try { tg.sent.push(JSON.parse(b)); } catch {} return rs2.end(JSON.stringify({ ok: true, result: {} })); }
+      rs2.statusCode = 404; rs2.end('{}');
+    });
+  });
+  await new Promise((r) => tgStub.listen(9104, '0.0.0.0', r)); // worker TELEGRAM_API_BASE=http://dbtest:9104
+  // 1) Shop tạo liên kết → lấy deep-link chứa mã.
+  let tr = await rq(SELLER, 'POST', `/shops/${A.shopId}/telegram/link`, { cookie: A.cookie, origin: OS });
+  const code = /start=([^&\s]+)/.exec(tr.json?.deep_link ?? '')?.[1];
+  code ? ok('shop tạo liên kết Telegram (deep-link có mã)') : bad('không tạo được liên kết', tr.raw);
+  // 2) Giả lập chủ shop bấm START → worker getUpdates thấy "/start <code>" → bind chat_id.
+  const CHAT = '900100200';
+  tg.updates.push({ update_id: 1, message: { chat: { id: Number(CHAT) }, text: `/start ${code}` } });
+  await (await fetch(`${WORKER}/internal/telegram-link-sweep`, { method: 'POST' })).json();
+  await sleep(300);
+  const bound = (await owner.query(`SELECT chat_id FROM shop_telegram WHERE shop_id=$1`, [A.shopId])).rows[0];
+  bound?.chat_id === CHAT ? ok('worker bind chat_id vào shop (đã kết nối)') : bad('không bind được chat_id', JSON.stringify(bound));
+  tg.sent.some((mm) => String(mm.chat_id) === CHAT && /kết nối/i.test(mm.text ?? '')) ? ok('gửi tin xác nhận "đã kết nối" tới chủ shop') : bad('không gửi xác nhận kết nối', JSON.stringify(tg.sent).slice(0, 200));
+  // 3) Đơn MỚI (không email) → chủ shop vẫn nhận Telegram "đơn mới".
+  tg.sent.length = 0;
+  const onew = await placeOrder(A, vid, null, 1);
+  await sleep(800); // chờ outbox → worker → deliverTelegram
+  tg.sent.some((mm) => String(mm.chat_id) === CHAT && /Đơn MỚI/i.test(mm.text ?? '') && (mm.text ?? '').includes(`#${onew.orderNum}`))
+    ? ok(`đơn mới #${onew.orderNum} (không email) → Telegram chủ shop nhận "Đơn MỚI"`) : bad('không bắn Telegram đơn mới', JSON.stringify(tg.sent).slice(0, 200));
+  // 4) Vá MEDIUM: email khách LỖI (bounce) → chủ shop VẪN nhận Telegram "đơn mới" (2 kênh độc lập).
+  tg.sent.length = 0;
+  const obounce = await placeOrder(A, vid, 'bounce@test.invalid', 1);
+  await sleep(900);
+  tg.sent.some((mm) => String(mm.chat_id) === CHAT && /Đơn MỚI/i.test(mm.text ?? '') && (mm.text ?? '').includes(`#${obounce.orderNum}`))
+    ? ok('email khách lỗi → chủ shop VẪN nhận Telegram "đơn mới" (email không nuốt Telegram)') : bad('email lỗi nuốt mất Telegram', JSON.stringify(tg.sent).slice(0, 200));
+  tgStub.close();
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

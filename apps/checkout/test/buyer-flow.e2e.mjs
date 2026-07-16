@@ -147,13 +147,15 @@ async function main() {
   sect('5. Trang checkout');
   r = await co({ host: A.host, path: '/checkout', accept: 'text/html', cartCookie: cart });
   const idem = r.body.match(/name="idempotency_key" value="([^"]+)"/)?.[1];
-  r.status === 200 && idem && r.body.includes('action="/checkout/place"') && r.body.includes('payment_method')
-    ? ok('GET /checkout → form đặt hàng + idem token') : bad('trang checkout lỗi', String(r.status));
+  const ct = r.body.match(/name="ct" value="([^"]+)"/)?.[1]; // token time-trap chống bot (Bước 7)
+  r.status === 200 && idem && ct && r.body.includes('action="/checkout/place"') && r.body.includes('payment_method')
+    ? ok('GET /checkout → form đặt hàng + idem token + time-trap') : bad('trang checkout lỗi', String(r.status));
 
   // ── 6. Đặt hàng COD (form → 303 success) ───────────────────────────────────
   sect('6. Đặt hàng (COD)');
+  await sleep(2600); // như người thật: điền form > MIN_FILL_MS (bot-guard Bước 7)
   r = await co({ method: 'POST', host: A.host, path: '/checkout/place', cartCookie: cart,
-    form: { idempotency_key: idem, name: 'Nguyễn Văn A', phone: '0901234567', email: `buyer-${uniq()}@kh.vn`, address_line: '123 Đường ABC', payment_method: 'cod' } });
+    form: { idempotency_key: idem, ct, name: 'Nguyễn Văn A', phone: '0901234567', email: `buyer-${uniq()}@kh.vn`, address_line: '123 Đường ABC', province: 'TP. Hồ Chí Minh', payment_method: 'cod' } });
   const m = /\/checkout\/success\?number=(\d+)&token=([^&\s]+)/.exec(r.location ?? '');
   r.status === 303 && m ? ok(`đặt hàng → 303 /checkout/success (đơn #${m[1]})`) : bad('đặt hàng COD lỗi', `status=${r.status} loc=${r.location}`);
 
@@ -170,9 +172,12 @@ async function main() {
                      ON CONFLICT (shop_id) DO UPDATE SET bank_bin=EXCLUDED.bank_bin, account_number=EXCLUDED.account_number, account_name=EXCLUDED.account_name, qr_enabled=true`, [A.shopId]);
   // Giỏ MỚI (không gửi cookie cũ — giỏ cũ đã 'converted' sau khi đặt COD).
   const cart2 = (await co({ method: 'POST', host: A.host, path: '/cart/add', form: { variant_id: prod.vid, qty: '1' } })).cartCookie;
-  const idem2 = (await co({ host: A.host, path: '/checkout', accept: 'text/html', cartCookie: cart2 })).body.match(/name="idempotency_key" value="([^"]+)"/)?.[1];
+  const page2 = (await co({ host: A.host, path: '/checkout', accept: 'text/html', cartCookie: cart2 })).body;
+  const idem2 = page2.match(/name="idempotency_key" value="([^"]+)"/)?.[1];
+  const ct2 = page2.match(/name="ct" value="([^"]+)"/)?.[1];
+  await sleep(2600);
   r = await co({ method: 'POST', host: A.host, path: '/checkout/place', cartCookie: cart2,
-    form: { idempotency_key: idem2, name: 'Trần B', phone: '0912345678', address_line: 'X', payment_method: 'qr' } });
+    form: { idempotency_key: idem2, ct: ct2, name: 'Trần B', phone: '0912345678', address_line: 'X', province: 'Hà Nội', payment_method: 'qr' } });
   const m2 = /number=(\d+)&token=([^&\s]+)/.exec(r.location ?? '');
   r.status === 303 && m2 ? ok(`đặt hàng QR → #${m2[1]}`) : bad('đặt hàng QR lỗi', `status=${r.status} loc=${r.location} ${r.body.slice(0,120)}`);
   r = await co({ host: A.host, path: `/checkout/success?number=${m2[1]}&token=${m2[2]}`, accept: 'text/html', cartCookie: cart2 });

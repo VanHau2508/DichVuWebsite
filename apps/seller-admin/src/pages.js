@@ -8,6 +8,7 @@ const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + '₫';
 const dt = (s) => { try { return new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(s)); } catch { return esc(s); } };
 const STATUS = { pending: 'Chờ xử lý', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn' };
 const PAY = { unpaid: 'Chưa trả', paid: 'Đã trả' };
+const SHIP_ST = { created: 'Đang tạo', in_transit: 'Đang vận chuyển', delivered: 'Đã giao', returned: 'Hoàn hàng', cancelled: 'Đã huỷ' };
 
 const STYLE = `*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#1f2430;background:#f6f7f8;line-height:1.55;-webkit-font-smoothing:antialiased}
 a{color:#2463eb;text-decoration:none}a:hover{text-decoration:underline}
@@ -88,6 +89,7 @@ const MEMBER_READ_ROLES = new Set(['owner', 'admin']); // xem nhân sự; SỬA 
 const EXPORT_ROLES = new Set(['owner']); // xuất dữ liệu: CHỈ chủ shop (seller cưỡng chế perm 'export')
 const DOMAIN_ROLES = new Set(['owner']); // tên miền: CHỈ chủ shop (seller cưỡng chế 'domain.write')
 const PAYMENT_ROLES = new Set(['owner']); // thanh toán: CHỈ chủ shop (seller cưỡng chế 'payment.write' + step-up)
+const SHIPPING_ROLES = new Set(['owner', 'admin']); // vận chuyển: owner/admin (seller cưỡng chế 'shop.write' + step-up)
 const ROLE_LABEL = { owner: 'Chủ shop', admin: 'Quản trị', catalog_manager: 'Quản lý sản phẩm', order_manager: 'Quản lý đơn' };
 const INVITE_ROLES = ['admin', 'catalog_manager', 'order_manager']; // KHÔNG mời owner qua đây
 const PSTATUS = { draft: 'Nháp', active: 'Đang bán', archived: 'Lưu trữ' };
@@ -111,6 +113,9 @@ const IC_CARD = ic('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3
 const IC_CHART = ic('<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7" y="12" width="3" height="5"/><rect x="12" y="8" width="3" height="9"/><rect x="17" y="5" width="3" height="12"/>');
 const IC_GEAR = ic('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>');
 const IC_TICKET = ic('<path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2 2 2 0 0 0 0 4 2 2 0 0 1-2 2H5a2 2 0 0 1-2-2 2 2 0 0 0 0-4z"/><path d="M13 6v2M13 12v2M13 16v2"/>');
+const IC_TRUCK = ic('<path d="M2 6h12v10H2z"/><path d="M14 9h4l3 3v4h-7z"/><circle cx="6" cy="18" r="1.8"/><circle cx="17" cy="18" r="1.8"/>');
+const IC_STAR = ic('<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>');
+const IC_HEART = ic('<circle cx="12" cy="8" r="3.5"/><path d="M5 20v-1.5a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6V20"/>');
 
 // Điều hướng dọc trong 1 shop (sidebar) — chỉ hiện mục vai trò được phép.
 function sideNav(ctx) {
@@ -119,14 +124,17 @@ function sideNav(ctx) {
   const it = (href, label, icon, on, show) => (show ? `<a href="${href}"${on ? ' class="on"' : ''}>${icon}<span>${label}</span></a>` : '');
   const t = it(`${base}/overview`, 'Tổng quan', IC_CHART, ctx.active === 'overview', ORDER_ROLES.has(ctx.role))
           + it(`${base}/orders`, 'Đơn hàng', IC_ORDER, ctx.active === 'orders', ORDER_ROLES.has(ctx.role))
+          + it(`${base}/customers`, 'Khách hàng', IC_HEART, ctx.active === 'customers', ORDER_ROLES.has(ctx.role))
           + it(`${base}/products`, 'Sản phẩm', IC_BOX, ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/categories`, 'Danh mục', IC_TAG, ctx.active === 'categories', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/coupons`, 'Khuyến mãi', IC_TICKET, ctx.active === 'coupons', CATALOG_ROLES.has(ctx.role))
+          + it(`${base}/reviews`, 'Đánh giá', IC_STAR, ctx.active === 'reviews', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/pages`, 'Trang nội dung', IC_FILE, ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/blog`, 'Blog', IC_NEWS, ctx.active === 'blog', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/members`, 'Nhân sự', IC_USERS, ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role))
           + it(`${base}/domains`, 'Tên miền', IC_GLOBE, ctx.active === 'domains', DOMAIN_ROLES.has(ctx.role))
           + it(`${base}/payment`, 'Thanh toán', IC_CARD, ctx.active === 'payment', PAYMENT_ROLES.has(ctx.role))
+          + it(`${base}/shipping`, 'Vận chuyển', IC_TRUCK, ctx.active === 'shipping', SHIPPING_ROLES.has(ctx.role))
           + it(`${base}/export`, 'Xuất dữ liệu', IC_DOWN, ctx.active === 'export', EXPORT_ROLES.has(ctx.role))
           + it(`${base}/theme`, 'Giao diện', IC_PALETTE, ctx.active === 'theme', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/settings`, 'Cài đặt', IC_GEAR, ctx.active === 'settings', CONTENT_ROLES.has(ctx.role));
@@ -268,8 +276,17 @@ export function renderShopSettings(ctx, shopId, shop, notice, err) {
         <div class="actions" style="align-items:end;flex-wrap:wrap">
           <div><label>Phí ship (VND)</label><input name="ship_fee_vnd" value="${esc(s.ship_fee_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="30000" style="width:150px"></div>
           <div><label>Miễn phí ship từ (VND)</label><input name="free_ship_threshold_vnd" value="${esc(s.free_ship_threshold_vnd ?? '')}" inputmode="numeric" maxlength="10" placeholder="để trống = không" style="width:200px"></div>
+          <div><label>Cảnh báo sắp hết hàng khi tồn ≤</label><input name="low_stock_threshold" value="${esc(s.low_stock_threshold ?? '')}" inputmode="numeric" maxlength="5" placeholder="mặc định 5" style="width:200px"></div>
         </div>
         <p class="muted" style="font-size:.8rem;margin:6px 0 0">VD: phí 30.000đ, miễn phí từ 500.000đ → đơn ≥ 500k được free ship.</p>
+
+        <h2 style="margin:22px 0 4px;font-size:1.05rem">Chống đơn ảo</h2>
+        <p class="muted" style="margin:0 0 10px;font-size:.85rem">Trần số đơn <strong>chưa xử lý</strong> cùng lúc từ một nguồn mạng / một SĐT. Để trống = dùng mặc định nền tảng. Đặt thấp hơn nếu bị spam; đặt cao hơn nếu nhiều khách thật dùng chung mạng.</p>
+        <div class="actions" style="align-items:end;flex-wrap:wrap">
+          <div><label>Tối đa đơn chờ / nguồn mạng</label><input name="max_pending_per_ip" value="${esc(s.max_pending_per_ip ?? '')}" inputmode="numeric" maxlength="3" placeholder="mặc định 30 (1–200)" style="width:200px"></div>
+          <div><label>Tối đa đơn chờ / SĐT</label><input name="max_pending_per_phone" value="${esc(s.max_pending_per_phone ?? '')}" inputmode="numeric" maxlength="2" placeholder="mặc định 8 (1–50)" style="width:200px"></div>
+        </div>
+        <p class="muted" style="font-size:.8rem;margin:6px 0 0">Trang thanh toán còn tự chặn bot (bẫy ẩn + câu hỏi xác minh khi một nguồn đặt quá nhiều đơn) — không cần cấu hình.</p>
 
         <div class="actions" style="margin-top:16px"><button class="btn" type="submit">Lưu cài đặt</button></div>
       </form>
@@ -412,6 +429,12 @@ export function renderOverview(ctx, shopId, s) {
     <div class="card"><h2 style="margin-top:0">Bán chạy 30 ngày</h2>
       ${top.length ? `<table><thead><tr><th>Sản phẩm</th><th class="right">Đã bán</th><th class="right">Doanh thu</th></tr></thead><tbody>${topRows}</tbody></table>`
         : '<p class="muted">Chưa có đơn đã thanh toán trong 30 ngày.</p>'}</div>
+    ${(s?.low_stock ?? []).length ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb"><h2 style="margin-top:0">⚠ Sắp hết hàng</h2>
+      <table><thead><tr><th>Sản phẩm</th><th class="right">Còn bán được</th></tr></thead><tbody>
+        ${s.low_stock.map((l) => `<tr><td>${esc(l.title)}${l.variant_title ? ` <span class="muted">${esc(l.variant_title)}</span>` : ''} <span class="muted" style="font-size:.8rem">${esc(l.sku ?? '')}</span></td>
+          <td class="num right"><strong style="color:${l.available <= 0 ? '#b91c1c' : '#b45309'}">${esc(l.available)}</strong></td></tr>`).join('')}
+      </tbody></table>
+      <p class="muted" style="font-size:.82rem;margin-bottom:0">Chỉnh ngưỡng cảnh báo trong <a href="${base}/settings">Cài đặt</a>. Email nhắc gửi hằng ngày nếu shop có email liên hệ.</p></div>` : ''}
     <p class="muted" style="font-size:.82rem">Doanh thu chỉ tính đơn <strong>đã thanh toán</strong>; mốc ngày theo giờ Việt Nam.</p>`);
 }
 
@@ -453,6 +476,7 @@ export function renderOrders(ctx, shopId, data, filter) {
   const rows = orders.map((o) => {
     const susp = Number(o.same_ip_phones) >= SUSPICIOUS_MIN;
     return `<tr>
+    <td><input type="checkbox" name="order_ids" value="${esc(o.id)}" form="bulkf" aria-label="Chọn đơn ${esc(o.order_number)}"></td>
     <td><a href="/shops/${esc(shopId)}/orders/${esc(o.id)}">#${esc(o.order_number)}</a></td>
     <td>${badge(o.status, STATUS[o.status] ?? o.status)}</td>
     <td>${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} <span class="muted">${esc(o.payment_method?.toUpperCase() ?? '')}</span></td>
@@ -473,7 +497,13 @@ export function renderOrders(ctx, shopId, data, filter) {
       <div><label>Đến ngày</label><input type="date" name="to" value="${esc(filter.to ?? '')}"></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
-    <div class="card">${orders.length ? `<table><thead><tr><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Khách</th><th>Thời gian</th><th style="text-align:right">Tổng</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="card">${orders.length ? `
+      <form id="bulkf" method="POST" action="/shops/${esc(shopId)}/orders/bulk-confirm" class="actions" style="margin-bottom:10px">
+        <button class="btn sm" type="submit">✓ Xác nhận các đơn đã chọn</button>
+        <button class="btn alt sm" type="submit" formaction="/shops/${esc(shopId)}/orders/print-batch" formmethod="get" formtarget="_blank">🖨 In các đơn đã chọn</button>
+        <span class="muted" style="font-size:.82rem">Tích chọn ở cột đầu (chỉ đơn "Chờ xử lý" xác nhận được; đơn khác tự bỏ qua).</span>
+      </form>
+      <table><thead><tr><th></th><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Khách</th><th>Thời gian</th><th style="text-align:right">Tổng</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="muted" style="margin-top:12px">${total} đơn ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
@@ -481,15 +511,44 @@ export function renderOrders(ctx, shopId, data, filter) {
     <a class="btn alt" href="/">← Về bảng điều khiển</a>`);
 }
 
-export function renderOrderDetail(ctx, shopId, o, err) {
+export function renderOrderDetail(ctx, shopId, o, err, shipping) {
   const act = (path, label, cls = 'btn sm', extra = '') => `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/${path}">${extra}<button class="${cls}" type="submit">${label}</button></form>`;
   let actions = '';
   if (o.status === 'pending') actions = act('confirm', 'Xác nhận đơn') + act('cancel', 'Huỷ đơn', 'btn warn sm');
   else if (o.status === 'confirmed') actions = `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/ship" class="actions" style="align-items:end">
       <div><label>Mã vận đơn</label><input name="tracking_number" required maxlength="64" style="width:180px"></div>
       <div><label>Đơn vị VC</label><input name="carrier" maxlength="40" style="width:120px" placeholder="GHN..."></div>
-      <button class="btn sm" type="submit">Giao hàng</button></form>` + act('cancel', 'Huỷ đơn', 'btn warn sm');
+      <button class="btn sm" type="submit">Giao hàng (nhập tay)</button></form>` + act('cancel', 'Huỷ đơn', 'btn warn sm');
   else if (o.status === 'shipped') actions = act('deliver', 'Đã giao xong');
+  // Tạo vận đơn QUA HÃNG (GHN/GHTK) — chỉ khi đơn đã xác nhận + shop đã kết nối hãng.
+  // Form prefill từ địa chỉ đơn; shop sửa/bổ sung quận-huyện trước khi đẩy sang hãng.
+  const addr = typeof o.shipping_address === 'object' && o.shipping_address ? o.shipping_address : {};
+  const carrierCard = (o.status === 'confirmed' && shipping?.connected) ? `
+    <div class="card"><h2 style="margin-top:0">Tạo vận đơn qua ${esc((shipping.provider ?? '').toUpperCase())}</h2>
+      <p class="muted">Đẩy đơn sang hãng — hãng trả <strong>mã vận đơn + phí</strong>, đơn tự chuyển "Đang giao".
+        ${o.payment_method === 'cod' && o.payment_status !== 'paid'
+          ? `Hãng sẽ <strong>thu hộ COD ${money(o.total_vnd)}</strong>.`
+          : o.payment_status === 'paid'
+            ? 'Đơn đã thanh toán — không thu hộ.'
+            : `<strong style="color:#b45309">⚠ Đơn CHƯA thanh toán — hãng sẽ KHÔNG thu hộ (chỉ thu hộ đơn COD).</strong> Chờ khách chuyển khoản hoặc bấm "Đã nhận tiền" trước khi giao.`}</p>
+      <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/carrier-shipment">
+        <div class="grid2">
+          <div><label>Người nhận</label><input name="to_name" required maxlength="100" value="${esc(o.customer_name ?? '')}"></div>
+          <div><label>SĐT</label><input name="to_phone" required maxlength="20" value="${esc(o.customer_phone ?? '')}"></div>
+        </div>
+        <label>Địa chỉ (số nhà, đường, phường/xã)</label><input name="to_address" required maxlength="300" value="${esc(addr.line ?? '')}">
+        <div class="grid2">
+          <div><label>Tỉnh / Thành</label><input name="to_province" required maxlength="60" value="${esc(addr.province ?? '')}"></div>
+          <div><label>Quận / Huyện</label><input name="to_district" required maxlength="60" placeholder="VD: Quận 1"></div>
+        </div>
+        <div class="grid2">
+          <div><label>Phường / Xã (tuỳ chọn)</label><input name="to_ward" maxlength="60"></div>
+          <div><label>Khối lượng (gram)</label><input name="weight_gram" type="number" min="50" max="50000" value="500"></div>
+        </div>
+        <label>Ghi chú cho hãng (tuỳ chọn)</label><input name="note" maxlength="200" placeholder="Cho xem hàng, không thử">
+        <button class="btn" type="submit" style="margin-top:12px">Tạo vận đơn ${esc((shipping.provider ?? '').toUpperCase())}</button>
+      </form>
+    </div>` : '';
   // Đơn COD chưa thu tiền → nút "Đã nhận tiền" (độc lập với trạng thái giao hàng).
   // Đơn QR: webhook đối soát tự đặt paid. Nút xác nhận TAY chỉ hiện cho CHỦ SHOP
   // (owner) làm fallback khi feed vắng — sẽ đòi xác nhận lại mật khẩu (step-up).
@@ -515,10 +574,21 @@ export function renderOrderDetail(ctx, shopId, o, err) {
     </tbody></table>
       <div style="text-align:right;margin-top:8px" class="muted">Tạm tính ${money(o.subtotal_vnd)} · Ship ${money(o.shipping_vnd)}</div>
       <div style="text-align:right;font-weight:700;font-size:1.1rem">Tổng ${money(o.total_vnd)}</div></div>
+    ${carrierCard}
+    ${(o.shipments ?? []).some((s) => s.provider_status === 'finalize_failed') ? `
+    <div class="card" style="border-color:#fca5a5;background:#fef2f2">
+      <h2 style="margin-top:0;color:#b91c1c">⚠ Vận đơn cần phục hồi</h2>
+      <p class="muted">Hãng ĐÃ tạo vận đơn nhưng hệ thống chốt đơn không thành công (đơn còn "đã xác nhận", chưa trừ kho).
+        Kiểm tra trên trang hãng: nếu vận đơn <strong>${esc((o.shipments.find((s) => s.provider_status === 'finalize_failed') ?? {}).tracking_number ?? '')}</strong> có thật → bấm "Đã tạo trên hãng"; nếu bạn đã huỷ nó trên portal hãng → bấm "Huỷ vận đơn".</p>
+      <div class="actions">
+        <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/carrier-reconcile"><input type="hidden" name="action" value="shipped"><button class="btn sm" type="submit">Đã tạo trên hãng → giao</button></form>
+        <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/carrier-reconcile"><input type="hidden" name="action" value="cancel"><button class="btn warn sm" type="submit">Huỷ vận đơn</button></form>
+      </div>
+    </div>` : ''}
     <div class="card"><h2>Khách hàng</h2>
       <p>${esc(o.customer_name)} · ${esc(o.customer_phone ?? '')}${o.customer_email ? ` · ${esc(o.customer_email)}` : ''}</p>
-      ${o.shipping_address ? `<p class="muted">${esc(typeof o.shipping_address === 'object' ? (o.shipping_address.line ?? JSON.stringify(o.shipping_address)) : o.shipping_address)}</p>` : ''}
-      ${(o.shipments ?? []).map((s) => `<p class="muted">Vận đơn: <strong>${esc(s.tracking_number)}</strong> ${esc(s.carrier ?? '')} (${esc(s.status)})</p>`).join('')}
+      ${o.shipping_address ? `<p class="muted">${esc(typeof o.shipping_address === 'object' ? [o.shipping_address.line, o.shipping_address.province].filter(Boolean).join(', ') || JSON.stringify(o.shipping_address) : o.shipping_address)}</p>` : ''}
+      ${(o.shipments ?? []).map((s) => `<p class="muted">Vận đơn: <strong>${esc(s.tracking_number ?? '(đang tạo)')}</strong> ${esc(s.carrier ?? '')} (${esc(SHIP_ST[s.status] ?? s.status)})${s.provider ? ` · qua ${esc(s.provider.toUpperCase())}` : ''}${s.carrier_fee_vnd != null ? ` · phí hãng ${money(s.carrier_fee_vnd)}` : ''}</p>`).join('')}
       <p class="muted">Tạo: ${dt(o.created_at)}</p></div>`);
 }
 
@@ -545,7 +615,22 @@ td.r,th.r{text-align:right}.tot{margin-left:auto;width:260px}.tot .row{display:f
 @media print{.noprint{display:none}body{padding:0}}`;
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex"><title>Đơn #${esc(o.order_number)} — ${esc(s.name ?? '')}</title><style>${CSS}</style></head><body>
-  <div class="doc">
+  ${printDoc(shopId, s, o, { backLink: true })}
+</body></html>`;
+}
+
+// Khối .doc của MỘT đơn — dùng chung cho in lẻ + in hàng loạt.
+function printDoc(shopId, s, o, { backLink = false } = {}) {
+  const lines = o.lines ?? [];
+  const addr = o.shipping_address
+    ? (typeof o.shipping_address === 'object' ? [o.shipping_address.line, o.shipping_address.province].filter(Boolean).join(', ') || JSON.stringify(o.shipping_address) : o.shipping_address)
+    : '';
+  const contact = [s.business_address, s.contact_phone ? `ĐT: ${s.contact_phone}` : '', s.contact_email ? `Email: ${s.contact_email}` : '']
+    .filter(Boolean).map(esc).join(' · ');
+  const ship = (o.shipments ?? [])[0];
+  const ST = { pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn tiền' };
+  const PT = { unpaid: 'Chưa thanh toán', pending: 'Chờ thanh toán', paid: 'Đã thanh toán', refunded: 'Đã hoàn tiền' };
+  return `<div class="doc">
     <div class="hd">
       <div><div class="shop">${esc(s.name ?? 'Cửa hàng')}</div>${contact ? `<div class="contact">${contact}</div>` : ''}</div>
       <div class="ord"><div class="no">Đơn #${esc(o.order_number)}</div><div class="d">${dt(o.created_at)}</div></div>
@@ -564,8 +649,27 @@ td.r,th.r{text-align:right}.tot{margin-left:auto;width:260px}.tot .row{display:f
       <div class="row"><span>Phí vận chuyển</span><span>${Number(o.shipping_vnd) === 0 ? 'Miễn phí' : money(o.shipping_vnd)}</span></div>
       <div class="row g"><span>Tổng cộng</span><span>${money(o.total_vnd)}</span></div>
     </div>
-    <div class="foot noprint"><a href="/shops/${esc(shopId)}/orders/${esc(o.id)}">← Quay lại</a> · Nhấn <strong>Ctrl+P</strong> (hoặc ⌘P) để in / lưu PDF.</div>
-  </div>
+    ${backLink ? `<div class="foot noprint"><a href="/shops/${esc(shopId)}/orders/${esc(o.id)}">← Quay lại</a> · Nhấn <strong>Ctrl+P</strong> (hoặc ⌘P) để in / lưu PDF.</div>` : ''}
+  </div>`;
+}
+
+// In HÀNG LOẠT: mỗi đơn một trang (page-break). Ctrl+P một lần in cả xấp.
+export function renderOrderPrintBatch(shopId, shop, orders) {
+  const s = shop ?? {};
+  const CSS = `*{box-sizing:border-box}body{font-family:system-ui,'Segoe UI',sans-serif;color:#111827;margin:0;padding:24px;font-size:14px;line-height:1.5}
+.doc{max-width:720px;margin:0 auto 32px;page-break-after:always}.doc:last-child{page-break-after:auto}
+.hd{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:2px solid #111827;padding-bottom:12px;margin-bottom:16px}
+.shop{font-size:1.35rem;font-weight:700}.contact{color:#6b7280;font-size:.82rem;margin-top:3px}.ord{text-align:right}.no{font-size:1.2rem;font-weight:700}.ord .d{color:#6b7280;font-size:.85rem}
+.tags{margin:0 0 14px}.tag{display:inline-block;border:1px solid #d1d5db;border-radius:6px;padding:3px 10px;font-size:.82rem;margin-right:8px}
+.cust{background:#f9fafb;border:1px solid #eceef1;border-radius:8px;padding:12px 14px;margin-bottom:16px}.cust b{display:inline-block;min-width:60px}
+table{width:100%;border-collapse:collapse;margin-bottom:14px}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #eceef1}th{font-size:.8rem;color:#6b7280;text-transform:uppercase;letter-spacing:.03em}
+td.r,th.r{text-align:right}.tot{margin-left:auto;width:260px}.tot .row{display:flex;justify-content:space-between;padding:4px 0}.tot .g{font-weight:700;font-size:1.1rem;border-top:2px solid #111827;padding-top:8px;margin-top:4px}
+.noprint{max-width:720px;margin:0 auto 16px;color:#6b7280;font-size:.85rem}
+@media print{.noprint{display:none}body{padding:0}}`;
+  return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>In ${orders.length} đơn — ${esc(s.name ?? '')}</title><style>${CSS}</style></head><body>
+  <div class="noprint">Xấp ${esc(String(orders.length))} đơn — nhấn <strong>Ctrl+P</strong> để in (mỗi đơn một trang).</div>
+  ${orders.map((o) => printDoc(shopId, s, o)).join('\n')}
 </body></html>`;
 }
 
@@ -1313,6 +1417,160 @@ export function renderSepayStepUp(ctx, shopId, op, txnId, err) {
     <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
   </div></div>`);
 }
+// ── CRM-lite: khách hàng gộp từ đơn (theo SĐT) + ghi chú ──────────────────────
+export function renderCustomers(ctx, shopId, data, filter) {
+  const base = `/shops/${esc(shopId)}/customers`;
+  const rows = (data?.customers ?? []).map((cu) => `<tr>
+    <td><a href="${base}/${esc(cu.phone)}">${esc(cu.name ?? '(không tên)')}</a><div class="muted" style="font-size:.8rem">${esc(cu.phone)}${cu.email ? ` · ${esc(cu.email)}` : ''}</div></td>
+    <td class="num">${esc(cu.n_orders)} đơn${Number(cu.n_orders) >= 3 ? ' <span class="badge delivered">thân thiết</span>' : ''}</td>
+    <td class="num right"><strong>${money(cu.total_spent_vnd)}</strong></td>
+    <td class="muted">${dt(cu.last_order_at)}</td></tr>`).join('');
+  const total = data?.total ?? 0, off = filter.offset, lim = filter.limit;
+  const nav = (o) => `?q=${encodeURIComponent(filter.q ?? '')}&min_orders=${esc(String(filter.min_orders ?? 1))}&offset=${o}`;
+  return layout('Khách hàng', ctx, `<h1>Khách hàng</h1>
+    <p class="muted">Gộp từ đơn hàng theo số điện thoại (không tính đơn huỷ). Bấm tên để xem lịch sử mua + ghi chú.</p>
+    <div class="card"><form method="GET" class="filters">
+      <div style="flex:1 1 200px"><label>Tìm (tên / SĐT)</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="Nguyễn…, 09…"></div>
+      <div><label>Mua tối thiểu</label><select name="min_orders">${[1, 2, 3, 5].map((n) => `<option value="${n}"${Number(filter.min_orders) === n ? ' selected' : ''}>≥ ${n} đơn</option>`).join('')}</select></div>
+      <div><button class="btn alt sm" type="submit">Lọc</button></div>
+    </form></div>
+    <div class="card">${rows ? `<table><thead><tr><th>Khách</th><th>Số đơn</th><th class="right">Tổng chi</th><th>Mua gần nhất</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="muted" style="margin-top:12px">${esc(String(total))} khách ·
+        ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
+        ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}</div>`
+      : '<p class="muted">Chưa có khách nào khớp bộ lọc.</p>'}</div>`);
+}
+
+export function renderCustomerDetail(ctx, shopId, cu, saved) {
+  const base = `/shops/${esc(shopId)}`;
+  const rows = (cu.orders ?? []).map((o) => `<tr>
+    <td><a href="${base}/orders/${esc(o.id)}">#${esc(o.order_number)}</a></td>
+    <td>${badge(o.status, STATUS[o.status] ?? o.status)}</td>
+    <td>${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} <span class="muted">${esc(o.payment_method?.toUpperCase() ?? '')}</span></td>
+    <td class="muted">${dt(o.created_at)}</td>
+    <td class="right"><strong>${money(o.total_vnd)}</strong></td></tr>`).join('');
+  return layout(`Khách: ${cu.name ?? cu.phone}`, ctx, `
+    <a class="muted" href="${base}/customers">← Danh sách khách hàng</a>
+    <h1>${esc(cu.name ?? '(không tên)')}</h1>
+    <div class="card"><div class="metrics">
+      <div class="metric"><div class="v">${esc(cu.phone)}</div><div class="l">SĐT${cu.email ? ` · ${esc(cu.email)}` : ''}</div></div>
+      <div class="metric"><div class="v">${esc(String(cu.n_orders))}</div><div class="l">đơn (không tính huỷ)</div></div>
+      <div class="metric"><div class="v">${money(cu.total_spent_vnd)}</div><div class="l">tổng chi</div></div>
+    </div></div>
+    <div class="card"><h2 style="margin-top:0">Ghi chú của shop</h2>
+      ${saved ? '<div class="card" style="border-color:#86efac;background:#f0fdf4;padding:8px 12px">Đã lưu ghi chú.</div>' : ''}
+      <form method="POST" action="${base}/customers/${esc(cu.phone)}/note">
+        <textarea name="note" rows="3" maxlength="2000" placeholder="VD: khách quen, thích giao giờ hành chính, hay đổi size…">${esc(cu.note ?? '')}</textarea>
+        <button class="btn sm" type="submit" style="margin-top:10px">Lưu ghi chú</button>
+      </form></div>
+    <div class="card"><h2 style="margin-top:0">Lịch sử mua (${esc(String((cu.orders ?? []).length))})</h2>
+      <table><thead><tr><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Thời gian</th><th class="right">Tổng</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+}
+
+// ── Đánh giá sản phẩm (moderation: pending → duyệt/từ chối) ──────────────────
+export function renderReviews(ctx, shopId, data, activeStatus) {
+  const base = `/shops/${esc(shopId)}/reviews`;
+  const rvs = data?.reviews ?? [];
+  const stars = (r) => '★'.repeat(Number(r)) + '☆'.repeat(5 - Number(r));
+  const tab = (st, label) => `<a class="btn ${activeStatus === st ? '' : 'alt '}sm" href="${base}?status=${st}">${label}</a>`;
+  const rows = rvs.map((r) => `<div class="card">
+      <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div>
+          <div><span style="color:#f59e0b">${stars(r.rating)}</span> <strong>${esc(r.author_name)}</strong>
+            ${r.verified ? '<span class="badge delivered">✓ đã mua</span>' : ''}
+            <span class="muted" style="font-size:.82rem">· ${dt(r.created_at)}</span></div>
+          <div class="muted" style="font-size:.85rem;margin:4px 0">SP: ${esc(r.product_title)}</div>
+          <p style="margin:6px 0 0;white-space:pre-line">${esc(r.content)}</p>
+        </div>
+        <div class="actions" style="align-items:flex-start">
+          ${activeStatus !== 'approved' ? `<form method="POST" action="${base}/${esc(r.id)}/approve"><button class="btn sm" type="submit">Duyệt</button></form>` : ''}
+          ${activeStatus !== 'rejected' ? `<form method="POST" action="${base}/${esc(r.id)}/reject"><button class="btn alt sm" type="submit">Từ chối</button></form>` : ''}
+          <form method="POST" action="${base}/${esc(r.id)}/delete"><button class="btn warn sm" type="submit">Xoá</button></form>
+        </div>
+      </div>
+    </div>`).join('');
+  return layout('Đánh giá', ctx, `<h1>Đánh giá sản phẩm</h1>
+    <p class="muted">Đánh giá khách gửi chỉ hiện trên cửa hàng sau khi bạn <strong>duyệt</strong>. Đang chờ: <strong>${esc(String(data?.pending_count ?? 0))}</strong></p>
+    <div class="actions" style="margin-bottom:14px">${tab('pending', 'Chờ duyệt')}${tab('approved', 'Đã duyệt')}${tab('rejected', 'Đã từ chối')}</div>
+    ${rows || '<div class="card"><p class="muted">Không có đánh giá nào ở mục này.</p></div>'}`);
+}
+
+// ── Vận chuyển hãng (GHN/GHTK) — kết nối per-shop ─────────────────────────────
+export function renderShipping(ctx, shopId, cfg, err, ok) {
+  const base = `/shops/${esc(shopId)}/shipping`;
+  const c = cfg ?? {};
+  const p = c.pickup ?? {};
+  if (c.available === false) {
+    return layout('Vận chuyển', ctx, `<h1>Vận chuyển</h1>
+      <div class="card"><p class="muted">Nền tảng chưa bật tích hợp hãng vận chuyển. Liên hệ quản trị nền tảng.</p></div>`);
+  }
+  const connected = !!c.connected;
+  const status = connected
+    ? `<div class="card" style="border-color:#86efac;background:#f0fdf4"><strong>✓ Đã kết nối ${esc((c.provider ?? '').toUpperCase())}</strong>
+        <span class="muted"> · token ${esc(c.token_prefix ?? '')}…</span>
+        <p class="muted" style="margin:8px 0 0">Điểm lấy hàng: ${esc([p.name, p.phone].filter(Boolean).join(' · '))}<br>${esc([p.address, p.ward, p.district, p.province].filter(Boolean).join(', '))}</p>
+        <form method="POST" action="${base}" style="margin-top:10px"><input type="hidden" name="__op" value="disconnect">
+          <button class="btn warn sm" type="submit">Ngắt kết nối</button></form>
+      </div>` : '';
+  return layout('Vận chuyển', ctx, `<h1>Vận chuyển</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${ok ? `<div class="card" style="border-color:#86efac;background:#f0fdf4">${esc(ok)}</div>` : ''}
+    ${status}
+    <div class="card"><h2 style="margin-top:0">${connected ? 'Đổi kết nối' : 'Kết nối hãng vận chuyển'}</h2>
+      <p class="muted">Dùng <strong>tài khoản GHN / GHTK của chính shop</strong>: lấy API token trong trang quản
+        trị hãng rồi dán vào đây. Sau khi kết nối, mỗi đơn đã xác nhận sẽ có nút <strong>"Tạo vận đơn"</strong> —
+        hãng trả mã vận đơn + phí, hệ thống tự theo dõi trạng thái tới khi giao xong. Token được
+        <strong>mã hoá</strong> khi lưu; thao tác này cần xác nhận lại mật khẩu.</p>
+      <form method="POST" action="${base}">
+        <input type="hidden" name="__op" value="connect">
+        <div class="grid2">
+          <div><label>Hãng</label><select name="provider">
+            <option value="ghtk"${c.provider === 'ghtk' ? ' selected' : ''}>GHTK (Giao Hàng Tiết Kiệm)</option>
+            <option value="ghn"${c.provider === 'ghn' ? ' selected' : ''}>GHN (Giao Hàng Nhanh)</option>
+          </select></div>
+          <div><label>ShopId GHN (chỉ khi chọn GHN)</label><input name="ghn_shop_id" maxlength="20" inputmode="numeric" value="${esc(c.ghn_shop_id ?? '')}" placeholder="Dãy số trong trang GHN"></div>
+        </div>
+        <label>API Token của hãng</label><input name="token" type="password" required maxlength="300" autocomplete="off" placeholder="Dán token từ trang quản trị hãng">
+        <h2 style="font-size:1rem">Điểm lấy hàng (hãng tới lấy tại đây)</h2>
+        <div class="grid2">
+          <div><label>Tên người gửi</label><input name="pick_name" required maxlength="100" value="${esc(p.name ?? '')}"></div>
+          <div><label>SĐT</label><input name="pick_phone" required maxlength="20" value="${esc(p.phone ?? '')}"></div>
+        </div>
+        <label>Địa chỉ (số nhà, đường, phường/xã)</label><input name="pick_address" required maxlength="300" value="${esc(p.address ?? '')}">
+        <div class="grid2">
+          <div><label>Tỉnh / Thành</label><input name="pick_province" required maxlength="60" value="${esc(p.province ?? '')}"></div>
+          <div><label>Quận / Huyện</label><input name="pick_district" required maxlength="60" value="${esc(p.district ?? '')}"></div>
+        </div>
+        <label>Phường / Xã (tuỳ chọn)</label><input name="pick_ward" maxlength="60" value="${esc(p.ward ?? '')}">
+        <button class="btn" type="submit" style="margin-top:12px">${connected ? 'Cập nhật kết nối' : 'Kết nối'}</button>
+      </form>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Chưa có tài khoản hãng?</h2>
+      <p class="muted">Đăng ký shop miễn phí tại trang của hãng (GHTK: khachhang.ghtk.vn · GHN: sso.ghn.vn),
+        hoàn tất hồ sơ rồi lấy API token trong phần cài đặt/tích hợp. Tiền thu hộ COD hãng chuyển
+        <strong>thẳng về tài khoản shop</strong> theo kỳ đối soát của hãng — nền tảng không giữ tiền.</p></div>`);
+}
+
+// Interstitial step-up cho kết nối/ngắt hãng VC — mang theo TOÀN BỘ form dưới dạng hidden.
+export function renderShippingStepUp(ctx, shopId, fields, err) {
+  const base = `/shops/${esc(shopId)}/shipping`;
+  const keep = Object.entries(fields ?? {})
+    .filter(([k, v]) => v != null && k !== 'password')
+    .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(String(v))}">`).join('');
+  const label = fields?.__op === 'disconnect' ? 'ngắt kết nối hãng vận chuyển' : 'kết nối hãng vận chuyển (lưu token)';
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận mật khẩu</h1>
+    <p class="muted">Thao tác nhạy cảm (${esc(label)}) cần xác thực lại. Nhập mật khẩu để tiếp tục.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${base}/step-up">
+      ${keep}
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận & tiếp tục</button>
+    </form>
+    <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
+}
+
 // Interstitial cho "xác nhận tay đơn QR đã nhận tiền" (mang theo mã đơn).
 export function renderOrderPayStepUp(ctx, shopId, oid, err) {
   const base = `/shops/${esc(shopId)}/orders/${esc(oid)}`;

@@ -5,6 +5,7 @@
  * của shop nên không có token động; chỉ tên shop + nội dung đơn, đều escape).
  */
 import QRCode from 'qrcode';
+import { PROVINCES } from './provinces.js';
 
 const AMP = /&/g, LT = /</g, GT = />/g, QUOT = /"/g, APOS = /'/g;
 export const esc = (s) => String(s ?? '').replace(AMP, '&amp;').replace(LT, '&lt;').replace(GT, '&gt;').replace(QUOT, '&quot;').replace(APOS, '&#39;');
@@ -40,6 +41,7 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:#2463eb;box-sh
 .qty{display:flex;gap:8px;align-items:center}.qty input{width:70px;text-align:center}
 .qtybtn{width:auto;padding:9px 14px;border:1px solid #d8dbe0;background:#fff;border-radius:10px;font-size:.9rem;cursor:pointer;text-decoration:none;text-align:center;color:#111827}.qtybtn:hover{background:#f6f7f8}
 .pay label{display:flex;gap:10px;align-items:center;font-weight:500;padding:12px;border:1px solid #d8dbe0;border-radius:10px;margin:8px 0;cursor:pointer}.pay input{width:auto}
+.hp{position:absolute;left:-9999px;width:1px;height:1px;opacity:0}
 .bank{background:#f6f7f8;border-radius:10px;padding:14px}.bank .row{border-color:#e6e8eb}
 .qrbox{text-align:center;margin:14px 0}.qrbox svg{max-width:220px;height:auto;border:1px solid #e6e8eb;border-radius:12px;padding:8px;background:#fff}
 .badge{display:inline-block;padding:4px 12px;border-radius:999px;font-size:.85rem;font-weight:600}
@@ -121,23 +123,39 @@ export function renderCart(shopName, s) {
     <a class="btn alt" href="/" style="margin-top:8px">Tiếp tục mua sắm</a>`);
 }
 
-export function renderCheckout(shopName, s, idemToken) {
+export function renderCheckout(shopName, s, idemToken, opts = {}) {
+  const pf = opts.prefill ?? {};
+  const v = (x) => esc(x ?? '');
+  const pm = pf.payment_method === 'qr' ? 'qr' : 'cod';
+  const ch = opts.challenge;
   return page('Thanh toán', shopName, `<h1>Thanh toán</h1>
+    ${opts.error ? `<div class="card" style="border-color:#fca5a5;background:#fef2f2;color:#b91c1c"><strong>${esc(opts.error)}</strong></div>` : ''}
     <div class="card"><h2>Đơn hàng</h2>
       ${s.items.map((it) => `<div class="tot"><span class="muted">${esc(it.product_title)} × ${it.qty}</span><span>${money(it.line_total_vnd)}</span></div>`).join('')}
       ${totalsBlock(s)}</div>
     <form method="POST" action="/checkout/place">
       <input type="hidden" name="idempotency_key" value="${esc(idemToken)}">
+      <input type="hidden" name="ct" value="${esc(opts.formTs ?? '')}">
       <div class="card"><h2>Người nhận</h2>
-        <label>Họ tên *</label><input name="name" required maxlength="120" autocomplete="name">
-        <label>Số điện thoại *</label><input name="phone" required inputmode="tel" autocomplete="tel" placeholder="09xxxxxxxx">
-        <label>Email (tuỳ chọn — nhận xác nhận đơn)</label><input name="email" type="email" autocomplete="email">
-        <label>Địa chỉ giao hàng *</label><textarea name="address_line" required rows="2" maxlength="300" autocomplete="street-address"></textarea>
+        <label>Họ tên *</label><input name="name" required maxlength="120" autocomplete="name" value="${v(pf.name)}">
+        <label>Số điện thoại *</label><input name="phone" required inputmode="tel" autocomplete="tel" placeholder="09xxxxxxxx" value="${v(pf.phone)}">
+        <label>Email (tuỳ chọn — nhận xác nhận đơn)</label><input name="email" type="email" autocomplete="email" value="${v(pf.email)}">
+        <label>Địa chỉ giao hàng *</label><textarea name="address_line" required rows="2" maxlength="300" autocomplete="street-address" placeholder="Số nhà, đường, phường/xã, quận/huyện">${v(pf.address_line)}</textarea>
+        <label>Tỉnh / Thành phố *</label><select name="province" required autocomplete="address-level1">
+          <option value="" disabled${pf.province ? '' : ' selected'}>— Chọn tỉnh/thành —</option>
+          ${PROVINCES.map((p) => `<option value="${esc(p)}"${pf.province === p ? ' selected' : ''}>${esc(p)}</option>`).join('')}
+        </select>
+        <input class="hp" type="text" name="company" tabindex="-1" autocomplete="off" aria-hidden="true">
       </div>
       <div class="card pay"><h2>Thanh toán</h2>
-        <label><input type="radio" name="payment_method" value="cod" checked> Thanh toán khi nhận hàng (COD)</label>
-        <label><input type="radio" name="payment_method" value="qr"> Chuyển khoản QR (VietQR)</label>
+        <label><input type="radio" name="payment_method" value="cod"${pm === 'cod' ? ' checked' : ''}> Thanh toán khi nhận hàng (COD)</label>
+        <label><input type="radio" name="payment_method" value="qr"${pm === 'qr' ? ' checked' : ''}> Chuyển khoản QR (VietQR)</label>
       </div>
+      ${ch ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb"><h2>Xác minh</h2>
+        <p class="muted">Để chống đặt hàng tự động, vui lòng trả lời: <strong>${esc(ch.a)} + ${esc(ch.b)} = ?</strong></p>
+        <input type="hidden" name="challenge_sig" value="${esc(ch.sig)}">
+        <input name="challenge_answer" required inputmode="numeric" maxlength="4" style="max-width:120px" placeholder="Kết quả">
+      </div>` : ''}
       <button class="btn" type="submit">Đặt hàng · ${money(s.total_vnd)}</button>
     </form>
     <a class="btn alt" href="/cart" style="margin-top:8px">Quay lại giỏ</a>`);

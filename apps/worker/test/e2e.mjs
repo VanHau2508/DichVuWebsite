@@ -154,13 +154,13 @@ async function main() {
   const oid = await orderIdOf(A.shopId, o1.orderNum);
   let r = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oid}/confirm`, { cookie: A.cookie, origin: OS });
   r.status === 200 && r.json.status === 'confirmed' ? ok('confirm đơn → confirmed') : bad('confirm lỗi', r.raw);
-  (await waitEmail(`Đơn hàng #${o1.orderNum} — đã xác nhận`)) ? ok('email "đã xác nhận"') : bad('không có email confirmed');
+  (await waitEmail(`Đơn hàng #${o1.orderNum} — đã được xác nhận`)) ? ok('email "đã được xác nhận"') : bad('không có email confirmed');
 
   const ohBefore = await onHand(vid);          // = 10 (setup); o1 reserved 1, chưa đụng on_hand
   r = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oid}/ship`, { body: { tracking_number: 'VN123456789', carrier: 'GHN' }, cookie: A.cookie, origin: OS });
   r.status === 200 && r.json.tracking_number === 'VN123456789' ? ok('ship đơn → shipped + tracking') : bad('ship lỗi', r.raw);
-  const shipMail = await waitEmail(`Đơn hàng #${o1.orderNum} — đang giao`);
-  shipMail ? ok('email "đang giao" (có mã vận đơn)') : bad('không có email shipped');
+  const shipMail = await waitEmail(`Đơn hàng #${o1.orderNum} — đang trên đường giao`);
+  shipMail ? ok('email "đang trên đường giao" (có mã vận đơn)') : bad('không có email shipped');
   // P0-5: ship CONSUME tồn — on_hand -= qty, reserved -= qty, ghi ledger 'ship'.
   const ohAfter = await onHand(vid), resAfterShip = await reserved(vid), lg = await shipLedger(vid);
   ohAfter === ohBefore - 1 ? ok(`ship consume on_hand ${ohBefore}→${ohAfter} (hàng rời kho)`) : bad('ship KHÔNG giảm on_hand', `${ohBefore}→${ohAfter}`);

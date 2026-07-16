@@ -380,6 +380,28 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
 .specs{border-collapse:collapse;width:100%;max-width:560px}
 .specs th,.specs td{text-align:left;padding:10px 14px;border:1px solid var(--color-border);font-size:.92rem;vertical-align:top}
 .specs th{background:var(--color-surface);color:var(--color-muted);font-weight:600;width:38%}
+/* ── Đánh giá sản phẩm ── */
+.pd-rating{display:inline-flex;align-items:center;gap:6px;font-size:.9rem;color:var(--color-muted);margin:-6px 0 10px}
+.st{color:#f59e0b;letter-spacing:1px}
+.rv{border-bottom:1px solid var(--color-border);padding:12px 0}
+.rv-head{display:flex;align-items:center;gap:8px;font-size:.92rem}
+.rv-ok{color:#15803d;font-size:.78rem;font-weight:600;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:999px;padding:2px 8px}
+.rv p{margin:6px 0 0;color:color-mix(in srgb,var(--color-text) 75%,var(--color-bg));line-height:1.65}
+.rv-note{border-radius:10px;padding:10px 14px;margin:0 0 14px;font-size:.9rem}
+.rv-note.ok{background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d}
+.rv-note.err{background:#fef2f2;border:1px solid #fecaca;color:#b91c1c}
+.rv-form{margin-top:16px}.rv-form summary{cursor:pointer;color:var(--color-primary);font-weight:600}
+.rv-form form{display:flex;flex-direction:column;gap:10px;margin-top:12px;max-width:480px}
+.rv-form input,.rv-form textarea{padding:10px 12px;border:1px solid #d6d6d6;border-radius:10px;font-size:.95rem;font-family:inherit;background:var(--color-bg);color:var(--color-text)}
+.rv-form .hp{position:absolute;left:-9999px;width:1px;height:1px;opacity:0}
+.rv-verify{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:.85rem}
+.rv-verify input{width:130px}
+/* Chọn sao no-JS: radio ẩn + label ★; hàng đảo (5→1) + flex row-reverse → tô "từ trái sang"
+   bằng :checked ~ (các label SAU radio đã chọn trong DOM = các sao BÊN TRÁI khi đảo chiều). */
+.rv-stars{display:inline-flex;flex-direction:row-reverse;gap:2px}
+.rv-stars input{position:absolute;width:1px;height:1px;opacity:0}
+.rv-stars label{font-size:1.7rem;color:#d1d5db;cursor:pointer;line-height:1}
+.rv-stars input:checked ~ label,.rv-stars label:hover,.rv-stars label:hover ~ label{color:#f59e0b}
 @media(max-width:720px){.pd-grid{grid-template-columns:1fr;gap:24px}.hnav{gap:14px;font-size:.85rem}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.pd-info h1{font-size:1.5rem}.pd-actions .btn{flex:1}}`;
 
 function page(title, tokens, bodyHtml, head = '') {
@@ -514,6 +536,37 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
   const descHtml = p.description ? `<section class="pd-block"><h2>Mô tả sản phẩm</h2><div class="desc" itemprop="description">${formatDesc(p.description)}</div></section>` : '';
   const related = Array.isArray(p.related) ? p.related : [];
   const relatedHtml = related.length ? `<section class="pd-block related"><h2>Có thể bạn thích</h2><div class="grid">${productCards(related)}</div></section>` : '';
+
+  // ── Đánh giá: sao trung bình + danh sách approved + form gửi (POST /checkout/review, PRG).
+  const stats = p.reviewStats ?? { n: 0, avg: 0 };
+  const stars = (r) => '★'.repeat(Math.round(Number(r))) + '☆'.repeat(5 - Math.round(Number(r)));
+  const ratingSummary = Number(stats.n) > 0
+    ? `<a class="pd-rating" href="#danh-gia"><span class="st">${stars(stats.avg)}</span> ${esc(String(stats.avg))} (${esc(String(stats.n))} đánh giá)</a>` : '';
+  const reviewItems = (p.reviews ?? []).map((rv) => `<div class="rv">
+      <div class="rv-head"><span class="st">${stars(rv.rating)}</span> <strong>${esc(rv.author_name)}</strong>${rv.verified ? ' <span class="rv-ok">✓ Đã mua hàng</span>' : ''}</div>
+      <p>${esc(rv.content)}</p></div>`).join('');
+  const flagMsg = p.reviewFlag === 'sent'
+    ? '<div class="rv-note ok">Cảm ơn bạn! Đánh giá sẽ hiển thị sau khi cửa hàng duyệt.</div>'
+    : p.reviewFlag === 'invalid' ? '<div class="rv-note err">Đánh giá chưa hợp lệ — cần chọn số sao và viết ít nhất 10 ký tự.</div>' : '';
+  const reviewsHtml = `<section class="pd-block" id="danh-gia"><h2>Đánh giá${Number(stats.n) ? ` (${esc(String(stats.n))})` : ''}</h2>
+      ${flagMsg}
+      ${reviewItems || '<p class="muted">Chưa có đánh giá nào. Hãy là người đầu tiên!</p>'}
+      <details class="rv-form"><summary>Viết đánh giá</summary>
+        <form method="POST" action="/checkout/review">
+          <input type="hidden" name="product_id" value="${esc(p.id)}">
+          <input class="hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+          <div class="rv-stars" role="radiogroup" aria-label="Số sao">
+            ${[5, 4, 3, 2, 1].map((n) => `<input type="radio" id="rv-s${n}" name="rating" value="${n}" required><label for="rv-s${n}" title="${n} sao">★</label>`).join('')}
+          </div>
+          <input name="author_name" required maxlength="80" placeholder="Tên của bạn" aria-label="Tên">
+          <textarea name="content" required minlength="10" maxlength="1000" rows="3" placeholder="Sản phẩm dùng thế nào? (ít nhất 10 ký tự)" aria-label="Nội dung"></textarea>
+          <div class="rv-verify"><span class="muted">Đã mua hàng? Nhập để nhận dấu ✓:</span>
+            <input name="order_number" inputmode="numeric" maxlength="15" placeholder="Số đơn">
+            <input name="phone" inputmode="tel" maxlength="20" placeholder="SĐT đặt hàng"></div>
+          <button class="btn btn-primary" type="submit">Gửi đánh giá</button>
+        </form>
+      </details>
+    </section>`;
   const crumb = `<div class="crumb"><a href="/">Trang chủ</a>${p.category ? ` / <a href="/c/${esc(p.category.slug)}">${esc(p.category.name)}</a>` : ''} / <span>${esc(p.title)}</span></div>`;
 
   const availability = soldOut ? 'https://schema.org/OutOfStock' : 'https://schema.org/InStock';
@@ -525,6 +578,7 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
         ${galleryHtml}
         <div class="pd-info">
           <h1 itemprop="name">${esc(p.title)}</h1>
+          ${ratingSummary}
           ${skuHtml}
           <div class="price" itemprop="offers" itemscope itemtype="https://schema.org/Offer">
             <span itemprop="price" content="${esc(String(Number(price)))}">${money(price)}</span>
@@ -538,7 +592,9 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
       </div>
       ${descHtml}
       ${specsHtml}
+      ${reviewsHtml}
       ${relatedHtml}
+      ${Number(stats.n) > 0 ? `<div itemprop="aggregateRating" itemscope itemtype="https://schema.org/AggregateRating"><meta itemprop="ratingValue" content="${esc(String(stats.avg))}"><meta itemprop="reviewCount" content="${esc(String(stats.n))}"></div>` : ''}
     </main>${SECTIONS.footer({}, ctx)}`;
   const desc = p.description ? String(p.description).replace(/\s+/g, ' ').trim().slice(0, 200) : `${p.title} — ${ctx.shop.name}`;
   const absUrl = (u) => (u ? (/^https?:\/\//i.test(u) ? u : `${ctx.origin || ''}${u}`) : '');

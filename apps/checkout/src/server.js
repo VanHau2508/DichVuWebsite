@@ -20,6 +20,7 @@ import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, 
 import { buildVietQR } from './vietqr.js';
 import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
 import { runReq, makeLog, health } from './obs.js';
+import { isProvince } from './provinces.js';
 
 const PORT = Number(process.env.PORT ?? 3060);
 // Mặc định phí ship nền tảng (shop chưa cấu hình → dùng số này). Dùng `??` không đủ:
@@ -34,6 +35,34 @@ const MAX_PENDING_PER_PHONE = Number(process.env.MAX_PENDING_ORDERS_PER_PHONE) |
 // Hash IP có PEPPER bí mật (HMAC) → không đảo ngược được nếu DB lộ (IPv4 nhỏ, sha256 trần dò ra).
 const IP_PEPPER = process.env.ORDER_HASH_PEPPER || 'nentang-order-ip-v1';
 const hashIp = (ip) => crypto.createHmac('sha256', IP_PEPPER).update('oip:' + ip).digest('hex');
+// ── Chống BOT no-JS: form ký HMAC (không cần lưu state) ───────────────────────
+// (1) time-trap: form nhúng thời điểm render đã ký → submit quá nhanh (bot) hoặc token
+//     giả/hết hạn → chặn. (2) câu hỏi toán ký → chỉ hiện khi 1 NGUỒN đã nhiều đơn chờ
+//     (leo thang), số a,b + đáp án ký HMAC nên không tính hộ/giả được.
+const MIN_FILL_MS = Number(process.env.CHECKOUT_MIN_FILL_MS) || 2500;   // <2.5s điền xong = bot
+const FORM_MAX_AGE_MS = Number(process.env.CHECKOUT_FORM_MAX_AGE_MS) || 2 * 60 * 60 * 1000; // 2h
+const CHALLENGE_AFTER_PENDING = Number(process.env.CHECKOUT_CHALLENGE_AFTER) || 4; // ≥N đơn chờ/IP → hỏi toán
+const formSig = (s) => crypto.createHmac('sha256', IP_PEPPER).update('form:' + s).digest('base64url').slice(0, 24);
+const issueFormTs = () => { const t = Date.now(); return `${t}.${formSig('ts:' + t)}`; };
+function verifyFormTs(v) {
+  const [tStr, mac] = String(v ?? '').split('.');
+  const t = Number(tStr);
+  if (!Number.isInteger(t) || formSig('ts:' + t) !== mac) return { valid: false };
+  return { valid: true, age: Date.now() - t };
+}
+// Challenge RÀNG BUỘC vào (idemKey + thời điểm) → một cặp đã giải KHÔNG replay được cho
+// đơn khác (idem khác → MAC lệch) và hết hạn sau FORM_MAX_AGE_MS.
+function issueChallenge(idemKey) {
+  const a = 2 + Math.floor(Math.random() * 8), b = 2 + Math.floor(Math.random() * 8), t = Date.now();
+  return { a, b, sig: `${a}.${b}.${t}.${formSig(`mc:${a}:${b}:${t}:${idemKey}`)}` };
+}
+function verifyChallenge(sig, answer, idemKey) {
+  const [aStr, bStr, tStr, mac] = String(sig ?? '').split('.');
+  const a = Number(aStr), b = Number(bStr), t = Number(tStr);
+  if (![a, b, t].every(Number.isInteger) || formSig(`mc:${a}:${b}:${t}:${idemKey}`) !== mac) return false;
+  if (Date.now() - t > FORM_MAX_AGE_MS) return false;
+  return Number(String(answer ?? '').trim()) === a + b;
+}
 // Chuẩn hoá SĐT về 1 dạng (chỉ số, +84→0) → '091 234', '+8491...', '0912...' tính là MỘT.
 function canonPhone(p) {
   let d = String(p ?? '').replace(/\D/g, '');
@@ -260,13 +289,72 @@ async function updateItemForm(req, res, form, ctx) {  // form giỏ (cập nhậ
   }
 }
 
+// ── Đánh giá sản phẩm (public, no-JS form từ trang SP) ────────────────────────
+// Mặc định PENDING — shop duyệt mới hiện. Chống spam: honeypot (bot điền field ẩn →
+// giả vờ thành công, không cho tín hiệu) + trần 3 đánh giá/IP/ngày (HMAC ip_hash).
+// Badge "đã mua": khách nhập số đơn + SĐT khớp đơn ĐÃ GIAO chứa đúng sản phẩm.
+const REVIEWS_PER_IP_DAY = Number(process.env.REVIEWS_PER_IP_DAY) || 3;
+async function submitReviewForm(req, res, form, ctx) {
+  const productId = String(form.product_id ?? '');
+  if (!UUID_RE.test(productId)) return sendHtml(res, 400, renderError(await getShopName(ctx.shopId), 'Yêu cầu không hợp lệ.'));
+  const back = (slug, okFlag) => redirect(res, slug ? `/p/${encodeURIComponent(slug)}?review=${okFlag}#danh-gia` : '/');
+  const slugRow = await withTenant(ctx.shopId, async (c) =>
+    (await c.query(`SELECT slug FROM products WHERE id = $1 AND deleted_at IS NULL`, [productId])).rows[0]);
+  if (!slugRow) return sendHtml(res, 404, renderError(await getShopName(ctx.shopId), 'Không tìm thấy sản phẩm.'));
+  if (String(form.website ?? '') !== '') return back(slugRow.slug, 'sent'); // honeypot → nuốt im lặng
+  const rating = parseInt(String(form.rating ?? ''), 10);
+  const author = String(form.author_name ?? '').trim().slice(0, 80);
+  const content = String(form.content ?? '').trim().slice(0, 1000);
+  if (!isInt(rating) || rating < 1 || rating > 5) return back(slugRow.slug, 'invalid');
+  if (author.length < 1 || /[\r\n]/.test(author) || content.length < 10) return back(slugRow.slug, 'invalid');
+  const ipHash = ctx.ip ? hashIp(ctx.ip) : null;
+  const orderNum = parseInt(String(form.order_number ?? '').replace(/\D/g, ''), 10);
+  const revPhone = canonPhone(String(form.phone ?? ''));
+
+  const out = await withTenant(ctx.shopId, async (c) => {
+    if (ipHash) {
+      const n = Number((await c.query(
+        `SELECT count(*)::int n FROM product_reviews WHERE shop_id = current_shop_id() AND ip_hash = $1 AND created_at > now() - interval '1 day'`, [ipHash])).rows[0].n);
+      if (n >= REVIEWS_PER_IP_DAY) return { limited: true };
+    }
+    // Badge "đã mua": đơn ĐÃ GIAO (shipped/delivered) đúng SĐT + chứa sản phẩm này.
+    // LƯU Ý (chấp nhận có kiểm soát): khớp theo (order_number + SĐT) có thể bị giả nếu kẻ
+    // tấn công biết SĐT + đoán đúng số đơn của nạn nhân — nhưng đánh giá LUÔN chờ shop DUYỆT
+    // trước khi hiện, nên badge giả không tự lên trang; đây là chốt chặn chính.
+    let verified = false;
+    if (Number.isInteger(orderNum) && revPhone) {
+      verified = (await c.query(
+        `SELECT 1 FROM orders o JOIN order_lines ol ON ol.order_id = o.id JOIN variants v ON v.id = ol.variant_id
+          WHERE o.order_number = $1 AND o.customer_phone = $2 AND v.product_id = $3 AND o.status IN ('shipped','delivered') LIMIT 1`,
+        [orderNum, revPhone, productId])).rows.length > 0;
+    }
+    await c.query(
+      `INSERT INTO product_reviews (shop_id, product_id, order_number, rating, author_name, content, verified, ip_hash)
+       VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6, $7)`,
+      [productId, Number.isInteger(orderNum) ? orderNum : null, rating, author, content, verified, ipHash],
+    );
+    return { ok: true };
+  });
+  if (out.limited) return sendHtml(res, 429, renderError(await getShopName(ctx.shopId), 'Bạn gửi đánh giá quá nhanh. Vui lòng thử lại vào ngày mai.'));
+  return back(slugRow.slug, 'sent');
+}
+
 // ── checkout (crown jewel) ───────────────────────────────────────────────────
 // Validate + chuẩn hoá input đơn — DÙNG CHUNG cho API JSON và form trình duyệt.
 function parseOrderInput(raw) {
   const name = String(raw.name ?? '').trim();
   const phone = String(raw.phone ?? '').trim();
   const email = raw.email ? String(raw.email).trim().toLowerCase() : null;
-  const address = raw.address && typeof raw.address === 'object' ? raw.address : null;
+  // Địa chỉ: WHITELIST cấu trúc (không lưu nguyên văn object client gửi vào jsonb —
+  // chặn nhét key rác/payload lớn). Chỉ giữ line/province/district/ward, ép chuỗi + trần.
+  let address = null;
+  if (raw.address && typeof raw.address === 'object' && !Array.isArray(raw.address)) {
+    const pick = (k, max) => (raw.address[k] != null && String(raw.address[k]).trim() !== '' ? String(raw.address[k]).trim().slice(0, max) : undefined);
+    address = { line: pick('line', 300), province: pick('province', 60), district: pick('district', 60), ward: pick('ward', 60) };
+    // province (tuỳ chọn phía API để tương thích ngược; form BẮT BUỘC ở UI) — phải nằm
+    // trong danh sách 34 tỉnh/thành, dùng cho tạo vận đơn hãng VC.
+    if (address.province && !isProvince(address.province)) return { error: 'tỉnh/thành không hợp lệ' };
+  }
   const paymentMethod = raw.payment_method ?? 'cod';
   if (name.length < 1 || name.length > 120 || /[\r\n]/.test(name)) return { error: 'tên người nhận không hợp lệ' };
   // Định dạng hợp lệ VÀ phải chuẩn hoá được về ≥8 CHỮ SỐ. Chuỗi kiểu "1.2.3.4.5.6" qua regex
@@ -312,17 +400,21 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     // TRƯỚC khi đếm → đếm+chèn NGUYÊN TỬ, chống đua nhiều checkout cùng lúc lách trần.
     const ipHash = ctx.ip ? hashIp(ctx.ip) : null;
     const phoneCanon = canonPhone(phone);
+    // Trần theo SHOP (0051) nếu shop đặt; NULL → mặc định nền tảng (env). Clamp trần cứng.
+    const shopLim = (await c.query(`SELECT max_pending_per_ip, max_pending_per_phone FROM shops WHERE id = current_shop_id()`)).rows[0] ?? {};
+    const capIp = Math.min(shopLim.max_pending_per_ip ?? MAX_PENDING_PER_IP, 200);
+    const capPhone = Math.min(shopLim.max_pending_per_phone ?? MAX_PENDING_PER_PHONE, 50);
     if (ctx.ip) await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, ['oip:' + ctx.ip]);
     if (phoneCanon) await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, ['oph:' + phoneCanon]);
     if (ipHash) {
       const nIp = Number((await c.query(
         `SELECT count(*)::int n FROM orders WHERE shop_id = current_shop_id() AND client_ip_hash = $1 AND status = 'pending'`, [ipHash])).rows[0].n);
-      if (nIp >= MAX_PENDING_PER_IP) fail(429, 'Quá nhiều đơn chưa xử lý từ mạng/kết nối này. Vui lòng liên hệ cửa hàng hoặc thử lại sau.');
+      if (nIp >= capIp) fail(429, 'Quá nhiều đơn chưa xử lý từ mạng/kết nối này. Vui lòng liên hệ cửa hàng hoặc thử lại sau.');
     }
     if (phoneCanon) {
       const nPh = Number((await c.query(
         `SELECT count(*)::int n FROM orders WHERE shop_id = current_shop_id() AND customer_phone = $1 AND status = 'pending'`, [phoneCanon])).rows[0].n);
-      if (nPh >= MAX_PENDING_PER_PHONE) fail(429, 'Số điện thoại này có quá nhiều đơn chưa xử lý. Vui lòng liên hệ cửa hàng.');
+      if (nPh >= capPhone) fail(429, 'Số điện thoại này có quá nhiều đơn chưa xử lý. Vui lòng liên hệ cửa hàng.');
     }
 
     // Khoá tồn + reserve + snapshot. Giá lấy từ variants (server-side).
@@ -396,9 +488,12 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     // không có dòng này → không email ma (ADR-006). Payload self-contained (worker
     // chỉ đọc outbox, không đụng orders/PII). Chỉ khi có email người mua.
     if (email) {
+      // link tra cứu: token THÔ nằm trong email khách (họ cần nó) — outbox row cũng chứa
+      // (chấp nhận được: token chỉ mở trang chi tiết 1 đơn của chính khách).
+      const link = ctx.host ? `https://${ctx.host}/checkout/order?number=${Number(num)}&token=${lookupToken}` : undefined;
       await c.query(
         `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.created', $1)`,
-        [{ to: email, order_number: Number(num), total_vnd: total, customer_name: name, payment_method: paymentMethod }],
+        [{ to: email, order_number: Number(num), total_vnd: total, customer_name: name, payment_method: paymentMethod, ...(link ? { link } : {}) }],
       );
     }
 
@@ -426,8 +521,44 @@ async function checkoutPlace(req, res, form, ctx) {
   const shopName = await getShopName(ctx.shopId);
   const idemKey = String(form.idempotency_key ?? '');
   if (idemKey.length < 8 || idemKey.length > 200) return sendHtml(res, 400, renderError(shopName, 'Phiên thanh toán không hợp lệ, vui lòng tải lại trang.'));
-  const f = parseOrderInput({ name: form.name, phone: form.phone, email: form.email, address: form.address_line ? { line: String(form.address_line).slice(0, 300) } : null, payment_method: form.payment_method });
-  if (f.error) return sendHtml(res, 400, renderError(shopName, f.error));
+
+  // Dựng lại trang thanh toán (giữ dữ liệu đã nhập) — dùng khi cần thử lại / hỏi xác minh.
+  // Sinh idem MỚI ở đây và ràng buộc challenge vào chính idem đó (chống replay).
+  const reRender = async ({ needChallenge, ...opts }) => {
+    const token = parseCookies(req)[CART_COOKIE];
+    const summary = await withTenant(ctx.shopId, async (c) => {
+      const cart = await findCart(c, token);
+      return cart ? summarize(c, cart.id) : { items: [] };
+    });
+    if (!summary.items.length) return redirect(res, '/cart');
+    const idem = genToken();
+    const prefill = { name: form.name, phone: form.phone, email: form.email, address_line: form.address_line, province: form.province, payment_method: form.payment_method };
+    return sendHtml(res, opts.status ?? 200, renderCheckout(shopName, summary, idem, { formTs: issueFormTs(), prefill, challenge: needChallenge ? issueChallenge(idem) : undefined, ...opts }));
+  };
+
+  // ── Lớp BOT no-JS ────────────────────────────────────────────────────────────
+  // (a) Honeypot: trường ẩn 'company' — người thật không thấy nên bỏ trống; bot điền → chặn.
+  if (String(form.company ?? '').trim() !== '') return sendHtml(res, 400, renderError(shopName, 'Không đặt được đơn.'));
+  // (b) Time-trap: token thời gian ký. Giả/hết hạn/điền quá nhanh (bot) → dựng lại form.
+  const ts = verifyFormTs(form.ct);
+  if (!ts.valid || ts.age > FORM_MAX_AGE_MS) return reRender({ error: 'Phiên thanh toán đã hết hạn. Vui lòng kiểm tra thông tin và bấm Đặt hàng lại.' });
+  if (ts.age < MIN_FILL_MS) return reRender({ error: 'Bạn thao tác hơi nhanh — vui lòng bấm Đặt hàng lại để xác nhận.' });
+
+  const f = parseOrderInput({ name: form.name, phone: form.phone, email: form.email, address: form.address_line ? { line: String(form.address_line).slice(0, 300), province: form.province ? String(form.province).slice(0, 60) : undefined } : null, payment_method: form.payment_method });
+  if (f.error) return reRender({ error: f.error });
+
+  // (c) Leo thang: nguồn (IP) đã nhiều đơn CHỜ → bắt trả lời câu hỏi toán (ký HMAC).
+  if (ctx.ip) {
+    const ipHash = hashIp(ctx.ip);
+    const nPending = await withTenant(ctx.shopId, async (c) =>
+      Number((await c.query(`SELECT count(*)::int n FROM orders WHERE shop_id = current_shop_id() AND client_ip_hash = $1 AND status = 'pending'`, [ipHash])).rows[0].n));
+    if (nPending >= CHALLENGE_AFTER_PENDING) {
+      if (!verifyChallenge(form.challenge_sig, form.challenge_answer, idemKey)) {
+        return reRender({ needChallenge: true, error: 'Vui lòng trả lời câu hỏi xác minh để tiếp tục đặt hàng.' });
+      }
+    }
+  }
+
   const token = parseCookies(req)[CART_COOKIE];
   try {
     const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, ctx, token, idemKey, f));
@@ -463,7 +594,7 @@ async function getCheckoutPage(req, res, _body, ctx) {
     return cart ? summarize(c, cart.id) : { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 };
   });
   if (!summary.items.length) return redirect(res, '/cart');       // giỏ trống → về giỏ
-  return sendHtml(res, 200, renderCheckout(await getShopName(ctx.shopId), summary, genToken()));
+  return sendHtml(res, 200, renderCheckout(await getShopName(ctx.shopId), summary, genToken(), { formTs: issueFormTs() }));
 }
 
 async function getLookupPage(req, res, _body, ctx) {
@@ -514,6 +645,7 @@ const ROUTES = [
   { m: 'GET', p: '/checkout/lookup', fn: getLookupPage },
   { m: 'GET', p: '/checkout/success', fn: getSuccessPage },
   { m: 'GET', p: '/checkout/order', fn: orderLookup },
+  { m: 'POST', p: '/checkout/review', fn: submitReviewForm, form: true },
 ];
 
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -537,7 +669,8 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     if (!accepting) return send(res, 503, { error: 'cửa hàng tạm ngưng nhận đơn' });
 
     const body = req.method === 'GET' ? {} : (route.form ? await readForm(req) : await readJson(req));
-    const ctx = { shopId, ip: clientIp(req) };
+    // host: build link tra cứu đơn trong email (bỏ port nội bộ; Caddy route theo host shop).
+    const ctx = { shopId, ip: clientIp(req), host: String(req.headers.host ?? '').split(':')[0].toLowerCase() };
     await route.fn(req, res, body, ctx, url.searchParams);
   } catch (err) {
     if (err.statusCode) {

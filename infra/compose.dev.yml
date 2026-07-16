@@ -195,6 +195,11 @@ services:
       PORT: "3040"
       # URL webhook nền tảng cho SePay per-shop (shop trỏ SePay của họ về đây). Prod: hooks.nentang.vn.
       PLATFORM_HOOKS_URL: https://hooks.localtest:8443
+      # Vận chuyển hãng (GHN/GHTK): token per-shop mã hoá AES-256-GCM. Dev: khoá cố định +
+      # API base trỏ STUB trong dbtest (e2e tự mở server) — KHÔNG gọi hãng thật.
+      SHIPPING_ENC_KEY: 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
+      GHN_API_BASE: http://dbtest:9101
+      GHTK_API_BASE: http://dbtest:9102
       # Custom domain (A5): chặn khách chiếm subdomain nền tảng + dựng bản ghi TXT challenge.
       PLATFORM_DOMAIN: nentang.vn
       DOMAINVERIFY_PREFIX: _nentang-verify
@@ -282,6 +287,12 @@ services:
       DATABASE_URL_BILLING: postgres://app_billing:devpassword@postgres:5432/app
       SUBSCRIPTION_SWEEP_MS: "3600000"
       SUBSCRIPTION_GRACE_DAYS: "7"
+      # Poll vận đơn hãng VC (0044) — dùng pool app_expiry; khoá giải mã token per-shop
+      # PHẢI khớp seller. Dev: API base trỏ stub trong dbtest.
+      SHIPPING_ENC_KEY: 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
+      GHN_API_BASE: http://dbtest:9101
+      GHTK_API_BASE: http://dbtest:9102
+      TRACKING_SWEEP_MS: "600000"
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       SMTP_HOST: mailpit

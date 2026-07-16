@@ -176,7 +176,156 @@ async function orderDetail(res, me, cookie, shopId, oid, err) {
   const r = await sellerApi('GET', `/shops/${shopId}/orders/${oid}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tìm thấy đơn.'));
-  return sendHtml(res, err ? 409 : 200, V.renderOrderDetail(ctx, shopId, r.json, err));
+  // Kết nối hãng VC (nếu có) → hiện card "Tạo vận đơn qua hãng" khi đơn đã xác nhận.
+  // Lỗi tải config KHÔNG được làm sập trang đơn → nuốt, coi như chưa kết nối.
+  const shipping = r.json.status === 'confirmed'
+    ? await sellerApi('GET', `/shops/${shopId}/shipping`, { cookie }).then((sr) => (sr.status === 200 ? sr.json : null)).catch(() => null)
+    : null;
+  return sendHtml(res, err ? 409 : 200, V.renderOrderDetail(ctx, shopId, r.json, err, shipping));
+}
+
+// Tạo vận đơn QUA HÃNG từ chi tiết đơn (form prefill) → seller gọi API hãng.
+async function carrierShipment(req, res, me, cookie, shopId, oid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const body = {
+    to_name: String(f.to_name ?? '').trim(), to_phone: String(f.to_phone ?? '').trim(),
+    to_address: String(f.to_address ?? '').trim(), to_province: String(f.to_province ?? '').trim(),
+    to_district: String(f.to_district ?? '').trim(), to_ward: String(f.to_ward ?? '').trim(),
+    note: String(f.note ?? '').trim(),
+    // Parse SỐ thật (không strip ký tự — '5e3' phải ra 5000, không phải 53); seller chặn 50–50000.
+    weight_gram: (() => { const raw = String(f.weight_gram ?? '').trim(); const n = raw === '' ? 500 : Number(raw); return Number.isFinite(n) ? Math.round(n) : 500; })(),
+  };
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/carrier-shipment`, { cookie, body });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}`);
+  return orderDetail(res, me, cookie, shopId, oid, r.json?.error ?? 'Không tạo được vận đơn.');
+}
+
+// ── CRM-lite: khách hàng + ghi chú (orders.read/write ở seller) ───────────────
+async function customersPage(res, me, cookie, shopId, sp) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'customers');
+  const q = (sp.get('q') ?? '').trim(), minOrders = sp.get('min_orders') ?? '1';
+  const offset = Math.max(parseInt(sp.get('offset') ?? '0', 10) || 0, 0), limit = 20;
+  const r = await sellerApi('GET', `/shops/${shopId}/customers?q=${encodeURIComponent(q)}&min_orders=${encodeURIComponent(minOrders)}&limit=${limit}&offset=${offset}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được khách hàng.'));
+  return sendHtml(res, 200, V.renderCustomers(ctx, shopId, r.json, { q, min_orders: Number(minOrders) || 1, offset, limit }));
+}
+async function customerDetail(res, me, cookie, shopId, phone, saved) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'customers');
+  const r = await sellerApi('GET', `/shops/${shopId}/customers/${phone}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tìm thấy khách.'));
+  return sendHtml(res, 200, V.renderCustomerDetail(ctx, shopId, r.json, saved));
+}
+async function customerNoteSave(req, res, me, cookie, shopId, phone) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await sellerApi('PUT', `/shops/${shopId}/customers/${phone}/note`, { cookie, body: { note: String(f.note ?? '') } });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/customers/${phone}?saved=1`);
+  return customerDetail(res, me, cookie, shopId, phone, false);
+}
+
+// ── Đánh giá sản phẩm: duyệt/từ chối/xoá (content.write ở seller) ─────────────
+async function reviewsPage(res, me, cookie, shopId, status) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const st = ['pending', 'approved', 'rejected'].includes(status) ? status : 'pending';
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'reviews');
+  const r = await sellerApi('GET', `/shops/${shopId}/reviews?status=${st}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được đánh giá.'));
+  return sendHtml(res, 200, V.renderReviews(ctx, shopId, r.json, st));
+}
+async function reviewAction(res, me, cookie, shopId, rid, action) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = action === 'delete'
+    ? await sellerApi('DELETE', `/shops/${shopId}/reviews/${rid}`, { cookie })
+    : await sellerApi('POST', `/shops/${shopId}/reviews/${rid}/${action}`, { cookie, body: {} });
+  return redirect(res, `/shops/${shopId}/reviews${r.status !== 200 ? '' : action === 'approve' ? '?status=pending' : '?status=pending'}`);
+}
+
+// Phục hồi vận đơn finalize_failed (đã tạo trên hãng nhưng chốt hỏng).
+async function carrierReconcile(req, res, me, cookie, shopId, oid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/carrier-reconcile`, { cookie, body: { action: f.action === 'cancel' ? 'cancel' : 'shipped' } });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}`);
+  return orderDetail(res, me, cookie, shopId, oid, r.json?.error ?? 'Không phục hồi được vận đơn.');
+}
+
+// ── Vận chuyển: trang kết nối hãng (shop.write + step-up ở seller) ────────────
+function shippingForm(f) {
+  return {
+    __op: f.__op === 'disconnect' ? 'disconnect' : 'connect',
+    provider: f.provider === 'ghn' ? 'ghn' : 'ghtk',
+    token: String(f.token ?? ''),
+    ghn_shop_id: String(f.ghn_shop_id ?? '').replace(/\D/g, '').slice(0, 20),
+    pick_name: String(f.pick_name ?? '').trim(), pick_phone: String(f.pick_phone ?? '').trim(),
+    pick_address: String(f.pick_address ?? '').trim(), pick_province: String(f.pick_province ?? '').trim(),
+    pick_district: String(f.pick_district ?? '').trim(), pick_ward: String(f.pick_ward ?? '').trim(),
+  };
+}
+async function shippingPage(res, me, cookie, shopId, ok, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'shipping');
+  const r = await sellerApi('GET', `/shops/${shopId}/shipping`, { cookie });
+  if (r.status !== 200) return sendHtml(res, 502, V.renderError(ctx, r.json?.error ?? 'Không tải được cấu hình vận chuyển.'));
+  return sendHtml(res, err ? 400 : 200, V.renderShipping(ctx, shopId, r.json, err, ok));
+}
+async function doShippingOp(res, me, cookie, shopId, form) {
+  if (form.__op === 'disconnect') {
+    const r = await sellerApi('DELETE', `/shops/${shopId}/shipping`, { cookie });
+    return r.status === 200 ? shippingPage(res, me, cookie, shopId, 'Đã ngắt kết nối hãng vận chuyển.', null)
+      : shippingPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không ngắt được kết nối.');
+  }
+  const body = {
+    provider: form.provider, token: form.token, ghn_shop_id: form.ghn_shop_id,
+    pickup: { name: form.pick_name, phone: form.pick_phone, address: form.pick_address, province: form.pick_province, district: form.pick_district, ward: form.pick_ward },
+  };
+  const r = await sellerApi('PUT', `/shops/${shopId}/shipping`, { cookie, body });
+  return r.status === 200 ? shippingPage(res, me, cookie, shopId, `Đã kết nối ${form.provider.toUpperCase()}.`, null)
+    : shippingPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không kết nối được.');
+}
+async function shippingOp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const form = shippingForm(await readForm(req));
+  if (steppedUp(me)) return doShippingOp(res, me, cookie, shopId, form);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'shipping');
+  return sendHtml(res, 200, V.renderShippingStepUp(ctx, shopId, form, null));
+}
+async function shippingStepUp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const form = shippingForm(f);
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'shipping');
+    return sendHtml(res, 401, V.renderShippingStepUp(ctx, shopId, form, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.'));
+  }
+  return doShippingOp(res, me, cookie, shopId, form);
+}
+
+// Xác nhận HÀNG LOẠT: forward danh sách id (checkbox) → seller (thành công một phần).
+async function ordersBulkConfirm(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const params = await readFormAll(req);
+  const ids = params.getAll('order_ids').filter((x) => /^[0-9a-f-]{36}$/.test(x));
+  if (!ids.length) return redirect(res, `/shops/${shopId}/orders`);
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/bulk/confirm`, { cookie, body: { order_ids: ids } });
+  return redirect(res, `/shops/${shopId}/orders${r.status === 200 ? `?bulk_ok=${r.json.confirmed}&bulk_skip=${r.json.skipped}` : ''}`);
+}
+
+// In HÀNG LOẠT (GET từ nút formaction, target _blank): mỗi đơn 1 trang.
+async function ordersPrintBatch(res, me, cookie, shopId, sp) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ids = sp.getAll('order_ids').filter((x) => /^[0-9a-f-]{36}$/.test(x)).slice(0, 50);
+  if (!ids.length) return redirect(res, `/shops/${shopId}/orders`);
+  const [shopR, ...orderRs] = await Promise.all([
+    sellerApi('GET', `/shops/${shopId}`, { cookie }),
+    ...ids.map((id) => sellerApi('GET', `/shops/${shopId}/orders/${id}`, { cookie })),
+  ]);
+  const orders = orderRs.filter((r) => r.status === 200 && r.json).map((r) => r.json);
+  if (!orders.length) return redirect(res, `/shops/${shopId}/orders`);
+  return sendHtml(res, 200, V.renderOrderPrintBatch(shopId, shopR.json, orders));
 }
 
 async function orderPrint(res, me, cookie, shopId, oid) {
@@ -1082,6 +1231,9 @@ async function settingsSave(req, res, me, cookie, shopId) {
     business_address: String(f.business_address ?? '').trim(),
     ship_fee_vnd: String(f.ship_fee_vnd ?? '').trim(),
     free_ship_threshold_vnd: String(f.free_ship_threshold_vnd ?? '').trim(),
+    low_stock_threshold: String(f.low_stock_threshold ?? '').trim(),
+    max_pending_per_ip: String(f.max_pending_per_ip ?? '').trim(),
+    max_pending_per_phone: String(f.max_pending_per_phone ?? '').trim(),
   };
   const r = await sellerApi('PATCH', `/shops/${shopId}`, { cookie, body });
   if (r.status === 200) return settingsPage(res, me, cookie, shopId, 'Đã lưu hồ sơ cửa hàng.', null);
@@ -1157,6 +1309,8 @@ async function handle(req, res, url, p) {
     let m;
     if ((m = new RegExp(`^/shops/${UUID}/overview$`).exec(p)) && req.method === 'GET') return overviewPage(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders$`).exec(p)) && req.method === 'GET') return ordersList(res, me, cookie, m[1], url.searchParams);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/bulk-confirm$`).exec(p)) && req.method === 'POST') return ordersBulkConfirm(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/print-batch$`).exec(p)) && req.method === 'GET') return ordersPrintBatch(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}$`).exec(p)) && req.method === 'GET') return orderDetail(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/print$`).exec(p)) && req.method === 'GET') return orderPrint(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/(confirm|ship|cancel|deliver|mark-paid)$`).exec(p)) && req.method === 'POST') return orderAction(req, res, me, cookie, m[1], m[2], m[3]);
@@ -1247,6 +1401,22 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/payment/sepay/step-up$`).exec(p)) && req.method === 'POST') return sepayStepUp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/payment/reconcile/${UUID}/resolve$`).exec(p)) && req.method === 'POST') return reconcileResolve(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/payment/reconcile/${UUID}/resolve/step-up$`).exec(p)) && req.method === 'POST') return reconcileResolveStepUp(req, res, me, cookie, m[1], m[2]);
+
+    // Khách hàng (CRM-lite, orders.read/write ở seller).
+    if ((m = new RegExp(`^/shops/${UUID}/customers$`).exec(p)) && req.method === 'GET') return customersPage(res, me, cookie, m[1], url.searchParams);
+    if ((m = new RegExp(`^/shops/${UUID}/customers/(\\d{8,15})$`).exec(p)) && req.method === 'GET') return customerDetail(res, me, cookie, m[1], m[2], url.searchParams.get('saved') === '1');
+    if ((m = new RegExp(`^/shops/${UUID}/customers/(\\d{8,15})/note$`).exec(p)) && req.method === 'POST') return customerNoteSave(req, res, me, cookie, m[1], m[2]);
+
+    // Đánh giá sản phẩm (content.write = owner/admin ở seller).
+    if ((m = new RegExp(`^/shops/${UUID}/reviews$`).exec(p)) && req.method === 'GET') return reviewsPage(res, me, cookie, m[1], url.searchParams.get('status'));
+    if ((m = new RegExp(`^/shops/${UUID}/reviews/${UUID}/(approve|reject|delete)$`).exec(p)) && req.method === 'POST') return reviewAction(res, me, cookie, m[1], m[2], m[3]);
+
+    // Vận chuyển hãng (shop.write = owner/admin + step-up ở seller).
+    if ((m = new RegExp(`^/shops/${UUID}/shipping$`).exec(p)) && req.method === 'GET') return shippingPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/shipping$`).exec(p)) && req.method === 'POST') return shippingOp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/shipping/step-up$`).exec(p)) && req.method === 'POST') return shippingStepUp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/carrier-shipment$`).exec(p)) && req.method === 'POST') return carrierShipment(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/carrier-reconcile$`).exec(p)) && req.method === 'POST') return carrierReconcile(req, res, me, cookie, m[1], m[2]);
 
     // Cài đặt / hồ sơ cửa hàng (shop.write = owner/admin).
     if ((m = new RegExp(`^/shops/${UUID}/settings$`).exec(p)) && req.method === 'GET') return settingsPage(res, me, cookie, m[1], null, null);

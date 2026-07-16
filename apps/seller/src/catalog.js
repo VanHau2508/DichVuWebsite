@@ -120,8 +120,9 @@ async function listProducts(res, ctx, _body, _params, query) {
   const where = ['p.deleted_at IS NULL'];
   const args = [];
   if (q) {
+    // Tìm KHÔNG DẤU (0048): vn_unaccent 2 vế — "ghe sofa" khớp "Ghế sofa".
     args.push('%' + likeEscape(q) + '%');
-    where.push(`p.title ILIKE $${args.length}`);
+    where.push(`vn_unaccent(p.title) LIKE vn_unaccent($${args.length})`);
   }
   if (['draft', 'active', 'archived'].includes(status)) {
     args.push(status);

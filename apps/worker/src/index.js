@@ -17,6 +17,7 @@
  */
 
 import http from 'node:http';
+import crypto from 'node:crypto';
 import { Resolver } from 'node:dns/promises';
 import pg from 'pg';
 import { Queue, Worker } from 'bullmq';
@@ -50,6 +51,11 @@ const DOMAINVERIFY_GIVEUP_HOURS = Number(process.env.DOMAINVERIFY_GIVEUP_HOURS ?
 // Pool RIÊNG cho vòng đời thuê bao (role app_billing cực hẹp — 0033). Thiếu env → tắt.
 const BILLING_URL = process.env.DATABASE_URL_BILLING;
 const billingDb = BILLING_URL ? new pg.Pool({ connectionString: BILLING_URL, max: 2 }) : null;
+// Poll trạng thái vận đơn hãng VC (GHN/GHTK — 0044). Dùng CHUNG pool app_expiry (role
+// tự động hoá vòng đời đơn). Cần thêm SHIPPING_ENC_KEY (giải mã token per-shop) — thiếu → tắt.
+const SHIPPING_ENC_KEY = process.env.SHIPPING_ENC_KEY ?? '';
+const TRACKING_ON = /^[0-9a-f]{64}$/i.test(SHIPPING_ENC_KEY);
+const TRACKING_SWEEP_MS = Number(process.env.TRACKING_SWEEP_MS ?? 600000); // 10 phút
 const SUBSCRIPTION_SWEEP_MS = Number(process.env.SUBSCRIPTION_SWEEP_MS ?? 3600000); // 1 giờ
 const SUBSCRIPTION_GRACE_DAYS = Number(process.env.SUBSCRIPTION_GRACE_DAYS ?? 7);
 const dnsResolver = new Resolver({ timeout: 3000, tries: 2 });
@@ -70,28 +76,58 @@ const log = makeLog('worker');
 const queue = new Queue('email', { connection });
 
 // ── compose email từ sự kiện ─────────────────────────────────────────────────
+// Payload SELF-CONTAINED (worker không đọc orders). p.link (nếu có) = URL tra cứu đơn.
 function compose(topic, p) {
   const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + 'đ';
+  const footer = `${p.link ? `\n\nTra cứu đơn hàng: ${p.link}` : ''}\n\nCảm ơn bạn!`;
   if (topic === 'order.created') {
     return {
       subject: `Xác nhận đơn hàng #${p.order_number}`,
-      text: `Chào ${p.customer_name || 'bạn'},\n\nĐơn hàng #${p.order_number} đã được ghi nhận.\nTổng: ${money(p.total_vnd)} — Thanh toán: ${p.payment_method === 'qr' ? 'chuyển khoản QR' : 'COD'}.\n\nCảm ơn bạn!`,
+      text: `Chào ${p.customer_name || 'bạn'},\n\nĐơn hàng #${p.order_number} đã được ghi nhận.\nTổng: ${money(p.total_vnd)} — Thanh toán: ${p.payment_method === 'qr' ? 'chuyển khoản QR' : 'khi nhận hàng (COD)'}.${footer}`,
     };
   }
   if (topic === 'order.paid') {
     return {
       subject: `Đã nhận thanh toán đơn #${p.order_number}`,
-      text: `Chào ${p.customer_name || 'bạn'},\n\nChúng tôi đã nhận đủ thanh toán cho đơn hàng #${p.order_number} (${money(p.total_vnd)}).\nĐơn của bạn đang được xử lý.\n\nCảm ơn bạn!`,
+      text: `Chào ${p.customer_name || 'bạn'},\n\nChúng tôi đã nhận đủ thanh toán cho đơn hàng #${p.order_number} (${money(p.total_vnd)}).\nĐơn của bạn đang được xử lý.${footer}`,
     };
   }
   if (topic === 'order.status_changed') {
-    const label = { confirmed: 'đã xác nhận', shipped: 'đang giao', delivered: 'đã giao', cancelled: 'đã huỷ' }[p.status] ?? p.status;
+    // Huỷ TỰ ĐỘNG (reason='expired'): nói rõ vì sao + mời đặt lại — khác huỷ do shop.
+    if (p.status === 'cancelled' && p.reason === 'expired') {
+      const why = p.payment_method === 'qr'
+        ? 'chưa nhận được thanh toán chuyển khoản trong thời gian giữ đơn'
+        : 'cửa hàng chưa kịp xác nhận trong thời gian giữ đơn';
+      return {
+        subject: `Đơn hàng #${p.order_number} đã tự huỷ`,
+        text: `Đơn hàng #${p.order_number} đã được HỆ THỐNG TỰ HUỶ vì ${why}.\nHàng đã được trả lại kho — nếu bạn vẫn muốn mua, vui lòng đặt lại đơn mới.${footer}`,
+      };
+    }
+    const label = { confirmed: 'đã được xác nhận', shipped: 'đang trên đường giao', delivered: 'đã giao thành công', cancelled: 'đã huỷ', refunded: 'đã hoàn tiền' }[p.status] ?? p.status;
+    const extra = p.status === 'shipped' && p.tracking_number ? `\nMã vận đơn: ${p.tracking_number} — bạn có thể tra trên trang của hãng vận chuyển.`
+      : p.status === 'delivered' ? '\nCảm ơn bạn đã mua hàng! Nếu có vấn đề với sản phẩm, hãy liên hệ cửa hàng.'
+      : p.tracking_number ? `\nMã vận đơn: ${p.tracking_number}` : '';
     return {
       subject: `Đơn hàng #${p.order_number} — ${label}`,
-      text: `Đơn hàng #${p.order_number} ${label}.${p.tracking_number ? `\nMã vận đơn: ${p.tracking_number}` : ''}`,
+      text: `Đơn hàng #${p.order_number} ${label}.${extra}${footer}`,
+    };
+  }
+  if (topic === 'stock.low') {
+    const lines = (p.items ?? []).map((i) => `  • ${i.title}${i.variant_title ? ` (${i.variant_title})` : ''} — còn ${i.available}`).join('\n');
+    return {
+      subject: `⚠ ${p.items?.length ?? 0} sản phẩm sắp hết hàng`,
+      text: `Các sản phẩm sau còn tồn thấp (≤ ${p.threshold}):\n\n${lines}\n\nVào trang quản trị để nhập thêm hàng hoặc ẩn sản phẩm.`,
     };
   }
   return { subject: `Thông báo`, text: JSON.stringify(p) };
+}
+
+// Điểm nối KÊNH THÔNG BÁO: hiện chỉ email; sau này thêm Zalo ZNS tại đây (cần OA +
+// template được Zalo duyệt — tích hợp khi user có tài khoản OA, KHÔNG dựng code chết).
+async function deliverNotification(topic, payload) {
+  if (!payload?.to) return; // không có email → bỏ qua (ZNS sau này dùng payload.phone)
+  const { subject, text } = compose(topic, payload);
+  await transport.sendMail({ from: FROM, to: payload.to, subject, text });
 }
 
 // ── poller: outbox → queue ───────────────────────────────────────────────────
@@ -125,11 +161,9 @@ const worker = new Worker('email', async (job) => {
   const { topic, payload } = job.data;
   // Cờ test: email bounce vĩnh viễn → để kiểm dead-letter (chỉ dev/test).
   if (payload?.to === 'bounce@test.invalid') throw new Error('simulated permanent bounce');
-  if (!payload?.to) return; // không có email → bỏ qua
-  const { subject, text } = compose(topic, payload);
-  await transport.sendMail({ from: FROM, to: payload.to, subject, text });
+  await deliverNotification(topic, payload);
   // KHÔNG log địa chỉ email (PII). Log topic + số đơn để truy vết.
-  log('info', 'email_sent', { topic, order: payload.order_number });
+  if (payload?.to) log('info', 'email_sent', { topic, order: payload.order_number });
 }, { connection, concurrency: 5 });
 
 worker.on('failed', (job, err) => log('warn', 'email_failed', { id: job?.id, attempts: job?.attemptsMade, message: err.message }));
@@ -145,7 +179,7 @@ async function sweepExpired() {
     c = await expiryDb.connect(); // connect() TRONG try — DB sập không làm crash worker
     await c.query('BEGIN');
     const orders = (await c.query(
-      `SELECT id, shop_id, coupon_code FROM orders
+      `SELECT id, shop_id, coupon_code, order_number, total_vnd, payment_method, customer_email FROM orders
         WHERE status = 'pending' AND (
               (payment_method = 'qr'  AND payment_status = 'unpaid' AND created_at < now() - ($1 || ' minutes')::interval)
            OR (payment_method = 'cod' AND payment_status = 'unpaid' AND created_at < now() - ($2 || ' days')::interval)
@@ -166,6 +200,12 @@ async function sweepExpired() {
       // Đơn hết hạn = chưa trả → hoàn lại 1 lượt coupon (đã tăng lúc tạo đơn).
       if (o.coupon_code) {
         await c.query(`UPDATE coupons SET used_count = GREATEST(used_count - 1, 0) WHERE shop_id = $1 AND upper(code) = upper($2)`, [o.shop_id, o.coupon_code]);
+      }
+      // Email báo khách đơn TỰ HUỶ (docs/34 §E — hết "huỷ im lặng"). Cùng transaction
+      // với huỷ (ADR-006). reason='expired' → compose() nói rõ lý do + mời đặt lại.
+      if (o.customer_email) {
+        await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.status_changed', $2)`,
+          [o.shop_id, { to: o.customer_email, order_number: Number(o.order_number), status: 'cancelled', reason: 'expired', payment_method: o.payment_method, total_vnd: Number(o.total_vnd) }]);
       }
     }
     await c.query('COMMIT');
@@ -261,10 +301,186 @@ async function sweepSubscriptions() {
   } finally { if (c) c.release(); }
 }
 
+// ── sweep: poll trạng thái vận đơn hãng VC (GHN/GHTK) ─────────────────────────
+// Vận đơn in_transit tạo qua hãng → hỏi API hãng (NGOÀI transaction, như DNS sweep);
+// 'delivered' → chốt đơn delivered (guard status='shipped' = idempotent) + outbox email.
+// 'returned'/'cancelled' → CHỈ đánh dấu vận đơn + log (shop xử lý hoàn/tồn TAY — không
+// tự đảo tồn kho vì hàng hoàn cần kiểm đếm thực tế). Token per-shop giải mã bằng
+// SHIPPING_ENC_KEY (AES-256-GCM, cùng định dạng secretbox iv.tag.ct base64).
+const GHN_BASE = (process.env.GHN_API_BASE ?? 'https://online-gateway.ghn.vn/shiip/public-api').replace(/\/+$/, '');
+const GHTK_BASE = (process.env.GHTK_API_BASE ?? 'https://services.giaohangtietkiem.vn').replace(/\/+$/, '');
+function sbOpen(blob, keyHex) { // bản sao secretbox.open (build context worker là dir riêng)
+  const key = Buffer.from(keyHex, 'hex');
+  const [ivB64, tagB64, ctB64] = String(blob).split('.');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivB64, 'base64'));
+  decipher.setAuthTag(Buffer.from(tagB64, 'base64'));
+  return Buffer.concat([decipher.update(Buffer.from(ctB64, 'base64')), decipher.final()]).toString('utf8');
+}
+async function carrierState(provider, token, ghnShopId, tracking) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 10000);
+  try {
+    if (provider === 'ghn') {
+      const r = await fetch(`${GHN_BASE}/v2/shipping-order/detail`, {
+        method: 'POST', headers: { 'content-type': 'application/json', Token: token },
+        body: JSON.stringify({ order_code: tracking }), signal: ac.signal,
+      });
+      const j = await r.json().catch(() => null);
+      if (r.status !== 200 || j?.code !== 200) return null;
+      const st = String(j?.data?.status ?? '');
+      return { state: st === 'delivered' ? 'delivered' : st === 'cancel' ? 'cancelled' : /return/.test(st) ? 'returned' : 'shipping', raw: st };
+    }
+    const r = await fetch(`${GHTK_BASE}/services/shipment/v2/${encodeURIComponent(tracking)}`, { headers: { Token: token }, signal: ac.signal });
+    const j = await r.json().catch(() => null);
+    if (r.status !== 200 || j?.success !== true) return null;
+    const st = Number(j?.order?.status ?? j?.order?.status_id ?? 0);
+    return { state: st === 5 || st === 6 ? 'delivered' : st === -1 ? 'cancelled' : st === 9 || st === 20 || st === 21 ? 'returned' : 'shipping', raw: String(st) };
+  } catch { return null; } finally { clearTimeout(t); }
+}
+async function sweepTracking() {
+  if (!expiryDb || !TRACKING_ON) return { checked: 0, delivered: 0 };
+  // Chống LỖI MỘT DÒNG bỏ đói cả hàng đợi (ORDER BY synced_at): mọi đường lỗi PHẢI bump
+  // synced_at để dòng hỏng xoay xuống cuối, không chiếm slot LIMIT 30 mãi mãi.
+  const bump = (id) => expiryDb.query(`UPDATE shipments SET synced_at = now() WHERE id = $1`, [id]).catch(() => {});
+  // Dọn CLAIM CHẾT: dòng 'created' quá 15' (crash giữa chừng / hãng từ chối mà DELETE bù
+  // fail). tracking NULL = hãng CHƯA tạo → mở khoá (cancelled). tracking CÓ (finalize_failed)
+  // = vận đơn THẬT tồn tại trên hãng → GIỮ khoá + log cảnh báo (mở là double-create COD thật).
+  try {
+    const gc = await expiryDb.query(
+      `UPDATE shipments SET status = 'cancelled', provider_status = 'claim_expired', synced_at = now()
+        WHERE status = 'created' AND provider IS NOT NULL AND tracking_number IS NULL
+          AND created_at < now() - interval '15 minutes' RETURNING id`);
+    if (gc.rowCount) log('info', 'tracking_claims_expired', { n: gc.rowCount });
+    const stuck = await expiryDb.query(
+      `SELECT id, order_id, tracking_number FROM shipments
+        WHERE status = 'created' AND provider IS NOT NULL AND tracking_number IS NOT NULL
+          AND created_at < now() - interval '15 minutes'`);
+    for (const r of stuck.rows) log('warn', 'tracking_finalize_stuck', { shipmentId: r.id, tracking: r.tracking_number });
+  } catch (e) { log('error', 'tracking_gc_error', { message: e.message }); }
+
+  let rows;
+  try {
+    rows = (await expiryDb.query(
+      `SELECT s.id, s.shop_id, s.order_id, s.provider, s.tracking_number,
+              cfg.token_enc, cfg.ghn_shop_id,
+              o.status AS order_status, o.order_number, o.total_vnd, o.customer_email
+         FROM shipments s
+         JOIN shop_shipping_config cfg ON cfg.shop_id = s.shop_id AND cfg.enabled
+         JOIN orders o ON o.id = s.order_id
+        WHERE s.provider IS NOT NULL AND s.status = 'in_transit'
+        ORDER BY s.synced_at NULLS FIRST LIMIT 30`)).rows;
+  } catch (e) { log('error', 'tracking_query_error', { message: e.message }); return { checked: 0, delivered: 0 }; }
+
+  let delivered = 0;
+  for (const s of rows) {
+    let token;
+    try { token = sbOpen(s.token_enc, SHIPPING_ENC_KEY); } catch {
+      log('error', 'tracking_decrypt_error', { shipmentId: s.id }); // khoá lệch/token hỏng
+      await bump(s.id); continue;
+    }
+    const st = await carrierState(s.provider, token, s.ghn_shop_id, s.tracking_number); // NGOÀI transaction
+    if (!st) { await bump(s.id); continue; } // hãng lỗi/timeout → xoay xuống cuối, thử nhịp sau
+    let c;
+    try {
+      c = await expiryDb.connect();
+      await c.query('BEGIN');
+      if (st.state === 'delivered') {
+        const upd = await c.query(`UPDATE orders SET status = 'delivered', delivered_at = now() WHERE id = $1 AND status = 'shipped'`, [s.order_id]);
+        await c.query(`UPDATE shipments SET status = 'delivered', provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
+        if (upd.rowCount === 1 && s.customer_email) {
+          await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.status_changed', $2)`,
+            [s.shop_id, { to: s.customer_email, order_number: Number(s.order_number), status: 'delivered', total_vnd: Number(s.total_vnd), tracking_number: s.tracking_number }]);
+        }
+        if (upd.rowCount === 1) { delivered++; log('info', 'tracking_delivered', { order_number: Number(s.order_number), provider: s.provider }); }
+      } else if (st.state === 'returned' || st.state === 'cancelled') {
+        await c.query(`UPDATE shipments SET status = $2, provider_status = $3, synced_at = now() WHERE id = $1`, [s.id, st.state, st.raw]);
+        log('warn', 'tracking_exception', { order_number: Number(s.order_number), provider: s.provider, state: st.state, raw: st.raw });
+      } else {
+        await c.query(`UPDATE shipments SET provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
+      }
+      await c.query('COMMIT');
+    } catch (e) {
+      if (c) await c.query('ROLLBACK').catch(() => {});
+      log('error', 'tracking_update_error', { message: e.message });
+    } finally { if (c) c.release(); }
+  }
+  return { checked: rows.length, delivered };
+}
+
+// ── sweep: cảnh báo SẮP HẾT HÀNG (0050) — mỗi ngày 1 email/shop nếu có hàng tồn thấp ──
+// Ngưỡng per-shop (NULL → 5). Chỉ shop active + có contact_email. Nhóm theo shop → 1 email
+// tối đa 20 dòng. Idempotent theo NHỊP (timer 24h); gọi tay /internal/lowstock-sweep để test.
+const LOWSTOCK_SWEEP_MS = Number(process.env.LOWSTOCK_SWEEP_MS ?? 86400000); // 24h
+async function sweepLowStock() {
+  if (!expiryDb) return { shops: 0 };
+  let rows;
+  try {
+    // CHỈ biến thể ĐÃ cấu hình tồn (có dòng inventory_levels — INNER JOIN) → không báo giả
+    // biến thể mới chưa nhập kho. Cap 20 dòng/SHOP bằng row_number (không để 1 shop nhiều
+    // biến thể tồn thấp bỏ đói cảnh báo shop khác qua LIMIT toàn cục).
+    rows = (await expiryDb.query(`
+      SELECT shop_id, contact_email, threshold, title, variant_title, available FROM (
+        SELECT s.id AS shop_id, s.contact_email, coalesce(s.low_stock_threshold, 5) AS threshold,
+               p.title, v.title AS variant_title, (il.on_hand - il.reserved)::int AS available,
+               row_number() OVER (PARTITION BY s.id ORDER BY (il.on_hand - il.reserved) ASC, v.id) AS rn
+          FROM shops s
+          JOIN products p ON p.shop_id = s.id AND p.status = 'active' AND p.deleted_at IS NULL
+          JOIN variants v ON v.product_id = p.id
+          JOIN inventory_levels il ON il.variant_id = v.id
+         WHERE s.status IN ('active', 'onboarding') AND s.contact_email IS NOT NULL
+           AND (il.on_hand - il.reserved) <= coalesce(s.low_stock_threshold, 5)
+      ) x WHERE rn <= 20`)).rows;
+  } catch (e) { log('error', 'lowstock_query_error', { message: e.message }); return { shops: 0 }; }
+  const byShop = new Map();
+  for (const r of rows) {
+    if (!byShop.has(r.shop_id)) byShop.set(r.shop_id, { to: r.contact_email, threshold: Number(r.threshold), items: [] });
+    byShop.get(r.shop_id).items.push({ title: r.title, variant_title: r.variant_title, available: r.available });
+  }
+  let sent = 0;
+  for (const [shopId, g] of byShop) {
+    let c;
+    try {
+      c = await expiryDb.connect();
+      await c.query('BEGIN');
+      // Claim NGUYÊN TỬ theo ngày: chỉ shop CHƯA gửi hôm nay mới qua → không email trùng.
+      const claimed = await c.query(
+        `UPDATE shops SET low_stock_alerted_on = current_date
+          WHERE id = $1 AND (low_stock_alerted_on IS NULL OR low_stock_alerted_on < current_date)`, [shopId]);
+      if (claimed.rowCount === 1) {
+        await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'stock.low', $2)`, [shopId, g]);
+        sent++;
+      }
+      await c.query('COMMIT');
+    } catch (e) {
+      if (c) await c.query('ROLLBACK').catch(() => {});
+      log('error', 'lowstock_outbox_error', { message: e.message });
+    } finally { if (c) c.release(); }
+  }
+  if (sent) log('info', 'lowstock_alerts', { shops: sent });
+  return { shops: sent };
+}
+
+// ── sweep: DỌN outbox — bỏ PII (email + link tra cứu token) khỏi dòng ĐÃ XỬ LÝ >7 ngày.
+// Email đã gửi xong nên không cần giữ; giảm bề mặt rò nếu DB lộ. app_worker đã có UPDATE outbox.
+const OUTBOX_GC_MS = Number(process.env.OUTBOX_GC_MS ?? 6 * 60 * 60 * 1000); // 6h
+async function sweepOutboxGc() {
+  try {
+    const r = await db.query(
+      `UPDATE outbox SET payload = payload - 'link' - 'to'
+        WHERE processed_at IS NOT NULL AND processed_at < now() - interval '7 days'
+          AND (jsonb_exists(payload, 'link') OR jsonb_exists(payload, 'to'))`);
+    if (r.rowCount) log('info', 'outbox_gc', { n: r.rowCount });
+    return { scrubbed: r.rowCount };
+  } catch (e) { log('error', 'outbox_gc_error', { message: e.message }); return { scrubbed: 0 }; }
+}
+
 const timer = setInterval(poll, POLL_MS);
 const expiryTimer = expiryDb ? setInterval(sweepExpired, EXPIRY_SWEEP_MS) : null;
+const lowstockTimer = expiryDb ? setInterval(sweepLowStock, LOWSTOCK_SWEEP_MS) : null;
+const outboxGcTimer = setInterval(sweepOutboxGc, OUTBOX_GC_MS);
 const domainTimer = domainDb ? setInterval(sweepDomainVerify, DOMAINVERIFY_SWEEP_MS) : null;
 const billingTimer = billingDb ? setInterval(sweepSubscriptions, SUBSCRIPTION_SWEEP_MS) : null;
+const trackingTimer = (expiryDb && TRACKING_ON) ? setInterval(sweepTracking, TRACKING_SWEEP_MS) : null;
 
 // ── HTTP: health + stats (cho e2e kiểm dead-letter) ──────────────────────────
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -294,6 +510,24 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(r));
   }
+  // Kích hoạt poll trạng thái vận đơn hãng VC ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/tracking-sweep' && req.method === 'POST') {
+    const r = await sweepTracking();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
+  // Kích hoạt quét sắp-hết-hàng ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/lowstock-sweep' && req.method === 'POST') {
+    const r = await sweepLowStock();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
+  // Kích hoạt dọn outbox ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/outbox-gc' && req.method === 'POST') {
+    const r = await sweepOutboxGc();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   res.writeHead(404); res.end();
 }));
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
@@ -304,6 +538,9 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (expiryTimer) clearInterval(expiryTimer);
     if (domainTimer) clearInterval(domainTimer);
     if (billingTimer) clearInterval(billingTimer);
+    if (trackingTimer) clearInterval(trackingTimer);
+    if (lowstockTimer) clearInterval(lowstockTimer);
+    clearInterval(outboxGcTimer);
     await worker.close().catch(() => {});
     await queue.close().catch(() => {});
     server.close(async () => { await db.end().catch(() => {}); await expiryDb?.end().catch(() => {}); await domainDb?.end().catch(() => {}); await billingDb?.end().catch(() => {}); process.exit(0); });

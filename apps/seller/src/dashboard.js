@@ -37,7 +37,15 @@ async function stats(res, ctx) {
        WHERE o.payment_status = 'paid' AND o.paid_at >= now() - interval '30 days'
        GROUP BY l.title_snapshot, l.sku_snapshot
        ORDER BY revenue DESC LIMIT 5`)).rows;
-    return { k, top };
+    // Sắp hết hàng (0050): available <= ngưỡng shop (NULL → mặc định 5). Chỉ SP đang bán.
+    const low = (await c.query(`
+      SELECT p.title, v.sku, v.title AS variant_title, (il.on_hand - il.reserved)::int AS available
+        FROM variants v
+        JOIN products p ON p.id = v.product_id AND p.status = 'active' AND p.deleted_at IS NULL
+        JOIN inventory_levels il ON il.variant_id = v.id
+       WHERE (il.on_hand - il.reserved) <= coalesce((SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5)
+       ORDER BY available ASC LIMIT 10`)).rows;
+    return { k, top, low };
   });
   const n = (x) => Number(x ?? 0);
   return send(res, 200, {
@@ -49,6 +57,7 @@ async function stats(res, ctx) {
       delivered: n(out.k.n_delivered), cancelled: n(out.k.n_cancelled),
     },
     top_products: out.top.map((t) => ({ title: t.title, sku: t.sku, qty: n(t.qty), revenue: n(t.revenue) })),
+    low_stock: out.low.map((l) => ({ title: l.title, sku: l.sku, variant_title: l.variant_title, available: n(l.available) })),
   });
 }
 

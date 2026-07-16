@@ -192,6 +192,9 @@ services:
       MEDIA_BUCKET_PRIVATE: media-private
       MEDIA_BUCKET_PUBLIC: media-public
       MEDIA_PUBLIC_BASE: ${MEDIA_PUBLIC_BASE:?}   # vd https://cdn.nentang.vn/media-public
+      # Vận chuyển hãng (GHN/GHTK): khoá mã hoá token per-shop (BẮT BUỘC nếu dùng);
+      # API base mặc định trỏ hãng THẬT — không đặt lại trừ khi test.
+      SHIPPING_ENC_KEY: ${SHIPPING_ENC_KEY:?}
     deploy: { resources: { limits: { memory: 384m } } }   # sharp re-encode ảnh
     depends_on:
       postgres: { condition: service_healthy }
@@ -247,6 +250,9 @@ services:
       # Khép kín vòng bill: quét thuê bao quá hạn → past_due → cancelled + đình chỉ shop.
       # (Bỏ dòng này = TẮT tự đình chỉ; team quản lý thuê bao tay qua Console.)
       DATABASE_URL_BILLING: postgres://app_billing:${APP_BILLING_PASSWORD:?}@postgres:5432/app
+      # Poll vận đơn hãng VC (0044): khoá PHẢI khớp seller; sweep mặc định 10 phút.
+      SHIPPING_ENC_KEY: ${SHIPPING_ENC_KEY:?}
+      TRACKING_SWEEP_MS: ${TRACKING_SWEEP_MS:-600000}
       PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
       REDIS_HOST: redis
       REDIS_PORT: "6379"

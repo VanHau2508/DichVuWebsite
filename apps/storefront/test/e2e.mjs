@@ -176,6 +176,15 @@ async function main() {
   pr.body.includes('aria-current="true"') ? ok('?variant= → chip đang chọn được đánh dấu') : bad('không đánh dấu chip chọn');
   pr.body.includes('530.000') ? ok('giá ĐỔI theo biến thể đang chọn (530.000)') : bad('giá không đổi theo biến thể', 'thiếu 530.000');
 
+  // ── 7. Tìm kiếm KHÔNG DẤU (0048) ────────────────────────────────────────────
+  sect('7. Tìm kiếm không dấu');
+  r = await sf(A.host, `/search?q=${encodeURIComponent('ao thun do')}`);
+  r.status === 200 && r.body.includes('Áo Thun Đỏ') ? ok('"ao thun do" (không dấu) → tìm ra "Áo Thun Đỏ"') : bad('tìm không dấu fail', String(r.status));
+  r = await sf(A.host, `/search?q=${encodeURIComponent('Áo Thun')}`);
+  r.body.includes('Áo Thun Đỏ') ? ok('có dấu vẫn tìm ra (tương thích cũ)') : bad('tìm có dấu hỏng');
+  r = await sf(A.host, `/search?q=khongtontai${uniq()}`);
+  !r.body.includes('Áo Thun Đỏ') ? ok('từ khoá lạ → không ra kết quả sai') : bad('tìm ra kết quả ma');
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

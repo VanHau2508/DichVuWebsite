@@ -27,6 +27,9 @@ grep -qiE 'change-me|devpassword|your-relay|your-domain' .env && die ".env còn 
 # MFA_ENC_KEY là khoá AES thật, KHÔNG nói 'change-me' nên guard trên bỏ sót: kiểm riêng.
 grep -qE '^MFA_ENC_KEY=[0-9a-fA-F]{64}$' .env || die "MFA_ENC_KEY phải là 64 hex (openssl rand -hex 32)"
 grep -qiE '^MFA_ENC_KEY=0{64}$' .env && die "MFA_ENC_KEY còn là khoá mẫu toàn 0 — sinh khoá thật"
+# SHIPPING_ENC_KEY (token hãng VC per-shop) — cùng chuẩn khoá AES 64-hex.
+grep -qE '^SHIPPING_ENC_KEY=[0-9a-fA-F]{64}$' .env || die "SHIPPING_ENC_KEY phải là 64 hex (openssl rand -hex 32)"
+grep -qiE '^SHIPPING_ENC_KEY=0{64}$' .env && die "SHIPPING_ENC_KEY còn là khoá mẫu toàn 0 — sinh khoá thật"
 docker info >/dev/null 2>&1 || die "docker chưa chạy"
 PREV="$(git rev-parse --short HEAD 2>/dev/null || echo '?')"
 echo "  commit đang deploy: $PREV"

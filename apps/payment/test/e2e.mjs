@@ -385,6 +385,28 @@ async function main() {
   const resvAfter = Number((await owner.query(`SELECT reserved FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].reserved);
   resvAfter === resvBefore - 1 ? ok('huỷ tự động → TRẢ LẠI tồn kho (reserve −1)') : bad(`reserve: trước=${resvBefore} sau=${resvAfter}`);
 
+  // ── 12. Thông báo khách (Bước 2): email tự-huỷ + link tra cứu ───────────────
+  sect('12. Thông báo khách');
+  // Đơn có EMAIL → outbox order.created phải kèm LINK tra cứu (number+token).
+  const cnl = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
+  const onl = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: phone(), email: `link-${uniq()}@mail.vn` }, payment_method: 'cod' }, cartToken: cnl, idemKey: `k-${uniq()}` });
+  const obLink = (await owner.query(
+    `SELECT payload FROM outbox WHERE shop_id=$1 AND topic='order.created' AND (payload->>'order_number')::int=$2`,
+    [A.shopId, onl.json.order_number])).rows[0];
+  obLink?.payload?.link?.includes(`/checkout/order?number=${onl.json.order_number}&token=`)
+    ? ok('email xác nhận kèm LINK tra cứu đơn') : bad('thiếu link tra cứu', JSON.stringify(obLink?.payload));
+
+  // Đơn COD có email quá 7 ngày → tự huỷ PHẢI gửi email (reason='expired') — hết huỷ im lặng.
+  const cexp2 = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
+  const oExp2 = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'K', phone: phone(), email: `exp-${uniq()}@mail.vn` }, payment_method: 'cod' }, cartToken: cexp2, idemKey: `k-${uniq()}` });
+  await owner.query(`UPDATE orders SET created_at = now() - interval '8 days' WHERE shop_id=$1 AND order_number=$2`, [A.shopId, oExp2.json.order_number]);
+  await fetch(`${WORKER}/internal/expire-sweep`, { method: 'POST' });
+  const obExp = (await owner.query(
+    `SELECT payload FROM outbox WHERE shop_id=$1 AND topic='order.status_changed' AND (payload->>'order_number')::int=$2 AND payload->>'reason'='expired'`,
+    [A.shopId, oExp2.json.order_number])).rows[0];
+  obExp && obExp.payload.status === 'cancelled'
+    ? ok('đơn TỰ HUỶ → outbox email reason=expired (hết huỷ im lặng)') : bad('tự huỷ vẫn im lặng', JSON.stringify(obExp?.payload));
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

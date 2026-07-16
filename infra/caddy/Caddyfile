@@ -109,6 +109,13 @@ nentang.vn, www.nentang.vn {
 	}
 	import security_headers
 
+	# Đường JSON đặt đơn (POST /checkout) BỎ QUA lớp chống bot no-JS; khách thật dùng
+	# POST /checkout/place. Chặn ở biên (e2e chạy nội bộ, không qua Caddy nên vẫn gọi được).
+	@checkout_json {
+		method POST
+		path /checkout
+	}
+	respond @checkout_json 404
 	@checkout path /cart /cart/* /checkout /checkout/*
 	handle @checkout {
 		reverse_proxy checkout:3060
@@ -127,6 +134,11 @@ https:// {
 	}
 	import security_headers
 
+	@checkout_json {
+		method POST
+		path /checkout
+	}
+	respond @checkout_json 404
 	@checkout path /cart /cart/* /checkout /checkout/*
 	handle @checkout {
 		reverse_proxy checkout:3060

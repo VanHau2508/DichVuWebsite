@@ -254,6 +254,13 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
              FROM products p2 JOIN product_categories pc2 ON pc2.product_id = p2.id
             WHERE pc2.category_id IN (SELECT category_id FROM product_categories WHERE product_id = $1) AND p2.id <> $1
             LIMIT 8`, [p.id])).rows.map((r) => ({ ...r, image: imgUrl(r.image_key), available: Number(r.available) }));
+        // Đánh giá: RLS store_reviews chỉ trả APPROVED của SP đang hiện.
+        p.reviewStats = (await c.query(
+          `SELECT count(*)::int AS n, coalesce(round(avg(rating)::numeric, 1), 0) AS avg FROM product_reviews WHERE product_id = $1`, [p.id])).rows[0];
+        p.reviews = (await c.query(
+          `SELECT rating, author_name, content, verified, created_at FROM product_reviews
+            WHERE product_id = $1 ORDER BY created_at DESC LIMIT 10`, [p.id])).rows;
+        p.reviewFlag = url.searchParams.get('review'); // 'sent' | 'invalid' (PRG từ checkout)
         p.selectedId = url.searchParams.get('variant');
         return { ...base, product: p };
       }
@@ -274,8 +281,9 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         const q = (url.searchParams.get('q') ?? '').trim().slice(0, 100);
         let products = [], total = 0;
         if (q) {
+          // KHÔNG DẤU (0048): "tham trai san" khớp "Thảm trải sàn" — vn_unaccent 2 vế + index trigram.
           const like = '%' + q.replace(/[%_\\]/g, '\\$&') + '%';
-          ({ products, total } = await productGrid(`WHERE p.title ILIKE $1`, [like], offset));
+          ({ products, total } = await productGrid(`WHERE vn_unaccent(p.title) LIKE vn_unaccent($1)`, [like], offset));
         }
         return { ...base, products, search: true, query: q, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: `/search?q=${encodeURIComponent(q)}` } };
       }

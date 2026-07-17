@@ -17,6 +17,8 @@ const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
 const CO = new URL(process.env.CHECKOUT_URL ?? 'http://checkout:3060');
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 4 });
+// Token lời mời KHÔNG còn trong API response (email hoá, 0073) — lấy từ outbox qua owner SQL (ADR-006: cùng tx với INSERT invitations nên đọc được ngay).
+const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
 const uniq = () => Math.random().toString(36).slice(2, 8);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ck = (sc) => { for (const c of sc ?? []) { const m = /^__Host-session=([^;]*)/.exec(c); if (m) return m[1]; } return null; };
@@ -89,7 +91,7 @@ async function main() {
   let r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: SHOP_NAME, slug: SLUG, plan_code: 'platform' }, cookie: staff, origin: OO });
   const shopId = r.json.id;
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email: OWNER_EMAIL, role: 'owner' }, cookie: staff, origin: OO });
-  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: r.json.token, password: OWNER_PW }, origin: OA });
+  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(OWNER_EMAIL), password: OWNER_PW }, origin: OA });
   const oc = await login(OWNER_EMAIL, OWNER_PW);
   const host = `${SLUG}.nentang.vn`;
 

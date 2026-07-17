@@ -20,6 +20,8 @@ const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 3 });
+// Token lời mời KHÔNG còn trong API response (email hoá, 0073) — lấy từ outbox qua owner SQL (ADR-006: cùng tx với INSERT invitations nên đọc được ngay).
+const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
 
 let pass = 0, fail = 0;
 const G = '\x1b[32m', R = '\x1b[31m', D = '\x1b[2m', X = '\x1b[0m', B = '\x1b[1m';
@@ -75,7 +77,7 @@ async function createShopWithOwner(staffCookie, slug) {
   const shopId = r.json.id;
   const email = `owner-${uniq()}@shop.vn`, password = 'owner passphrase strong';
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role: 'owner' }, cookie: staffCookie, origin: OO });
-  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: r.json.token, password }, origin: OA });
+  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
   r = await rq(AUTH, 'POST', '/auth/login', { body: { email, password }, origin: OA });
   return { shopId, email, password, cookie: ck(r.sc) };
 }
@@ -85,7 +87,7 @@ async function inviteMember(shopId, ownerCookie, role) {
   const email = `${role}-${uniq()}@shop.vn`, password = 'member passphrase good';
   const r = await rq(SELLER, 'POST', `/shops/${shopId}/members/invite`, { body: { email, role }, cookie: ownerCookie, origin: OS });
   if (r.status !== 201) throw new Error(`mời ${role} thất bại: ${r.raw}`);
-  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: r.json.token, password }, origin: OA });
+  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
   const lr = await rq(AUTH, 'POST', '/auth/login', { body: { email, password }, origin: OA });
   return { email, password, cookie: ck(lr.sc), userId: await uid(email) };
 }
@@ -181,6 +183,43 @@ async function main() {
   r.status === 401 ? ok('không cookie → 401') : bad('không cookie vẫn qua', r.raw);
   r = await rq(SELLER, 'GET', '/shops', { cookie: A.cookie });
   (r.json?.shops ?? []).some((s) => s.shop_id === A.shopId) ? ok('GET /shops liệt kê shop của mình') : bad('GET /shops lỗi', r.raw);
+
+  // ── 9. Ép MFA per-shop (0074) ──────────────────────────────────────────────
+  sect('9. Ép MFA per-shop (require_mfa)');
+  // Owner B CHƯA bật MFA → không bật được cờ (chống TỰ KHOÁ) — 422.
+  r = await rq(SELLER, 'PATCH', `/shops/${Bshop.shopId}/require-mfa`, { body: { require_mfa: true }, cookie: Bshop.cookie, origin: OS });
+  r.status === 422 ? ok('owner CHƯA bật MFA bật require_mfa → 422 (chống tự khoá)') : bad('thiếu guard tự khoá', r.raw);
+  // Mời một admin (chưa MFA) vào shop B TRƯỚC khi bật cờ (mời cần step-up owner).
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: Bshop.password }, cookie: Bshop.cookie, origin: OA });
+  const bAdmin = await inviteMember(Bshop.shopId, Bshop.cookie, 'admin');
+  // Owner B bật MFA cho tài khoản mình (activate ROTATE cookie — A6).
+  let er = await rq(AUTH, 'POST', '/auth/mfa/enroll', { cookie: Bshop.cookie, origin: OA });
+  const bKey = base32Decode(er.json.secret);
+  er = await rq(AUTH, 'POST', '/auth/mfa/activate', { cookie: Bshop.cookie, body: { code: totp(bKey, {}) }, origin: OA });
+  Bshop.cookie = ck(er.sc) ?? Bshop.cookie;
+  r = await rq(SELLER, 'PATCH', `/shops/${Bshop.shopId}/require-mfa`, { body: { require_mfa: true }, cookie: Bshop.cookie, origin: OS });
+  r.status === 200 && r.json.require_mfa === true ? ok('owner CÓ MFA bật require_mfa → 200') : bad('bật require_mfa lỗi', r.raw);
+  // Thành viên chưa MFA → chặn MỌI route (kể cả đọc — nghiêm ngặt), cờ riêng cho BFF.
+  r = await rq(SELLER, 'GET', `/shops/${Bshop.shopId}/whoami`, { cookie: bAdmin.cookie });
+  r.status === 403 && r.json?.mfa_required_by_shop === true
+    ? ok('thành viên chưa MFA → 403 {mfa_required_by_shop:true}') : bad('gate require_mfa không chặn', r.raw);
+  r = await rq(SELLER, 'GET', `/shops/${Bshop.shopId}/products`, { cookie: bAdmin.cookie });
+  r.status === 403 && r.json?.mfa_required_by_shop ? ok('route ĐỌC cũng bị chặn (strict)') : bad('route đọc lọt qua gate', r.raw);
+  // Thành viên bật MFA → truy cập lại bình thường.
+  er = await rq(AUTH, 'POST', '/auth/mfa/enroll', { cookie: bAdmin.cookie, origin: OA });
+  const aKey = base32Decode(er.json.secret);
+  er = await rq(AUTH, 'POST', '/auth/mfa/activate', { cookie: bAdmin.cookie, body: { code: totp(aKey, {}) }, origin: OA });
+  bAdmin.cookie = ck(er.sc) ?? bAdmin.cookie;
+  r = await rq(SELLER, 'GET', `/shops/${Bshop.shopId}/whoami`, { cookie: bAdmin.cookie });
+  r.status === 200 && r.json?.role === 'admin' ? ok('thành viên bật MFA xong → qua gate') : bad('vẫn chặn sau khi bật MFA', r.raw);
+  // Chỉ OWNER đổi được cờ — admin (đã MFA, qua gate) vẫn 403.
+  r = await rq(SELLER, 'PATCH', `/shops/${Bshop.shopId}/require-mfa`, { body: { require_mfa: false }, cookie: bAdmin.cookie, origin: OS });
+  r.status === 403 ? ok('admin (không owner) đổi require_mfa → 403') : bad('non-owner đổi được require_mfa', r.raw);
+  // GET shop trả require_mfa (settings UI render trạng thái).
+  r = await rq(SELLER, 'GET', `/shops/${Bshop.shopId}`, { cookie: Bshop.cookie });
+  r.status === 200 && r.json?.require_mfa === true ? ok('GET /shops/:id trả require_mfa') : bad('GET shop thiếu require_mfa', r.raw);
+  r = await rq(SELLER, 'PATCH', `/shops/${Bshop.shopId}/require-mfa`, { body: { require_mfa: false }, cookie: Bshop.cookie, origin: OS });
+  r.status === 200 && r.json.require_mfa === false ? ok('owner tắt require_mfa → 200') : bad('tắt require_mfa lỗi', r.raw);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

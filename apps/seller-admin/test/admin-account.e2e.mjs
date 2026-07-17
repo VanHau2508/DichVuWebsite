@@ -16,6 +16,8 @@ const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
 const ADMIN = process.env.ADMIN_URL ?? 'http://seller-admin:3001';
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OADM = process.env.ADMIN_ORIGIN ?? 'https://admin.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 4 });
+// Token lời mời KHÔNG còn trong API response (email hoá, 0073) — lấy từ outbox qua owner SQL (ADR-006: cùng tx với INSERT invitations nên đọc được ngay).
+const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
 
 let pass = 0, fail = 0;
 const G = '\x1b[32m', R = '\x1b[31m', D = '\x1b[2m', X = '\x1b[0m', B = '\x1b[1m';
@@ -67,7 +69,7 @@ async function makeShopOwner(staffCookie, slug) {
   const shopId = r.json.id;
   const email = `owner-${uniq()}@shop.vn`, password = 'owner passphrase strong';
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role: 'owner' }, cookie: staffCookie, origin: OO });
-  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: r.json.token, password }, origin: OA });
+  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
   return { shopId, email, password, cookie: await login(email, password) };
 }
 
@@ -122,14 +124,16 @@ async function main() {
   r.status >= 400 && /Mật khẩu không đúng/.test(r.body) ? ok('step-up sai mật khẩu → chặn') : bad('step-up sai vẫn qua', String(r.status));
 
   r = await adm('POST', M('/step-up'), { cookie: A.cookie, origin: OADM, form: { __action: 'invite', email: invitee, role: 'admin', password: A.password } });
-  const token = decodeURIComponent((/invite\/accept\?token=([^"<]+)/.exec(r.body) || [])[1] ?? '');
-  r.status === 200 && /Đã mời/.test(r.body) && token ? ok('step-up đúng → mời thành công + link chấp nhận') : bad('mời sau step-up lỗi', r.body.slice(0, 160));
+  // #11: UI báo "Đã gửi email" — KHÔNG hiện link/token (token chỉ tới email người được mời).
+  const token = await inviteTokenOf(invitee);
+  r.status === 200 && /Đã gửi email lời mời/.test(r.body) && !/invite\/accept\?token=/.test(r.body) && token
+    ? ok('step-up đúng → mời thành công, UI báo đã gửi email (không lộ link)') : bad('mời sau step-up lỗi', r.body.slice(0, 160));
 
   // Đã step-up (còn hạn 5') → mời tiếp KHÔNG hỏi lại mật khẩu.
   const invitee2 = `nv2-${uniq()}@shop.vn`;
   r = await adm('POST', M('/invite'), { cookie: A.cookie, origin: OADM, form: { email: invitee2, role: 'catalog_manager' } });
-  const token2 = decodeURIComponent((/invite\/accept\?token=([^"<]+)/.exec(r.body) || [])[1] ?? '');
-  r.status === 200 && /Đã mời/.test(r.body) && !/Xác nhận mật khẩu/.test(r.body) && token2 ? ok('trong cửa sổ step-up → mời thẳng + hiện link chấp nhận') : bad('vẫn hỏi step-up trong cửa sổ', r.body.slice(0, 120));
+  const token2 = await inviteTokenOf(invitee2);
+  r.status === 200 && /Đã gửi email lời mời/.test(r.body) && !/Xác nhận mật khẩu/.test(r.body) && token2 ? ok('trong cửa sổ step-up → mời thẳng, báo đã gửi email') : bad('vẫn hỏi step-up trong cửa sổ', r.body.slice(0, 120));
 
   // ── 3. Đổi vai trò + gỡ (thành viên thật) ──────────────────────────────────
   sect('3. Đổi vai trò & gỡ');

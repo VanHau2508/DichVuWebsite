@@ -1,0 +1,12 @@
+-- 0074 — #13 ÉP MFA PER-SHOP: shops.require_mfa.
+--
+-- Chủ shop bật "bắt buộc nhân sự dùng xác thực 2 lớp": seller (membership gate)
+-- chặn MỌI route của shop (kể cả đọc) với 403 {mfa_required_by_shop:true} khi
+-- tài khoản chưa bật MFA; BFF hiện trang hướng dẫn vào /account bật MFA.
+-- Guard chống tự khoá: owner phải ĐANG bật MFA mới bật được cờ này (422 ở seller).
+--
+-- GRANTS: KHÔNG cần gì mới (mirror 0063). app_rw có SELECT/UPDATE table-level
+-- trên shops (0003) → cột mới TỰ PHỦ dưới policy tenant sẵn có (đọc trong gate +
+-- owner đổi qua route riêng). app_auth/app_platform/app_store/app_tls đều grant
+-- table-level trên shops → không rơi vào bẫy column-level grant.
+ALTER TABLE shops ADD COLUMN require_mfa boolean NOT NULL DEFAULT false;

@@ -479,6 +479,21 @@ async function revokeOtherSessions(req, res, body, ctx) {
   return send(res, 200, { ok: true, revoked: r.rowCount });
 }
 
+// Lịch sử đăng nhập/bảo mật của CHÍNH mình — 50 sự kiện gần nhất từ audit_logs
+// cấp identity (shop_id NULL). Grant SELECT + policy auth_audit_read: 0073.
+// Lọc "của tôi" bằng WHERE actor_id (policy không biết session là ai).
+async function listAuthEvents(req, res, body, ctx) {
+  if (!isFullyAuthed(ctx.auth)) return send(res, 401, { error: 'cần đăng nhập đầy đủ' });
+  const { rows } = await db.query(
+    `SELECT action, ip::text AS ip, created_at
+       FROM audit_logs
+      WHERE shop_id IS NULL AND actor_type = 'user' AND actor_id = $1
+      ORDER BY id DESC LIMIT 50`,
+    [ctx.auth.user.id],
+  );
+  return send(res, 200, { events: rows });
+}
+
 async function me(req, res, body, ctx) {
   if (!ctx.auth) return send(res, 401, { error: 'chưa đăng nhập' });
   if (!isFullyAuthed(ctx.auth)) return send(res, 401, { error: 'mfa_required', mfa_required: true });
@@ -774,6 +789,7 @@ const ROUTES = {
   'POST /auth/logout': logout,
   'GET /auth/me': me,
   'GET /auth/sessions': listSessions,
+  'GET /auth/events': listAuthEvents,
   'POST /auth/sessions/revoke': revokeSession,
   'POST /auth/sessions/revoke-others': revokeOtherSessions,
   'POST /auth/step-up': stepUp,

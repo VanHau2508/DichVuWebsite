@@ -18,6 +18,8 @@ const AUTH = process.env.AUTH_URL ?? 'http://auth:3020';
 const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 3 });
+// Token lời mời KHÔNG còn trong API response (email hoá, 0073) — lấy từ outbox qua owner SQL.
+const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
 
 let pass = 0, fail = 0;
 const G = '\x1b[32m', R = '\x1b[31m', D = '\x1b[2m', X = '\x1b[0m', B = '\x1b[1m';
@@ -62,8 +64,10 @@ async function makeStaff() {
 async function makeShop(staff, slug) {
   return (await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staff, origin: OO })).json.id;
 }
-const invite = async (staff, shopId, email, role = 'owner') =>
-  (await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role }, cookie: staff, origin: OO })).json.token;
+const invite = async (staff, shopId, email, role = 'owner') => {
+  await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role }, cookie: staff, origin: OO });
+  return inviteTokenOf(email); // token chỉ nằm trong email (outbox) — người mời không nhận được
+};
 const membershipsOf = async (cookie) => (await rq(AUTH, 'GET', '/auth/me', { cookie })).json?.memberships ?? [];
 
 async function main() {

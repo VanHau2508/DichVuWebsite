@@ -23,6 +23,8 @@ const MAILPIT = process.env.MAILPIT_URL ?? 'http://mailpit:8025';
 const WORKER = process.env.WORKER_URL ?? 'http://worker:3080';
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 4 });
+// Token lời mời KHÔNG còn trong API response (email hoá, 0073) — lấy từ outbox qua owner SQL (ADR-006: cùng tx với INSERT invitations nên đọc được ngay).
+const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
 
 let pass = 0, fail = 0;
 const G = '\x1b[32m', R = '\x1b[31m', D = '\x1b[2m', X = '\x1b[0m', B = '\x1b[1m';
@@ -67,6 +69,7 @@ function co(host, method, path, { body, cartToken, idemKey } = {}) {
 // Mailpit
 const mpClear = () => fetch(`${MAILPIT}/api/v1/messages`, { method: 'DELETE' });
 async function mpList() { const r = await fetch(`${MAILPIT}/api/v1/messages`); return (await r.json()).messages ?? []; }
+const mpDetail = async (id) => (await fetch(`${MAILPIT}/api/v1/message/${id}`)).json(); // {Text, HTML, ...}
 async function waitEmail(subjectIncludes, timeout = 10000) {
   const t0 = Date.now();
   while (Date.now() - t0 < timeout) {
@@ -99,7 +102,7 @@ async function makeShopOwner(staffCookie, slug) {
   const shopId = r.json.id;
   const email = `owner-${uniq()}@shop.vn`, password = 'owner passphrase strong';
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role: 'owner' }, cookie: staffCookie, origin: OO });
-  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: r.json.token, password }, origin: OA });
+  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
   return { shopId, slug, host: `${slug}.nentang.vn`, cookie: await login(email, password) };
 }
 async function setupProduct(shop, price, stock) {
@@ -137,6 +140,30 @@ async function main() {
   const mail1 = await waitEmail(`Xác nhận đơn hàng #${o1.orderNum}`);
   mail1 ? ok('email xác nhận tới Mailpit (outbox pattern hoạt động)') : bad('không nhận được email xác nhận');
   mail1 && mail1.To?.[0]?.Address === buyer ? ok('email gửi đúng địa chỉ người mua') : bad('email sai người nhận');
+  // Đợt 5.4 #15: compose trả thêm HTML (multipart/alternative) — bản text GIỮ NGUYÊN.
+  const det1 = mail1 ? await mpDetail(mail1.ID) : null;
+  det1?.HTML && det1.HTML.includes('Tra cứu đơn hàng') && /checkout\/success/.test(det1.HTML)
+    ? ok('email có bản HTML + nút CTA "Tra cứu đơn hàng" trỏ link tra cứu') : bad('email thiếu HTML/CTA', (det1?.HTML ?? '(rỗng)').slice(0, 200));
+  det1?.HTML && det1.HTML.includes(`${A.slug}.nentang.vn`)
+    ? ok('header thương hiệu = miền shop (payload self-contained, không đọc bảng shops)') : bad('HTML thiếu thương hiệu shop', (det1?.HTML ?? '').slice(0, 200));
+  det1?.Text && det1.Text.includes(`Đơn hàng #${o1.orderNum} đã được ghi nhận`)
+    ? ok('bản text giữ nguyên cấu trúc cũ (client text-only vẫn đọc trọn)') : bad('bản text đổi/mất', (det1?.Text ?? '').slice(0, 200));
+
+  // ── 1b. Nhánh compose 'user.invited' (HỢP ĐỒNG với Đợt 5.5) ────────────────
+  sect('1b. Email lời mời quản trị (user.invited)');
+  await mpClear();
+  const inviteeEmail = `moi-${uniq()}@kh.vn`;
+  const acceptUrl = `https://admin.nentang.vn/invitations/accept?token=tk-${uniq()}`;
+  // Ghi thẳng outbox đúng KHUÔN payload 5.5 sẽ dùng: {to, shop_name, role, accept_url, expires_days}.
+  await owner.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'user.invited', $2)`,
+    [A.shopId, { to: inviteeEmail, shop_name: A.slug, role: 'staff', accept_url: acceptUrl, expires_days: 7 }]);
+  const invMail = await waitEmail(`Lời mời quản trị cửa hàng ${A.slug}`);
+  invMail ? ok(`email user.invited tới Mailpit (subject "Lời mời quản trị cửa hàng ${A.slug}")`) : bad('không có email user.invited');
+  const invDet = invMail ? await mpDetail(invMail.ID) : null;
+  invDet?.HTML?.includes(acceptUrl) && invDet.HTML.includes('Chấp nhận lời mời')
+    ? ok('HTML có nút CTA "Chấp nhận lời mời" trỏ đúng accept_url') : bad('HTML thiếu accept_url/CTA', (invDet?.HTML ?? '(rỗng)').slice(0, 200));
+  invDet?.Text?.includes(acceptUrl) && /hết hạn sau 7 ngày/.test(invDet.Text ?? '')
+    ? ok('text có link chấp nhận + "Lời mời hết hạn sau 7 ngày"') : bad('text thiếu link/hạn', (invDet?.Text ?? '').slice(0, 200));
 
   // ── 2. Không email MA khi checkout thất bại ────────────────────────────────
   sect('2. Không email ma khi thất bại');
@@ -293,6 +320,29 @@ async function main() {
   await sleep(900);
   tg.sent.some((mm) => String(mm.chat_id) === CHAT && /Đơn MỚI/i.test(mm.text ?? '') && (mm.text ?? '').includes(`#${obounce.orderNum}`))
     ? ok('email khách lỗi → chủ shop VẪN nhận Telegram "đơn mới" (email không nuốt Telegram)') : bad('email lỗi nuốt mất Telegram', JSON.stringify(tg.sent).slice(0, 200));
+  // 5) SLA ĐƠN Ứ (Đợt 5.4 #7): pending >24h + shipped >7 ngày → MỘT digest Telegram/shop/ngày.
+  tg.sent.length = 0;
+  const ostale = await placeOrder(A, vid, null, 1); // COD pending
+  const oidStale = await orderIdOf(A.shopId, ostale.orderNum);
+  await owner.query(`UPDATE orders SET created_at = now() - interval '25 hours' WHERE id = $1`, [oidStale]);
+  const oship = await placeOrder(A, vid, null, 1);
+  const oidShip = await orderIdOf(A.shopId, oship.orderNum);
+  await owner.query(`UPDATE orders SET status = 'shipped' WHERE id = $1`, [oidShip]);
+  // Mốc "đã gửi hãng" đo bằng shipments.created_at (app_expiry không đọc được shipped_at) → backdate 8 ngày.
+  await owner.query(`INSERT INTO shipments (shop_id, order_id, carrier, tracking_number, status, created_at)
+                     VALUES ($1, $2, 'GHN', 'STALE-${uniq()}', 'in_transit', now() - interval '8 days')`, [A.shopId, oidShip]);
+  const st1 = await (await fetch(`${WORKER}/internal/stale-sweep`, { method: 'POST' })).json();
+  await sleep(300);
+  const dig = tg.sent.find((mm) => String(mm.chat_id) === CHAT && /Đơn ứ/.test(mm.text ?? '') && (mm.text ?? '').includes(`#${ostale.orderNum}`));
+  st1.shops >= 1 && dig && dig.text.includes(`#${oship.orderNum}`) && /chờ xử lý >24h/.test(dig.text) && /gửi hãng >7 ngày chưa giao/.test(dig.text)
+    ? ok(`digest đơn ứ: pending #${ostale.orderNum} + shipped-kẹt #${oship.orderNum} gộp MỘT tin`)
+    : bad('digest đơn ứ sai/thiếu', JSON.stringify({ st1, sent: tg.sent.map((m) => m.text) }).slice(0, 400));
+  // Chạy lại NGAY → dedup 1 tin/shop/NGÀY (Redis tgstale:<shop>:<ngày VN>) — không spam.
+  tg.sent.length = 0;
+  const st2 = await (await fetch(`${WORKER}/internal/stale-sweep`, { method: 'POST' })).json();
+  await sleep(300);
+  st2.shops === 0 && !tg.sent.some((mm) => /Đơn ứ/.test(mm.text ?? ''))
+    ? ok('re-sweep → KHÔNG digest trùng (dedup theo shop/ngày)') : bad('digest gửi trùng', JSON.stringify({ st2, n: tg.sent.length }));
   tgStub.close();
 
   // ── Nhắc hạn thuê bao 7/3/1 + past_due (dunning — 0062) ─────────────────────

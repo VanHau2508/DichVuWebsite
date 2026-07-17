@@ -36,6 +36,8 @@ const ORIGIN_AUTH = 'https://auth.localtest';
 const ORIGIN_OPS = 'https://ops.localtest';
 
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 3 });
+// Token lời mời KHÔNG còn trong API response (email hoá, 0073) — lấy từ outbox qua owner SQL.
+const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
 const platformRole = new pg.Pool({ connectionString: process.env.DATABASE_URL_PLATFORM, max: 2 });
 
 let pass = 0, fail = 0;
@@ -186,8 +188,19 @@ async function main() {
   r = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, {
     body: { email: ownerEmail, role: 'owner' }, cookie: staffCookie, origin: ORIGIN_OPS,
   });
-  const inviteToken = r.json?.token;
-  r.status === 201 && inviteToken ? ok('tạo lời mời owner → nhận token') : bad('mời owner lỗi', r.raw);
+  r.status === 201 && r.json?.invitation_id ? ok('tạo lời mời owner → 201') : bad('mời owner lỗi', r.raw);
+  // #11: token = bằng chứng sở hữu email — KHÔNG được trả cho người mời qua API.
+  r.json?.token === undefined && r.raw && !r.raw.includes('"token"')
+    ? ok('response KHÔNG chứa token thô (email hoá lời mời)') : bad('response vẫn lộ token', r.raw);
+  // Outbox user.invited ghi CÙNG transaction: đọc được ngay, accept_url chứa token.
+  const obRow = (await owner.query(
+    `SELECT shop_id, payload FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1`, [ownerEmail],
+  )).rows[0];
+  obRow && obRow.shop_id === shopId && obRow.payload?.accept_url?.includes('/invite/accept?token=')
+    && obRow.payload?.role === 'owner' && obRow.payload?.shop_name
+    ? ok('outbox user.invited: shop_id + accept_url + role + shop_name') : bad('outbox lời mời sai', JSON.stringify(obRow));
+  const inviteToken = await inviteTokenOf(ownerEmail);
+  inviteToken ? ok('lấy được token từ accept_url trong outbox') : bad('không lấy được token từ outbox');
 
   const ownerPw = 'owner brand new passphrase';
   r = await req(AUTH, 'POST', '/auth/invitations/accept', {
@@ -209,10 +222,11 @@ async function main() {
   // Đua: hai accept ĐỒNG THỜI cùng token → đúng MỘT thắng (claim atomic).
   // Bài tuần tự ở trên bị lọc SELECT (accepted_at IS NULL) chặn; chỉ bài đua này
   // mới chạm tới UPDATE ... WHERE accepted_at IS NULL có kiểm rowCount.
+  const raceEmail = `race-${uniq()}@a.vn`;
   let rr = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, {
-    body: { email: `race-${uniq()}@a.vn`, role: 'admin' }, cookie: staffCookie, origin: ORIGIN_OPS,
+    body: { email: raceEmail, role: 'admin' }, cookie: staffCookie, origin: ORIGIN_OPS,
   });
-  const raceToken = rr.json.token;
+  const raceToken = await inviteTokenOf(raceEmail);
   const racePw = 'race condition passphrase';
   const [a, b] = await Promise.all([
     req(AUTH, 'POST', '/auth/invitations/accept', { body: { token: raceToken, password: racePw }, origin: ORIGIN_AUTH }),

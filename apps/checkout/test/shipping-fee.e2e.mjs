@@ -29,6 +29,8 @@ async function loadDeps() {
   ({ base32Decode } = await import('../../../packages/auth/src/base32.js'));
   owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 4 });
 }
+// Token lời mời KHÔNG còn trong API response (email hoá, 0073) — lấy từ outbox qua owner SQL.
+const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
 
 let pass = 0, fail = 0;
 const G = '\x1b[32m', R = '\x1b[31m', D = '\x1b[2m', X = '\x1b[0m', B = '\x1b[1m';
@@ -93,7 +95,7 @@ async function makeShopOwner(staffCookie, slug) {
   const shopId = r.json.id;
   const email = `owner-${uniq()}@shop.vn`, password = 'owner passphrase strong';
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role: 'owner' }, cookie: staffCookie, origin: OO });
-  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: r.json.token, password }, origin: OA });
+  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
   return { shopId, slug, host: `${slug}.nentang.vn`, cookie: await login(email, password) };
 }
 // PATCH hồ sơ shop (full-profile — gửi lại đủ trường muốn giữ).

@@ -22,6 +22,8 @@ const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 3 });
+// Token lời mời KHÔNG còn trong API response (email hoá, 0073) — lấy từ outbox qua owner SQL (ADR-006: cùng tx với INSERT invitations nên đọc được ngay).
+const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
 const rw = new pg.Pool({ connectionString: process.env.DATABASE_URL_RW, max: 2 });
 
 let pass = 0, fail = 0;
@@ -67,7 +69,7 @@ async function makeShopOwner(staffCookie, slug) {
   const shopId = r.json.id;
   const email = `owner-${uniq()}@shop.vn`, password = 'owner passphrase strong';
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role: 'owner' }, cookie: staffCookie, origin: OO });
-  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: r.json.token, password }, origin: OA });
+  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
   return { shopId, email, password, cookie: await login(email, password) };
 }
 
@@ -76,7 +78,7 @@ async function inviteMember(shopId, ownerCookie, role) {
   const email = `${role}-${uniq()}@shop.vn`, password = 'member passphrase good';
   const r = await rq(SELLER, 'POST', `/shops/${shopId}/members/invite`, { body: { email, role }, cookie: ownerCookie, origin: OS });
   if (r.status !== 201) throw new Error(`mời ${role} thất bại: ${r.raw}`);
-  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: r.json.token, password }, origin: OA });
+  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
   return { email, password, cookie: await login(email, password), userId: await uid(email) };
 }
 

@@ -174,6 +174,8 @@ services:
       ALLOWED_ORIGINS: https://admin.nentang.vn,https://ops.localtest
       PORT: "3030"
       TRIAL_DAYS: "14"
+      # Link chấp nhận lời mời trong EMAIL (mirror RESET_LINK_BASE của auth).
+      INVITE_LINK_BASE: https://admin.localtest:8443/invite/accept
     volumes:
       # Chỉ dev: mount src cho mutation testing (patch trên host → restart).
       # Đường dẫn PHẢI khớp CMD của Dockerfile (node src/server.js → /app/src),
@@ -200,6 +202,8 @@ services:
       AUTH_URL: http://auth:3020
       ALLOWED_ORIGINS: https://admin.nentang.vn,https://seller.localtest
       PORT: "3040"
+      # Link chấp nhận lời mời trong EMAIL (mirror RESET_LINK_BASE của auth).
+      INVITE_LINK_BASE: https://admin.localtest:8443/invite/accept
       # URL webhook nền tảng cho SePay per-shop (shop trỏ SePay của họ về đây). Prod: hooks.nentang.vn.
       PLATFORM_HOOKS_URL: https://hooks.localtest:8443
       # Vận chuyển hãng (GHN/GHTK): token per-shop mã hoá AES-256-GCM. Dev: khoá cố định +

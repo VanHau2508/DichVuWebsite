@@ -45,6 +45,9 @@ const PORT = Number(process.env.PORT ?? 3040);
 const AUTH_URL = process.env.AUTH_URL ?? 'http://auth:3020';
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const STEP_UP_WINDOW_MS = 5 * 60_000;
+// Base URL trang CHẤP NHẬN LỜI MỜI công khai (seller-admin /invite/accept) — mirror
+// RESET_LINK_BASE của auth: dịch vụ giữ token thô dựng link đầy đủ cho email.
+const INVITE_LINK_BASE = process.env.INVITE_LINK_BASE ?? 'https://admin.nentang.vn/invite/accept';
 
 if (ALLOWED_ORIGINS.length === 0) throw new Error('thiếu ALLOWED_ORIGINS');
 
@@ -92,7 +95,7 @@ async function getShop(res, ctx) {
               contact_email, contact_phone, business_address,
               ship_fee_vnd, free_ship_threshold_vnd, low_stock_threshold,
               ship_fee_far_vnd, ship_extra_per_500g_vnd, default_weight_gram, ship_from_province,
-              max_pending_per_ip, max_pending_per_phone, pii_retention_months, logo_key
+              max_pending_per_ip, max_pending_per_phone, pii_retention_months, logo_key, require_mfa
          FROM shops WHERE id = $1`,
       [ctx.shopId],
     );
@@ -194,9 +197,33 @@ async function inviteMember(res, ctx, body) {
        VALUES (current_shop_id(), $1, $2, $3, $4, now() + interval '7 days')`,
       [email, role, hashToken(token), ctx.user.id],
     );
+    // ADR-006 (mirror auth forgot 0058): outbox CÙNG transaction (withTenant = 1 tx).
+    // Token thô CHỈ đi qua email người ĐƯỢC MỜI — API không trả token cho người mời
+    // (token = bằng chứng sở hữu email). app_rw ghi outbox qua tenant_isolation (0004).
+    const shopName = (await c.query(`SELECT name FROM shops WHERE id = current_shop_id()`)).rows[0]?.name ?? '';
+    await c.query(
+      `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'user.invited', $1)`,
+      [{ to: email, shop_name: shopName, role, accept_url: `${INVITE_LINK_BASE}?token=${token}`, expires_days: 7 }],
+    );
     await audit(c, 'member.invited', { actorId: ctx.user.id, ip: ctx.ip, metadata: { email, role } });
   });
-  return send(res, 201, { token, accept_path: '/auth/invitations/accept' });
+  return send(res, 201, { ok: true, email, email_sent: true });
+}
+
+// ── Ép MFA per-shop (0074) — CHỈ owner, có guard chống tự khoá ────────────────
+async function setRequireMfa(res, ctx, body) {
+  if (ctx.role !== 'owner') return send(res, 403, { error: 'chỉ chủ cửa hàng được bật/tắt yêu cầu xác thực 2 lớp' });
+  const on = body.require_mfa === true || body.require_mfa === '1';
+  // Chống TỰ KHOÁ: owner chưa bật MFA mà bật cờ này là tự chặn mình khỏi mọi
+  // route của shop ngay request kế tiếp. Bắt owner bật MFA cho tài khoản trước.
+  if (on && !ctx.user.mfa_enabled) {
+    return send(res, 422, { error: 'bạn cần bật xác thực 2 lớp cho tài khoản của mình trước khi bắt buộc cho cửa hàng' });
+  }
+  await withTenant(ctx.shopId, async (c) => {
+    await c.query(`UPDATE shops SET require_mfa = $1 WHERE id = current_shop_id()`, [on]);
+    await audit(c, 'shop.require_mfa_changed', { actorId: ctx.user.id, ip: ctx.ip, metadata: { require_mfa: on } });
+  });
+  return send(res, 200, { ok: true, require_mfa: on });
 }
 
 async function changeRole(res, ctx, targetUserId, body) {
@@ -253,6 +280,7 @@ const ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/whoami$`), perm: null, fn: (res, ctx) => whoami(res, ctx) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}$`), perm: null, fn: (res, ctx) => getShop(res, ctx) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}$`), perm: 'shop.write', fn: (res, ctx, b) => updateShopProfile(res, ctx, b) },
+  { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/require-mfa$`), perm: 'shop.write', fn: (res, ctx, b) => setRequireMfa(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/members$`), perm: 'members.read', fn: (res, ctx) => listMembers(res, ctx) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/members/invite$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b) => inviteMember(res, ctx, b) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/members/${UUID}/role$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b, p) => changeRole(res, ctx, p[1], b) },
@@ -301,6 +329,18 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const membership = user.memberships.find((mm) => mm.shop_id === shopId);
     if (!membership) return send(res, 404, { error: 'không tìm thấy' });
     const role = membership.role;
+
+    // Ép MFA per-shop (0074): shop bật require_mfa → MỌI route của shop (kể cả
+    // đọc — nghiêm ngặt) đòi tài khoản đã bật MFA. Chỉ tốn 1 query khi user CHƯA
+    // bật MFA; user đã bật thì đi thẳng. BFF nhận cờ mfa_required_by_shop để
+    // hiện trang hướng dẫn bật 2FA (link /account).
+    if (!user.mfa_enabled) {
+      const requireMfa = await withTenant(shopId, async (c) =>
+        (await c.query(`SELECT require_mfa FROM shops WHERE id = current_shop_id()`)).rows[0]?.require_mfa === true);
+      if (requireMfa) {
+        return send(res, 403, { error: 'cửa hàng yêu cầu bật xác thực 2 lớp', mfa_required_by_shop: true });
+      }
+    }
 
     // RBAC: đủ quyền?
     if (route.perm && !can(role, route.perm)) {

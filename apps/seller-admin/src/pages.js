@@ -391,6 +391,18 @@ export function renderShopSettings(ctx, shopId, shop, notice, err) {
         <div class="actions" style="margin-top:16px"><button class="btn" type="submit">Lưu cài đặt</button></div>
       </form>
     </div>
+    ${ctx.role === 'owner' ? `<div class="card">
+      <h2 style="margin-top:0">Bảo mật nhân sự</h2>
+      <p class="muted" style="font-size:.85rem">Bật để <strong>bắt buộc mọi nhân sự</strong> của cửa hàng dùng xác thực 2 lớp (2FA).
+        Ai chưa bật 2FA sẽ bị <strong>chặn toàn bộ</strong> trang quản trị cửa hàng cho tới khi bật (họ được hướng dẫn bật trong trang Tài khoản).
+        Bạn phải đang bật 2FA cho tài khoản của mình trước.</p>
+      <form method="POST" action="${base}/settings/require-mfa">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:600">
+          <input type="checkbox" name="require_mfa" value="1"${s.require_mfa ? ' checked' : ''} style="width:auto"> Bắt buộc nhân sự bật 2FA
+        </label>
+        <div class="actions" style="margin-top:10px"><button class="btn" type="submit">Lưu cài đặt 2FA</button></div>
+      </form>
+    </div>` : ''}
     <div class="card"><p class="muted" style="margin:0;font-size:.85rem">Tên miền cửa hàng: <code>${esc(s.slug ?? '')}.nentang.vn</code>.
       Đổi bảng màu ở <a href="${base}/theme">Giao diện</a>; tên miền riêng ở <a href="${base}/domains">Tên miền</a>.</p></div>`);
 }
@@ -566,9 +578,8 @@ export function renderPlatformShopDetail(ctx, shop, { notice = null, err = null,
   const base = `/platform/shops/${esc(shop.id)}`;
   const isOperator = shop.staff_role === 'operator';
   const inviteCard = invite ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0">
-    <h2 style="margin-top:0">Link mời đã tạo</h2>
-    <p class="muted">Gửi link này cho chủ shop <strong>${esc(invite.email)}</strong> để họ đặt mật khẩu và nhận cửa hàng. Hết hạn ${dt(invite.expires_at)}.</p>
-    <p><code style="word-break:break-all">${esc(invite.url)}</code></p></div>` : '';
+    <h2 style="margin-top:0">Đã gửi email lời mời</h2>
+    <p class="muted" style="margin-bottom:0">Lời mời đã gửi tới <strong>${esc(invite.email)}</strong> — chủ shop mở email, bấm link để đặt mật khẩu và nhận cửa hàng. Hết hạn ${dt(invite.expires_at)}.</p></div>` : '';
   const statusForm = isOperator ? '' : shop.status === 'suspended'
     ? `<form method="POST" action="${base}/restore" style="display:inline"><button class="btn sm" type="submit">Mở lại</button></form>`
     : `<form method="POST" action="${base}/suspend" style="display:inline"><button class="btn warn sm" type="submit">Tạm khoá</button></form>`;
@@ -626,10 +637,10 @@ export function renderPlatformShopDetail(ctx, shop, { notice = null, err = null,
       <p class="muted" style="font-size:.8rem">Hoá đơn VAT (NĐ 123): lập trên phần mềm kế toán, dùng bảng này làm căn cứ số liệu — nền tảng không tích hợp e-invoice.</p>
     </div>
     ${isOperator ? '' : `<div class="card"><h2 style="margin-top:0">Mời chủ shop (owner)</h2>
-      <p class="muted" style="font-size:.85rem">Tạo link mời để chủ shop đặt mật khẩu + nhận cửa hàng (concierge — chưa gửi email tự động).</p>
+      <p class="muted" style="font-size:.85rem">Hệ thống gửi email lời mời để chủ shop đặt mật khẩu + nhận cửa hàng (link chỉ tới email người được mời).</p>
       <form method="POST" action="${base}/invite" class="actions" style="align-items:end">
         <div><label>Email chủ shop</label><input name="email" type="email" required placeholder="chushop@email.com" style="width:260px"></div>
-        <button class="btn" type="submit">Tạo link mời</button>
+        <button class="btn" type="submit">Gửi email lời mời</button>
       </form></div>`}
     ${offboardCard}`);
 }
@@ -1507,9 +1518,35 @@ export function renderPageEditor(ctx, shopId, p, err, notice, form) {
 }
 
 // ── Tài khoản (bảo mật) ──────────────────────────────────────────────────────
+// Nhãn tiếng Việt cho sự kiện đăng nhập/bảo mật (GET /auth/events). Mã lạ hiện nguyên văn.
+const AUTH_EVENT_LABEL = {
+  'user.register': 'Tạo tài khoản',
+  'user.login': 'Đăng nhập thành công',
+  'user.login_failed': 'Đăng nhập thất bại',
+  'user.login_rate_limited': 'Chặn đăng nhập (thử quá nhiều)',
+  'user.login_password_ok_mfa_pending': 'Đăng nhập — chờ mã 2 lớp',
+  'user.mfa_verified': 'Xác thực 2 lớp thành công',
+  'user.mfa_failed': 'Nhập sai mã 2 lớp',
+  'user.mfa_replay_blocked': 'Chặn mã 2 lớp dùng lại',
+  'user.mfa_enabled': 'Bật xác thực 2 lớp',
+  'user.mfa_disabled': 'Tắt xác thực 2 lớp',
+  'user.mfa_disable_failed': 'Tắt 2 lớp thất bại',
+  'user.password_changed': 'Đổi mật khẩu',
+  'user.password_change_failed': 'Đổi mật khẩu thất bại',
+  'user.password_reset_requested': 'Yêu cầu đặt lại mật khẩu',
+  'user.password_reset': 'Đặt lại mật khẩu qua email',
+  'user.step_up': 'Xác nhận lại mật khẩu (step-up)',
+  'user.step_up_failed': 'Xác nhận mật khẩu thất bại',
+  'user.session_revoked': 'Thu hồi phiên đăng nhập',
+  'user.sessions_revoked_others': 'Đăng xuất mọi thiết bị khác',
+  'user.logout': 'Đăng xuất',
+  'user.invitation_accepted': 'Chấp nhận lời mời vào cửa hàng',
+};
+
 export function renderAccount(info) {
   const { email, mfa_enabled, enroll, recovery_codes, notice, err } = info;
   const sessions = info.sessions ?? [];
+  const events = info.events ?? [];
   let mfaCard;
   if (recovery_codes) {
     mfaCard = `<div class="card"><h2 style="margin-top:0">✅ Đã bật xác thực 2 lớp</h2>
@@ -1561,7 +1598,28 @@ export function renderAccount(info) {
       </tr>`).join('')}</tbody></table>
       ${sessions.filter((s) => !s.current).length ? `<form method="POST" action="/account/sessions/revoke-others" style="margin-top:10px"><button class="btn warn sm" type="submit">Đăng xuất mọi thiết bị KHÁC</button></form>` : ''}
     </div>` : ''}
+    ${events.length ? `<div class="card"><h2 style="margin-top:0">Hoạt động đăng nhập gần đây</h2>
+      <p class="muted" style="font-size:.82rem">50 sự kiện bảo mật gần nhất của tài khoản (đăng nhập, sai mật khẩu, đổi mật khẩu, 2 lớp…). Thấy hoạt động lạ → đổi mật khẩu + đăng xuất thiết bị khác.</p>
+      <table><thead><tr><th>Thời gian</th><th>Hoạt động</th><th>IP</th></tr></thead><tbody>
+      ${events.map((e) => `<tr>
+        <td class="muted" style="white-space:nowrap">${dt(e.created_at)}</td>
+        <td>${esc(AUTH_EVENT_LABEL[e.action] ?? e.action)}</td>
+        <td class="muted">${esc(e.ip ?? '—')}</td>
+      </tr>`).join('')}</tbody></table>
+    </div>` : ''}
     <a class="btn alt" href="/">← Bảng điều khiển</a>`);
+}
+
+// Trang chặn thân thiện khi shop BẮT BUỘC 2FA mà tài khoản chưa bật (0074).
+export function renderMfaRequiredByShop(ctx) {
+  return layout('Cần bật xác thực 2 lớp', ctx, `<div class="center"><div class="card">
+    <h1>Cửa hàng yêu cầu xác thực 2 lớp</h1>
+    <p class="muted">Chủ cửa hàng đã bật <strong>bắt buộc xác thực 2 lớp (2FA)</strong> cho toàn bộ nhân sự.
+      Tài khoản của bạn chưa bật 2FA nên tạm thời không truy cập được cửa hàng này.</p>
+    <p class="muted">Vào trang <strong>Tài khoản</strong> để bật 2FA (mất ~1 phút, cần ứng dụng Google Authenticator/Authy), sau đó đăng nhập lại.</p>
+    <a class="btn" href="/account">Bật 2FA trong Tài khoản</a>
+    <a class="btn alt" href="/" style="margin-left:8px">← Bảng điều khiển</a>
+  </div></div>`);
 }
 
 // ── Nhân sự ──────────────────────────────────────────────────────────────────
@@ -1579,8 +1637,7 @@ export function renderMembers(ctx, shopId, data, canWrite, notice, err) {
   return layout('Nhân sự', ctx, `<h1>Nhân sự cửa hàng</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${notice?.invited ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0">
-      <strong>Đã mời ${esc(notice.invited)}.</strong> Gửi link này cho họ để đặt mật khẩu & tham gia (sống 7 ngày):
-      <br><code style="word-break:break-all">${esc(notice.acceptUrl ?? notice.token)}</code></div>` : ''}
+      <strong>Đã gửi email lời mời tới ${esc(notice.invited)}.</strong> Họ mở email, bấm link để đặt mật khẩu & tham gia (lời mời sống 7 ngày).</div>` : ''}
     <div class="card"><table><thead><tr><th>Email</th><th>Vai trò</th><th>Tham gia</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     ${canWrite ? `<div class="card"><h2 style="margin-top:0">Mời thành viên</h2>
       <p class="muted" style="font-size:.85rem">Thao tác nhân sự cần xác nhận lại mật khẩu (step-up).</p>
@@ -2037,7 +2094,7 @@ export function renderNotify(ctx, shopId, data, err, ok) {
           <p class="muted" style="font-size:.82rem;margin:8px 0 0">Đường link: <code>${esc(d.deep_link)}</code> — mã dùng 1 lần, <strong>hết hạn sau 30 phút</strong> — bấm tạo lại nếu quá hạn.</p>
         </div>` : `<form method="POST" action="${base}/link"><button class="btn" type="submit">Tạo liên kết Telegram</button></form>`}
     </div>
-    <div class="card"><p class="muted" style="margin:0;font-size:.85rem">Chưa có Telegram? Tải app "Telegram" trên điện thoại (miễn phí) rồi quay lại bước 1. Mỗi nhân sự có thể kết nối máy riêng.</p></div>`);
+    <div class="card"><p class="muted" style="margin:0;font-size:.85rem">Chưa có Telegram? Tải app "Telegram" trên điện thoại (miễn phí) rồi quay lại bước 1. Một máy nhận cho cả cửa hàng — kết nối máy mới sẽ THAY máy cũ.</p></div>`);
 }
 
 // ── Vận chuyển hãng (GHN/GHTK) — kết nối per-shop ─────────────────────────────

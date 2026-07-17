@@ -9,6 +9,8 @@ const AUTH = 'http://auth:3020', PLATFORM = 'http://platform:3030', SELLER = 'ht
 const CO = new URL('http://checkout:3060');
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 3 });
+// Token lời mời KHÔNG còn trong API response (email hoá, 0073) — lấy từ outbox qua owner SQL (ADR-006: cùng tx với INSERT invitations nên đọc được ngay).
+const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
 let pass = 0, fail = 0;
 const ok = (m) => { pass++; console.log('  PASS ' + m); };
 const bad = (m, d) => { fail++; console.log('  FAIL ' + m + (d ? ' :: ' + d : '')); };
@@ -62,7 +64,7 @@ async function main() {
   const shopId = r.json.id, host = `${slug}.nentang.vn`;
   const oe = `owner-${uniq()}@shop.vn`, op = 'owner passphrase strong';
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email: oe, role: 'owner' }, cookie: staff, origin: OO });
-  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: r.json.token, password: op }, origin: OA });
+  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(oe), password: op }, origin: OA });
   const ck1 = await login(oe, op);
   r = await rq(SELLER, 'POST', `/shops/${shopId}/products`, { body: { title: 'SP QR', slug: `sp-${uniq()}`, price_vnd: 200000, status: 'active', variants: [{ sku: `Q-${uniq()}`, price_vnd: 200000 }] }, cookie: ck1, origin: OS });
   const vid = (await rq(SELLER, 'GET', `/shops/${shopId}/products/${r.json.id}`, { cookie: ck1 })).json.variants[0].id;

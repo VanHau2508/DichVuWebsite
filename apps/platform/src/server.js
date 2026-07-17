@@ -27,6 +27,10 @@ const AUTH_URL = process.env.AUTH_URL ?? 'http://auth:3020';
 const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN ?? 'nentang.vn';
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const INVITE_TTL_DAYS = 7;
+// Base URL trang CHẤP NHẬN LỜI MỜI công khai (seller-admin /invite/accept) — mirror
+// RESET_LINK_BASE của auth (0058): dịch vụ giữ token thô dựng link đầy đủ, worker chỉ
+// dán vào email. Trỏ origin TRÌNH DUYỆT tới được, KHÔNG phải URL nội bộ.
+const INVITE_LINK_BASE = process.env.INVITE_LINK_BASE ?? 'https://admin.nentang.vn/invite/accept';
 // Thời gian dùng thử — LUÔN đặt current_period_end lúc tạo shop, nếu không thì
 // sweepSubscriptions (lọc IS NOT NULL) bỏ qua vĩnh viễn = shop miễn phí mãi mãi.
 // NaN/âm → 0 = không trial (hết hạn ngay ở nhịp sweep kế). Đồng bộ với migration 0056.
@@ -428,24 +432,43 @@ async function inviteOwner(req, res, body, staff, shopId, ip) {
   if (!EMAIL_RE.test(email)) return send(res, 400, { error: 'email không hợp lệ' });
   if (!ROLES.includes(role)) return send(res, 400, { error: 'vai trò không hợp lệ' });
 
-  const shop = await db.query(`SELECT id FROM shops WHERE id = $1 AND deleted_at IS NULL`, [shopId]);
+  const shop = await db.query(`SELECT id, name FROM shops WHERE id = $1 AND deleted_at IS NULL`, [shopId]);
   if (shop.rows.length === 0) return send(res, 404, { error: 'không tìm thấy shop' });
 
   const token = genToken();
-  const { rows } = await db.query(
-    `INSERT INTO invitations (shop_id, email, role, token_hash, invited_by, expires_at)
-     VALUES ($1, $2, $3, $4, $5, now() + ($6 || ' days')::interval) RETURNING id, expires_at`,
-    [shopId, email, role, hashToken(token), staff.user.id, String(INVITE_TTL_DAYS)],
-  );
+  // ADR-006 (mirror auth forgot 0058): invitation + outbox trong MỘT transaction —
+  // không bao giờ có lời mời mà không email, hay email mà không lời mời.
+  // Token thô CHỈ đi qua email người ĐƯỢC MỜI (token = bằng chứng sở hữu email);
+  // API không trả token cho người mời nữa. Grant/policy outbox của app_platform: 0073.
+  const client = await db.connect();
+  let inv;
+  try {
+    await client.query('BEGIN');
+    inv = (await client.query(
+      `INSERT INTO invitations (shop_id, email, role, token_hash, invited_by, expires_at)
+       VALUES ($1, $2, $3, $4, $5, now() + ($6 || ' days')::interval) RETURNING id, expires_at`,
+      [shopId, email, role, hashToken(token), staff.user.id, String(INVITE_TTL_DAYS)],
+    )).rows[0];
+    await client.query(
+      `INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'user.invited', $2)`,
+      [shopId, { to: email, shop_name: shop.rows[0].name, role, accept_url: `${INVITE_LINK_BASE}?token=${token}`, expires_days: INVITE_TTL_DAYS }],
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
   await audit('invitation.created', { shopId, actorId: staff.user.id, ip, metadata: { email, role } });
 
-  // Trả token cho NHÂN VIÊN đã xác thực — hợp lệ: họ chính là người gửi link cho
-  // owner (qua email/tin nhắn). Đây không phải rò rỉ; đây là kết quả thao tác.
+  // KHÔNG trả token: token là bằng chứng sở hữu email của NGƯỜI ĐƯỢC MỜI —
+  // trả cho người mời là phá bất biến đó (người mời chiếm được tài khoản mời).
   return send(res, 201, {
-    invitation_id: rows[0].id,
-    token,
-    accept_path: `/auth/invitations/accept`,
-    expires_at: rows[0].expires_at,
+    invitation_id: inv.id,
+    email,
+    email_sent: true,
+    expires_at: inv.expires_at,
   });
 }
 

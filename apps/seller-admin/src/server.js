@@ -148,8 +148,9 @@ async function platformInvite(req, res, me, cookie, shopId) {
   const r = await platformApi('POST', `/ops/shops/${shopId}/invitations`, { cookie, body: { email: String(f.email ?? '').trim(), role: 'owner' } });
   if (isDenied(r.status)) return platDenied(res, me);
   if (r.status !== 201) return platformShopDetail(res, me, cookie, shopId, { err: r.json?.error ?? 'Không tạo được lời mời.' });
-  const invite = { email: String(f.email ?? '').trim(), url: `${ADMIN_ORIGIN}/invite/accept?token=${encodeURIComponent(r.json.token)}`, expires_at: r.json.expires_at };
-  return platformShopDetail(res, me, cookie, shopId, { invite, notice: 'Đã tạo link mời — sao chép gửi cho chủ shop.' });
+  // Token KHÔNG còn trong response (email hoá lời mời, 0073) — chỉ báo đã gửi email.
+  const invite = { email: String(f.email ?? '').trim(), expires_at: r.json.expires_at };
+  return platformShopDetail(res, me, cookie, shopId, { invite, notice: `Đã gửi email lời mời tới ${invite.email}.` });
 }
 // Step-up PHẢN ỨNG (khác phía shop chủ động): platform trả 403 step_up_required
 // → mới hiện form mật khẩu. Cố ý: non-staff nhận 403 THƯỜNG từ requireStaff →
@@ -1011,10 +1012,13 @@ async function blockMove(res, me, cookie, shopId, pid, bid, dir) {
 
 // ── account (bảo mật cá nhân) ─────────────────────────────────────────────────
 async function accountPage(res, me, cookie, extra = {}) {
-  // Nạp danh sách phiên đang sống (best-effort — lỗi thì trang vẫn hiện phần còn lại).
-  let sessions = [];
-  if (cookie) { try { const r = await authApi('GET', '/auth/sessions', { cookie }); if (r.status === 200) sessions = r.json?.sessions ?? []; } catch { /* ignore */ } }
-  return sendHtml(res, extra.err ? 400 : 200, V.renderAccount({ email: me.email, mfa_enabled: me.mfa_enabled, sessions, ...extra }));
+  // Nạp danh sách phiên đang sống + lịch sử đăng nhập (best-effort — lỗi thì trang vẫn hiện phần còn lại).
+  let sessions = [], events = [];
+  if (cookie) {
+    try { const r = await authApi('GET', '/auth/sessions', { cookie }); if (r.status === 200) sessions = r.json?.sessions ?? []; } catch { /* ignore */ }
+    try { const r = await authApi('GET', '/auth/events', { cookie }); if (r.status === 200) events = r.json?.events ?? []; } catch { /* ignore */ }
+  }
+  return sendHtml(res, extra.err ? 400 : 200, V.renderAccount({ email: me.email, mfa_enabled: me.mfa_enabled, sessions, events, ...extra }));
 }
 
 async function mfaEnrollStart(res, me, cookie) {
@@ -1121,11 +1125,8 @@ async function membersList(res, me, cookie, shopId, notice, err) {
 // Lõi thao tác (giả định đã step-up; seller vẫn kiểm lại phía nó).
 async function doInvite(res, me, cookie, shopId, p) {
   const r = await sellerApi('POST', `/shops/${shopId}/members/invite`, { cookie, body: { email: p.email, role: p.role } });
-  if (r.status === 201) {
-    const token = r.json?.token;
-    const acceptUrl = token ? `${ADMIN_ORIGIN}/invite/accept?token=${encodeURIComponent(token)}` : null;
-    return membersList(res, me, cookie, shopId, { invited: p.email, token, acceptUrl });
-  }
+  // Token KHÔNG còn trong response (email hoá lời mời, 0073) — chỉ báo đã gửi email.
+  if (r.status === 201) return membersList(res, me, cookie, shopId, { invited: p.email });
   return membersList(res, me, cookie, shopId, null, r.json?.error ?? 'Không mời được.');
 }
 // encodeURIComponent(uid): uid từ form step-up chưa qua regex UUID như route trực tiếp;
@@ -1505,6 +1506,18 @@ async function settingsSave(req, res, me, cookie, shopId) {
   if (r.status === 200) return settingsPage(res, me, cookie, shopId, 'Đã lưu hồ sơ cửa hàng.', null);
   return settingsPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không lưu được hồ sơ.');
 }
+// Bật/tắt "bắt buộc nhân sự dùng 2FA" (0074) — form riêng, owner-only (seller cưỡng chế).
+async function requireMfaSave(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await sellerApi('PATCH', `/shops/${shopId}/require-mfa`, { cookie, body: { require_mfa: String(f.require_mfa ?? '') === '1' } });
+  if (r.status === 200) {
+    return settingsPage(res, me, cookie, shopId, r.json.require_mfa
+      ? 'Đã BẬT bắt buộc xác thực 2 lớp — nhân sự chưa bật 2FA sẽ bị chặn cho tới khi bật.'
+      : 'Đã tắt bắt buộc xác thực 2 lớp.', null);
+  }
+  return settingsPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không đổi được cài đặt 2FA.');
+}
 
 // ── Hoàn tiền (refund = owner/admin; step-up) ────────────────────────────────
 // Bút toán 0070: form gửi kèm amount_vnd (để trống = hoàn TOÀN BỘ số còn lại) + reason;
@@ -1589,6 +1602,16 @@ async function handle(req, res, url, p) {
     if (p === '/account/sessions/revoke-others' && req.method === 'POST') return sessionRevokeOthers(res, me, cookie);
 
     let m;
+    // Ép MFA per-shop (0074): shop bật require_mfa mà tài khoản CHƯA bật MFA →
+    // seller trả 403 {mfa_required_by_shop} cho MỌI route. Probe whoami một lần
+    // (chỉ khi user chưa bật MFA — user đã bật đi thẳng, không tốn gọi nội bộ)
+    // để hiện trang hướng dẫn thân thiện thay vì lỗi rời rạc ở từng trang.
+    if (!me.mfa_enabled && (m = new RegExp(`^/shops/${UUID}(/|$)`).exec(p)) && isMember(me, m[1])) {
+      const probe = await sellerApi('GET', `/shops/${m[1]}/whoami`, { cookie }).catch(() => ({ status: 0 }));
+      if (probe.status === 403 && probe.json?.mfa_required_by_shop) {
+        return sendHtml(res, 403, V.renderMfaRequiredByShop({ user: me }));
+      }
+    }
     if ((m = new RegExp(`^/shops/${UUID}/overview$`).exec(p)) && req.method === 'GET') return overviewPage(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders$`).exec(p)) && req.method === 'GET') return ordersList(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'GET') return orderNewPage(res, me, cookie, m[1], null, null, url.searchParams.get('q') ?? '');
@@ -1717,6 +1740,7 @@ async function handle(req, res, url, p) {
     // Cài đặt / hồ sơ cửa hàng (shop.write = owner/admin).
     if ((m = new RegExp(`^/shops/${UUID}/settings$`).exec(p)) && req.method === 'GET') return settingsPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/settings$`).exec(p)) && req.method === 'POST') return settingsSave(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/settings/require-mfa$`).exec(p)) && req.method === 'POST') return requireMfaSave(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/logo$`).exec(p)) && req.method === 'POST') return logoUpload(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/logo/remove$`).exec(p)) && req.method === 'POST') return logoRemove(res, me, cookie, m[1]);
 

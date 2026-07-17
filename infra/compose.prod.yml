@@ -172,6 +172,8 @@ services:
       PORT: "3030"
       # Số ngày dùng thử khi tạo shop (0 = không trial). Đồng bộ .env.example + 0056.
       TRIAL_DAYS: ${TRIAL_DAYS:-14}
+      # Link chấp nhận lời mời trong EMAIL (mirror RESET_LINK_BASE của auth).
+      INVITE_LINK_BASE: https://${ADMIN_DOMAIN:-admin.nentang.vn}/invite/accept
     deploy: { resources: { limits: { memory: 192m } } }
     depends_on:
       postgres: { condition: service_healthy }
@@ -187,6 +189,8 @@ services:
       AUTH_URL: http://auth:3020
       ALLOWED_ORIGINS: https://${ADMIN_DOMAIN:-admin.nentang.vn}
       PORT: "3040"
+      # Link chấp nhận lời mời trong EMAIL (mirror RESET_LINK_BASE của auth).
+      INVITE_LINK_BASE: https://${ADMIN_DOMAIN:-admin.nentang.vn}/invite/accept
       # Custom domain (A5): chặn khách chiếm subdomain nền tảng.
       PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
       MINIO_ENDPOINT: minio

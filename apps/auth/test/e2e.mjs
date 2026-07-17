@@ -321,6 +321,23 @@ async function main() {
   (await req('GET', '/auth/me', { cookie: sC })).status === 401 && (await req('GET', '/auth/me', { cookie: sA })).status === 200
     ? ok('revoke-others: phiên khác chết, phiên hiện tại sống') : bad('revoke-others sai');
 
+  // ── 10d. Lịch sử đăng nhập (/auth/events) — chỉ CỦA CHÍNH MÌNH ─────────────
+  sect('10d. Lịch sử đăng nhập (/auth/events)');
+  // Tài khoản sEmail (10c) đã tích sự kiện: register, login ×3, session_revoked,
+  // sessions_revoked_others. Tài khoản oEmail chỉ có register + login.
+  rs = await req('GET', '/auth/events', { cookie: sA });
+  const evts = rs.json?.events ?? [];
+  rs.status === 200 && evts.length >= 3 ? ok(`/auth/events → ${evts.length} sự kiện của chính mình`) : bad('/auth/events lỗi', rs.raw);
+  evts.some((e) => e.action === 'user.login') && evts.some((e) => e.action === 'user.sessions_revoked_others')
+    ? ok('có user.login + user.sessions_revoked_others (đúng hành vi đã làm)') : bad('thiếu sự kiện mong đợi', JSON.stringify(evts.slice(0, 6)));
+  evts.every((e) => typeof e.action === 'string' && 'ip' in e && e.created_at)
+    ? ok('mỗi sự kiện đủ {action, ip, created_at}') : bad('sự kiện thiếu trường', JSON.stringify(evts[0]));
+  // CÔ LẬP: user KHÁC không thấy sự kiện của sEmail (lọc actor_id ở WHERE).
+  const evtsO = (await req('GET', '/auth/events', { cookie: oCookie })).json?.events ?? [];
+  evtsO.length > 0 && !evtsO.some((e) => e.action === 'user.sessions_revoked_others' || e.action === 'user.session_revoked')
+    ? ok('user khác CHỈ thấy sự kiện của mình (không rò chéo actor)') : bad('events rò chéo user', JSON.stringify(evtsO));
+  (await req('GET', '/auth/events', {})).status === 401 ? ok('không phiên → 401') : bad('/auth/events không đòi phiên');
+
   // ── 11. Rate limit đăng nhập ───────────────────────────────────────────────
   sect('11. Rate limit đăng nhập (theo tài khoản)');
   await redis.flushdb();

@@ -1186,6 +1186,7 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
     <td class="num right"><form method="POST" action="${base}/variants/${esc(v.id)}/price" class="inline" id="vw-${esc(v.id)}">
       <input name="price_vnd" type="number" min="0" step="1000" value="${esc(v.price_vnd)}" style="width:110px" aria-label="Giá biến thể (VND)">
       <button class="btn alt sm" type="submit">Lưu</button></form></td>
+    <td class="num right"><input form="vw-${esc(v.id)}" name="compare_at_vnd" type="number" min="0" step="1000" value="${esc(v.compare_at_vnd ?? '')}" placeholder="không KM" style="width:110px" aria-label="Giá gạch (VND)"></td>
     <td><input form="vw-${esc(v.id)}" name="weight_gram" type="number" min="1" max="50000" value="${esc(v.weight_gram ?? '')}" placeholder="mặc định" style="width:90px" aria-label="Khối lượng (gram)"></td>
     <td>${stock(v.id)}</td>
     <td><form method="POST" action="${base}/variants/${esc(v.id)}/inventory" class="inline">
@@ -1217,7 +1218,7 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
       </form>
     </div>
     <div class="card"><h2 style="margin-top:0">Biến thể & tồn kho</h2>
-      <table><thead><tr><th>SKU / Phân loại</th><th class="right">Giá</th><th>Nặng (g)</th><th>Có thể bán</th><th>Điều chỉnh tồn</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <table><thead><tr><th>SKU / Phân loại</th><th class="right">Giá</th><th class="right">Giá gạch (đ)</th><th>Nặng (g)</th><th>Có thể bán</th><th>Điều chỉnh tồn</th><th></th></tr></thead><tbody>${rows}</tbody></table>
       <h2>Thêm biến thể lẻ</h2>
       <p class="muted" style="font-size:.85rem">Dùng khi KHÔNG dùng phân loại đa trục ở trên (thêm tay từng biến thể).</p>
       <form method="POST" action="${base}/variants" class="inline">

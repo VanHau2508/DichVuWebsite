@@ -84,6 +84,14 @@ function normalizeHost(raw) {
 const CACHE_PUBLIC = 'public, s-maxage=60, stale-while-revalidate=300';
 const PAGE_SIZE = 24; // sản phẩm mỗi trang (lưới trang chủ / danh mục / tìm kiếm)
 
+// Sắp xếp lưới (?sort=): WHITELIST → ORDER BY tĩnh (không nội suy input). Giá sort trên
+// p.price_vnd — đúng cột giá thẻ sản phẩm đang hiển thị. Giá trị lạ rơi về 'new'.
+const GRID_SORTS = {
+  new: 'p.created_at DESC',
+  price_asc: 'p.price_vnd ASC, p.created_at DESC',
+  price_desc: 'p.price_vnd DESC, p.created_at DESC',
+};
+
 // Predicate "biến thể KHÔNG MỒ CÔI": biến thể phải có ánh xạ variant_option_values cho
 // MỌI trục (product_options) hiện tại của sản phẩm. Khi shop thu hẹp phân loại, biến thể
 // của tổ hợp cũ mất hết ánh xạ (cascade) nhưng vẫn active + còn giá/tồn cũ → phải ẨN
@@ -229,15 +237,24 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       const hasBlog = Number((await c.query(`SELECT count(*)::int n FROM blog_posts WHERE status = 'published'`)).rows[0].n) > 0;
       const base = { shop, theme, categories, menu, hasBlog };
 
+      // ?sort= whitelist (giá trị lạ → 'new' = created_at DESC, hành vi cũ).
+      const sortKey = Object.hasOwn(GRID_SORTS, url.searchParams.get('sort') ?? '') ? url.searchParams.get('sort') : 'new';
+      // Giá GẠCH NGANG trên thẻ lưới (0067): thẻ hiện p.price_vnd → chỉ lấy compare của
+      // biến thể bán ĐÚNG giá đó (tránh badge -% sai khi biến thể khác giá). Chỉ hiển thị.
+      const cardCompareSql = `(SELECT v.compare_at_vnd FROM variants v
+                    WHERE v.product_id = p.id AND v.price_vnd = p.price_vnd
+                      AND v.compare_at_vnd > v.price_vnd AND ${VARIANT_NOT_ORPHAN_SQL}
+                    ORDER BY v.position LIMIT 1) AS compare_at_vnd`;
       const productGrid = async (whereJoin = '', args = [], offset = 0) => {
         const total = Number((await c.query(`SELECT count(*)::int n FROM products p ${whereJoin}`, args)).rows[0].n);
         const rows = (await c.query(
           `SELECT p.id, p.slug, p.title, p.price_vnd,
                   (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
+                  ${cardCompareSql},
                   (SELECT coalesce(sum(il.on_hand - il.reserved), 0)
                      FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
                     WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS available
-             FROM products p ${whereJoin} ORDER BY p.created_at DESC LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
+             FROM products p ${whereJoin} ORDER BY ${GRID_SORTS[sortKey]} LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
           args,
         )).rows.map((p) => ({ ...p, image: imgUrl(p.image_key), available: Number(p.available) }));
         return { products: rows, total };
@@ -256,7 +273,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         // Lọc biến thể MỒ CÔI ngay tại query → selected/totalAvail/selector (theme.js)
         // đều kế thừa danh sách đã lọc, không cần sửa theme.
         const variants = (await c.query(
-          `SELECT v.id, v.title, v.sku, v.price_vnd, coalesce(il.on_hand - il.reserved, 0) AS available
+          `SELECT v.id, v.title, v.sku, v.price_vnd, v.compare_at_vnd, coalesce(il.on_hand - il.reserved, 0) AS available
              FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
             WHERE v.product_id = $1 AND ${VARIANT_NOT_ORPHAN_SQL}
             ORDER BY v.position`, [p.id])).rows;
@@ -308,7 +325,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         const { products, total } = await productGrid(
           `JOIN product_categories pc ON pc.product_id = p.id WHERE pc.category_id = $1`, [cat.id], offset,
         );
-        return { ...base, products, home: true, heroTitle: cat.name, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: `/c/${cm[1]}` } };
+        return { ...base, products, home: true, heroTitle: cat.name, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: `/c/${cm[1]}`, sort: sortKey } };
       }
 
       // Tìm kiếm: /search?q=... (ILIKE theo tên; RLS store_products lọc active).
@@ -320,7 +337,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
           const like = '%' + q.replace(/[%_\\]/g, '\\$&') + '%';
           ({ products, total } = await productGrid(`WHERE vn_unaccent(p.title) LIKE vn_unaccent($1)`, [like], offset));
         }
-        return { ...base, products, search: true, query: q, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: `/search?q=${encodeURIComponent(q)}` } };
+        return { ...base, products, search: true, query: q, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: `/search?q=${encodeURIComponent(q)}`, sort: sortKey } };
       }
 
       // Trang nội dung/chính sách: /pages/:slug. CHỈ bản published (RLS store_pages
@@ -364,7 +381,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       // Trang chủ: CHỈ path '/'. Path lạ → 404 (không render home cho mọi thứ).
       if (url.pathname !== '/') return { ...base, notFound: true };
       const { products, total } = await productGrid('', [], offset);
-      return { ...base, products, home: true, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: '/' } };
+      return { ...base, products, home: true, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: '/', sort: sortKey } };
     });
 
     if (data.notFound) return sendHtml(res, 404, renderNotFound(), { shopSlug: data.shop?.slug });

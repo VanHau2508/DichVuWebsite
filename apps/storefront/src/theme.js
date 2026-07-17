@@ -89,25 +89,47 @@ const I_RETURN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const I_BADGE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l2.4 1.8 3 .1.9 2.9 2.4 1.8-.9 2.9.9 2.9-2.4 1.8-.9 2.9-3 .1L12 22l-2.4-1.8-3-.1-.9-2.9L3.3 15.4l.9-2.9-.9-2.9 2.4-1.8.9-2.9 3-.1z"/><path d="M9 12l2 2 4-4"/></svg>';
 const I_WALLET = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h13v4"/><path d="M3 7v10a2 2 0 0 0 2 2h14a1 1 0 0 0 1-1v-3"/><path d="M21 11v4h-4a2 2 0 0 1 0-4z"/></svg>';
 
+// Giá GẠCH NGANG (compare-at, 0067 — CHỈ hiển thị, checkout luôn tính price_vnd):
+// chỉ render khi compare > giá bán; kèm badge -N%.
+const offPct = (price, cmp) => Math.round((1 - Number(price) / Number(cmp)) * 100);
+const compareHtml = (price, cmp) =>
+  (cmp != null && Number(cmp) > Number(price)
+    ? ` <s class="cmp">${money(cmp)}</s><span class="off">-${offPct(price, cmp)}%</span>` : '');
+
 // Thẻ sản phẩm dùng chung (lưới trang chủ / danh mục / tìm kiếm). Escape mọi field người bán.
 function productCards(products) {
   return products.map((p) => {
     const out = Number(p.available) <= 0;
     return `<a class="card${out ? ' is-out' : ''}" href="/p/${esc(p.slug)}">
           <div class="thumb">${out ? '<span class="soldout-tag">Hết hàng</span>' : ''}${p.image ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy">` : `<span class="ph">${I_IMG}</span>`}</div>
-          <div class="body"><div class="name">${esc(p.title)}</div><div class="price">${money(p.price_vnd)}</div><span class="cta">Xem chi tiết →</span></div>
+          <div class="body"><div class="name">${esc(p.title)}</div><div class="price">${money(p.price_vnd)}${compareHtml(p.price_vnd, p.compare_at_vnd)}</div><span class="cta">Xem chi tiết →</span></div>
         </a>`;
   }).join('');
 }
-// Phân trang ← Trước / Sau → từ pageInfo {total, offset, pageSize, basePath}.
+// Query sort đính kèm link (bỏ khi 'new' = mặc định → URL sạch).
+const sortQs = (pi) => (pi?.sort && pi.sort !== 'new' ? `&sort=${pi.sort}` : '');
+// Phân trang ← Trước / Sau → từ pageInfo {total, offset, pageSize, basePath, sort}.
 function pager(pi) {
   if (!pi || pi.total <= pi.pageSize) return '';
   const cur = Math.floor(pi.offset / pi.pageSize) + 1;
   const last = Math.max(1, Math.ceil(pi.total / pi.pageSize));
-  const link = (n) => esc(`${pi.basePath}${pi.basePath.includes('?') ? '&' : '?'}page=${n}`);
+  const link = (n) => esc(`${pi.basePath}${pi.basePath.includes('?') ? '&' : '?'}page=${n}${sortQs(pi)}`);
   const prev = cur > 1 ? `<a class="pg-btn" href="${link(cur - 1)}">← Trước</a>` : '<span class="pg-btn off">← Trước</span>';
   const next = cur < last ? `<a class="pg-btn" href="${link(cur + 1)}">Sau →</a>` : '<span class="pg-btn off">Sau →</span>';
   return `<nav class="pager">${prev}<span class="pg-info">Trang ${cur}/${last}</span>${next}</nav>`;
+}
+// Thanh sắp xếp no-JS (3 link GET, CSP-sạch) — trên lưới trang chủ / danh mục / tìm kiếm.
+// Đổi sort = về trang 1 (không kèm page). Đang chọn → span (không phải link).
+function sortBar(pi) {
+  if (!pi) return '';
+  const cur = pi.sort ?? 'new';
+  const opts = [['new', 'Mới nhất'], ['price_asc', 'Giá tăng dần'], ['price_desc', 'Giá giảm dần']];
+  const links = opts.map(([k, label]) => {
+    if (k === cur) return `<span class="sort-link on" aria-current="true">${label}</span>`;
+    const href = k === 'new' ? pi.basePath : `${pi.basePath}${pi.basePath.includes('?') ? '&' : '?'}sort=${k}`;
+    return `<a class="sort-link" href="${esc(href)}">${label}</a>`;
+  }).join('');
+  return `<nav class="sortbar" aria-label="Sắp xếp sản phẩm"><span class="sort-lbl">Sắp xếp:</span>${links}</nav>`;
 }
 
 // Dải "vì sao chọn chúng tôi" — mặc định 4 cam kết. Shop có thể override qua props.items
@@ -186,6 +208,7 @@ const SECTIONS = {
     return `<section class="section" id="san-pham"><div class="wrap">
       <div class="section-h"><h2>${esc(props.title || 'Sản phẩm')}</h2></div>
       ${chips}
+      ${ctx.products.length ? sortBar(ctx.pageInfo) : ''}
       <div class="grid">${cards}</div>
       ${pager(ctx.pageInfo)}
     </div></section>`;
@@ -299,6 +322,15 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .pg-btn:hover{border-color:var(--color-primary);color:var(--color-primary);background:color-mix(in srgb,var(--color-primary) 6%,var(--color-bg))}
 .pg-btn.off{color:#c9ced6;pointer-events:none}
 .pg-info{color:var(--color-muted);font-size:.88rem;font-variant-numeric:tabular-nums}
+/* Giá gạch ngang + badge -% (kích thước theo em → tự cân trong thẻ lưới lẫn trang SP). */
+.cmp{color:var(--color-muted);font-weight:500;font-size:.72em;text-decoration:line-through;margin-left:7px;font-variant-numeric:tabular-nums}
+.off{display:inline-block;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;font-size:.56em;font-weight:800;border-radius:6px;padding:1px 6px;margin-left:6px;vertical-align:middle;line-height:1.5}
+/* Thanh sắp xếp lưới sản phẩm (no-JS, 3 link). */
+.sortbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 20px;font-size:.88rem}
+.sort-lbl{color:var(--color-muted)}
+.sort-link{padding:7px 14px;border:1px solid var(--color-border);border-radius:var(--pill);color:var(--color-muted);font-weight:500;transition:border-color .15s,color .15s,background .15s}
+a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);background:color-mix(in srgb,var(--color-primary) 6%,var(--color-bg))}
+.sort-link.on{border-color:var(--color-primary);color:var(--color-primary);background:var(--color-hero-bg);font-weight:700}
 .blog-list{display:grid;gap:18px;max-width:760px}
 .blog-card{border:1px solid var(--color-border);border-radius:var(--r-lg);padding:22px 26px;background:var(--color-bg);box-shadow:var(--sh-sm);transition:transform .2s cubic-bezier(.2,.7,.2,1),border-color .2s,box-shadow .2s}
 .blog-card:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--color-primary) 34%,var(--color-border));box-shadow:var(--sh)}
@@ -594,7 +626,7 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
           ${ratingSummary}
           ${skuHtml}
           <div class="price" itemprop="offers" itemscope itemtype="https://schema.org/Offer">
-            <span itemprop="price" content="${esc(String(Number(price)))}">${money(price)}</span>
+            <span itemprop="price" content="${esc(String(Number(price)))}">${money(price)}</span>${compareHtml(price, selected?.compare_at_vnd)}
             <meta itemprop="priceCurrency" content="VND"><link itemprop="availability" href="${availability}">
           </div>
           ${stockBadge}
@@ -622,7 +654,7 @@ export function renderSearch(ctx, { canonical = null } = {}) {
   const q = ctx.query ?? '';
   const count = ctx.pageInfo?.total ?? ctx.products.length;
   const results = ctx.products.length
-    ? `<div class="grid">${productCards(ctx.products)}</div>${pager(ctx.pageInfo)}`
+    ? `${sortBar(ctx.pageInfo)}<div class="grid">${productCards(ctx.products)}</div>${pager(ctx.pageInfo)}`
     : `<p class="empty">${q ? `Không tìm thấy sản phẩm nào cho “${esc(q)}”.` : 'Nhập từ khoá để tìm sản phẩm.'}</p>`;
   const body = `${SECTIONS.header({}, ctx)}
     <main class="wrap section">

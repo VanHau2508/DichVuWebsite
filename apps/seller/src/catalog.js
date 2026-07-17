@@ -28,6 +28,9 @@ const isInt = (x) => Number.isInteger(x);
 const validPrice = (x) => isInt(x) && x >= 0 && x <= MAX_PRICE;
 // Cân biến thể (gram): null = xoá (dùng mặc định shop khi tính phí ship theo cân).
 const validWeight = (w) => w === null || (isInt(w) && w >= 1 && w <= 50000);
+// Giá GẠCH NGANG (compare-at, 0067): CHỈ hiển thị — checkout luôn tính price_vnd.
+// null = xoá. Khi đặt phải > giá bán (kiểm ở từng handler, cần biết giá hiệu lực).
+const validCompareAt = (x) => x === null || (isInt(x) && x >= 0 && x <= MAX_PRICE);
 const validTitle = (x) => typeof x === 'string' && x.trim().length >= 1 && x.length <= 200;
 const validSku = (x) => typeof x === 'string' && x.trim().length >= 1 && x.length <= 64;
 const validSlug = (x) => typeof x === 'string' && SLUG_RE.test(x);
@@ -70,6 +73,8 @@ async function createProduct(res, ctx, body) {
     if (!validSku(v.sku)) return send(res, 400, { error: 'SKU biến thể không hợp lệ' });
     if (!validPrice(v.price_vnd)) return send(res, 400, { error: 'giá biến thể không hợp lệ' });
     if (v.weight_gram !== undefined && !validWeight(v.weight_gram)) return send(res, 400, { error: 'khối lượng biến thể không hợp lệ (1–50000g)' });
+    if (v.compare_at_vnd !== undefined && !validCompareAt(v.compare_at_vnd)) return send(res, 400, { error: 'giá gạch biến thể không hợp lệ' });
+    if (v.compare_at_vnd != null && v.compare_at_vnd <= v.price_vnd) return send(res, 400, { error: 'giá gạch phải lớn hơn giá bán' });
   }
   // SKU trùng nhau NGAY trong payload → chặn sớm (DB cũng chặn nhưng báo rõ hơn).
   const skus = variants.map((v) => v.sku.trim());
@@ -90,9 +95,9 @@ async function createProduct(res, ctx, body) {
       for (let i = 0; i < variants.length; i++) {
         const v = variants[i];
         await c.query(
-          `INSERT INTO variants (shop_id, product_id, title, sku, price_vnd, position, weight_gram)
-           VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6)`,
-          [productId, v.title != null ? String(v.title) : null, v.sku.trim(), v.price_vnd, i, v.weight_gram ?? null],
+          `INSERT INTO variants (shop_id, product_id, title, sku, price_vnd, position, weight_gram, compare_at_vnd)
+           VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6, $7)`,
+          [productId, v.title != null ? String(v.title) : null, v.sku.trim(), v.price_vnd, i, v.weight_gram ?? null, v.compare_at_vnd ?? null],
         );
       }
 
@@ -172,7 +177,7 @@ async function getProduct(res, ctx, _body, params) {
     );
     if (p.rows.length === 0) return null;
     const variants = await c.query(
-      `SELECT id, title, sku, price_vnd, position, weight_gram FROM variants WHERE product_id = $1 ORDER BY position`,
+      `SELECT id, title, sku, price_vnd, position, weight_gram, compare_at_vnd FROM variants WHERE product_id = $1 ORDER BY position`,
       [productId],
     );
     const cats = await c.query(`SELECT category_id FROM product_categories WHERE product_id = $1`, [productId]);
@@ -266,6 +271,8 @@ async function addVariant(res, ctx, body, params) {
   if (!validSku(body.sku)) return send(res, 400, { error: 'SKU không hợp lệ' });
   if (!validPrice(body.price_vnd)) return send(res, 400, { error: 'giá không hợp lệ' });
   if (body.weight_gram !== undefined && !validWeight(body.weight_gram)) return send(res, 400, { error: 'khối lượng không hợp lệ (1–50000g, để trống = mặc định shop)' });
+  if (body.compare_at_vnd !== undefined && !validCompareAt(body.compare_at_vnd)) return send(res, 400, { error: 'giá gạch không hợp lệ' });
+  if (body.compare_at_vnd != null && body.compare_at_vnd <= body.price_vnd) return send(res, 400, { error: 'giá gạch phải lớn hơn giá bán' });
   try {
     const out = await withTenant(ctx.shopId, async (c) => {
       // Sản phẩm phải tồn tại (composite FK cũng chặn, nhưng báo 404 rõ hơn).
@@ -273,9 +280,9 @@ async function addVariant(res, ctx, body, params) {
       if (p.rows.length === 0) return { code: 404 };
       const pos = await c.query(`SELECT coalesce(max(position), -1) + 1 AS p FROM variants WHERE product_id = $1`, [productId]);
       const v = await c.query(
-        `INSERT INTO variants (shop_id, product_id, title, sku, price_vnd, position, weight_gram)
-         VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6) RETURNING id`,
-        [productId, body.title != null ? String(body.title) : null, body.sku.trim(), body.price_vnd, pos.rows[0].p, body.weight_gram ?? null],
+        `INSERT INTO variants (shop_id, product_id, title, sku, price_vnd, position, weight_gram, compare_at_vnd)
+         VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        [productId, body.title != null ? String(body.title) : null, body.sku.trim(), body.price_vnd, pos.rows[0].p, body.weight_gram ?? null, body.compare_at_vnd ?? null],
       );
       await audit(c, 'variant.added', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, variantId: v.rows[0].id } });
       return { code: 201, id: v.rows[0].id };
@@ -305,15 +312,31 @@ async function updateVariant(res, ctx, body, params) {
     if (!validWeight(body.weight_gram)) return send(res, 400, { error: 'khối lượng không hợp lệ (1–50000g, để trống = mặc định shop)' });
     args.push(body.weight_gram); sets.push(`weight_gram = $${args.length}`);
   }
+  // Giá gạch ngang (compare-at, CHỈ hiển thị — checkout luôn tính price_vnd): null = xoá.
+  if (body.compare_at_vnd !== undefined) {
+    if (!validCompareAt(body.compare_at_vnd)) return send(res, 400, { error: 'giá gạch không hợp lệ' });
+    args.push(body.compare_at_vnd); sets.push(`compare_at_vnd = $${args.length}`);
+  }
   if (!sets.length) return send(res, 400, { error: 'không có trường nào để cập nhật' });
   try {
-    const n = await withTenant(ctx.shopId, async (c) => {
+    const out = await withTenant(ctx.shopId, async (c) => {
+      // compare_at phải > giá bán HIỆU LỰC (giá mới nếu đổi cùng request, giá hiện tại nếu không).
+      if (body.compare_at_vnd != null) {
+        let effPrice = body.price_vnd;
+        if (effPrice === undefined) {
+          const cur = await c.query(`SELECT price_vnd FROM variants WHERE id = $1 AND product_id = $2`, [variantId, productId]);
+          if (!cur.rows.length) return { code: 404 };
+          effPrice = Number(cur.rows[0].price_vnd);
+        }
+        if (body.compare_at_vnd <= effPrice) return { code: 400 };
+      }
       args.push(variantId, productId);
       const r = await c.query(`UPDATE variants SET ${sets.join(', ')} WHERE id = $${args.length - 1} AND product_id = $${args.length}`, args);
       if (r.rowCount === 1) await audit(c, 'variant.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, variantId } });
-      return r.rowCount;
+      return { code: r.rowCount === 1 ? 200 : 404 };
     });
-    if (n !== 1) return send(res, 404, { error: 'không tìm thấy biến thể' });
+    if (out.code === 400) return send(res, 400, { error: 'giá gạch phải lớn hơn giá bán' });
+    if (out.code === 404) return send(res, 404, { error: 'không tìm thấy biến thể' });
     return send(res, 200, { ok: true });
   } catch (err) {
     if (err.code === '23505') return send(res, 409, { error: conflictMessage(err) });
@@ -452,8 +475,9 @@ async function saveProductOptions(res, ctx, body, params) {
         // nhưng tổ hợp mới PHẢI về giá sản phẩm + phần bán được = 0 (như nhánh tạo mới),
         // nếu không nó KẾ THỪA giá khuyến mãi/tồn của biến thể cũ → bán sai giá + oversell.
         // weight_gram cùng lớp bug: reset NULL, không kế thừa cân cũ → tính sai phí ship.
+        // compare_at_vnd cùng lớp bug: reset NULL, không kế thừa giá gạch cũ → badge % sai.
         variantId = pool.shift();
-        await c.query(`UPDATE variants SET title = $2, position = $3, price_vnd = $4, weight_gram = NULL WHERE id = $1`, [variantId, title, ci, basePrice]);
+        await c.query(`UPDATE variants SET title = $2, position = $3, price_vnd = $4, weight_gram = NULL, compare_at_vnd = NULL WHERE id = $1`, [variantId, title, ci, basePrice]);
         // Hạ on_hand = reserved (available về 0; GIỮ reserve của đơn đang chờ — CHECK reserved<=on_hand).
         const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1`, [variantId])).rows[0];
         if (lvl && Number(lvl.on_hand) > Number(lvl.reserved)) {

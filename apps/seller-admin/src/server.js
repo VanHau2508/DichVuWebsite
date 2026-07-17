@@ -683,13 +683,19 @@ async function variantAdd(req, res, me, cookie, shopId, pid) {
   return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không thêm được biến thể.');
 }
 
-// Sửa giá + cân 1 biến thể (ô inline trong bảng biến thể, chung nút Lưu) → seller PATCH.
+// Sửa giá + giá gạch + cân 1 biến thể (ô inline trong bảng biến thể, chung nút Lưu) → seller PATCH.
 async function variantPrice(req, res, me, cookie, shopId, pid, vid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
   // Cân: '' = xoá (NULL → dùng mặc định shop); rác → -1 để seller trả lỗi tiếng Việt.
   const wraw = String(f.weight_gram ?? '').trim();
-  const body = { price_vnd: parseVnd(f.price_vnd), weight_gram: wraw === '' ? null : (Number.isFinite(Number(wraw)) ? Math.round(Number(wraw)) : -1) };
+  // Giá gạch (compare-at, chỉ hiển thị): '' = xoá; rác → -1 (seller trả 400 tiếng Việt).
+  const craw = String(f.compare_at_vnd ?? '').trim();
+  const body = {
+    price_vnd: parseVnd(f.price_vnd),
+    weight_gram: wraw === '' ? null : (Number.isFinite(Number(wraw)) ? Math.round(Number(wraw)) : -1),
+    compare_at_vnd: craw === '' ? null : (Number.isFinite(Number(craw)) ? Math.round(Number(craw)) : -1),
+  };
   const r = await sellerApi('PATCH', `/shops/${shopId}/products/${pid}/variants/${vid}`, { cookie, body });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/products/${pid}`);
   return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không sửa được giá biến thể.');

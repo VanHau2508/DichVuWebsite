@@ -355,6 +355,13 @@ export function renderShopSettings(ctx, shopId, shop, notice, err) {
         </div>
         <p class="muted" style="font-size:.8rem;margin:6px 0 0">Trang thanh toán còn tự chặn bot (bẫy ẩn + câu hỏi xác minh khi một nguồn đặt quá nhiều đơn) — không cần cấu hình.</p>
 
+        <h2 style="margin:22px 0 4px;font-size:1.05rem">Dữ liệu cá nhân của khách</h2>
+        <p class="muted" style="font-size:.85rem">Tuân thủ Luật Bảo vệ dữ liệu cá nhân 91/2025: tự động <strong>ẩn danh</strong>
+          (xoá tên, SĐT, email, địa chỉ — doanh thu và trạng thái đơn giữ nguyên) các đơn ĐÃ XONG cũ hơn
+          số tháng dưới đây. Để trống = giữ vĩnh viễn. Chỉ chủ cửa hàng đổi được.</p>
+        <div><label>Ẩn danh đơn cũ hơn (tháng)</label>
+          <input name="pii_retention_months" value="${esc(s.pii_retention_months ?? '')}" inputmode="numeric" maxlength="3" placeholder="trống = giữ vĩnh viễn (6–120)" style="width:240px"></div>
+
         <div class="actions" style="margin-top:16px"><button class="btn" type="submit">Lưu cài đặt</button></div>
       </form>
     </div>
@@ -1603,7 +1610,7 @@ export function renderSepayStepUp(ctx, shopId, op, txnId, err) {
   </div></div>`);
 }
 // ── CRM-lite: khách hàng gộp từ đơn (theo SĐT) + ghi chú ──────────────────────
-export function renderCustomers(ctx, shopId, data, filter) {
+export function renderCustomers(ctx, shopId, data, filter, notice) {
   const base = `/shops/${esc(shopId)}/customers`;
   const rows = (data?.customers ?? []).map((cu) => `<tr>
     <td><a href="${base}/${esc(cu.phone)}">${esc(cu.name ?? '(không tên)')}</a><div class="muted" style="font-size:.8rem">${esc(cu.phone)}${cu.email ? ` · ${esc(cu.email)}` : ''}</div></td>
@@ -1613,6 +1620,7 @@ export function renderCustomers(ctx, shopId, data, filter) {
   const total = data?.total ?? 0, off = filter.offset, lim = filter.limit;
   const nav = (o) => `?q=${encodeURIComponent(filter.q ?? '')}&min_orders=${esc(String(filter.min_orders ?? 1))}&offset=${o}`;
   return layout('Khách hàng', ctx, `<h1>Khách hàng</h1>
+    ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">Đã ẩn danh dữ liệu khách theo yêu cầu — các đơn cũ chỉ còn "(đã ẩn danh)".</div>` : ''}
     <p class="muted">Gộp từ đơn hàng theo số điện thoại (không tính đơn huỷ). Bấm tên để xem lịch sử mua + ghi chú.</p>
     <div class="card"><form method="GET" class="filters">
       <div style="flex:1 1 200px"><label>Tìm (tên / SĐT)</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="Nguyễn…, 09…"></div>
@@ -1626,7 +1634,7 @@ export function renderCustomers(ctx, shopId, data, filter) {
       : '<p class="muted">Chưa có khách nào khớp bộ lọc.</p>'}</div>`);
 }
 
-export function renderCustomerDetail(ctx, shopId, cu, saved) {
+export function renderCustomerDetail(ctx, shopId, cu, saved, err) {
   const base = `/shops/${esc(shopId)}`;
   const rows = (cu.orders ?? []).map((o) => `<tr>
     <td><a href="${base}/orders/${esc(o.id)}">#${esc(o.order_number)}</a></td>
@@ -1649,7 +1657,31 @@ export function renderCustomerDetail(ctx, shopId, cu, saved) {
         <button class="btn sm" type="submit" style="margin-top:10px">Lưu ghi chú</button>
       </form></div>
     <div class="card"><h2 style="margin-top:0">Lịch sử mua (${esc(String((cu.orders ?? []).length))})</h2>
-      <table><thead><tr><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Thời gian</th><th class="right">Tổng</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+      <table><thead><tr><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Thời gian</th><th class="right">Tổng</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${ctx.role === 'owner' ? `<div class="card" style="border-color:#fca5a5">
+      <h2 style="margin-top:0">Xoá dữ liệu cá nhân (ẩn danh)</h2>
+      <p class="muted">Khi khách yêu cầu xoá dữ liệu (Luật BVDLCN 91/2025): hệ thống xoá tên, SĐT, email, địa chỉ
+        khỏi <strong>toàn bộ đơn cũ</strong> của khách này, xoá ghi chú và ẩn tên trên đánh giá đã xác minh.
+        Doanh thu, trạng thái đơn và tồn kho giữ nguyên. <strong>Không hoàn tác được.</strong>
+        Đơn đang xử lý phải hoàn tất hoặc huỷ trước.</p>
+      <form method="POST" action="${base}/customers/${esc(cu.phone)}/erase"><button class="btn warn sm" type="submit">Ẩn danh khách này</button></form>
+    </div>` : ''}`);
+}
+
+// Interstitial mật khẩu cho ẨN DANH khách (mirror renderExportStepUp — thao tác huỷ dữ liệu).
+export function renderCustomerEraseStepUp(ctx, shopId, phone, err) {
+  const base = `/shops/${esc(shopId)}`;
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận mật khẩu</h1>
+    <p class="muted">Ẩn danh dữ liệu khách là thao tác nhạy cảm, KHÔNG hoàn tác — nhập mật khẩu để tiếp tục.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${base}/customers/${esc(phone)}/erase/step-up">
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn warn" type="submit" style="width:100%;margin-top:12px">Xác nhận & ẩn danh</button>
+    </form>
+    <a class="muted" href="${base}/customers/${esc(phone)}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
 }
 
 // ── Đánh giá sản phẩm (moderation: pending → duyệt/từ chối) ──────────────────

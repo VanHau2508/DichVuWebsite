@@ -258,14 +258,39 @@ async function customersPage(res, me, cookie, shopId, sp) {
   const offset = Math.max(parseInt(sp.get('offset') ?? '0', 10) || 0, 0), limit = 20;
   const r = await sellerApi('GET', `/shops/${shopId}/customers?q=${encodeURIComponent(q)}&min_orders=${encodeURIComponent(minOrders)}&limit=${limit}&offset=${offset}`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được khách hàng.'));
-  return sendHtml(res, 200, V.renderCustomers(ctx, shopId, r.json, { q, min_orders: Number(minOrders) || 1, offset, limit }));
+  return sendHtml(res, 200, V.renderCustomers(ctx, shopId, r.json, { q, min_orders: Number(minOrders) || 1, offset, limit }, sp.get('erased') === '1'));
 }
-async function customerDetail(res, me, cookie, shopId, phone, saved) {
+async function customerDetail(res, me, cookie, shopId, phone, saved, err) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'customers');
   const r = await sellerApi('GET', `/shops/${shopId}/customers/${phone}`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tìm thấy khách.'));
-  return sendHtml(res, 200, V.renderCustomerDetail(ctx, shopId, r.json, saved));
+  return sendHtml(res, err ? 409 : 200, V.renderCustomerDetail(ctx, shopId, r.json, saved, err));
+}
+// ── Ẩn danh khách (Luật BVDLCN 91/2025) — owner-only + step-up (mirror export) ─
+async function doCustomerErase(res, me, cookie, shopId, phone) {
+  const r = await sellerApi('POST', `/shops/${shopId}/customers/${phone}/erase`, { cookie, body: {} });
+  // Thành công → chi tiết khách sẽ 404 (SĐT đã NULL) — PHẢI về danh sách, không re-render detail.
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/customers?erased=1`);
+  return customerDetail(res, me, cookie, shopId, phone, false, r.json?.error ?? 'Không ẩn danh được.');
+}
+async function customerErase(req, res, me, cookie, shopId, phone) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (roleFor(me, shopId) !== 'owner') return customerDetail(res, me, cookie, shopId, phone, false, 'Chỉ chủ cửa hàng được ẩn danh dữ liệu khách.');
+  if (steppedUp(me)) return doCustomerErase(res, me, cookie, shopId, phone);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'customers');
+  return sendHtml(res, 200, V.renderCustomerEraseStepUp(ctx, shopId, phone, null));
+}
+async function customerEraseStepUp(req, res, me, cookie, shopId, phone) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (roleFor(me, shopId) !== 'owner') return customerDetail(res, me, cookie, shopId, phone, false, 'Chỉ chủ cửa hàng được ẩn danh dữ liệu khách.');
+  const f = await readForm(req);
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'customers');
+    return sendHtml(res, 401, V.renderCustomerEraseStepUp(ctx, shopId, phone, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.'));
+  }
+  return doCustomerErase(res, me, cookie, shopId, phone);
 }
 async function customerNoteSave(req, res, me, cookie, shopId, phone) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -1341,6 +1366,7 @@ async function settingsSave(req, res, me, cookie, shopId) {
     ship_extra_per_500g_vnd: String(f.ship_extra_per_500g_vnd ?? '').trim(),
     default_weight_gram: String(f.default_weight_gram ?? '').trim(),
     ship_from_province: String(f.ship_from_province ?? '').trim(),
+    pii_retention_months: String(f.pii_retention_months ?? '').trim(),
     low_stock_threshold: String(f.low_stock_threshold ?? '').trim(),
     max_pending_per_ip: String(f.max_pending_per_ip ?? '').trim(),
     max_pending_per_phone: String(f.max_pending_per_phone ?? '').trim(),
@@ -1523,6 +1549,8 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/customers$`).exec(p)) && req.method === 'GET') return customersPage(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/customers/(\\d{8,15})$`).exec(p)) && req.method === 'GET') return customerDetail(res, me, cookie, m[1], m[2], url.searchParams.get('saved') === '1');
     if ((m = new RegExp(`^/shops/${UUID}/customers/(\\d{8,15})/note$`).exec(p)) && req.method === 'POST') return customerNoteSave(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/customers/(\\d{8,15})/erase$`).exec(p)) && req.method === 'POST') return customerErase(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/customers/(\\d{8,15})/erase/step-up$`).exec(p)) && req.method === 'POST') return customerEraseStepUp(req, res, me, cookie, m[1], m[2]);
 
     // Đánh giá sản phẩm (content.write = owner/admin ở seller).
     if ((m = new RegExp(`^/shops/${UUID}/reviews$`).exec(p)) && req.method === 'GET') return reviewsPage(res, me, cookie, m[1], url.searchParams.get('status'));

@@ -20,6 +20,7 @@ export const ALL_PERMS = [
   'payment.write',
   'shop.write',
   'export',
+  'privacy.erase', // ẩn danh dữ liệu khách (Luật BVDLCN 91/2025) — CHỈ owner, cần step-up
 ];
 
 // Quyền theo vai trò. Owner = tất cả. Khớp đúng ma trận:
@@ -35,7 +36,7 @@ const ROLE_PERMS = {
 };
 
 // Thao tác nhạy cảm cần step-up (xác thực lại gần đây).
-export const STEP_UP_PERMS = new Set(['members.write', 'domain.write', 'payment.write', 'export', 'refund']);
+export const STEP_UP_PERMS = new Set(['members.write', 'domain.write', 'payment.write', 'export', 'refund', 'privacy.erase']);
 
 export const ROLES = Object.keys(ROLE_PERMS);
 

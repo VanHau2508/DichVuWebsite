@@ -56,3 +56,11 @@ test('permsFor liệt kê đúng, owner nhiều nhất', () => {
 test('bốn vai trò khớp CHECK của DB', () => {
   assert.deepEqual(ROLES.sort(), ['admin', 'catalog_manager', 'order_manager', 'owner']);
 });
+
+test('privacy.erase: CHỈ owner + bắt buộc step-up (ẩn danh là thao tác huỷ dữ liệu)', () => {
+  assert.equal(can('owner', 'privacy.erase'), true);
+  assert.equal(can('admin', 'privacy.erase'), false);
+  assert.equal(can('catalog_manager', 'privacy.erase'), false);
+  assert.equal(can('order_manager', 'privacy.erase'), false);
+  assert.equal(needsStepUp('privacy.erase'), true);
+});

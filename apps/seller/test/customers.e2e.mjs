@@ -136,6 +136,41 @@ async function main() {
   r = await rq(SELLER, 'GET', `/shops/${Bs.shopId}/customers/${P}`, { cookie: Bs.cookie });
   r.status === 404 ? ok('shop B xem chi tiết khách shop A → 404') : bad('rò chi tiết', r.raw);
 
+  // ── 4. Ẩn danh khách (Luật BVDLCN 91/2025) — owner + step-up, chặn in-flight ──
+  sect('4. Ẩn danh khách theo yêu cầu');
+  const P2 = '0988777666'; // Trần Thị Hai: 1 đơn pending (n2) + 1 đơn đã huỷ
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/customers/${P2}/note`, { body: { note: 'khách test erase' }, cookie: A.cookie, origin: OS });
+  // Chưa step-up → seller chặn (route stepUp: true).
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/customers/${P2}/erase`, { cookie: A.cookie, origin: OS });
+  r.status === 403 && r.json?.step_up_required ? ok('chưa step-up → 403 step_up_required') : bad('không đòi step-up', r.raw);
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
+  // Còn đơn pending → 409 (cần địa chỉ để giao nốt).
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/customers/${P2}/erase`, { cookie: A.cookie, origin: OS });
+  r.status === 409 && /đang xử lý/.test(r.json?.error ?? '') ? ok('còn đơn in-flight → 409') : bad('không chặn in-flight', r.raw);
+  // Huỷ đơn pending rồi ẩn danh.
+  const oid2 = (await owner.query(`SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, n2])).rows[0].id;
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oid2}/cancel`, { cookie: A.cookie, origin: OS });
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/customers/${P2}/erase`, { cookie: A.cookie, origin: OS });
+  r.status === 200 && r.json.orders_anonymized === 2 ? ok('erase 200 — ẩn danh 2 đơn') : bad('erase lỗi', r.raw);
+  const anon = (await owner.query(
+    `SELECT customer_name, customer_phone, customer_email, shipping_address, client_ip_hash, anonymized_at, total_vnd, status
+       FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, n2])).rows[0];
+  anon.customer_name === '(đã ẩn danh)' && anon.customer_phone === null && anon.customer_email === null
+    && anon.shipping_address === null && anon.client_ip_hash === null && anon.anonymized_at
+    ? ok('đơn: tên sentinel + phone/email/địa-chỉ/ip NULL + anonymized_at') : bad('cột ẩn danh sai', JSON.stringify(anon));
+  Number(anon.total_vnd) === 130000 && anon.status === 'cancelled' // 100k hàng + 30k ship
+    ? ok('tiền + trạng thái đơn GIỮ NGUYÊN') : bad('mất dữ liệu doanh thu', JSON.stringify(anon));
+  const noteRow = await owner.query(`SELECT 1 FROM customer_notes WHERE shop_id=$1 AND phone=$2`, [A.shopId, P2]);
+  noteRow.rows.length === 0 ? ok('ghi chú CRM đã xoá') : bad('note còn sót');
+  r = await rq(SELLER, 'GET', `/shops/${A.shopId}/customers/${P2}`, { cookie: A.cookie });
+  r.status === 404 ? ok('chi tiết khách sau erase → 404') : bad('khách vẫn còn', r.raw);
+  r = await rq(SELLER, 'GET', `/shops/${A.shopId}/customers/${P}`, { cookie: A.cookie });
+  r.status === 200 ? ok('khách KHÁC (Tèo) không bị ảnh hưởng') : bad('erase lan sang khách khác', r.raw);
+  const aud = (await owner.query(
+    `SELECT metadata FROM audit_logs WHERE shop_id=$1 AND action='customer.erased' ORDER BY id DESC LIMIT 1`, [A.shopId])).rows[0];
+  aud && aud.metadata.phone_masked === '•••666' && !JSON.stringify(aud.metadata).includes(P2)
+    ? ok('audit chỉ ghi SĐT che (•••666), không SĐT thô') : bad('audit rò SĐT', JSON.stringify(aud?.metadata));
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

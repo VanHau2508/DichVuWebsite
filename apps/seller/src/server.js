@@ -91,7 +91,7 @@ async function getShop(res, ctx) {
               contact_email, contact_phone, business_address,
               ship_fee_vnd, free_ship_threshold_vnd, low_stock_threshold,
               ship_fee_far_vnd, ship_extra_per_500g_vnd, default_weight_gram, ship_from_province,
-              max_pending_per_ip, max_pending_per_phone, logo_key
+              max_pending_per_ip, max_pending_per_phone, pii_retention_months, logo_key
          FROM shops WHERE id = $1`,
       [ctx.shopId],
     );
@@ -141,19 +141,29 @@ async function updateShopProfile(res, ctx, body) {
   if (fromProv && !isProvince(fromProv)) return send(res, 400, { error: 'tỉnh/thành gửi hàng không hợp lệ' });
   // Mirror CHECK shops_ship_far_requires_from — lỗi tiếng Việt thay vì để DB nổ thành 500.
   if (shipFar != null && !fromProv) return send(res, 400, { error: 'cần chọn "Giao hàng từ tỉnh/thành" khi đặt phí liên miền' });
+  // Hạn ẩn danh PII (0064): '' → NULL = giữ vĩnh viễn (mặc định). Sàn 6 tháng (đơn còn
+  // trong vòng đời khiếu nại/đối soát COD). Bật là MẤT DỮ LIỆU dần → chỉ OWNER đổi được.
+  const piiMonths = parseMoney(body.pii_retention_months);
+  if (piiMonths != null && (!Number.isInteger(piiMonths) || piiMonths < 6 || piiMonths > 120)) return send(res, 400, { error: 'hạn ẩn danh dữ liệu khách không hợp lệ (6–120 tháng)' });
 
-  await withTenant(ctx.shopId, async (c) => {
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const cur = (await c.query(`SELECT pii_retention_months FROM shops WHERE id = current_shop_id()`)).rows[0];
+    if ((cur?.pii_retention_months ?? null) !== piiMonths && ctx.role !== 'owner') {
+      return { code: 403, body: { error: 'chỉ chủ cửa hàng được đổi hạn lưu dữ liệu khách' } };
+    }
     await c.query(
       `UPDATE shops SET name = $1, contact_email = $2, contact_phone = $3, business_address = $4,
               ship_fee_vnd = $5, free_ship_threshold_vnd = $6, low_stock_threshold = $7,
               max_pending_per_ip = $8, max_pending_per_phone = $9,
-              ship_fee_far_vnd = $10, ship_extra_per_500g_vnd = $11, default_weight_gram = $12, ship_from_province = $13
+              ship_fee_far_vnd = $10, ship_extra_per_500g_vnd = $11, default_weight_gram = $12, ship_from_province = $13,
+              pii_retention_months = $14
         WHERE id = current_shop_id()`,
-      [name, email || null, phone || null, address || null, shipFee, freeThreshold, lowStock, maxIp, maxPhone, shipFar, extra500, defWeight, fromProv],
+      [name, email || null, phone || null, address || null, shipFee, freeThreshold, lowStock, maxIp, maxPhone, shipFar, extra500, defWeight, fromProv, piiMonths],
     );
     await audit(c, 'shop.profile_updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: {} });
+    return { code: 200, body: { ok: true } };
   });
-  return send(res, 200, { ok: true });
+  return send(res, out.code, out.body);
 }
 
 async function listMembers(res, ctx) {

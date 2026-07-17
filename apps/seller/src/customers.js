@@ -75,13 +75,55 @@ async function setNote(res, ctx, body, params) {
     else await c.query(
       `INSERT INTO customer_notes (shop_id, phone, note, updated_at) VALUES (current_shop_id(), $1, $2, now())
        ON CONFLICT (shop_id, phone) DO UPDATE SET note = $2, updated_at = now()`, [phone, note]);
-    await audit(c, 'customer.note_set', { actorId: ctx.user.id, ip: ctx.ip, metadata: { phone } });
+    // Audit KHÔNG ghi SĐT thô (append-only, app_rw không sửa được — ghi thô = tự phá erasure).
+    await audit(c, 'customer.note_set', { actorId: ctx.user.id, ip: ctx.ip, metadata: { phone_masked: '•••' + phone.slice(-3) } });
   });
   return send(res, 200, { ok: true });
+}
+
+// ── Ẩn danh khách theo yêu cầu (Luật BVDLCN 91/2025) — CHỈ owner + step-up ────
+// ANONYMIZE chứ không xoá đơn: doanh thu/trạng thái/dòng hàng giữ nguyên; chỉ gỡ danh
+// tính (tên → sentinel, SĐT/email/địa chỉ/ip_hash → NULL). Kèm: xoá ghi chú CRM, ẩn tên
+// trên đánh giá ĐÃ XÁC MINH (chứng minh được là khách này qua order_number), scrub
+// payload outbox. Chặn khi còn đơn đang xử lý (cần địa chỉ để giao nốt).
+async function eraseCustomer(res, ctx, _b, params) {
+  const phone = params[1];
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const inflight = Number((await c.query(
+      `SELECT count(*)::int n FROM orders WHERE customer_phone = $1 AND status IN ('pending','confirmed','shipped')`, [phone],
+    )).rows[0].n);
+    if (inflight > 0) return { code: 409, body: { error: `khách còn ${inflight} đơn đang xử lý — hoàn tất hoặc huỷ các đơn đó trước khi ẩn danh` } };
+    const nums = (await c.query(`SELECT order_number FROM orders WHERE customer_phone = $1`, [phone])).rows.map((r) => Number(r.order_number));
+    if (nums.length === 0) return { code: 404, body: { error: 'không tìm thấy khách hàng' } };
+    const ord = await c.query(
+      `UPDATE orders SET customer_name = '(đã ẩn danh)', customer_phone = NULL, customer_email = NULL,
+              shipping_address = NULL, client_ip_hash = NULL, anonymized_at = now()
+        WHERE customer_phone = $1`, [phone],
+    );
+    // Đánh giá VERIFIED khớp order_number = liên kết chứng minh được (badge tính theo
+    // SĐT+đơn lúc gửi). Đánh giá thường tên tự do — không xoá được đáng tin cậy.
+    const rev = await c.query(
+      `UPDATE product_reviews SET author_name = '(đã ẩn danh)', ip_hash = NULL
+        WHERE verified AND order_number = ANY($1::int[])`, [nums],
+    );
+    await c.query(`DELETE FROM customer_notes WHERE phone = $1`, [phone]);
+    // Outbox: gỡ to/link/customer_name khỏi payload các đơn của khách (RLS scope shop này).
+    await c.query(
+      `UPDATE outbox SET payload = payload - 'to' - 'link' - 'customer_name'
+        WHERE payload ? 'order_number' AND (payload->>'order_number')::bigint = ANY($1::bigint[])`, [nums],
+    );
+    await audit(c, 'customer.erased', {
+      actorId: ctx.user.id, ip: ctx.ip,
+      metadata: { phone_masked: '•••' + phone.slice(-3), orders: ord.rowCount, reviews: rev.rowCount },
+    });
+    return { code: 200, body: { ok: true, orders_anonymized: ord.rowCount, reviews_anonymized: rev.rowCount } };
+  });
+  return send(res, out.code, out.body);
 }
 
 export const CUSTOMER_ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/customers$`), perm: 'orders.read', fn: (res, ctx, b, p, q) => listCustomers(res, ctx, b, p, q) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/customers/${PHONE}$`), perm: 'orders.read', fn: (res, ctx, b, p) => getCustomer(res, ctx, b, p) },
   { m: 'PUT', re: new RegExp(`^/shops/${UUID}/customers/${PHONE}/note$`), perm: 'orders.write', fn: (res, ctx, b, p) => setNote(res, ctx, b, p) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/customers/${PHONE}/erase$`), perm: 'privacy.erase', stepUp: true, fn: (res, ctx, b, p) => eraseCustomer(res, ctx, b, p) },
 ];

@@ -100,9 +100,14 @@ const platCtx = (me) => ({ user: me }); // không shopId → layout đơn (khôn
 const platDenied = (res, me) => sendHtml(res, 403, V.renderPlatformDenied(platCtx(me)));
 const isDenied = (st) => st === 401 || st === 403;
 async function platformShops(res, me, cookie) {
-  const r = await platformApi('GET', '/ops/shops', { cookie });
+  // Danh sách shop + số liệu điều hành — song song. /ops/metrics lỗi lẻ → vẫn
+  // render danh sách (khối Tổng quan tự ẩn), KHÔNG sập cả trang chủ Console.
+  const [r, mr] = await Promise.all([
+    platformApi('GET', '/ops/shops', { cookie }),
+    platformApi('GET', '/ops/metrics', { cookie }).catch(() => ({ status: 0, json: null })),
+  ]);
   if (r.status !== 200) return platDenied(res, me);
-  return sendHtml(res, 200, V.renderPlatformShops(platCtx(me), r.json?.shops ?? []));
+  return sendHtml(res, 200, V.renderPlatformShops(platCtx(me), r.json?.shops ?? [], mr.status === 200 ? mr.json : null));
 }
 async function platformShopNew(res, me, cookie, err, form) {
   // Select gói render từ DB qua /ops/plans (đã giết giá hardcode trong pages.js).
@@ -1598,6 +1603,10 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const buf = FONTS.get(p.slice(7));
     if (buf) { res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'public, max-age=31536000, immutable' }); return res.end(buf); }
     res.writeHead(404); return res.end();
+  }
+  // /favicon.ico: trả 204 sớm — khỏi chạy router + render 404 HTML cho icon.
+  if (p === '/favicon.ico') {
+    res.writeHead(204, { 'cache-control': 'public, max-age=86400' }); return res.end();
   }
   try {
     await handle(req, res, url, p);

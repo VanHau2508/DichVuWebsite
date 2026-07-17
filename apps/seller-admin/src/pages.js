@@ -384,7 +384,70 @@ export function renderPlatformDenied(ctx) {
     <div class="card"><p class="muted">Khu vực này chỉ dành cho <strong>nhân viên nền tảng</strong> (đã bật MFA). Tài khoản của bạn không có quyền.</p>
     <a class="btn alt" href="/">← Về bảng điều khiển</a></div>`);
 }
-export function renderPlatformShops(ctx, shops) {
+// Biểu đồ cột doanh thu THU thuê bao 12 tháng — mirror revenueChart bên dưới:
+// SVG sinh ở SERVER (no-JS, hợp CSP), cột var(--pri), tooltip <title> gốc trình duyệt,
+// nhãn thưa. Tháng 0đ vẫn có vạch mờ (dữ liệu đã lấp tháng trống ở API).
+function platformRevenueChart(months) {
+  const pts = (Array.isArray(months) ? months : []).filter((p) => p && p.month);
+  if (!pts.length) return '';
+  const W = 720, H = 168, BOTTOM = 22, TOP = 10;
+  const base = H - BOTTOM, n = pts.length, gap = 8;
+  const bw = (W - gap * (n - 1)) / n;
+  const vals = pts.map((p) => Math.max(0, Number(p.amount_vnd) || 0));
+  const max = Math.max(...vals, 1);
+  // Nhãn 'YYYY-MM' → 'M/YYYY' TRỰC TIẾP từ chuỗi — không qua Date() để khỏi lệch múi giờ.
+  const mLabel = (ym) => { const p = String(ym).split('-'); return `${Number(p[1])}/${p[0]}`; };
+  const q = (v) => Math.round(v * 10) / 10;
+  const bars = pts.map((p, i) => {
+    const v = vals[i];
+    const x = q(i * (bw + gap)), x2 = q(x + bw);
+    const h = v > 0 ? Math.max(3, (v / max) * (base - TOP)) : 2;
+    const y = q(base - h), r = q(Math.min(4, h / 2));
+    const d = `M${x},${base} L${x},${q(y + r)} Q${x},${y} ${q(x + r)},${y} L${q(x2 - r)},${y} Q${x2},${y} ${x2},${q(y + r)} L${x2},${base} Z`;
+    const nInv = Number(p.invoices) || 0;
+    return `<path d="${d}" fill="${v > 0 ? 'var(--pri)' : 'var(--bd)'}"><title>${esc(mLabel(p.month))} · ${esc(money(v))}${nInv ? ` · ${esc(nInv)} lần thu` : ''}</title></path>`;
+  }).join('');
+  // Nhãn THƯA (2 tháng/nhãn + tháng cuối) → không chen chữ.
+  const labels = pts.map((p, i) => ((i % 2 === 0 || i === n - 1)
+    ? `<text x="${(i * (bw + gap) + bw / 2).toFixed(1)}" y="${H - 6}" text-anchor="middle" font-size="11" fill="var(--mut)">${esc(mLabel(p.month))}</text>` : '')).join('');
+  const total = vals.reduce((a, b) => a + b, 0);
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Doanh thu thu thuê bao 12 tháng: tổng ${money(total)}, tháng cao nhất ${money(max)}">
+      <line x1="0" y1="${base}" x2="${W}" y2="${base}" stroke="var(--bd)" stroke-width="1"/>
+      ${bars}${labels}</svg>`;
+}
+
+// Khối "Tổng quan" điều hành trên trang chủ Console. metrics null (API lỗi lẻ) →
+// trả chuỗi rỗng, danh sách shop vẫn hiển thị bình thường.
+function platformOverview(m) {
+  if (!m) return '';
+  const st = m.shops_by_sub_status ?? {};
+  const tile = (label, value, sub = '') => `<div class="metric"><div class="l">${esc(label)}</div><div class="v">${value}</div>${sub ? `<div class="l" style="margin:4px 0 0">${esc(sub)}</div>` : ''}</div>`;
+  const planMix = (m.shops_by_plan ?? []).map((p) => `${esc(p.plan_code)} × ${esc(p.n)}`).join(' · ');
+  const chart = platformRevenueChart(m.revenue_by_month);
+  const SUB_ST = { trial: 'Dùng thử', active: 'Đang trả phí', past_due: 'Quá hạn', cancelled: 'Đã huỷ' };
+  const expRows = (m.expiring_soon ?? []).map((s) => `<tr>
+    <td><a href="/platform/shops/${esc(s.id)}">${esc(s.name)}</a></td>
+    <td>${esc(s.plan_code ?? '—')} <span class="muted">${esc(SUB_ST[s.sub_status] ?? s.sub_status ?? '')}</span></td>
+    <td>${s.current_period_end ? dt(s.current_period_end) : '—'}</td>
+    <td class="right"><a class="btn alt sm" href="/platform/shops/${esc(s.id)}">Gia hạn →</a></td></tr>`).join('');
+  return `
+    <h2 style="margin:18px 0 10px">Tổng quan</h2>
+    <div class="metrics">
+      ${tile('MRR (doanh thu định kỳ/tháng)', money(m.mrr_vnd ?? 0), 'thuê bao active + quá hạn')}
+      ${tile('Đang trả phí', esc(st.active ?? 0), 'thuê bao active')}
+      ${tile('Dùng thử', esc(st.trial ?? 0), `quá hạn: ${st.past_due ?? 0} · đã huỷ: ${st.cancelled ?? 0}`)}
+      ${tile('Đã thu 30 ngày', money(m.collected_30d_vnd ?? 0))}
+      ${tile('Tổng đã thu', money(m.collected_total_vnd ?? 0), 'từ trước tới nay')}
+    </div>
+    <div class="card"><h2 style="margin-top:0">Doanh thu thu thuê bao 12 tháng</h2>
+      ${chart || '<p class="muted">Chưa ghi nhận khoản thu nào.</p>'}
+      <p class="muted" style="font-size:.82rem;margin-bottom:0">${planMix ? `Gói đang tính tiền: ${planMix}. ` : ''}Huỷ ~90 ngày qua: <strong>${esc(m.churn_90d ?? 0)}</strong> thuê bao (ước lượng theo kỳ hết hạn — hệ thống chưa ghi mốc huỷ chính xác).</p></div>
+    <div class="card"><h2 style="margin-top:0">Sắp hết hạn (7 ngày)</h2>
+      ${expRows ? `<table><thead><tr><th>Cửa hàng</th><th>Gói</th><th>Hết hạn</th><th class="right"></th></tr></thead><tbody>${expRows}</tbody></table>`
+        : '<p class="muted">Không có thuê bao nào hết hạn trong 7 ngày tới.</p>'}</div>`;
+}
+
+export function renderPlatformShops(ctx, shops, metrics = null) {
   const rows = (shops ?? []).map((s) => `<tr>
     <td><a href="/platform/shops/${esc(s.id)}">${esc(s.name)}</a><div class="muted" style="font-size:.8rem">${esc(s.subdomain ?? s.slug)}</div></td>
     <td>${badge(s.status, PLAT_STATUS[s.status] ?? s.status)}</td>
@@ -394,6 +457,7 @@ export function renderPlatformShops(ctx, shops) {
   return layout('Console nền tảng', ctx, `
     <div class="toolbar"><h1 style="margin:0">Console nền tảng</h1>
       <a class="btn" href="/platform/new">+ Tạo cửa hàng</a></div>
+    ${platformOverview(metrics)}
     <div class="card">${(shops ?? []).length ? `<table><thead><tr><th>Cửa hàng</th><th>Trạng thái</th><th>Gói</th><th class="right">Đã thu</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table>
       <p class="muted" style="margin-top:10px">${shops.length} cửa hàng.</p>` : '<p class="muted">Chưa có cửa hàng nào. Bấm “Tạo cửa hàng”.</p>'}</div>`);
 }

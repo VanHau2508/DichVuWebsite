@@ -144,6 +144,11 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     if (buf) { res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'public, max-age=31536000, immutable' }); return res.end(buf); }
     res.writeHead(404); return res.end();
   }
+  // /favicon.ico: browser tự hỏi mỗi phiên — trả 204 NGAY TẠI ĐÂY (trước resolve shop)
+  // để khỏi tốn roundtrip DB + trả 404 HTML nặng. Cache 1 ngày cho browser khỏi hỏi lại.
+  if (url.pathname === '/favicon.ico') {
+    res.writeHead(204, { 'cache-control': 'public, max-age=86400' }); return res.end();
+  }
 
   try {
     const host = normalizeHost(req.headers.host);

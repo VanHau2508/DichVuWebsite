@@ -127,8 +127,11 @@ async function listProducts(res, ctx, _body, _params, query) {
   const args = [];
   if (q) {
     // Tìm KHÔNG DẤU (0048): vn_unaccent 2 vế — "ghe sofa" khớp "Ghế sofa".
+    // Kèm tìm theo SKU biến thể (rà soát #16): seller dán mã SKU vào ô tìm là ra
+    // sản phẩm — SKU không dấu nên ILIKE thường là đủ, không cần vn_unaccent.
     args.push('%' + likeEscape(q) + '%');
-    where.push(`vn_unaccent(p.title) LIKE vn_unaccent($${args.length})`);
+    where.push(`(vn_unaccent(p.title) LIKE vn_unaccent($${args.length})
+      OR EXISTS (SELECT 1 FROM variants sv WHERE sv.product_id = p.id AND sv.sku ILIKE $${args.length}))`);
   }
   if (['draft', 'active', 'archived'].includes(status)) {
     args.push(status);
@@ -321,22 +324,33 @@ async function updateVariant(res, ctx, body, params) {
 async function deleteVariant(res, ctx, _body, params) {
   const productId = params[1];
   const variantId = params[2];
-  const out = await withTenant(ctx.shopId, async (c) => {
-    const cnt = await c.query(`SELECT count(*)::int AS n FROM variants WHERE product_id = $1`, [productId]);
-    if (cnt.rows[0].n <= 1) {
-      // Sản phẩm phải luôn còn ≥ 1 biến thể.
-      const exists = await c.query(`SELECT 1 FROM variants WHERE id = $1 AND product_id = $2`, [variantId, productId]);
-      if (exists.rows.length === 0) return { code: 404 };
-      return { code: 409 };
+  try {
+    const out = await withTenant(ctx.shopId, async (c) => {
+      const cnt = await c.query(`SELECT count(*)::int AS n FROM variants WHERE product_id = $1`, [productId]);
+      if (cnt.rows[0].n <= 1) {
+        // Sản phẩm phải luôn còn ≥ 1 biến thể.
+        const exists = await c.query(`SELECT 1 FROM variants WHERE id = $1 AND product_id = $2`, [variantId, productId]);
+        if (exists.rows.length === 0) return { code: 404 };
+        return { code: 409 };
+      }
+      const r = await c.query(`DELETE FROM variants WHERE id = $1 AND product_id = $2`, [variantId, productId]);
+      if (r.rowCount === 0) return { code: 404 };
+      await audit(c, 'variant.deleted', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, variantId } });
+      return { code: 200 };
+    });
+    if (out.code === 404) return send(res, 404, { error: 'không tìm thấy biến thể' });
+    if (out.code === 409) return send(res, 409, { error: 'không thể xoá biến thể cuối cùng' });
+    return send(res, 200, { ok: true });
+  } catch (err) {
+    // inventory_ledger / order_lines / cart_items FK RESTRICT tới variants: biến thể
+    // đã có lịch sử thì không xoá được — trước đây 23503 lọt ra ngoài thành 500
+    // "lỗi hệ thống". Trả 409 kèm hướng xử lý thay vì để seller tưởng hệ thống hỏng.
+    if (err.code === '23503') {
+      const why = err.table === 'order_lines' ? 'đơn hàng' : err.table === 'cart_items' ? 'giỏ hàng của khách' : 'lịch sử kho';
+      return send(res, 409, { error: `biến thể đã có ${why} — lưu trữ sản phẩm thay vì xoá` });
     }
-    const r = await c.query(`DELETE FROM variants WHERE id = $1 AND product_id = $2`, [variantId, productId]);
-    if (r.rowCount === 0) return { code: 404 };
-    await audit(c, 'variant.deleted', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, variantId } });
-    return { code: 200 };
-  });
-  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy biến thể' });
-  if (out.code === 409) return send(res, 409, { error: 'không thể xoá biến thể cuối cùng' });
-  return send(res, 200, { ok: true });
+    throw err;
+  }
 }
 
 // ── biến thể ĐA TRỤC (options/values → sinh ma trận) + thông số ────────────────

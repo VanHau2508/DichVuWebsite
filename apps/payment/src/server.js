@@ -146,23 +146,41 @@ async function sepayWebhook(req, res, body) {
       scoped = true;
     }
     if (ev.skip) return { matched: false, reason: ev.skip };
-    if (!ev.ref) { if (scoped) await persistUnmatched(c, { ...ev, reason: 'no_ref', body }); return { matched: false, reason: 'no_ref' }; }
+    // Global không quy được shop khi THIẾU ref / không thấy đơn → không ghi hàng đợi được,
+    // nhưng KHÔNG nuốt im lặng: log warn để sweepMoneyAlerts/ops còn thấy (gia cố re-audit).
+    if (!ev.ref) {
+      if (scoped) await persistUnmatched(c, { ...ev, reason: 'no_ref', body });
+      else log('warn', 'payment_global_unmatched', { reason: 'no_ref', eventId: ev.eventId, amount: ev.amount });
+      return { matched: false, reason: 'no_ref' };
+    }
 
-    // Global: tra xuyên shop. Per-shop: cô lập trong shop + KHOÁ HÀNG (gộp giao dịch đồng
-    // thời không đọc thiếu → không kẹt đơn ở unpaid khi khách chuyển làm nhiều lần).
-    const order = (await c.query(
-      scoped
-        ? `SELECT ${ORDER_COLS} FROM orders WHERE payment_ref = $1 AND shop_id = current_shop_id() FOR UPDATE`
-        : `SELECT ${ORDER_COLS} FROM orders WHERE payment_ref = $1`,
-      [ev.ref],
-    )).rows[0];
-    if (!order) { if (scoped) await persistUnmatched(c, { ...ev, reason: 'order_not_found', body }); return { matched: false, reason: 'order_not_found' }; }
-    if (isGlobal) await c.query(`SELECT set_config('app.shop_id', $1, true)`, [order.shop_id]);
+    // CẢ HAI nhánh đều KHOÁ HÀNG (FOR UPDATE) — gộp giao dịch đồng thời (khách chuyển
+    // làm nhiều lần) không đọc thiếu → không kẹt đơn ở unpaid. Trước đây chỉ per-shop
+    // có khoá; global đua partial-transfer (re-audit #30). BẪY RLS: FOR UPDATE bắt dòng
+    // qua thêm policy USING của UPDATE (tenant-scoped) → global phải DÒ shop trước
+    // (SELECT thường, chưa khoá) → set context → khoá LẠI trong context như per-shop.
+    let order;
+    if (scoped) {
+      order = (await c.query(`SELECT ${ORDER_COLS} FROM orders WHERE payment_ref = $1 AND shop_id = current_shop_id() FOR UPDATE`, [ev.ref])).rows[0];
+    } else {
+      const probe = (await c.query(`SELECT shop_id FROM orders WHERE payment_ref = $1`, [ev.ref])).rows[0];
+      if (probe) {
+        await c.query(`SELECT set_config('app.shop_id', $1, true)`, [probe.shop_id]);
+        order = (await c.query(`SELECT ${ORDER_COLS} FROM orders WHERE payment_ref = $1 AND shop_id = current_shop_id() FOR UPDATE`, [ev.ref])).rows[0];
+      }
+    }
+    if (!order) {
+      if (scoped) await persistUnmatched(c, { ...ev, reason: 'order_not_found', body });
+      else log('warn', 'payment_global_unmatched', { reason: 'order_not_found', eventId: ev.eventId, amount: ev.amount });
+      return { matched: false, reason: 'order_not_found' };
+    }
 
     const want = norm(order.qr_account);
     if (!want || ev.rcvAccount !== want) {
       log('warn', 'payment_account_mismatch', { ref: ev.ref, rcvAccount: mask(ev.rcvAccount), want: mask(want) });
-      if (scoped) await persistUnmatched(c, { ...ev, reason: 'account_mismatch', body });
+      // Đơn ĐÃ tìm thấy → biết shop (context đã set cả nhánh global) → ghi hàng đợi
+      // đối soát cho CẢ global (trước đây global nuốt im lặng — tiền treo vô hình).
+      await persistUnmatched(c, { ...ev, reason: 'account_mismatch', body });
       return { matched: false, reason: 'account_mismatch' };
     }
     return creditOrder(c, order, { eventId: ev.eventId, amount: ev.amount, content: ev.content, rcvAccount: ev.rcvAccount, body });

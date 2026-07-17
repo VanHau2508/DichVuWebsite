@@ -91,6 +91,14 @@ async function main() {
   r = await req('POST', '/auth/register', { body: { email: `x-${uniq()}@a.vn`, password: 'short' } });
   r.status === 400 ? ok('mật khẩu quá ngắn bị từ chối') : bad('nhận mật khẩu yếu', r.raw);
 
+  // Blocklist: đủ 10 ký tự nhưng QUÁ PHỔ BIẾN → 400 với thông điệp riêng.
+  r = await req('POST', '/auth/register', { body: { email: `x-${uniq()}@a.vn`, password: 'password123' } });
+  r.status === 400 && /quá phổ biến/.test(r.json?.error ?? '')
+    ? ok('mật khẩu phổ biến (password123) → 400 "quá phổ biến"') : bad('nhận mật khẩu phổ biến', r.raw);
+  r = await req('POST', '/auth/register', { body: { email: `x-${uniq()}@a.vn`, password: 'MatKhau123' } });
+  r.status === 400 && /quá phổ biến/.test(r.json?.error ?? '')
+    ? ok('blocklist không phân biệt hoa thường (MatKhau123)') : bad('hoa thường lách được blocklist', r.raw);
+
   r = await req('POST', '/auth/login', { body: { email, password: 'wrong wrong wrong' } });
   r.status === 401 && !r.json?.mfa_required ? ok('sai mật khẩu → 401 chung chung') : bad('sai mật khẩu không bị chặn đúng', r.raw);
 
@@ -224,8 +232,13 @@ async function main() {
   r = await req('POST', '/auth/password/reset', { body: { token: 'sai-token', password: newPassword } });
   r.status === 400 ? ok('reset token sai → 400') : bad('token sai được chấp nhận', r.raw);
 
+  // Mật khẩu phổ biến bị chặn TRƯỚC khi tra token → token không bị đốt.
+  r = await req('POST', '/auth/password/reset', { body: { token: resetToken, password: 'matkhau1234' } });
+  r.status === 400 && /quá phổ biến/.test(r.json?.error ?? '')
+    ? ok('reset chặn mật khẩu phổ biến (matkhau1234) → 400') : bad('reset nhận mật khẩu phổ biến', r.raw);
+
   r = await req('POST', '/auth/password/reset', { body: { token: resetToken, password: newPassword } });
-  r.status === 200 ? ok('reset token đúng → 200') : bad('reset lỗi', r.raw);
+  r.status === 200 ? ok('reset token đúng → 200 (token còn sống sau lần bị chặn blocklist)') : bad('reset lỗi', r.raw);
 
   r = await req('POST', '/auth/password/reset', { body: { token: resetToken, password: 'another one here' } });
   r.status === 400 ? ok('reset token dùng lại → 400 (một lần)') : bad('reset token dùng lại được', r.raw);
@@ -256,6 +269,9 @@ async function main() {
 
   let rr = await req('POST', '/auth/password/change', { cookie: cpCookie, body: { current_password: 'sai het roi', new_password: cpNew } });
   rr.status === 401 ? ok('đổi mk: mật khẩu hiện tại sai → 401') : bad('current sai được chấp nhận', rr.raw);
+  rr = await req('POST', '/auth/password/change', { cookie: cpCookie, body: { current_password: cpPw, new_password: 'qwertyuiop' } });
+  rr.status === 400 && /quá phổ biến/.test(rr.json?.error ?? '')
+    ? ok('đổi mk: mật khẩu mới quá phổ biến → 400') : bad('đổi mk nhận mật khẩu phổ biến', rr.raw);
   rr = await req('POST', '/auth/password/change', { cookie: cpCookie, body: { current_password: cpPw, new_password: cpNew } });
   rr.status === 200 ? ok('đổi mk: current đúng → 200') : bad('đổi mk lỗi', rr.raw);
   const meCur = (await req('GET', '/auth/me', { cookie: cpCookie })).status;

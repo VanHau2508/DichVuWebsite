@@ -145,6 +145,7 @@ const EXPORT_ROLES = new Set(['owner']); // xuất dữ liệu: CHỈ chủ shop
 const DOMAIN_ROLES = new Set(['owner']); // tên miền: CHỈ chủ shop (seller cưỡng chế 'domain.write')
 const PAYMENT_ROLES = new Set(['owner']); // thanh toán: CHỈ chủ shop (seller cưỡng chế 'payment.write' + step-up)
 const SHIPPING_ROLES = new Set(['owner', 'admin']); // vận chuyển: owner/admin (seller cưỡng chế 'shop.write' + step-up)
+const AUDIT_ROLES = new Set(['owner', 'admin']); // nhật ký hoạt động: owner/admin (seller cưỡng chế 'audit.read')
 const ROLE_LABEL = { owner: 'Chủ shop', admin: 'Quản trị', catalog_manager: 'Quản lý sản phẩm', order_manager: 'Quản lý đơn' };
 const INVITE_ROLES = ['admin', 'catalog_manager', 'order_manager']; // KHÔNG mời owner qua đây
 const PSTATUS = { draft: 'Nháp', active: 'Đang bán', archived: 'Lưu trữ' };
@@ -173,6 +174,7 @@ const IC_TRUCK = ic('<path d="M2 6h12v10H2z"/><path d="M14 9h4l3 3v4h-7z"/><circ
 const IC_BELL = ic('<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 20a2 2 0 0 0 4 0"/>');
 const IC_STAR = ic('<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>');
 const IC_HEART = ic('<circle cx="12" cy="8" r="3.5"/><path d="M5 20v-1.5a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6V20"/>');
+const IC_LOG = ic('<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 11h7M9 15h7M9 19h4"/>');
 
 // Điều hướng dọc trong 1 shop (sidebar) — chỉ hiện mục vai trò được phép.
 function sideNav(ctx) {
@@ -189,6 +191,7 @@ function sideNav(ctx) {
           + it(`${base}/pages`, 'Trang nội dung', IC_FILE, ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/blog`, 'Blog', IC_NEWS, ctx.active === 'blog', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/members`, 'Nhân sự', IC_USERS, ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role))
+          + it(`${base}/audit-log`, 'Nhật ký', IC_LOG, ctx.active === 'audit', AUDIT_ROLES.has(ctx.role))
           + it(`${base}/domains`, 'Tên miền', IC_GLOBE, ctx.active === 'domains', DOMAIN_ROLES.has(ctx.role))
           + it(`${base}/payment`, 'Thanh toán', IC_CARD, ctx.active === 'payment', PAYMENT_ROLES.has(ctx.role))
           + it(`${base}/shipping`, 'Vận chuyển', IC_TRUCK, ctx.active === 'shipping', SHIPPING_ROLES.has(ctx.role))
@@ -1465,6 +1468,90 @@ export function renderStepUp(ctx, shopId, action, params, err) {
   </div></div>`);
 }
 
+// ── Nhật ký hoạt động (audit.read = owner/admin ở seller) ────────────────────
+// Nhãn tiếng Việt cho mã hành động; mã lạ hiện nguyên văn (fallback trung thực).
+const ACTION_LABEL = {
+  'product.created': 'Tạo sản phẩm', 'product.updated': 'Sửa sản phẩm', 'product.deleted': 'Xoá sản phẩm',
+  'product.imported': 'Nhập sản phẩm từ CSV', 'product.options_saved': 'Lưu thuộc tính sản phẩm',
+  'product.options_cleared': 'Xoá thuộc tính sản phẩm', 'product.specs_set': 'Cập nhật thông số',
+  'product.categories_set': 'Gán danh mục sản phẩm',
+  'variant.added': 'Thêm biến thể', 'variant.updated': 'Sửa biến thể', 'variant.deleted': 'Xoá biến thể',
+  'category.created': 'Tạo danh mục', 'category.updated': 'Sửa danh mục', 'category.deleted': 'Xoá danh mục',
+  'inventory.adjusted': 'Điều chỉnh tồn kho',
+  'order.confirmed': 'Xác nhận đơn', 'order.shipped': 'Giao đơn cho vận chuyển', 'order.cancelled': 'Huỷ đơn',
+  'order.marked_paid': 'Đánh dấu đã thu tiền', 'order.qr_marked_paid_manual': 'Xác nhận tay chuyển khoản QR',
+  'order.refunded': 'Hoàn tiền đơn', 'order.created_manual': 'Tạo đơn tay',
+  'coupon.created': 'Tạo mã giảm giá', 'coupon.updated': 'Sửa mã giảm giá', 'coupon.deleted': 'Xoá mã giảm giá',
+  'customer.note_set': 'Ghi chú khách hàng', 'customer.erased': 'Ẩn danh dữ liệu khách',
+  'review.deleted': 'Xoá đánh giá',
+  'page.created': 'Tạo trang nội dung', 'page.updated': 'Sửa trang nội dung', 'page.published': 'Đăng trang',
+  'page.rolled_back': 'Khôi phục bản trang cũ', 'page.deleted': 'Xoá trang', 'page.previewed': 'Xem thử trang',
+  'page.block_added': 'Thêm khối nội dung', 'page.block_updated': 'Sửa khối nội dung',
+  'page.block_deleted': 'Xoá khối nội dung', 'page.blocks_reordered': 'Sắp xếp khối nội dung',
+  'blog.created': 'Tạo bài blog', 'blog.updated': 'Sửa bài blog', 'blog.deleted': 'Xoá bài blog',
+  'media.uploaded': 'Tải ảnh lên', 'media.deleted': 'Xoá ảnh', 'media.reordered': 'Sắp xếp ảnh',
+  'media.variant_assigned': 'Gán ảnh cho biến thể',
+  'shop.logo_updated': 'Đổi logo shop', 'shop.logo_removed': 'Gỡ logo shop', 'shop.profile_updated': 'Sửa hồ sơ shop',
+  'theme.updated': 'Đổi giao diện',
+  'member.invited': 'Mời nhân sự', 'member.role_changed': 'Đổi vai trò nhân sự', 'member.removed': 'Gỡ nhân sự',
+  'domain.added': 'Thêm tên miền', 'domain.primary_changed': 'Đổi tên miền chính', 'domain.revoked': 'Gỡ tên miền',
+  'payment_config.updated': 'Sửa cấu hình thanh toán', 'payment_config.sepay_enabled': 'Bật SePay',
+  'payment_config.sepay_disabled': 'Tắt SePay', 'payment.reconcile_resolved': 'Xử lý đối soát tiền',
+  'shipping.connected': 'Kết nối hãng vận chuyển', 'shipping.disconnected': 'Ngắt hãng vận chuyển',
+  'shipping.cod_mismatch': 'Lệch COD vận chuyển', 'shipping.reconcile_cancel': 'Đối soát đơn huỷ VC',
+  'telegram.link_requested': 'Yêu cầu kết nối Telegram', 'telegram.unlinked': 'Ngắt Telegram',
+  'export.created': 'Xuất dữ liệu',
+  // Hành động cấp nền tảng gắn shop này (actor là nhân viên nền tảng).
+  'invitation.created': 'Nền tảng tạo lời mời', 'shop.suspended': 'Nền tảng tạm ngưng shop',
+  'shop.restored': 'Nền tảng khôi phục shop',
+};
+
+// Tóm tắt metadata AN TOÀN: giấu key nhạy cảm, che email/SĐT (phòng khi handler
+// nào đó ghi PII thô — đa số đã ghi phone_masked sẵn), cắt ngắn giá trị dài.
+const META_HIDE = /token|secret|hash|password|key/i;
+function maskMetaValue(v) {
+  let s = typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v);
+  // email → a***@domain
+  s = s.replace(/([^\s@"{}[\],]+)@([^\s@"{}[\],]+)/g, (_, a, d) => `${a.slice(0, 1)}***@${d}`);
+  // chuỗi toàn số dài như SĐT → che còn 3 số cuối
+  s = s.replace(/(?<!\d)\d{8,15}(?!\d)/g, (m) => '•••' + m.slice(-3));
+  return s.length > 80 ? s.slice(0, 77) + '…' : s;
+}
+function maskMeta(m) {
+  if (m == null || typeof m !== 'object') return '';
+  const parts = [];
+  for (const [k, v] of Object.entries(m)) {
+    if (v == null || META_HIDE.test(k)) continue;
+    parts.push(`${esc(k)}: ${esc(maskMetaValue(v))}`);
+    if (parts.length >= 6) break;
+  }
+  return parts.join(' · ');
+}
+
+export function renderAuditLog(ctx, shopId, data, filter) {
+  const entries = data?.entries ?? [];
+  const off = filter.offset, lim = filter.limit;
+  const actorOf = (e) => e.actor_email ? esc(e.actor_email)
+    : e.actor_type === 'system' ? 'Hệ thống'
+    : e.actor_type === 'platform_staff' ? 'Nhân viên nền tảng'
+    : '(không còn là nhân sự)';
+  const rows = entries.map((e) => `<tr>
+    <td class="muted" style="white-space:nowrap">${dt(e.created_at)}</td>
+    <td>${actorOf(e)}</td>
+    <td>${ACTION_LABEL[e.action] ? esc(ACTION_LABEL[e.action]) : `<code>${esc(e.action)}</code>`}</td>
+    <td class="muted" style="font-size:.85rem">${maskMeta(e.metadata)}</td>
+  </tr>`).join('');
+  const nav = (o) => `/shops/${esc(shopId)}/audit-log?offset=${o}`;
+  return layout('Nhật ký', ctx, `<h1>Nhật ký hoạt động</h1>
+    <p class="muted">Mọi thao tác trong shop đều được ghi lại, không sửa/xoá được.
+      Lịch sử đăng nhập, đổi mật khẩu, MFA là sự kiện cấp tài khoản (không gắn shop) nên không hiển thị tại đây.</p>
+    <div class="card">${rows ? `<table><thead><tr><th>Thời điểm</th><th>Người thực hiện</th><th>Hành động</th><th>Chi tiết</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="muted" style="margin-top:12px">
+        ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Mới hơn</a>` : '<span style="color:#d1d5db">← Mới hơn</span>'} ·
+        ${data?.has_more ? `<a href="${nav(off + lim)}">Cũ hơn →</a>` : '<span style="color:#d1d5db">Cũ hơn →</span>'}</div>`
+      : '<p class="muted">Chưa có hoạt động nào được ghi.</p>'}</div>`);
+}
+
 // ── Xuất dữ liệu (owner) ─────────────────────────────────────────────────────
 export function renderExport(ctx, shopId, notice, err) {
   const base = `/shops/${esc(shopId)}`;
@@ -1804,7 +1891,7 @@ export function renderNotify(ctx, shopId, data, err, ok) {
       ${pending && d.deep_link ? `<div class="card" style="background:var(--surface,#f6f7f8)">
           <p style="margin:0 0 8px"><strong>Mã liên kết đã tạo</strong> — bấm mở Telegram:</p>
           <a class="btn" href="${esc(d.deep_link)}" target="_blank" rel="noopener">Mở Telegram & bấm START</a>
-          <p class="muted" style="font-size:.82rem;margin:8px 0 0">Đường link: <code>${esc(d.deep_link)}</code> — mã dùng 1 lần, tạo lại nếu hết hạn.</p>
+          <p class="muted" style="font-size:.82rem;margin:8px 0 0">Đường link: <code>${esc(d.deep_link)}</code> — mã dùng 1 lần, <strong>hết hạn sau 30 phút</strong> — bấm tạo lại nếu quá hạn.</p>
         </div>` : `<form method="POST" action="${base}/link"><button class="btn" type="submit">Tạo liên kết Telegram</button></form>`}
     </div>
     <div class="card"><p class="muted" style="margin:0;font-size:.85rem">Chưa có Telegram? Tải app "Telegram" trên điện thoại (miễn phí) rồi quay lại bước 1. Mỗi nhân sự có thể kết nối máy riêng.</p></div>`);

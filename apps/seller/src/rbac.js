@@ -21,6 +21,7 @@ export const ALL_PERMS = [
   'shop.write',
   'export',
   'privacy.erase', // ẩn danh dữ liệu khách (Luật BVDLCN 91/2025) — CHỈ owner, cần step-up
+  'audit.read', // xem nhật ký hoạt động shop (owner + admin)
 ];
 
 // Quyền theo vai trò. Owner = tất cả. Khớp đúng ma trận:
@@ -30,7 +31,7 @@ export const ALL_PERMS = [
 //   - Order Manager: chỉ đơn hàng.
 const ROLE_PERMS = {
   owner: new Set(ALL_PERMS),
-  admin: new Set(['catalog.read', 'catalog.write', 'orders.read', 'orders.write', 'refund', 'theme.write', 'shop.write', 'content.read', 'content.write', 'members.read']),
+  admin: new Set(['catalog.read', 'catalog.write', 'orders.read', 'orders.write', 'refund', 'theme.write', 'shop.write', 'content.read', 'content.write', 'members.read', 'audit.read']),
   catalog_manager: new Set(['catalog.read', 'catalog.write']),
   order_manager: new Set(['orders.read', 'orders.write']),
 };

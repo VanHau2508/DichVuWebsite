@@ -33,6 +33,14 @@ test('order_manager: chỉ đơn hàng', () => {
   assert.equal(can('order_manager', 'refund'), false); // hoàn tiền không thuộc order manager
 });
 
+test('audit.read: owner + admin xem nhật ký; catalog/order manager thì không', () => {
+  assert.equal(can('owner', 'audit.read'), true);
+  assert.equal(can('admin', 'audit.read'), true);
+  assert.equal(can('catalog_manager', 'audit.read'), false);
+  assert.equal(can('order_manager', 'audit.read'), false);
+  assert.equal(needsStepUp('audit.read'), false); // chỉ đọc, không cần step-up
+});
+
 test('vai trò lạ không có quyền nào', () => {
   assert.equal(can('nobody', 'catalog.read'), false);
   assert.equal(can(undefined, 'catalog.read'), false);

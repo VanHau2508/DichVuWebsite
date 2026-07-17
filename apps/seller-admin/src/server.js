@@ -1019,6 +1019,16 @@ async function resetSubmit(req, res) {
   return sendHtml(res, r.status, V.renderReset(token, r.json?.error ?? 'Link không hợp lệ hoặc đã hết hạn.'));
 }
 
+// ── nhật ký hoạt động — seller cưỡng chế audit.read (owner/admin) ─────────────
+async function auditPage(res, me, cookie, shopId, sp) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'audit');
+  const offset = Math.max(parseInt(sp.get('offset') ?? '0', 10) || 0, 0), limit = 50;
+  const r = await sellerApi('GET', `/shops/${shopId}/audit-log?limit=${limit}&offset=${offset}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được nhật ký.'));
+  return sendHtml(res, 200, V.renderAuditLog(ctx, shopId, r.json, { offset, limit }));
+}
+
 // ── nhân sự (member management) — SỬA cần step-up; seller cưỡng chế members.write ─
 async function membersList(res, me, cookie, shopId, notice, err) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -1527,6 +1537,9 @@ async function handle(req, res, url, p) {
       if (m[4] === 'delete') return blockDelete(res, me, cookie, m[1], m[2], m[3]);
       return blockMove(res, me, cookie, m[1], m[2], m[3], m[4] === 'moveup' ? 'up' : 'down');
     }
+
+    // Nhật ký hoạt động.
+    if ((m = new RegExp(`^/shops/${UUID}/audit-log$`).exec(p)) && req.method === 'GET') return auditPage(res, me, cookie, m[1], url.searchParams);
 
     // Nhân sự.
     if ((m = new RegExp(`^/shops/${UUID}/members$`).exec(p)) && req.method === 'GET') return membersList(res, me, cookie, m[1]);

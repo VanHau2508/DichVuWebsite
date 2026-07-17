@@ -35,6 +35,7 @@ import { SHIPPING_ROUTES } from './shipping.js';
 import { REVIEW_ROUTES } from './reviews.js';
 import { CUSTOMER_ROUTES } from './customers.js';
 import { NOTIFY_ROUTES } from './notify.js';
+import { AUDIT_ROUTES } from './audit-log.js';
 import { isProvince } from './provinces.js';
 import { runReq, makeLog, health } from './obs.js';
 
@@ -272,6 +273,7 @@ const ROUTES = [
   ...REVIEW_ROUTES,
   ...CUSTOMER_ROUTES,
   ...NOTIFY_ROUTES,
+  ...AUDIT_ROUTES,
 ];
 
 const server = http.createServer((req, res) => runReq(req, res, async () => {

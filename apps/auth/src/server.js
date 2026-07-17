@@ -96,9 +96,29 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 function validEmail(x) {
   return typeof x === 'string' && x.length <= 254 && EMAIL_RE.test(x);
 }
-function validPassword(x) {
+// Mật khẩu QUÁ PHỔ BIẾN dù đủ 10 ký tự — chặn cứng, so KHÔNG phân biệt hoa
+// thường. Bản ngắn hơn ('password', 'qwerty', '123456'…) đã bị chặn bởi độ dài,
+// nên danh sách chỉ cần các biến thể ≥10 ký tự hay gặp (kèm ngữ cảnh VN).
+// Blocklist tĩnh trong code: auth là dịch vụ toàn cục, không có ngữ cảnh shop
+// lúc đăng ký nên không chặn được "tên shop + 123" per-tenant tại đây.
+const WEAK_PASSWORDS = new Set([
+  '1234567890', '0123456789', '12345678910', '1234567891', '12345678901',
+  '9876543210', '1111111111', '0000000000', 'aaaaaaaaaa', 'abcdefghij',
+  'abcd1234567', 'a1b2c3d4e5', '1q2w3e4r5t', 'qwertyuiop', 'qwerty1234',
+  'qwerty12345', 'password12', 'password123', 'password1234', 'passw0rd123',
+  'p@ssword123', 'iloveyou12', 'iloveyou123', 'admin12345', 'adminadmin',
+  'administrator', 'welcome12345',
+  'matmatkhau', 'matkhau123', 'matkhau1234', 'matkhau12345', 'daylamatkhau',
+  'khongbiet1', 'khongbiet123', 'khongchobiet', 'vietnam123', 'vietnam1234',
+  'hanoi12345', 'saigon12345', 'anhyeuem123', 'emyeuanh123', 'bongda12345',
+  'xinchao123', 'xinchao1234', 'congchua123', 'hoangtu123', 'thanhcong123',
+]);
+// Trả CHUỖI LỖI tiếng Việt hoặc null nếu hợp lệ (thay validPassword boolean cũ).
+function passwordError(x) {
   // Tối thiểu 10 ký tự. Không áp luật phức tạp rối rắm (NIST khuyến nghị độ dài).
-  return typeof x === 'string' && x.length >= 10 && x.length <= 1024;
+  if (typeof x !== 'string' || x.length < 10 || x.length > 1024) return 'mật khẩu tối thiểu 10 ký tự';
+  if (WEAK_PASSWORDS.has(x.trim().toLowerCase())) return 'mật khẩu quá phổ biến, hãy chọn mật khẩu khác';
+  return null;
 }
 
 // ── session ──────────────────────────────────────────────────────────────────
@@ -157,7 +177,8 @@ async function register(req, res, body, ctx) {
   const email = String(body.email ?? '').toLowerCase().trim();
   const password = body.password;
   if (!validEmail(email)) return send(res, 400, { error: 'email không hợp lệ' });
-  if (!validPassword(password)) return send(res, 400, { error: 'mật khẩu tối thiểu 10 ký tự' });
+  const pwErr = passwordError(password);
+  if (pwErr) return send(res, 400, { error: pwErr });
 
   // Rate limit theo IP TRƯỚC khi băm. hashPassword là Argon2id 19 MiB trên
   // threadpool libuv (4) dùng chung với login/reset — không chặn ở đây thì
@@ -513,7 +534,8 @@ async function changePassword(req, res, body, ctx) {
     await audit('user.password_change_failed', { userId: user.id, ip: ctx.ip, ua: ctx.ua });
     return send(res, 401, { error: 'mật khẩu hiện tại không đúng' });
   }
-  if (!validPassword(body.new_password)) return send(res, 400, { error: 'mật khẩu mới tối thiểu 10 ký tự' });
+  const pwErr = passwordError(body.new_password);
+  if (pwErr) return send(res, 400, { error: pwErr });
 
   const hash = await hashPassword(body.new_password);
   const client = await db.connect();
@@ -612,7 +634,9 @@ async function forgot(req, res, body, ctx) {
 async function resetPassword(req, res, body, ctx) {
   const token = String(body.token ?? '');
   const password = body.password;
-  if (!token || !validPassword(password)) return send(res, 400, { error: 'token hoặc mật khẩu không hợp lệ' });
+  if (!token) return send(res, 400, { error: 'token hoặc mật khẩu không hợp lệ' });
+  const pwErr = passwordError(password);
+  if (pwErr) return send(res, 400, { error: pwErr });
 
   const { rows } = await db.query(
     `SELECT id, user_id FROM password_reset_tokens
@@ -687,7 +711,8 @@ async function acceptInvitation(req, res, body, ctx) {
 
     if (!existing) {
       // (a) Chưa có tài khoản → tạo mới, đánh dấu đã xác minh (token chứng minh email).
-      if (!validPassword(password)) { await client.query('ROLLBACK'); return send(res, 400, { error: 'mật khẩu tối thiểu 10 ký tự' }); }
+      const pwErr = passwordError(password);
+      if (pwErr) { await client.query('ROLLBACK'); return send(res, 400, { error: pwErr }); }
       const hash = await hashPassword(password);
       userId = (await client.query(
         `INSERT INTO users (email, password_hash, email_verified_at) VALUES ($1, $2, now()) RETURNING id`,
@@ -698,7 +723,8 @@ async function acceptInvitation(req, res, body, ctx) {
       // (b) Tài khoản CHƯA xác minh (có thể do kẻ đăng ký trước để chiếm). Người giữ
       // token mới là chủ email thật → CLAIM: đặt lại mật khẩu, TẮT MFA, thu hồi mọi
       // phiên cũ. Sau bước này account thuộc về người vừa chấp nhận, kẻ cũ bị đá.
-      if (!validPassword(password)) { await client.query('ROLLBACK'); return send(res, 400, { error: 'mật khẩu tối thiểu 10 ký tự' }); }
+      const pwErr = passwordError(password);
+      if (pwErr) { await client.query('ROLLBACK'); return send(res, 400, { error: pwErr }); }
       const hash = await hashPassword(password);
       userId = existing.id;
       await client.query(`UPDATE users SET password_hash = $1, email_verified_at = now(), mfa_enabled = false WHERE id = $2`, [hash, userId]);

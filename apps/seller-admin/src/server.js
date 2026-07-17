@@ -9,6 +9,7 @@
  */
 import http from 'node:http';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { parseCookies, readForm, readFormAll, readMultipartFile, readMultipartFiles, sendHtml, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
 import { authApi, sellerApi, platformApi, sellerUpload, sellerDownload, loadSession } from './api.js';
 import * as V from './pages.js';
@@ -170,6 +171,44 @@ async function ordersList(res, me, cookie, shopId, q) {
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được đơn hàng.'));
   return sendHtml(res, 200, V.renderOrders(ctx, shopId, r.json, { status, q: search, from, to, limit, offset }));
+}
+
+// ── Tạo đơn thủ công (nhân viên chốt đơn Facebook/Zalo rồi gõ vào) ─────────────
+async function orderNewPage(res, me, cookie, shopId, err, form) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('GET', `/shops/${shopId}/sellable-variants`, { cookie });
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được danh sách sản phẩm.'));
+  // idem token chống double-submit: sinh MỚI mỗi lần render form (nhét hidden input).
+  const idem = `manual-${crypto.randomUUID()}`;
+  return sendHtml(res, err ? 400 : 200, V.renderOrderNew(ctx, shopId, r.json.variants ?? [], idem, err, form ?? {}));
+}
+async function orderNewSubmit(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req); // getAll: 5 slot variant_id[]/qty[] trùng tên
+  const vids = f.getAll('variant_id'), qtys = f.getAll('qty');
+  const lines = [];
+  for (let i = 0; i < vids.length; i++) {
+    if (!vids[i]) continue; // slot bỏ trống
+    lines.push({ variant_id: vids[i], qty: Number(qtys[i] ?? 0) });
+  }
+  const body = {
+    lines,
+    customer: {
+      name: (f.get('name') ?? '').trim(), phone: (f.get('phone') ?? '').trim(),
+      email: (f.get('email') ?? '').trim(), address_line: (f.get('address_line') ?? '').trim(),
+      province: (f.get('province') ?? '').trim(),
+    },
+    payment_method: f.get('payment_method') === 'qr' ? 'qr' : 'cod',
+    ship_fee_vnd: (f.get('ship_fee_vnd') ?? '').trim(),
+    note: (f.get('note') ?? '').trim(),
+    idempotency_key: String(f.get('idem') ?? ''),
+  };
+  const r = await sellerApi('POST', `/shops/${shopId}/orders`, { cookie, body });
+  if (r.status === 201) return redirect(res, `/shops/${shopId}/orders/${r.json.id}`);
+  // Lỗi → render lại form GIỮ giá trị đã gõ (idem mới — claim cũ đã rollback).
+  const form = { ...Object.fromEntries(['name', 'phone', 'email', 'address_line', 'province', 'ship_fee_vnd', 'note'].map((k) => [k, f.get(k) ?? ''])), payment_method: body.payment_method, lines };
+  return orderNewPage(res, me, cookie, shopId, r.json?.error ?? 'Không tạo được đơn.', form);
 }
 
 async function orderDetail(res, me, cookie, shopId, oid, err) {
@@ -1369,6 +1408,8 @@ async function handle(req, res, url, p) {
     let m;
     if ((m = new RegExp(`^/shops/${UUID}/overview$`).exec(p)) && req.method === 'GET') return overviewPage(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders$`).exec(p)) && req.method === 'GET') return ordersList(res, me, cookie, m[1], url.searchParams);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'GET') return orderNewPage(res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'POST') return orderNewSubmit(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/bulk-confirm$`).exec(p)) && req.method === 'POST') return ordersBulkConfirm(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/print-batch$`).exec(p)) && req.method === 'GET') return ordersPrintBatch(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}$`).exec(p)) && req.method === 'GET') return orderDetail(res, me, cookie, m[1], m[2]);

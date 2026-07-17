@@ -144,6 +144,8 @@ async function main() {
 
   // ── 5. Bảo trì khi suspended ───────────────────────────────────────────────
   sect('5. Trang bảo trì khi shop suspended');
+  // suspend/restore là thao tác phá hoại đòi step-up 5' (đợt 4.4) — xác thực lại trước.
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: 'staff strong passphrase' }, cookie: staff, origin: OA });
   await rq(PLATFORM, 'POST', `/ops/shops/${A.shopId}/suspend`, { body: { reason: 'test' }, cookie: staff, origin: OO });
   r = await sf(A.host, '/');
   r.status === 503 && !r.body.includes('&lt;script&gt;') ? ok('shop suspended → 503 trang bảo trì (không render sản phẩm)') : bad('suspended vẫn render', String(r.status));
@@ -184,6 +186,83 @@ async function main() {
   r.body.includes('Áo Thun Đỏ') ? ok('có dấu vẫn tìm ra (tương thích cũ)') : bad('tìm có dấu hỏng');
   r = await sf(A.host, `/search?q=khongtontai${uniq()}`);
   !r.body.includes('Áo Thun Đỏ') ? ok('từ khoá lạ → không ra kết quả sai') : bad('tìm ra kết quả ma');
+
+  // ── 8. Đợt 5.2: tìm ĐẢO TỪ + SKU, lọc còn hàng/giá, canonical phân trang ────
+  sect('8. Tìm đảo từ + SKU, lọc, canonical phân trang');
+  const rugSku = `RUG-${uniq()}`.toUpperCase();
+  const rugPid = (await mkProduct(A.shopId, A.cookie, { title: 'Thảm trải sàn cao cấp', slug: `rug-${uniq()}`, price_vnd: 350000, status: 'active', variants: [{ sku: rugSku, price_vnd: 350000 }] })).json.id;
+  const rugV = (await owner.query(`SELECT id FROM variants WHERE product_id=$1`, [rugPid])).rows[0].id;
+  await owner.query(`INSERT INTO inventory_levels (shop_id, variant_id, on_hand) VALUES ($1,$2,10) ON CONFLICT (shop_id,variant_id) DO UPDATE SET on_hand=10`, [A.shopId, rugV]);
+  r = await sf(A.host, `/search?q=${encodeURIComponent('trai tham')}`);
+  r.body.includes('Thảm trải sàn cao cấp') ? ok('"trai tham" (ĐẢO TỪ) vẫn tìm ra "Thảm trải sàn..."') : bad('đảo từ không ra', String(r.status));
+  !r.body.includes('Thảm đa trục') ? ok('AND theo token: "trai tham" KHÔNG ra "Thảm đa trục"') : bad('AND token sai — ra cả SP chỉ khớp 1 từ');
+  r = await sf(A.host, `/search?q=${encodeURIComponent(rugSku)}`);
+  r.body.includes('Thảm trải sàn cao cấp') ? ok('tìm theo SKU biến thể ra sản phẩm') : bad('tìm SKU fail');
+  // Lọc: "ao thun do" (XSS product) KHÔNG có tồn → instock=1 phải ẩn nó.
+  r = await sf(A.host, `/search?q=${encodeURIComponent('ao thun do')}&instock=1`);
+  !r.body.includes('Áo Thun Đỏ') ? ok('?instock=1 ẩn sản phẩm hết hàng') : bad('instock=1 vẫn hiện SP hết hàng');
+  r = await sf(A.host, `/search?q=${encodeURIComponent('trai tham')}&instock=1`);
+  r.body.includes('Thảm trải sàn cao cấp') && r.body.includes('name="instock"') && r.body.includes('Áp dụng')
+    ? ok('?instock=1 giữ SP còn hàng + form lọc no-JS render') : bad('instock giữ hàng còn / form lọc thiếu');
+  r = await sf(A.host, `/search?q=${encodeURIComponent('trai tham')}&pmin=400000`);
+  !r.body.includes('Thảm trải sàn cao cấp') ? ok('?pmin=400000 loại SP giá 350k') : bad('pmin không lọc');
+  r = await sf(A.host, `/search?q=${encodeURIComponent('trai tham')}&pmax=400000`);
+  r.body.includes('Thảm trải sàn cao cấp') && r.body.includes('pmax=400000')
+    ? ok('?pmax=400000 giữ SP giá 350k + link mang theo bộ lọc') : bad('pmax lọc sai / link rơi lọc');
+  r = await sf(A.host, `/search?q=${encodeURIComponent('trai tham')}&pmin=abc`);
+  r.body.includes('Thảm trải sàn cao cấp') ? ok('pmin không hợp lệ bị BỎ QUA (không 500/không lọc bậy)') : bad('pmin rác phá kết quả');
+  // Canonical phân trang (#28): trang 2 canonical về CHÍNH NÓ, kèm rel=prev.
+  r = await sf(A.host, '/?page=2');
+  r.body.includes(`<link rel="canonical" href="https://${A.host}/?page=2">`) ? ok('canonical /?page=2 chứa page=2 (không gộp về trang 1)') : bad('canonical trang 2 sai', r.body.match(/rel="canonical"[^>]*/)?.[0]);
+  r.body.includes(`<link rel="prev" href="https://${A.host}/">`) ? ok('trang 2 có rel=prev về trang 1 (URL sạch)') : bad('thiếu rel=prev');
+  r = await sf(A.host, '/');
+  r.body.includes(`<link rel="canonical" href="https://${A.host}/">`) && !r.body.includes('?page=1') ? ok('trang 1 canonical URL sạch (không ?page=1)') : bad('canonical trang 1 sai');
+
+  // ── 9. Block ẢNH trong trang nội dung (escape + CSP-sạch) ───────────────────
+  sect('9. Block ảnh CMS (escape)');
+  const FAKE_MEDIA = `${A.shopId}/00000000-0000-4000-8000-000000000000.webp`;
+  const pgSlug = `anh-${uniq()}`;
+  let pg = await rq(SELLER, 'POST', `/shops/${A.shopId}/pages`, { body: { slug: pgSlug, title: 'Trang có ảnh', blocks: [
+    { type: 'paragraph', text: 'Đoạn mở đầu' },
+    { type: 'image', key: FAKE_MEDIA, alt: `"><script>alert('img')</script>`, caption: 'Chú thích <b>đậm</b>' },
+  ] }, cookie: A.cookie, origin: OS });
+  pg.status === 201 ? ok('tạo trang với block image (key media hợp lệ) → 201') : bad('tạo trang image fail', JSON.stringify(pg.json));
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/pages/${pg.json.id}/publish`, { body: {}, cookie: A.cookie, origin: OS });
+  r = await sf(A.host, `/pages/${pgSlug}`);
+  r.body.includes('<figure') && r.body.includes(`/media-public/${FAKE_MEDIA}`) ? ok('block image render <figure><img src=/media-public/key>') : bad('block image không render', String(r.status));
+  !r.body.includes(`<script>alert('img')`) && r.body.includes('&lt;script&gt;') ? ok('alt chứa <script> được ESCAPE') : bad('alt XSS không escape');
+  !r.body.includes('<b>đậm</b>') ? ok('caption HTML được escape') : bad('caption HTML thô lọt');
+  const badKey = await rq(SELLER, 'POST', `/shops/${A.shopId}/pages`, { body: { slug: `bad-${uniq()}`, title: 'x', blocks: [{ type: 'image', key: '../../etc/passwd', alt: 'x' }] }, cookie: A.cookie, origin: OS });
+  badKey.status === 400 ? ok('key ảnh sai định dạng → 400') : bad('key rác được nhận', String(badKey.status));
+  const crossKey = await rq(SELLER, 'POST', `/shops/${A.shopId}/pages`, { body: { slug: `cross-${uniq()}`, title: 'x', blocks: [{ type: 'image', key: `${Bs.shopId}/00000000-0000-4000-8000-000000000000.webp`, alt: 'x' }] }, cookie: A.cookie, origin: OS });
+  crossKey.status === 400 ? ok('key ảnh CHÉO SHOP → 400 (không trỏ media shop khác)') : bad('key chéo shop lọt', String(crossKey.status));
+
+  // ── 10. Blog: ảnh bìa + ảnh trong bài + phân trang ──────────────────────────
+  sect('10. Blog: ảnh bìa + [anh:] + phân trang');
+  const mkPost = async (i, extra = {}) => {
+    const b = await rq(SELLER, 'POST', `/shops/${A.shopId}/blog`, { body: { title: `Bài số ${i}`, slug: `bai-${i}-${uniq()}`, body: `Nội dung bài ${i}`, ...extra }, cookie: A.cookie, origin: OS });
+    await rq(SELLER, 'POST', `/shops/${A.shopId}/blog/${b.json.id}/publish`, { body: {}, cookie: A.cookie, origin: OS });
+    return b;
+  };
+  const coverPost = await mkPost(0, { cover_image_key: FAKE_MEDIA, body: `Đoạn đầu bài viết.\n\n[anh:${FAKE_MEDIA}|Ảnh minh hoạ <script>xau</script>]\n\nĐoạn cuối.` });
+  coverPost.status === 201 ? ok('tạo bài blog có cover_image_key → 201') : bad('blog cover fail', JSON.stringify(coverPost.json));
+  const badCover = await rq(SELLER, 'POST', `/shops/${A.shopId}/blog`, { body: { title: 'x', slug: `bc-${uniq()}`, cover_image_key: 'javascript:alert(1)' }, cookie: A.cookie, origin: OS });
+  badCover.status === 400 ? ok('cover key rác → 400') : bad('cover rác lọt', String(badCover.status));
+  for (let i = 1; i <= 12; i++) await mkPost(i);
+  const coverSlug = (await owner.query(`SELECT slug FROM blog_posts WHERE id=$1`, [coverPost.json.id])).rows[0].slug;
+  r = await sf(A.host, '/blog');
+  r.status === 200 && r.body.includes('Trang 1/2') ? ok('blog 13 bài → phân trang Trang 1/2 (12/trang)') : bad('blog pager thiếu', String(r.status));
+  r = await sf(A.host, '/blog?page=2');
+  r.body.includes(`<link rel="canonical" href="https://${A.host}/blog?page=2">`) ? ok('canonical /blog?page=2 chứa page=2') : bad('canonical blog trang 2 sai');
+  r.body.includes('Bài số 0') ? ok('trang 2 hiện bài cũ nhất (Bài số 0)') : bad('phân trang blog sai nội dung');
+  r.body.includes('blog-thumb') && r.body.includes(`/media-public/${FAKE_MEDIA}`) ? ok('danh sách blog hiện ảnh bìa thumbnail') : bad('thiếu cover thumb ở danh sách');
+  r = await sf(A.host, `/blog/${coverSlug}`);
+  r.body.includes('blog-cover') && r.body.includes(`/media-public/${FAKE_MEDIA}`) ? ok('bài blog hiện ảnh bìa trên đầu') : bad('thiếu ảnh bìa trong bài');
+  r.body.includes(`<meta property="og:image" content="https://${A.host}/media-public/${FAKE_MEDIA}">`) ? ok('og:image ƯU TIÊN ảnh bìa bài (URL tuyệt đối)') : bad('og:image không ưu tiên cover');
+  r.body.includes('<figure') && !r.body.includes('<script>xau') && r.body.includes('Ảnh minh hoạ') ? ok('[anh:key|alt] trong bài → <figure>, alt escape') : bad('[anh:] không render/không escape');
+  const cspB = r.headers['content-security-policy'] ?? '';
+  cspB.includes("default-src 'none'") && cspB.includes("img-src 'self' data:") && !cspB.includes('script-src')
+    ? ok('CSP giữ nguyên — không origin mới, vẫn không script') : bad('CSP đổi', cspB);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

@@ -80,6 +80,17 @@ export function tokensToCss(tokens) {
 const money = (vnd) => new Intl.NumberFormat('vi-VN').format(Number(vnd)) + '₫';
 const fmtDate = (d) => { try { return d ? new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(d)) : ''; } catch { return ''; } };
 
+// Ảnh trong nội dung (block image / blog): dựng URL từ key media PUBLIC — cùng nguồn
+// cấu hình với server.js (mặc định tương đối /media-public → CSP img-src 'self').
+// Key phải ĐÚNG định dạng media của shop ("<uuid>/<uuid>.webp", logo có tiền tố logo-)
+// — phòng thủ thêm ở tầng render (seller đã validate khi lưu): key lạ → không render.
+const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
+const U36 = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const MEDIA_KEY_RE = new RegExp(`^${U36}/(?:logo-)?${U36}\\.webp$`);
+const mediaFigure = (key, alt, caption) => (typeof key === 'string' && MEDIA_KEY_RE.test(key)
+  ? `<figure class="ct-img"><img src="${esc(`${MEDIA_PUBLIC_BASE}/${key}`)}" alt="${esc(alt ?? '')}" loading="lazy">${caption ? `<figcaption>${esc(caption)}</figcaption>` : ''}</figure>`
+  : '');
+
 // ── icon SVG nội tuyến (an toàn với CSP: là markup, không phải tài nguyên ngoài) ──
 const I_CART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="20" r="1"/><circle cx="17" cy="20" r="1"/><path d="M2 3h2l2.4 12.3a1 1 0 0 0 1 .8h8.7a1 1 0 0 0 1-.8L21 7H5.6"/></svg>';
 const I_IMG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-5-5L5 20"/></svg>';
@@ -108,28 +119,56 @@ function productCards(products) {
 }
 // Query sort đính kèm link (bỏ khi 'new' = mặc định → URL sạch).
 const sortQs = (pi) => (pi?.sort && pi.sort !== 'new' ? `&sort=${pi.sort}` : '');
-// Phân trang ← Trước / Sau → từ pageInfo {total, offset, pageSize, basePath, sort}.
+// Bộ lọc (#27) đính kèm link phân trang/sắp xếp — pager + sort KHÔNG được làm rơi
+// lọc đang áp. Giá trị đã parse server-side (bool/int) nên an toàn để nối query.
+const filterParts = (pi) => {
+  const f = pi?.filters ?? {};
+  const parts = [];
+  if (f.instock) parts.push('instock=1');
+  if (f.pmin != null) parts.push(`pmin=${f.pmin}`);
+  if (f.pmax != null) parts.push(`pmax=${f.pmax}`);
+  return parts;
+};
+const filterQs = (pi) => filterParts(pi).map((p) => `&${p}`).join('');
+// Phân trang ← Trước / Sau → từ pageInfo {total, offset, pageSize, basePath, sort, filters}.
 function pager(pi) {
   if (!pi || pi.total <= pi.pageSize) return '';
   const cur = Math.floor(pi.offset / pi.pageSize) + 1;
   const last = Math.max(1, Math.ceil(pi.total / pi.pageSize));
-  const link = (n) => esc(`${pi.basePath}${pi.basePath.includes('?') ? '&' : '?'}page=${n}${sortQs(pi)}`);
+  const link = (n) => esc(`${pi.basePath}${pi.basePath.includes('?') ? '&' : '?'}page=${n}${sortQs(pi)}${filterQs(pi)}`);
   const prev = cur > 1 ? `<a class="pg-btn" href="${link(cur - 1)}">← Trước</a>` : '<span class="pg-btn off">← Trước</span>';
   const next = cur < last ? `<a class="pg-btn" href="${link(cur + 1)}">Sau →</a>` : '<span class="pg-btn off">Sau →</span>';
   return `<nav class="pager">${prev}<span class="pg-info">Trang ${cur}/${last}</span>${next}</nav>`;
 }
 // Thanh sắp xếp no-JS (3 link GET, CSP-sạch) — trên lưới trang chủ / danh mục / tìm kiếm.
-// Đổi sort = về trang 1 (không kèm page). Đang chọn → span (không phải link).
+// Đổi sort = về trang 1 (không kèm page) nhưng GIỮ bộ lọc. Đang chọn → span.
 function sortBar(pi) {
   if (!pi) return '';
   const cur = pi.sort ?? 'new';
   const opts = [['new', 'Mới nhất'], ['price_asc', 'Giá tăng dần'], ['price_desc', 'Giá giảm dần']];
   const links = opts.map(([k, label]) => {
     if (k === cur) return `<span class="sort-link on" aria-current="true">${label}</span>`;
-    const href = k === 'new' ? pi.basePath : `${pi.basePath}${pi.basePath.includes('?') ? '&' : '?'}sort=${k}`;
+    const parts = (k === 'new' ? [] : [`sort=${k}`]).concat(filterParts(pi));
+    const href = parts.length ? `${pi.basePath}${pi.basePath.includes('?') ? '&' : '?'}${parts.join('&')}` : pi.basePath;
     return `<a class="sort-link" href="${esc(href)}">${label}</a>`;
   }).join('');
   return `<nav class="sortbar" aria-label="Sắp xếp sản phẩm"><span class="sort-lbl">Sắp xếp:</span>${links}</nav>`;
+}
+// Form lọc no-JS (#27, GET — CSP-sạch): còn hàng + khoảng giá. Chỉ hiện ở danh mục /
+// tìm kiếm (pageInfo.filterable). Giữ q/sort qua input hidden; submit = về trang 1.
+function filterBar(pi, query) {
+  if (!pi?.filterable) return '';
+  const f = pi.filters ?? {};
+  const path = pi.basePath.split('?')[0]; // /c/:slug hoặc /search (q giữ bằng hidden)
+  const hidden = (query ? `<input type="hidden" name="q" value="${esc(query)}">` : '')
+    + (pi.sort && pi.sort !== 'new' ? `<input type="hidden" name="sort" value="${esc(pi.sort)}">` : '');
+  return `<form class="filterbar" method="GET" action="${esc(path)}">${hidden}
+    <label class="fb-chk"><input type="checkbox" name="instock" value="1"${f.instock ? ' checked' : ''}> Còn hàng</label>
+    <input class="fb-num" name="pmin" inputmode="numeric" value="${f.pmin != null ? f.pmin : ''}" placeholder="Giá từ (đ)" aria-label="Giá từ (đồng)">
+    <span class="fb-sep">–</span>
+    <input class="fb-num" name="pmax" inputmode="numeric" value="${f.pmax != null ? f.pmax : ''}" placeholder="đến (đ)" aria-label="Giá đến (đồng)">
+    <button class="fb-btn" type="submit">Áp dụng</button>
+  </form>`;
 }
 
 // Dải "vì sao chọn chúng tôi" — mặc định 4 cam kết. Shop có thể override qua props.items
@@ -208,6 +247,7 @@ const SECTIONS = {
     return `<section class="section" id="san-pham"><div class="wrap">
       <div class="section-h"><h2>${esc(props.title || 'Sản phẩm')}</h2></div>
       ${chips}
+      ${filterBar(ctx.pageInfo, ctx.query)}
       ${ctx.products.length ? sortBar(ctx.pageInfo) : ''}
       <div class="grid">${cards}</div>
       ${pager(ctx.pageInfo)}
@@ -240,6 +280,9 @@ const BLOCK_RENDER = {
   list: (b) => `<ul>${(Array.isArray(b.items) ? b.items : []).map((i) => `<li>${esc(i)}</li>`).join('')}</ul>`,
   quote: (b) => `<blockquote><p>${esc(b.text)}</p>${b.cite ? `<cite>${esc(b.cite)}</cite>` : ''}</blockquote>`,
   divider: () => '<hr>',
+  // Ảnh (#24): key media của shop (seller đã validate; mediaFigure re-check định dạng
+  // + esc mọi thứ). alt/caption là text người bán nhập → escape như mọi block khác.
+  image: (b) => mediaFigure(b.key, b.alt, b.caption),
 };
 
 const DEFAULT_LAYOUT = [
@@ -331,7 +374,24 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .sort-link{padding:7px 14px;border:1px solid var(--color-border);border-radius:var(--pill);color:var(--color-muted);font-weight:500;transition:border-color .15s,color .15s,background .15s}
 a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);background:color-mix(in srgb,var(--color-primary) 6%,var(--color-bg))}
 .sort-link.on{border-color:var(--color-primary);color:var(--color-primary);background:var(--color-hero-bg);font-weight:700}
+/* Form lọc lưới (#27, no-JS GET) */
+.filterbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 16px;font-size:.88rem}
+.fb-chk{display:inline-flex;align-items:center;gap:6px;color:var(--color-text);cursor:pointer;padding:8px 14px;border:1px solid var(--color-border);border-radius:var(--pill);background:var(--color-bg)}
+.fb-chk input{accent-color:var(--color-primary)}
+.fb-num{width:110px;padding:8px 12px;border:1px solid var(--color-border);border-radius:var(--pill);font-size:.88rem;font-family:inherit;background:var(--color-bg);color:var(--color-text)}
+.fb-num:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 22%,transparent)}
+.fb-sep{color:var(--color-muted)}
+.fb-btn{padding:8px 18px;border:1px solid color-mix(in srgb,var(--color-primary) 55%,var(--color-border));border-radius:var(--pill);background:var(--color-bg);color:var(--color-primary);font-weight:700;font-size:.88rem;font-family:inherit;cursor:pointer;transition:background .15s,border-color .15s}
+.fb-btn:hover{background:color-mix(in srgb,var(--color-primary) 8%,var(--color-bg));border-color:var(--color-primary)}
+/* Ảnh trong nội dung (block image / blog) */
+.ct-img{margin:1.4em 0}
+.ct-img img{width:100%;border-radius:var(--r-lg);border:1px solid var(--color-border)}
+.ct-img figcaption{margin-top:8px;font-size:.85rem;color:var(--color-muted);text-align:center}
 .blog-list{display:grid;gap:18px;max-width:760px}
+.blog-thumb{display:block;margin:0 0 14px;border-radius:var(--r);overflow:hidden;aspect-ratio:16/7;background:var(--color-surface)}
+.blog-thumb img{width:100%;height:100%;object-fit:cover}
+.blog-cover{margin:16px 0 22px}
+.blog-cover img{width:100%;border-radius:var(--r-lg);border:1px solid var(--color-border)}
 .blog-card{border:1px solid var(--color-border);border-radius:var(--r-lg);padding:22px 26px;background:var(--color-bg);box-shadow:var(--sh-sm);transition:transform .2s cubic-bezier(.2,.7,.2,1),border-color .2s,box-shadow .2s}
 .blog-card:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--color-primary) 34%,var(--color-border));box-shadow:var(--sh)}
 .blog-card h2{margin:0 0 4px;font-size:1.3rem;font-weight:800;letter-spacing:-.02em;line-height:1.3}
@@ -475,7 +535,7 @@ function withHomeSections(layout) {
 }
 
 /** Render trang chủ theo layout của theme (hoặc mặc định). */
-export function renderHome(ctx, { canonical = null } = {}) {
+export function renderHome(ctx, { canonical = null, prevUrl = null, nextUrl = null } = {}) {
   const base = Array.isArray(ctx.theme?.layout) && ctx.theme.layout.length ? ctx.theme.layout : DEFAULT_LAYOUT;
   const layout = withHomeSections(base);
   const body = layout
@@ -483,7 +543,7 @@ export function renderHome(ctx, { canonical = null } = {}) {
     .join('\n');
   const head = metaHead({
     description: `${ctx.shop.name} — cửa hàng trực tuyến. Giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.`,
-    canonical, ogTitle: ctx.shop.name, siteName: ctx.shop.name, ogImage: shopOgImage(ctx),
+    canonical, prevUrl, nextUrl, ogTitle: ctx.shop.name, siteName: ctx.shop.name, ogImage: shopOgImage(ctx),
   });
   return page(ctx.shop.name, ctx.theme?.tokens, body, head);
 }
@@ -663,6 +723,7 @@ export function renderSearch(ctx, { canonical = null } = {}) {
         <input name="q" value="${esc(q)}" placeholder="Tìm sản phẩm…" aria-label="Tìm sản phẩm">
         <button class="btn btn-primary" type="submit">Tìm</button>
       </form>
+      ${q ? filterBar(ctx.pageInfo, q) : ''}
       ${results}
     </main>${SECTIONS.footer({}, ctx)}`;
   const head = metaHead({
@@ -672,39 +733,61 @@ export function renderSearch(ctx, { canonical = null } = {}) {
   return page(`${q ? `Tìm "${q}"` : 'Tìm kiếm'} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
 }
 
-/** Blog: danh sách bài published. */
-export function renderBlogList(ctx, posts, { canonical = null } = {}) {
+/** Blog: danh sách bài published (kèm ảnh bìa nếu có + phân trang ?page=). */
+export function renderBlogList(ctx, posts, { canonical = null, prevUrl = null, nextUrl = null, blogPage = null } = {}) {
   const items = (posts ?? []).length
     ? posts.map((p) => `<article class="blog-card">
+        ${p.cover ? `<a class="blog-thumb" href="/blog/${esc(p.slug)}"><img src="${esc(p.cover)}" alt="${esc(p.title)}" loading="lazy"></a>` : ''}
         <h2><a href="/blog/${esc(p.slug)}">${esc(p.title)}</a></h2>
         <div class="blog-date">${esc(fmtDate(p.published_at))}</div>
         ${p.excerpt ? `<p>${esc(p.excerpt)}</p>` : ''}
         <a class="blog-more" href="/blog/${esc(p.slug)}">Đọc tiếp →</a>
       </article>`).join('')
     : '<p class="empty">Chưa có bài viết nào.</p>';
+  // Phân trang no-JS (12 bài/trang — server LIMIT/OFFSET). Trang 1 = URL sạch /blog.
+  let pagerHtml = '';
+  if (blogPage && blogPage.last > 1) {
+    const link = (n) => esc(n > 1 ? `/blog?page=${n}` : '/blog');
+    const prev = blogPage.page > 1 ? `<a class="pg-btn" href="${link(blogPage.page - 1)}">← Trước</a>` : '<span class="pg-btn off">← Trước</span>';
+    const next = blogPage.page < blogPage.last ? `<a class="pg-btn" href="${link(blogPage.page + 1)}">Sau →</a>` : '<span class="pg-btn off">Sau →</span>';
+    pagerHtml = `<nav class="pager">${prev}<span class="pg-info">Trang ${blogPage.page}/${blogPage.last}</span>${next}</nav>`;
+  }
   const body = `${SECTIONS.header({}, ctx)}
     <main class="wrap section">
       <div class="section-h"><h2>Blog</h2></div>
       <div class="blog-list">${items}</div>
+      ${pagerHtml}
     </main>${SECTIONS.footer({}, ctx)}`;
-  const head = metaHead({ description: `Bài viết & tin tức từ ${ctx.shop.name}`, canonical, ogTitle: `Blog — ${ctx.shop.name}`, siteName: ctx.shop.name, ogImage: shopOgImage(ctx) });
+  const head = metaHead({ description: `Bài viết & tin tức từ ${ctx.shop.name}`, canonical, prevUrl, nextUrl, ogTitle: `Blog — ${ctx.shop.name}`, siteName: ctx.shop.name, ogImage: shopOgImage(ctx) });
   return page(`Blog — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
 }
 
-/** Blog: một bài. body TEXT → tách đoạn theo dòng trống, esc + <br> cho xuống dòng đơn. */
+/** Blog: một bài. body TEXT → tách đoạn theo dòng trống, esc + <br> cho xuống dòng đơn.
+ *  Ảnh TRONG BÀI: đoạn đứng riêng dạng [anh:<key-media>|mô tả] → <figure> (key phải
+ *  đúng định dạng media của shop — mediaFigure re-check; sai → rơi về text thường). */
 export function renderBlogPost(ctx, post, { canonical = null } = {}) {
+  const IMG_LINE_RE = /^\[anh:([^\]|\s]+)(?:\|([^\]]*))?\]$/;
   const paras = String(post.body ?? '').split(/\n\s*\n/).map((s) => s.trim()).filter(Boolean)
-    .map((para) => `<p>${esc(para).replace(/\n/g, '<br>')}</p>`).join('');
+    .map((para) => {
+      const m = IMG_LINE_RE.exec(para);
+      if (m) { const fig = mediaFigure(m[1], m[2] ?? '', ''); if (fig) return fig; }
+      return `<p>${esc(para).replace(/\n/g, '<br>')}</p>`;
+    }).join('');
+  const coverHtml = post.cover ? `<figure class="blog-cover"><img src="${esc(post.cover)}" alt="${esc(post.title)}"></figure>` : '';
   const body = `${SECTIONS.header({}, ctx)}
     <main class="wrap content blog-post">
       <div class="crumb"><a href="/">Trang chủ</a> / <a href="/blog">Blog</a> / ${esc(post.title)}</div>
       <h1>${esc(post.title)}</h1>
       <div class="blog-date">${esc(fmtDate(post.published_at))}</div>
+      ${coverHtml}
       ${paras || ''}
       <p style="margin-top:36px"><a class="btn btn-primary" href="/blog">← Về Blog</a></p>
     </main>${SECTIONS.footer({}, ctx)}`;
   const desc = post.excerpt ? String(post.excerpt) : String(post.body ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
-  const head = metaHead({ description: desc, canonical, ogTitle: post.title, ogType: 'article', siteName: ctx.shop.name, ogImage: shopOgImage(ctx) });
+  // og:image: ƯU TIÊN ảnh bìa bài (URL tuyệt đối) → fallback ảnh cấp shop (logo/SP đầu).
+  const abs = (u) => (u ? (/^https?:\/\//i.test(u) ? u : `${ctx.origin || ''}${u}`) : null);
+  const ogImage = abs(post.cover) ?? shopOgImage(ctx);
+  const head = metaHead({ description: desc, canonical, ogTitle: post.title, ogType: 'article', siteName: ctx.shop.name, ogImage });
   return page(`${post.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
 }
 
@@ -726,11 +809,14 @@ function deriveDescription(blocks) {
  * Thẻ meta SEO/OG. MỌI giá trị do người bán nhập đều esc() — kể cả trong thuộc tính
  * content="..." (esc escape cả " và ') → không breakout attribute (ADR-008).
  */
-function metaHead({ description, canonical, ogTitle, ogType, siteName, robots, ogImage }) {
+function metaHead({ description, canonical, ogTitle, ogType, siteName, robots, ogImage, prevUrl, nextUrl }) {
   const t = [];
   if (robots) t.push(`<meta name="robots" content="${esc(robots)}">`);
   if (description) t.push(`<meta name="description" content="${esc(description)}">`);
   if (canonical) t.push(`<link rel="canonical" href="${esc(canonical)}">`);
+  // Phân trang (#28): báo trang kề cho crawler (canonical mỗi trang trỏ chính nó).
+  if (prevUrl) t.push(`<link rel="prev" href="${esc(prevUrl)}">`);
+  if (nextUrl) t.push(`<link rel="next" href="${esc(nextUrl)}">`);
   t.push(`<meta property="og:type" content="${esc(ogType || 'website')}">`);
   t.push(`<meta property="og:title" content="${esc(ogTitle ?? '')}">`);
   if (description) t.push(`<meta property="og:description" content="${esc(description)}">`);

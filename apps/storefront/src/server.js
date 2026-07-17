@@ -239,6 +239,27 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
 
       // ?sort= whitelist (giá trị lạ → 'new' = created_at DESC, hành vi cũ).
       const sortKey = Object.hasOwn(GRID_SORTS, url.searchParams.get('sort') ?? '') ? url.searchParams.get('sort') : 'new';
+      // Bộ lọc lưới (#27, chỉ danh mục + tìm kiếm): ?instock=1 (còn hàng bán được —
+      // dùng lại đúng predicate available của thẻ lưới) + ?pmin=/?pmax= (khoảng giá
+      // p.price_vnd, số nguyên). Parse/whitelist tại đây — KHÔNG nội suy chuỗi thô vào SQL.
+      const parsePrice = (s) => (/^\d{1,12}$/.test(s ?? '') ? Number(s) : null);
+      const filters = {
+        instock: url.searchParams.get('instock') === '1',
+        pmin: parsePrice(url.searchParams.get('pmin')),
+        pmax: parsePrice(url.searchParams.get('pmax')),
+      };
+      // Nối điều kiện lọc vào WHERE có sẵn; đẩy giá vào args (tham số hoá).
+      const filterSql = (args) => {
+        const parts = [];
+        if (filters.instock) {
+          parts.push(`(SELECT coalesce(sum(il.on_hand - il.reserved), 0)
+                         FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
+                        WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}) > 0`);
+        }
+        if (filters.pmin != null) { args.push(filters.pmin); parts.push(`p.price_vnd >= $${args.length}`); }
+        if (filters.pmax != null) { args.push(filters.pmax); parts.push(`p.price_vnd <= $${args.length}`); }
+        return parts.length ? ' AND ' + parts.join(' AND ') : '';
+      };
       // Giá GẠCH NGANG trên thẻ lưới (0067): thẻ hiện p.price_vnd → chỉ lấy compare của
       // biến thể bán ĐÚNG giá đó (tránh badge -% sai khi biến thể khác giá). Chỉ hiển thị.
       const cardCompareSql = `(SELECT v.compare_at_vnd FROM variants v
@@ -322,22 +343,33 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       if (cm) {
         const cat = (await c.query(`SELECT id, name FROM categories WHERE slug = $1`, [cm[1]])).rows[0];
         if (!cat) return { ...base, notFound: true };
+        const args = [cat.id];
         const { products, total } = await productGrid(
-          `JOIN product_categories pc ON pc.product_id = p.id WHERE pc.category_id = $1`, [cat.id], offset,
+          `JOIN product_categories pc ON pc.product_id = p.id WHERE pc.category_id = $1${filterSql(args)}`, args, offset,
         );
-        return { ...base, products, home: true, heroTitle: cat.name, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: `/c/${cm[1]}`, sort: sortKey } };
+        return { ...base, products, home: true, heroTitle: cat.name, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: `/c/${cm[1]}`, sort: sortKey, filters, filterable: true } };
       }
 
-      // Tìm kiếm: /search?q=... (ILIKE theo tên; RLS store_products lọc active).
+      // Tìm kiếm: /search?q=... (LIKE theo tên; RLS store_products lọc active).
       if (url.pathname === '/search') {
         const q = (url.searchParams.get('q') ?? '').trim().slice(0, 100);
         let products = [], total = 0;
         if (q) {
-          // KHÔNG DẤU (0048): "tham trai san" khớp "Thảm trải sàn" — vn_unaccent 2 vế + index trigram.
-          const like = '%' + q.replace(/[%_\\]/g, '\\$&') + '%';
-          ({ products, total } = await productGrid(`WHERE vn_unaccent(p.title) LIKE vn_unaccent($1)`, [like], offset));
+          // KHÔNG DẤU (0048) + ĐẢO TỪ (#26): tách q theo khoảng trắng → MỌI token phải
+          // khớp (AND) → "trai tham" vẫn ra "Thảm trải sàn". Mỗi token khớp tên
+          // (vn_unaccent LIKE, escape %_\) HOẶC SKU biến thể không-mồ-côi (EXISTS —
+          // theo pattern tìm của seller catalog.js). Vẫn LIKE-based có chủ đích:
+          // chuyển tsvector/FTS là dự án riêng, chưa làm ở đợt này.
+          const toks = q.split(/\s+/).filter(Boolean).slice(0, 8);
+          const args = [];
+          const conds = toks.map((t) => {
+            args.push('%' + t.replace(/[%_\\]/g, '\\$&') + '%');
+            return `(vn_unaccent(p.title) LIKE vn_unaccent($${args.length}) OR EXISTS (
+              SELECT 1 FROM variants v WHERE v.product_id = p.id AND v.sku ILIKE $${args.length} AND ${VARIANT_NOT_ORPHAN_SQL}))`;
+          });
+          ({ products, total } = await productGrid(`WHERE ${conds.join(' AND ')}${filterSql(args)}`, args, offset));
         }
-        return { ...base, products, search: true, query: q, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: `/search?q=${encodeURIComponent(q)}`, sort: sortKey } };
+        return { ...base, products, search: true, query: q, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: `/search?q=${encodeURIComponent(q)}`, sort: sortKey, filters, filterable: true } };
       }
 
       // Trang nội dung/chính sách: /pages/:slug. CHỈ bản published (RLS store_pages
@@ -366,15 +398,23 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         return { ...base, page: doc };
       }
 
-      // Blog: /blog (danh sách bài published) + /blog/:slug (bài). RLS store_blog lọc published.
+      // Blog: /blog (danh sách bài published, phân trang ?page= — 12 bài/trang) +
+      // /blog/:slug (bài, kèm ảnh bìa). RLS store_blog lọc published.
       if (url.pathname === '/blog') {
-        const posts = (await c.query(`SELECT slug, title, excerpt, published_at FROM blog_posts WHERE status = 'published' ORDER BY published_at DESC LIMIT 50`)).rows;
-        return { ...base, blog: 'list', posts };
+        const BLOG_PAGE_SIZE = 12;
+        const bp = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
+        const nPosts = Number((await c.query(`SELECT count(*)::int n FROM blog_posts WHERE status = 'published'`)).rows[0].n);
+        const posts = (await c.query(
+          `SELECT slug, title, excerpt, cover_image_key, published_at FROM blog_posts
+            WHERE status = 'published' ORDER BY published_at DESC LIMIT ${BLOG_PAGE_SIZE} OFFSET ${(bp - 1) * BLOG_PAGE_SIZE}`,
+        )).rows.map((p) => ({ ...p, cover: imgUrl(p.cover_image_key) }));
+        return { ...base, blog: 'list', posts, blogPage: { page: bp, last: Math.max(1, Math.ceil(nPosts / BLOG_PAGE_SIZE)) } };
       }
       const bm = /^\/blog\/([a-z0-9-]+)$/.exec(url.pathname);
       if (bm) {
-        const post = (await c.query(`SELECT slug, title, excerpt, body, published_at FROM blog_posts WHERE slug = $1 AND status = 'published'`, [bm[1]])).rows[0];
+        const post = (await c.query(`SELECT slug, title, excerpt, body, published_at, cover_image_key FROM blog_posts WHERE slug = $1 AND status = 'published'`, [bm[1]])).rows[0];
         if (!post) return { ...base, notFound: true };
+        post.cover = imgUrl(post.cover_image_key);
         return { ...base, blog: 'post', post };
       }
 
@@ -391,17 +431,33 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     // vì bộ quét mạng xã hội KHÔNG hiểu ảnh đường-dẫn-tương-đối (/media-public/...).
     const origin = host ? `https://${host}` : '';
     const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '', hasBlog: data.hasBlog, origin };
-    const canonical = host ? `https://${host}${url.pathname}` : null; // URL sạch (không kèm query)
+    // Canonical PHÂN TRANG (#28): trang N canonical về CHÍNH NÓ (?page=N — không gộp
+    // hết về trang 1 làm Google bỏ index trang sau); sort/lọc KHÔNG vào canonical
+    // (cùng nội dung, khác thứ tự). Kèm <link rel=prev/next> khi có trang kề.
+    let canonical = host ? `https://${host}${url.pathname}` : null; // URL sạch (không kèm query)
+    let prevUrl = null, nextUrl = null;
+    const pagedPath = (n) => `https://${host}${url.pathname}${n > 1 ? `?page=${n}` : ''}`;
+    if (host && data.home && data.pageInfo) {
+      const cur = Math.floor(data.pageInfo.offset / data.pageInfo.pageSize) + 1;
+      const last = Math.max(1, Math.ceil(data.pageInfo.total / data.pageInfo.pageSize));
+      canonical = pagedPath(cur);
+      if (cur > 1) prevUrl = pagedPath(cur - 1);
+      if (cur < last) nextUrl = pagedPath(cur + 1);
+    } else if (host && data.blog === 'list' && data.blogPage) {
+      canonical = pagedPath(data.blogPage.page);
+      if (data.blogPage.page > 1) prevUrl = pagedPath(data.blogPage.page - 1);
+      if (data.blogPage.page < data.blogPage.last) nextUrl = pagedPath(data.blogPage.page + 1);
+    }
     if (data.page) {
       // Preview → banner cảnh báo + no-store/noindex; published → cache CDN như thường.
       if (data.preview) return sendHtml(res, 200, renderPage(ctx, data.page, { preview: true, canonical }), { shopSlug: data.shop.slug, preview: true });
       return sendHtml(res, 200, renderPage(ctx, data.page, { canonical }), { shopSlug: data.shop.slug, cache: true });
     }
     if (data.product) return sendHtml(res, 200, renderProduct(ctx, data.product, { canonical }), { shopSlug: data.shop.slug, cache: true });
-    if (data.blog === 'list') return sendHtml(res, 200, renderBlogList(ctx, data.posts ?? [], { canonical }), { shopSlug: data.shop.slug, cache: true });
+    if (data.blog === 'list') return sendHtml(res, 200, renderBlogList(ctx, data.posts ?? [], { canonical, prevUrl, nextUrl, blogPage: data.blogPage ?? null }), { shopSlug: data.shop.slug, cache: true });
     if (data.blog === 'post') return sendHtml(res, 200, renderBlogPost(ctx, data.post, { canonical }), { shopSlug: data.shop.slug, cache: true });
     if (data.search) return sendHtml(res, 200, renderSearch(ctx, { canonical }), { shopSlug: data.shop.slug });
-    return sendHtml(res, 200, renderHome(ctx, { canonical }), { shopSlug: data.shop.slug, cache: true });
+    return sendHtml(res, 200, renderHome(ctx, { canonical, prevUrl, nextUrl }), { shopSlug: data.shop.slug, cache: true });
   } catch (err) {
     log('error', 'render_error', { path: url.pathname, message: err.message, stack: err.stack });
     if (!res.headersSent) sendHtml(res, 500, renderNotFound());

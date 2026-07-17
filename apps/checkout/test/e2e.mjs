@@ -204,7 +204,8 @@ async function main() {
   // Trước khi đình chỉ: thêm giỏ + checkout được.
   let rc = await co(C.host, 'POST', '/cart/items', { body: { variant_id: vidC, qty: 1 } });
   rc.status === 200 ? ok('shop hoạt động: thêm giỏ được') : bad('thêm giỏ lỗi', rc.raw);
-  // Đình chỉ shop C.
+  // Đình chỉ shop C. suspend giờ là thao tác phá hoại đòi step-up 5' (đợt 4.4) — xác thực lại trước.
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: 'staff strong passphrase' }, cookie: staff, origin: OA });
   await rq(PLATFORM, 'POST', `/ops/shops/${C.shopId}/suspend`, { body: { reason: 'gian lận' }, cookie: staff, origin: OO });
   rc = await co(C.host, 'POST', '/cart/items', { body: { variant_id: vidC, qty: 1 }, cartToken: rc.cartToken });
   rc.status === 503 ? ok('sau đình chỉ: thêm giỏ → 503 (không nhận đơn)') : bad('shop đình chỉ vẫn thêm giỏ', String(rc.status));

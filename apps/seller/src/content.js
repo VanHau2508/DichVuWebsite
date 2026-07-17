@@ -11,15 +11,21 @@ import { withTenant, audit } from './db.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
-const BLOCK_TYPES = new Set(['heading', 'paragraph', 'list', 'quote', 'divider']);
+const BLOCK_TYPES = new Set(['heading', 'paragraph', 'list', 'quote', 'divider', 'image']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Key media PUBLIC do luồng upload media sinh ra (media.js): "<shop_id>/<media_id>.webp"
+// (logo: "<shop_id>/logo-<uuid>.webp"). Block ảnh CHỈ nhận key đúng định dạng này —
+// KHÔNG có đường upload mới, seller dán key ảnh đã upload ở sản phẩm/logo.
+const U36 = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const MEDIA_KEY_RE = new RegExp(`^${U36}/(?:logo-)?${U36}\\.webp$`);
 const isInt = (x) => Number.isInteger(x);
 const PREVIEW_TTL_MIN = 30; // link preview sống ngắn — nó lộ nội dung chưa xuất bản
 const genToken = () => crypto.randomBytes(32).toString('base64url');
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
-/** Validate MỘT block/section theo type. Trả null nếu OK, hoặc chuỗi lỗi. */
-function badBlock(b) {
+/** Validate MỘT block/section theo type. Trả null nếu OK, hoặc chuỗi lỗi.
+ *  shopId (nếu truyền): block ảnh phải trỏ media CỦA CHÍNH SHOP (key namespace theo shop_id). */
+function badBlock(b, shopId) {
   if (!b || typeof b !== 'object') return 'block không hợp lệ';
   if (!BLOCK_TYPES.has(b.type)) return `type block không hợp lệ: ${b.type}`;
   if (b.type === 'heading' || b.type === 'paragraph' || b.type === 'quote') {
@@ -28,15 +34,20 @@ function badBlock(b) {
   } else if (b.type === 'list') {
     if (!Array.isArray(b.items) || b.items.length < 1 || b.items.length > 50) return 'list không hợp lệ';
     for (const it of b.items) if (typeof it !== 'string' || it.length > 500) return 'mục list không hợp lệ';
+  } else if (b.type === 'image') {
+    if (typeof b.key !== 'string' || !MEDIA_KEY_RE.test(b.key)) return 'key ảnh không hợp lệ (dạng <shop-id>/<media-id>.webp — lấy từ ảnh đã upload)';
+    if (shopId && !b.key.startsWith(`${shopId}/`)) return 'key ảnh không thuộc cửa hàng này';
+    if (typeof b.alt !== 'string' || !b.alt.trim() || b.alt.length > 300) return 'alt ảnh không hợp lệ (bắt buộc, tối đa 300 ký tự)';
+    if (b.caption != null && b.caption !== '' && (typeof b.caption !== 'string' || b.caption.length > 500)) return 'chú thích ảnh không hợp lệ';
   }
   return null; // divider: không có field bắt buộc
 }
 
 /** Validate cả mảng blocks. */
-function badBlocks(blocks) {
+function badBlocks(blocks, shopId) {
   if (!Array.isArray(blocks)) return 'blocks phải là mảng';
   if (blocks.length > 100) return 'tối đa 100 block';
-  for (const b of blocks) { const e = badBlock(b); if (e) return e; }
+  for (const b of blocks) { const e = badBlock(b, shopId); if (e) return e; }
   return null;
 }
 
@@ -52,6 +63,7 @@ function normalizeBlocks(blocks) {
     seen.add(id);
     if (b.type === 'list') return { id, type: 'list', items: b.items.map((x) => String(x)) };
     if (b.type === 'divider') return { id, type: 'divider' };
+    if (b.type === 'image') return b.caption != null && b.caption !== '' ? { id, type: 'image', key: b.key, alt: b.alt, caption: b.caption } : { id, type: 'image', key: b.key, alt: b.alt };
     if (b.type === 'quote') return b.cite != null && b.cite !== '' ? { id, type: 'quote', text: b.text, cite: b.cite } : { id, type: 'quote', text: b.text };
     return { id, type: b.type, text: b.text }; // heading | paragraph
   });
@@ -77,7 +89,7 @@ async function createPage(res, ctx, body) {
   const blocks = body.blocks ?? [];
   if (!SLUG_RE.test(slug)) return send(res, 400, { error: 'slug không hợp lệ' });
   if (!validTitle(title)) return send(res, 400, { error: 'tiêu đề không hợp lệ' });
-  const bb = badBlocks(blocks);
+  const bb = badBlocks(blocks, ctx.shopId);
   if (bb) return send(res, 400, { error: bb });
   if (!validSeo(body.seo_title, SEO_MAX.seo_title)) return send(res, 400, { error: 'seo_title quá dài' });
   if (!validSeo(body.seo_description, SEO_MAX.seo_description)) return send(res, 400, { error: 'seo_description quá dài' });
@@ -121,7 +133,7 @@ async function updatePage(res, ctx, body, params) {
   const args = [];
   const add = (col, val) => { args.push(val); sets.push(`${col} = $${args.length}`); };
   if (body.title !== undefined) { if (!validTitle(body.title)) return send(res, 400, { error: 'tiêu đề không hợp lệ' }); add('title', String(body.title).trim()); }
-  if (body.blocks !== undefined) { const bb = badBlocks(body.blocks); if (bb) return send(res, 400, { error: bb }); add('blocks', JSON.stringify(normalizeBlocks(body.blocks))); }
+  if (body.blocks !== undefined) { const bb = badBlocks(body.blocks, ctx.shopId); if (bb) return send(res, 400, { error: bb }); add('blocks', JSON.stringify(normalizeBlocks(body.blocks))); }
   if (body.menu_position !== undefined) {
     if (body.menu_position !== null && !isInt(body.menu_position)) return send(res, 400, { error: 'menu_position không hợp lệ' });
     add('menu_position', body.menu_position);
@@ -233,8 +245,8 @@ const saveBlocks = (c, pageId, blocks) => c.query(`UPDATE pages SET blocks = $1,
 
 async function addBlock(res, ctx, body, params) {
   const pageId = params[1];
-  const nb = { type: body.type, text: body.text, items: body.items, cite: body.cite };
-  const e = badBlock(nb);
+  const nb = { type: body.type, text: body.text, items: body.items, cite: body.cite, key: body.key, alt: body.alt, caption: body.caption };
+  const e = badBlock(nb, ctx.shopId);
   if (e) return send(res, 400, { error: e });
   if (body.index != null && (!isInt(body.index) || body.index < 0)) return send(res, 400, { error: 'index không hợp lệ' });
   const out = await withTenant(ctx.shopId, async (c) => {
@@ -256,8 +268,8 @@ async function addBlock(res, ctx, body, params) {
 
 async function updateBlock(res, ctx, body, params) {
   const pageId = params[1], blockId = params[2];
-  const nb = { type: body.type, text: body.text, items: body.items, cite: body.cite };
-  const e = badBlock(nb);
+  const nb = { type: body.type, text: body.text, items: body.items, cite: body.cite, key: body.key, alt: body.alt, caption: body.caption };
+  const e = badBlock(nb, ctx.shopId);
   if (e) return send(res, 400, { error: e });
   const out = await withTenant(ctx.shopId, async (c) => {
     const p = (await lockPage(c, pageId)).rows[0];

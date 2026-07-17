@@ -215,6 +215,83 @@ async function listPlans(req, res) {
   return send(res, 200, { plans: rows });
 }
 
+// Số liệu điều hành cho trang chủ Console — CHỈ đọc các bảng quản lý app_platform
+// đã có quyền (plans/subscriptions/shops/platform_invoices, 0006/0061). Không đụng
+// dữ liệu khách mua. 6 truy vấn song song, mỗi cái đều nhỏ (bảng quản lý ~trăm dòng).
+async function getMetrics(req, res) {
+  const [mrr, byStatus, byPlan, byMonth, expiring, churn, collected] = await Promise.all([
+    // MRR = tổng giá gói/tháng của thuê bao đang TÍNH TIỀN (active + past_due —
+    // past_due vẫn là doanh thu định kỳ đang đòi, chưa mất). Trial/cancelled không tính.
+    db.query(
+      `SELECT COALESCE(SUM(p.price_vnd_month), 0)::bigint AS mrr
+         FROM subscriptions s
+         JOIN plans p ON p.code = s.plan_code
+         JOIN shops sh ON sh.id = s.shop_id
+        WHERE s.status IN ('active','past_due') AND sh.deleted_at IS NULL`,
+    ),
+    db.query(
+      `SELECT s.status, COUNT(*)::int AS n
+         FROM subscriptions s JOIN shops sh ON sh.id = s.shop_id
+        WHERE sh.deleted_at IS NULL GROUP BY s.status`,
+    ),
+    db.query(
+      `SELECT s.plan_code, COUNT(*)::int AS n
+         FROM subscriptions s JOIN shops sh ON sh.id = s.shop_id
+        WHERE s.status IN ('active','past_due') AND sh.deleted_at IS NULL
+        GROUP BY s.plan_code ORDER BY s.plan_code`,
+    ),
+    // 12 tháng gần nhất, LẤP THÁNG TRỐNG bằng generate_series (tháng không thu = 0đ,
+    // biểu đồ không bị "co" mất tháng). COUNT(pi.id) chứ không COUNT(*) — LEFT JOIN
+    // tháng trống vẫn ra 1 dòng NULL.
+    db.query(
+      `SELECT to_char(m.month, 'YYYY-MM') AS month,
+              COALESCE(SUM(pi.amount_vnd), 0)::bigint AS amount_vnd,
+              COUNT(pi.id)::int AS invoices
+         FROM generate_series(date_trunc('month', now()) - interval '11 months',
+                              date_trunc('month', now()), interval '1 month') AS m(month)
+         LEFT JOIN platform_invoices pi ON date_trunc('month', pi.created_at) = m.month
+        GROUP BY m.month ORDER BY m.month`,
+    ),
+    db.query(
+      `SELECT sh.id, sh.name, s.plan_code, s.status AS sub_status, s.current_period_end
+         FROM subscriptions s JOIN shops sh ON sh.id = s.shop_id
+        WHERE s.status IN ('trial','active')
+          AND s.current_period_end IS NOT NULL
+          AND s.current_period_end < now() + interval '7 days'
+          AND sh.deleted_at IS NULL
+        ORDER BY s.current_period_end LIMIT 20`,
+    ),
+    // CHURN ~90 ngày — ƯỚC LƯỢNG: subscriptions KHÔNG có cột cancelled_at (0006/0033).
+    // Worker billing chỉ được UPDATE cột status (0033) nên current_period_end ĐÓNG BĂNG
+    // tại lúc kỳ hết hạn → "cancelled + kỳ hết trong 90 ngày" ≈ huỷ trong ~90 ngày
+    // (lệch đúng bằng khoảng ân hạn past_due). Là proxy, KHÔNG phải mốc huỷ chính xác.
+    db.query(
+      `SELECT COUNT(*)::int AS n FROM subscriptions
+        WHERE status = 'cancelled'
+          AND current_period_end >= now() - interval '90 days'`,
+    ),
+    // Đã thu 30 ngày (cửa sổ trượt, khác revenue_by_month theo tháng lịch) + tổng đã thu.
+    db.query(
+      `SELECT COALESCE(SUM(amount_vnd) FILTER (WHERE created_at >= now() - interval '30 days'), 0)::bigint AS d30,
+              COALESCE(SUM(amount_vnd), 0)::bigint AS total
+         FROM platform_invoices`,
+    ),
+  ]);
+  const statusCounts = { trial: 0, active: 0, past_due: 0, cancelled: 0 };
+  for (const r of byStatus.rows) statusCounts[r.status] = r.n;
+  return send(res, 200, {
+    mrr_vnd: mrr.rows[0].mrr,
+    shops_by_sub_status: statusCounts,
+    shops_by_plan: byPlan.rows,
+    revenue_by_month: byMonth.rows,
+    expiring_soon: expiring.rows,
+    churn_90d: churn.rows[0].n,
+    churn_90d_is_estimate: true, // không có cancelled_at — xem chú thích trên
+    collected_30d_vnd: collected.rows[0].d30,
+    collected_total_vnd: collected.rows[0].total,
+  });
+}
+
 // Ghi nhận đã THU thuê bao: sub → active + gia hạn kỳ (từ mốc lớn hơn giữa now và kỳ cũ,
 // cộng dồn), đổi gói nếu chọn, và MỞ LẠI shop nếu đang suspended (guard: chỉ suspended→active,
 // KHÔNG un-terminate). Thu tiền THỦ CÔNG (chưa cổng recurring) — đúng mô hình concierge.
@@ -335,6 +412,7 @@ const ROUTES = [
   { m: 'POST', re: /^\/ops\/shops$/, fn: (req, res, b, s, ip) => createShop(req, res, b, s, ip) },
   { m: 'GET', re: /^\/ops\/shops$/, fn: (req, res) => listShops(req, res) },
   { m: 'GET', re: /^\/ops\/plans$/, fn: (req, res) => listPlans(req, res) },
+  { m: 'GET', re: /^\/ops\/metrics$/, fn: (req, res) => getMetrics(req, res) },
   { m: 'GET', re: new RegExp(`^/ops/shops/${SHOP_ID}$`), fn: (req, res, b, s, ip, p) => getShop(req, res, p[0]) },
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/invitations$`), fn: (req, res, b, s, ip, p) => inviteOwner(req, res, b, s, p[0], ip) },
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/suspend$`), fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'suspend', s, ip, b) },

@@ -383,6 +383,78 @@ async function main() {
     ? ok('app_rw KHÔNG quyền nào trên platform_invoices (REVOKE default-privileges ăn)')
     : bad('app_rw còn quyền trên platform_invoices', JSON.stringify(rw.rows[0]));
 
+  // ── 5c. Metrics điều hành (/ops/metrics) ───────────────────────────────────
+  sect('5c. Metrics điều hành (/ops/metrics)');
+
+  // Non-staff (owner của shop) → 403.
+  r = await req(PLATFORM, 'GET', '/ops/metrics', { cookie: ownerCookie });
+  r.status === 403 ? ok('non-staff GET /ops/metrics → 403') : bad('non-staff xem được metrics', r.raw);
+
+  // Dựng shop SẮP HẾT HẠN: tạo mới (sub trial 14 ngày) rồi kéo kỳ về +3 ngày →
+  // phải lọt cửa sổ cảnh báo 7 ngày của expiring_soon.
+  const expSlug = `exp-${uniq()}`;
+  r = await req(PLATFORM, 'POST', '/ops/shops', {
+    body: { name: 'Shop sắp hết hạn', slug: expSlug, plan_code: 'care' },
+    cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  const expShopId = r.json?.id;
+  await owner.query(
+    `UPDATE subscriptions SET current_period_end = now() + interval '3 days' WHERE shop_id = $1`,
+    [expShopId],
+  );
+
+  r = await req(PLATFORM, 'GET', '/ops/metrics', { cookie: staffCookie });
+  const mtr = r.json ?? {};
+  r.status === 200 ? ok('staff GET /ops/metrics → 200') : bad('metrics lỗi', r.raw);
+
+  // MRR khớp giá trị TÍNH TỪ DB (cùng công thức: active+past_due, join plans, bỏ shop đã xoá).
+  const dbMrr = await owner.query(
+    `SELECT COALESCE(SUM(p.price_vnd_month), 0)::bigint AS mrr
+       FROM subscriptions s JOIN plans p ON p.code = s.plan_code
+       JOIN shops sh ON sh.id = s.shop_id
+      WHERE s.status IN ('active','past_due') AND sh.deleted_at IS NULL`,
+  );
+  String(mtr.mrr_vnd) === String(dbMrr.rows[0].mrr) && Number(mtr.mrr_vnd) > 0
+    ? ok(`mrr_vnd = ${mtr.mrr_vnd} khớp SUM giá gói active/past_due trong DB`)
+    : bad('mrr_vnd lệch DB', `api=${mtr.mrr_vnd} db=${dbMrr.rows[0].mrr}`);
+
+  // revenue_by_month: đúng 12 tháng, LẤP THÁNG TRỐNG; entry cuối = tháng hiện tại
+  // và khớp SUM hoá đơn tháng này trong DB.
+  const dbMonth = await owner.query(
+    `SELECT COALESCE(SUM(amount_vnd), 0)::bigint AS t,
+            to_char(date_trunc('month', now()), 'YYYY-MM') AS ym
+       FROM platform_invoices WHERE created_at >= date_trunc('month', now())`,
+  );
+  const months = mtr.revenue_by_month ?? [];
+  months.length === 12 ? ok('revenue_by_month có đủ 12 entry (gap-fill)') : bad('revenue_by_month thiếu tháng', JSON.stringify(months.map((x) => x.month)));
+  const lastM = months[months.length - 1];
+  lastM?.month === dbMonth.rows[0].ym && String(lastM?.amount_vnd) === String(dbMonth.rows[0].t)
+    ? ok(`tháng hiện tại ${lastM.month}: amount ${lastM.amount_vnd} khớp SUM DB`)
+    : bad('entry tháng hiện tại sai', JSON.stringify(lastM ?? null));
+
+  // expiring_soon chứa shop vừa dựng (kỳ +3 ngày, status trial).
+  const expHit = (mtr.expiring_soon ?? []).find((x) => x.id === expShopId);
+  expHit && expHit.plan_code === 'care' && expHit.sub_status === 'trial'
+    ? ok('expiring_soon chứa shop hết hạn sau 3 ngày (trial/care)')
+    : bad('expiring_soon thiếu shop đã dựng', JSON.stringify(mtr.expiring_soon ?? null));
+
+  // Đếm theo trạng thái khớp DB; churn là số (proxy — không có cancelled_at).
+  const dbActive = await owner.query(
+    `SELECT COUNT(*)::int AS n FROM subscriptions s JOIN shops sh ON sh.id = s.shop_id
+      WHERE s.status = 'active' AND sh.deleted_at IS NULL`,
+  );
+  mtr.shops_by_sub_status?.active === dbActive.rows[0].n
+    ? ok(`shops_by_sub_status.active = ${dbActive.rows[0].n} khớp DB`)
+    : bad('đếm active lệch', `api=${mtr.shops_by_sub_status?.active} db=${dbActive.rows[0].n}`);
+  Number.isInteger(mtr.churn_90d) && mtr.churn_90d_is_estimate === true
+    ? ok('churn_90d là số nguyên + cờ ước-lượng (không có cancelled_at)')
+    : bad('churn_90d sai dạng', JSON.stringify({ churn: mtr.churn_90d, flag: mtr.churn_90d_is_estimate }));
+
+  // Tổng đã thu ≥ tổng của shop test này (sổ toàn nền tảng bao trùm sổ 1 shop).
+  Number(mtr.collected_total_vnd) >= Number(sum.rows[0].t)
+    ? ok('collected_total_vnd bao trùm tổng đã thu của shop test')
+    : bad('collected_total_vnd nhỏ hơn tổng 1 shop', `${mtr.collected_total_vnd} < ${sum.rows[0].t}`);
+
   // ── 6. Cổng staff (bỏ khỏi platform_staff → mất quyền dù MFA còn) ───────────
   sect('6. Cổng platform_staff');
   await owner.query(`DELETE FROM platform_staff WHERE user_id = $1`, [staff.userId]);

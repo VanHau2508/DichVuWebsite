@@ -12,6 +12,9 @@ import { send } from './http.js';
 import { withTenant } from './db.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
+// Base URL ảnh public (giống storefront) — thumbnail SP bán chạy trên Tổng quan.
+const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
+const DAYS = 14; // độ dài chuỗi doanh thu theo ngày (biểu đồ Tổng quan)
 
 async function stats(res, ctx) {
   const out = await withTenant(ctx.shopId, async (c) => {
@@ -22,6 +25,10 @@ async function stats(res, ctx) {
         coalesce(sum(total_vnd) FILTER (WHERE payment_status = 'paid'
           AND paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh' >= date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '6 days'), 0) AS rev_7d,
         coalesce(sum(total_vnd) FILTER (WHERE payment_status = 'paid'), 0) AS rev_all,
+        -- Kỳ 7 ngày LIỀN TRƯỚC [today-13, today-6) → tính % tăng/giảm so với 7 ngày này.
+        coalesce(sum(total_vnd) FILTER (WHERE payment_status = 'paid'
+          AND paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh' >= date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '13 days'
+          AND paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh' <  date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '6 days'), 0) AS rev_prev7,
         count(*) FILTER (WHERE created_at AT TIME ZONE 'Asia/Ho_Chi_Minh' >= date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh')) AS orders_today,
         count(*) FILTER (WHERE status = 'pending')   AS n_pending,
         count(*) FILTER (WHERE status = 'confirmed') AS n_confirmed,
@@ -30,13 +37,35 @@ async function stats(res, ctx) {
         count(*) FILTER (WHERE status = 'cancelled') AS n_cancelled,
         count(*) FILTER (WHERE payment_status <> 'paid' AND status NOT IN ('cancelled', 'refunded')) AS n_unpaid
       FROM orders`)).rows[0];
+    // Bán chạy 30 ngày + ẢNH: gộp theo tên/sku (snapshot), lấy biến thể GẦN NHẤT làm đại
+    // diện → resolve ảnh (ưu tiên ảnh riêng biến thể, không có thì ảnh chính sản phẩm).
     const top = (await c.query(`
-      SELECT l.title_snapshot AS title, l.sku_snapshot AS sku,
-             sum(l.qty)::int AS qty, sum(l.qty * l.unit_price_vnd)::bigint AS revenue
-        FROM order_lines l JOIN orders o ON o.id = l.order_id
-       WHERE o.payment_status = 'paid' AND o.paid_at >= now() - interval '30 days'
-       GROUP BY l.title_snapshot, l.sku_snapshot
-       ORDER BY revenue DESC LIMIT 5`)).rows;
+      SELECT t.title, t.sku, t.qty, t.revenue,
+             (SELECT m.public_key FROM media m
+                JOIN variants v ON v.product_id = m.product_id
+               WHERE v.id = t.vid AND m.status = 'ready' AND m.deleted_at IS NULL
+                 AND (m.variant_id = t.vid OR m.variant_id IS NULL)
+               ORDER BY (m.variant_id IS NOT NULL) DESC, m.position, m.created_at LIMIT 1) AS image_key
+        FROM (
+          SELECT l.title_snapshot AS title, l.sku_snapshot AS sku,
+                 sum(l.qty)::int AS qty, sum(l.qty * l.unit_price_vnd)::bigint AS revenue,
+                 (array_agg(l.variant_id ORDER BY o.paid_at DESC))[1] AS vid
+            FROM order_lines l JOIN orders o ON o.id = l.order_id
+           WHERE o.payment_status = 'paid' AND o.paid_at >= now() - interval '30 days'
+           GROUP BY l.title_snapshot, l.sku_snapshot
+           ORDER BY revenue DESC LIMIT 5
+        ) t`)).rows;
+    // Doanh thu THEO NGÀY (14 ngày, giờ VN) — generate_series lấp ngày trống = 0 để biểu
+    // đồ không "nhảy cóc". LEFT JOIN theo ngày đã quy đổi múi giờ VN.
+    const series = (await c.query(`
+      SELECT to_char(d, 'YYYY-MM-DD') AS day, coalesce(sum(o.total_vnd), 0)::bigint AS revenue
+        FROM generate_series(
+               date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '${DAYS - 1} days',
+               date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh'),
+               interval '1 day') AS d
+        LEFT JOIN orders o ON o.payment_status = 'paid'
+             AND date_trunc('day', o.paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh') = d
+       GROUP BY d ORDER BY d`)).rows;
     // Sắp hết hàng (0050): available <= ngưỡng shop (NULL → mặc định 5). Chỉ SP đang bán.
     const low = (await c.query(`
       SELECT p.title, v.sku, v.title AS variant_title, (il.on_hand - il.reserved)::int AS available
@@ -45,18 +74,22 @@ async function stats(res, ctx) {
         JOIN inventory_levels il ON il.variant_id = v.id
        WHERE (il.on_hand - il.reserved) <= coalesce((SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5)
        ORDER BY available ASC LIMIT 10`)).rows;
-    return { k, top, low };
+    return { k, top, low, series };
   });
   const n = (x) => Number(x ?? 0);
   return send(res, 200, {
-    revenue: { today: n(out.k.rev_today), d7: n(out.k.rev_7d), all: n(out.k.rev_all) },
+    revenue: { today: n(out.k.rev_today), d7: n(out.k.rev_7d), prev7: n(out.k.rev_prev7), all: n(out.k.rev_all) },
+    series: out.series.map((r) => ({ day: r.day, revenue: n(r.revenue) })),
     orders_today: n(out.k.orders_today),
     unpaid: n(out.k.n_unpaid),
     status: {
       pending: n(out.k.n_pending), confirmed: n(out.k.n_confirmed), shipped: n(out.k.n_shipped),
       delivered: n(out.k.n_delivered), cancelled: n(out.k.n_cancelled),
     },
-    top_products: out.top.map((t) => ({ title: t.title, sku: t.sku, qty: n(t.qty), revenue: n(t.revenue) })),
+    top_products: out.top.map((t) => ({
+      title: t.title, sku: t.sku, qty: n(t.qty), revenue: n(t.revenue),
+      image_url: t.image_key ? `${MEDIA_PUBLIC_BASE}/${t.image_key}` : null,
+    })),
     low_stock: out.low.map((l) => ({ title: l.title, sku: l.sku, variant_title: l.variant_title, available: n(l.available) })),
   });
 }

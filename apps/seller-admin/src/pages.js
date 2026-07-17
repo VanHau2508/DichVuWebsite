@@ -85,6 +85,18 @@ textarea{min-height:80px;resize:vertical}
 .stock{font-weight:600}.stock.low{color:var(--warn)}.stock.zero{color:var(--bad)}
 input[type=file]{width:auto;padding:9px 12px;background:var(--surf);border:1.5px dashed color-mix(in srgb,var(--pri) 30%,var(--bd));border-radius:var(--r);color:var(--soft)}
 .media-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+/* Tổng quan: số liệu lớn + biểu đồ doanh thu (SVG nội tuyến, không JS) */
+.hero-num{font-size:clamp(1.9rem,4vw,2.6rem);font-weight:800;letter-spacing:-.03em;line-height:1.1;font-variant-numeric:tabular-nums}
+.hero-sub{color:var(--mut);font-size:.9rem;margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.delta{display:inline-flex;align-items:center;gap:4px;font-size:.8rem;font-weight:700;padding:3px 10px;border-radius:var(--pill);white-space:nowrap}
+.delta.up{background:var(--goodbg);color:var(--good)}
+.delta.down{background:var(--badbg);color:var(--bad)}
+.delta.flat{background:var(--wash);color:var(--prid)}
+.chart{width:100%;height:auto;display:block;margin-top:18px}
+.chart path{transition:opacity .12s}.chart:hover path{opacity:.55}.chart path:hover{opacity:1}
+.tbar{height:4px;border-radius:2px;background:var(--bd);margin-top:5px;overflow:hidden;min-width:70px}
+.tbar i{display:block;height:100%;border-radius:2px;background:linear-gradient(90deg,var(--pri),var(--pri2))}
+.sdot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;display:inline-block;margin-right:7px}
 .pcell{display:flex;align-items:center;gap:11px;min-width:0}
 .pthumb{width:44px;height:44px;flex:0 0 auto;border-radius:10px;object-fit:cover;border:1px solid var(--bd);background:var(--surf);display:block}
 .pthumb.ph{display:grid;place-items:center;color:color-mix(in srgb,var(--pri) 55%,var(--mut))}.pthumb.ph svg{width:20px;height:20px}
@@ -444,23 +456,72 @@ export function renderMfa(err) {
 }
 
 // Tổng quan cửa hàng (GĐ2): KPI doanh thu + đơn theo trạng thái + bán chạy.
+// Biểu đồ cột doanh thu theo ngày — SVG NỘI TUYẾN sinh ở SERVER: không JS, hợp CSP.
+// Màu dùng var(--pri) → tự hợp dark mode. Tooltip = <title> gốc trình duyệt (no-JS).
+// MỘT chuỗi số liệu ⇒ một màu, KHÔNG cần chú giải (tiêu đề đã nói rõ nó là gì).
+function revenueChart(series) {
+  const pts = (Array.isArray(series) ? series : []).filter((p) => p && p.day);
+  if (!pts.length) return '';
+  const W = 720, H = 168, BOTTOM = 22, TOP = 10;
+  const base = H - BOTTOM, n = pts.length, gap = 6;
+  const bw = (W - gap * (n - 1)) / n;
+  const vals = pts.map((p) => Math.max(0, Number(p.revenue) || 0));
+  const max = Math.max(...vals, 1);
+  // Nhãn ngày lấy TRỰC TIẾP từ chuỗi 'YYYY-MM-DD' — không qua Date() để khỏi lệch múi giờ.
+  const dayLabel = (iso) => { const p = String(iso).split('-'); return `${Number(p[2])}/${Number(p[1])}`; };
+  const q = (v) => Math.round(v * 10) / 10; // làm tròn toạ độ → SVG gọn, không đổi hình
+  const bars = pts.map((p, i) => {
+    const v = vals[i];
+    const x = q(i * (bw + gap)), x2 = q(x + bw);
+    const h = v > 0 ? Math.max(3, (v / max) * (base - TOP)) : 2; // ngày 0đ vẫn có vạch mờ
+    const y = q(base - h), r = q(Math.min(4, h / 2)); // bo 4px ĐẦU cột, chân cột phẳng trên trục
+    const d = `M${x},${base} L${x},${q(y + r)} Q${x},${y} ${q(x + r)},${y} L${q(x2 - r)},${y} Q${x2},${y} ${x2},${q(y + r)} L${x2},${base} Z`;
+    return `<path d="${d}" fill="${v > 0 ? 'var(--pri)' : 'var(--bd)'}"><title>${esc(dayLabel(p.day))} · ${esc(money(v))}</title></path>`;
+  }).join('');
+  // Nhãn THƯA (3 ngày/nhãn + ngày cuối) → không chen chữ.
+  const labels = pts.map((p, i) => ((i % 3 === 0 || i === n - 1)
+    ? `<text x="${(i * (bw + gap) + bw / 2).toFixed(1)}" y="${H - 6}" text-anchor="middle" font-size="11" fill="var(--mut)">${esc(dayLabel(p.day))}</text>` : '')).join('');
+  const total = vals.reduce((a, b) => a + b, 0);
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Doanh thu ${n} ngày gần nhất: tổng ${money(total)}, ngày cao nhất ${money(max)}">
+      <line x1="0" y1="${base}" x2="${W}" y2="${base}" stroke="var(--bd)" stroke-width="1"/>
+      ${bars}${labels}</svg>`;
+}
+
 export function renderOverview(ctx, shopId, s) {
   const base = `/shops/${esc(shopId)}`;
   const st = s?.status ?? {};
   const rev = s?.revenue ?? {};
   const metric = (label, value, sub = '') => `<div class="metric"><div class="l">${esc(label)}</div><div class="v">${value}</div>${sub ? `<div class="l" style="margin:4px 0 0">${sub}</div>` : ''}</div>`;
-  // Ô trạng thái đơn (bấm vào lọc danh sách đơn theo trạng thái).
+  // % thay đổi 7 ngày này so với 7 ngày LIỀN TRƯỚC. Không có nền so sánh (prev7=0) →
+  // không bịa %. Luôn kèm mũi tên + chữ (KHÔNG chỉ dựa vào màu).
+  const d7 = Number(rev.d7 ?? 0), prev7 = Number(rev.prev7 ?? 0);
+  const pct = prev7 > 0 ? Math.round(((d7 - prev7) / prev7) * 100) : null;
+  const delta = pct === null
+    ? (d7 > 0 ? '<span class="delta flat">● chưa có kỳ trước để so</span>' : '')
+    : `<span class="delta ${pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat'}">${pct > 0 ? '▲' : pct < 0 ? '▼' : '●'} ${esc(Math.abs(pct))}% so với 7 ngày trước</span>`;
+  // Ô trạng thái đơn (bấm vào lọc danh sách đơn theo trạng thái). Màu TRẠNG THÁI riêng,
+  // luôn đi kèm nhãn chữ → không bao giờ chỉ-dựa-vào-màu.
   const S = [
-    { k: 'pending', label: 'Chờ xác nhận' }, { k: 'confirmed', label: 'Đã xác nhận' },
-    { k: 'shipped', label: 'Đang giao' }, { k: 'delivered', label: 'Đã giao' }, { k: 'cancelled', label: 'Đã huỷ' },
+    { k: 'pending', label: 'Chờ xác nhận', c: 'var(--warn)' }, { k: 'confirmed', label: 'Đã xác nhận', c: 'var(--pri)' },
+    { k: 'shipped', label: 'Đang giao', c: 'var(--indigo)' }, { k: 'delivered', label: 'Đã giao', c: 'var(--good)' }, { k: 'cancelled', label: 'Đã huỷ', c: 'var(--bad)' },
   ];
   const statusCards = S.map((x) => `<a class="metric" style="text-decoration:none;color:inherit;display:block" href="${base}/orders?status=${x.k}">
-      <div class="l">${esc(x.label)}</div><div class="v">${esc(st[x.k] ?? 0)}</div></a>`).join('');
+      <div class="l"><span class="sdot" style="background:${x.c}"></span>${esc(x.label)}</div><div class="v">${esc(st[x.k] ?? 0)}</div></a>`).join('');
   const top = (s?.top_products ?? []);
-  const topRows = top.map((t) => `<tr><td>${esc(t.title)} <span class="muted" style="font-size:.8rem">${esc(t.sku ?? '')}</span></td>
-      <td class="num right">${esc(t.qty)}</td><td class="num right"><strong>${money(t.revenue)}</strong></td></tr>`).join('');
+  const maxTop = Math.max(...top.map((t) => Number(t.revenue) || 0), 1);
+  const topRows = top.map((t) => `<tr>
+      <td><div class="pcell">${t.image_url ? `<img class="pthumb" src="${esc(t.image_url)}" alt="" loading="lazy" width="44" height="44">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0">${esc(t.title)}<div class="muted" style="font-size:.8rem">${esc(t.sku ?? '')}</div></div></div></td>
+      <td class="num right">${esc(t.qty)}</td>
+      <td class="num right"><strong>${money(t.revenue)}</strong><div class="tbar"><i style="width:${Math.round((Number(t.revenue) || 0) / maxTop * 100)}%"></i></div></td></tr>`).join('');
+  const chart = revenueChart(s?.series);
   return layout('Tổng quan', ctx, `
     <h1>Tổng quan</h1>
+    <div class="dash-hero">
+      <p class="eyebrow">Doanh thu 7 ngày gần nhất</p>
+      <div class="hero-num">${money(d7)}</div>
+      <div class="hero-sub">${delta}<span>Hôm nay <strong>${money(rev.today ?? 0)}</strong> · ${esc(s?.orders_today ?? 0)} đơn mới</span></div>
+      ${chart || '<p class="muted" style="margin:14px 0 0">Chưa có dữ liệu doanh thu để vẽ biểu đồ.</p>'}
+    </div>
     <div class="metrics">
       ${metric('Doanh thu hôm nay', money(rev.today ?? 0), `${esc(s?.orders_today ?? 0)} đơn mới`)}
       ${metric('Doanh thu 7 ngày', money(rev.d7 ?? 0))}

@@ -99,15 +99,26 @@ async function dashboard(res, me, cookie) {
 const platCtx = (me) => ({ user: me }); // không shopId → layout đơn (không sidebar shop)
 const platDenied = (res, me) => sendHtml(res, 403, V.renderPlatformDenied(platCtx(me)));
 const isDenied = (st) => st === 401 || st === 403;
-async function platformShops(res, me, cookie) {
-  // Danh sách shop + số liệu điều hành — song song. /ops/metrics lỗi lẻ → vẫn
-  // render danh sách (khối Tổng quan tự ẩn), KHÔNG sập cả trang chủ Console.
+async function platformShops(res, me, cookie, sp) {
+  // Danh sách shop + số liệu điều hành — song song. Tìm/lọc/phân trang no-JS:
+  // ?q/?sub_status/?page forward nguyên sang /ops/shops (platform tự validate).
+  // /ops/metrics lỗi lẻ → vẫn render danh sách (khối Tổng quan tự ẩn), KHÔNG sập trang.
+  const filters = {
+    q: String(sp?.get('q') ?? '').trim().slice(0, 100),
+    sub_status: String(sp?.get('sub_status') ?? '').trim(),
+    page: Math.max(1, parseInt(sp?.get('page') ?? '1', 10) || 1),
+  };
+  const qs = new URLSearchParams();
+  if (filters.q) qs.set('q', filters.q);
+  if (filters.sub_status) qs.set('sub_status', filters.sub_status);
+  if (filters.page > 1) qs.set('page', String(filters.page));
+  const qstr = qs.toString();
   const [r, mr] = await Promise.all([
-    platformApi('GET', '/ops/shops', { cookie }),
+    platformApi('GET', `/ops/shops${qstr ? `?${qstr}` : ''}`, { cookie }),
     platformApi('GET', '/ops/metrics', { cookie }).catch(() => ({ status: 0, json: null })),
   ]);
   if (r.status !== 200) return platDenied(res, me);
-  return sendHtml(res, 200, V.renderPlatformShops(platCtx(me), r.json?.shops ?? [], mr.status === 200 ? mr.json : null));
+  return sendHtml(res, 200, V.renderPlatformShops(platCtx(me), r.json ?? {}, mr.status === 200 ? mr.json : null, filters));
 }
 async function platformShopNew(res, me, cookie, err, form) {
   // Select gói render từ DB qua /ops/plans (đã giết giá hardcode trong pages.js).
@@ -170,16 +181,45 @@ async function doPlatformRenew(res, me, cookie, shopId, p) {
     ? { notice: `Đã ghi nhận thu ${new Intl.NumberFormat('vi-VN').format(r.json?.amount_vnd ?? 0)}₫ — gia hạn ${r.json?.months} tháng${body.plan_code ? ` (gói ${body.plan_code})` : ''}, mở lại shop nếu đang khoá.` }
     : { err: r.json?.error ?? 'Không gia hạn được.' });
 }
+// Chấm dứt hợp đồng (terminate — admin + step-up + gõ đúng slug). Sau khi đóng,
+// trang chi tiết 404 (platform set deleted_at) → quay về danh sách Console.
+// Tham số confirm_slug SỐNG SÓT qua màn step-up (hidden — mirror renew).
+async function platformTerminate(req, res, me, cookie, shopId) {
+  const f = await readForm(req);
+  return doPlatformTerminate(res, me, cookie, shopId, { confirm_slug: String(f.confirm_slug ?? '').trim() });
+}
+async function doPlatformTerminate(res, me, cookie, shopId, p) {
+  const r = await platformApi('POST', `/ops/shops/${shopId}/terminate`, { cookie, body: { confirm_slug: p.confirm_slug } });
+  if (r.json?.step_up_required) return platformStepUpPage(res, me, shopId, 'terminate', p);
+  if (r.status === 200) return redirect(res, '/platform');
+  // Lỗi nghiệp vụ (409 chưa suspended / 422 sai slug / 403 thiếu quyền admin) →
+  // hiện ngay trên trang chi tiết; non-staff bị chính GET chi tiết platDenied.
+  return platformShopDetail(res, me, cookie, shopId, { err: r.json?.error ?? 'Không chấm dứt được cửa hàng.' });
+}
+// Tải bản xuất dữ liệu QUẢN LÝ (nghĩa vụ "xuất dữ liệu rồi đóng" — Luật 91/2025).
+// Chỉ dữ liệu quản lý nền tảng; dữ liệu nghiệp vụ do chủ shop tự xuất (ghi trong file).
+async function platformExport(res, me, cookie, shopId) {
+  const r = await platformApi('GET', `/ops/shops/${shopId}/export`, { cookie });
+  if (isDenied(r.status)) return platDenied(res, me);
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError({ user: me }, r.json?.error ?? 'Không xuất được dữ liệu.'));
+  const buf = Buffer.from(JSON.stringify(r.json, null, 2), 'utf8');
+  return sendDownload(res, buf, { filename: `xuat-du-lieu-shop-${r.json?.shop?.slug ?? shopId}.json`, contentType: 'application/json; charset=utf-8' });
+}
 async function platformStepUpPage(res, me, shopId, action, params, err) {
   return sendHtml(res, err ? 401 : 200, V.renderPlatformStepUp(platCtx(me), shopId, action, params, err));
 }
 async function platformStepUp(req, res, me, cookie, shopId) {
   const f = await readForm(req);
   const action = String(f.__action ?? '');
-  const p = { months: String(f.months ?? '1'), plan_code: f.plan_code ? String(f.plan_code) : '', amount_vnd: String(f.amount_vnd ?? '').trim(), note: String(f.note ?? '').trim() };
+  // Tham số theo action — terminate mang confirm_slug (phải sống sót cả khi gõ SAI
+  // mật khẩu: form step-up render lại vẫn giữ hidden confirm_slug).
+  const p = action === 'terminate'
+    ? { confirm_slug: String(f.confirm_slug ?? '').trim() }
+    : { months: String(f.months ?? '1'), plan_code: f.plan_code ? String(f.plan_code) : '', amount_vnd: String(f.amount_vnd ?? '').trim(), note: String(f.note ?? '').trim() };
   const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
   if (r.status !== 200) return platformStepUpPage(res, me, shopId, action, p, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.');
   if (action === 'renew') return doPlatformRenew(res, me, cookie, shopId, p);
+  if (action === 'terminate') return doPlatformTerminate(res, me, cookie, shopId, p);
   return platformStatus(res, me, cookie, shopId, action === 'restore' ? 'restore' : 'suspend');
 }
 
@@ -211,14 +251,16 @@ async function ordersList(res, me, cookie, shopId, q) {
 }
 
 // ── Tạo đơn thủ công (nhân viên chốt đơn Facebook/Zalo rồi gõ vào) ─────────────
-async function orderNewPage(res, me, cookie, shopId, err, form) {
+async function orderNewPage(res, me, cookie, shopId, err, form, q) {
   if (!isMember(me, shopId)) return denyShop(res, me);
-  const r = await sellerApi('GET', `/shops/${shopId}/sellable-variants`, { cookie });
+  // ?q= lọc picker phía seller (tên không dấu / SKU) — shop >500 biến thể vẫn chọn đúng hàng.
+  const pq = (q ?? '').trim().slice(0, 100);
+  const r = await sellerApi('GET', `/shops/${shopId}/sellable-variants${pq ? `?q=${encodeURIComponent(pq)}` : ''}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được danh sách sản phẩm.'));
   // idem token chống double-submit: sinh MỚI mỗi lần render form (nhét hidden input).
   const idem = `manual-${crypto.randomUUID()}`;
-  return sendHtml(res, err ? 400 : 200, V.renderOrderNew(ctx, shopId, r.json.variants ?? [], idem, err, form ?? {}));
+  return sendHtml(res, err ? 400 : 200, V.renderOrderNew(ctx, shopId, r.json.variants ?? [], idem, err, form ?? {}, { q: pq, truncated: r.json.truncated === true }));
 }
 async function orderNewSubmit(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -243,9 +285,10 @@ async function orderNewSubmit(req, res, me, cookie, shopId) {
   };
   const r = await sellerApi('POST', `/shops/${shopId}/orders`, { cookie, body });
   if (r.status === 201) return redirect(res, `/shops/${shopId}/orders/${r.json.id}`);
-  // Lỗi → render lại form GIỮ giá trị đã gõ (idem mới — claim cũ đã rollback).
+  // Lỗi → render lại form GIỮ giá trị đã gõ (idem mới — claim cũ đã rollback). Giữ cả
+  // ?q= (hidden input) để picker vẫn lọc như lúc nhân viên đang chọn.
   const form = { ...Object.fromEntries(['name', 'phone', 'email', 'address_line', 'province', 'ship_fee_vnd', 'note'].map((k) => [k, f.get(k) ?? ''])), payment_method: body.payment_method, lines };
-  return orderNewPage(res, me, cookie, shopId, r.json?.error ?? 'Không tạo được đơn.', form);
+  return orderNewPage(res, me, cookie, shopId, r.json?.error ?? 'Không tạo được đơn.', form, f.get('picker_q') ?? '');
 }
 
 async function orderDetail(res, me, cookie, shopId, oid, err) {
@@ -445,6 +488,17 @@ async function ordersBulkConfirm(req, res, me, cookie, shopId) {
   return redirect(res, `/shops/${shopId}/orders${r.status === 200 ? `?bulk_ok=${r.json.confirmed}&bulk_skip=${r.json.skipped}` : ''}`);
 }
 
+// ĐÃ NHẬN TIỀN HÀNG LOẠT (COD): mirror bulk-confirm — seller tự bỏ qua đơn không hợp
+// lệ (QR/đã trả/terminal), thành công một phần.
+async function ordersBulkMarkPaid(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const params = await readFormAll(req);
+  const ids = params.getAll('order_ids').filter((x) => /^[0-9a-f-]{36}$/.test(x));
+  if (!ids.length) return redirect(res, `/shops/${shopId}/orders`);
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/bulk/mark-paid`, { cookie, body: { order_ids: ids } });
+  return redirect(res, `/shops/${shopId}/orders${r.status === 200 ? `?bulkpay_ok=${r.json.paid}&bulkpay_skip=${r.json.skipped}` : ''}`);
+}
+
 // In HÀNG LOẠT (GET từ nút formaction, target _blank): mỗi đơn 1 trang.
 async function ordersPrintBatch(res, me, cookie, shopId, sp) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -561,7 +615,7 @@ async function blogEditor(res, me, cookie, shopId, id, err) {
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tìm thấy bài viết.'));
   return sendHtml(res, err ? 400 : 200, V.renderBlogEditor(ctx, shopId, r.json, err));
 }
-const blogForm = (f) => ({ title: String(f.title ?? '').trim(), slug: String(f.slug ?? '').toLowerCase().trim(), excerpt: String(f.excerpt ?? ''), body: String(f.body ?? '') });
+const blogForm = (f) => ({ title: String(f.title ?? '').trim(), slug: String(f.slug ?? '').toLowerCase().trim(), excerpt: String(f.excerpt ?? ''), body: String(f.body ?? ''), cover_image_key: String(f.cover_image_key ?? '').trim() });
 async function blogCreate(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const body = blogForm(await readForm(req));
@@ -835,6 +889,10 @@ function blockBody(f) {
   if (type === 'list') return { type: 'list', items: String(f.text ?? '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean) };
   if (type === 'divider') return { type: 'divider' };
   if (type === 'quote') { const b = { type: 'quote', text: String(f.text ?? '') }; const cite = String(f.cite ?? '').trim(); if (cite) b.cite = cite; return b; }
+  if (type === 'image') { // #24: key media ĐÃ upload (seller validate định dạng + đúng shop)
+    const b = { type: 'image', key: String(f.key ?? '').trim(), alt: String(f.alt ?? '').trim() };
+    const cap = String(f.caption ?? '').trim(); if (cap) b.caption = cap; return b;
+  }
   return { type, text: String(f.text ?? '') }; // heading | paragraph
 }
 
@@ -1218,31 +1276,59 @@ async function themePage(res, me, cookie, shopId, ok) {
 async function themeSave(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
-  // reset → tokens/layout rỗng (storefront dùng mặc định). Storefront sanitize khi render nên
-  // PUT chỉ cần dựng đúng cấu trúc; giá trị lạ sẽ bị bỏ lúc render.
+  // reset → tokens/layout rỗng (storefront dùng mặc định — người dùng bấm nút tường minh).
+  // Còn lại: MERGE (#39) — đọc theme HIỆN TẠI trước, chỉ ghi đè đúng phần form sửa
+  // (màu/chữ/bo góc, hero, tiêu đề lưới, 4 cam kết). Section lạ / props lạ (layout tuỳ
+  // chỉnh qua API) GIỮ NGUYÊN — lưu giao diện không được xoá tuỳ biến của shop.
+  // Storefront sanitize khi render nên giá trị lạ sẽ bị bỏ lúc render.
   let tokens = {}, layout = [];
   if (!f.reset) {
+    const cur = await sellerApi('GET', `/shops/${shopId}/theme`, { cookie });
+    const curTheme = cur.status === 200 && cur.json ? cur.json : {};
+    tokens = curTheme.tokens && typeof curTheme.tokens === 'object' && !Array.isArray(curTheme.tokens) ? { ...curTheme.tokens } : {};
     const HEX = /^#[0-9a-fA-F]{6}$/;
     for (const k of ['color.primary', 'color.accent', 'color.hero-bg', 'color.text', 'color.surface']) {
       const v = String(f[k] ?? ''); if (HEX.test(v)) tokens[k] = v;
     }
     if (tokens['color.primary']) tokens['color.primary-dark'] = tokens['color.primary']; // màu hover nút
     const font = String(f.font ?? '').trim();
+    // Form luôn gửi font: có giá trị → đặt; chọn "Mặc định" ('') → XOÁ để về mặc định.
     if (font) { tokens['font.body'] = font; tokens['font.heading'] = font; }
+    else { delete tokens['font.body']; delete tokens['font.heading']; }
     const radius = String(f.radius ?? '').trim();
     if (/^\d{1,4}px$/.test(radius)) tokens['radius'] = radius;
-    // layout: giữ cấu trúc chuẩn, chỉ nạp props hero + tiêu đề khu sản phẩm.
-    const heroProps = {};
-    const eb = String(f.hero_eyebrow ?? '').trim(); if (eb) heroProps.eyebrow = eb.slice(0, 60);
-    const ht = String(f.hero_title ?? '').trim(); if (ht) heroProps.title = ht.slice(0, 120);
-    const hs = String(f.hero_subtitle ?? '').trim(); if (hs) heroProps.subtitle = hs.slice(0, 300);
-    const gt = String(f.grid_title ?? '').trim();
-    layout = [
-      { section: 'header', props: {} },
-      { section: 'hero', props: heroProps },
-      { section: 'product_grid', props: gt ? { title: gt.slice(0, 80) } : {} },
-      { section: 'footer', props: {} },
-    ];
+
+    // layout: bắt đầu từ layout ĐANG LƯU (deep-copy mức section/props); trống → khung chuẩn.
+    layout = Array.isArray(curTheme.layout) && curTheme.layout.length
+      ? curTheme.layout.map((s) => (s && typeof s === 'object' ? { ...s, props: s.props && typeof s.props === 'object' ? { ...s.props } : {} } : s))
+      : [{ section: 'header', props: {} }, { section: 'hero', props: {} }, { section: 'product_grid', props: {} }, { section: 'footer', props: {} }];
+    const findOrInsert = (name, afterName) => {
+      let s = layout.find((x) => x && x.section === name);
+      if (!s) {
+        s = { section: name, props: {} };
+        const i = layout.findIndex((x) => x && x.section === afterName);
+        layout.splice(i >= 0 ? i + 1 : layout.length, 0, s);
+      }
+      return s;
+    };
+    const setOrDel = (props, key, val) => { if (val) props[key] = val; else delete props[key]; };
+    const hero = findOrInsert('hero', 'header');
+    setOrDel(hero.props, 'eyebrow', String(f.hero_eyebrow ?? '').trim().slice(0, 60));
+    setOrDel(hero.props, 'title', String(f.hero_title ?? '').trim().slice(0, 120));
+    setOrDel(hero.props, 'subtitle', String(f.hero_subtitle ?? '').trim().slice(0, 300));
+    const grid = findOrInsert('product_grid', 'hero');
+    setOrDel(grid.props, 'title', String(f.grid_title ?? '').trim().slice(0, 80));
+    // 4 cam kết (#40): mỗi ô (tiêu đề, mô tả) trống = giữ mặc định Ô ĐÓ; cả 4 trống =
+    // bỏ items (storefront dùng nguyên bộ mặc định). Icon cố định theo ô.
+    let anyFeat = false;
+    const items = V.THEME_FEATURE_DEFAULTS.map((def, i) => {
+      const t = String(f[`feat_title_${i}`] ?? '').trim().slice(0, 80);
+      const d = String(f[`feat_desc_${i}`] ?? '').trim().slice(0, 200);
+      if (t || d) anyFeat = true;
+      return { icon: def.icon, title: t || def.title, desc: d || def.desc };
+    });
+    const feats = findOrInsert('features', 'hero');
+    if (anyFeat) feats.props.items = items; else delete feats.props.items;
   }
   const r = await sellerApi('PUT', `/shops/${shopId}/theme`, { cookie, body: { tokens, layout } });
   return redirect(res, `/shops/${shopId}/theme?ok=${r.status === 200 ? 1 : 0}`);
@@ -1421,27 +1507,35 @@ async function settingsSave(req, res, me, cookie, shopId) {
 }
 
 // ── Hoàn tiền (refund = owner/admin; step-up) ────────────────────────────────
-async function doRefund(res, me, cookie, shopId, oid) {
-  const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/refund`, { cookie, body: {} });
+// Bút toán 0070: form gửi kèm amount_vnd (để trống = hoàn TOÀN BỘ số còn lại) + reason;
+// hai giá trị này phải SỐNG SÓT qua màn step-up (hidden input) — không bắt gõ lại.
+async function doRefund(res, me, cookie, shopId, oid, vals) {
+  const body = {};
+  if ((vals?.amount_vnd ?? '') !== '') body.amount_vnd = parseVnd(vals.amount_vnd);
+  if ((vals?.reason ?? '').trim() !== '') body.reason = vals.reason.trim();
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/refund`, { cookie, body });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}`);
   return orderDetail(res, me, cookie, shopId, oid, r.json?.error ?? 'Không hoàn tiền được.');
 }
-async function refundConfirm(res, me, cookie, shopId, oid) {
+async function refundConfirm(req, res, me, cookie, shopId, oid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const vals = { amount_vnd: String(f.amount_vnd ?? '').trim(), reason: String(f.reason ?? '').trim().slice(0, 500) };
   if (!['owner', 'admin'].includes(roleFor(me, shopId))) return orderDetail(res, me, cookie, shopId, oid, 'Chỉ chủ cửa hàng hoặc quản trị mới hoàn tiền.');
-  if (steppedUp(me)) return doRefund(res, me, cookie, shopId, oid);
+  if (steppedUp(me)) return doRefund(res, me, cookie, shopId, oid, vals);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
-  return sendHtml(res, 200, V.renderRefundStepUp(ctx, shopId, oid, null));
+  return sendHtml(res, 200, V.renderRefundStepUp(ctx, shopId, oid, null, vals));
 }
 async function refundStepUp(req, res, me, cookie, shopId, oid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
+  const vals = { amount_vnd: String(f.amount_vnd ?? '').trim(), reason: String(f.reason ?? '').trim().slice(0, 500) };
   const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
   if (r.status !== 200) {
     const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
-    return sendHtml(res, 401, V.renderRefundStepUp(ctx, shopId, oid, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.'));
+    return sendHtml(res, 401, V.renderRefundStepUp(ctx, shopId, oid, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.', vals));
   }
-  return doRefund(res, me, cookie, shopId, oid);
+  return doRefund(res, me, cookie, shopId, oid, vals);
 }
 
 async function handle(req, res, url, p) {
@@ -1473,13 +1567,15 @@ async function handle(req, res, url, p) {
 
     // Console nền tảng (chỉ platform_staff — gate ẩn qua platform requireStaff).
     let pm;
-    if (p === '/platform' && req.method === 'GET') return platformShops(res, me, cookie);
+    if (p === '/platform' && req.method === 'GET') return platformShops(res, me, cookie, url.searchParams);
     if (p === '/platform/new' && req.method === 'GET') return platformShopNew(res, me, cookie, null, {});
     if (p === '/platform' && req.method === 'POST') return platformCreate(req, res, me, cookie);
     if ((pm = new RegExp(`^/platform/shops/${UUID}$`).exec(p)) && req.method === 'GET') return platformShopDetail(res, me, cookie, pm[1]);
     if ((pm = new RegExp(`^/platform/shops/${UUID}/invite$`).exec(p)) && req.method === 'POST') return platformInvite(req, res, me, cookie, pm[1]);
     if ((pm = new RegExp(`^/platform/shops/${UUID}/(suspend|restore)$`).exec(p)) && req.method === 'POST') return platformStatus(res, me, cookie, pm[1], pm[2]);
     if ((pm = new RegExp(`^/platform/shops/${UUID}/renew$`).exec(p)) && req.method === 'POST') return platformRenew(req, res, me, cookie, pm[1]);
+    if ((pm = new RegExp(`^/platform/shops/${UUID}/terminate$`).exec(p)) && req.method === 'POST') return platformTerminate(req, res, me, cookie, pm[1]);
+    if ((pm = new RegExp(`^/platform/shops/${UUID}/export$`).exec(p)) && req.method === 'GET') return platformExport(res, me, cookie, pm[1]);
     if ((pm = new RegExp(`^/platform/shops/${UUID}/step-up$`).exec(p)) && req.method === 'POST') return platformStepUp(req, res, me, cookie, pm[1]);
 
     // Tài khoản (cá nhân, không theo shop).
@@ -1495,16 +1591,17 @@ async function handle(req, res, url, p) {
     let m;
     if ((m = new RegExp(`^/shops/${UUID}/overview$`).exec(p)) && req.method === 'GET') return overviewPage(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders$`).exec(p)) && req.method === 'GET') return ordersList(res, me, cookie, m[1], url.searchParams);
-    if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'GET') return orderNewPage(res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'GET') return orderNewPage(res, me, cookie, m[1], null, null, url.searchParams.get('q') ?? '');
     if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'POST') return orderNewSubmit(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/bulk-confirm$`).exec(p)) && req.method === 'POST') return ordersBulkConfirm(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/bulk-mark-paid$`).exec(p)) && req.method === 'POST') return ordersBulkMarkPaid(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/print-batch$`).exec(p)) && req.method === 'GET') return ordersPrintBatch(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}$`).exec(p)) && req.method === 'GET') return orderDetail(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/print$`).exec(p)) && req.method === 'GET') return orderPrint(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/(confirm|ship|cancel|deliver|mark-paid)$`).exec(p)) && req.method === 'POST') return orderAction(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr$`).exec(p)) && req.method === 'POST') return markPaidQrConfirm(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr/step-up$`).exec(p)) && req.method === 'POST') return markPaidQrStepUp(req, res, me, cookie, m[1], m[2]);
-    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/refund$`).exec(p)) && req.method === 'POST') return refundConfirm(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/refund$`).exec(p)) && req.method === 'POST') return refundConfirm(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/refund/step-up$`).exec(p)) && req.method === 'POST') return refundStepUp(req, res, me, cookie, m[1], m[2]);
 
     // Sản phẩm & tồn kho.

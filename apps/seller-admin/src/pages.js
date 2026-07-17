@@ -477,6 +477,26 @@ export function renderPlatformShopNew(ctx, err, f = {}, plans = []) {
       <div class="actions" style="margin-top:14px"><button class="btn" type="submit">Tạo cửa hàng</button></div>
     </form></div>`);
 }
+// Interstitial mật khẩu cho thao tác phá hoại của STAFF (mirror renderDomainStepUp):
+// platform trả 403 step_up_required → form này; hidden fields giữ nguyên tham số
+// renew (tháng/gói/tiền/ghi chú) để retry sau khi xác thực không mất dữ liệu đã gõ.
+export function renderPlatformStepUp(ctx, shopId, action, params, err) {
+  const base = `/platform/shops/${esc(shopId)}`;
+  const label = { suspend: 'tạm khoá cửa hàng', restore: 'mở lại cửa hàng', renew: 'gia hạn / ghi nhận thu tiền' }[action] ?? action;
+  const hidden = Object.entries(params).filter(([, v]) => v != null && v !== '').map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('');
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận mật khẩu</h1>
+    <p class="muted">Thao tác nhạy cảm (${esc(label)}) cần xác thực lại. Nhập mật khẩu để tiếp tục.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${base}/step-up">
+      <input type="hidden" name="__action" value="${esc(action)}">${hidden}
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận &amp; tiếp tục</button>
+    </form>
+    <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
+}
+
 export function renderPlatformShopDetail(ctx, shop, { notice = null, err = null, invite = null, plans = [] } = {}) {
   const base = `/platform/shops/${esc(shop.id)}`;
   const inviteCard = invite ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0">

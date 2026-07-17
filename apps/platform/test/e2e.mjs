@@ -221,6 +221,14 @@ async function main() {
 
   // ── 5. Khoá & mở shop ──────────────────────────────────────────────────────
   sect('5. Khoá & mở shop (không xoá dữ liệu)');
+  // Thao tác phá hoại của staff đòi STEP-UP (mirror phía shop): chưa gõ lại mật khẩu → 403.
+  r = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/suspend`, {
+    body: { reason: 'quá hạn thanh toán' }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  r.status === 403 && r.json?.step_up_required ? ok('suspend chưa step-up → 403 step_up_required') : bad('không đòi step-up', r.raw);
+  // Step-up một lần — cửa sổ 5 phút phủ toàn bộ các lệnh suspend/restore/renew phía dưới.
+  r = await req(AUTH, 'POST', '/auth/step-up', { body: { password: 'a strong platform passphrase' }, cookie: staffCookie, origin: ORIGIN_AUTH });
+  r.status === 200 ? ok('staff step-up → 200') : bad('step-up lỗi', r.raw);
   r = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/suspend`, {
     body: { reason: 'quá hạn thanh toán' }, cookie: staffCookie, origin: ORIGIN_OPS,
   });

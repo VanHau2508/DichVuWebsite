@@ -65,7 +65,7 @@ async function introspect(cookieHeader) {
       signal: AbortSignal.timeout(3000),
     });
     if (!res.ok) return null; // 401 (chưa đăng nhập / phiên nửa vời) → null
-    return await res.json(); // {id, email, mfa_enabled, memberships}
+    return await res.json(); // {id, email, mfa_enabled, memberships, stepped_up_at}
   } catch (err) {
     log('error', 'introspect_failed', { message: err.message });
     return null; // fail-closed
@@ -76,6 +76,15 @@ async function introspect(cookieHeader) {
  * Yêu cầu: phiên hợp lệ + là platform_staff + đã bật MFA.
  * Trả về {user, staffRole} hoặc gửi lỗi và trả null.
  */
+// Step-up 5 phút cho thao tác PHÁ HOẠI của staff (mirror seller server.js): phiên
+// staff bị chiếm/ẩu không khoá được shop đang trả phí hay ghi hoá đơn mà không gõ
+// lại mật khẩu. /auth/me đã trả stepped_up_at sẵn — platform chỉ việc ĐỌC.
+const STEP_UP_WINDOW_MS = 5 * 60_000;
+function steppedUpRecently(me) {
+  if (!me?.stepped_up_at) return false;
+  return Date.now() - new Date(me.stepped_up_at).getTime() < STEP_UP_WINDOW_MS;
+}
+
 async function requireStaff(req, res) {
   const me = await introspect(req.headers.cookie);
   if (!me) {
@@ -415,9 +424,9 @@ const ROUTES = [
   { m: 'GET', re: /^\/ops\/metrics$/, fn: (req, res) => getMetrics(req, res) },
   { m: 'GET', re: new RegExp(`^/ops/shops/${SHOP_ID}$`), fn: (req, res, b, s, ip, p) => getShop(req, res, p[0]) },
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/invitations$`), fn: (req, res, b, s, ip, p) => inviteOwner(req, res, b, s, p[0], ip) },
-  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/suspend$`), fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'suspend', s, ip, b) },
-  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/restore$`), fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'restore', s, ip, b) },
-  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/subscription/renew$`), fn: (req, res, b, s, ip, p) => renewSubscription(req, res, p[0], s, ip, b) },
+  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/suspend$`), stepUp: true, fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'suspend', s, ip, b) },
+  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/restore$`), stepUp: true, fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'restore', s, ip, b) },
+  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/subscription/renew$`), stepUp: true, fn: (req, res, b, s, ip, p) => renewSubscription(req, res, p[0], s, ip, b) },
 ];
 
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -432,6 +441,11 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   try {
     const staff = await requireStaff(req, res);
     if (!staff) return; // requireStaff đã gửi lỗi
+    // Cổng step-up SAU requireStaff (chỉ staff thật mới thấy cờ step_up_required —
+    // non-staff nhận 403 thường từ requireStaff, không lộ sự tồn tại của cổng).
+    if (route.stepUp && !steppedUpRecently(staff.user)) {
+      return send(res, 403, { error: 'step_up_required', step_up_required: true });
+    }
 
     const params = route.re.exec(url.pathname).slice(1);
     const body = req.method === 'GET' ? {} : await readJson(req);

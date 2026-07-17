@@ -140,24 +140,47 @@ async function platformInvite(req, res, me, cookie, shopId) {
   const invite = { email: String(f.email ?? '').trim(), url: `${ADMIN_ORIGIN}/invite/accept?token=${encodeURIComponent(r.json.token)}`, expires_at: r.json.expires_at };
   return platformShopDetail(res, me, cookie, shopId, { invite, notice: 'Đã tạo link mời — sao chép gửi cho chủ shop.' });
 }
+// Step-up PHẢN ỨNG (khác phía shop chủ động): platform trả 403 step_up_required
+// → mới hiện form mật khẩu. Cố ý: non-staff nhận 403 THƯỜNG từ requireStaff →
+// platDenied như cũ, không bị lộ một form mật khẩu vô nghĩa.
 async function platformStatus(res, me, cookie, shopId, action) {
   const r = await platformApi('POST', `/ops/shops/${shopId}/${action}`, { cookie, body: {} });
+  if (r.json?.step_up_required) return platformStepUpPage(res, me, shopId, action, {});
   if (isDenied(r.status)) return platDenied(res, me);
   const okMsg = action === 'suspend' ? 'Đã tạm khoá cửa hàng.' : 'Đã mở lại cửa hàng.';
   return platformShopDetail(res, me, cookie, shopId, r.status === 200 ? { notice: okMsg } : { err: r.json?.error ?? 'Thao tác không thực hiện được.' });
 }
+// Tách gate (đọc form) khỏi core: nhánh retry sau step-up không còn req gốc,
+// chỉ còn tham số đã parse (mirror domainStepUp/doDomainAdd).
 async function platformRenew(req, res, me, cookie, shopId) {
   const f = await readForm(req);
-  const body = { months: String(f.months ?? '1') };
-  if (f.plan_code) body.plan_code = String(f.plan_code);
+  const p = { months: String(f.months ?? '1'), plan_code: f.plan_code ? String(f.plan_code) : '', amount_vnd: String(f.amount_vnd ?? '').trim(), note: String(f.note ?? '').trim() };
+  return doPlatformRenew(res, me, cookie, shopId, p);
+}
+async function doPlatformRenew(res, me, cookie, shopId, p) {
+  const body = { months: p.months };
+  if (p.plan_code) body.plan_code = p.plan_code;
   // Số tiền ghi đè (deal thương lượng) + ghi chú — để trống = server tự tính giá gói × tháng.
-  if (String(f.amount_vnd ?? '').trim() !== '') body.amount_vnd = Number(String(f.amount_vnd).trim());
-  if (String(f.note ?? '').trim() !== '') body.note = String(f.note).trim();
+  if (p.amount_vnd !== '') body.amount_vnd = Number(p.amount_vnd);
+  if (p.note !== '') body.note = p.note;
   const r = await platformApi('POST', `/ops/shops/${shopId}/subscription/renew`, { cookie, body });
+  if (r.json?.step_up_required) return platformStepUpPage(res, me, shopId, 'renew', p);
   if (isDenied(r.status)) return platDenied(res, me);
   return platformShopDetail(res, me, cookie, shopId, r.status === 200
     ? { notice: `Đã ghi nhận thu ${new Intl.NumberFormat('vi-VN').format(r.json?.amount_vnd ?? 0)}₫ — gia hạn ${r.json?.months} tháng${body.plan_code ? ` (gói ${body.plan_code})` : ''}, mở lại shop nếu đang khoá.` }
     : { err: r.json?.error ?? 'Không gia hạn được.' });
+}
+async function platformStepUpPage(res, me, shopId, action, params, err) {
+  return sendHtml(res, err ? 401 : 200, V.renderPlatformStepUp(platCtx(me), shopId, action, params, err));
+}
+async function platformStepUp(req, res, me, cookie, shopId) {
+  const f = await readForm(req);
+  const action = String(f.__action ?? '');
+  const p = { months: String(f.months ?? '1'), plan_code: f.plan_code ? String(f.plan_code) : '', amount_vnd: String(f.amount_vnd ?? '').trim(), note: String(f.note ?? '').trim() };
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) return platformStepUpPage(res, me, shopId, action, p, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.');
+  if (action === 'renew') return doPlatformRenew(res, me, cookie, shopId, p);
+  return platformStatus(res, me, cookie, shopId, action === 'restore' ? 'restore' : 'suspend');
 }
 
 async function overviewPage(res, me, cookie, shopId) {
@@ -1457,6 +1480,7 @@ async function handle(req, res, url, p) {
     if ((pm = new RegExp(`^/platform/shops/${UUID}/invite$`).exec(p)) && req.method === 'POST') return platformInvite(req, res, me, cookie, pm[1]);
     if ((pm = new RegExp(`^/platform/shops/${UUID}/(suspend|restore)$`).exec(p)) && req.method === 'POST') return platformStatus(res, me, cookie, pm[1], pm[2]);
     if ((pm = new RegExp(`^/platform/shops/${UUID}/renew$`).exec(p)) && req.method === 'POST') return platformRenew(req, res, me, cookie, pm[1]);
+    if ((pm = new RegExp(`^/platform/shops/${UUID}/step-up$`).exec(p)) && req.method === 'POST') return platformStepUp(req, res, me, cookie, pm[1]);
 
     // Tài khoản (cá nhân, không theo shop).
     if (p === '/account' && req.method === 'GET') return accountPage(res, me, cookie);

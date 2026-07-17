@@ -236,6 +236,153 @@ async function main() {
   r = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/restore`, { cookie: staffCookie, origin: ORIGIN_OPS });
   r.status === 200 && r.json.status === 'active' ? ok('restore → active') : bad('restore lỗi', r.raw);
 
+  // ── 5b. Gia hạn + hoá đơn (sổ thu platform_invoices) ───────────────────────
+  sect('5b. Gia hạn + hoá đơn (platform_invoices)');
+
+  // Giá gói lấy từ DB làm mốc so sánh — KHÔNG hardcode lại trong assert.
+  const dbPlans = await owner.query(`SELECT code, price_vnd_month FROM plans WHERE active`);
+  const priceOf = (c) => Number(dbPlans.rows.find((p) => p.code === c)?.price_vnd_month);
+
+  // /ops/plans — Console render select gói từ đây (giết giá hardcode ở BFF).
+  r = await req(PLATFORM, 'GET', '/ops/plans', { cookie: staffCookie });
+  const apiPlans = r.json?.plans ?? [];
+  r.status === 200 && apiPlans.length >= 3 && apiPlans.every((p) => Number(p.price_vnd_month) === priceOf(p.code))
+    ? ok('/ops/plans → giá từng gói khớp DB') : bad('/ops/plans lỗi', r.raw);
+
+  // Renew trần (không ghi đè): amount = giá gói hiện tại × months; kỳ cộng dồn GREATEST.
+  const before = await owner.query(`SELECT current_period_end FROM subscriptions WHERE shop_id = $1`, [shopId]);
+  const prevEnd = before.rows[0].current_period_end;
+  r = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/subscription/renew`, {
+    body: { months: 3 }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  r.status === 200 && r.json.amount_vnd === priceOf('platform') * 3 && r.json.months === 3 && r.json.plan_code === 'platform'
+    ? ok(`renew 3 tháng → amount ${r.json.amount_vnd} = giá gói × 3`) : bad('renew 3 tháng lỗi', r.raw);
+  let chk = await owner.query(
+    `SELECT status, (current_period_end - $2::timestamptz) BETWEEN interval '85 days' AND interval '95 days' AS stacked
+       FROM subscriptions WHERE shop_id = $1`, [shopId, prevEnd]);
+  chk.rows[0].status === 'active' && chk.rows[0].stacked
+    ? ok('sub → active, kỳ cộng dồn ~3 tháng từ mốc GREATEST') : bad('kỳ/trạng thái sau renew sai', JSON.stringify(chk.rows));
+
+  // Hoá đơn đầu tiên: đúng từng cột (amount là bigint → pg trả string → Number()).
+  let inv = await owner.query(
+    `SELECT plan_code, months, amount_vnd, note, created_by FROM platform_invoices WHERE shop_id = $1 ORDER BY created_at`, [shopId]);
+  inv.rowCount === 1 && Number(inv.rows[0].amount_vnd) === priceOf('platform') * 3
+    && inv.rows[0].months === 3 && inv.rows[0].plan_code === 'platform'
+    && inv.rows[0].created_by === staff.userId && inv.rows[0].note === null
+    ? ok('hoá đơn 1: amount/months/plan/created_by/note đúng') : bad('hoá đơn 1 sai', JSON.stringify(inv.rows));
+
+  // Renew đổi gói: hoá đơn ghi giá gói MỚI; kỳ stack thêm ~1 tháng (GREATEST cộng dồn).
+  const end2 = await owner.query(`SELECT current_period_end FROM subscriptions WHERE shop_id = $1`, [shopId]);
+  r = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/subscription/renew`, {
+    body: { months: 1, plan_code: 'growth' }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  r.status === 200 && r.json.amount_vnd === priceOf('growth') && r.json.plan_code === 'growth'
+    ? ok('renew đổi gói → amount = giá gói MỚI (growth)') : bad('renew đổi gói lỗi', r.raw);
+  chk = await owner.query(
+    `SELECT plan_code, (current_period_end - $2::timestamptz) BETWEEN interval '28 days' AND interval '32 days' AS stacked
+       FROM subscriptions WHERE shop_id = $1`, [shopId, end2.rows[0].current_period_end]);
+  chk.rows[0].plan_code === 'growth' && chk.rows[0].stacked
+    ? ok('sub đổi gói growth, kỳ stack thêm ~1 tháng') : bad('stack đổi gói sai', JSON.stringify(chk.rows));
+  inv = await owner.query(`SELECT plan_code FROM platform_invoices WHERE shop_id = $1 ORDER BY created_at DESC LIMIT 1`, [shopId]);
+  inv.rows[0].plan_code === 'growth' ? ok('hoá đơn 2 ghi gói growth') : bad('hoá đơn 2 sai gói', JSON.stringify(inv.rows));
+
+  // Ghi đè deal thương lượng: amount tuỳ ý + note.
+  r = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/subscription/renew`, {
+    body: { months: 6, amount_vnd: 123456, note: 'deal thử nghiệm' }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  r.status === 200 && r.json.amount_vnd === 123456 ? ok('ghi đè số tiền → 123456') : bad('ghi đè lỗi', r.raw);
+  inv = await owner.query(`SELECT amount_vnd, note FROM platform_invoices WHERE shop_id = $1 ORDER BY created_at DESC LIMIT 1`, [shopId]);
+  Number(inv.rows[0].amount_vnd) === 123456 && inv.rows[0].note === 'deal thử nghiệm'
+    ? ok('hoá đơn 3: amount ghi đè + note') : bad('hoá đơn 3 sai', JSON.stringify(inv.rows));
+
+  // Validate ghi đè: âm / không phải số → 400, KHÔNG thêm hoá đơn.
+  r = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/subscription/renew`, {
+    body: { months: 1, amount_vnd: -5 }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  const rAbc = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/subscription/renew`, {
+    body: { months: 1, amount_vnd: 'abc' }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  let cnt = await owner.query(`SELECT count(*)::int AS n FROM platform_invoices WHERE shop_id = $1`, [shopId]);
+  r.status === 400 && rAbc.status === 400 && cnt.rows[0].n === 3
+    ? ok('amount âm/chữ → 400, không thêm hoá đơn') : bad('validate ghi đè hỏng', `${r.status}/${rAbc.status}/n=${cnt.rows[0].n}`);
+
+  // Clamp months: 99→24, 0→1 — hoá đơn ghi số tháng ĐÃ clamp.
+  r = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/subscription/renew`, {
+    body: { months: 99 }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  const r0 = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/subscription/renew`, {
+    body: { months: 0 }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  inv = await owner.query(`SELECT months FROM platform_invoices WHERE shop_id = $1 ORDER BY created_at DESC LIMIT 2`, [shopId]);
+  r.json?.months === 24 && r0.json?.months === 1 && inv.rows.some((x) => x.months === 24) && inv.rows.some((x) => x.months === 1)
+    ? ok('clamp months 99→24, 0→1 (cả response lẫn hoá đơn)') : bad('clamp lỗi', `${r.raw} / ${r0.raw}`);
+
+  // Gói sai → 400, không thêm hoá đơn.
+  r = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/subscription/renew`, {
+    body: { months: 1, plan_code: 'khong-ton-tai' }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  cnt = await owner.query(`SELECT count(*)::int AS n FROM platform_invoices WHERE shop_id = $1`, [shopId]);
+  r.status === 400 && cnt.rows[0].n === 5 ? ok('gói sai → 400, không thêm hoá đơn') : bad('gói sai lọt', r.raw);
+
+  // Suspended → renew MỞ LẠI shop (kênh reopened).
+  await req(PLATFORM, 'POST', `/ops/shops/${shopId}/suspend`, { cookie: staffCookie, origin: ORIGIN_OPS });
+  r = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/subscription/renew`, {
+    body: { months: 1 }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  chk = await owner.query(`SELECT status FROM shops WHERE id = $1`, [shopId]);
+  r.status === 200 && chk.rows[0].status === 'active'
+    ? ok('renew mở lại shop suspended') : bad('không mở lại suspended', `${r.status}/${chk.rows[0]?.status}`);
+
+  // Terminated KHÔNG mở lại — nhưng tiền VẪN ghi (ghi nhận thu ≠ mở shop, CHỦ ĐÍCH).
+  await owner.query(`UPDATE shops SET status = 'terminated' WHERE id = $1`, [shopId]);
+  r = await req(PLATFORM, 'POST', `/ops/shops/${shopId}/subscription/renew`, {
+    body: { months: 1 }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  chk = await owner.query(`SELECT status FROM shops WHERE id = $1`, [shopId]);
+  cnt = await owner.query(`SELECT count(*)::int AS n FROM platform_invoices WHERE shop_id = $1`, [shopId]);
+  r.status === 200 && chk.rows[0].status === 'terminated' && cnt.rows[0].n === 7
+    ? ok('terminated: KHÔNG mở lại, hoá đơn vẫn ghi') : bad('semantics terminated sai', `${r.status}/${chk.rows[0]?.status}/n=${cnt.rows[0].n}`);
+  await owner.query(`UPDATE shops SET status = 'active' WHERE id = $1`, [shopId]);
+
+  // Shop không tồn tại → 404 (trong transaction, trước mọi UPDATE).
+  r = await req(PLATFORM, 'POST', `/ops/shops/00000000-0000-4000-8000-000000000000/subscription/renew`, {
+    body: { months: 1 }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  r.status === 404 ? ok('shop lạ → 404 (không tìm thấy thuê bao)') : bad('shop lạ không 404', r.raw);
+
+  // Lịch sử + tổng qua API khớp SUM trong DB; list shops có cột total_collected_vnd.
+  const sum = await owner.query(`SELECT COALESCE(SUM(amount_vnd),0)::bigint AS t FROM platform_invoices WHERE shop_id = $1`, [shopId]);
+  r = await req(PLATFORM, 'GET', `/ops/shops/${shopId}`, { cookie: staffCookie });
+  r.status === 200 && r.json.invoices?.length === 7 && r.json.invoice_count === 7
+    && String(r.json.invoice_total_vnd) === String(sum.rows[0].t)
+    ? ok(`chi tiết shop: 7 hoá đơn, tổng ${r.json.invoice_total_vnd} khớp DB`) : bad('lịch sử/tổng qua API sai', r.raw);
+  r = await req(PLATFORM, 'GET', '/ops/shops', { cookie: staffCookie });
+  const listed = r.json?.shops?.find((s) => s.id === shopId);
+  String(listed?.total_collected_vnd) === String(sum.rows[0].t)
+    ? ok('list shops: total_collected_vnd khớp tổng') : bad('total_collected_vnd sai', JSON.stringify(listed ?? null));
+
+  // Cô lập role: app_platform đọc được + KHÔNG sửa được (sổ thu append-only);
+  // app_rw KHÔNG quyền nào — lưới bắt rò default-privileges 0003 (test "bảng GLOBAL"
+  // của schema-invariants MIỄN bảng có shop_id nên không phủ bảng này).
+  try {
+    await platformRole.query('SELECT 1 FROM platform_invoices LIMIT 1');
+    ok('app_platform SELECT platform_invoices OK');
+  } catch (err) { bad('app_platform không đọc được platform_invoices', err.code); }
+  try {
+    await platformRole.query(`UPDATE platform_invoices SET amount_vnd = 0 WHERE shop_id = $1`, [shopId]);
+    bad('app_platform SỬA được hoá đơn — chứng từ phải bất biến');
+  } catch (err) {
+    err.code === '42501' ? ok('app_platform UPDATE bị từ chối (42501) — chứng từ bất biến') : bad('lỗi khác khi UPDATE hoá đơn', err.code);
+  }
+  const rw = await owner.query(`
+    SELECT has_table_privilege('app_rw','platform_invoices','SELECT') AS sel,
+           has_table_privilege('app_rw','platform_invoices','INSERT') AS ins,
+           has_table_privilege('app_rw','platform_invoices','UPDATE') AS upd,
+           has_table_privilege('app_rw','platform_invoices','DELETE') AS del`);
+  !rw.rows[0].sel && !rw.rows[0].ins && !rw.rows[0].upd && !rw.rows[0].del
+    ? ok('app_rw KHÔNG quyền nào trên platform_invoices (REVOKE default-privileges ăn)')
+    : bad('app_rw còn quyền trên platform_invoices', JSON.stringify(rw.rows[0]));
+
   // ── 6. Cổng staff (bỏ khỏi platform_staff → mất quyền dù MFA còn) ───────────
   sect('6. Cổng platform_staff');
   await owner.query(`DELETE FROM platform_staff WHERE user_id = $1`, [staff.userId]);

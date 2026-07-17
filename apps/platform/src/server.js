@@ -162,7 +162,9 @@ async function createShop(req, res, body, staff, ip) {
 async function listShops(req, res) {
   const { rows } = await db.query(
     `SELECT s.id, s.slug, s.name, s.status, s.created_at,
-            d.hostname AS subdomain, sub.plan_code, sub.status AS sub_status
+            d.hostname AS subdomain, sub.plan_code, sub.status AS sub_status,
+            (SELECT COALESCE(SUM(pi.amount_vnd), 0)::bigint
+               FROM platform_invoices pi WHERE pi.shop_id = s.id) AS total_collected_vnd
        FROM shops s
        LEFT JOIN domains d ON d.shop_id = s.id AND d.is_primary
        LEFT JOIN subscriptions sub ON sub.shop_id = s.id
@@ -183,12 +185,42 @@ async function getShop(req, res, shopId) {
     [shopId],
   );
   if (rows.length === 0) return send(res, 404, { error: 'không tìm thấy shop' });
-  return send(res, 200, rows[0]);
+  // Lịch sử thu + tổng đã thu (sổ platform_invoices) — thuần bổ sung vào payload.
+  const [inv, tot] = await Promise.all([
+    db.query(
+      `SELECT id, plan_code, months, amount_vnd, note, created_at
+         FROM platform_invoices WHERE shop_id = $1
+        ORDER BY created_at DESC LIMIT 50`,
+      [shopId],
+    ),
+    db.query(
+      `SELECT COALESCE(SUM(amount_vnd), 0)::bigint AS total, COUNT(*)::int AS n
+         FROM platform_invoices WHERE shop_id = $1`,
+      [shopId],
+    ),
+  ]);
+  return send(res, 200, {
+    ...rows[0],
+    invoices: inv.rows,
+    invoice_total_vnd: tot.rows[0].total,
+    invoice_count: tot.rows[0].n,
+  });
+}
+
+// Danh sách gói đang bán — cho Console render select gói từ DB (giết giá hardcode ở BFF).
+async function listPlans(req, res) {
+  const { rows } = await db.query(
+    'SELECT code, name, price_vnd_month, max_products FROM plans WHERE active ORDER BY price_vnd_month',
+  );
+  return send(res, 200, { plans: rows });
 }
 
 // Ghi nhận đã THU thuê bao: sub → active + gia hạn kỳ (từ mốc lớn hơn giữa now và kỳ cũ,
 // cộng dồn), đổi gói nếu chọn, và MỞ LẠI shop nếu đang suspended (guard: chỉ suspended→active,
 // KHÔNG un-terminate). Thu tiền THỦ CÔNG (chưa cổng recurring) — đúng mô hình concierge.
+// Mỗi lần thu = MỘT dòng platform_invoices trong CÙNG transaction (sổ thu — không được
+// có gia hạn mà thiếu hoá đơn hoặc ngược lại). amount mặc định = giá gói HIỆU LỰC × months;
+// ghi đè thủ công qua body.amount_vnd cho deal thương lượng (note ghi lý do).
 async function renewSubscription(req, res, shopId, staff, ip, body) {
   const months = Math.min(Math.max(parseInt(body.months ?? '1', 10) || 1, 1), 24);
   const planCode = body.plan_code ? String(body.plan_code).trim() : null;
@@ -196,11 +228,30 @@ async function renewSubscription(req, res, shopId, staff, ip, body) {
     const p = await db.query('SELECT code FROM plans WHERE code = $1 AND active', [planCode]);
     if (p.rows.length === 0) return send(res, 400, { error: 'gói dịch vụ không hợp lệ' });
   }
+  // Ghi đè số tiền (deal thương lượng): chỉ nhận số nguyên an toàn 0..2 tỷ.
+  let override = null;
+  if (body.amount_vnd !== undefined && body.amount_vnd !== null && String(body.amount_vnd).trim() !== '') {
+    override = Number(body.amount_vnd);
+    if (!Number.isSafeInteger(override) || override < 0 || override > 2_000_000_000) {
+      return send(res, 400, { error: 'số tiền không hợp lệ' });
+    }
+  }
+  const note = body.note ? String(body.note).trim().slice(0, 500) || null : null;
   const client = await db.connect();
   try {
     await client.query('BEGIN');
-    const sub = await client.query(`SELECT 1 FROM subscriptions WHERE shop_id = $1`, [shopId]);
+    // Gói HIỆU LỰC (gói ghi đè nếu có, không thì gói hiện tại) + giá — đọc trong CÙNG tx
+    // để không race với đổi gói song song.
+    const sub = await client.query(
+      `SELECT COALESCE($2::text, s.plan_code) AS plan_code, p.price_vnd_month
+         FROM subscriptions s JOIN plans p ON p.code = COALESCE($2::text, s.plan_code)
+        WHERE s.shop_id = $1`,
+      [shopId, planCode],
+    );
     if (sub.rows.length === 0) { await client.query('ROLLBACK'); return send(res, 404, { error: 'không tìm thấy thuê bao của shop' }); }
+    const effPlan = sub.rows[0].plan_code;
+    // pg trả bigint dạng string → Number() tường minh (max 5.9M×24 = 141.6M, an toàn).
+    const amount = override ?? Number(sub.rows[0].price_vnd_month) * months;
     await client.query(
       `UPDATE subscriptions SET status = 'active',
               plan_code = COALESCE($2, plan_code),
@@ -210,12 +261,17 @@ async function renewSubscription(req, res, shopId, staff, ip, body) {
     );
     await client.query(`UPDATE shops SET status = 'active' WHERE id = $1 AND status = 'suspended'`, [shopId]);
     await client.query(
+      `INSERT INTO platform_invoices (shop_id, plan_code, months, amount_vnd, note, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [shopId, effPlan, months, amount, note, staff.user.id],
+    );
+    await client.query(
       `INSERT INTO audit_logs (shop_id, actor_type, actor_id, action, ip, metadata)
        VALUES ($1, 'platform_staff', $2, 'subscription.renewed', $3, $4)`,
-      [shopId, staff.user.id, ip, { months, plan_code: planCode }],
+      [shopId, staff.user.id, ip, { months, plan_code: effPlan, amount_vnd: amount, override: override !== null }],
     );
     await client.query('COMMIT');
-    return send(res, 200, { ok: true, months });
+    return send(res, 200, { ok: true, months, amount_vnd: amount, plan_code: effPlan });
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -278,6 +334,7 @@ const SHOP_ID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
 const ROUTES = [
   { m: 'POST', re: /^\/ops\/shops$/, fn: (req, res, b, s, ip) => createShop(req, res, b, s, ip) },
   { m: 'GET', re: /^\/ops\/shops$/, fn: (req, res) => listShops(req, res) },
+  { m: 'GET', re: /^\/ops\/plans$/, fn: (req, res) => listPlans(req, res) },
   { m: 'GET', re: new RegExp(`^/ops/shops/${SHOP_ID}$`), fn: (req, res, b, s, ip, p) => getShop(req, res, p[0]) },
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/invitations$`), fn: (req, res, b, s, ip, p) => inviteOwner(req, res, b, s, p[0], ip) },
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/suspend$`), fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'suspend', s, ip, b) },

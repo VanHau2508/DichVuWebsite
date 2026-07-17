@@ -393,8 +393,8 @@ async function main() {
   const obLink = (await owner.query(
     `SELECT payload FROM outbox WHERE shop_id=$1 AND topic='order.created' AND (payload->>'order_number')::int=$2`,
     [A.shopId, onl.json.order_number])).rows[0];
-  obLink?.payload?.link?.includes(`/checkout/order?number=${onl.json.order_number}&token=`)
-    ? ok('email xác nhận kèm LINK tra cứu đơn') : bad('thiếu link tra cứu', JSON.stringify(obLink?.payload));
+  obLink?.payload?.link?.includes(`/checkout/success?number=${onl.json.order_number}&token=`)
+    ? ok('email xác nhận kèm LINK tra cứu đơn (trang HTML, không phải API JSON)') : bad('thiếu link tra cứu', JSON.stringify(obLink?.payload));
 
   // Đơn COD có email quá 7 ngày → tự huỷ PHẢI gửi email (reason='expired') — hết huỷ im lặng.
   const cexp2 = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;

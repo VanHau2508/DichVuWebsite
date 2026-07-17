@@ -152,6 +152,8 @@ services:
       SESSION_TTL_HOURS: "168"
       ALLOWED_ORIGINS: https://${ADMIN_DOMAIN:-admin.nentang.vn}
       PORT: "3020"
+      # Trang /reset CÔNG KHAI của admin — auth dựng link trong email đặt lại mật khẩu.
+      RESET_LINK_BASE: https://${ADMIN_DOMAIN:-admin.nentang.vn}/reset
     deploy: { resources: { limits: { memory: 256m } } }
     depends_on:
       postgres: { condition: service_healthy }
@@ -168,6 +170,8 @@ services:
       PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
       ALLOWED_ORIGINS: https://${ADMIN_DOMAIN:-admin.nentang.vn}
       PORT: "3030"
+      # Số ngày dùng thử khi tạo shop (0 = không trial). Đồng bộ .env.example + 0056.
+      TRIAL_DAYS: ${TRIAL_DAYS:-14}
     deploy: { resources: { limits: { memory: 192m } } }
     depends_on:
       postgres: { condition: service_healthy }
@@ -257,6 +261,9 @@ services:
       TRACKING_SWEEP_MS: ${TRACKING_SWEEP_MS:-600000}
       # Cảnh báo đường tiền/vận hành → webhook (Slack/Discord/Telegram-bridge). Trống = tắt.
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      # Dead-man's switch: ping monitor NGOÀI (healthchecks.io) mỗi nhịp alert-sweep (~5').
+      # Worker treo/chết/DB sập → ngừng ping → monitor báo động. Trống = tắt.
+      WORKER_HEARTBEAT_URL: ${WORKER_HEARTBEAT_URL:-}
       # Bot Telegram nền tảng (thông báo per-shop + cảnh báo tiền). Trống = tắt.
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
@@ -268,12 +275,24 @@ services:
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:?}
       SMTP_PASSWORD: ${SMTP_PASSWORD:?}
+      # (tuỳ chọn) ép TLS ngầm khi relay không dùng cổng 465 (465 tự bật trong code).
+      SMTP_SECURE: ${SMTP_SECURE:-}
       EMAIL_FROM: ${EMAIL_FROM:?}
       POLL_MS: "1000"
       EMAIL_ATTEMPTS: "5"
       EMAIL_BACKOFF_MS: "2000"
       PORT: "3080"
     deploy: { resources: { limits: { memory: 256m } } }
+    # Tường minh (đè HEALTHCHECK của image) để ops chỉnh không cần rebuild. LƯU Ý:
+    # compose + restart:unless-stopped KHÔNG tự restart container `unhealthy` — chỉ
+    # process THOÁT mới restart. Worker treo-nhưng-sống cần WORKER_HEARTBEAT_URL +
+    # monitor NGOÀI (docs/35 Blocker 3).
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 5
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }

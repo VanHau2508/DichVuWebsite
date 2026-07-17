@@ -234,6 +234,39 @@ async function main() {
   r = await a.post(`/orders/${o2.id}/carrier-shipment`, TO);
   r.status === 200 ? ok('retry sau khi hãng ok → 200') : bad('retry lỗi', r.raw);
 
+  // ── 4b. Hàng HOÀN (bom hàng) → đơn 'returned', báo shop, KHÔNG tự cộng tồn ──
+  // o2 đang 'shipped' với vận đơn GHTK sống. GHTK status 20 = trả hàng → sweep phải
+  // chốt đơn 'returned' (trước đây kẹt 'shipped' vĩnh viễn), outbox KHÔNG có 'to'
+  // (chỉ Telegram cho shop, không email khách bom hàng), on_hand GIỮ NGUYÊN (shop tự
+  // Điều chỉnh tồn khi nhận lại hàng thật), sweep lặp = idempotent.
+  sect('4b. Hàng hoàn (bom hàng) → returned');
+  const onHandShipped = Number((await owner.query(`SELECT on_hand FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].on_hand);
+  stub.ghtkStatus = 20; // hãng báo TRẢ HÀNG
+  let wrr = await (await fetch(`${WORKER}/internal/tracking-sweep`, { method: 'POST' })).json();
+  od = (await a.get(`/orders/${o2.id}`)).json;
+  od.status === 'returned' && od.shipments[0].status === 'returned'
+    ? ok('đơn → returned + vận đơn returned') : bad('returned sai', `${od.status} ${od.shipments?.[0]?.status} ${JSON.stringify(wrr)}`);
+  const rat = await owner.query(`SELECT returned_at FROM orders WHERE id=$1`, [o2.id]);
+  rat.rows[0]?.returned_at ? ok('returned_at đã chốt mốc') : bad('thiếu returned_at');
+  const obr = await owner.query(
+    `SELECT payload FROM outbox WHERE shop_id=$1 AND topic='order.status_changed' AND payload->>'status'='returned' AND (payload->>'order_number')::int=$2`,
+    [A.shopId, o2.num]);
+  obr.rows.length === 1 ? ok('outbox returned đúng 1 dòng') : bad('outbox returned sai số dòng', String(obr.rows.length));
+  obr.rows[0] && !('to' in obr.rows[0].payload) && obr.rows[0].payload.reason === 'carrier_returned'
+    ? ok('payload KHÔNG có to (không email khách) + reason=carrier_returned') : bad('payload returned sai', JSON.stringify(obr.rows[0]?.payload));
+  const onHandReturned = Number((await owner.query(`SELECT on_hand FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].on_hand);
+  onHandReturned === onHandShipped ? ok('on_hand GIỮ NGUYÊN (không tự cộng — shop tự điều chỉnh)') : bad(`on_hand đổi: ${onHandShipped}→${onHandReturned}`);
+  // Sweep lần 2: idempotent — đơn giữ returned, KHÔNG thêm outbox trùng.
+  await (await fetch(`${WORKER}/internal/tracking-sweep`, { method: 'POST' })).json();
+  const obr2 = await owner.query(
+    `SELECT count(*)::int n FROM outbox WHERE shop_id=$1 AND topic='order.status_changed' AND payload->>'status'='returned' AND (payload->>'order_number')::int=$2`,
+    [A.shopId, o2.num]);
+  obr2.rows[0].n === 1 ? ok('sweep lần 2 → vẫn đúng 1 outbox (idempotent)') : bad('outbox returned trùng', String(obr2.rows[0].n));
+  // Đơn returned là terminal cho đường tiền: không đánh dấu đã nhận tiền được nữa.
+  r = await a.post(`/orders/${o2.id}/mark-paid`, {});
+  r.status === 409 ? ok('mark-paid trên đơn returned → 409') : bad('mark-paid lọt trên đơn returned', r.raw);
+  stub.ghtkStatus = 4; // trả stub về trạng thái đang giao cho các mục sau
+
   // ── 5. Cô lập chéo shop + validation ────────────────────────────────────────
   sect('5. Cô lập + validation');
   const b = S(Bs);

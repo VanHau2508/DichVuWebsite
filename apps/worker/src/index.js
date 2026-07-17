@@ -23,6 +23,7 @@ import pg from 'pg';
 import { Queue, Worker } from 'bullmq';
 import nodemailer from 'nodemailer';
 import { runReq, makeLog, health } from './obs.js';
+import { buildSmtpOptions } from './smtp.js';
 
 const PORT = Number(process.env.PORT ?? 3080);
 const POLL_MS = Number(process.env.POLL_MS ?? 1000);
@@ -69,7 +70,7 @@ if (process.env.DOMAINVERIFY_RESOLVER) {
   }).catch((e) => log('warn', 'domainverify_resolver_lookup_failed', { message: e.message }));
 }
 const connection = { host: process.env.REDIS_HOST ?? 'redis', port: Number(process.env.REDIS_PORT ?? 6379) };
-const transport = nodemailer.createTransport({ host: process.env.SMTP_HOST ?? 'mailpit', port: Number(process.env.SMTP_PORT ?? 1025), secure: false });
+const transport = nodemailer.createTransport(buildSmtpOptions());
 
 const log = makeLog('worker');
 
@@ -103,13 +104,20 @@ function compose(topic, p) {
         text: `Đơn hàng #${p.order_number} đã được HỆ THỐNG TỰ HUỶ vì ${why}.\nHàng đã được trả lại kho — nếu bạn vẫn muốn mua, vui lòng đặt lại đơn mới.${footer}`,
       };
     }
-    const label = { confirmed: 'đã được xác nhận', shipped: 'đang trên đường giao', delivered: 'đã giao thành công', cancelled: 'đã huỷ', refunded: 'đã hoàn tiền' }[p.status] ?? p.status;
+    const label = { confirmed: 'đã được xác nhận', shipped: 'đang trên đường giao', delivered: 'đã giao thành công', cancelled: 'đã huỷ', refunded: 'đã hoàn tiền', returned: 'đã được hoàn về cửa hàng' }[p.status] ?? p.status;
     const extra = p.status === 'shipped' && p.tracking_number ? `\nMã vận đơn: ${p.tracking_number} — bạn có thể tra trên trang của hãng vận chuyển.`
       : p.status === 'delivered' ? '\nCảm ơn bạn đã mua hàng! Nếu có vấn đề với sản phẩm, hãy liên hệ cửa hàng.'
       : p.tracking_number ? `\nMã vận đơn: ${p.tracking_number}` : '';
     return {
       subject: `Đơn hàng #${p.order_number} — ${label}`,
       text: `Đơn hàng #${p.order_number} ${label}.${extra}${footer}`,
+    };
+  }
+  if (topic === 'user.password_reset') {
+    // Sự kiện CẤP IDENTITY (outbox shop_id NULL — 0058): chỉ email, worker không đọc users.
+    return {
+      subject: 'Đặt lại mật khẩu nentang.vn',
+      text: `Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản này.\n\nMở link sau để đặt mật khẩu mới (hết hạn sau 30 phút, dùng một lần):\n${p.link}\n\nNếu bạn KHÔNG yêu cầu, hãy bỏ qua email này — mật khẩu của bạn không thay đổi.`,
     };
   }
   if (topic === 'stock.low') {
@@ -396,8 +404,23 @@ async function sweepTracking() {
             [s.shop_id, { to: s.customer_email, order_number: Number(s.order_number), status: 'delivered', total_vnd: Number(s.total_vnd), tracking_number: s.tracking_number }]);
         }
         if (upd.rowCount === 1) { delivered++; log('info', 'tracking_delivered', { order_number: Number(s.order_number), provider: s.provider }); }
-      } else if (st.state === 'returned' || st.state === 'cancelled') {
-        await c.query(`UPDATE shipments SET status = $2, provider_status = $3, synced_at = now() WHERE id = $1`, [s.id, st.state, st.raw]);
+      } else if (st.state === 'returned') {
+        // Hàng HOÀN (bom hàng): trước đây đơn kẹt 'shipped' mãi. Chốt đơn 'returned' +
+        // mốc returned_at, guard status='shipped' = idempotent (mirror nhánh delivered).
+        // KHÔNG cộng lại on_hand: hàng chưa chắc về kho/có thể hỏng, và app_expiry cố
+        // tình KHÔNG có quyền on_hand/ledger (0022) — chủ shop tự Điều chỉnh tồn khi
+        // nhận hàng thật. Reserve đã trả lúc ship (consumeAndShip) nên không còn gì release.
+        const upd = await c.query(`UPDATE orders SET status = 'returned', returned_at = now() WHERE id = $1 AND status = 'shipped'`, [s.order_id]);
+        await c.query(`UPDATE shipments SET status = 'returned', provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
+        // Outbox KHÔNG có 'to' → chỉ Telegram cho shop, không email khách bom hàng.
+        // Gate rowCount===1 (như delivered) → exactly-once dù sweep chạy lặp.
+        if (upd.rowCount === 1) {
+          await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.status_changed', $2)`,
+            [s.shop_id, { order_number: Number(s.order_number), status: 'returned', total_vnd: Number(s.total_vnd), tracking_number: s.tracking_number, reason: 'carrier_returned' }]);
+        }
+        log('warn', 'tracking_returned', { order_number: Number(s.order_number), provider: s.provider, order_changed: upd.rowCount === 1, raw: st.raw });
+      } else if (st.state === 'cancelled') {
+        await c.query(`UPDATE shipments SET status = 'cancelled', provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
         log('warn', 'tracking_exception', { order_number: Number(s.order_number), provider: s.provider, state: st.state, raw: st.raw });
       } else {
         await c.query(`UPDATE shipments SET provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
@@ -542,6 +565,7 @@ function tgMessageFor(topic, p) {
   if (topic === 'order.created') return `🛒 Đơn MỚI #${p.order_number} — ${money(p.total_vnd)} (${p.payment_method === 'qr' ? 'chờ CK QR' : 'COD'})${p.customer_name ? `\nKhách: ${p.customer_name}` : ''}`;
   if (topic === 'order.paid') return `💰 Đơn #${p.order_number} ĐÃ THANH TOÁN — ${money(p.total_vnd)}. Chuẩn bị giao hàng.`;
   if (topic === 'order.status_changed' && p.status === 'cancelled') return `❌ Đơn #${p.order_number} đã huỷ${p.reason === 'expired' ? ' (tự huỷ quá hạn)' : ''}.`;
+  if (topic === 'order.status_changed' && p.status === 'returned') return `↩️ Đơn #${p.order_number} bị HOÀN (bom hàng) — hàng đang về cửa hàng. Nhận lại hàng rồi cập nhật tồn kho (Điều chỉnh tồn).`;
   if (topic === 'stock.low') return `📦 ${p.items?.length ?? 0} sản phẩm SẮP HẾT HÀNG (còn ≤ ${p.threshold}). Kiểm kho + nhập thêm.`;
   return null;
 }
@@ -568,6 +592,10 @@ const ALERT_REPEAT_MS = Number(process.env.ALERT_REPEAT_MS ?? 3600000);   // nh�
 const ALERT_UNMATCHED_MAX = Number(process.env.ALERT_UNMATCHED_MAX ?? 1); // ≥N giao dịch chưa khớp >1h
 const ALERT_OUTBOX_MAX = Number(process.env.ALERT_OUTBOX_MAX ?? 20);      // ≥N email tồn >10'
 const ALERT_EMAIL_FAIL_MAX = Number(process.env.ALERT_EMAIL_FAIL_MAX ?? 5);
+// Dead-man's switch: ping URL này mỗi nhịp alert-sweep — im lặng → monitor NGOÀI báo động.
+// Cần vì sweepMoneyAlerts chạy TRONG chính worker + dùng CHÍNH DB nó giám sát: worker
+// chết/treo thì nó không tự báo được. Trống = tắt.
+const WORKER_HEARTBEAT_URL = process.env.WORKER_HEARTBEAT_URL ?? '';
 let lastAlertState = '', lastAlertAt = 0;
 
 async function postAlert(text, metrics, severity) {
@@ -621,6 +649,16 @@ async function sweepMoneyAlerts() {
     await postAlert('✓ NỀN TẢNG — các cảnh báo vận hành đã hết.', m, 'ok');
     lastAlertState = ''; lastAlertAt = 0;
     log('info', 'ops_alert_cleared', {});
+  }
+  // Dead-man's switch: chạy tới đây = worker CÒN SỐNG + timer còn quay (các query trên
+  // đều có try/catch riêng nên heartbeat vẫn bắn kể cả khi DB lỗi — nó đo SỰ SỐNG của
+  // vòng lặp, không đo nội dung cảnh báo). Nuốt mọi lỗi + timeout 5s: KHÔNG được để
+  // throw lọt ra setInterval (kỷ luật chống crash-loop của file này).
+  if (WORKER_HEARTBEAT_URL) {
+    const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 5000);
+    try { await fetch(WORKER_HEARTBEAT_URL, { method: 'POST', signal: ac.signal }); }
+    catch (e) { log('warn', 'heartbeat_ping_failed', { message: e.message }); }
+    finally { clearTimeout(t); }
   }
   return { metrics: m, breaches: breaches.length };
 }

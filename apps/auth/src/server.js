@@ -44,6 +44,10 @@ const SESSION_TTL_MS = Number(process.env.SESSION_TTL_HOURS ?? 168) * 3600_000;
 const CHALLENGE_TTL_MS = 10 * 60_000; // phiên nửa vời (chờ MFA) sống ngắn
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const ISSUER = 'nentang';
+// Base URL trang ĐẶT LẠI MẬT KHẨU công khai (seller-admin /reset) — auth dựng link đầy đủ
+// vì nó giữ token thô; worker chỉ dán link vào email. Trỏ origin TRÌNH DUYỆT tới được
+// (admin.nentang.vn), KHÔNG phải URL nội bộ của auth.
+const RESET_LINK_BASE = process.env.RESET_LINK_BASE ?? 'https://admin.nentang.vn/reset';
 
 // Chỉ dùng cho e2e: lưu token đặt lại mật khẩu vào Redis để test lấy được.
 //
@@ -571,11 +575,28 @@ async function forgot(req, res, body, ctx) {
     const { rows } = await db.query(`SELECT id FROM users WHERE email = $1 AND status = 'active'`, [email]);
     if (rows.length) {
       const token = generateToken();
-      await db.query(
-        `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
-         VALUES ($1, $2, now() + interval '30 minutes')`,
-        [rows[0].id, hashToken(token)],
-      );
+      // ADR-006: token + outbox trong MỘT transaction — không bao giờ có token mà
+      // không email, hay email mà không token. shop_id NULL = sự kiện cấp identity
+      // (như audit_logs); worker gửi email, bỏ qua Telegram (guard !shopId).
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+           VALUES ($1, $2, now() + interval '30 minutes')`,
+          [rows[0].id, hashToken(token)],
+        );
+        await client.query(
+          `INSERT INTO outbox (shop_id, topic, payload) VALUES (NULL, 'user.password_reset', $1)`,
+          [{ to: email, link: `${RESET_LINK_BASE}?token=${token}` }],
+        );
+        await client.query('COMMIT');
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+      } finally {
+        client.release();
+      }
       await audit('user.password_reset_requested', { userId: rows[0].id, ip: ctx.ip });
       // Ở production token CHỈ đi qua email. Không log, không trả qua HTTP response
       // (đừng biến API thành kênh rò token), không lưu đâu khác.

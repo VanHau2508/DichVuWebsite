@@ -169,9 +169,22 @@ async function getShopName(shopId) {
   catch { return null; }
 }
 
+// Predicate "biến thể KHÔNG MỒ CÔI": phải có ánh xạ variant_option_values cho MỌI trục
+// (product_options) hiện tại của sản phẩm. Shop thu hẹp phân loại → biến thể tổ hợp cũ mất
+// hết ánh xạ (cascade) nhưng vẫn active + giữ GIÁ/TỒN CŨ → đường tiền phải CHẶN (không cho
+// thêm giỏ, không chốt đơn giá cũ). SP phẳng (0 option) thoả rỗng → mua bình thường.
+// Cần grant+policy app_checkout trên 2 bảng option (migration 0057). Alias `v` = variants.
+const VARIANT_NOT_ORPHAN_SQL = `NOT EXISTS (
+  SELECT 1 FROM product_options po WHERE po.product_id = v.product_id
+    AND NOT EXISTS (SELECT 1 FROM variant_option_values vov
+                     WHERE vov.variant_id = v.id AND vov.option_id = po.id))`;
+
 // ── cart handlers (lõi dùng chung JSON + form) ───────────────────────────────
 async function cartAddCore(c, token, variantId, qty) {
-  const v = (await c.query(`SELECT 1 FROM variants WHERE id = $1`, [variantId])).rows[0]; // RLS: chỉ variant active
+  // RLS: chỉ variant active; kèm chặn biến thể MỒ CÔI (mồ côi == 'ngừng bán').
+  const v = (await c.query(
+    `SELECT 1 FROM variants v WHERE v.id = $1 AND ${VARIANT_NOT_ORPHAN_SQL}`, [variantId],
+  )).rows[0];
   if (!v) fail(404, 'sản phẩm không tồn tại hoặc ngừng bán');
   let cart = await findCart(c, token);
   let newToken = null;
@@ -389,10 +402,13 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
 
     const cart = await findCart(c, token);
     if (!cart) fail(400, 'giỏ hàng trống hoặc hết hạn');
+    // Phòng thủ nhiều lớp: loại biến thể MỒ CÔI khỏi đơn (đã vào giỏ TRƯỚC khi shop thu hẹp
+    // phân loại) — không bao giờ reserve/snapshot theo giá/tồn cũ. Giỏ rỗng ra → fail dưới.
     const items = (await c.query(
       `SELECT ci.variant_id, ci.qty, v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title
          FROM cart_items ci JOIN variants v ON v.id = ci.variant_id JOIN products p ON p.id = v.product_id
-        WHERE ci.cart_id = $1 ORDER BY ci.created_at`, [cart.id],
+        WHERE ci.cart_id = $1 AND ${VARIANT_NOT_ORPHAN_SQL}
+        ORDER BY ci.created_at`, [cart.id],
     )).rows;
     if (items.length === 0) fail(400, 'giỏ hàng trống');
 
@@ -492,7 +508,9 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     // nhận thông báo Telegram "đơn mới" (worker định tuyến theo shop_id). link tra cứu: token
     // THÔ trong email khách (họ cần) — chỉ thêm khi có email.
     {
-      const link = (email && ctx.host) ? `https://${ctx.host}/checkout/order?number=${Number(num)}&token=${lookupToken}` : undefined;
+      // Link tra cứu trong email PHẢI trỏ trang HTML (/checkout/success — có QR để trả tiền),
+      // KHÔNG phải /checkout/order (API JSON — khách bấm vào chỉ thấy JSON thô).
+      const link = (email && ctx.host) ? `https://${ctx.host}/checkout/success?number=${Number(num)}&token=${lookupToken}` : undefined;
       await c.query(
         `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.created', $1)`,
         [{ ...(email ? { to: email } : {}), order_number: Number(num), total_vnd: total, customer_name: name, payment_method: paymentMethod, ...(link ? { link } : {}) }],

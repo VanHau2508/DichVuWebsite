@@ -155,7 +155,7 @@ async function overviewPage(res, me, cookie, shopId) {
 
 async function ordersList(res, me, cookie, shopId, q) {
   if (!isMember(me, shopId)) return denyShop(res, me);
-  const status = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'].includes(q.get('status')) ? q.get('status') : '';
+  const status = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded', 'returned'].includes(q.get('status')) ? q.get('status') : '';
   const search = (q.get('q') ?? '').trim().slice(0, 100);
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
   const from = DATE_RE.test((q.get('from') ?? '').trim()) ? q.get('from').trim() : '';
@@ -907,6 +907,31 @@ async function inviteAcceptSubmit(req, res, cookie) {
   return sendHtml(res, r.status, V.renderInviteAccept(token, r.json?.error ?? 'Không chấp nhận được lời mời.'));
 }
 
+// ── quên mật khẩu (CÔNG KHAI — người quên mật khẩu KHÔNG có phiên) ────────────
+// Trước đây /account/password/forgot nằm SAU tường đăng nhập = vô nghĩa với người
+// đã quên mật khẩu. Cặp /forgot + /reset này công khai; POST vẫn qua sameOrigin.
+function forgotPage(res) {
+  return sendHtml(res, 200, V.renderForgot());
+}
+async function forgotSubmit(req, res) {
+  const f = await readForm(req);
+  // Nuốt lỗi + LUÔN trả trang trung tính: không tiết lộ email có tồn tại hay không.
+  await authApi('POST', '/auth/password/forgot', { body: { email: String(f.email ?? '').trim() } }).catch(() => {});
+  return sendHtml(res, 200, V.renderForgotDone());
+}
+function resetPage(res, url) {
+  const token = url.searchParams.get('token') ?? '';
+  if (!token) return sendHtml(res, 400, V.renderError({}, 'Thiếu mã đặt lại trong link.'));
+  return sendHtml(res, 200, V.renderReset(token));
+}
+async function resetSubmit(req, res) {
+  const f = await readForm(req);
+  const token = String(f.token ?? '');
+  const r = await authApi('POST', '/auth/password/reset', { body: { token, password: String(f.password ?? '') } });
+  if (r.status === 200) return sendHtml(res, 200, V.renderResetDone());
+  return sendHtml(res, r.status, V.renderReset(token, r.json?.error ?? 'Link không hợp lệ hoặc đã hết hạn.'));
+}
+
 // ── nhân sự (member management) — SỬA cần step-up; seller cưỡng chế members.write ─
 async function membersList(res, me, cookie, shopId, notice, err) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -1307,6 +1332,11 @@ async function handle(req, res, url, p) {
     // Chấp nhận lời mời: CÔNG KHAI (người được mời chưa có phiên). POST vẫn qua sameOrigin.
     if (p === '/invite/accept' && req.method === 'GET') return inviteAcceptPage(res, url);
     if (p === '/invite/accept' && req.method === 'POST') return inviteAcceptSubmit(req, res, cookie);
+    // Quên mật khẩu: CÔNG KHAI (đặt TRƯỚC tường đăng nhập — người quên mật khẩu không có phiên).
+    if (p === '/forgot' && req.method === 'GET') return forgotPage(res);
+    if (p === '/forgot' && req.method === 'POST') return forgotSubmit(req, res);
+    if (p === '/reset' && req.method === 'GET') return resetPage(res, url);
+    if (p === '/reset' && req.method === 'POST') return resetSubmit(req, res);
 
     // Còn lại: cần phiên ĐẦY ĐỦ.
     const sess = await loadSession(cookie);

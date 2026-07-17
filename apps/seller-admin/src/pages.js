@@ -6,7 +6,7 @@ import { esc } from './http.js';
 
 const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + '₫';
 const dt = (s) => { try { return new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(s)); } catch { return esc(s); } };
-const STATUS = { pending: 'Chờ xử lý', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn' };
+const STATUS = { pending: 'Chờ xử lý', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn', returned: 'Hoàn hàng' };
 const PAY = { unpaid: 'Chưa trả', paid: 'Đã trả' };
 const SHIP_ST = { created: 'Đang tạo', in_transit: 'Đang vận chuyển', delivered: 'Đã giao', returned: 'Hoàn hàng', cancelled: 'Đã huỷ' };
 
@@ -75,6 +75,7 @@ textarea{min-height:80px;resize:vertical}
 .badge.pending{background:var(--warnbg);color:var(--warn)}.badge.confirmed{background:var(--wash);color:var(--prid)}.badge.shipped{background:var(--indigobg);color:var(--indigo)}
 .badge.delivered{background:var(--goodbg);color:var(--good)}.badge.cancelled{background:var(--badbg);color:var(--bad)}.badge.paid{background:var(--goodbg);color:var(--good)}.badge.unpaid{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--soft)}
 .badge.refunded{background:color-mix(in srgb,var(--pri2) 15%,transparent);color:var(--pri2)}
+.badge.returned{background:var(--warnbg);color:var(--warn)}
 .badge.active{background:var(--goodbg);color:var(--good)}.badge.draft{background:var(--warnbg);color:var(--warn)}.badge.archived{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--soft)}.badge.published{background:var(--goodbg);color:var(--good)}
 .badge.onboarding{background:var(--wash);color:var(--prid)}.badge.suspended{background:var(--badbg);color:var(--bad)}.badge.closed{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--soft)}
 .muted{color:var(--mut)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
@@ -442,7 +443,8 @@ export function renderLogin(err) {
       <label>Email</label><input name="email" type="email" required autocomplete="username">
       <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
       <button class="btn" type="submit" style="width:100%;margin-top:14px">Đăng nhập</button>
-    </form></div></div>`);
+    </form>
+    <p class="muted" style="font-size:.82rem;margin-top:12px"><a href="/forgot">Quên mật khẩu?</a></p></div></div>`);
 }
 
 export function renderMfa(err) {
@@ -571,7 +573,7 @@ export function renderDashboard(ctx, shops, isStaff = false) {
         : `<div class="card"><h2 style="margin-top:0">Chưa có cửa hàng</h2><p class="muted" style="margin:0">Bạn chưa được thêm vào cửa hàng nào. Liên hệ nền tảng để được cấp cửa hàng, hoặc nhờ chủ shop mời bạn vào bằng email này.</p></div>`}`);
 }
 
-const STATUSES = ['', 'pending', 'confirmed', 'shipped', 'delivered', 'cancelled'];
+const STATUSES = ['', 'pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'returned'];
 export function renderOrders(ctx, shopId, data, filter) {
   const orders = data.orders ?? [];
   // Cảnh báo khi 1 NGUỒN (mạng/kết nối) có ≥4 SĐT KHÁC NHAU đơn chưa xử lý — dấu hiệu 1 kẻ
@@ -657,7 +659,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping) {
   // Đơn COD chưa thu tiền → nút "Đã nhận tiền" (độc lập với trạng thái giao hàng).
   // Đơn QR: webhook đối soát tự đặt paid. Nút xác nhận TAY chỉ hiện cho CHỦ SHOP
   // (owner) làm fallback khi feed vắng — sẽ đòi xác nhận lại mật khẩu (step-up).
-  const unpaidLive = o.payment_status !== 'paid' && !['cancelled', 'refunded'].includes(o.status);
+  const unpaidLive = o.payment_status !== 'paid' && !['cancelled', 'refunded', 'returned'].includes(o.status);
   let payAction = '';
   if (o.payment_method === 'cod' && unpaidLive) payAction = act('mark-paid', 'Đã nhận tiền (COD)');
   else if (o.payment_method === 'qr' && unpaidLive && ctx.role === 'owner') payAction = act('mark-paid-qr', 'Đã nhận tiền (QR) — xác nhận tay', 'btn warn sm');
@@ -674,6 +676,11 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping) {
     <div class="card"><span class="pill">${badge(o.status, STATUS[o.status] ?? o.status)}</span>
       <span class="pill">${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} ${esc(o.payment_method?.toUpperCase() ?? '')}</span>
       <div class="actions">${(actions + payAction + refundAction) || '<span class="muted">Không có thao tác.</span>'}</div></div>
+    ${o.status === 'returned' ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg)">
+      <h2 style="margin-top:0">↩️ Đơn bị hoàn (bom hàng)</h2>
+      <p class="muted" style="margin-bottom:0">Hãng vận chuyển báo hàng đang/đã hoàn về. Khi <strong>nhận lại hàng thực tế</strong>,
+        vào trang sản phẩm → <strong>Điều chỉnh tồn</strong> để cộng lại số lượng — hệ thống KHÔNG tự cộng
+        vì hàng có thể hỏng/thiếu khi về tới nơi.</p></div>` : ''}
     <div class="card"><h2>Sản phẩm</h2><table><tbody>
       ${(o.lines ?? []).map((l) => `<tr><td><div class="pcell">${l.image_url ? `<img class="pthumb" src="${esc(l.image_url)}" alt="" loading="lazy" width="44" height="44">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0">${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span></div></div></td><td class="muted">${money(l.unit_price_vnd)} × ${esc(l.qty)}</td><td style="text-align:right">${money(Number(l.unit_price_vnd) * l.qty)}</td></tr>`).join('')}
     </tbody></table>
@@ -707,7 +714,7 @@ export function renderOrderPrint(shopId, shop, o) {
   const contact = [s.business_address, s.contact_phone ? `ĐT: ${s.contact_phone}` : '', s.contact_email ? `Email: ${s.contact_email}` : '']
     .filter(Boolean).map(esc).join(' · ');
   const ship = (o.shipments ?? [])[0];
-  const ST = { pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn tiền' };
+  const ST = { pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn tiền', returned: 'Hoàn hàng' };
   const PT = { unpaid: 'Chưa thanh toán', pending: 'Chờ thanh toán', paid: 'Đã thanh toán', refunded: 'Đã hoàn tiền' };
   const CSS = `*{box-sizing:border-box}body{font-family:system-ui,'Segoe UI',Roboto,sans-serif;color:#0d1526;margin:0;padding:24px;font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased}
 .doc{max-width:720px;margin:0 auto}.hd{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:2px solid #0d1526;padding-bottom:12px;margin-bottom:16px}
@@ -733,7 +740,7 @@ function printDoc(shopId, s, o, { backLink = false } = {}) {
   const contact = [s.business_address, s.contact_phone ? `ĐT: ${s.contact_phone}` : '', s.contact_email ? `Email: ${s.contact_email}` : '']
     .filter(Boolean).map(esc).join(' · ');
   const ship = (o.shipments ?? [])[0];
-  const ST = { pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn tiền' };
+  const ST = { pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn tiền', returned: 'Hoàn hàng' };
   const PT = { unpaid: 'Chưa thanh toán', pending: 'Chờ thanh toán', paid: 'Đã thanh toán', refunded: 'Đã hoàn tiền' };
   return `<div class="doc">
     <div class="hd">
@@ -1767,6 +1774,39 @@ export function renderInviteDone(kind) {
   }[kind] ?? ['Lời mời', ''];
   return layout('Lời mời', {}, `<div class="center"><div class="card">
     <h1>${esc(T[0])}</h1><p class="muted">${esc(T[1])}</p>
+    <a class="btn" href="/login">Đăng nhập</a></div></div>`);
+}
+
+// ── Quên mật khẩu (CÔNG KHAI — mirror renderInviteAccept: layout({}) → authwrap) ──
+export function renderForgot(err) {
+  return layout('Quên mật khẩu', {}, `<div class="center"><div class="card"><h1>Quên mật khẩu</h1>
+    <p class="muted">Nhập email tài khoản — chúng tôi sẽ gửi link đặt lại mật khẩu.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="/forgot">
+      <label>Email</label><input name="email" type="email" required autocomplete="username">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Gửi link đặt lại</button>
+    </form>
+    <p class="muted" style="font-size:.82rem;margin-top:10px"><a href="/login">← Đăng nhập</a></p></div></div>`);
+}
+export function renderForgotDone() {
+  // Trung tính: KHÔNG tiết lộ email có tồn tại hay không.
+  return layout('Quên mật khẩu', {}, `<div class="center"><div class="card"><h1>Kiểm tra email</h1>
+    <p class="muted">Nếu email vừa nhập có tài khoản, chúng tôi đã gửi link đặt lại mật khẩu
+      (hết hạn sau 30 phút). Kiểm tra cả mục spam.</p>
+    <a class="btn" href="/login">Về đăng nhập</a></div></div>`);
+}
+export function renderReset(token, err) {
+  return layout('Đặt lại mật khẩu', {}, `<div class="center"><div class="card"><h1>Đặt mật khẩu mới</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="/reset">
+      <input type="hidden" name="token" value="${esc(token)}">
+      <label>Mật khẩu mới (tối thiểu 10 ký tự)</label><input name="password" type="password" required minlength="10" autocomplete="new-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Đặt lại mật khẩu</button>
+    </form></div></div>`);
+}
+export function renderResetDone() {
+  return layout('Đặt lại mật khẩu', {}, `<div class="center"><div class="card"><h1>Đã đổi mật khẩu ✅</h1>
+    <p class="muted">Mật khẩu đã được đặt lại và mọi phiên cũ đã bị đăng xuất. Đăng nhập bằng mật khẩu mới.</p>
     <a class="btn" href="/login">Đăng nhập</a></div></div>`);
 }
 

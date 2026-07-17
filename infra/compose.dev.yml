@@ -137,6 +137,8 @@ services:
       # Origin được phép gửi request đổi trạng thái (chống CSRF).
       ALLOWED_ORIGINS: https://admin.nentang.vn,https://auth.localtest
       PORT: "3020"
+      # Trang /reset CÔNG KHAI của admin (origin TRÌNH DUYỆT tới được) — auth dựng link email.
+      RESET_LINK_BASE: https://admin.localtest:8443/reset
       # CHỈ DEV. Lưu token đặt lại mật khẩu vào Redis cho e2e đọc.
       # Service từ chối khởi động nếu cờ này bật cùng APP_ENV=production.
       DEV_RESET_TOKEN_STASH: "1"
@@ -167,6 +169,7 @@ services:
       PLATFORM_DOMAIN: nentang.vn
       ALLOWED_ORIGINS: https://admin.nentang.vn,https://ops.localtest
       PORT: "3030"
+      TRIAL_DAYS: "14"
     volumes:
       # Chỉ dev: mount src cho mutation testing (patch trên host → restart).
       # Đường dẫn PHẢI khớp CMD của Dockerfile (node src/server.js → /app/src),

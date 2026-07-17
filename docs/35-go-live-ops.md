@@ -66,6 +66,34 @@ Dedup: chỉ báo khi trạng thái đổi hoặc quá `ALERT_REPEAT_MS` (1h) �
 3. **Backup dead-man's switch:** đặt `HEALTHCHECK_PING_URL` (healthchecks.io) trong `.env` →
    `backup.sh` ping khi chạy xong. Cron backup ngừng chạy → không ping → healthchecks.io báo động.
 4. Nối kênh báo (Telegram/Zalo/email) trong dịch vụ giám sát → nhận thông báo khi có sự cố.
+5. **Dead-man's switch cho WORKER (vòng cảnh báo tiền):** đặt `WORKER_HEARTBEAT_URL`
+   (healthchecks.io, grace ≥ 15') → worker ping mỗi ~5' cuối mỗi nhịp `sweepMoneyAlerts`.
+   Worker treo/chết/DB sập → ngừng ping → monitor báo động. Vì sao cần: `sweepMoneyAlerts`
+   chạy TRONG chính worker + dùng CHÍNH DB nó giám sát, nên worker chết thì nó KHÔNG tự
+   báo được — phải có mắt NGOÀI hộp.
+
+**Lưu ý quan trọng về healthcheck:** container healthcheck (image + block trong compose)
+CHỈ đặt TRẠNG THÁI. Với `docker compose` + `restart: unless-stopped`, container `unhealthy`
+KHÔNG được tự khởi động lại — chỉ container có tiến trình THOÁT mới restart. Worker
+treo-nhưng-còn-sống sẽ nằm `unhealthy` và IM LẶNG. Cho MVP: dựa vào `restart: unless-stopped`
+(bắt crash cứng) + heartbeat + monitor ngoài là đủ; sidecar autoheal cần mount docker.sock
+(quyền ngang root) — KHÔNG khuyến nghị.
+
+---
+
+## Email deliverability — SPF / DKIM / DMARC (bắt buộc trước khách #1)
+
+**Vì sao:** worker đã ÉP auth + STARTTLS (587) tới relay thật. Nhưng nếu THIẾU bản ghi
+DNS xác thực domain gửi, thư vẫn vào SPAM hoặc bị relay/Gmail từ chối (Gmail/Yahoo từ
+2024 bắt buộc SPF+DKIM+DMARC). Khách VN dùng Gmail là chính.
+
+**Bạn cần làm (DNS + dashboard relay — code không tự làm được):**
+1. **SPF:** thêm TXT trên domain của `EMAIL_FROM` cho phép relay gửi thay
+   (relay như Resend/SES/SendGrid cấp sẵn chuỗi `include:...`).
+2. **DKIM:** thêm CNAME/TXT khoá ký do relay cấp → thư được ký, không bị coi là giả mạo.
+3. **DMARC:** thêm TXT `_dmarc` giá trị `v=DMARC1; p=quarantine; rua=mailto:<email của bạn>`.
+4. **Verify domain gửi** trong dashboard relay (thường phải "verified" mới gửi production).
+5. **Kiểm:** gửi 1 thư thử tới Gmail → "Show original" phải thấy SPF=PASS, DKIM=PASS, DMARC=PASS.
 
 ---
 
@@ -74,6 +102,8 @@ Dedup: chỉ báo khi trạng thái đổi hoặc quá `ALERT_REPEAT_MS` (1h) �
 - [ ] `BACKUP_ENC_KEY` thật + `OFFSITE_CMD`/`OFFSITE_DEST` + cron backup chạy + **đã diễn tập restore**
 - [ ] `ALERT_WEBHOOK_URL` thật + đã thử nhận được 1 cảnh báo mẫu
 - [ ] Giám sát uptime NGOÀI VPS trỏ vào URL công khai + `HEALTHCHECK_PING_URL` cho backup
+- [ ] SMTP relay thật (`SMTP_USER`/`SMTP_PASSWORD`) + domain gửi đã verify + SPF/DKIM/DMARC = PASS (gửi thử tới Gmail)
+- [ ] `WORKER_HEARTBEAT_URL` thật + healthchecks.io grace ≥ 15' + đã thấy 1 ping thành công
 - [ ] (Ngoài phạm vi doc này) VPS + floating IP + tên miền + secret prod thật (KHÔNG devpassword) +
       SMTP relay thật + **API key GHTK/GHN production** cho các shop
 

@@ -27,6 +27,10 @@ const AUTH_URL = process.env.AUTH_URL ?? 'http://auth:3020';
 const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN ?? 'nentang.vn';
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const INVITE_TTL_DAYS = 7;
+// Thời gian dùng thử — LUÔN đặt current_period_end lúc tạo shop, nếu không thì
+// sweepSubscriptions (lọc IS NOT NULL) bỏ qua vĩnh viễn = shop miễn phí mãi mãi.
+// NaN/âm → 0 = không trial (hết hạn ngay ở nhịp sweep kế). Đồng bộ với migration 0056.
+const TRIAL_DAYS = Math.max(0, Number(process.env.TRIAL_DAYS ?? 14) || 0);
 
 if (ALLOWED_ORIGINS.length === 0) {
   throw new Error('thiếu ALLOWED_ORIGINS — mọi mutation sẽ bị từ chối');
@@ -132,8 +136,9 @@ async function createShop(req, res, body, staff, ip) {
     );
 
     await client.query(
-      `INSERT INTO subscriptions (shop_id, plan_code, status) VALUES ($1, $2, 'trial')`,
-      [shopId, planCode],
+      `INSERT INTO subscriptions (shop_id, plan_code, status, current_period_end)
+       VALUES ($1, $2, 'trial', now() + ($3 || ' days')::interval)`,
+      [shopId, planCode, String(TRIAL_DAYS)],
     );
 
     await client.query(

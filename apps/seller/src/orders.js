@@ -27,7 +27,7 @@ async function listOrders(res, ctx, _b, _p, query) {
   const status = query.get('status');
   const where = [];
   const args = [];
-  if (['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'].includes(status)) { args.push(status); where.push(`status = $${args.length}`); }
+  if (['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded', 'returned'].includes(status)) { args.push(status); where.push(`status = $${args.length}`); }
   // Tìm: mã đơn (nếu q toàn số) hoặc tên/điện thoại khách (ILIKE, escape wildcard).
   const q = (query.get('q') ?? '').trim().slice(0, 100);
   if (q) {
@@ -234,7 +234,7 @@ async function markPaid(res, ctx, _body, params) {
     if (o.payment_method !== 'cod') return { code: 409, msg: 'chỉ đơn COD mới đánh dấu đã nhận tiền thủ công' };
     // 'refunded'/'cancelled' là TERMINAL: không cho đánh dấu đã-trả (khớp markPaidQr) — nếu
     // không, mark-paid (perm orders.write, không step-up) có thể ĐẢO NGƯỢC một lệnh hoàn tiền.
-    if (['cancelled', 'refunded'].includes(o.status)) return { code: 409, msg: 'đơn đã huỷ/hoàn, không thể đánh dấu đã nhận tiền' };
+    if (['cancelled', 'refunded', 'returned'].includes(o.status)) return { code: 409, msg: 'đơn đã huỷ/hoàn/trả, không thể đánh dấu đã nhận tiền' };
     const upd = await c.query(
       `UPDATE orders SET payment_status = 'paid', paid_at = now()
         WHERE id = $1 AND payment_status <> 'paid'`, [orderId],
@@ -268,7 +268,7 @@ async function markPaidQr(res, ctx, _body, params) {
     )).rows[0];
     if (!o) return { code: 404 };
     if (o.payment_method !== 'qr') return { code: 409, msg: 'chỉ đơn QR mới xác nhận tay tại đây' };
-    if (['cancelled', 'refunded'].includes(o.status)) return { code: 409, msg: 'đơn đã huỷ/hoàn, không thể xác nhận thanh toán' };
+    if (['cancelled', 'refunded', 'returned'].includes(o.status)) return { code: 409, msg: 'đơn đã huỷ/hoàn/trả, không thể xác nhận thanh toán' };
     const upd = await c.query(
       `UPDATE orders SET payment_status = 'paid', paid_at = now()
         WHERE id = $1 AND payment_status <> 'paid'`, [orderId],

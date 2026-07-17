@@ -83,6 +83,16 @@ function normalizeHost(raw) {
 
 const CACHE_PUBLIC = 'public, s-maxage=60, stale-while-revalidate=300';
 const PAGE_SIZE = 24; // sản phẩm mỗi trang (lưới trang chủ / danh mục / tìm kiếm)
+
+// Predicate "biến thể KHÔNG MỒ CÔI": biến thể phải có ánh xạ variant_option_values cho
+// MỌI trục (product_options) hiện tại của sản phẩm. Khi shop thu hẹp phân loại, biến thể
+// của tổ hợp cũ mất hết ánh xạ (cascade) nhưng vẫn active + còn giá/tồn cũ → phải ẨN
+// (không cho chọn, không đếm tồn). SP phẳng (0 option) thoả rỗng → giữ nguyên như cũ.
+// Yêu cầu alias `v` cho variants ở query bao ngoài; app_store đã có quyền đọc từ 0041.
+const VARIANT_NOT_ORPHAN_SQL = `NOT EXISTS (
+  SELECT 1 FROM product_options po WHERE po.product_id = v.product_id
+    AND NOT EXISTS (SELECT 1 FROM variant_option_values vov
+                     WHERE vov.variant_id = v.id AND vov.option_id = po.id))`;
 // Host GỐC nền tảng → trang CÔNG TY (marketing/bảng giá), KHÔNG phải shop nào.
 const ROOT_HOSTS = new Set((process.env.PLATFORM_ROOT_HOSTS ?? 'nentang.vn,www.nentang.vn')
   .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
@@ -221,7 +231,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
                   (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
                   (SELECT coalesce(sum(il.on_hand - il.reserved), 0)
                      FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
-                    WHERE v.product_id = p.id) AS available
+                    WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS available
              FROM products p ${whereJoin} ORDER BY p.created_at DESC LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
           args,
         )).rows.map((p) => ({ ...p, image: imgUrl(p.image_key), available: Number(p.available) }));
@@ -238,10 +248,13 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         )).rows[0];
         if (!p) return { ...base, notFound: true };
         // available = on_hand - reserved (KHỚP checkout: không có dòng inventory = 0 = hết hàng).
+        // Lọc biến thể MỒ CÔI ngay tại query → selected/totalAvail/selector (theme.js)
+        // đều kế thừa danh sách đã lọc, không cần sửa theme.
         const variants = (await c.query(
           `SELECT v.id, v.title, v.sku, v.price_vnd, coalesce(il.on_hand - il.reserved, 0) AS available
              FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
-            WHERE v.product_id = $1 ORDER BY v.position`, [p.id])).rows;
+            WHERE v.product_id = $1 AND ${VARIANT_NOT_ORPHAN_SQL}
+            ORDER BY v.position`, [p.id])).rows;
         // Trục biến thể (Màu/Size...) — RLS store_* chỉ trả option của SP đang bán.
         p.options = (await c.query(
           `SELECT o.id, o.name, o.position,
@@ -266,7 +279,8 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         p.related = (await c.query(
           `SELECT DISTINCT p2.id, p2.slug, p2.title, p2.price_vnd,
                   (SELECT m.public_key FROM media m WHERE m.product_id = p2.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
-                  (SELECT coalesce(sum(il.on_hand - il.reserved), 0) FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id WHERE v.product_id = p2.id) AS available
+                  (SELECT coalesce(sum(il.on_hand - il.reserved), 0) FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
+                    WHERE v.product_id = p2.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS available
              FROM products p2 JOIN product_categories pc2 ON pc2.product_id = p2.id
             WHERE pc2.category_id IN (SELECT category_id FROM product_categories WHERE product_id = $1) AND p2.id <> $1
             LIMIT 8`, [p.id])).rows.map((r) => ({ ...r, image: imgUrl(r.image_key), available: Number(r.available) }));

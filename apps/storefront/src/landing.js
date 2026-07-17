@@ -17,7 +17,7 @@ const STATS = [
   { n: '24/7', l: 'Cửa hàng luôn online, không lo sập' },
 ];
 const FEATURES = [
-  { icon: I.store, t: 'Cửa hàng đẹp, đâu ra đấy', d: 'Giao diện hiện đại, tự đổi màu thương hiệu, logo, banner — không cần biết code.' },
+  { icon: I.store, t: 'Cửa hàng đẹp, đâu ra đấy', d: 'Giao diện hiện đại, tự đổi màu thương hiệu, logo, phông chữ và nội dung trang chủ — không cần biết code.' },
   { icon: I.seo, t: 'Chuẩn SEO, tự lên Google', d: 'Sitemap, dữ liệu có cấu trúc, tốc độ nhanh. Khách tìm là thấy cửa hàng của bạn.' },
   { icon: I.cart, t: 'Bán hàng dễ như trở tay', d: 'Sản phẩm, đơn hàng, tồn kho, danh mục, blog — gói gọn trong một trang quản trị.' },
   { icon: I.wallet, t: 'Tiền vào thẳng túi bạn', d: 'COD và chuyển khoản QR VietQR. Chúng tôi KHÔNG giữ tiền của bạn, không ôm dòng tiền.' },

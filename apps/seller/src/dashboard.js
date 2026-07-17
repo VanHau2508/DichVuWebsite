@@ -35,7 +35,7 @@ async function stats(res, ctx) {
         count(*) FILTER (WHERE status = 'shipped')   AS n_shipped,
         count(*) FILTER (WHERE status = 'delivered') AS n_delivered,
         count(*) FILTER (WHERE status = 'cancelled') AS n_cancelled,
-        count(*) FILTER (WHERE payment_status <> 'paid' AND status NOT IN ('cancelled', 'refunded')) AS n_unpaid
+        count(*) FILTER (WHERE payment_status <> 'paid' AND status NOT IN ('cancelled', 'refunded', 'returned')) AS n_unpaid
       FROM orders`)).rows[0];
     // Bán chạy 30 ngày + ẢNH: gộp theo tên/sku (snapshot), lấy biến thể GẦN NHẤT làm đại
     // diện → resolve ảnh (ưu tiên ảnh riêng biến thể, không có thì ảnh chính sản phẩm).

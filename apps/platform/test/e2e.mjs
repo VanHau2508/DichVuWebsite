@@ -12,12 +12,26 @@
  * Chậm (~60s) vì MFA buộc chờ sang bước thời gian mới — đúng như thiết kế.
  */
 
+import http from 'node:http';
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
 
 const AUTH = process.env.AUTH_URL ?? 'http://auth:3020';
 const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
+const STOREFRONT = process.env.STOREFRONT_URL ?? 'http://storefront:3050';
+
+// GET storefront với Host tuỳ ý (fetch/undici không cho đặt header host → node:http,
+// mirror apps/storefront/test/e2e.mjs).
+function storeGet(host, path = '/') {
+  const u = new URL(STOREFRONT);
+  return new Promise((resolve, reject) => {
+    http.request(
+      { hostname: u.hostname, port: u.port, path, method: 'GET', headers: { host } },
+      (res) => { res.resume(); res.on('end', () => resolve({ status: res.statusCode })); },
+    ).on('error', reject).end();
+  });
+}
 const ORIGIN_AUTH = 'https://auth.localtest';
 const ORIGIN_OPS = 'https://ops.localtest';
 
@@ -454,14 +468,167 @@ async function main() {
   mtr.shops_by_sub_status?.active === dbActive.rows[0].n
     ? ok(`shops_by_sub_status.active = ${dbActive.rows[0].n} khớp DB`)
     : bad('đếm active lệch', `api=${mtr.shops_by_sub_status?.active} db=${dbActive.rows[0].n}`);
-  Number.isInteger(mtr.churn_90d) && mtr.churn_90d_is_estimate === true
-    ? ok('churn_90d là số nguyên + cờ ước-lượng (không có cancelled_at)')
-    : bad('churn_90d sai dạng', JSON.stringify({ churn: mtr.churn_90d, flag: mtr.churn_90d_is_estimate }));
+  // 0072: churn_90d = mốc huỷ THẬT (cancelled_at); legacy_estimate = dòng huỷ
+  // trước 0072 (NULL) vẫn ước lượng; cờ is_estimate CHỈ true khi còn phần legacy.
+  Number.isInteger(mtr.churn_90d) && Number.isInteger(mtr.churn_90d_legacy_estimate)
+    && mtr.churn_90d_is_estimate === (mtr.churn_90d_legacy_estimate > 0)
+    ? ok('churn_90d (thật) + legacy_estimate tách bạch, cờ is_estimate khớp legacy>0')
+    : bad('churn_90d sai dạng', JSON.stringify({ churn: mtr.churn_90d, legacy: mtr.churn_90d_legacy_estimate, flag: mtr.churn_90d_is_estimate }));
 
   // Tổng đã thu ≥ tổng của shop test này (sổ toàn nền tảng bao trùm sổ 1 shop).
   Number(mtr.collected_total_vnd) >= Number(sum.rows[0].t)
     ? ok('collected_total_vnd bao trùm tổng đã thu của shop test')
     : bad('collected_total_vnd nhỏ hơn tổng 1 shop', `${mtr.collected_total_vnd} < ${sum.rows[0].t}`);
+
+  // ── 5d. listShops: phân trang + tìm + lọc (?page/?q/?sub_status) ───────────
+  sect('5d. listShops phân trang + tìm + lọc');
+  r = await req(PLATFORM, 'GET', `/ops/shops?q=${slug}`, { cookie: staffCookie });
+  r.status === 200 && r.json.shops.some((s) => s.id === shopId) && r.json.page === 1
+    && Number.isInteger(r.json.total) && r.json.total >= 1 && r.json.page_size === 50
+    ? ok(`?q=${slug} tìm thấy shop + meta {page,total,page_size}`) : bad('tìm theo slug lỗi', r.raw);
+  r.json?.staff_role === 'admin'
+    ? ok('list trả staff_role=admin (Console ẩn/hiện nút theo vai trò)') : bad('thiếu staff_role', r.raw);
+  r = await req(PLATFORM, 'GET', `/ops/shops?q=khong-ton-tai-${uniq()}`, { cookie: staffCookie });
+  r.status === 200 && r.json.shops.length === 0 && r.json.total === 0 && r.json.has_more === false
+    ? ok('?q không khớp → rỗng, total 0, has_more false') : bad('q không khớp vẫn ra shop', r.raw);
+  r = await req(PLATFORM, 'GET', '/ops/shops?page=9999', { cookie: staffCookie });
+  r.status === 200 && r.json.shops.length === 0 && r.json.has_more === false && r.json.page === 9999
+    ? ok('?page=9999 → trang rỗng, has_more false') : bad('phân trang xa lỗi', r.raw);
+  // Lọc sub_status kết hợp q: shop exp (trial) khớp, shop chính (active) không.
+  r = await req(PLATFORM, 'GET', `/ops/shops?q=${expSlug}&sub_status=trial`, { cookie: staffCookie });
+  const rActive = await req(PLATFORM, 'GET', `/ops/shops?q=${expSlug}&sub_status=active`, { cookie: staffCookie });
+  r.status === 200 && r.json.total === 1 && r.json.shops[0]?.id === expShopId
+    && rActive.json.total === 0
+    ? ok('?sub_status=trial + q → đúng 1 shop trial; lọc active → 0') : bad('lọc sub_status lỗi', `${r.raw} / ${rActive.raw}`);
+
+  // ── 5e. Terminate (offboard) + export + cancelled_at ───────────────────────
+  sect('5e. Chấm dứt hợp đồng (terminate) + xuất dữ liệu (export)');
+  // Re-step-up cho chắc (cửa sổ 5' — suite có thể chạy sát biên).
+  await req(AUTH, 'POST', '/auth/step-up', { body: { password: 'a strong platform passphrase' }, cookie: staffCookie, origin: ORIGIN_AUTH });
+  const termSlug = `term-${uniq()}`;
+  r = await req(PLATFORM, 'POST', '/ops/shops', {
+    body: { name: 'Shop sắp đóng', slug: termSlug, plan_code: 'platform' },
+    cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  const termShopId = r.json?.id;
+  termShopId ? ok('dựng shop để terminate') : bad('không dựng được shop terminate', r.raw);
+
+  // Guard giai đoạn nguội: shop CHƯA suspended → 409 dù slug đúng.
+  r = await req(PLATFORM, 'POST', `/ops/shops/${termShopId}/terminate`, {
+    body: { confirm_slug: termSlug }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  r.status === 409 ? ok('terminate shop chưa suspended → 409 (buộc khoá trước)') : bad('đóng thẳng shop đang chạy', r.raw);
+
+  await req(PLATFORM, 'POST', `/ops/shops/${termShopId}/suspend`, { cookie: staffCookie, origin: ORIGIN_OPS });
+  // Suspended → storefront trả 503 (trang tạm ngưng) — mốc so sánh cho serving-stop.
+  let sf = await storeGet(`${termSlug}.nentang.vn`);
+  sf.status === 503 ? ok('storefront shop suspended → 503 (trang tạm ngưng)') : bad('storefront suspended sai', String(sf.status));
+
+  // Typed confirmation: gõ sai slug → 422, shop VẪN suspended.
+  r = await req(PLATFORM, 'POST', `/ops/shops/${termShopId}/terminate`, {
+    body: { confirm_slug: 'go-sai-slug' }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  chk = await owner.query(`SELECT status, deleted_at FROM shops WHERE id = $1`, [termShopId]);
+  r.status === 422 && chk.rows[0].status === 'suspended' && chk.rows[0].deleted_at === null
+    ? ok('confirm_slug sai → 422, shop còn nguyên suspended') : bad('typed confirmation thủng', `${r.status}/${JSON.stringify(chk.rows)}`);
+
+  // Export TRƯỚC khi đóng (nghĩa vụ Luật 91/2025): dữ liệu quản lý + ghi chú tenant.
+  r = await req(PLATFORM, 'GET', `/ops/shops/${termShopId}/export`, { cookie: staffCookie });
+  r.status === 200 && r.json.shop?.slug === termSlug && r.json.domains?.length >= 1
+    && r.json.subscriptions?.length === 1 && typeof r.json.tenant_data_note === 'string'
+    && r.json.truncated?.audit_logs === false
+    ? ok('export shop → JSON đủ mục quản lý + tenant_data_note + cờ truncated') : bad('export lỗi', r.raw);
+  // Export shop CHÍNH: có lời mời — và KHÔNG rò token_hash / verification_token.
+  r = await req(PLATFORM, 'GET', `/ops/shops/${shopId}/export`, { cookie: staffCookie });
+  r.status === 200 && r.json.invitations?.length >= 1
+    && r.json.invitations.every((i) => !('token_hash' in i))
+    && r.json.domains.every((d) => !('verification_token' in d))
+    ? ok('export không rò token_hash lời mời / verification_token domain') : bad('export rò bí mật', r.raw);
+
+  // Terminate đúng slug → 200; DB: terminated + deleted_at + sub cancelled + cancelled_at + audit.
+  r = await req(PLATFORM, 'POST', `/ops/shops/${termShopId}/terminate`, {
+    body: { confirm_slug: termSlug, reason: 'khách ngừng kinh doanh' }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  chk = await owner.query(`SELECT status, deleted_at FROM shops WHERE id = $1`, [termShopId]);
+  const subChk = await owner.query(`SELECT status, cancelled_at FROM subscriptions WHERE shop_id = $1`, [termShopId]);
+  const audChk = await owner.query(`SELECT 1 FROM audit_logs WHERE shop_id = $1 AND action = 'shop.terminated'`, [termShopId]);
+  r.status === 200 && r.json.status === 'terminated' && chk.rows[0].status === 'terminated' && chk.rows[0].deleted_at
+    ? ok('terminate đúng slug → shops.status=terminated + deleted_at set') : bad('terminate lỗi', `${r.raw}/${JSON.stringify(chk.rows)}`);
+  subChk.rows[0]?.status === 'cancelled' && subChk.rows[0]?.cancelled_at
+    ? ok('thuê bao → cancelled + cancelled_at set (0072)') : bad('sub sau terminate sai', JSON.stringify(subChk.rows));
+  audChk.rowCount === 1 ? ok('audit shop.terminated đã ghi') : bad('thiếu audit terminate');
+
+  // SERVING-STOP thật: storefront giờ 404 (RLS store_shop loại terminated/deleted).
+  sf = await storeGet(`${termSlug}.nentang.vn`);
+  sf.status === 404 ? ok('storefront shop terminated → 404 (ngừng phục vụ tự nhiên)') : bad('storefront terminated vẫn phục vụ', String(sf.status));
+
+  // Shop đã đóng biến khỏi danh sách (deleted_at filter); terminate lần 2 → 404;
+  // export VẪN chạy được (bằng chứng hậu đóng — cố ý không lọc deleted_at).
+  r = await req(PLATFORM, 'GET', `/ops/shops?q=${termSlug}`, { cookie: staffCookie });
+  const rT2 = await req(PLATFORM, 'POST', `/ops/shops/${termShopId}/terminate`, {
+    body: { confirm_slug: termSlug }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  const rEx2 = await req(PLATFORM, 'GET', `/ops/shops/${termShopId}/export`, { cookie: staffCookie });
+  r.json?.total === 0 && rT2.status === 404 && rEx2.status === 200 && rEx2.json.shop?.status === 'terminated'
+    ? ok('shop đóng: biến khỏi list, terminate lần 2 → 404, export hậu đóng vẫn được')
+    : bad('hậu terminate sai', `list=${r.json?.total} t2=${rT2.status} ex=${rEx2.status}`);
+
+  // Metrics: sub vừa huỷ có cancelled_at → churn_90d (THẬT) ≥ 1.
+  r = await req(PLATFORM, 'GET', '/ops/metrics', { cookie: staffCookie });
+  r.json?.churn_90d >= 1 ? ok(`churn_90d (mốc thật) = ${r.json.churn_90d} ≥ 1 sau terminate`) : bad('churn_90d không nhặt sub vừa huỷ', JSON.stringify(r.json?.churn_90d));
+
+  // Renew TÁI KÍCH HOẠT phải xoá cancelled_at (hết churn khi khách trả tiền lại).
+  await owner.query(`UPDATE subscriptions SET status = 'cancelled', cancelled_at = now() WHERE shop_id = $1`, [expShopId]);
+  r = await req(PLATFORM, 'POST', `/ops/shops/${expShopId}/subscription/renew`, {
+    body: { months: 1 }, cookie: staffCookie, origin: ORIGIN_OPS,
+  });
+  chk = await owner.query(`SELECT status, cancelled_at FROM subscriptions WHERE shop_id = $1`, [expShopId]);
+  r.status === 200 && chk.rows[0].status === 'active' && chk.rows[0].cancelled_at === null
+    ? ok('renew sub đã huỷ → active + cancelled_at NULL (hết churn)') : bad('renew không xoá cancelled_at', JSON.stringify(chk.rows));
+
+  // ── 5f. Ma trận vai trò: operator CHỈ đọc, admin mới ghi ───────────────────
+  sect('5f. Vai trò operator vs admin (minRole)');
+  const oper = await makeMfaUser('operator');
+  oper.userId = await userIdOf(oper.email);
+  await owner.query(`INSERT INTO platform_staff (user_id, role) VALUES ($1, 'operator')`, [oper.userId]);
+  const operLogin = await fullLogin(oper.email, oper.password, oper.key, oper.usedCounter);
+  operLogin.ok ? ok('operator (MFA) đăng nhập đầy đủ') : bad('operator đăng nhập lỗi');
+  const operCookie = operLogin.cookie;
+
+  r = await req(PLATFORM, 'GET', '/ops/shops', { cookie: operCookie });
+  r.status === 200 && r.json.staff_role === 'operator'
+    ? ok('operator GET /ops/shops → 200 + staff_role=operator') : bad('operator không đọc được list', r.raw);
+  r = await req(PLATFORM, 'GET', '/ops/metrics', { cookie: operCookie });
+  r.status === 200 ? ok('operator GET /ops/metrics → 200 (đọc OK)') : bad('operator không xem được metrics', r.raw);
+  r = await req(PLATFORM, 'GET', `/ops/shops/${shopId}`, { cookie: operCookie });
+  r.status === 200 && r.json.staff_role === 'operator'
+    ? ok('operator GET chi tiết shop → 200') : bad('operator không xem được chi tiết', r.raw);
+
+  // Route ghi/tiền/phá hoại → 403 'cần quyền admin nền tảng'. Với route stepUp:
+  // lỗi phải là LỖI VAI TRÒ (không phải step_up_required) — gate vai trò đứng TRƯỚC.
+  const adminOnly = [
+    ['POST', '/ops/shops', { name: 'X', slug: `op-${uniq()}`, plan_code: 'platform' }],
+    ['POST', `/ops/shops/${shopId}/invitations`, { email: 'x@y.vn', role: 'owner' }],
+    ['POST', `/ops/shops/${shopId}/suspend`, {}],
+    ['POST', `/ops/shops/${shopId}/restore`, {}],
+    ['POST', `/ops/shops/${shopId}/subscription/renew`, { months: 1 }],
+    ['POST', `/ops/shops/${shopId}/terminate`, { confirm_slug: slug }],
+  ];
+  let matrixOk = true;
+  for (const [m, p, b] of adminOnly) {
+    const rr2 = await req(PLATFORM, m, p, { body: b, cookie: operCookie, origin: ORIGIN_OPS });
+    if (rr2.status !== 403 || rr2.json?.error !== 'cần quyền admin nền tảng' || rr2.json?.step_up_required) {
+      matrixOk = false;
+      bad(`operator ${m} ${p} không bị chặn đúng`, rr2.raw);
+    }
+  }
+  if (matrixOk) ok('operator bị 403 "cần quyền admin nền tảng" trên CẢ 6 route ghi (trước cả step-up)');
+  r = await req(PLATFORM, 'GET', `/ops/shops/${shopId}/export`, { cookie: operCookie });
+  r.status === 403 && r.json?.error === 'cần quyền admin nền tảng'
+    ? ok('operator GET export → 403 (dump sổ quản lý là admin-only)') : bad('operator export lọt', r.raw);
+  // DB xác nhận không có hiệu ứng phụ: shop chính vẫn active.
+  chk = await owner.query(`SELECT status FROM shops WHERE id = $1`, [shopId]);
+  chk.rows[0].status === 'active' ? ok('shop chính vẫn active sau loạt gọi operator') : bad('operator gây hiệu ứng phụ', JSON.stringify(chk.rows));
 
   // ── 6. Cổng staff (bỏ khỏi platform_staff → mất quyền dù MFA còn) ───────────
   sect('6. Cổng platform_staff');

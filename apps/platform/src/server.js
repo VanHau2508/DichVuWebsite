@@ -75,6 +75,14 @@ async function introspect(cookieHeader) {
 /**
  * Yêu cầu: phiên hợp lệ + là platform_staff + đã bật MFA.
  * Trả về {user, staffRole} hoặc gửi lỗi và trả null.
+ *
+ * platform_staff.role có HAI mức (0006, CHECK operator|admin):
+ *   - 'operator': chỉ ĐỌC — danh sách/chi tiết shop, plans, metrics (nhân viên
+ *     vận hành xem số liệu, không đụng tiền/trạng thái).
+ *   - 'admin'   : thêm các route GHI/PHÁ HOẠI/TIỀN — tạo shop, mời owner,
+ *     suspend/restore/terminate, ghi nhận thu, xuất dữ liệu offboard.
+ * Gate nằm ở dispatch (route.minRole, cạnh gate stepUp): operator gọi route
+ * admin → 403 {error:'cần quyền admin nền tảng'}.
  */
 // Step-up 5 phút cho thao tác PHÁ HOẠI của staff (mirror seller server.js): phiên
 // staff bị chiếm/ẩu không khoá được shop đang trả phí hay ghi hoá đơn mà không gõ
@@ -168,22 +176,62 @@ async function createShop(req, res, body, staff, ip) {
   }
 }
 
-async function listShops(req, res) {
-  const { rows } = await db.query(
-    `SELECT s.id, s.slug, s.name, s.status, s.created_at,
-            d.hostname AS subdomain, sub.plan_code, sub.status AS sub_status,
-            (SELECT COALESCE(SUM(pi.amount_vnd), 0)::bigint
-               FROM platform_invoices pi WHERE pi.shop_id = s.id) AS total_collected_vnd
-       FROM shops s
-       LEFT JOIN domains d ON d.shop_id = s.id AND d.is_primary
-       LEFT JOIN subscriptions sub ON sub.shop_id = s.id
-      WHERE s.deleted_at IS NULL
-      ORDER BY s.created_at DESC LIMIT 200`,
-  );
-  return send(res, 200, { shops: rows });
+// Phân trang 50/trang + tìm (?q= ILIKE name/slug) + lọc (?sub_status=). Trước đây
+// LIMIT 200 cứng — quá 200 shop là danh sách "mù". total đếm CÙNG điều kiện lọc.
+// staff_role trả kèm (đã có sẵn từ requireStaff — 0 truy vấn thêm) để Console
+// ẩn nút admin-only với operator; gate THẬT vẫn là minRole ở dispatch.
+const SHOPS_PAGE_SIZE = 50;
+const SUB_STATUSES = ['trial', 'active', 'past_due', 'cancelled'];
+async function listShops(req, res, staff) {
+  const url = new URL(req.url, 'http://internal');
+  const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
+  const q = (url.searchParams.get('q') ?? '').trim().slice(0, 100);
+  const subStatus = (url.searchParams.get('sub_status') ?? '').trim();
+  const where = ['s.deleted_at IS NULL'];
+  const args = [];
+  if (q) {
+    // Escape ký tự đặc biệt của LIKE — người dùng gõ '%' phải khớp NGHĨA ĐEN.
+    args.push(`%${q.replace(/[\\%_]/g, (ch) => '\\' + ch)}%`);
+    where.push(`(s.name ILIKE $${args.length} OR s.slug ILIKE $${args.length})`);
+  }
+  if (SUB_STATUSES.includes(subStatus)) {
+    args.push(subStatus);
+    where.push(`sub.status = $${args.length}`);
+  }
+  // subscriptions UNIQUE(shop_id) từ 0065 → LEFT JOIN không nhân dòng, COUNT chuẩn.
+  const whereSql = where.join(' AND ');
+  const [list, total] = await Promise.all([
+    db.query(
+      `SELECT s.id, s.slug, s.name, s.status, s.created_at,
+              d.hostname AS subdomain, sub.plan_code, sub.status AS sub_status,
+              (SELECT COALESCE(SUM(pi.amount_vnd), 0)::bigint
+                 FROM platform_invoices pi WHERE pi.shop_id = s.id) AS total_collected_vnd
+         FROM shops s
+         LEFT JOIN domains d ON d.shop_id = s.id AND d.is_primary
+         LEFT JOIN subscriptions sub ON sub.shop_id = s.id
+        WHERE ${whereSql}
+        ORDER BY s.created_at DESC
+        LIMIT ${SHOPS_PAGE_SIZE} OFFSET ${(page - 1) * SHOPS_PAGE_SIZE}`,
+      args,
+    ),
+    db.query(
+      `SELECT COUNT(*)::int AS n
+         FROM shops s LEFT JOIN subscriptions sub ON sub.shop_id = s.id
+        WHERE ${whereSql}`,
+      args,
+    ),
+  ]);
+  return send(res, 200, {
+    shops: list.rows,
+    page,
+    page_size: SHOPS_PAGE_SIZE,
+    total: total.rows[0].n,
+    has_more: page * SHOPS_PAGE_SIZE < total.rows[0].n,
+    staff_role: staff.staffRole,
+  });
 }
 
-async function getShop(req, res, shopId) {
+async function getShop(req, res, shopId, staff) {
   const { rows } = await db.query(
     `SELECT s.id, s.slug, s.name, s.status, s.locale, s.currency, s.timezone, s.created_at,
             d.hostname AS subdomain, sub.plan_code, sub.status AS sub_status, sub.current_period_end
@@ -213,6 +261,7 @@ async function getShop(req, res, shopId) {
     invoices: inv.rows,
     invoice_total_vnd: tot.rows[0].total,
     invoice_count: tot.rows[0].n,
+    staff_role: staff.staffRole, // Console ẩn nút admin-only với operator (gate thật ở dispatch)
   });
 }
 
@@ -270,14 +319,14 @@ async function getMetrics(req, res) {
           AND sh.deleted_at IS NULL
         ORDER BY s.current_period_end LIMIT 20`,
     ),
-    // CHURN ~90 ngày — ƯỚC LƯỢNG: subscriptions KHÔNG có cột cancelled_at (0006/0033).
-    // Worker billing chỉ được UPDATE cột status (0033) nên current_period_end ĐÓNG BĂNG
-    // tại lúc kỳ hết hạn → "cancelled + kỳ hết trong 90 ngày" ≈ huỷ trong ~90 ngày
-    // (lệch đúng bằng khoảng ân hạn past_due). Là proxy, KHÔNG phải mốc huỷ chính xác.
+    // CHURN ~90 ngày — từ 0072 có cancelled_at (mốc huỷ THẬT, worker/terminate ghi).
+    // Dòng huỷ TRƯỚC 0072 (cancelled_at NULL) vẫn phải ước lượng qua current_period_end
+    // đóng băng (proxy cũ, lệch đúng khoảng ân hạn) — TÁCH RIÊNG hai con số, không trộn.
     db.query(
-      `SELECT COUNT(*)::int AS n FROM subscriptions
-        WHERE status = 'cancelled'
-          AND current_period_end >= now() - interval '90 days'`,
+      `SELECT COUNT(*) FILTER (WHERE cancelled_at >= now() - interval '90 days')::int AS exact,
+              COUNT(*) FILTER (WHERE cancelled_at IS NULL
+                                 AND current_period_end >= now() - interval '90 days')::int AS legacy
+         FROM subscriptions WHERE status = 'cancelled'`,
     ),
     // Đã thu 30 ngày (cửa sổ trượt, khác revenue_by_month theo tháng lịch) + tổng đã thu.
     db.query(
@@ -294,8 +343,12 @@ async function getMetrics(req, res) {
     shops_by_plan: byPlan.rows,
     revenue_by_month: byMonth.rows,
     expiring_soon: expiring.rows,
-    churn_90d: churn.rows[0].n,
-    churn_90d_is_estimate: true, // không có cancelled_at — xem chú thích trên
+    // Hai con số TÁCH BẠCH: churn_90d = mốc huỷ thật (cancelled_at, 0072);
+    // legacy_estimate = dòng huỷ trước 0072 (không có mốc) vẫn ước lượng theo kỳ.
+    // Cờ is_estimate chỉ còn true khi bức tranh CÒN phần ước lượng (legacy > 0).
+    churn_90d: churn.rows[0].exact,
+    churn_90d_legacy_estimate: churn.rows[0].legacy,
+    churn_90d_is_estimate: churn.rows[0].legacy > 0,
     collected_30d_vnd: collected.rows[0].d30,
     collected_total_vnd: collected.rows[0].total,
   });
@@ -338,8 +391,11 @@ async function renewSubscription(req, res, shopId, staff, ip, body) {
     const effPlan = sub.rows[0].plan_code;
     // pg trả bigint dạng string → Number() tường minh (max 5.9M×24 = 141.6M, an toàn).
     const amount = override ?? Number(sub.rows[0].price_vnd_month) * months;
+    // cancelled_at = NULL: sub huỷ mà chủ shop quay lại trả tiền = HẾT churn —
+    // giữ mốc cũ sẽ đếm nhầm sub đang active vào churn_90d (0072).
     await client.query(
       `UPDATE subscriptions SET status = 'active',
+              cancelled_at = NULL,
               plan_code = COALESCE($2, plan_code),
               current_period_end = GREATEST(COALESCE(current_period_end, now()), now()) + ($3 || ' months')::interval
         WHERE shop_id = $1`,
@@ -415,18 +471,131 @@ async function setShopStatus(req, res, shopId, action, staff, ip, body) {
   return send(res, 200, { ok: true, status: action === 'suspend' ? 'suspended' : 'active' });
 }
 
+// ── Chấm dứt hợp đồng (offboard) — admin + step-up ───────────────────────────
+// Nghĩa vụ "xuất dữ liệu rồi đóng" (Luật 91/2025): quy trình là suspend (giai đoạn
+// nguội) → GET export → terminate. Guard tường minh:
+//   * CHỈ shop đang 'suspended' — không đóng thẳng shop đang chạy (409).
+//   * body.confirm_slug phải GÕ ĐÚNG slug của shop (typed confirmation, 422).
+// Hiệu ứng: shops.status='terminated' + deleted_at=now(); thuê bao → cancelled
+// + cancelled_at=now() (0072). Serving DỪNG TỰ NHIÊN qua các chốt sẵn có, KHÔNG
+// cần đụng domains (suspend cũng không đụng domains — nó phục vụ trang tạm ngưng):
+//   * storefront: policy store_shop (0011) loại terminated/deleted → 404.
+//   * checkout:  policy checkout_shop (0012) loại terminated/suspended → 404.
+//   * tls-authorize: SQL loại terminated + deleted_at → ngừng cấp/gia hạn chứng chỉ.
+// KHÔNG xoá dữ liệu (cam kết hợp đồng) — dòng domains giữ nguyên nên slug/subdomain
+// không tái sử dụng được (chủ đích: tránh kẻ khác chiếm subdomain shop cũ).
+async function terminateShop(req, res, shopId, staff, ip, body) {
+  const confirm = String(body.confirm_slug ?? '').trim();
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    // FOR UPDATE: khoá dòng để guard trạng thái + confirm slug không race với
+    // suspend/restore/terminate song song.
+    const cur = await client.query(
+      `SELECT slug, status FROM shops WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [shopId]);
+    if (cur.rows.length === 0) { await client.query('ROLLBACK'); return send(res, 404, { error: 'không tìm thấy shop' }); }
+    const { slug, status } = cur.rows[0];
+    if (status !== 'suspended') {
+      await client.query('ROLLBACK');
+      return send(res, 409, { error: 'chỉ chấm dứt được shop đang tạm khoá (tạm khoá trước để có giai đoạn nguội)' });
+    }
+    if (confirm !== slug) {
+      await client.query('ROLLBACK');
+      return send(res, 422, { error: 'gõ đúng slug của shop để xác nhận chấm dứt' });
+    }
+    await client.query(`UPDATE shops SET status = 'terminated', deleted_at = now() WHERE id = $1`, [shopId]);
+    // Huỷ thuê bao CÒN HIỆU LỰC. Sub đã cancelled từ trước: GIỮ nguyên (mốc huỷ
+    // thật là lúc sweep huỷ, không phải lúc terminate — không ghi đè/bịa mốc).
+    await client.query(
+      `UPDATE subscriptions SET status = 'cancelled', cancelled_at = now()
+        WHERE shop_id = $1 AND status <> 'cancelled'`, [shopId]);
+    await client.query(
+      `INSERT INTO audit_logs (shop_id, actor_type, actor_id, action, ip, metadata)
+       VALUES ($1, 'platform_staff', $2, 'shop.terminated', $3, $4)`,
+      [shopId, staff.user.id, ip, { slug, reason: body?.reason ?? null }],
+    );
+    await client.query('COMMIT');
+    log('info', 'shop_terminated', { shopId, slug });
+    return send(res, 200, { ok: true, status: 'terminated' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// ── Xuất dữ liệu offboard (admin) — GET /ops/shops/:id/export ────────────────
+// PHẠM VI TRUNG THỰC: chỉ dữ liệu QUẢN LÝ mà app_platform vốn được đọc (0006/0061/
+// 0072): shop, domains, thuê bao, sổ thu, lời mời, nhân sự, nhật ký. Dữ liệu
+// NGHIỆP VỤ (sản phẩm/đơn/khách) app_platform CỐ TÌNH không đọc được — nguyên tắc
+// "platform không xem dữ liệu khách mua" (0006). KHÔNG đục lỗ RLS ở đây; bản xuất
+// nghiệp vụ ĐẦY ĐỦ do CHỦ SHOP tự chạy qua seller POST /shops/:id/export (ZIP CSV
+// toàn bộ, đã có từ A4) — ghi rõ trong trường tenant_data_note của bản xuất.
+// Mỗi mục cap 10k dòng + cờ truncated (không stream cả sổ khổng lồ qua JSON).
+// Cố ý KHÔNG lọc deleted_at: xuất được cả shop ĐÃ terminated (bằng chứng hậu đóng).
+const EXPORT_ROW_CAP = 10_000;
+async function exportShop(req, res, shopId) {
+  const shop = await db.query(`SELECT * FROM shops WHERE id = $1`, [shopId]);
+  if (shop.rows.length === 0) return send(res, 404, { error: 'không tìm thấy shop' });
+  // Mỗi mục lấy cap+1 để biết còn dòng bị cắt hay không.
+  const capped = async (sql, args) => {
+    const { rows } = await db.query(`${sql} LIMIT ${EXPORT_ROW_CAP + 1}`, args);
+    const truncated = rows.length > EXPORT_ROW_CAP;
+    return { rows: truncated ? rows.slice(0, EXPORT_ROW_CAP) : rows, truncated };
+  };
+  const [domains, subs, invoices, invitations, members, auditLogs] = await Promise.all([
+    // domains: KHÔNG xuất verification_token (bí mật xác minh).
+    capped(`SELECT hostname, is_primary, verified_at, created_at FROM domains WHERE shop_id = $1 ORDER BY created_at`, [shopId]),
+    capped(`SELECT plan_code, status, started_at, current_period_end, cancelled_at, created_at FROM subscriptions WHERE shop_id = $1 ORDER BY created_at`, [shopId]),
+    capped(`SELECT plan_code, months, amount_vnd, note, created_by, created_at FROM platform_invoices WHERE shop_id = $1 ORDER BY created_at`, [shopId]),
+    // invitations: KHÔNG xuất token_hash.
+    capped(`SELECT email, role, invited_by, expires_at, accepted_at, created_at FROM invitations WHERE shop_id = $1 ORDER BY created_at`, [shopId]),
+    capped(`SELECT user_id, role, created_at FROM memberships WHERE shop_id = $1 ORDER BY created_at`, [shopId]),
+    capped(`SELECT action, actor_type, actor_id, ip, metadata, created_at FROM audit_logs WHERE shop_id = $1 ORDER BY created_at DESC`, [shopId]),
+  ]);
+  return send(res, 200, {
+    exported_at: new Date().toISOString(),
+    tenant_data_note:
+      'Bản xuất này CHỈ gồm dữ liệu quản lý nền tảng (shop, tên miền, thuê bao, sổ thu, lời mời, nhân sự, nhật ký). '
+      + 'Dữ liệu nghiệp vụ (sản phẩm, đơn hàng, khách hàng) nền tảng cố tình KHÔNG đọc được — '
+      + 'chủ shop tự xuất đầy đủ qua trang Xuất dữ liệu của quản trị shop (ZIP CSV) trước khi chấm dứt.',
+    shop: shop.rows[0],
+    domains: domains.rows,
+    subscriptions: subs.rows,
+    platform_invoices: invoices.rows,
+    invitations: invitations.rows,
+    memberships: members.rows,
+    audit_logs: auditLogs.rows,
+    truncated: {
+      domains: domains.truncated,
+      subscriptions: subs.truncated,
+      platform_invoices: invoices.truncated,
+      invitations: invitations.truncated,
+      memberships: members.truncated,
+      audit_logs: auditLogs.truncated,
+    },
+  });
+}
+
 // ── router ───────────────────────────────────────────────────────────────────
 const SHOP_ID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
+// minRole:'admin' = route GHI/PHÁ HOẠI/TIỀN — operator chỉ được các route đọc
+// (list/detail/plans/metrics). Xem docstring requireStaff. stepUp = gõ lại mật
+// khẩu trong 5' (đợt 4.4). export là GET đọc-only nhưng dump cả sổ quản lý →
+// vẫn khoá admin (operator không cần mang được dữ liệu ra ngoài).
 const ROUTES = [
-  { m: 'POST', re: /^\/ops\/shops$/, fn: (req, res, b, s, ip) => createShop(req, res, b, s, ip) },
-  { m: 'GET', re: /^\/ops\/shops$/, fn: (req, res) => listShops(req, res) },
+  { m: 'POST', re: /^\/ops\/shops$/, minRole: 'admin', fn: (req, res, b, s, ip) => createShop(req, res, b, s, ip) },
+  { m: 'GET', re: /^\/ops\/shops$/, fn: (req, res, b, s) => listShops(req, res, s) },
   { m: 'GET', re: /^\/ops\/plans$/, fn: (req, res) => listPlans(req, res) },
   { m: 'GET', re: /^\/ops\/metrics$/, fn: (req, res) => getMetrics(req, res) },
-  { m: 'GET', re: new RegExp(`^/ops/shops/${SHOP_ID}$`), fn: (req, res, b, s, ip, p) => getShop(req, res, p[0]) },
-  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/invitations$`), fn: (req, res, b, s, ip, p) => inviteOwner(req, res, b, s, p[0], ip) },
-  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/suspend$`), stepUp: true, fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'suspend', s, ip, b) },
-  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/restore$`), stepUp: true, fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'restore', s, ip, b) },
-  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/subscription/renew$`), stepUp: true, fn: (req, res, b, s, ip, p) => renewSubscription(req, res, p[0], s, ip, b) },
+  { m: 'GET', re: new RegExp(`^/ops/shops/${SHOP_ID}$`), fn: (req, res, b, s, ip, p) => getShop(req, res, p[0], s) },
+  { m: 'GET', re: new RegExp(`^/ops/shops/${SHOP_ID}/export$`), minRole: 'admin', fn: (req, res, b, s, ip, p) => exportShop(req, res, p[0]) },
+  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/invitations$`), minRole: 'admin', fn: (req, res, b, s, ip, p) => inviteOwner(req, res, b, s, p[0], ip) },
+  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/suspend$`), minRole: 'admin', stepUp: true, fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'suspend', s, ip, b) },
+  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/restore$`), minRole: 'admin', stepUp: true, fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'restore', s, ip, b) },
+  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/subscription/renew$`), minRole: 'admin', stepUp: true, fn: (req, res, b, s, ip, p) => renewSubscription(req, res, p[0], s, ip, b) },
+  { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/terminate$`), minRole: 'admin', stepUp: true, fn: (req, res, b, s, ip, p) => terminateShop(req, res, p[0], s, ip, b) },
 ];
 
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -441,6 +610,11 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   try {
     const staff = await requireStaff(req, res);
     if (!staff) return; // requireStaff đã gửi lỗi
+    // Cổng VAI TRÒ trước cổng step-up: operator bị chặn vì THIẾU QUYỀN, không phải
+    // thiếu xác thực — không bắt gõ lại mật khẩu rồi mới báo "không đủ quyền".
+    if (route.minRole === 'admin' && staff.staffRole !== 'admin') {
+      return send(res, 403, { error: 'cần quyền admin nền tảng' });
+    }
     // Cổng step-up SAU requireStaff (chỉ staff thật mới thấy cờ step_up_required —
     // non-staff nhận 403 thường từ requireStaff, không lộ sự tồn tại của cổng).
     if (route.stepUp && !steppedUpRecently(staff.user)) {

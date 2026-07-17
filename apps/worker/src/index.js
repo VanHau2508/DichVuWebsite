@@ -82,19 +82,66 @@ const queue = new Queue('email', { connection });
 
 // ── compose email từ sự kiện ─────────────────────────────────────────────────
 // Payload SELF-CONTAINED (worker không đọc orders). p.link (nếu có) = URL tra cứu đơn.
+// Trả {subject, text, html}: text GIỮ NGUYÊN cấu trúc cũ (nodemailer gửi multipart/
+// alternative — client text-only vẫn đọc trọn); html là bản trình bày inline-style.
+const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + 'đ';
+// esc cho HTML email — payload chứa dữ liệu người dùng (tên khách, tên SP…) PHẢI escape.
+const escHtml = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// Thương hiệu hiển thị trong email: shop_name (nếu payload mang) → host của link tra cứu
+// (miền shop — payload đơn hàng không mang tên shop, worker CỐ Ý không đọc bảng shops)
+// → thương hiệu nền tảng. KHÔNG nhúng/tải logo: email nhẹ, không request ngoài.
+function brandOf(p) {
+  if (p?.shop_name) return p.shop_name;
+  try { if (p?.link) return new URL(p.link).host; } catch { /* link hỏng → rơi xuống brand nền tảng */ }
+  return PLATFORM_BRAND;
+}
+// Khung HTML email: header thương hiệu (text) + nội dung + nút CTA (nếu có) + footer.
+// Table + inline style (Gmail/Outlook bỏ <style>); KHÔNG ảnh/CSS/font ngoài. Màu an toàn
+// dark-mode: nền trắng ép bằng bgcolor + chữ tối #111827 — client dark tự đảo, không mất chữ.
+function emailHtml(p, title, bodyHtml, cta) {
+  const brand = escHtml(brandOf(p));
+  const btn = cta ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:18px 0 6px"><tr><td bgcolor="#1d4ed8" style="border-radius:6px"><a href="${escHtml(cta.url)}" style="display:inline-block;padding:11px 22px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none">${escHtml(cta.label)}</a></td></tr></table>` : '';
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f3f4f6" style="background-color:#f3f4f6;padding:24px 12px"><tr><td align="center">
+<table role="presentation" cellpadding="0" cellspacing="0" bgcolor="#ffffff" style="background-color:#ffffff;width:100%;max-width:560px;border-radius:8px;border:1px solid #e5e7eb;font-family:Arial,Helvetica,sans-serif;color:#111827">
+<tr><td style="padding:16px 28px;border-bottom:1px solid #e5e7eb;font-size:16px;font-weight:bold;color:#111827">${brand}</td></tr>
+<tr><td style="padding:22px 28px;font-size:14px;line-height:1.65;color:#111827">
+<h1 style="margin:0 0 12px;font-size:18px;line-height:1.4;color:#111827">${escHtml(title)}</h1>
+${bodyHtml}${btn}</td></tr>
+<tr><td style="padding:14px 28px;border-top:1px solid #e5e7eb;font-size:12px;line-height:1.5;color:#6b7280">${brand} — Email tự động từ cửa hàng trên nentang.vn. Vui lòng không trả lời email này.</td></tr>
+</table></td></tr></table>`;
+}
+// Bảng thông tin nhỏ (mã đơn/tổng tiền/…) — value do CALLER escape (tránh escape kép).
+const kvRow = (k, v) => `<tr><td style="padding:5px 12px 5px 0;color:#6b7280;white-space:nowrap;vertical-align:top">${escHtml(k)}</td><td style="padding:5px 0;color:#111827"><strong>${v}</strong></td></tr>`;
+const kvTable = (rows) => `<table role="presentation" cellpadding="0" cellspacing="0" style="font-size:14px;margin:4px 0 6px">${rows.join('')}</table>`;
+const par = (s) => `<p style="margin:0 0 10px">${s}</p>`;
+
 function compose(topic, p) {
-  const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + 'đ';
   const footer = `${p.link ? `\n\nTra cứu đơn hàng: ${p.link}` : ''}\n\nCảm ơn bạn!`;
+  const trackCta = p.link ? { url: p.link, label: 'Tra cứu đơn hàng' } : null;
+  const payLabel = p.payment_method === 'qr' ? 'chuyển khoản QR' : 'khi nhận hàng (COD)';
   if (topic === 'order.created') {
     return {
       subject: `Xác nhận đơn hàng #${p.order_number}`,
-      text: `Chào ${p.customer_name || 'bạn'},\n\nĐơn hàng #${p.order_number} đã được ghi nhận.\nTổng: ${money(p.total_vnd)} — Thanh toán: ${p.payment_method === 'qr' ? 'chuyển khoản QR' : 'khi nhận hàng (COD)'}.${footer}`,
+      text: `Chào ${p.customer_name || 'bạn'},\n\nĐơn hàng #${p.order_number} đã được ghi nhận.\nTổng: ${money(p.total_vnd)} — Thanh toán: ${payLabel}.${footer}`,
+      html: emailHtml(p, `Xác nhận đơn hàng #${p.order_number}`,
+        par(`Chào ${escHtml(p.customer_name || 'bạn')}, đơn hàng của bạn đã được ghi nhận.`) +
+        kvTable([
+          kvRow('Mã đơn', `#${escHtml(p.order_number)}`),
+          kvRow('Tổng tiền', escHtml(money(p.total_vnd))),
+          kvRow('Thanh toán', escHtml(payLabel)),
+        ]), trackCta),
     };
   }
   if (topic === 'order.paid') {
     return {
       subject: `Đã nhận thanh toán đơn #${p.order_number}`,
       text: `Chào ${p.customer_name || 'bạn'},\n\nChúng tôi đã nhận đủ thanh toán cho đơn hàng #${p.order_number} (${money(p.total_vnd)}).\nĐơn của bạn đang được xử lý.${footer}`,
+      html: emailHtml(p, `Đã nhận thanh toán đơn #${p.order_number}`,
+        par(`Chào ${escHtml(p.customer_name || 'bạn')}, chúng tôi đã nhận đủ thanh toán cho đơn hàng của bạn.`) +
+        kvTable([
+          kvRow('Mã đơn', `#${escHtml(p.order_number)}`),
+          kvRow('Số tiền', escHtml(money(p.total_vnd))),
+        ]) + par('Đơn của bạn đang được xử lý.'), trackCta),
     };
   }
   if (topic === 'order.status_changed') {
@@ -106,15 +153,23 @@ function compose(topic, p) {
       return {
         subject: `Đơn hàng #${p.order_number} đã tự huỷ`,
         text: `Đơn hàng #${p.order_number} đã được HỆ THỐNG TỰ HUỶ vì ${why}.\nHàng đã được trả lại kho — nếu bạn vẫn muốn mua, vui lòng đặt lại đơn mới.${footer}`,
+        html: emailHtml(p, `Đơn hàng #${p.order_number} đã tự huỷ`,
+          par(`Đơn hàng <strong>#${escHtml(p.order_number)}</strong> đã được hệ thống tự huỷ vì ${escHtml(why)}.`) +
+          par('Hàng đã được trả lại kho — nếu bạn vẫn muốn mua, vui lòng đặt lại đơn mới.'), trackCta),
       };
     }
     const label = { confirmed: 'đã được xác nhận', shipped: 'đang trên đường giao', delivered: 'đã giao thành công', cancelled: 'đã huỷ', refunded: 'đã hoàn tiền', returned: 'đã được hoàn về cửa hàng' }[p.status] ?? p.status;
     const extra = p.status === 'shipped' && p.tracking_number ? `\nMã vận đơn: ${p.tracking_number} — bạn có thể tra trên trang của hãng vận chuyển.`
       : p.status === 'delivered' ? '\nCảm ơn bạn đã mua hàng! Nếu có vấn đề với sản phẩm, hãy liên hệ cửa hàng.'
       : p.tracking_number ? `\nMã vận đơn: ${p.tracking_number}` : '';
+    const extraHtml = p.status === 'shipped' && p.tracking_number ? par(`Mã vận đơn: <strong>${escHtml(p.tracking_number)}</strong> — bạn có thể tra trên trang của hãng vận chuyển.`)
+      : p.status === 'delivered' ? par('Cảm ơn bạn đã mua hàng! Nếu có vấn đề với sản phẩm, hãy liên hệ cửa hàng.')
+      : p.tracking_number ? par(`Mã vận đơn: <strong>${escHtml(p.tracking_number)}</strong>`) : '';
     return {
       subject: `Đơn hàng #${p.order_number} — ${label}`,
       text: `Đơn hàng #${p.order_number} ${label}.${extra}${footer}`,
+      html: emailHtml(p, `Đơn hàng #${p.order_number} — ${label}`,
+        par(`Đơn hàng <strong>#${escHtml(p.order_number)}</strong> ${escHtml(label)}.`) + extraHtml, trackCta),
     };
   }
   if (topic === 'user.password_reset') {
@@ -122,13 +177,37 @@ function compose(topic, p) {
     return {
       subject: 'Đặt lại mật khẩu nentang.vn',
       text: `Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản này.\n\nMở link sau để đặt mật khẩu mới (hết hạn sau 30 phút, dùng một lần):\n${p.link}\n\nNếu bạn KHÔNG yêu cầu, hãy bỏ qua email này — mật khẩu của bạn không thay đổi.`,
+      html: emailHtml({ shop_name: PLATFORM_BRAND }, 'Đặt lại mật khẩu nentang.vn',
+        par('Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản này.') +
+        par('Bấm nút bên dưới để đặt mật khẩu mới (hết hạn sau 30 phút, dùng một lần).') +
+        par(`<span style="color:#6b7280">Nếu bạn KHÔNG yêu cầu, hãy bỏ qua email này — mật khẩu của bạn không thay đổi.</span>`),
+        { url: p.link, label: 'Đặt mật khẩu mới' }),
+    };
+  }
+  if (topic === 'user.invited') {
+    // HỢP ĐỒNG với Đợt 5.5 (service ghi outbox 'user.invited'): payload CHÍNH XÁC là
+    // {to, shop_name, role, accept_url, expires_days} — đổi tên trường phải đổi CẢ HAI phía.
+    const roleLabel = { owner: 'Chủ cửa hàng', admin: 'Quản trị', staff: 'Nhân viên', catalog_manager: 'Quản lý sản phẩm', order_manager: 'Quản lý đơn hàng' }[p.role] ?? p.role;
+    return {
+      subject: `Lời mời quản trị cửa hàng ${p.shop_name}`,
+      text: `Bạn được mời tham gia quản trị cửa hàng ${p.shop_name} với vai trò ${roleLabel}.\n\nMở link sau để chấp nhận lời mời:\n${p.accept_url}\n\nLời mời hết hạn sau ${p.expires_days} ngày. Nếu bạn KHÔNG mong đợi lời mời này, hãy bỏ qua email — không có gì thay đổi.`,
+      html: emailHtml(p, `Lời mời quản trị cửa hàng ${p.shop_name}`,
+        par(`Bạn được mời tham gia quản trị cửa hàng <strong>${escHtml(p.shop_name)}</strong> với vai trò <strong>${escHtml(roleLabel)}</strong>.`) +
+        par(`Lời mời hết hạn sau <strong>${escHtml(p.expires_days)} ngày</strong>.`) +
+        par(`<span style="color:#6b7280">Nếu bạn KHÔNG mong đợi lời mời này, hãy bỏ qua email — không có gì thay đổi.</span>`),
+        { url: p.accept_url, label: 'Chấp nhận lời mời' }),
     };
   }
   if (topic === 'stock.low') {
     const lines = (p.items ?? []).map((i) => `  • ${i.title}${i.variant_title ? ` (${i.variant_title})` : ''} — còn ${i.available}`).join('\n');
+    const rowsHtml = (p.items ?? []).map((i) => `<tr><td style="padding:6px 12px 6px 0;border-bottom:1px solid #f3f4f6">${escHtml(i.title)}${i.variant_title ? ` <span style="color:#6b7280">(${escHtml(i.variant_title)})</span>` : ''}</td><td align="right" style="padding:6px 0;border-bottom:1px solid #f3f4f6;white-space:nowrap"><strong>còn ${escHtml(i.available)}</strong></td></tr>`).join('');
     return {
       subject: `⚠ ${p.items?.length ?? 0} sản phẩm sắp hết hàng`,
       text: `Các sản phẩm sau còn tồn thấp (≤ ${p.threshold}):\n\n${lines}\n\nVào trang quản trị để nhập thêm hàng hoặc ẩn sản phẩm.`,
+      html: emailHtml(p, `${p.items?.length ?? 0} sản phẩm sắp hết hàng`,
+        par(`Các sản phẩm sau còn tồn thấp (≤ ${escHtml(p.threshold)}):`) +
+        `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;margin:4px 0 6px">${rowsHtml}</table>` +
+        par('Vào trang quản trị để nhập thêm hàng hoặc ẩn sản phẩm.')),
     };
   }
   if (topic === 'subscription.reminder') {
@@ -138,27 +217,44 @@ function compose(topic, p) {
     const plan = p.plan_name || p.plan_code || '';
     const who = p.shop_name ? `cửa hàng ${p.shop_name}` : 'cửa hàng của bạn';
     const contact = `\n\nĐể gia hạn, vui lòng liên hệ ${PLATFORM_BRAND}: ${BILLING_CONTACT}.`;
+    const contactHtml = par(`Để gia hạn, vui lòng liên hệ ${escHtml(PLATFORM_BRAND)}: <strong>${escHtml(BILLING_CONTACT)}</strong>.`);
     if (p.milestone === 'past_due') {
       return {
         subject: `⚠ Thuê bao ${who} ĐÃ QUÁ HẠN — còn ${p.grace_days_left} ngày trước khi website tạm ngưng`,
         text: `Gói ${plan} của ${who} đã HẾT HẠN ngày ${d(p.period_end)}.\nWebsite hiện VẪN hoạt động trong thời gian ân hạn — còn ${p.grace_days_left} ngày.\nNếu chưa gia hạn trong thời gian này, website sẽ TẠM NGƯNG (khách không truy cập được). Dữ liệu được giữ nguyên và khôi phục ngay khi gia hạn.${contact}`,
+        html: emailHtml(p, `Thuê bao ĐÃ QUÁ HẠN — còn ${p.grace_days_left} ngày ân hạn`,
+          par(`Gói <strong>${escHtml(plan)}</strong> của ${escHtml(who)} đã hết hạn ngày <strong>${escHtml(d(p.period_end))}</strong>.`) +
+          par(`Website hiện VẪN hoạt động trong thời gian ân hạn — còn <strong>${escHtml(p.grace_days_left)} ngày</strong>. Nếu chưa gia hạn, website sẽ tạm ngưng (khách không truy cập được). Dữ liệu được giữ nguyên và khôi phục ngay khi gia hạn.`) +
+          contactHtml),
       };
     }
     const label = p.sub_status === 'trial' ? `Thời gian dùng thử (gói ${plan})` : `Gói ${plan}`;
     return {
       subject: `${label} của ${who} sắp hết hạn — còn ${p.days_left} ngày`,
       text: `${label} của ${who} sẽ hết hạn ngày ${d(p.period_end)} (còn ${p.days_left} ngày).\nGia hạn trước ngày này để website và đơn hàng hoạt động liên tục, không gián đoạn.${contact}`,
+      html: emailHtml(p, `${label} sắp hết hạn — còn ${p.days_left} ngày`,
+        par(`${escHtml(label)} của ${escHtml(who)} sẽ hết hạn ngày <strong>${escHtml(d(p.period_end))}</strong> (còn ${escHtml(p.days_left)} ngày).`) +
+        par('Gia hạn trước ngày này để website và đơn hàng hoạt động liên tục, không gián đoạn.') +
+        contactHtml),
     };
   }
-  return { subject: `Thông báo`, text: JSON.stringify(p) };
+  return { subject: `Thông báo`, text: JSON.stringify(p) }; // fallback: text-only, không html
 }
 
 // Điểm nối KÊNH THÔNG BÁO: hiện chỉ email; sau này thêm Zalo ZNS tại đây (cần OA +
 // template được Zalo duyệt — tích hợp khi user có tài khoản OA, KHÔNG dựng code chết).
+// List-Unsubscribe: CỐ Ý KHÔNG đặt — RÀ TỪNG topic thì TẤT CẢ đều transactional:
+// order.* (trạng thái đơn khách vừa đặt), user.password_reset / user.invited (hành động
+// người nhận khởi phát), stock.low + subscription.reminder (thông báo vận hành/thu phí tới
+// CHỦ SHOP đang trả tiền dịch vụ — tắt là mất cảnh báo nghiệp vụ, không phải marketing).
+// Không có topic marketing nào → header unsubscribe sẽ là cargo-cult (bấm vào tắt được
+// email giao dịch = tự hại). Khi nào thêm email marketing/newsletter MỚI phải thêm header
+// (mailto + one-click RFC 8058). Bounce/complaint handling nằm ở RELAY (Resend/SES dashboard
+// + suppression list của relay) — xem docs/35 mục deliverability.
 async function deliverNotification(topic, payload) {
   if (!payload?.to) return; // không có email → bỏ qua (ZNS sau này dùng payload.phone)
-  const { subject, text } = compose(topic, payload);
-  await transport.sendMail({ from: FROM, to: payload.to, subject, text });
+  const { subject, text, html } = compose(topic, payload);
+  await transport.sendMail({ from: FROM, to: payload.to, subject, text, ...(html ? { html } : {}) });
 }
 
 // ── poller: outbox → queue ───────────────────────────────────────────────────
@@ -764,6 +860,63 @@ async function deliverTelegram(topic, payload, shopId, outboxId) {
   } catch (e) { log('error', 'tg_deliver_error', { message: e.message }); } // KHÔNG throw (không làm fail email)
 }
 
+// ── sweep: SLA ĐƠN Ứ — digest Telegram cho shop có đơn ứ đọng ────────────────
+// (a) đơn 'pending' quá STALE_PENDING_HOURS (24h) — shop quên xác nhận (QR pending tự huỷ
+//     sau 30' nên tồn >24h thực tế là COD chờ shop); (b) đơn 'shipped' quá STALE_SHIPPED_DAYS
+//     (7 ngày) chưa delivered/returned — kẹt ở hãng VC / shop quên chốt giao.
+// Mốc "đã gửi hãng" = max(shipments.created_at) của đơn (mọi đường ship đều tạo/chốt dòng
+// shipments cùng lúc UPDATE orders → xấp xỉ shipped_at; app_expiry CỐ Ý không có quyền đọc
+// orders.shipped_at — 0022/0044 cấp cột tường minh, và ngưỡng NGÀY không cần chính xác phút).
+// Digest MỘT tin/shop/NGÀY (giờ VN): dedup Redis key tgstale:<shop>:<ngày> — mirror tgsent
+// (đánh dấu SAU khi gửi thành công; gửi lỗi → nhịp sau thử lại). Gửi TRỰC TIẾP qua tgSend
+// như sweepMoneyAlerts, KHÔNG qua outbox: đây là digest phái sinh từ trạng thái DB hiện có,
+// không phải sự kiện nghiệp vụ mới (ADR-006 dành cho sự kiện phát trong transaction).
+const STALE_PENDING_HOURS = Number(process.env.STALE_PENDING_HOURS ?? 24);
+const STALE_SHIPPED_DAYS = Number(process.env.STALE_SHIPPED_DAYS ?? 7);
+const STALE_SWEEP_MS = Number(process.env.STALE_SWEEP_MS ?? 300000); // 5 phút — nhịp như alert-sweep
+async function sweepStaleOrders() {
+  if (!expiryDb || !TELEGRAM_ON) return { shops: 0, pending: 0, shipped: 0 };
+  let pend, ship;
+  try {
+    pend = (await expiryDb.query(
+      `SELECT shop_id, order_number FROM orders
+        WHERE status = 'pending' AND created_at < now() - ($1 || ' hours')::interval
+        ORDER BY shop_id, created_at LIMIT 500`, [String(STALE_PENDING_HOURS)])).rows;
+    ship = (await expiryDb.query(
+      `SELECT o.shop_id, o.order_number FROM orders o
+        WHERE o.status = 'shipped'
+          AND coalesce((SELECT max(s.created_at) FROM shipments s WHERE s.order_id = o.id), o.created_at)
+              < now() - ($1 || ' days')::interval
+        ORDER BY o.shop_id, o.created_at LIMIT 500`, [String(STALE_SHIPPED_DAYS)])).rows;
+  } catch (e) { log('error', 'stale_query_error', { message: e.message }); return { shops: 0, pending: 0, shipped: 0 }; }
+  const byShop = new Map();
+  const add = (r, kind) => {
+    if (!byShop.has(r.shop_id)) byShop.set(r.shop_id, { pending: [], shipped: [] });
+    byShop.get(r.shop_id)[kind].push(Number(r.order_number));
+  };
+  for (const r of pend) add(r, 'pending');
+  for (const r of ship) add(r, 'shipped');
+  const day = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' }); // YYYY-MM-DD giờ VN
+  let sent = 0;
+  for (const [shopId, g] of byShop) {
+    try {
+      const rc = await queue.client;
+      const key = `tgstale:${shopId}:${day}`;
+      if (await rc.get(key)) continue; // shop này đã nhận digest hôm nay
+      const row = (await expiryDb.query(`SELECT chat_id FROM shop_telegram WHERE shop_id = $1 AND enabled AND chat_id IS NOT NULL`, [shopId])).rows[0];
+      if (!row?.chat_id) continue; // chưa nối Telegram → thôi (không có kênh khác để digest)
+      const firstFew = (a) => a.slice(0, 5).map((n) => `#${n}`).join(', ') + (a.length > 5 ? '…' : '');
+      const parts = [];
+      if (g.pending.length) parts.push(`${g.pending.length} đơn chờ xử lý >${STALE_PENDING_HOURS}h (${firstFew(g.pending)})`);
+      if (g.shipped.length) parts.push(`${g.shipped.length} đơn gửi hãng >${STALE_SHIPPED_DAYS} ngày chưa giao (${firstFew(g.shipped)})`);
+      const okSent = await tgSend(row.chat_id, `⏳ Đơn ứ: ${parts.join(', ')}. Vào trang quản trị xử lý sớm để không mất khách.`);
+      if (okSent) { sent++; await rc.set(key, '1', 'EX', 26 * 3600); } // 26h > 1 ngày — key tự rơi
+    } catch (e) { log('error', 'stale_digest_error', { message: e.message }); }
+  }
+  if (sent) log('info', 'stale_order_digests', { shops: sent, pending: pend.length, shipped: ship.length });
+  return { shops: sent, pending: pend.length, shipped: ship.length };
+}
+
 const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL ?? '';
 const ALERT_SWEEP_MS = Number(process.env.ALERT_SWEEP_MS ?? 300000);      // 5 phút
 const ALERT_REPEAT_MS = Number(process.env.ALERT_REPEAT_MS ?? 3600000);   // nhắc lại mỗi 1h nếu còn
@@ -853,6 +1006,7 @@ const domainTimer = domainDb ? setInterval(sweepDomainVerify, DOMAINVERIFY_SWEEP
 const billingTimer = billingDb ? setInterval(sweepSubscriptions, SUBSCRIPTION_SWEEP_MS) : null;
 const trackingTimer = (expiryDb && TRACKING_ON) ? setInterval(sweepTracking, TRACKING_SWEEP_MS) : null;
 const piiTimer = expiryDb ? setInterval(sweepPiiRetention, PII_SWEEP_MS) : null;
+const staleTimer = (expiryDb && TELEGRAM_ON) ? setInterval(sweepStaleOrders, STALE_SWEEP_MS) : null;
 
 // ── HTTP: health + stats (cho e2e kiểm dead-letter) ──────────────────────────
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -939,6 +1093,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(r));
   }
+  // Kích hoạt quét đơn ứ (SLA digest) ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/stale-sweep' && req.method === 'POST') {
+    const r = await sweepStaleOrders();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   res.writeHead(404); res.end();
 }));
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
@@ -952,6 +1112,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (trackingTimer) clearInterval(trackingTimer);
     if (lowstockTimer) clearInterval(lowstockTimer);
     if (piiTimer) clearInterval(piiTimer);
+    if (staleTimer) clearInterval(staleTimer);
     clearInterval(outboxGcTimer);
     clearInterval(alertTimer);
     if (tgLinkTimer) clearInterval(tgLinkTimer);

@@ -188,9 +188,9 @@ jobs:
           shopt -s nullglob
           scripts=(scripts/verify-*.sh)
           echo "Tìm thấy ${#scripts[@]} verify script"
-          # Sàn = SỐ THẬT hôm nay (19), không để hở: sàn cũ 15 cho mất-ròng tới 4 script mutation
-          # mà vẫn qua. Thêm script mới → đếm tăng, vẫn qua; xoá/đổi tên → đếm giảm <19 → FAIL.
-          [ "${#scripts[@]}" -ge 19 ] || { echo "CHỈ ${#scripts[@]} verify script (<19) — nghi mất script (rỗng=xanh giả)"; exit 1; }
+          # Sàn = SỐ THẬT hôm nay (20, gồm verify-backup-encryption), không để hở: sàn thấp cho
+          # mất-ròng script mutation mà vẫn qua. Thêm script mới → đếm tăng, vẫn qua; xoá/đổi tên → đếm giảm <20 → FAIL.
+          [ "${#scripts[@]}" -ge 20 ] || { echo "CHỈ ${#scripts[@]} verify script (<20) — nghi mất script (rỗng=xanh giả)"; exit 1; }
           fail=0
           for s in "${scripts[@]}"; do
             name=$(basename "$s" .sh)

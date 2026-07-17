@@ -7,6 +7,17 @@
 #   bash scripts/restore.sh logical <thư-mục-backup>    # NẠP logical.sql vào Postgres (GHI ĐÈ — chỉ máy khôi phục!)
 #
 # <thư-mục-backup> chứa *.enc lấy về từ offsite. Cần BACKUP_ENC_KEY (khoá đã mã hoá backup).
+#
+# REDIS (redis.rdb.enc — dead-letter email + dedup): khôi phục TAY, file PHẢI nằm vào chỗ
+# TRƯỚC KHI redis khởi động (RDB chỉ được đọc lúc start):
+#   1) giải mã:   openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:BACKUP_ENC_KEY \
+#                   -in redis.rdb.enc -out dump.rdb
+#   2) dừng:      docker compose -f infra/compose.prod.yml --env-file .env stop worker redis
+#   3) đặt file:  docker run --rm -v nentang-prod_redisdata:/data -v "$PWD":/src alpine \
+#                   sh -c 'rm -rf /data/appendonlydir && cp /src/dump.rdb /data/dump.rdb'
+#      (prod chạy --appendonly yes: nếu KHÔNG xoá appendonlydir, AOF cũ sẽ THẮNG dump.rdb
+#       và snapshot khôi phục bị bỏ qua — xoá AOF là chủ ý khi đã quyết khôi phục từ RDB)
+#   4) chạy lại:  docker compose -f infra/compose.prod.yml --env-file .env start redis worker
 
 set -uo pipefail
 cd "$(dirname "$0")/.."

@@ -9,6 +9,7 @@
 #   - base.tar.gz    : pg_basebackup — nền cho PITR.
 #   - wal.tar.gz     : WAL archive — replay tới THỜI ĐIỂM (RPO nhỏ nếu đẩy dày).
 #   - media.tar.gz   : ảnh MinIO (public+private).
+#   - redis.rdb      : snapshot Redis (dead-letter email chờ retry + trạng thái dedup).
 #   - caddy_data     : CHỨNG CHỈ TLS — mất = cấp lại hàng trăm cert (rate-limit LE).
 # OFFSITE_CMD (env) đẩy ra nơi khác VPS — BẮT BUỘC trước khách thật (offsite = DR thật).
 
@@ -18,7 +19,11 @@ cd "$(dirname "$0")/.."
 umask 077
 set -a; [ -f .env ] && . ./.env; set +a
 
-C="docker compose -f infra/compose.prod.yml --env-file .env"
+# BACKUP_COMPOSE_FILE (env): cho drill/verify (scripts/verify-backup-encryption.sh) chạy
+# đúng script này trên stack DEV/CI — prod mặc định như cũ. --env-file chỉ thêm khi .env
+# tồn tại (dev/CI không có .env; docker compose fail cứng nếu trỏ file thiếu).
+ENVFLAG=""; [ -f .env ] && ENVFLAG="--env-file .env"
+C="docker compose -f ${BACKUP_COMPOSE_FILE:-infra/compose.prod.yml} $ENVFLAG"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/nentang}"
 RET="${BACKUP_RETENTION_DAYS:-14}"
 BACKUP_ENC_KEY="${BACKUP_ENC_KEY:-}"
@@ -82,6 +87,24 @@ $C exec -T minio tar -C /data -czf - media-public media-private > "$DEST/media.t
 
 # Caddy certs.
 docker run --rm -v nentang-prod_caddy_data:/d:ro -w /d alpine tar czf - . > "$DEST/caddy_data.tar.gz" 2>/dev/null && ok "caddy_data (chứng chỉ)" || warn "caddy_data backup lỗi"
+
+# Redis snapshot (hàng đợi email BullMQ: dead-letter đang chờ retry + dedup Telegram/digest).
+# Mất redis không chí mạng như Postgres (outbox là nguồn sự thật) nhưng mất dead-letter =
+# mất dấu email hỏng chưa gửi lại — rẻ để giữ. BGSAVE → chờ xong (LASTSAVE đổi, kèm fallback
+# rdb_bgsave_in_progress=0 cho ca BGSAVE xong trong cùng giây) → copy dump.rdb ra ngoài.
+RLAST="$($C exec -T redis redis-cli LASTSAVE 2>/dev/null | tr -d '\r')"
+if $C exec -T redis redis-cli BGSAVE >/dev/null 2>&1; then
+  for _ in $(seq 30); do
+    RNOW="$($C exec -T redis redis-cli LASTSAVE 2>/dev/null | tr -d '\r')"
+    [ -n "$RNOW" ] && [ "$RNOW" != "$RLAST" ] && break
+    RPROG="$($C exec -T redis redis-cli INFO persistence 2>/dev/null | tr -d '\r' | grep '^rdb_bgsave_in_progress:' | cut -d: -f2)"
+    [ "$RPROG" = "0" ] && [ -n "$RNOW" ] && break
+    sleep 1
+  done
+  if $C exec -T redis sh -c 'cat /data/dump.rdb' > "$DEST/redis.rdb" 2>/dev/null && [ -s "$DEST/redis.rdb" ]; then
+    ok "redis snapshot ($(wc -c <"$DEST/redis.rdb") byte)"
+  else warn "redis dump.rdb rỗng/lỗi"; fi
+else warn "redis BGSAVE lỗi"; fi
 
 # MÃ HOÁ mọi artifact TRƯỚC khi rời máy (chỉ còn *.enc trong $DEST khi đẩy offsite).
 for f in "$DEST"/*; do [ -f "$f" ] && encrypt_file "$f"; done

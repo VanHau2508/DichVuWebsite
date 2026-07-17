@@ -194,7 +194,7 @@ bash scripts/backup-restore-drill.sh  # 11/11 — khôi phục host trắng, RLS
 | `compose.prod` + `deploy.sh` + `backup.sh` + `pitr-drill` + provision role | ✅ Code sẵn (chưa chạy thật) |
 | **Deploy thật** (VPS + floating IP + TLS ACME) | 🔑 Cần tài nguyên (B1) |
 | **Backup offsite + PITR thật** (S3/B2) | 🔑 Cần tài nguyên (B2) |
-| **Alert on-call** (Telegram/Zalo) + probe ngoài | 🔑 Cần token + **chưa viết code** (B3) |
+| **Alert on-call**: cảnh báo đường tiền → Telegram/webhook (`sweepMoneyAlerts`) + heartbeat worker + soi/retry dead-letter (`/internal/dead-letters`) | ✅ Code xong — 🔑 còn cắm token/URL thật (xem docs/35 B2–B3) |
 | **UAT khách thật + pentest** | 🔑 Cần người (Tuần C-D) |
 | Giao diện quản trị **nền tảng** (tạo/khoá shop) trên web | ⚠️ DEV chưa có UI (dùng seed/API); prod dùng API |
 | Cấu hình thanh toán QR trên **UI admin** | ⚠️ Backend có, chưa có trang UI (dùng API) |

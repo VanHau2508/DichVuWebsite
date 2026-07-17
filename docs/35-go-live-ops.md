@@ -10,8 +10,13 @@ tảng; phần còn lại là **bạn cắm dịch vụ ngoài + đặt secret t
 **Vì sao:** dump chứa **PII khách + hash mật khẩu + KHOÁ TLS**. Backup chỉ nằm trên VPS =
 mất VPS mất sạch. Backup không mã hoá + offsite bị lộ = lộ toàn bộ.
 
-**Đã có sẵn (code):** `scripts/backup.sh` mã hoá **AES-256** mọi artifact TRƯỚC khi rời máy;
-`scripts/restore.sh` giải mã + phục hồi. Thiếu khoá → script TỪ CHỐI đẩy (không "xanh giả").
+**Đã có sẵn (code):** `scripts/backup.sh` mã hoá **AES-256** mọi artifact TRƯỚC khi rời máy
+(logical + base + WAL + media + caddy certs + **snapshot Redis** `redis.rdb` — dead-letter
+email chờ retry + trạng thái dedup); `scripts/restore.sh` giải mã + phục hồi (đầu file có
+hướng dẫn đặt lại `dump.rdb` TRƯỚC khi Redis khởi động). Thiếu khoá → script TỪ CHỐI đẩy
+(không "xanh giả"). Đường mã hoá được CI kiểm end-to-end: `scripts/verify-backup-encryption.sh`
+chạy chính `backup.sh`, chứng minh file .enc không giải mã được bằng khoá sai, rồi restore
+vào Postgres mới và thấy dữ liệu sống sót.
 
 **Bạn cần làm:**
 1. Sinh khoá mã hoá: `openssl rand -base64 48` → đặt `BACKUP_ENC_KEY` trong `.env`.
@@ -48,6 +53,25 @@ Dedup: chỉ báo khi trạng thái đổi hoặc quá `ALERT_REPEAT_MS` (1h) �
    vụ như Make/IFTTT/n8n). *(Telegram bot API nhận `chat_id`+`text`, không cùng shape `{text}` nên
    cần relay — nếu muốn, báo tôi xây thêm 1 adapter Telegram gọn.)*
 3. Ngưỡng chỉnh được: `ALERT_UNMATCHED_MAX` (mặc định 1), `ALERT_OUTBOX_MAX` (20), `ALERT_EMAIL_FAIL_MAX` (5).
+
+**Runbook "tiền chưa khớp" (khi nhận cảnh báo `giao dịch tiền CHƯA KHỚP quá 1h`):**
+1. Vào **admin của shop → Thanh toán → Hàng đợi đối soát** (100 giao dịch gần nhất, dòng
+   chưa xử lý nổi lên đầu). Mỗi dòng có số tiền + thời gian + **lý do**:
+
+   | Lý do | Nghĩa là gì | Hành động |
+   |---|---|---|
+   | `no_ref` (Thiếu mã đối soát) | Nội dung chuyển khoản KHÔNG chứa mã `NTG…` (khách tự gõ chuyển khoản, không dùng QR / app bank cắt nội dung) | Mở app ngân hàng, đối chiếu **số tiền + thời gian** với các đơn QR đang chờ. LƯU Ý: đơn QR `pending` tự huỷ sau 30' giữ đơn — nếu đơn đã tự huỷ mà tiền đã về: hoàn tiền cho khách hoặc mời đặt lại đơn mới. |
+   | `order_not_found` (Không thấy đơn) | Có mã `NTG…` nhưng không khớp đơn nào của shop — thường do đơn đã tự huỷ trước khi tiền về, khách gõ tay sai mã, hoặc dán nhầm ref của shop khác | Tìm mã/số tiền trong danh sách đơn (kể cả đơn huỷ). Khách chuyển muộn cho đơn đã huỷ → hoàn tiền hoặc mời đặt lại. |
+   | `account_mismatch` (Sai tài khoản nhận) | Mã đúng nhưng tiền về **tài khoản khác** với tài khoản cấu hình của shop | So số tài khoản trong trang Thanh toán với tài khoản SePay đang theo dõi — cấu hình lệch thì sửa. **Kiểm tiền THẬT trong app ngân hàng trước khi tin webhook**; nếu không giải thích được → coi là dấu hiệu giả mạo, tạo lại token webhook SePay của shop. |
+
+2. Xử lý xong thực tế (giao hàng / hoàn tiền / sửa cấu hình) → bấm **"Đã xử lý"** trên dòng đó.
+   Nút này đòi **step-up** (nhập lại mật khẩu) và ghi audit `payment.reconcile_resolved`.
+   Resolve chỉ GỠ dòng khỏi hàng đợi — **KHÔNG tự đặt đơn thành `paid`** (đơn QR chỉ webhook
+   đối soát được đặt paid; bất biến chống gian lận, không có đường tay).
+3. Cảnh báo báo có giao dịch chưa khớp mà hàng đợi các shop đều TRỐNG → giao dịch về **đường
+   webhook GLOBAL** (key nền tảng, không quy được shop nên không ghi hàng đợi): xem log
+   `docker compose -f infra/compose.prod.yml logs payment | grep payment_global_unmatched`
+   (có `eventId` + `amount` để tra với SePay).
 
 **Runbook "kẹt email" (khi nhận cảnh báo email thất bại/dead-letter):** từ trong mạng nội bộ
 (vd `docker compose -f infra/compose.dev.yml exec seller sh`), soi lý do:

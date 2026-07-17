@@ -358,6 +358,8 @@ async function main() {
 
   // 5) GIA HẠN qua platform → kỳ mới → RE-ARM tự động (IS DISTINCT FROM), không reset tay.
   await mpClear();
+  // renew giờ là thao tác phá hoại đòi step-up 5' (đợt 4.4) — xác thực lại trước.
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: 'staff strong passphrase' }, cookie: staff, origin: OA });
   let dr = await rq(PLATFORM, 'POST', `/ops/shops/${A.shopId}/subscription/renew`, { body: { months: 1 }, cookie: staff, origin: OO });
   dr.status === 200 ? ok('platform ghi nhận THU tiền (renew 1 tháng) → sub active, kỳ mới') : bad('renew lỗi', dr.raw);
   await owner.query(`UPDATE subscriptions SET current_period_end = now() + interval '6 days' WHERE shop_id = $1`, [A.shopId]);

@@ -295,6 +295,111 @@ async function main() {
     ? ok('email khách lỗi → chủ shop VẪN nhận Telegram "đơn mới" (email không nuốt Telegram)') : bad('email lỗi nuốt mất Telegram', JSON.stringify(tg.sent).slice(0, 200));
   tgStub.close();
 
+  // ── Nhắc hạn thuê bao 7/3/1 + past_due (dunning — 0062) ─────────────────────
+  // Shop A đã bind Telegram (CHAT) ở mục trên → mở lại stub 9104 để bắt tin nhắc.
+  sect('Nhắc hạn thuê bao (dunning 7/3/1 + past_due)');
+  const dunTg = { sent: [] };
+  const dunStub = http.createServer((rq3, rs3) => {
+    let b = ''; rq3.on('data', (d) => (b += d)); rq3.on('end', () => {
+      rs3.setHeader('content-type', 'application/json');
+      if (/\/getUpdates/.test(rq3.url)) return rs3.end(JSON.stringify({ ok: true, result: [] }));
+      if (/\/sendMessage/.test(rq3.url)) { try { dunTg.sent.push(JSON.parse(b)); } catch {} return rs3.end(JSON.stringify({ ok: true, result: {} })); }
+      rs3.statusCode = 404; rs3.end('{}');
+    });
+  });
+  await new Promise((r) => dunStub.listen(9104, '0.0.0.0', r));
+  await mpClear();
+  const contactEmail = `chushop-${uniq()}@test.vn`;
+  await owner.query(`UPDATE shops SET contact_email = $2 WHERE id = $1`, [A.shopId, contactEmail]);
+  await owner.query(`UPDATE subscriptions SET status = 'trial', current_period_end = now() + interval '2 days' WHERE shop_id = $1`, [A.shopId]);
+  const remRows = async () => (await owner.query(`SELECT id, payload FROM outbox WHERE shop_id = $1 AND topic = 'subscription.reminder' ORDER BY id`, [A.shopId])).rows;
+  const remState = async () => (await owner.query(`SELECT status, reminded_milestone FROM subscriptions WHERE shop_id = $1`, [A.shopId])).rows[0];
+  const sweepSub = async () => (await fetch(`${WORKER}/internal/subscription-sweep`, { method: 'POST' })).json();
+
+  // 1) Còn 2 ngày → mốc d3, email tới contact_email, claim ghi marker.
+  let dsw = await sweepSub();
+  let drows = await remRows();
+  drows.length === 1 && drows[0].payload.milestone === 'd3' && drows[0].payload.to === contactEmail
+    ? ok(`sweep → 1 outbox 'subscription.reminder' mốc d3 + payload.to=contact_email (reminded=${dsw.reminded})`)
+    : bad('outbox nhắc d3 sai/thiếu', JSON.stringify({ dsw, p: drows.map((x) => x.payload) }).slice(0, 300));
+  (await remState())?.reminded_milestone === 'd3' ? ok(`claim ghi subscriptions.reminded_milestone='d3'`) : bad('không ghi reminded_milestone', JSON.stringify(await remState()));
+  const d3Mail = await waitEmail(`của cửa hàng ${A.slug} sắp hết hạn — còn 2 ngày`);
+  d3Mail && d3Mail.To?.[0]?.Address === contactEmail && /dùng thử/i.test(d3Mail.Subject)
+    ? ok('Mailpit: email nhắc TRIAL "Thời gian dùng thử ... còn 2 ngày" đúng người nhận')
+    : bad('email nhắc d3 sai/thiếu', JSON.stringify(d3Mail?.Subject ?? d3Mail));
+
+  // 2) Re-sweep ngay → KHÔNG dòng trùng (claim theo mốc idempotent — mirror 0052).
+  await sweepSub();
+  (await remRows()).length === 1 ? ok('re-sweep ngay → KHÔNG outbox trùng (idempotent theo mốc)') : bad('re-sweep tạo outbox trùng', String((await remRows()).length));
+
+  // 3) THANG BẬC trong CÙNG kỳ: giữ reminded_period_end = current (không re-arm), chỉ
+  // rank d1(3) > d3(2) mới cho qua → đúng đường claim khi kỳ không đổi.
+  await mpClear();
+  await owner.query(`UPDATE subscriptions SET current_period_end = now() + interval '12 hours', reminded_period_end = now() + interval '12 hours' WHERE shop_id = $1`, [A.shopId]);
+  await sweepSub();
+  drows = await remRows();
+  drows.length === 2 && drows[1].payload.milestone === 'd1'
+    ? ok('cùng kỳ, sát hạn hơn → NHẢY BẬC d3→d1 (chỉ 1 dòng mới, không burst)')
+    : bad('thang bậc d1 sai', JSON.stringify(drows.map((x) => x.payload.milestone)));
+  (await waitEmail(`của cửa hàng ${A.slug} sắp hết hạn — còn 1 ngày`)) ? ok('email "còn 1 ngày"') : bad('không có email d1');
+
+  // 4) Hết hạn → CÙNG TICK: sweepSubscriptions lật past_due rồi reminder bắn mốc past_due
+  // (rank 4 > 3, kỳ giữ nguyên — đúng chuỗi prod khi kỳ trôi qua tự nhiên).
+  await mpClear();
+  await owner.query(`UPDATE subscriptions SET current_period_end = now() - interval '1 hour', reminded_period_end = now() - interval '1 hour' WHERE shop_id = $1`, [A.shopId]);
+  dsw = await sweepSub();
+  drows = await remRows();
+  const dst = await remState();
+  dst?.status === 'past_due' && drows.length === 3 && drows[2].payload.milestone === 'past_due'
+    ? ok(`hết hạn → cùng tick: status='past_due' + nhắc mốc past_due (past_due=${dsw.past_due})`)
+    : bad('past_due cùng tick sai', JSON.stringify({ dst, m: drows.map((x) => x.payload.milestone) }));
+  const pdMail = await waitEmail(`Thuê bao cửa hàng ${A.slug} ĐÃ QUÁ HẠN — còn 7 ngày`);
+  pdMail ? ok('email ân hạn "ĐÃ QUÁ HẠN — còn 7 ngày trước khi website tạm ngưng"') : bad('không có email past_due');
+
+  // 5) GIA HẠN qua platform → kỳ mới → RE-ARM tự động (IS DISTINCT FROM), không reset tay.
+  await mpClear();
+  let dr = await rq(PLATFORM, 'POST', `/ops/shops/${A.shopId}/subscription/renew`, { body: { months: 1 }, cookie: staff, origin: OO });
+  dr.status === 200 ? ok('platform ghi nhận THU tiền (renew 1 tháng) → sub active, kỳ mới') : bad('renew lỗi', dr.raw);
+  await owner.query(`UPDATE subscriptions SET current_period_end = now() + interval '6 days' WHERE shop_id = $1`, [A.shopId]);
+  await sweepSub();
+  drows = await remRows();
+  drows.length === 4 && drows[3].payload.milestone === 'd7' && drows[3].payload.sub_status === 'active'
+    ? ok('kỳ MỚI vào cửa sổ 7 ngày → nhắc d7 LẠI từ đầu (re-arm theo reminded_period_end)')
+    : bad('re-arm sau gia hạn sai', JSON.stringify(drows.map((x) => x.payload.milestone)));
+  (await waitEmail(`Gói Platform của cửa hàng ${A.slug} sắp hết hạn — còn 6 ngày`)) ? ok('email gói TRẢ PHÍ "Gói Platform ... còn 6 ngày"') : bad('không có email d7 sau renew');
+
+  // 6) KHÔNG contact_email → outbox KHÔNG 'to' → email bỏ qua (không dead-letter),
+  // Telegram VẪN bắn tới chat chủ shop.
+  await mpClear();
+  dunTg.sent.length = 0;
+  const dunStats0 = await workerStats();
+  await owner.query(`UPDATE shops SET contact_email = NULL WHERE id = $1`, [A.shopId]);
+  await owner.query(`UPDATE subscriptions SET current_period_end = now() + interval '2 days' WHERE shop_id = $1`, [A.shopId]);
+  await sweepSub();
+  drows = await remRows();
+  drows.length === 5 && drows[4].payload.milestone === 'd3' && !('to' in drows[4].payload)
+    ? ok('không contact_email → outbox mốc d3 KHÔNG có payload.to (Telegram-only)')
+    : bad('payload Telegram-only sai', JSON.stringify(drows[drows.length - 1]?.payload));
+  await sleep(1500); // chờ poller (500ms) + consumer xử lý
+  dunTg.sent.some((mm) => String(mm.chat_id) === CHAT && /sắp hết hạn — còn 2 ngày/.test(mm.text ?? ''))
+    ? ok('Telegram chủ shop nhận "⏰ ... sắp hết hạn — còn 2 ngày" dù không email')
+    : bad('không có Telegram nhắc hạn', JSON.stringify(dunTg.sent).slice(0, 300));
+  const dunStats1 = await workerStats();
+  dunStats1.failed === dunStats0.failed ? ok('outbox không-to xử lý sạch (không dead-letter)') : bad('reminder không-to vào dead-letter', JSON.stringify(dunStats1));
+
+  // 7) Tường quyền app_billing (0062 thu hẹp theo dòng như 0058): không giả mạo được
+  // email đơn hàng, không đọc identity, không ghi reminder mồ côi shop.
+  const billing = new pg.Pool({ connectionString: 'postgres://app_billing:devpassword@postgres:5432/app', max: 1 });
+  const mustFail = async (q, args) => { try { await billing.query(q, args); return null; } catch (e) { return e.message; } };
+  const forgeMsg = await mustFail(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.paid', '{}'::jsonb)`, [A.shopId]);
+  forgeMsg && /row-level security/i.test(forgeMsg) ? ok('app_billing INSERT outbox topic order.paid → CHẶN (policy chỉ subscription.reminder)') : bad('app_billing giả mạo được order.paid — LỖ HỔNG', forgeMsg ?? 'insert THÀNH CÔNG');
+  const orphanMsg = await mustFail(`INSERT INTO outbox (shop_id, topic, payload) VALUES (NULL, 'subscription.reminder', '{}'::jsonb)`);
+  orphanMsg && /row-level security/i.test(orphanMsg) ? ok('app_billing INSERT reminder shop_id NULL → CHẶN (phải gắn shop)') : bad('reminder mồ côi shop được ghi', orphanMsg ?? 'insert THÀNH CÔNG');
+  const idMsg = await mustFail(`SELECT email FROM users LIMIT 1`);
+  idMsg && /permission denied/i.test(idMsg) ? ok('app_billing SELECT users.email → permission denied (tường 0033 nguyên vẹn)') : bad('app_billing đọc được users — LỖ HỔNG', idMsg ?? 'select THÀNH CÔNG');
+  await billing.end();
+  dunStub.close();
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

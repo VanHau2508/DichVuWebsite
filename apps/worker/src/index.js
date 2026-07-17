@@ -30,6 +30,10 @@ const POLL_MS = Number(process.env.POLL_MS ?? 1000);
 const ATTEMPTS = Number(process.env.EMAIL_ATTEMPTS ?? 5);
 const BACKOFF_MS = Number(process.env.EMAIL_BACKOFF_MS ?? 2000);
 const FROM = process.env.EMAIL_FROM ?? 'no-reply@nentang.vn';
+// Thương hiệu + email liên hệ nền tảng cho NỘI DUNG nhắc hạn thuê bao (dunning) —
+// cùng mặc định với storefront (trang công ty) để copy nhất quán.
+const PLATFORM_BRAND = process.env.PLATFORM_BRAND ?? 'Nền Tảng';
+const BILLING_CONTACT = process.env.PLATFORM_CONTACT_EMAIL ?? 'lienhe@nentang.vn';
 
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 4 });
 // Pool RIÊNG cho job hết hạn đơn (role app_expiry cực hẹp — xem migration 0022).
@@ -125,6 +129,25 @@ function compose(topic, p) {
     return {
       subject: `⚠ ${p.items?.length ?? 0} sản phẩm sắp hết hàng`,
       text: `Các sản phẩm sau còn tồn thấp (≤ ${p.threshold}):\n\n${lines}\n\nVào trang quản trị để nhập thêm hàng hoặc ẩn sản phẩm.`,
+    };
+  }
+  if (topic === 'subscription.reminder') {
+    // NHẮC HẠN thuê bao (dunning 7/3/1 + past_due) — gửi tới shops.contact_email.
+    // Nhánh này BẮT BUỘC: thiếu nó fallback dưới sẽ email JSON thô cho chủ shop.
+    const d = (iso) => new Date(iso).toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+    const plan = p.plan_name || p.plan_code || '';
+    const who = p.shop_name ? `cửa hàng ${p.shop_name}` : 'cửa hàng của bạn';
+    const contact = `\n\nĐể gia hạn, vui lòng liên hệ ${PLATFORM_BRAND}: ${BILLING_CONTACT}.`;
+    if (p.milestone === 'past_due') {
+      return {
+        subject: `⚠ Thuê bao ${who} ĐÃ QUÁ HẠN — còn ${p.grace_days_left} ngày trước khi website tạm ngưng`,
+        text: `Gói ${plan} của ${who} đã HẾT HẠN ngày ${d(p.period_end)}.\nWebsite hiện VẪN hoạt động trong thời gian ân hạn — còn ${p.grace_days_left} ngày.\nNếu chưa gia hạn trong thời gian này, website sẽ TẠM NGƯNG (khách không truy cập được). Dữ liệu được giữ nguyên và khôi phục ngay khi gia hạn.${contact}`,
+      };
+    }
+    const label = p.sub_status === 'trial' ? `Thời gian dùng thử (gói ${plan})` : `Gói ${plan}`;
+    return {
+      subject: `${label} của ${who} sắp hết hạn — còn ${p.days_left} ngày`,
+      text: `${label} của ${who} sẽ hết hạn ngày ${d(p.period_end)} (còn ${p.days_left} ngày).\nGia hạn trước ngày này để website và đơn hàng hoạt động liên tục, không gián đoạn.${contact}`,
     };
   }
   return { subject: `Thông báo`, text: JSON.stringify(p) };
@@ -279,7 +302,7 @@ async function sweepDomainVerify() {
 // Idempotent (guard status trong WHERE). DB lỗi → chỉ bỏ nhịp (không unhandledRejection).
 // Sub past_due VẪN phục vụ storefront (ân hạn); chỉ khi cancelled mới treo.
 async function sweepSubscriptions() {
-  if (!billingDb) return { past_due: 0, cancelled: 0 };
+  if (!billingDb) return { past_due: 0, cancelled: 0, reminded: 0 };
   let c;
   try {
     c = await billingDb.connect();
@@ -304,13 +327,88 @@ async function sweepSubscriptions() {
       );
     }
     await c.query('COMMIT');
-    if (pd.rowCount || cancelled.length) log('info', 'subscriptions_swept', { past_due: pd.rowCount, cancelled: cancelled.length });
-    return { past_due: pd.rowCount, cancelled: cancelled.length };
+    // Nhắc hạn chạy SAU chuyển trạng thái, CÙNG nhịp: sub vừa lật past_due nhận ngay
+    // thông báo ân hạn trong cùng tick (không đợi giờ sau). LƯU Ý pool max:2 và client
+    // transaction ở trên còn checkout tới finally → reminder chỉ được dùng ≤1 kết nối
+    // đồng thời (vòng lặp per-sub TUẦN TỰ, không Promise.all — sẽ deadlock pool).
+    const reminded = await sweepSubscriptionReminders();
+    if (pd.rowCount || cancelled.length || reminded) log('info', 'subscriptions_swept', { past_due: pd.rowCount, cancelled: cancelled.length, reminded });
+    return { past_due: pd.rowCount, cancelled: cancelled.length, reminded };
   } catch (e) {
     if (c) await c.query('ROLLBACK').catch(() => {});
     log('error', 'subscription_sweep_error', { message: e.message });
-    return { past_due: 0, cancelled: 0 };
+    return { past_due: 0, cancelled: 0, reminded: 0 };
   } finally { if (c) c.release(); }
+}
+
+// ── sweep: NHẮC HẠN thuê bao 7/3/1 ngày + past_due (dunning — 0062) ──────────
+// Outbox topic 'subscription.reminder' → email tới shops.contact_email (nếu có) +
+// Telegram per-shop (consumer định tuyến theo outbox.shop_id — app_billing KHÔNG đụng
+// shop_telegram). Idempotent theo MỐC: claim nguyên tử (mirror lowstock 0052) trên cặp
+// (reminded_milestone, reminded_period_end) TRONG CÙNG transaction với INSERT outbox
+// (ADR-006: rollback → không mốc cháy, không email ma). Thang bậc d7<d3<d1<past_due:
+// worker chết bỏ lỡ mốc → chỉ gửi MỘT nhắc cao nhất (không burst 3 email); gia hạn đẩy
+// current_period_end tới → IS DISTINCT FROM tự RE-ARM, platform không cần reset gì.
+// Kỷ luật chống crash-loop như mọi sweep: nuốt mọi lỗi, không bao giờ throw ra setInterval.
+async function sweepSubscriptionReminders() {
+  if (!billingDb) return 0;
+  let subs;
+  try {
+    // NOT EXISTS = guard đa-sub (mirror lines suspend): đừng nhắc "sắp tạm ngưng" khi
+    // concierge đã tạo sub MỚI còn hạn dài phục vụ shop (gia hạn kiểu thêm dòng).
+    subs = (await billingDb.query(
+      `SELECT sub.id, sub.shop_id, sub.status, sub.plan_code, sub.current_period_end,
+              sh.name AS shop_name, sh.contact_email, p.name AS plan_name
+         FROM subscriptions sub
+         JOIN shops sh ON sh.id = sub.shop_id
+         LEFT JOIN plans p ON p.code = sub.plan_code
+        WHERE sh.status IN ('onboarding','active') AND sub.current_period_end IS NOT NULL
+          AND ((sub.status IN ('trial','active') AND sub.current_period_end < now() + interval '7 days')
+               OR sub.status = 'past_due')
+          AND NOT EXISTS (SELECT 1 FROM subscriptions s2
+                           WHERE s2.shop_id = sub.shop_id AND s2.id <> sub.id
+                             AND s2.status IN ('trial','active') AND s2.current_period_end > now() + interval '7 days')
+        ORDER BY sub.current_period_end LIMIT 200`)).rows;
+  } catch (e) { log('error', 'subreminder_query_error', { message: e.message }); return 0; }
+  let sent = 0;
+  for (const s of subs) {
+    const msLeft = new Date(s.current_period_end).getTime() - Date.now();
+    const days = msLeft / 86400000;
+    const milestone = s.status === 'past_due' ? 'past_due' : days <= 1 ? 'd1' : days <= 3 ? 'd3' : 'd7';
+    const daysLeft = Math.max(0, Math.ceil(days));
+    const graceDaysLeft = Math.max(0, Math.ceil((msLeft + SUBSCRIPTION_GRACE_DAYS * 86400000) / 86400000));
+    let c;
+    try {
+      c = await billingDb.connect();
+      await c.query('BEGIN');
+      // Claim nguyên tử theo mốc: qua khi (a) kỳ ĐỔI (gia hạn → re-arm) hoặc (b) mốc mới
+      // CAO BẬC hơn mốc đã nhắc trong cùng kỳ. Hai sweep đua → loser WHERE fail → 0 dòng.
+      const claimed = await c.query(
+        `UPDATE subscriptions SET reminded_milestone = $2, reminded_period_end = current_period_end
+          WHERE id = $1 AND (reminded_period_end IS DISTINCT FROM current_period_end
+            OR CASE $2 WHEN 'd7' THEN 1 WHEN 'd3' THEN 2 WHEN 'd1' THEN 3 ELSE 4 END
+             > CASE reminded_milestone WHEN 'd7' THEN 1 WHEN 'd3' THEN 2 WHEN 'd1' THEN 3 WHEN 'past_due' THEN 4 ELSE 0 END)`,
+        [s.id, milestone]);
+      if (claimed.rowCount === 1) {
+        // 'to' CHỈ khi có contact_email — thiếu thì deliverNotification bỏ qua email,
+        // Telegram vẫn bắn (cùng khuôn sự kiện 'returned' không email khách).
+        const payload = {
+          shop_name: s.shop_name, plan_code: s.plan_code, plan_name: s.plan_name,
+          sub_status: s.status, milestone, days_left: daysLeft, grace_days_left: graceDaysLeft,
+          period_end: s.current_period_end,
+        };
+        if (s.contact_email) payload.to = s.contact_email;
+        await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'subscription.reminder', $2)`, [s.shop_id, payload]);
+        sent++;
+      }
+      await c.query('COMMIT');
+    } catch (e) {
+      if (c) await c.query('ROLLBACK').catch(() => {});
+      log('error', 'subreminder_outbox_error', { message: e.message });
+    } finally { if (c) c.release(); }
+  }
+  if (sent) log('info', 'subscription_reminders', { n: sent });
+  return sent;
 }
 
 // ── sweep: poll trạng thái vận đơn hãng VC (GHN/GHTK) ─────────────────────────
@@ -493,12 +591,40 @@ const OUTBOX_GC_MS = Number(process.env.OUTBOX_GC_MS ?? 6 * 60 * 60 * 1000); // 
 async function sweepOutboxGc() {
   try {
     const r = await db.query(
-      `UPDATE outbox SET payload = payload - 'link' - 'to'
+      `UPDATE outbox SET payload = payload - 'link' - 'to' - 'customer_name'
         WHERE processed_at IS NOT NULL AND processed_at < now() - interval '7 days'
-          AND (jsonb_exists(payload, 'link') OR jsonb_exists(payload, 'to'))`);
+          AND (jsonb_exists(payload, 'link') OR jsonb_exists(payload, 'to') OR jsonb_exists(payload, 'customer_name'))`);
     if (r.rowCount) log('info', 'outbox_gc', { n: r.rowCount });
     return { scrubbed: r.rowCount };
   } catch (e) { log('error', 'outbox_gc_error', { message: e.message }); return { scrubbed: 0 }; }
+}
+
+// ── sweep: ẨN DANH PII theo hạn lưu trữ per-shop (0064, Luật BVDLCN 91/2025) ──
+// Shop bật shops.pii_retention_months (NULL = tắt, mặc định) → đơn TRẠNG THÁI KẾT THÚC
+// cũ hơn N tháng bị gỡ danh tính (tên → sentinel, SĐT/email/địa chỉ/ip_hash → NULL).
+// Chỉ GHI-ĐÈ — app_expiry cố tình KHÔNG có SELECT trên cột PII (WHERE không đụng chúng).
+// Batch 500 × tối đa 20 vòng: shop mới bật với backlog lớn không chạy vô hạn một nhịp.
+const PII_SWEEP_MS = Number(process.env.PII_SWEEP_MS ?? 86400000); // 24h
+async function sweepPiiRetention() {
+  if (!expiryDb) return { anonymized: 0 };
+  let total = 0;
+  try {
+    for (let round = 0; round < 20; round++) {
+      const r = await expiryDb.query(
+        `UPDATE orders SET customer_name = '(đã ẩn danh)', customer_phone = NULL, customer_email = NULL,
+                shipping_address = NULL, client_ip_hash = NULL, anonymized_at = now()
+          WHERE id IN (
+            SELECT o.id FROM orders o JOIN shops s ON s.id = o.shop_id
+             WHERE s.pii_retention_months IS NOT NULL AND o.anonymized_at IS NULL
+               AND o.status IN ('delivered','cancelled','refunded','returned')
+               AND o.created_at < now() - (s.pii_retention_months || ' months')::interval
+             ORDER BY o.created_at LIMIT 500 FOR UPDATE OF o SKIP LOCKED)`);
+      total += r.rowCount;
+      if (r.rowCount < 500) break;
+    }
+    if (total) log('info', 'pii_sweep', { n: total }); // CHỈ đếm — không log PII
+  } catch (e) { log('error', 'pii_sweep_error', { message: e.message }); }
+  return { anonymized: total };
 }
 
 // ── sweep: CẢNH BÁO ĐƯỜNG TIỀN + VẬN HÀNH ────────────────────────────────────
@@ -567,6 +693,14 @@ function tgMessageFor(topic, p) {
   if (topic === 'order.status_changed' && p.status === 'cancelled') return `❌ Đơn #${p.order_number} đã huỷ${p.reason === 'expired' ? ' (tự huỷ quá hạn)' : ''}.`;
   if (topic === 'order.status_changed' && p.status === 'returned') return `↩️ Đơn #${p.order_number} bị HOÀN (bom hàng) — hàng đang về cửa hàng. Nhận lại hàng rồi cập nhật tồn kho (Điều chỉnh tồn).`;
   if (topic === 'stock.low') return `📦 ${p.items?.length ?? 0} sản phẩm SẮP HẾT HÀNG (còn ≤ ${p.threshold}). Kiểm kho + nhập thêm.`;
+  if (topic === 'subscription.reminder') {
+    // Thiếu nhánh này = nửa Telegram của dunning âm thầm TẮT (return null bên dưới).
+    const plan = p.plan_name || p.plan_code || '';
+    const d = new Date(p.period_end).toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+    return p.milestone === 'past_due'
+      ? `🔴 Thuê bao (gói ${plan}) ĐÃ QUÁ HẠN — còn ${p.grace_days_left} ngày ân hạn trước khi website TẠM NGƯNG. Liên hệ ${BILLING_CONTACT} để gia hạn ngay.`
+      : `⏰ ${p.sub_status === 'trial' ? `Dùng thử (gói ${plan})` : `Gói ${plan}`} sắp hết hạn — còn ${p.days_left} ngày (đến ${d}). Liên hệ ${BILLING_CONTACT} để gia hạn.`;
+  }
   return null;
 }
 async function deliverTelegram(topic, payload, shopId, outboxId) {
@@ -672,6 +806,7 @@ const tgLinkTimer = (TELEGRAM_ON && expiryDb) ? setInterval(sweepTelegramLink, T
 const domainTimer = domainDb ? setInterval(sweepDomainVerify, DOMAINVERIFY_SWEEP_MS) : null;
 const billingTimer = billingDb ? setInterval(sweepSubscriptions, SUBSCRIPTION_SWEEP_MS) : null;
 const trackingTimer = (expiryDb && TRACKING_ON) ? setInterval(sweepTracking, TRACKING_SWEEP_MS) : null;
+const piiTimer = expiryDb ? setInterval(sweepPiiRetention, PII_SWEEP_MS) : null;
 
 // ── HTTP: health + stats (cho e2e kiểm dead-letter) ──────────────────────────
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -714,6 +849,11 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     return res.end(JSON.stringify(r));
   }
   // Kích hoạt dọn outbox ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/pii-sweep' && req.method === 'POST') {
+    const r = await sweepPiiRetention();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   if (url.pathname === '/internal/outbox-gc' && req.method === 'POST') {
     const r = await sweepOutboxGc();
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -743,6 +883,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (billingTimer) clearInterval(billingTimer);
     if (trackingTimer) clearInterval(trackingTimer);
     if (lowstockTimer) clearInterval(lowstockTimer);
+    if (piiTimer) clearInterval(piiTimer);
     clearInterval(outboxGcTimer);
     clearInterval(alertTimer);
     if (tgLinkTimer) clearInterval(tgLinkTimer);

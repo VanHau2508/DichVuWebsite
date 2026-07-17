@@ -256,6 +256,13 @@ services:
       # Khép kín vòng bill: quét thuê bao quá hạn → past_due → cancelled + đình chỉ shop.
       # (Bỏ dòng này = TẮT tự đình chỉ; team quản lý thuê bao tay qua Console.)
       DATABASE_URL_BILLING: postgres://app_billing:${APP_BILLING_PASSWORD:?}@postgres:5432/app
+      # Ân hạn past_due (ngày). Trước đây prod KHÔNG truyền biến này (code luôn chạy mặc
+      # định 7) — nhắc hạn tính grace_days_left từ nó nên PHẢI truyền qua để copy khớp
+      # đúng thời điểm treo shop thật (đặt trong .env thì đổi cả hai cùng lúc).
+      SUBSCRIPTION_GRACE_DAYS: ${SUBSCRIPTION_GRACE_DAYS:-7}
+      # Thương hiệu + email liên hệ nền tảng trong email/Telegram NHẮC HẠN thuê bao.
+      PLATFORM_BRAND: ${PLATFORM_BRAND:-Nền Tảng}
+      PLATFORM_CONTACT_EMAIL: ${PLATFORM_CONTACT_EMAIL:-lienhe@nentang.vn}
       # Poll vận đơn hãng VC (0044): khoá PHẢI khớp seller; sweep mặc định 10 phút.
       SHIPPING_ENC_KEY: ${SHIPPING_ENC_KEY:?}
       TRACKING_SWEEP_MS: ${TRACKING_SWEEP_MS:-600000}

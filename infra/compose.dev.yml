@@ -292,6 +292,8 @@ services:
       DATABASE_URL_BILLING: postgres://app_billing:devpassword@postgres:5432/app
       SUBSCRIPTION_SWEEP_MS: "3600000"
       SUBSCRIPTION_GRACE_DAYS: "7"
+      # Email liên hệ nền tảng trong copy nhắc hạn thuê bao (e2e assert xác định).
+      PLATFORM_CONTACT_EMAIL: lienhe@nentang.vn
       # Poll vận đơn hãng VC (0044) — dùng pool app_expiry; khoá giải mã token per-shop
       # PHẢI khớp seller. Dev: API base trỏ stub trong dbtest.
       SHIPPING_ENC_KEY: 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0

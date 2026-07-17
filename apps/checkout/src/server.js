@@ -21,7 +21,7 @@ import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, 
 import { buildVietQR } from './vietqr.js';
 import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
 import { runReq, makeLog, health } from './obs.js';
-import { isProvince } from './provinces.js';
+import { isProvince, regionOf } from './provinces.js';
 
 const PORT = Number(process.env.PORT ?? 3060);
 // Mặc định phí ship nền tảng (shop chưa cấu hình → dùng số này). Dùng `??` không đủ:
@@ -108,16 +108,36 @@ async function findCart(c, token) {
 // Phí ship theo shop (đọc trong tenant context). NULL → mặc định nền tảng (tương thích
 // ngược). Dùng CHUNG cho summarize (hiển thị) và createOrderTx (tính đơn) → luôn khớp.
 async function shopShipping(c) {
-  const s = (await c.query(`SELECT ship_fee_vnd, free_ship_threshold_vnd FROM shops WHERE id = current_shop_id()`)).rows[0] ?? {};
+  const s = (await c.query(`SELECT ship_fee_vnd, free_ship_threshold_vnd, ship_fee_far_vnd, ship_extra_per_500g_vnd, default_weight_gram, ship_from_province FROM shops WHERE id = current_shop_id()`)).rows[0] ?? {};
   return {
     fee: s.ship_fee_vnd != null ? Number(s.ship_fee_vnd) : SHIP_FEE,
     threshold: s.free_ship_threshold_vnd != null ? Number(s.free_ship_threshold_vnd) : null,
+    feeFar: s.ship_fee_far_vnd != null ? Number(s.ship_fee_far_vnd) : null,        // NULL = không phân vùng (phí phẳng như cũ)
+    extraPer500g: s.ship_extra_per_500g_vnd != null ? Number(s.ship_extra_per_500g_vnd) : 0,
+    defaultWeightGram: Number(s.default_weight_gram ?? 500),
+    fromRegion: regionOf(s.ship_from_province), // null nếu shop chưa khai / tên lạ → bỏ bậc vùng
   };
 }
-function computeShipping(cfg, subtotal, hasItems) {
-  if (!hasItems) return 0;
-  if (cfg.threshold != null && subtotal >= cfg.threshold) return 0; // đủ ngưỡng miễn phí ship
-  return cfg.fee;
+// Phí ship 2 bậc vùng (nội miền / liên miền) + phụ phí cân (mỗi 500g vượt 500g đầu).
+// HAI CHẾ ĐỘ một hàm: HIỂN THỊ (assumeFarWhenUnknown=false — chưa rõ tỉnh → ước tính
+// nội miền + ghi chú) và CHỐT ĐƠN (true — không rõ tỉnh → tính LIÊN MIỀN, bảo vệ shop:
+// Origin header giả được bằng curl nên người mua rành kỹ thuật không né được phí xa).
+// items: [{qty, weight_gram}] — weight_gram NULL → dùng cân mặc định của shop.
+function computeShipping(cfg, subtotal, items, province, { assumeFarWhenUnknown = false } = {}) {
+  if (!items.length) return 0;
+  if (cfg.threshold != null && subtotal >= cfg.threshold) return 0; // đủ ngưỡng miễn phí ship — miễn TOÀN BỘ (kể cả phụ phí cân)
+  let fee = cfg.fee;
+  if (cfg.feeFar != null && cfg.fromRegion) {
+    const to = regionOf(province);
+    fee = to == null
+      ? (assumeFarWhenUnknown ? cfg.feeFar : cfg.fee)
+      : (to === cfg.fromRegion ? cfg.fee : cfg.feeFar);
+  }
+  if (cfg.extraPer500g > 0) {
+    const grams = items.reduce((s, it) => s + it.qty * (it.weight_gram != null ? Number(it.weight_gram) : cfg.defaultWeightGram), 0);
+    fee += Math.ceil(Math.max(0, grams - 500) / 500) * cfg.extraPer500g;
+  }
+  return fee;
 }
 
 // Giảm giá thực từ coupon theo subtotal. Cap ≤ subtotal (chỉ giảm hàng, không giảm ship,
@@ -142,9 +162,9 @@ async function resolveCoupon(c, code, subtotal) {
   return discount > 0 ? { code: cp.code, kind: cp.kind, value: Number(cp.value), discount } : null;
 }
 
-async function summarize(c, cartId) {
+async function summarize(c, cartId, province = null) {
   const items = (await c.query(
-    `SELECT ci.variant_id, ci.qty, v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title, p.slug,
+    `SELECT ci.variant_id, ci.qty, v.price_vnd, v.weight_gram, v.title AS variant_title, v.sku, p.title AS product_title, p.slug,
             (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key
        FROM cart_items ci JOIN variants v ON v.id = ci.variant_id JOIN products p ON p.id = v.product_id
       WHERE ci.cart_id = $1 ORDER BY ci.created_at`, [cartId],
@@ -155,12 +175,16 @@ async function summarize(c, cartId) {
     subtotal += unit * it.qty;
     return { variant_id: it.variant_id, product_title: it.product_title, variant_title: it.variant_title, sku: it.sku, unit_price_vnd: unit, qty: it.qty, line_total_vnd: unit * it.qty, image: imgUrl(it.image_key) };
   });
-  const shipping = computeShipping(await shopShipping(c), subtotal, out.length > 0);
+  const cfg = await shopShipping(c);
+  const shipping = computeShipping(cfg, subtotal, items, province); // chế độ HIỂN THỊ: chưa rõ tỉnh → ước tính nội miền
+  // Cờ cho UI: shop CÓ phí liên miền nhưng CHƯA rõ tỉnh nhận → hiện ghi chú "chưa gồm phụ phí liên miền".
+  const feeRegionPending = items.length > 0 && cfg.feeFar != null && cfg.fromRegion != null
+    && regionOf(province) == null && !(cfg.threshold != null && subtotal >= cfg.threshold);
   // Mã giảm giá đang áp trên giỏ — re-validate theo subtotal hiện tại (mã hết hạn/không đủ đơn → bỏ qua).
   const cc = (await c.query(`SELECT coupon_code FROM carts WHERE id = $1`, [cartId])).rows[0]?.coupon_code;
   const coupon = cc ? await resolveCoupon(c, cc, subtotal) : null;
   const discount = coupon?.discount ?? 0;
-  return { items: out, subtotal_vnd: subtotal, shipping_vnd: shipping, discount_vnd: discount, coupon_code: coupon?.code ?? null, total_vnd: subtotal - discount + shipping };
+  return { items: out, subtotal_vnd: subtotal, shipping_vnd: shipping, discount_vnd: discount, coupon_code: coupon?.code ?? null, total_vnd: subtotal - discount + shipping, fee_region_pending: feeRegionPending };
 }
 
 // Tên shop (cho header trang HTML). app_checkout có SELECT shops (policy checkout_shop).
@@ -405,7 +429,7 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     // Phòng thủ nhiều lớp: loại biến thể MỒ CÔI khỏi đơn (đã vào giỏ TRƯỚC khi shop thu hẹp
     // phân loại) — không bao giờ reserve/snapshot theo giá/tồn cũ. Giỏ rỗng ra → fail dưới.
     const items = (await c.query(
-      `SELECT ci.variant_id, ci.qty, v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title
+      `SELECT ci.variant_id, ci.qty, v.price_vnd, v.weight_gram, v.title AS variant_title, v.sku, p.title AS product_title
          FROM cart_items ci JOIN variants v ON v.id = ci.variant_id JOIN products p ON p.id = v.product_id
         WHERE ci.cart_id = $1 AND ${VARIANT_NOT_ORPHAN_SQL}
         ORDER BY ci.created_at`, [cart.id],
@@ -446,7 +470,13 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       subtotal += unit * it.qty;
       lines.push({ variant_id: it.variant_id, title: it.product_title + (it.variant_title ? ` - ${it.variant_title}` : ''), sku: it.sku, unit, qty: it.qty });
     }
-    const shipping = computeShipping(await shopShipping(c), subtotal, items.length > 0);
+    // Chế độ CHỐT ĐƠN: không rõ tỉnh → tính LIÊN MIỀN (bảo vệ shop — xem computeShipping).
+    const shipping = computeShipping(await shopShipping(c), subtotal, items, address?.province, { assumeFarWhenUnknown: true });
+    // Vòng trung thực phí no-JS: phí khách ĐÃ THẤY (hidden ship_seen, chỉ form gửi) khác phí
+    // thật → 409 NGAY TRONG transaction (rollback reserve/coupon/idem — không TOCTOU) →
+    // checkoutPlace dựng lại form với phí đúng cho một cú bấm xác nhận nữa. ship_seen chỉ
+    // dùng để SO SÁNH — tuyệt đối không đưa vào total.
+    if (f.expectedShipping != null && shipping !== f.expectedShipping) fail(409, 'phí giao hàng đã cập nhật', { shipping_vnd: shipping });
     // Mã giảm giá: RE-VALIDATE lúc tạo đơn (subtotal đã chốt) + giành 1 lượt NGUYÊN TỬ. Đua 2
     // đơn dùng lượt cuối → chỉ 1 đơn thắng (UPDATE khoá hàng coupon). Hết lượt → bỏ giảm (đơn
     // vẫn tạo, khách trả đủ) thay vì chặn checkout.
@@ -548,7 +578,9 @@ async function checkoutPlace(req, res, form, ctx) {
     const token = parseCookies(req)[CART_COOKIE];
     const summary = await withTenant(ctx.shopId, async (c) => {
       const cart = await findCart(c, token);
-      return cart ? summarize(c, cart.id) : { items: [] };
+      // Tỉnh đã chọn hợp lệ → tổng dựng lại TÍNH THEO TỈNH (ship_seen mới = phí đúng → vòng
+      // xác nhận phí hội tụ sau đúng một cú bấm).
+      return cart ? summarize(c, cart.id, isProvince(String(form.province ?? '')) ? String(form.province) : null) : { items: [] };
     });
     if (!summary.items.length) return redirect(res, '/cart');
     const idem = genToken();
@@ -566,6 +598,12 @@ async function checkoutPlace(req, res, form, ctx) {
 
   const f = parseOrderInput({ name: form.name, phone: form.phone, email: form.email, address: form.address_line ? { line: String(form.address_line).slice(0, 300), province: form.province ? String(form.province).slice(0, 60) : undefined } : null, payment_method: form.payment_method });
   if (f.error) return reRender({ error: f.error });
+  // Form NGƯỜI MUA bắt buộc chọn tỉnh (API JSON /checkout vẫn tuỳ chọn — tương thích ngược,
+  // nhưng không rõ tỉnh thì bị tính phí liên miền ở createOrderTx).
+  if (!f.address?.province) return reRender({ error: 'Vui lòng chọn Tỉnh/Thành phố nhận hàng.' });
+  // Phí ship khách ĐÃ THẤY trên form (hidden ship_seen). Thiếu/rác → null = bỏ so khớp
+  // (form của ta luôn gửi); chỉ dùng để SO SÁNH trong createOrderTx, không vào total.
+  f.expectedShipping = /^\d{1,9}$/.test(String(form.ship_seen ?? '')) ? Number(form.ship_seen) : null;
 
   // (c) Leo thang: nguồn (IP) đã nhiều đơn CHỜ → bắt trả lời câu hỏi toán (ký HMAC).
   if (ctx.ip) {
@@ -584,6 +622,11 @@ async function checkoutPlace(req, res, form, ctx) {
     const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, ctx, token, idemKey, f));
     return redirect(res, `/checkout/success?number=${out.body.order_number}&token=${encodeURIComponent(out.body.lookup_token)}&placed=1`);
   } catch (err) {
+    // Phí ship đã cập nhật (ship_seen lệch) → dựng lại form: summarize theo tỉnh đã chọn
+    // phát ship_seen ĐÚNG + idem/formTs mới → khách kiểm tra rồi bấm Đặt hàng lại là xong.
+    if (err.statusCode === 409 && err.body?.shipping_vnd != null) {
+      return reRender({ error: `Phí giao hàng tới ${f.address.province} là ${new Intl.NumberFormat('vi-VN').format(err.body.shipping_vnd)}₫ — tổng đơn đã được cập nhật, vui lòng kiểm tra và bấm Đặt hàng lại.` });
+    }
     if (err.statusCode) return sendHtml(res, err.statusCode, renderError(shopName, err.body?.error ?? 'Không đặt được đơn.'));
     throw err;
   }

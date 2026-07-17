@@ -200,6 +200,50 @@ async function main() {
   r = await co({ host: A.host, path: '/checkout/success', accept: 'text/html' });
   r.status === 200 && r.body.includes('Tra cứu đơn hàng') ? ok('thiếu tham số → form tra cứu (không ngõ cụt)') : bad('thiếu tham số không về form');
 
+  // ── 10. Phí liên miền + vòng trung thực ship_seen (no-JS, re-render 409) ────
+  sect('10. Phí vùng miền + vòng xác nhận lại phí (ship_seen)');
+  r = await rq(SELLER, 'PATCH', `/shops/${A.shopId}`, { body: { name: A.slug, ship_fee_vnd: 20000, ship_fee_far_vnd: 40000, ship_from_province: 'Hà Nội' }, cookie: A.cookie, origin: OS });
+  r.status === 200 ? ok('cấu hình phí vùng: nội 20k / liên 40k / gửi từ Hà Nội') : bad('không cấu hình được phí vùng', r.raw);
+  const cart3 = (await co({ method: 'POST', host: A.host, path: '/cart/add', form: { variant_id: prod.vid, qty: '1' } })).cartCookie;
+  const page3 = (await co({ host: A.host, path: '/checkout', accept: 'text/html', cartCookie: cart3 })).body;
+  const grab = (b) => ({
+    idem: b.match(/name="idempotency_key" value="([^"]+)"/)?.[1],
+    ct: b.match(/name="ct" value="([^"]+)"/)?.[1],
+    seen: b.match(/name="ship_seen" value="(\d+)"/)?.[1],
+  });
+  let fm = grab(page3);
+  fm.seen === '20000' && page3.includes('nội miền')
+    ? ok('trang checkout: hidden ship_seen=20000 + ghi chú "nội miền" (chưa rõ tỉnh nhận)') : bad('thiếu ship_seen/ghi chú vùng', `seen=${fm.seen}`);
+
+  // (a) thiếu tỉnh → re-render bắt chọn (form người mua BẮT BUỘC tỉnh; API JSON vẫn tuỳ chọn)
+  await sleep(2600);
+  r = await co({ method: 'POST', host: A.host, path: '/checkout/place', cartCookie: cart3,
+    form: { idempotency_key: fm.idem, ct: fm.ct, ship_seen: fm.seen, name: 'Lê Thị C', phone: '0904444444', address_line: '99 Nguyễn Huệ', payment_method: 'cod' } });
+  r.status === 200 && r.body.includes('Vui lòng chọn Tỉnh/Thành phố')
+    ? ok('POST thiếu tỉnh → 200 re-render lỗi "Vui lòng chọn Tỉnh/Thành phố"') : bad('thiếu tỉnh không bị chặn', `status=${r.status}`);
+  fm = grab(r.body);
+
+  // (b) tỉnh LIÊN MIỀN + ship_seen CŨ (20000) → 409 trong tx → 200 re-render, KHÔNG tạo đơn
+  const nBefore = (await owner.query('SELECT count(*)::int n FROM orders WHERE shop_id=$1', [A.shopId])).rows[0].n;
+  await sleep(2600);
+  r = await co({ method: 'POST', host: A.host, path: '/checkout/place', cartCookie: cart3,
+    form: { idempotency_key: fm.idem, ct: fm.ct, ship_seen: fm.seen, name: 'Lê Thị C', phone: '0904444444', address_line: '99 Nguyễn Huệ', province: 'TP. Hồ Chí Minh', payment_method: 'cod' } });
+  const nAfter = (await owner.query('SELECT count(*)::int n FROM orders WHERE shop_id=$1', [A.shopId])).rows[0].n;
+  r.status === 200 && nAfter === nBefore && r.body.includes('40.000')
+    ? ok('ship_seen cũ (20k) + tỉnh liên miền → 200 re-render báo phí 40.000₫, KHÔNG tạo đơn') : bad('vòng trung thực phí hỏng', `status=${r.status} orders ${nBefore}→${nAfter}`);
+  fm = grab(r.body);
+  fm.seen === '40000' ? ok('form dựng lại mang ship_seen=40000 (tổng đã tính theo tỉnh)') : bad('ship_seen dựng lại sai', fm.seen);
+
+  // (c) bấm Đặt hàng lại (ship_seen đúng, idem/ct MỚI từ re-render) → 303 + phí lưu đúng
+  await sleep(2600);
+  r = await co({ method: 'POST', host: A.host, path: '/checkout/place', cartCookie: cart3,
+    form: { idempotency_key: fm.idem, ct: fm.ct, ship_seen: fm.seen, name: 'Lê Thị C', phone: '0904444444', address_line: '99 Nguyễn Huệ', province: 'TP. Hồ Chí Minh', payment_method: 'cod' } });
+  const m3 = /number=(\d+)&token=([^&\s]+)/.exec(r.location ?? '');
+  r.status === 303 && m3 ? ok(`Đặt hàng lại → 303 success (đơn #${m3[1]})`) : bad('repost với phí đúng thất bại', `status=${r.status} ${r.body?.slice(0, 150)}`);
+  const rowS = m3 ? (await owner.query('SELECT shipping_vnd, total_vnd FROM orders WHERE shop_id=$1 AND order_number=$2', [A.shopId, Number(m3[1])])).rows[0] : null;
+  rowS && Number(rowS.shipping_vnd) === 40000 && Number(rowS.total_vnd) === 190000
+    ? ok('orders.shipping_vnd=40000 (liên miền), total=190k — khớp nút đã bấm') : bad('phí ship lưu sai', JSON.stringify(rowS));
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

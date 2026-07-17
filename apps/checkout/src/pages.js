@@ -122,6 +122,7 @@ const totalsBlock = (s) => `
   <div class="tot"><span class="muted">Tạm tính</span><span>${money(s.subtotal_vnd)}</span></div>
   ${s.discount_vnd ? `<div class="tot"><span class="muted">Giảm giá${s.coupon_code ? ` (${esc(s.coupon_code)})` : ''}</span><span style="color:#0e9f6e">−${money(s.discount_vnd)}</span></div>` : ''}
   <div class="tot"><span class="muted">Phí giao hàng</span><span>${money(s.shipping_vnd)}</span></div>
+  ${s.fee_region_pending ? `<div class="muted" style="font-size:.82rem">Phí trên tính theo giao nội miền — có thể thêm phụ phí liên miền tuỳ tỉnh/thành nhận hàng (chốt ở bước Đặt hàng).</div>` : ''}
   <div class="tot grand"><span>Tổng cộng</span><span>${money(s.total_vnd)}</span></div>`;
 
 // Ô nhập mã giảm giá trên trang giỏ (no-JS: POST /cart/coupon → PRG). Rỗng = gỡ mã.
@@ -178,6 +179,7 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
     <form method="POST" action="/checkout/place">
       <input type="hidden" name="idempotency_key" value="${esc(idemToken)}">
       <input type="hidden" name="ct" value="${esc(opts.formTs ?? '')}">
+      <input type="hidden" name="ship_seen" value="${Number(s.shipping_vnd)}">
       <div class="card"><h2>Người nhận</h2>
         <label>Họ tên *</label><input name="name" required maxlength="120" autocomplete="name" value="${v(pf.name)}">
         <label>Số điện thoại *</label><input name="phone" required inputmode="tel" autocomplete="tel" placeholder="09xxxxxxxx" value="${v(pf.phone)}">

@@ -104,8 +104,11 @@ async function platformShops(res, me, cookie) {
   if (r.status !== 200) return platDenied(res, me);
   return sendHtml(res, 200, V.renderPlatformShops(platCtx(me), r.json?.shops ?? []));
 }
-function platformShopNew(res, me, err, form) {
-  return sendHtml(res, err ? 400 : 200, V.renderPlatformShopNew(platCtx(me), err, form));
+async function platformShopNew(res, me, cookie, err, form) {
+  // Select gói render từ DB qua /ops/plans (đã giết giá hardcode trong pages.js).
+  const pr = await platformApi('GET', '/ops/plans', { cookie });
+  if (isDenied(pr.status)) return platDenied(res, me);
+  return sendHtml(res, err ? 400 : 200, V.renderPlatformShopNew(platCtx(me), err, form, pr.json?.plans ?? []));
 }
 async function platformCreate(req, res, me, cookie) {
   const f = await readForm(req);
@@ -113,13 +116,16 @@ async function platformCreate(req, res, me, cookie) {
   const r = await platformApi('POST', '/ops/shops', { cookie, body });
   if (r.status === 201) return redirect(res, `/platform/shops/${r.json.id}`);
   if (isDenied(r.status)) return platDenied(res, me);
-  return platformShopNew(res, me, r.json?.error ?? 'Không tạo được cửa hàng.', f);
+  return platformShopNew(res, me, cookie, r.json?.error ?? 'Không tạo được cửa hàng.', f);
 }
 async function platformShopDetail(res, me, cookie, shopId, opts = {}) {
-  const r = await platformApi('GET', `/ops/shops/${shopId}`, { cookie });
+  const [r, pr] = await Promise.all([
+    platformApi('GET', `/ops/shops/${shopId}`, { cookie }),
+    platformApi('GET', '/ops/plans', { cookie }),
+  ]);
   if (isDenied(r.status)) return platDenied(res, me);
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError({ user: me }, r.json?.error ?? 'Không tìm thấy cửa hàng.'));
-  return sendHtml(res, 200, V.renderPlatformShopDetail(platCtx(me), r.json, opts));
+  return sendHtml(res, 200, V.renderPlatformShopDetail(platCtx(me), r.json, { ...opts, plans: pr.json?.plans ?? [] }));
 }
 async function platformInvite(req, res, me, cookie, shopId) {
   const f = await readForm(req);
@@ -139,10 +145,13 @@ async function platformRenew(req, res, me, cookie, shopId) {
   const f = await readForm(req);
   const body = { months: String(f.months ?? '1') };
   if (f.plan_code) body.plan_code = String(f.plan_code);
+  // Số tiền ghi đè (deal thương lượng) + ghi chú — để trống = server tự tính giá gói × tháng.
+  if (String(f.amount_vnd ?? '').trim() !== '') body.amount_vnd = Number(String(f.amount_vnd).trim());
+  if (String(f.note ?? '').trim() !== '') body.note = String(f.note).trim();
   const r = await platformApi('POST', `/ops/shops/${shopId}/subscription/renew`, { cookie, body });
   if (isDenied(r.status)) return platDenied(res, me);
   return platformShopDetail(res, me, cookie, shopId, r.status === 200
-    ? { notice: `Đã ghi nhận thu — gia hạn ${body.months} tháng${body.plan_code ? ` (gói ${body.plan_code})` : ''}, mở lại shop nếu đang khoá.` }
+    ? { notice: `Đã ghi nhận thu ${new Intl.NumberFormat('vi-VN').format(r.json?.amount_vnd ?? 0)}₫ — gia hạn ${r.json?.months} tháng${body.plan_code ? ` (gói ${body.plan_code})` : ''}, mở lại shop nếu đang khoá.` }
     : { err: r.json?.error ?? 'Không gia hạn được.' });
 }
 
@@ -644,11 +653,14 @@ async function variantAdd(req, res, me, cookie, shopId, pid) {
   return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không thêm được biến thể.');
 }
 
-// Sửa giá 1 biến thể (ô inline trong bảng biến thể) → seller PATCH.
+// Sửa giá + cân 1 biến thể (ô inline trong bảng biến thể, chung nút Lưu) → seller PATCH.
 async function variantPrice(req, res, me, cookie, shopId, pid, vid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
-  const r = await sellerApi('PATCH', `/shops/${shopId}/products/${pid}/variants/${vid}`, { cookie, body: { price_vnd: parseVnd(f.price_vnd) } });
+  // Cân: '' = xoá (NULL → dùng mặc định shop); rác → -1 để seller trả lỗi tiếng Việt.
+  const wraw = String(f.weight_gram ?? '').trim();
+  const body = { price_vnd: parseVnd(f.price_vnd), weight_gram: wraw === '' ? null : (Number.isFinite(Number(wraw)) ? Math.round(Number(wraw)) : -1) };
+  const r = await sellerApi('PATCH', `/shops/${shopId}/products/${pid}/variants/${vid}`, { cookie, body });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/products/${pid}`);
   return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không sửa được giá biến thể.');
 }
@@ -1325,6 +1337,10 @@ async function settingsSave(req, res, me, cookie, shopId) {
     business_address: String(f.business_address ?? '').trim(),
     ship_fee_vnd: String(f.ship_fee_vnd ?? '').trim(),
     free_ship_threshold_vnd: String(f.free_ship_threshold_vnd ?? '').trim(),
+    ship_fee_far_vnd: String(f.ship_fee_far_vnd ?? '').trim(),
+    ship_extra_per_500g_vnd: String(f.ship_extra_per_500g_vnd ?? '').trim(),
+    default_weight_gram: String(f.default_weight_gram ?? '').trim(),
+    ship_from_province: String(f.ship_from_province ?? '').trim(),
     low_stock_threshold: String(f.low_stock_threshold ?? '').trim(),
     max_pending_per_ip: String(f.max_pending_per_ip ?? '').trim(),
     max_pending_per_phone: String(f.max_pending_per_phone ?? '').trim(),
@@ -1388,7 +1404,7 @@ async function handle(req, res, url, p) {
     // Console nền tảng (chỉ platform_staff — gate ẩn qua platform requireStaff).
     let pm;
     if (p === '/platform' && req.method === 'GET') return platformShops(res, me, cookie);
-    if (p === '/platform/new' && req.method === 'GET') return platformShopNew(res, me, null, {});
+    if (p === '/platform/new' && req.method === 'GET') return platformShopNew(res, me, cookie, null, {});
     if (p === '/platform' && req.method === 'POST') return platformCreate(req, res, me, cookie);
     if ((pm = new RegExp(`^/platform/shops/${UUID}$`).exec(p)) && req.method === 'GET') return platformShopDetail(res, me, cookie, pm[1]);
     if ((pm = new RegExp(`^/platform/shops/${UUID}/invite$`).exec(p)) && req.method === 'POST') return platformInvite(req, res, me, cookie, pm[1]);

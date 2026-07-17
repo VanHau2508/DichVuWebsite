@@ -35,6 +35,7 @@ import { SHIPPING_ROUTES } from './shipping.js';
 import { REVIEW_ROUTES } from './reviews.js';
 import { CUSTOMER_ROUTES } from './customers.js';
 import { NOTIFY_ROUTES } from './notify.js';
+import { isProvince } from './provinces.js';
 import { runReq, makeLog, health } from './obs.js';
 
 const MAX_UPLOAD = 10 * 1024 * 1024;
@@ -89,6 +90,7 @@ async function getShop(res, ctx) {
       `SELECT id, slug, name, status, locale, currency, timezone,
               contact_email, contact_phone, business_address,
               ship_fee_vnd, free_ship_threshold_vnd, low_stock_threshold,
+              ship_fee_far_vnd, ship_extra_per_500g_vnd, default_weight_gram, ship_from_province,
               max_pending_per_ip, max_pending_per_phone, logo_key
          FROM shops WHERE id = $1`,
       [ctx.shopId],
@@ -127,14 +129,27 @@ async function updateShopProfile(res, ctx, body) {
   if (maxIp != null && (!Number.isInteger(maxIp) || maxIp < 1 || maxIp > 200)) return send(res, 400, { error: 'trần đơn chờ / nguồn không hợp lệ (1–200)' });
   const maxPhone = parseMoney(body.max_pending_per_phone);
   if (maxPhone != null && (!Number.isInteger(maxPhone) || maxPhone < 1 || maxPhone > 50)) return send(res, 400, { error: 'trần đơn chờ / SĐT không hợp lệ (1–50)' });
+  // Phí ship theo VÙNG + CÂN (0063): '' → NULL (không phân vùng / không phụ phí — như cũ).
+  const shipFar = parseMoney(body.ship_fee_far_vnd);
+  if (shipFar != null && (!Number.isInteger(shipFar) || shipFar < 0 || shipFar > MAX_SHIP)) return send(res, 400, { error: 'phí ship liên miền không hợp lệ' });
+  const extra500 = parseMoney(body.ship_extra_per_500g_vnd);
+  if (extra500 != null && (!Number.isInteger(extra500) || extra500 < 0 || extra500 > MAX_SHIP)) return send(res, 400, { error: 'phụ phí theo cân không hợp lệ' });
+  // Cột NOT NULL DEFAULT 500 (LỆCH pattern NULL-=-mặc-định của các cột khác): '' → reset về 500.
+  const defWeight = parseMoney(body.default_weight_gram) ?? 500;
+  if (!Number.isInteger(defWeight) || defWeight < 1 || defWeight > 50000) return send(res, 400, { error: 'khối lượng mặc định không hợp lệ (1–50000g)' });
+  const fromProv = String(body.ship_from_province ?? '').trim() || null;
+  if (fromProv && !isProvince(fromProv)) return send(res, 400, { error: 'tỉnh/thành gửi hàng không hợp lệ' });
+  // Mirror CHECK shops_ship_far_requires_from — lỗi tiếng Việt thay vì để DB nổ thành 500.
+  if (shipFar != null && !fromProv) return send(res, 400, { error: 'cần chọn "Giao hàng từ tỉnh/thành" khi đặt phí liên miền' });
 
   await withTenant(ctx.shopId, async (c) => {
     await c.query(
       `UPDATE shops SET name = $1, contact_email = $2, contact_phone = $3, business_address = $4,
               ship_fee_vnd = $5, free_ship_threshold_vnd = $6, low_stock_threshold = $7,
-              max_pending_per_ip = $8, max_pending_per_phone = $9
+              max_pending_per_ip = $8, max_pending_per_phone = $9,
+              ship_fee_far_vnd = $10, ship_extra_per_500g_vnd = $11, default_weight_gram = $12, ship_from_province = $13
         WHERE id = current_shop_id()`,
-      [name, email || null, phone || null, address || null, shipFee, freeThreshold, lowStock, maxIp, maxPhone],
+      [name, email || null, phone || null, address || null, shipFee, freeThreshold, lowStock, maxIp, maxPhone, shipFar, extra500, defWeight, fromProv],
     );
     await audit(c, 'shop.profile_updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: {} });
   });

@@ -332,11 +332,20 @@ export function renderShopSettings(ctx, shopId, shop, notice, err) {
         <h2 style="margin:22px 0 4px;font-size:1.05rem">Phí vận chuyển</h2>
         <p class="muted" style="margin:0 0 10px;font-size:.85rem">Phí ship áp cho mỗi đơn (tính tự động lúc thanh toán). Để trống = dùng mặc định nền tảng.</p>
         <div class="actions" style="align-items:end;flex-wrap:wrap">
-          <div><label>Phí ship (VND)</label><input name="ship_fee_vnd" value="${esc(s.ship_fee_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="30000" style="width:150px"></div>
+          <div><label>Phí ship nội miền (VND)</label><input name="ship_fee_vnd" value="${esc(s.ship_fee_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="30000" style="width:170px"></div>
+          <div><label>Phí ship liên miền (VND)</label><input name="ship_fee_far_vnd" value="${esc(s.ship_fee_far_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="để trống = như nội miền" style="width:200px"></div>
+          <div><label>Giao hàng từ tỉnh/thành</label><select name="ship_from_province" style="width:200px" aria-label="Tỉnh/thành gửi hàng">
+            <option value="">— Chưa chọn —</option>
+            ${PROVINCES.map((p) => `<option value="${esc(p)}"${s.ship_from_province === p ? ' selected' : ''}>${esc(p)}</option>`).join('')}
+          </select></div>
           <div><label>Miễn phí ship từ (VND)</label><input name="free_ship_threshold_vnd" value="${esc(s.free_ship_threshold_vnd ?? '')}" inputmode="numeric" maxlength="10" placeholder="để trống = không" style="width:200px"></div>
+        </div>
+        <div class="actions" style="align-items:end;flex-wrap:wrap">
+          <div><label>Phụ phí mỗi 500g vượt 500g đầu (VND)</label><input name="ship_extra_per_500g_vnd" value="${esc(s.ship_extra_per_500g_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="để trống = không phụ phí" style="width:230px"></div>
+          <div><label>Khối lượng mặc định mỗi sản phẩm (gram)</label><input name="default_weight_gram" value="${esc(s.default_weight_gram ?? '')}" inputmode="numeric" maxlength="5" placeholder="500" style="width:230px"></div>
           <div><label>Cảnh báo sắp hết hàng khi tồn ≤</label><input name="low_stock_threshold" value="${esc(s.low_stock_threshold ?? '')}" inputmode="numeric" maxlength="5" placeholder="mặc định 5" style="width:200px"></div>
         </div>
-        <p class="muted" style="font-size:.8rem;margin:6px 0 0">VD: phí 30.000đ, miễn phí từ 500.000đ → đơn ≥ 500k được free ship.</p>
+        <p class="muted" style="font-size:.8rem;margin:6px 0 0">Nội miền = cùng miền Bắc/Trung/Nam với tỉnh gửi hàng. Cân đơn = tổng khối lượng biến thể (khai ở từng sản phẩm; trống = mặc định). VD: phí 30.000đ, miễn phí từ 500.000đ → đơn ≥ 500k được free ship (miễn cả phụ phí cân).</p>
 
         <h2 style="margin:22px 0 4px;font-size:1.05rem">Chống đơn ảo</h2>
         <p class="muted" style="margin:0 0 10px;font-size:.85rem">Trần số đơn <strong>chưa xử lý</strong> cùng lúc từ một nguồn mạng / một SĐT. Để trống = dùng mặc định nền tảng. Đặt thấp hơn nếu bị spam; đặt cao hơn nếu nhiều khách thật dùng chung mạng.</p>
@@ -356,11 +365,11 @@ export function renderShopSettings(ctx, shopId, shop, notice, err) {
 // ── Console nền tảng (super-admin, chỉ platform_staff) ───────────────────────
 // Gate ẩn: seller-admin không biết ai là staff → mọi handler gọi platformApi; platform
 // requireStaff (introspect + platform_staff + MFA) tự chặn (403 → renderPlatformDenied).
-const PLANS = [
-  { code: 'platform', label: 'Platform — 990.000đ/tháng · 100 SP' },
-  { code: 'care', label: 'Care — 2.490.000đ/tháng · 100 SP' },
-  { code: 'growth', label: 'Growth — 5.900.000đ/tháng · 500 SP' },
-];
+// Gói dịch vụ tải từ DB qua GET /ops/plans (KHÔNG hardcode giá — giá đổi trong DB là
+// đổi khắp Console). Giá ghi ngay trong label từng gói: no-JS SSR không tính giá động được.
+const planLabel = (p) => `${p.name} — ${money(p.price_vnd_month)}/tháng · ${p.max_products} SP`;
+const planOptions = (plans, selected) => (plans ?? []).map((p) =>
+  `<option value="${esc(p.code)}"${selected === p.code ? ' selected' : ''}>${esc(planLabel(p))}</option>`).join('');
 const PLAT_STATUS = { onboarding: 'Đang thiết lập', active: 'Đang hoạt động', suspended: 'Tạm khoá' };
 
 export function renderPlatformDenied(ctx) {
@@ -373,14 +382,15 @@ export function renderPlatformShops(ctx, shops) {
     <td><a href="/platform/shops/${esc(s.id)}">${esc(s.name)}</a><div class="muted" style="font-size:.8rem">${esc(s.subdomain ?? s.slug)}</div></td>
     <td>${badge(s.status, PLAT_STATUS[s.status] ?? s.status)}</td>
     <td>${esc(s.plan_code ?? '—')} <span class="muted">${esc(s.sub_status ?? '')}</span></td>
+    <td class="right">${money(s.total_collected_vnd ?? 0)}</td>
     <td class="muted">${dt(s.created_at)}</td></tr>`).join('');
   return layout('Console nền tảng', ctx, `
     <div class="toolbar"><h1 style="margin:0">Console nền tảng</h1>
       <a class="btn" href="/platform/new">+ Tạo cửa hàng</a></div>
-    <div class="card">${(shops ?? []).length ? `<table><thead><tr><th>Cửa hàng</th><th>Trạng thái</th><th>Gói</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="card">${(shops ?? []).length ? `<table><thead><tr><th>Cửa hàng</th><th>Trạng thái</th><th>Gói</th><th class="right">Đã thu</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table>
       <p class="muted" style="margin-top:10px">${shops.length} cửa hàng.</p>` : '<p class="muted">Chưa có cửa hàng nào. Bấm “Tạo cửa hàng”.</p>'}</div>`);
 }
-export function renderPlatformShopNew(ctx, err, f = {}) {
+export function renderPlatformShopNew(ctx, err, f = {}, plans = []) {
   return layout('Tạo cửa hàng', ctx, `
     <a class="muted" href="/platform">← Console nền tảng</a>
     <h1>Tạo cửa hàng mới</h1>
@@ -389,11 +399,11 @@ export function renderPlatformShopNew(ctx, err, f = {}) {
       <label>Tên cửa hàng</label><input name="name" value="${esc(f.name ?? '')}" required maxlength="200" placeholder="Nhà Xinh Décor">
       <label>Subdomain (slug)</label><input name="slug" value="${esc(f.slug ?? '')}" required pattern="[a-z0-9-]+" maxlength="40" placeholder="nha-xinh">
       <div class="muted" style="font-size:.82rem;margin:2px 0 8px">→ <code>&lt;slug&gt;.nentang.vn</code> (chỉ a-z, 0-9, gạch ngang)</div>
-      <label>Gói dịch vụ</label><select name="plan_code">${PLANS.map((p) => `<option value="${p.code}"${f.plan_code === p.code ? ' selected' : ''}>${esc(p.label)}</option>`).join('')}</select>
+      <label>Gói dịch vụ</label><select name="plan_code">${planOptions(plans, f.plan_code)}</select>
       <div class="actions" style="margin-top:14px"><button class="btn" type="submit">Tạo cửa hàng</button></div>
     </form></div>`);
 }
-export function renderPlatformShopDetail(ctx, shop, { notice = null, err = null, invite = null } = {}) {
+export function renderPlatformShopDetail(ctx, shop, { notice = null, err = null, invite = null, plans = [] } = {}) {
   const base = `/platform/shops/${esc(shop.id)}`;
   const inviteCard = invite ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0">
     <h2 style="margin-top:0">Link mời đã tạo</h2>
@@ -425,9 +435,20 @@ export function renderPlatformShopDetail(ctx, shop, { notice = null, err = null,
       <p class="muted" style="font-size:.85rem">Khi chủ shop đã trả tiền: chọn số kỳ → thuê bao chuyển <strong>active</strong>, gia hạn kỳ, và <strong>mở lại</strong> shop nếu đang khoá vì nợ. (Thu tiền thủ công — chưa cổng recurring.)</p>
       <form method="POST" action="${base}/renew" class="actions" style="align-items:end;flex-wrap:wrap">
         <div><label>Số tháng</label><select name="months">${[1, 3, 6, 12].map((m) => `<option value="${m}">${m} tháng</option>`).join('')}</select></div>
-        <div><label>Đổi gói (tuỳ chọn)</label><select name="plan_code"><option value="">— Giữ gói hiện tại —</option>${PLANS.map((p) => `<option value="${p.code}"${shop.plan_code === p.code ? ' selected' : ''}>${esc(p.label)}</option>`).join('')}</select></div>
+        <div><label>Đổi gói (tuỳ chọn)</label><select name="plan_code"><option value="">— Giữ gói hiện tại —</option>${planOptions(plans, shop.plan_code)}</select></div>
+        <div><label>Số tiền (VND, tuỳ chọn)</label><input name="amount_vnd" inputmode="numeric" maxlength="11" placeholder="để trống = giá gói × số tháng" style="width:220px"></div>
+        <div><label>Ghi chú</label><input name="note" maxlength="500" placeholder="VD: deal 6 tháng giảm 10%" style="width:220px"></div>
         <button class="btn" type="submit">Ghi nhận thu + gia hạn</button>
       </form>
+      <p class="muted" style="font-size:.8rem">Để trống số tiền → hệ thống tự tính theo giá gói (không JS — giá từng gói ghi ngay trong tên gói).</p>
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0">Lịch sử thu</h2>
+      ${(shop.invoices ?? []).length ? `<table><thead><tr><th>Ngày</th><th>Gói</th><th>Số tháng</th><th class="right">Số tiền</th><th>Ghi chú</th></tr></thead><tbody>
+        ${shop.invoices.map((i) => `<tr><td class="muted">${dt(i.created_at)}</td><td>${esc(i.plan_code)}</td><td>${esc(i.months)}</td><td class="right">${money(i.amount_vnd)}</td><td class="muted">${esc(i.note ?? '')}</td></tr>`).join('')}
+      </tbody></table>
+      <p class="muted">Tổng đã thu: <strong>${money(shop.invoice_total_vnd ?? 0)}</strong> (${esc(shop.invoice_count ?? 0)} lần thu)</p>` : '<p class="muted">Chưa ghi nhận khoản thu nào.</p>'}
+      <p class="muted" style="font-size:.8rem">Hoá đơn VAT (NĐ 123): lập trên phần mềm kế toán, dùng bảng này làm căn cứ số liệu — nền tảng không tích hợp e-invoice.</p>
     </div>
     <div class="card"><h2 style="margin-top:0">Mời chủ shop (owner)</h2>
       <p class="muted" style="font-size:.85rem">Tạo link mời để chủ shop đặt mật khẩu + nhận cửa hàng (concierge — chưa gửi email tự động).</p>
@@ -700,7 +721,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping) {
         </div>
         <div class="grid2">
           <div><label>Phường / Xã (tuỳ chọn)</label><input name="to_ward" maxlength="60"></div>
-          <div><label>Khối lượng (gram)</label><input name="weight_gram" type="number" min="50" max="50000" value="500"></div>
+          <div><label>Khối lượng (gram)</label><input name="weight_gram" type="number" min="50" max="50000" value="${Math.min(50000, Math.max(50, Number(o.est_weight_gram) || 500))}"></div>
         </div>
         <label>Ghi chú cho hãng (tuỳ chọn)</label><input name="note" maxlength="200" placeholder="Cho xem hàng, không thử">
         <button class="btn" type="submit" style="margin-top:12px">Tạo vận đơn ${esc((shipping.provider ?? '').toUpperCase())}</button>
@@ -1091,9 +1112,10 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
   };
   const rows = (p.variants ?? []).map((v) => `<tr>
     <td>${esc(v.sku)}${v.title ? ` <span class="muted">${esc(v.title)}</span>` : ''}</td>
-    <td class="num right"><form method="POST" action="${base}/variants/${esc(v.id)}/price" class="inline">
+    <td class="num right"><form method="POST" action="${base}/variants/${esc(v.id)}/price" class="inline" id="vw-${esc(v.id)}">
       <input name="price_vnd" type="number" min="0" step="1000" value="${esc(v.price_vnd)}" style="width:110px" aria-label="Giá biến thể (VND)">
       <button class="btn alt sm" type="submit">Lưu</button></form></td>
+    <td><input form="vw-${esc(v.id)}" name="weight_gram" type="number" min="1" max="50000" value="${esc(v.weight_gram ?? '')}" placeholder="mặc định" style="width:90px" aria-label="Khối lượng (gram)"></td>
     <td>${stock(v.id)}</td>
     <td><form method="POST" action="${base}/variants/${esc(v.id)}/inventory" class="inline">
       <input name="delta" type="number" step="1" required placeholder="+/−" style="width:84px" aria-label="Điều chỉnh tồn">
@@ -1124,7 +1146,7 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
       </form>
     </div>
     <div class="card"><h2 style="margin-top:0">Biến thể & tồn kho</h2>
-      <table><thead><tr><th>SKU / Phân loại</th><th class="right">Giá</th><th>Có thể bán</th><th>Điều chỉnh tồn</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <table><thead><tr><th>SKU / Phân loại</th><th class="right">Giá</th><th>Nặng (g)</th><th>Có thể bán</th><th>Điều chỉnh tồn</th><th></th></tr></thead><tbody>${rows}</tbody></table>
       <h2>Thêm biến thể lẻ</h2>
       <p class="muted" style="font-size:.85rem">Dùng khi KHÔNG dùng phân loại đa trục ở trên (thêm tay từng biến thể).</p>
       <form method="POST" action="${base}/variants" class="inline">

@@ -103,6 +103,14 @@ async function getOrder(res, ctx, _b, params) {
          FROM order_lines ol WHERE ol.order_id = $1`, [o.id]
     )).rows.map(({ image_key, ...l }) => ({ ...l, image_url: image_key ? `${MEDIA_PUBLIC_BASE}/${image_key}` : null }));
     o.shipments = (await c.query(`SELECT carrier, tracking_number, status, provider, carrier_fee_vnd, provider_status FROM shipments WHERE order_id = $1`, [o.id])).rows;
+    // Khối lượng ƯỚC TÍNH cho form vận đơn (prefill, shop sửa được): Σ qty × cân biến thể
+    // SỐNG (NULL → mặc định shop). KHÔNG snapshot trên order_lines — shop đổi cân sau khi
+    // đơn tạo thì prefill lệch, chấp nhận v1; phí ship ĐÃ THU của khách chốt tại
+    // createOrderTx (checkout) nên không lệch tiền.
+    o.est_weight_gram = Number((await c.query(
+      `SELECT coalesce(sum(ol.qty * coalesce(v.weight_gram, s.default_weight_gram)), 0)::int AS g
+         FROM order_lines ol JOIN variants v ON v.id = ol.variant_id
+         JOIN shops s ON s.id = current_shop_id() WHERE ol.order_id = $1`, [o.id])).rows[0].g);
     return o;
   });
   if (!data) return send(res, 404, { error: 'không tìm thấy đơn' });

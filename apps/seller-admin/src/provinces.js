@@ -17,3 +17,14 @@ export const PROVINCES = [
   'Đồng Nai', 'Tây Ninh', 'Đồng Tháp', 'Vĩnh Long', 'An Giang', 'Cà Mau',
 ];
 export const isProvince = (p) => PROVINCES.includes(p);
+
+/**
+ * Bản đồ VÙNG MIỀN tĩnh (Bắc/Trung/Nam) cho phí ship 2 bậc nội miền / liên miền.
+ * Đủ 34/34 tỉnh (15 Bắc + 11 Trung + 8 Nam) — có test chống drift với PROVINCES.
+ */
+export const REGION_OF = {
+  'Hà Nội': 'bac', 'Hải Phòng': 'bac', 'Cao Bằng': 'bac', 'Lạng Sơn': 'bac', 'Lai Châu': 'bac', 'Điện Biên': 'bac', 'Sơn La': 'bac', 'Tuyên Quang': 'bac', 'Lào Cai': 'bac', 'Thái Nguyên': 'bac', 'Phú Thọ': 'bac', 'Bắc Ninh': 'bac', 'Hưng Yên': 'bac', 'Ninh Bình': 'bac', 'Quảng Ninh': 'bac',
+  'Huế': 'trung', 'Đà Nẵng': 'trung', 'Thanh Hóa': 'trung', 'Nghệ An': 'trung', 'Hà Tĩnh': 'trung', 'Quảng Trị': 'trung', 'Quảng Ngãi': 'trung', 'Gia Lai': 'trung', 'Đắk Lắk': 'trung', 'Khánh Hòa': 'trung', 'Lâm Đồng': 'trung',
+  'TP. Hồ Chí Minh': 'nam', 'Cần Thơ': 'nam', 'Đồng Nai': 'nam', 'Tây Ninh': 'nam', 'Đồng Tháp': 'nam', 'Vĩnh Long': 'nam', 'An Giang': 'nam', 'Cà Mau': 'nam',
+};
+export const regionOf = (p) => REGION_OF[p] ?? null; // null = KHÔNG BIẾT vùng

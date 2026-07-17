@@ -495,7 +495,14 @@ async function sweepTracking() {
       c = await expiryDb.connect();
       await c.query('BEGIN');
       if (st.state === 'delivered') {
-        const upd = await c.query(`UPDATE orders SET status = 'delivered', delivered_at = now() WHERE id = $1 AND status = 'shipped'`, [s.order_id]);
+        // COD hãng giao xong = shipper ĐÃ THU tiền khách (thu hộ) → tự flip unpaid→paid
+        // (0066). QR giữ nguyên bất biến "chỉ webhook đặt paid". CASE trong CÙNG câu
+        // UPDATE + guard status='shipped' → nguyên tử, idempotent như cũ.
+        const upd = await c.query(
+          `UPDATE orders SET status = 'delivered', delivered_at = now(),
+                  payment_status = CASE WHEN payment_method = 'cod' AND payment_status = 'unpaid' THEN 'paid' ELSE payment_status END,
+                  paid_at = CASE WHEN payment_method = 'cod' AND payment_status = 'unpaid' THEN now() ELSE paid_at END
+            WHERE id = $1 AND status = 'shipped'`, [s.order_id]);
         await c.query(`UPDATE shipments SET status = 'delivered', provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
         if (upd.rowCount === 1 && s.customer_email) {
           await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.status_changed', $2)`,

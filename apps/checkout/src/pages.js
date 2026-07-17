@@ -213,6 +213,10 @@ export function renderOrder(shopName, o, pay, qr, justPlaced = false) {
   if (o.payment_method === 'qr' && o.status !== 'cancelled') {
     payBlock = paid
       ? `<div class="card"><span class="badge paid">Đã thanh toán ✓</span></div>`
+      : o.pay_config_changed
+      ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg,#fffbeb)"><h2>Thanh toán tạm gián đoạn</h2>
+          <p class="muted">Cửa hàng vừa thay đổi thông tin nhận thanh toán nên mã QR của đơn này không còn hiệu lực.
+          Vui lòng <strong>liên hệ cửa hàng</strong> để hoàn tất thanh toán — đừng chuyển tiền theo thông tin cũ.</p></div>`
       : `<div class="card"><h2>Chuyển khoản QR</h2>
           <p class="muted">Quét mã trong app ngân hàng, hoặc chuyển thủ công đúng nội dung. Trang tự cập nhật khi nhận được tiền.</p>
           ${qr ? `<div class="qrbox">${qr}</div>` : ''}

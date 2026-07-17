@@ -215,6 +215,9 @@ async function main() {
   od = (await a.get(`/orders/${o1.id}`)).json;
   od.status === 'delivered' && od.shipments[0].status === 'delivered'
     ? ok('đơn → delivered + vận đơn delivered') : bad('delivered sai', `${od.status} ${od.shipments?.[0]?.status}`);
+  // COD hãng giao xong = shipper ĐÃ THU tiền (0066) → tự 'paid' (trước đây unpaid vĩnh viễn).
+  od.payment_status === 'paid'
+    ? ok('COD giao xong → payment_status tự PAID (hãng đã thu hộ)') : bad('COD delivered vẫn unpaid', od.payment_status);
   const ob = await owner.query(
     `SELECT payload FROM outbox WHERE shop_id=$1 AND topic='order.status_changed' AND payload->>'status'='delivered' AND (payload->>'order_number')::int=$2`,
     [A.shopId, o1.num]);

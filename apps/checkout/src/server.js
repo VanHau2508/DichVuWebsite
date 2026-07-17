@@ -673,7 +673,7 @@ async function getSuccessPage(req, res, _body, ctx, query) {
   if (!Number.isInteger(number) || !token) return sendHtml(res, 200, renderLookup(shopName));
   const data = await withTenant(ctx.shopId, async (c) => {
     const o = (await c.query(
-      `SELECT id, order_number, status, payment_status, payment_method, shipping_vnd, total_vnd, customer_name, payment_ref
+      `SELECT id, order_number, status, payment_status, payment_method, shipping_vnd, total_vnd, customer_name, payment_ref, qr_account
          FROM orders WHERE order_number = $1 AND lookup_token_hash = $2`, [number, hashToken(token)],
     )).rows[0];
     if (!o) return null;
@@ -681,6 +681,14 @@ async function getSuccessPage(req, res, _body, ctx, query) {
     let pay = null;
     if (o.payment_method === 'qr' && o.payment_status !== 'paid') {
       pay = (await c.query(`SELECT bank_bin, account_number, account_name FROM shop_payment_config WHERE shop_id = current_shop_id()`)).rows[0] ?? null;
+      // Webhook đối soát khớp SNAPSHOT qr_account lúc TẠO ĐƠN (payment/server.js).
+      // Shop đã ĐỔI tài khoản → vẽ QR theo config MỚI là dụ khách trả vào TK mà webhook
+      // KHÔNG khớp (tiền treo unmatched vĩnh viễn). Trường hợp đó: KHÔNG vẽ QR, báo
+      // khách liên hệ shop (shop huỷ tạo lại đơn hoặc xác nhận tay).
+      if (pay && o.qr_account && pay.account_number !== o.qr_account) {
+        pay = null;
+        o.pay_config_changed = true;
+      }
     }
     return { o, pay };
   });
@@ -726,6 +734,10 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const buf = FONTS.get(url.pathname.slice(7));
     if (buf) { res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'public, max-age=31536000, immutable' }); return res.end(buf); }
     res.writeHead(404); return res.end();
+  }
+  // /favicon.ico: trả 204 sớm (trước resolve shop) — khỏi tốn roundtrip DB cho icon.
+  if (url.pathname === '/favicon.ico') {
+    res.writeHead(204, { 'cache-control': 'public, max-age=86400' }); return res.end();
   }
 
   const route = ROUTES.find((r) => r.m === req.method && r.p === url.pathname);

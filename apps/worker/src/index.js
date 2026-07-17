@@ -173,9 +173,13 @@ async function poll() {
       `SELECT id, shop_id, topic, payload FROM outbox WHERE processed_at IS NULL ORDER BY id LIMIT 50 FOR UPDATE SKIP LOCKED`,
     )).rows;
     for (const r of rows) {
+      // removeOnFail CÓ TRẦN (7 ngày / 1000 job): dead-letter để soi + retry (xem
+      // /internal/dead-letters) nhưng KHÔNG tích trong Redis vĩnh viễn (audit #47).
+      // sweepMoneyAlerts cảnh báo theo SỐ LƯỢNG failed hiện có — quét mỗi 5', ngưỡng
+      // ALERT_EMAIL_FAIL_MAX; giữ 7 ngày ≫ cửa sổ cảnh báo nên cắt trần KHÔNG làm lọt cảnh báo.
       await queue.add(
         r.topic, { topic: r.topic, payload: r.payload, shopId: r.shop_id, outboxId: String(r.id) },
-        { jobId: `ob-${r.id}`, attempts: ATTEMPTS, backoff: { type: 'fixed', delay: BACKOFF_MS }, removeOnComplete: { count: 500 }, removeOnFail: false },
+        { jobId: `ob-${r.id}`, attempts: ATTEMPTS, backoff: { type: 'fixed', delay: BACKOFF_MS }, removeOnComplete: { count: 500 }, removeOnFail: { age: 7 * 24 * 3600, count: 1000 } },
       );
     }
     if (rows.length) await c.query(`UPDATE outbox SET processed_at = now() WHERE id = ANY($1::bigint[])`, [rows.map((r) => r.id)]);
@@ -664,6 +668,15 @@ async function tgSend(chatId, text) {
 // Poll getUpdates → xử lý "/start <code>" để BIND chat_id vào shop (tra theo link_code).
 async function sweepTelegramLink() {
   if (!TELEGRAM_ON || !expiryDb) return { bound: 0 };
+  // DỌN mã liên kết HẾT HẠN (0069) — kể cả mã đời cũ không có hạn (NULL, trước 0069):
+  // xoá link_code để deep-link cũ/lộ CHẾT HẲN. Chạy TRƯỚC getUpdates (Telegram API sập
+  // vẫn dọn được). Mã lộ chỉ sống tối đa 30' + 1 nhịp sweep (~15s).
+  try {
+    const gc = await expiryDb.query(
+      `UPDATE shop_telegram SET link_code = NULL, link_code_expires_at = NULL
+        WHERE link_code IS NOT NULL AND (link_code_expires_at IS NULL OR link_code_expires_at <= now())`);
+    if (gc.rowCount) log('info', 'tg_link_expired_cleared', { n: gc.rowCount });
+  } catch (e) { log('error', 'tg_link_gc_error', { message: e.message }); }
   let updates;
   const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 12000);
   try {
@@ -680,11 +693,14 @@ async function sweepTelegramLink() {
     const mm = /^\/start\s+([A-Za-z0-9_-]{6,40})/.exec(text);
     if (!mm || chat == null) continue;
     try {
+      // Bind CHỈ khi mã CÒN HẠN (0069) — mã hết hạn/đời cũ (NULL) rơi xuống nhánh "mã không
+      // đúng" bên dưới → người dùng được nhắc tạo mã mới trong admin.
       const upd = await expiryDb.query(
-        `UPDATE shop_telegram SET chat_id = $2, linked_at = now(), link_code = NULL WHERE link_code = $1 RETURNING shop_id`,
+        `UPDATE shop_telegram SET chat_id = $2, linked_at = now(), link_code = NULL, link_code_expires_at = NULL
+          WHERE link_code = $1 AND link_code_expires_at > now() RETURNING shop_id`,
         [mm[1], String(chat)]);
       if (upd.rowCount === 1) { bound++; await tgSend(String(chat), '✅ Đã kết nối! Cửa hàng của bạn sẽ nhận thông báo đơn hàng + vận hành tại đây.'); }
-      else await tgSend(String(chat), 'Mã liên kết không đúng hoặc đã dùng. Vào lại trang Thông báo trong admin để lấy mã mới.');
+      else await tgSend(String(chat), 'Mã liên kết không đúng, đã dùng hoặc đã hết hạn (mã chỉ sống 30 phút). Vào lại trang Thông báo trong admin để tạo mã mới.');
     } catch (e) { log('error', 'tg_bind_error', { message: e.message }); }
   }
   if (bound) log('info', 'tg_linked', { n: bound });
@@ -773,6 +789,8 @@ async function sweepMoneyAlerts() {
     m.outbox_backlog = Number((await db.query(
       `SELECT count(*)::int n FROM outbox WHERE processed_at IS NULL AND created_at < now() - interval '10 minutes'`)).rows[0].n);
   } catch (e) { log('error', 'alert_outbox_error', { message: e.message }); }
+  // Đếm failed HIỆN CÓ trong Redis. removeOnFail giữ 7 ngày/1000 job (poll()) — dài hơn
+  // rất nhiều cửa sổ quét 5' + ALERT_REPEAT_MS 1h, nên trần retention KHÔNG làm lọt cảnh báo.
   try { m.email_failed = Number((await queue.getJobCounts('failed')).failed ?? 0); } catch {}
 
   const breaches = [];
@@ -823,6 +841,28 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const counts = await queue.getJobCounts('completed', 'failed', 'active', 'waiting', 'delayed');
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(counts));
+  }
+  // Soi email DEAD-LETTER (audit #48): 20 job failed gần nhất + tổng — để vận hành biết
+  // "kẹt email vì gì" (SMTP sai? relay từ chối?). Nội bộ mạng trong như /stats (không route Caddy).
+  if (url.pathname === '/internal/dead-letters' && req.method === 'GET') {
+    const [counts, jobs] = await Promise.all([queue.getJobCounts('failed'), queue.getFailed(0, 19)]);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({
+      count: Number(counts.failed ?? 0),
+      recent: jobs.map((j) => ({
+        id: j.id, name: j.name,
+        failedReason: String(j.failedReason ?? '').slice(0, 300), // cắt ngắn — stack SMTP có thể rất dài
+        attemptsMade: j.attemptsMade, timestamp: j.timestamp,
+      })),
+    }));
+  }
+  // Retry TOÀN BỘ dead-letter (sau khi sửa SMTP/relay): đưa job failed về 'waiting' để
+  // consumer gửi lại. BullMQ v5: Queue#retryJobs xử lý theo lô (Lua) — không kéo từng job.
+  if (url.pathname === '/internal/dead-letters/retry' && req.method === 'POST') {
+    const before = Number((await queue.getJobCounts('failed')).failed ?? 0);
+    await queue.retryJobs({ state: 'failed' });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({ retried: before }));
   }
   // Kích hoạt quét hết hạn ngay (nội bộ — không route qua Caddy; idempotent, vô hại).
   // Cho phép cron ngoài gọi đúng lịch, và để e2e kiểm chứng xác định.

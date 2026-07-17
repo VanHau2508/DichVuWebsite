@@ -49,6 +49,14 @@ Dedup: chỉ báo khi trạng thái đổi hoặc quá `ALERT_REPEAT_MS` (1h) �
    cần relay — nếu muốn, báo tôi xây thêm 1 adapter Telegram gọn.)*
 3. Ngưỡng chỉnh được: `ALERT_UNMATCHED_MAX` (mặc định 1), `ALERT_OUTBOX_MAX` (20), `ALERT_EMAIL_FAIL_MAX` (5).
 
+**Runbook "kẹt email" (khi nhận cảnh báo email thất bại/dead-letter):** từ trong mạng nội bộ
+(vd `docker compose -f infra/compose.dev.yml exec seller sh`), soi lý do:
+`curl http://worker:3080/internal/dead-letters` → xem `recent[].failedReason` (thường là SMTP
+sai user/password, relay từ chối, domain gửi chưa verify). Sửa nguyên nhân (secret SMTP /
+dashboard relay) → gửi lại toàn bộ: `curl -X POST http://worker:3080/internal/dead-letters/retry`
+→ job quay về hàng đợi và gửi lại; kiểm `curl http://worker:3080/stats` thấy `failed` giảm.
+Dead-letter tự dọn sau 7 ngày / giữ tối đa 1000 job (không phình Redis vô hạn).
+
 ---
 
 ## Blocker 3 — Giám sát UPTIME (biết khi hệ thống sập)

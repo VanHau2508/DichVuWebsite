@@ -147,13 +147,18 @@ mutate "bỏ WITH CHECK khỏi FOR ALL (Postgres dùng lại USING → không r�
 # Bảng mới quên bật RLS — kịch bản thực tế nhất của tuần thứ 9.
 # Đây là RÒ RỈ THẬT. Test hành vi không bắt được vì nó không thể viết test cho
 # một bảng chưa tồn tại. Bất biến schema là tuyến phòng thủ DUY NHẤT ở đây.
+#
+# BÀI HỌC TÊN BẢNG: bản cũ dùng `product_reviews` — rồi lời tiên tri trong
+# schema-invariants thành SỰ THẬT: 0047 tạo bảng product_reviews THẬT, CREATE TABLE
+# ở đây đụng tên → mutation không áp dụng được → case CHẾT, bất biến không còn được
+# kiểm. Dùng tên tổng hợp không bao giờ thành tính năng thật.
 mutate "bảng MỚI có shop_id nhưng quên RLS (rò thật; test hành vi không thể phủ)" invariant \
-  "CREATE TABLE product_reviews (
+  "CREATE TABLE zz_mutation_probe (
      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
      shop_id uuid NOT NULL REFERENCES shops(id),
      rating int NOT NULL);
-   GRANT SELECT, INSERT, UPDATE, DELETE ON product_reviews TO app_rw" \
-  "DROP TABLE product_reviews"
+   GRANT SELECT, INSERT, UPDATE, DELETE ON zz_mutation_probe TO app_rw" \
+  "DROP TABLE IF EXISTS zz_mutation_probe"
 
 # ─────────────────────────────────────────────────────────────────────────────
 sect "3. Trạng thái sau khi hoàn nguyên"

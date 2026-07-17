@@ -12,13 +12,17 @@ const BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME ?? ''; // công khai (kh�
 
 async function getTelegram(res, ctx) {
   const row = await withTenant(ctx.shopId, async (c) =>
-    (await c.query(`SELECT chat_id, link_code, enabled, linked_at FROM shop_telegram WHERE shop_id = current_shop_id()`)).rows[0] ?? null);
+    (await c.query(`SELECT chat_id, link_code, enabled, linked_at, link_code_expires_at FROM shop_telegram WHERE shop_id = current_shop_id()`)).rows[0] ?? null);
+  // Mã CHỈ "pending" khi CÒN HẠN (0069) — khớp điều kiện bind của worker (expires > now()).
+  // Mã hết hạn/đời cũ không hạn: coi như không có → UI hiện lại nút "Tạo liên kết".
+  const codeLive = !!row?.link_code && !row?.chat_id
+    && !!row?.link_code_expires_at && new Date(row.link_code_expires_at) > new Date();
   return send(res, 200, {
     available: !!BOT_USERNAME,
     bot_username: BOT_USERNAME,
     connected: !!row?.chat_id && !!row?.enabled,
-    pending: !!row?.link_code && !row?.chat_id,
-    ...(row?.link_code && !row?.chat_id ? { deep_link: `https://t.me/${BOT_USERNAME}?start=${row.link_code}` } : {}),
+    pending: codeLive,
+    ...(codeLive ? { deep_link: `https://t.me/${BOT_USERNAME}?start=${row.link_code}` } : {}),
   });
 }
 
@@ -33,9 +37,12 @@ async function linkTelegram(res, ctx) {
       cd = crypto.randomBytes(9).toString('base64url');
       try {
         await c.query('SAVEPOINT lt');
+        // Mã có HẠN 30 phút (0069) — mã lộ/cũ không bind được vĩnh viễn; quá hạn bấm tạo lại.
         await c.query(
-          `INSERT INTO shop_telegram (shop_id, link_code, enabled) VALUES (current_shop_id(), $1, true)
-           ON CONFLICT (shop_id) DO UPDATE SET link_code = $1, enabled = true`, [cd]);
+          `INSERT INTO shop_telegram (shop_id, link_code, enabled, link_code_expires_at)
+           VALUES (current_shop_id(), $1, true, now() + interval '30 minutes')
+           ON CONFLICT (shop_id) DO UPDATE
+             SET link_code = $1, enabled = true, link_code_expires_at = now() + interval '30 minutes'`, [cd]);
         await c.query('RELEASE SAVEPOINT lt');
         break;
       } catch (e) {

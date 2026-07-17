@@ -87,6 +87,24 @@ async function main() {
   const sv = (r.json?.variants ?? []).find((v) => v.id === vid);
   r.status === 200 && sv && Number(sv.price_vnd) === 250000 && sv.available === 10
     ? ok('sellable-variants trả biến thể + giá + tồn') : bad('sellable-variants sai', r.raw);
+  r.json?.truncated ? bad('truncated:true dù dưới trần 500', r.raw) : ok('dưới trần 500 → KHÔNG có cờ truncated');
+
+  // Picker ?q= (Đợt 5.1): lọc tên KHÔNG DẤU + SKU. Tạo SP tên có dấu để kiểm vn_unaccent.
+  const rAcc = await rq(SELLER, 'POST', `/shops/${A.shopId}/products`, {
+    body: { title: `Ghế Sofa Đỏ ${uniq()}`, slug: `ghe-${uniq()}`, price_vnd: 99000, status: 'active', variants: [{ sku: `SOFA-${uniq()}`, price_vnd: 99000 }] }, cookie: A.cookie, origin: OS });
+  const accDetail = await rq(SELLER, 'GET', `/shops/${A.shopId}/products/${rAcc.json.id}`, { cookie: A.cookie });
+  const accVid = accDetail.json.variants[0].id, accSku = accDetail.json.variants[0].sku;
+  r = await a.get('/sellable-variants?q=ghe%20sofa');
+  const hitTitle = (r.json?.variants ?? []).some((v) => v.id === accVid);
+  const noisePruned = !(r.json?.variants ?? []).some((v) => v.id === vid);
+  r.status === 200 && hitTitle && noisePruned
+    ? ok('?q= "ghe sofa" (không dấu) khớp "Ghế Sofa Đỏ", biến thể khác bị lọc') : bad('?q= không dấu sai', r.raw);
+  r = await a.get(`/sellable-variants?q=${encodeURIComponent(accSku.toLowerCase())}`);
+  (r.json?.variants ?? []).some((v) => v.id === accVid)
+    ? ok('?q= theo SKU (thường/hoa ILIKE) khớp biến thể') : bad('?q= SKU sai', r.raw);
+  r = await a.get('/sellable-variants?q=zzz-khong-ton-tai');
+  r.status === 200 && (r.json?.variants ?? []).length === 0
+    ? ok('?q= không khớp → danh sách rỗng (không lỗi)') : bad('?q= rác sai', r.raw);
 
   sect('2. Tạo đơn COD — giá server, reserve tồn, phí mặc định');
   r = await a.post('/orders', mkBody({ note: 'khách hẹn giao chiều' }));

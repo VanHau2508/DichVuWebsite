@@ -37,6 +37,18 @@ async function stats(res, ctx) {
         count(*) FILTER (WHERE status = 'cancelled') AS n_cancelled,
         count(*) FILTER (WHERE payment_status <> 'paid' AND status NOT IN ('cancelled', 'refunded', 'returned')) AS n_unpaid
       FROM orders`)).rows[0];
+    // Hoàn MỘT PHẦN (0070) trừ khỏi doanh thu theo NGÀY TẠO bút toán. CHỈ đơn còn
+    // payment_status='paid': đơn hoàn TOÀN BỘ đã lật 'refunded' và tự rớt khỏi
+    // rev_* ở trên — trừ thêm bút toán của nó là trừ ĐÚP.
+    const rf = (await c.query(`
+      SELECT
+        coalesce(sum(r.amount_vnd) FILTER (WHERE r.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh' >= date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh')), 0) AS rf_today,
+        coalesce(sum(r.amount_vnd) FILTER (WHERE r.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh' >= date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '6 days'), 0) AS rf_7d,
+        coalesce(sum(r.amount_vnd) FILTER (WHERE r.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh' >= date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '13 days'
+          AND r.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh' < date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '6 days'), 0) AS rf_prev7,
+        coalesce(sum(r.amount_vnd), 0) AS rf_all
+      FROM refunds r JOIN orders o ON o.id = r.order_id
+      WHERE o.payment_status = 'paid'`)).rows[0];
     // Bán chạy 30 ngày + ẢNH: gộp theo tên/sku (snapshot), lấy biến thể GẦN NHẤT làm đại
     // diện → resolve ảnh (ưu tiên ảnh riêng biến thể, không có thì ảnh chính sản phẩm).
     const top = (await c.query(`
@@ -66,6 +78,15 @@ async function stats(res, ctx) {
         LEFT JOIN orders o ON o.payment_status = 'paid'
              AND date_trunc('day', o.paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh') = d
        GROUP BY d ORDER BY d`)).rows;
+    // Bút toán hoàn một phần theo ngày (giờ VN) — trừ vào series cùng logic với rf ở trên.
+    const rfByDay = (await c.query(`
+      SELECT to_char(date_trunc('day', r.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh'), 'YYYY-MM-DD') AS day,
+             sum(r.amount_vnd)::bigint AS refunded
+        FROM refunds r JOIN orders o ON o.id = r.order_id
+       WHERE o.payment_status = 'paid' AND r.created_at >= now() - interval '${DAYS + 1} days'
+       GROUP BY 1`)).rows;
+    const rfMap = new Map(rfByDay.map((r) => [r.day, Number(r.refunded)]));
+    for (const s of series) s.revenue = Number(s.revenue) - (rfMap.get(s.day) ?? 0);
     // Sắp hết hàng (0050): available <= ngưỡng shop (NULL → mặc định 5). Chỉ SP đang bán.
     const low = (await c.query(`
       SELECT p.title, v.sku, v.title AS variant_title, (il.on_hand - il.reserved)::int AS available
@@ -74,11 +95,14 @@ async function stats(res, ctx) {
         JOIN inventory_levels il ON il.variant_id = v.id
        WHERE (il.on_hand - il.reserved) <= coalesce((SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5)
        ORDER BY available ASC LIMIT 10`)).rows;
-    return { k, top, low, series };
+    return { k, rf, top, low, series };
   });
   const n = (x) => Number(x ?? 0);
   return send(res, 200, {
-    revenue: { today: n(out.k.rev_today), d7: n(out.k.rev_7d), prev7: n(out.k.rev_prev7), all: n(out.k.rev_all) },
+    revenue: {
+      today: n(out.k.rev_today) - n(out.rf.rf_today), d7: n(out.k.rev_7d) - n(out.rf.rf_7d),
+      prev7: n(out.k.rev_prev7) - n(out.rf.rf_prev7), all: n(out.k.rev_all) - n(out.rf.rf_all),
+    },
     series: out.series.map((r) => ({ day: r.day, revenue: n(r.revenue) })),
     orders_today: n(out.k.orders_today),
     unpaid: n(out.k.n_unpaid),

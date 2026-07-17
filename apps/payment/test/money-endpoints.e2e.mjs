@@ -251,6 +251,72 @@ async function main() {
   r = await rq(SELLER, 'POST', `/shops/${A.shopId}/payment/reconcile/${row2.id}/resolve`, { cookie: Bs.cookie, origin: OS });
   r.status === 404 ? ok('owner B gọi path shop A → 404 (không phải thành viên, không lộ tồn tại)') : bad('membership gate vỡ', r.raw);
 
+  // ── 5. HOÀN MỘT PHẦN — bút toán refunds (0070) ────────────────────────────
+  sect('5. HOÀN MỘT PHẦN (bút toán refunds 0070)');
+  // Hoàn TOÀN BỘ ở mục 1 (o1, total 230000) giờ cũng phải để lại bút toán đủ tổng.
+  let rrows = (await owner.query(`SELECT amount_vnd FROM refunds WHERE order_id=$1`, [o1.id])).rows;
+  rrows.length === 1 && Number(rrows[0].amount_vnd) === 230000
+    ? ok('hoàn toàn bộ (mục 1) ghi 1 bút toán đủ tổng 230000') : bad('bút toán hoàn toàn bộ sai', JSON.stringify(rrows));
+
+  await stepUp(A.cookie, A.password); // cửa sổ step-up có thể đã nguội sau các mục trên
+  const o5 = await mkOrder(2); // total = 2×100000 + 30000 ship = 230000
+  r = await a.post(`/orders/${o5.id}/mark-paid`, {});
+  r.status === 200 ? ok('chuẩn bị: o5 COD mark-paid → 200') : bad('mark-paid o5 lỗi', r.raw);
+  r = await a.post(`/orders/${o5.id}/refund`, { amount_vnd: 'abc' });
+  r.status === 400 && /không hợp lệ/.test(r.json?.error ?? '') ? ok('amount rác → 400') : bad('amount rác lọt', r.raw);
+  r = await a.post(`/orders/${o5.id}/refund`, { amount_vnd: -5 });
+  r.status === 400 ? ok('amount âm → 400') : bad('amount âm lọt', r.raw);
+
+  before = await invOf(vid);
+  r = await a.post(`/orders/${o5.id}/refund`, { amount_vnd: 100000, reason: 'khách trả 1 món' });
+  r.status === 200 && r.json.payment_status === 'paid' && r.json.refund_vnd === 100000 && r.json.refunded_total_vnd === 100000
+    ? ok('hoàn MỘT PHẦN 100k → 200, đơn GIỮ paid, refunded_total=100k') : bad('hoàn một phần lỗi', r.raw);
+  row = await orderRow(o5.id);
+  row.payment_status === 'paid' && row.status === 'pending'
+    ? ok('DB: đơn vẫn paid + pending sau hoàn một phần') : bad(`DB sai sau partial: ${JSON.stringify(row)}`);
+  inv = await invOf(vid);
+  Number(inv.reserved) === Number(before.reserved) && Number(inv.on_hand) === Number(before.on_hand)
+    ? ok('hoàn một phần KHÔNG đụng tồn kho') : bad(`tồn bị đụng sau partial: ${inv.on_hand}/${inv.reserved}`);
+  rrows = (await owner.query(`SELECT amount_vnd, reason FROM refunds WHERE order_id=$1 ORDER BY created_at`, [o5.id])).rows;
+  rrows.length === 1 && Number(rrows[0].amount_vnd) === 100000 && rrows[0].reason === 'khách trả 1 món'
+    ? ok('bút toán partial ghi amount + reason') : bad('bút toán partial sai', JSON.stringify(rrows));
+  r = await a.get(`/orders/${o5.id}`);
+  r.status === 200 && (r.json.refunds ?? []).length === 1 && r.json.refunded_total_vnd === 100000
+    ? ok('getOrder trả refunds[] + refunded_total_vnd') : bad('getOrder thiếu refunds', r.raw);
+
+  r = await a.post(`/orders/${o5.id}/refund`, { amount_vnd: 200000 });
+  r.status === 422 && /vượt quá/.test(r.json?.error ?? '')
+    ? ok('hoàn vượt số còn lại (100k+200k > 230k) → 422 tiếng Việt') : bad('over-refund lọt', r.raw);
+
+  before = await invOf(vid);
+  r = await a.post(`/orders/${o5.id}/refund`, { amount_vnd: 130000 });
+  r.status === 200 && r.json.status === 'refunded' && r.json.payment_status === 'refunded' && r.json.refunded_total_vnd === 230000
+    ? ok('partial thứ 2 chạm tổng (100k+130k=230k) → LẬT refunded') : bad('chạm tổng không lật', r.raw);
+  inv = await invOf(vid);
+  Number(inv.reserved) === Number(before.reserved) - 2 && Number(inv.on_hand) === Number(before.on_hand)
+    ? ok('nhát lật từ pending → GIẢI PHÓNG reserve (−2) như hoàn toàn bộ') : bad(`tồn sau lật: ${inv.on_hand}/${inv.reserved}`);
+  r = await a.get(`/orders/${o5.id}`);
+  (r.json?.refunds ?? []).length === 2 && r.json?.refunded_total_vnd === 230000
+    ? ok('lịch sử 2 bút toán, luỹ kế = tổng đơn') : bad('lịch sử sau lật sai', r.raw);
+  r = await a.post(`/orders/${o5.id}/refund`, { amount_vnd: 1000 });
+  r.status === 409 ? ok('hoàn tiếp sau khi đã lật refunded → 409') : bad('refund sau lật lọt', r.raw);
+
+  // ── 6. BULK MARK-PAID COD (gom tiền cuối ngày) ────────────────────────────
+  sect('6. BULK MARK-PAID (chỉ COD, bỏ qua QR/terminal)');
+  const c1 = await mkOrder(1), c2 = await mkOrder(1), q1 = await mkOrder(1, 'qr');
+  r = await a.post('/orders/bulk/mark-paid', { order_ids: [c1.id, c2.id, q1.id] });
+  r.status === 200 && r.json.paid === 2 && r.json.skipped === 1
+    ? ok('bulk mark-paid [COD,COD,QR] → paid=2, skipped=1 (QR không đi đường tay)') : bad('bulk mark-paid sai', r.raw);
+  const rows2 = (await owner.query(`SELECT id, payment_status, paid_at FROM orders WHERE id = ANY($1)`, [[c1.id, c2.id, q1.id]])).rows;
+  rows2.filter((x) => x.payment_status === 'paid' && x.paid_at).length === 2
+    && rows2.find((x) => x.id === q1.id)?.payment_status === 'unpaid'
+    ? ok('DB: 2 COD paid+paid_at, QR vẫn unpaid') : bad('DB bulk mark-paid sai', JSON.stringify(rows2));
+  r = await a.post('/orders/bulk/mark-paid', { order_ids: [c1.id, c2.id] });
+  r.status === 200 && r.json.paid === 0 && r.json.skipped === 2
+    ? ok('bulk mark-paid lần 2 → idempotent (paid=0, skipped=2)') : bad('bulk mark-paid không idempotent', r.raw);
+  r = await a.post('/orders/bulk/mark-paid', { order_ids: [] });
+  r.status === 400 ? ok('danh sách rỗng → 400') : bad('rỗng lọt', r.raw);
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

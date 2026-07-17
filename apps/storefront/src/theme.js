@@ -451,7 +451,7 @@ export function renderHome(ctx, { canonical = null } = {}) {
     .join('\n');
   const head = metaHead({
     description: `${ctx.shop.name} — cửa hàng trực tuyến. Giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.`,
-    canonical, ogTitle: ctx.shop.name, siteName: ctx.shop.name,
+    canonical, ogTitle: ctx.shop.name, siteName: ctx.shop.name, ogImage: shopOgImage(ctx),
   });
   return page(ctx.shop.name, ctx.theme?.tokens, body, head);
 }
@@ -655,7 +655,7 @@ export function renderBlogList(ctx, posts, { canonical = null } = {}) {
       <div class="section-h"><h2>Blog</h2></div>
       <div class="blog-list">${items}</div>
     </main>${SECTIONS.footer({}, ctx)}`;
-  const head = metaHead({ description: `Bài viết & tin tức từ ${ctx.shop.name}`, canonical, ogTitle: `Blog — ${ctx.shop.name}`, siteName: ctx.shop.name });
+  const head = metaHead({ description: `Bài viết & tin tức từ ${ctx.shop.name}`, canonical, ogTitle: `Blog — ${ctx.shop.name}`, siteName: ctx.shop.name, ogImage: shopOgImage(ctx) });
   return page(`Blog — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
 }
 
@@ -672,7 +672,7 @@ export function renderBlogPost(ctx, post, { canonical = null } = {}) {
       <p style="margin-top:36px"><a class="btn btn-primary" href="/blog">← Về Blog</a></p>
     </main>${SECTIONS.footer({}, ctx)}`;
   const desc = post.excerpt ? String(post.excerpt) : String(post.body ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
-  const head = metaHead({ description: desc, canonical, ogTitle: post.title, ogType: 'article', siteName: ctx.shop.name });
+  const head = metaHead({ description: desc, canonical, ogTitle: post.title, ogType: 'article', siteName: ctx.shop.name, ogImage: shopOgImage(ctx) });
   return page(`${post.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
 }
 
@@ -694,7 +694,7 @@ function deriveDescription(blocks) {
  * Thẻ meta SEO/OG. MỌI giá trị do người bán nhập đều esc() — kể cả trong thuộc tính
  * content="..." (esc escape cả " và ') → không breakout attribute (ADR-008).
  */
-function metaHead({ description, canonical, ogTitle, ogType, siteName, robots }) {
+function metaHead({ description, canonical, ogTitle, ogType, siteName, robots, ogImage }) {
   const t = [];
   if (robots) t.push(`<meta name="robots" content="${esc(robots)}">`);
   if (description) t.push(`<meta name="description" content="${esc(description)}">`);
@@ -704,10 +704,20 @@ function metaHead({ description, canonical, ogTitle, ogType, siteName, robots })
   if (description) t.push(`<meta property="og:description" content="${esc(description)}">`);
   if (canonical) t.push(`<meta property="og:url" content="${esc(canonical)}">`);
   if (siteName) t.push(`<meta property="og:site_name" content="${esc(siteName)}">`);
+  // og:image (URL TUYỆT ĐỐI — bộ quét FB/Zalo không hiểu đường dẫn tương đối): thiếu
+  // → thẻ share trắng trên FB/Zalo, kênh bán chính của shop VN.
+  if (ogImage) { t.push(`<meta property="og:image" content="${esc(ogImage)}">`); t.push(`<meta name="twitter:image" content="${esc(ogImage)}">`); }
   t.push(`<meta name="twitter:card" content="summary">`);
   t.push(`<meta name="twitter:title" content="${esc(ogTitle ?? '')}">`);
   if (description) t.push(`<meta name="twitter:description" content="${esc(description)}">`);
   return t.join('');
+}
+
+/** Ảnh og cho trang cấp-shop (trang chủ/blog): logo shop → ảnh SP đầu tiên → null.
+ *  Trả URL TUYỆT ĐỐI theo ctx.origin (server.js luôn set cho mọi trang shop). */
+function shopOgImage(ctx) {
+  const abs = (u) => (u ? (/^https?:\/\//i.test(u) ? u : `${ctx.origin || ''}${u}`) : null);
+  return abs(ctx.shop?.logo_url) ?? abs((Array.isArray(ctx.products) ? ctx.products : []).find((p) => p.image)?.image);
 }
 
 /**

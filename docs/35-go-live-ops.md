@@ -105,6 +105,33 @@ DNS xác thực domain gửi, thư vẫn vào SPAM hoặc bị relay/Gmail từ 
 
 ---
 
+## Xoay khoá mã hoá (secretbox v2 — Đợt 5.6)
+
+**Vì sao:** blob cũ `iv.tag.ct` không mang key-id — đổi khoá là hỏng MỌI ciphertext
+(secret MFA của toàn bộ user + token GHN/GHTK per-shop). Định dạng v2
+`v2.<kid>.iv.tag.ct` + keyring cho phép xoay khoá KHÔNG downtime.
+
+**Hai cột ciphertext trong hệ thống:** `mfa_totp.secret_enc` (khoá `MFA_ENC_KEYS`,
+legacy `MFA_ENC_KEY`) · `shop_shipping_config.token_enc` (khoá `SHIPPING_ENC_KEYS`,
+legacy `SHIPPING_ENC_KEY` — seller VÀ worker cùng giải mã). SePay là sha256 hash,
+Telegram chỉ lưu chat_id, backup mã hoá file bằng `BACKUP_ENC_KEY` riêng — không liên quan.
+
+**Keyring:** `MFA_ENC_KEYS='k2:<64hex mới>,k1:<64hex cũ>'` — entry ĐẦU = active
+(mã hoá); các entry sau chỉ để giải mã. Khoá legacy (env cũ) = entry ngầm định
+kid `k0`, VẪN PHẢI đặt (gate khởi động + giải mã blob legacy). Cùng mẫu cho
+`SHIPPING_ENC_KEYS` (đặt GIỐNG NHAU ở seller và worker).
+
+**Quy trình xoay (mỗi khoá):**
+1. Sinh khoá mới: `openssl rand -hex 32` → thêm `kMỚI:<hex>` lên ĐẦU keyring, GIỮ khoá cũ phía sau.
+2. Deploy/restart (auth · seller · worker) — từ giờ mã hoá mới dùng khoá mới, dữ liệu cũ vẫn đọc được.
+3. Re-encrypt tồn đọng: `node scripts/rotate-secretbox.js` (DATABASE_URL role bỏ-qua-RLS;
+   `--dry-run` xem trước; idempotent — chạy lại vô hại). Xem header script cho lệnh dev/prod đầy đủ.
+4. Chứng minh: `node scripts/rotate-secretbox.js --verify` → 100% dòng giải mã OK; đăng nhập MFA thử.
+5. CHỈ SAU ĐÓ mới được bỏ entry khoá cũ khỏi keyring (khuyến nghị giữ thêm 1 chu kỳ backup —
+   restore backup cũ cần khoá cũ để đọc blob trong đó).
+
+---
+
 ## Checklist go-live (đánh dấu đủ mới nhận khách trả tiền)
 
 - [ ] `BACKUP_ENC_KEY` thật + `OFFSITE_CMD`/`OFFSITE_DEST` + cron backup chạy + **đã diễn tập restore**

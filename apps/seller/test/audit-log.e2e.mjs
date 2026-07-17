@@ -104,6 +104,36 @@ async function main() {
   const ids = (r.json?.entries ?? []).map((e) => Number(e.id));
   ids.every((v, i) => i === 0 || v <= ids[i - 1]) ? ok('sắp xếp mới nhất trước (id giảm dần)') : bad('thứ tự sai', JSON.stringify(ids));
 
+  // ── 1b. Diff TRƯỚC/SAU trong metadata (rà soát #9) ─────────────────────────
+  sect('1b. Audit diff from/to (giá, coupon)');
+  const pid = (await rq(SELLER, 'GET', `/shops/${A.shopId}/audit-log`, { cookie: A.cookie })).json.entries
+    .find((e) => e.action === 'product.created')?.metadata?.productId;
+  r = await rq(SELLER, 'PATCH', `/shops/${A.shopId}/products/${pid}`, { body: { price_vnd: 45000, title: `SP ${markerA} sửa` }, cookie: A.cookie, origin: OS });
+  if (r.status !== 200) throw new Error(`PATCH sản phẩm thất bại: ${r.raw}`);
+  r = await rq(SELLER, 'GET', `/shops/${A.shopId}/audit-log`, { cookie: A.cookie });
+  const upd = (r.json?.entries ?? []).find((e) => e.action === 'product.updated');
+  upd?.metadata?.changed?.price_vnd?.from === 50000 && upd?.metadata?.changed?.price_vnd?.to === 45000
+    ? ok('product.updated ghi changed.price_vnd {from:50000, to:45000} — hạ giá CHỨNG MINH được')
+    : bad('thiếu diff giá trong audit', JSON.stringify(upd?.metadata));
+  upd?.metadata?.changed?.title?.to === `SP ${markerA} sửa`
+    ? ok('changed.title ghi from/to') : bad('thiếu diff title', JSON.stringify(upd?.metadata));
+  // PATCH lặp lại CÙNG giá trị → không có trường nào đổi thật → metadata KHÔNG có changed.
+  await rq(SELLER, 'PATCH', `/shops/${A.shopId}/products/${pid}`, { body: { price_vnd: 45000 }, cookie: A.cookie, origin: OS });
+  r = await rq(SELLER, 'GET', `/shops/${A.shopId}/audit-log`, { cookie: A.cookie });
+  const upd2 = (r.json?.entries ?? []).find((e) => e.action === 'product.updated');
+  upd2 && upd2.metadata?.changed === undefined
+    ? ok('PATCH cùng giá trị → không ghi changed (chỉ trường ĐỔI thật)') : bad('changed thừa khi không đổi', JSON.stringify(upd2?.metadata));
+  // Coupon: tắt active → changed.active {from:true, to:false}.
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/coupons`, { body: { code: `AUD${uniq().toUpperCase()}`, kind: 'percent', value: 10 }, cookie: A.cookie, origin: OS });
+  if (r.status !== 201) throw new Error(`tạo coupon thất bại: ${r.raw}`);
+  const cpId = r.json.id;
+  r = await rq(SELLER, 'PATCH', `/shops/${A.shopId}/coupons/${cpId}`, { body: { active: false }, cookie: A.cookie, origin: OS });
+  if (r.status !== 200) throw new Error(`PATCH coupon thất bại: ${r.raw}`);
+  r = await rq(SELLER, 'GET', `/shops/${A.shopId}/audit-log`, { cookie: A.cookie });
+  const cUpd = (r.json?.entries ?? []).find((e) => e.action === 'coupon.updated');
+  cUpd?.metadata?.changed?.active?.from === true && cUpd?.metadata?.changed?.active?.to === false
+    ? ok('coupon.updated ghi changed.active {from:true, to:false}') : bad('thiếu diff active coupon', JSON.stringify(cUpd?.metadata));
+
   // ── 2. RBAC: audit.read chỉ owner/admin ────────────────────────────────────
   sect('2. RBAC audit.read');
   r = await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });

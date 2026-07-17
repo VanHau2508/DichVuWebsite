@@ -132,7 +132,11 @@ services:
       DATABASE_URL: postgres://app_auth:devpassword@postgres:5432/app
       REDIS_URL: redis://redis:6379
       # 64 hex = 32 byte. Dev key CỐ ĐỊNH; production lấy từ secret manager.
+      # MFA_ENC_KEY (legacy, kid ngầm 'k0') vẫn PHẢI đặt: gate khởi động + giải mã blob cũ 'iv.tag.ct'.
       MFA_ENC_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+      # Keyring XOAY KHOÁ (Đợt 5.6): entry ĐẦU = active (mã hoá); entry sau chỉ để giải mã.
+      # k2 = khoá active sau diễn tập xoay; k1 = khoá dev cũ. Xem scripts/rotate-secretbox.js.
+      MFA_ENC_KEYS: "k2:d4c3b2a1f0e9d8c7b6a5948382716051d4c3b2a1f0e9d8c7b6a5948382716051,k1:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
       SESSION_TTL_HOURS: "168"
       # Origin được phép gửi request đổi trạng thái (chống CSRF).
       ALLOWED_ORIGINS: https://admin.nentang.vn,https://auth.localtest
@@ -200,7 +204,10 @@ services:
       PLATFORM_HOOKS_URL: https://hooks.localtest:8443
       # Vận chuyển hãng (GHN/GHTK): token per-shop mã hoá AES-256-GCM. Dev: khoá cố định +
       # API base trỏ STUB trong dbtest (e2e tự mở server) — KHÔNG gọi hãng thật.
+      # SHIPPING_ENC_KEY (legacy, kid ngầm 'k0') vẫn PHẢI đặt: gate bật tính năng + giải mã blob cũ.
       SHIPPING_ENC_KEY: 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
+      # Keyring XOAY KHOÁ (Đợt 5.6): entry ĐẦU = active. PHẢI khớp worker (worker cũng giải mã).
+      SHIPPING_ENC_KEYS: "k2:9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0,k1:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
       GHN_API_BASE: http://dbtest:9101
       GHTK_API_BASE: http://dbtest:9102
       # Telegram bot username (công khai) để dựng deep-link kết nối.
@@ -295,8 +302,9 @@ services:
       # Email liên hệ nền tảng trong copy nhắc hạn thuê bao (e2e assert xác định).
       PLATFORM_CONTACT_EMAIL: lienhe@nentang.vn
       # Poll vận đơn hãng VC (0044) — dùng pool app_expiry; khoá giải mã token per-shop
-      # PHẢI khớp seller. Dev: API base trỏ stub trong dbtest.
+      # PHẢI khớp seller (cả keyring lẫn legacy). Dev: API base trỏ stub trong dbtest.
       SHIPPING_ENC_KEY: 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
+      SHIPPING_ENC_KEYS: "k2:9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0,k1:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
       GHN_API_BASE: http://dbtest:9101
       GHTK_API_BASE: http://dbtest:9102
       TRACKING_SWEEP_MS: "600000"

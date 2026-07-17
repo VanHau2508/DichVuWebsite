@@ -314,8 +314,10 @@ async function sweepSubscriptions() {
     const pd = await c.query(
       `UPDATE subscriptions SET status = 'past_due'
         WHERE status IN ('trial','active') AND current_period_end IS NOT NULL AND current_period_end < now()`);
+    // cancelled_at (0072): mốc huỷ THẬT cho churn — app_billing được GRANT UPDATE
+    // theo cột (status, cancelled_at); platform renew sẽ NULL lại khi tái kích hoạt.
     const cancelled = (await c.query(
-      `UPDATE subscriptions SET status = 'cancelled'
+      `UPDATE subscriptions SET status = 'cancelled', cancelled_at = now()
         WHERE status = 'past_due' AND current_period_end IS NOT NULL
           AND current_period_end < now() - ($1 || ' days')::interval
         RETURNING shop_id`, [String(SUBSCRIPTION_GRACE_DAYS)])).rows;
@@ -423,9 +425,28 @@ async function sweepSubscriptionReminders() {
 // SHIPPING_ENC_KEY (AES-256-GCM, cùng định dạng secretbox iv.tag.ct base64).
 const GHN_BASE = (process.env.GHN_API_BASE ?? 'https://online-gateway.ghn.vn/shiip/public-api').replace(/\/+$/, '');
 const GHTK_BASE = (process.env.GHTK_API_BASE ?? 'https://services.giaohangtietkiem.vn').replace(/\/+$/, '');
+// Keyring xoay khoá (Đợt 5.6, đồng bộ apps/seller/src/secretbox.js): SHIPPING_ENC_KEYS
+// = 'k2:<64hex|base64>,k1:...'; blob v2 mang kid → chọn khoá theo kid; blob legacy
+// 3 phần và kid ngầm định 'k0' → khoá legacy SHIPPING_ENC_KEY.
+function sbRing() {
+  const out = new Map();
+  for (const part of String(process.env.SHIPPING_ENC_KEYS ?? '').split(',').map((s) => s.trim()).filter(Boolean)) {
+    const i = part.indexOf(':');
+    if (i < 1) continue;
+    const m = part.slice(i + 1).trim();
+    out.set(part.slice(0, i).trim(), /^[0-9a-fA-F]{64}$/.test(m) ? Buffer.from(m, 'hex') : Buffer.from(m, 'base64'));
+  }
+  return out;
+}
 function sbOpen(blob, keyHex) { // bản sao secretbox.open (build context worker là dir riêng)
-  const key = Buffer.from(keyHex, 'hex');
-  const [ivB64, tagB64, ctB64] = String(blob).split('.');
+  const parts = String(blob).split('.');
+  let key = Buffer.from(keyHex, 'hex');
+  let [ivB64, tagB64, ctB64] = parts;
+  if (parts[0] === 'v2' && parts.length === 5) {
+    key = sbRing().get(parts[1]) ?? (parts[1] === 'k0' ? key : null);
+    if (!key) throw new Error(`không có khoá kid "${parts[1]}" trong SHIPPING_ENC_KEYS`);
+    [, , ivB64, tagB64, ctB64] = parts;
+  }
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivB64, 'base64'));
   decipher.setAuthTag(Buffer.from(tagB64, 'base64'));
   return Buffer.concat([decipher.update(Buffer.from(ctB64, 'base64')), decipher.final()]).toString('utf8');

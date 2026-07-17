@@ -38,6 +38,28 @@ const validSlug = (x) => typeof x === 'string' && SLUG_RE.test(x);
 // Escape ký tự wildcard để q được so khớp NGUYÊN VĂN trong ILIKE.
 const likeEscape = (s) => s.replace(/[%_\\]/g, '\\$&');
 
+// ── audit diff TRƯỚC/SAU (rà soát #9): 'nhân viên hạ giá 500k→50k' phải chứng
+// minh được từ nhật ký. Chỉ ALLOWLIST trường NGHIỆP VỤ (giá, SKU, tiêu đề, trạng
+// thái, cân, giá gạch) — không PII, không mô tả dài. Chỉ ghi trường THAY ĐỔI thật.
+const NUMERIC_AUDIT_FIELDS = ['price_vnd', 'compare_at_vnd', 'weight_gram'];
+function diffChanged(oldRow, want) {
+  const changed = {};
+  for (const [k, v] of Object.entries(want)) {
+    const num = NUMERIC_AUDIT_FIELDS.includes(k);
+    const from = num ? (oldRow[k] == null ? null : Number(oldRow[k])) : oldRow[k];
+    const to = num ? (v == null ? null : Number(v)) : v;
+    if (from !== to) changed[k] = { from, to };
+  }
+  return changed;
+}
+// Trần ~2KB cho metadata audit — vượt thì bỏ phần diff, đánh dấu truncated.
+function capMeta(meta) {
+  if (JSON.stringify(meta).length <= 2048) return meta;
+  const { changed, ...rest } = meta;
+  return { ...rest, truncated: true };
+}
+const withChanged = (meta, changed) => capMeta({ ...meta, ...(Object.keys(changed).length ? { changed } : {}) });
+
 /** Ánh xạ lỗi unique về thông báo đúng cột. */
 function conflictMessage(err) {
   const c = err.constraint ?? '';
@@ -201,7 +223,11 @@ async function updateProduct(res, ctx, body, params) {
   const productId = params[1];
   const sets = [];
   const args = [];
-  const add = (col, val) => { args.push(val); sets.push(`${col} = $${args.length}`); };
+  const want = {}; // giá trị MỚI của trường ALLOWLIST — cho audit diff from/to
+  const add = (col, val) => {
+    args.push(val); sets.push(`${col} = $${args.length}`);
+    if (col === 'title' || col === 'status' || col === 'price_vnd') want[col] = val;
+  };
 
   if (body.title !== undefined) {
     if (!validTitle(body.title)) return send(res, 400, { error: 'tiêu đề không hợp lệ' });
@@ -221,12 +247,21 @@ async function updateProduct(res, ctx, body, params) {
 
   try {
     const n = await withTenant(ctx.shopId, async (c) => {
+      // Đọc bản ghi TRƯỚC UPDATE trong CÙNG transaction (FOR UPDATE khoá dòng) —
+      // audit ghi from/to chứng minh được ai đổi giá từ bao nhiêu (rà soát #9).
+      const cur = await c.query(
+        `SELECT title, status, price_vnd FROM products WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+        [productId],
+      );
+      if (cur.rows.length === 0) return 0;
       args.push(productId);
       const r = await c.query(
         `UPDATE products SET ${sets.join(', ')} WHERE id = $${args.length} AND deleted_at IS NULL`,
         args,
       );
-      if (r.rowCount === 1) await audit(c, 'product.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId } });
+      if (r.rowCount === 1) {
+        await audit(c, 'product.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: withChanged({ productId }, diffChanged(cur.rows[0], want)) });
+      }
       return r.rowCount;
     });
     if (n !== 1) return send(res, 404, { error: 'không tìm thấy sản phẩm' });
@@ -298,41 +333,45 @@ async function addVariant(res, ctx, body, params) {
 // Sửa GIÁ / SKU một biến thể (ma trận sinh ra lấy giá sản phẩm — chủ shop chỉnh từng tổ hợp ở đây).
 async function updateVariant(res, ctx, body, params) {
   const productId = params[1], variantId = params[2];
-  const sets = [], args = [];
+  const sets = [], args = [], want = {}; // want: giá trị MỚI cho audit diff from/to
   if (body.price_vnd !== undefined) {
     if (!validPrice(body.price_vnd)) return send(res, 400, { error: 'giá không hợp lệ' });
-    args.push(body.price_vnd); sets.push(`price_vnd = $${args.length}`);
+    args.push(body.price_vnd); sets.push(`price_vnd = $${args.length}`); want.price_vnd = body.price_vnd;
   }
   if (body.sku !== undefined) {
     if (!validSku(body.sku)) return send(res, 400, { error: 'SKU không hợp lệ' });
-    args.push(String(body.sku).trim()); sets.push(`sku = $${args.length}`);
+    args.push(String(body.sku).trim()); sets.push(`sku = $${args.length}`); want.sku = String(body.sku).trim();
   }
   // Cân (gram) cho phí ship theo cân: null = xoá (dùng mặc định shop).
   if (body.weight_gram !== undefined) {
     if (!validWeight(body.weight_gram)) return send(res, 400, { error: 'khối lượng không hợp lệ (1–50000g, để trống = mặc định shop)' });
-    args.push(body.weight_gram); sets.push(`weight_gram = $${args.length}`);
+    args.push(body.weight_gram); sets.push(`weight_gram = $${args.length}`); want.weight_gram = body.weight_gram;
   }
   // Giá gạch ngang (compare-at, CHỈ hiển thị — checkout luôn tính price_vnd): null = xoá.
   if (body.compare_at_vnd !== undefined) {
     if (!validCompareAt(body.compare_at_vnd)) return send(res, 400, { error: 'giá gạch không hợp lệ' });
-    args.push(body.compare_at_vnd); sets.push(`compare_at_vnd = $${args.length}`);
+    args.push(body.compare_at_vnd); sets.push(`compare_at_vnd = $${args.length}`); want.compare_at_vnd = body.compare_at_vnd;
   }
   if (!sets.length) return send(res, 400, { error: 'không có trường nào để cập nhật' });
   try {
     const out = await withTenant(ctx.shopId, async (c) => {
+      // Đọc bản ghi TRƯỚC UPDATE (FOR UPDATE, cùng transaction): audit ghi from/to
+      // (rà soát #9) + dùng luôn cho check giá gạch bên dưới.
+      const cur = await c.query(
+        `SELECT sku, price_vnd, weight_gram, compare_at_vnd FROM variants WHERE id = $1 AND product_id = $2 FOR UPDATE`,
+        [variantId, productId],
+      );
+      if (!cur.rows.length) return { code: 404 };
       // compare_at phải > giá bán HIỆU LỰC (giá mới nếu đổi cùng request, giá hiện tại nếu không).
       if (body.compare_at_vnd != null) {
-        let effPrice = body.price_vnd;
-        if (effPrice === undefined) {
-          const cur = await c.query(`SELECT price_vnd FROM variants WHERE id = $1 AND product_id = $2`, [variantId, productId]);
-          if (!cur.rows.length) return { code: 404 };
-          effPrice = Number(cur.rows[0].price_vnd);
-        }
+        const effPrice = body.price_vnd !== undefined ? body.price_vnd : Number(cur.rows[0].price_vnd);
         if (body.compare_at_vnd <= effPrice) return { code: 400 };
       }
       args.push(variantId, productId);
       const r = await c.query(`UPDATE variants SET ${sets.join(', ')} WHERE id = $${args.length - 1} AND product_id = $${args.length}`, args);
-      if (r.rowCount === 1) await audit(c, 'variant.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, variantId } });
+      if (r.rowCount === 1) {
+        await audit(c, 'variant.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: withChanged({ productId, variantId }, diffChanged(cur.rows[0], want)) });
+      }
       return { code: r.rowCount === 1 ? 200 : 404 };
     });
     if (out.code === 400) return send(res, 400, { error: 'giá gạch phải lớn hơn giá bán' });

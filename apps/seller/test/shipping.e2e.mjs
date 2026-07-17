@@ -174,7 +174,10 @@ async function main() {
   r.json.connected && r.json.provider === 'ghtk' && !JSON.stringify(r.json).includes('ghtk-token-cua-shop-a-123')
     ? ok('GET /shipping: connected, token KHÔNG lộ trong response') : bad('token lộ hoặc chưa connected', r.raw);
   const enc = (await owner.query(`SELECT token_enc FROM shop_shipping_config WHERE shop_id=$1`, [A.shopId])).rows[0].token_enc;
-  !enc.includes('ghtk-token') && enc.split('.').length === 3 ? ok('token trong DB đã MÃ HOÁ (iv.tag.ct)') : bad('token DB plaintext!', enc.slice(0, 40));
+  // Định dạng: legacy 'iv.tag.ct' (3 phần) hoặc v2 'v2.<kid>.iv.tag.ct' (5 phần — xoay khoá Đợt 5.6).
+  const encP = enc.split('.');
+  !enc.includes('ghtk-token') && (encP.length === 3 || (encP[0] === 'v2' && encP.length === 5))
+    ? ok('token trong DB đã MÃ HOÁ (iv.tag.ct / v2.kid.iv.tag.ct)') : bad('token DB plaintext!', enc.slice(0, 40));
 
   // Kiểm tra kết nối (0đ): gọi API tính phí, KHÔNG tạo đơn.
   r = await a.get('/shipping/test');

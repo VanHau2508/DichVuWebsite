@@ -55,8 +55,15 @@ async function updateCoupon(res, ctx, body, params) {
   if (body.active === undefined || body.active === null) return send(res, 400, { error: 'thiếu trạng thái active' }); // tránh PATCH thiếu field vô tình TẮT coupon
   const active = body.active === true || body.active === 'true' || body.active === '1';
   const out = await withTenant(ctx.shopId, async (c) => {
+    // Đọc TRƯỚC UPDATE (FOR UPDATE, cùng transaction) — audit ghi from/to (rà soát #9):
+    // 'ai bật/tắt mã lúc nào' chứng minh được từ nhật ký. code không phải PII, giúp nhận diện mã.
+    const cur = await c.query(`SELECT code, active FROM coupons WHERE id = $1 AND shop_id = current_shop_id() FOR UPDATE`, [id]);
+    if (cur.rows.length === 0) return 0;
     const r = await c.query(`UPDATE coupons SET active = $2 WHERE id = $1 AND shop_id = current_shop_id()`, [id, active]);
-    if (r.rowCount === 1) await audit(c, 'coupon.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: { id, active } });
+    if (r.rowCount === 1) {
+      const changed = cur.rows[0].active !== active ? { active: { from: cur.rows[0].active, to: active } } : {};
+      await audit(c, 'coupon.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: { id, code: cur.rows[0].code, active, ...(Object.keys(changed).length ? { changed } : {}) } });
+    }
     return r.rowCount;
   });
   return send(res, out === 1 ? 200 : 404, out === 1 ? { ok: true, active } : { error: 'không tìm thấy mã' });

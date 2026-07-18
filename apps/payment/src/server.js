@@ -17,9 +17,13 @@
  */
 
 import http from 'node:http';
+import net from 'node:net';
 import crypto from 'node:crypto';
 import pg from 'pg';
 import { runReq, makeLog, health } from './obs.js';
+// Bộ đếm rate-limit DÙNG CHUNG với auth (atomic Lua, FAIL-OPEN khi Redis lỗi). File
+// gắn vào /app/ratelimit.js qua bind-mount trong compose.dev.yml (không copy, không sửa).
+import { hit } from '../ratelimit.js';
 
 const PORT = Number(process.env.PORT ?? 3070);
 const SEPAY_KEY = process.env.SEPAY_WEBHOOK_KEY ?? '';
@@ -28,6 +32,98 @@ const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 8 });
 if (!SEPAY_KEY) throw new Error('thiếu SEPAY_WEBHOOK_KEY');
 
 const log = makeLog('payment');
+
+// ── Rate-limit hạ tầng (Đợt 6.2) ───────────────────────────────────────────────
+// Image payment là bản TỐI GIẢN (chỉ src + pg), KHÔNG có ioredis. Rate-limit chỉ cần
+// EVAL (cho ratelimit.js) + DEL, nên tự nói RESP qua net (built-in) — không thêm
+// dependency, không rebuild image (khớp luồng dev: bind-mount + restart). Ngữ nghĩa
+// GIỐNG cấu hình Redis của auth: Redis chưa sẵn sàng / lệnh quá hạn → REJECT NGAY (không
+// treo); nuốt lỗi socket. hit() bắt mọi lỗi → FAIL-OPEN, không bao giờ chặn webhook thật.
+function respParse(b, i) {
+  if (i >= b.length) return { ok: false };
+  const type = b[i];
+  const nl = b.indexOf('\r\n', i + 1);
+  if (nl < 0) return { ok: false };
+  const line = b.toString('latin1', i + 1, nl);
+  const after = nl + 2;
+  if (type === 0x2b) return { ok: true, value: line, next: after };
+  if (type === 0x2d) return { ok: true, value: new Error(line), next: after, err: true };
+  if (type === 0x3a) return { ok: true, value: Number(line), next: after };
+  if (type === 0x24) {
+    const len = Number(line);
+    if (len < 0) return { ok: true, value: null, next: after };
+    const end = after + len;
+    if (end + 2 > b.length) return { ok: false };
+    return { ok: true, value: b.toString('utf8', after, end), next: end + 2 };
+  }
+  if (type === 0x2a) {
+    const n = Number(line);
+    if (n < 0) return { ok: true, value: null, next: after };
+    const arr = []; let p = after;
+    for (let k = 0; k < n; k++) { const el = respParse(b, p); if (!el.ok) return { ok: false }; arr.push(el.value); p = el.next; }
+    return { ok: true, value: arr, next: p };
+  }
+  return { ok: false };
+}
+function makeRedis(url, { commandTimeout = 1000 } = {}) {
+  const u = new URL(url);
+  const host = u.hostname, port = Number(u.port || 6379);
+  let sock = null, ready = false, buf = Buffer.alloc(0);
+  const pending = []; // resolver theo ĐÚNG thứ tự Redis trả lời (1 kết nối = FIFO)
+  function fail(err) {
+    ready = false;
+    while (pending.length) { const p = pending.shift(); clearTimeout(p.timer); p.reject(err); }
+    if (sock) { sock.removeAllListeners(); sock.destroy(); sock = null; }
+    setTimeout(connect, 500).unref();
+  }
+  function connect() {
+    try {
+      sock = net.connect({ host, port });
+      sock.setNoDelay(true);
+      sock.on('connect', () => { ready = true; });
+      sock.on('error', () => {});
+      sock.on('close', () => fail(new Error('redis closed')));
+      sock.on('data', (chunk) => {
+        buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
+        let out;
+        while (pending.length && (out = respParse(buf, 0)).ok) {
+          buf = buf.subarray(out.next);
+          const p = pending.shift(); clearTimeout(p.timer);
+          out.err ? p.reject(out.value) : p.resolve(out.value);
+        }
+      });
+    } catch { ready = false; setTimeout(connect, 500).unref(); }
+  }
+  function sendCmd(args) {
+    return new Promise((resolve, reject) => {
+      if (!ready || !sock) return reject(new Error('redis not ready')); // enableOfflineQueue:false
+      let cmd = `*${args.length}\r\n`;
+      for (const a of args) { const s = String(a); cmd += `$${Buffer.byteLength(s)}\r\n${s}\r\n`; }
+      const timer = setTimeout(() => fail(new Error('redis timeout')), commandTimeout);
+      pending.push({ resolve, reject, timer });
+      sock.write(cmd);
+    });
+  }
+  connect();
+  return {
+    eval: (script, numkeys, ...rest) => sendCmd(['EVAL', script, numkeys, ...rest]),
+    del: (key) => sendCmd(['DEL', key]),
+  };
+}
+// REDIS_URL vắng → không dựng client → gate tự bỏ qua (fail-open). Không chặn khởi động.
+const redis = process.env.REDIS_URL ? makeRedis(process.env.REDIS_URL, { commandTimeout: 1000 }) : null;
+// SePay hợp lệ post từ VÀI IP, lưu lượng thấp → 120/60s/IP là an toàn. Nếu 1 IP SePay
+// hợp lệ post nhiều hơn → NÂNG qua env (không bịa số chết). 429 bảo SePay THỬ LẠI (an
+// toàn — không mất thông báo thật). Cửa sổ cố định 60s.
+const SEPAY_WEBHOOK_RL = Number(process.env.SEPAY_WEBHOOK_RL_PER_MIN) || 120;
+
+// IP client SAU Caddy: Caddy (proxy tin cậy DUY NHẤT) ghi IP thật vào phần tử PHẢI NHẤT
+// của X-Forwarded-For. Khớp apps/auth + checkout http.js (lấy trái nhất là giả mạo được).
+function clientIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.length) { const parts = xff.split(','); return parts[parts.length - 1].trim(); }
+  return req.socket.remoteAddress ?? 'unknown';
+}
 
 function readJson(req) {
   return new Promise((resolve, reject) => {
@@ -195,6 +291,16 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   if (await health(url.pathname, res, { db: () => db.query('SELECT 1') })) return;
   try {
     if (req.method === 'POST' && url.pathname === '/webhooks/sepay') {
+      // Cổng rate-limit per-IP (Đợt 6.2) — TRƯỚC readJson + withTxn (chưa giữ connection
+      // pool, chưa parse body). FAIL-OPEN: Redis lỗi (rl.degraded) → cho qua, không bao
+      // giờ âm thầm bỏ webhook thật. 429 kèm Retry-After → SePay thử lại (an toàn).
+      if (redis) {
+        const rl = await hit(redis, `rl:pay:webhook:ip:${clientIp(req)}`, { limit: SEPAY_WEBHOOK_RL, windowSec: 60 });
+        if (!rl.allowed && !rl.degraded) {
+          res.writeHead(429, { 'content-type': 'application/json', 'cache-control': 'no-store', 'retry-after': String(rl.retryAfterSec || 60) });
+          return res.end(JSON.stringify({ error: 'rate limited' }));
+        }
+      }
       return await sepayWebhook(req, res, await readJson(req));
     }
   } catch (err) {

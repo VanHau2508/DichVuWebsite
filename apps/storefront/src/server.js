@@ -13,6 +13,7 @@
  */
 
 import http from 'node:http';
+import net from 'node:net';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import pg from 'pg';
@@ -20,6 +21,9 @@ import { renderHome, renderProduct, renderPage, renderSearch, renderBlogList, re
 import { renderLanding } from './landing.js';
 import { renderAbout, renderSupport, renderTerms, renderBlogList as renderCoBlogList, renderBlogPost as renderCoBlogPost, findPost, companyPaths } from './company.js';
 import { runReq, makeLog, health } from './obs.js';
+// Bộ đếm rate-limit DÙNG CHUNG với auth (atomic Lua, FAIL-OPEN khi Redis lỗi). File
+// gắn vào /app/ratelimit.js qua bind-mount trong compose.dev.yml (không copy, không sửa).
+import { hit } from '../ratelimit.js';
 
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
@@ -47,6 +51,100 @@ const CSP = [
 ].join('; ');
 
 const log = makeLog('storefront');
+
+// ── Rate-limit hạ tầng (Đợt 6.2) ───────────────────────────────────────────────
+// Image storefront là bản TỐI GIẢN (chỉ src + pg), KHÔNG có ioredis. Rate-limit chỉ
+// cần EVAL (cho ratelimit.js) + DEL, nên tự nói RESP qua net (built-in) — không thêm
+// dependency, không rebuild image (khớp luồng dev: chỉ bind-mount + restart). Ngữ
+// nghĩa GIỐNG cấu hình Redis của auth: Redis chưa sẵn sàng / lệnh quá hạn → REJECT
+// NGAY (không treo request); nuốt lỗi socket (không làm sập tiến trình). hit() bắt mọi
+// lỗi → FAIL-OPEN, nên bug ở client cùng lắm là mất rate-limit chứ không sập storefront.
+function respParse(b, i) {
+  if (i >= b.length) return { ok: false };
+  const type = b[i];
+  const nl = b.indexOf('\r\n', i + 1);
+  if (nl < 0) return { ok: false };
+  const line = b.toString('latin1', i + 1, nl);
+  const after = nl + 2;
+  if (type === 0x2b) return { ok: true, value: line, next: after };                 // + chuỗi đơn
+  if (type === 0x2d) return { ok: true, value: new Error(line), next: after, err: true }; // - lỗi
+  if (type === 0x3a) return { ok: true, value: Number(line), next: after };         // : số nguyên
+  if (type === 0x24) {                                                              // $ bulk
+    const len = Number(line);
+    if (len < 0) return { ok: true, value: null, next: after };
+    const end = after + len;
+    if (end + 2 > b.length) return { ok: false };
+    return { ok: true, value: b.toString('utf8', after, end), next: end + 2 };
+  }
+  if (type === 0x2a) {                                                              // * mảng (reply EVAL)
+    const n = Number(line);
+    if (n < 0) return { ok: true, value: null, next: after };
+    const arr = []; let p = after;
+    for (let k = 0; k < n; k++) { const el = respParse(b, p); if (!el.ok) return { ok: false }; arr.push(el.value); p = el.next; }
+    return { ok: true, value: arr, next: p };
+  }
+  return { ok: false };
+}
+function makeRedis(url, { commandTimeout = 1000 } = {}) {
+  const u = new URL(url);
+  const host = u.hostname, port = Number(u.port || 6379);
+  let sock = null, ready = false, buf = Buffer.alloc(0);
+  const pending = []; // hàng đợi resolver theo ĐÚNG thứ tự Redis trả lời (1 kết nối = FIFO)
+  function fail(err) {
+    ready = false;
+    while (pending.length) { const p = pending.shift(); clearTimeout(p.timer); p.reject(err); }
+    if (sock) { sock.removeAllListeners(); sock.destroy(); sock = null; }
+    setTimeout(connect, 500).unref();
+  }
+  function connect() {
+    try {
+      sock = net.connect({ host, port });
+      sock.setNoDelay(true);
+      sock.on('connect', () => { ready = true; });
+      sock.on('error', () => {});                       // đã xử lý ở 'close' → nuốt để không throw
+      sock.on('close', () => fail(new Error('redis closed')));
+      sock.on('data', (chunk) => {
+        buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
+        let out;
+        while (pending.length && (out = respParse(buf, 0)).ok) {
+          buf = buf.subarray(out.next);
+          const p = pending.shift(); clearTimeout(p.timer);
+          out.err ? p.reject(out.value) : p.resolve(out.value);
+        }
+      });
+    } catch { ready = false; setTimeout(connect, 500).unref(); }
+  }
+  function send(args) {
+    return new Promise((resolve, reject) => {
+      if (!ready || !sock) return reject(new Error('redis not ready')); // enableOfflineQueue:false
+      let cmd = `*${args.length}\r\n`;
+      for (const a of args) { const s = String(a); cmd += `$${Buffer.byteLength(s)}\r\n${s}\r\n`; }
+      const timer = setTimeout(() => fail(new Error('redis timeout')), commandTimeout);
+      pending.push({ resolve, reject, timer });
+      sock.write(cmd);
+    });
+  }
+  connect();
+  return {
+    eval: (script, numkeys, ...rest) => send(['EVAL', script, numkeys, ...rest]),
+    del: (key) => send(['DEL', key]),
+  };
+}
+// REDIS_URL vắng → không dựng client → gate tự bỏ qua (fail-open). Không bao giờ chặn khởi động.
+const redis = process.env.REDIS_URL ? makeRedis(process.env.REDIS_URL, { commandTimeout: 1000 }) : null;
+// Đọc chung 240/60s (~4 req/s bền — rộng cho người duyệt web, trang catalog rẻ). TÌM KIẾM
+// 30/60s (LIKE full-scan là bộ khuếch đại đắt). Cửa sổ cố định 60s, chỉnh được qua env.
+const SF_READ_RL = Number(process.env.SF_READ_RL_PER_MIN) || 240;
+const SF_SEARCH_RL = Number(process.env.SF_SEARCH_RL_PER_MIN) || 30;
+const RL_HTML = '<!doctype html><meta charset="utf-8"><title>Quá nhiều yêu cầu</title><body style="font-family:system-ui,sans-serif;text-align:center;padding:48px 16px"><h1>429 — Quá nhiều yêu cầu</h1><p>Bạn đang thao tác quá nhanh. Vui lòng thử lại sau giây lát.</p></body>';
+
+// IP client SAU Caddy: Caddy (proxy tin cậy DUY NHẤT) ghi IP thật vào phần tử PHẢI NHẤT
+// của X-Forwarded-For. Lấy trái nhất là giả mạo được. Khớp apps/auth + checkout http.js.
+function clientIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.length) { const parts = xff.split(','); return parts[parts.length - 1].trim(); }
+  return req.socket.remoteAddress ?? 'unknown';
+}
 
 /** Resolve hostname → {shopId, isPrimary, primaryHost}. CHỈ domain đã verified. Kèm tên
  *  miền CHÍNH của shop để 301 host phụ về chính (A5 — tránh trùng nội dung SEO). */
@@ -156,6 +254,25 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   // để khỏi tốn roundtrip DB + trả 404 HTML nặng. Cache 1 ngày cho browser khỏi hỏi lại.
   if (url.pathname === '/favicon.ico') {
     res.writeHead(204, { 'cache-control': 'public, max-age=86400' }); return res.end();
+  }
+
+  // ── Cổng rate-limit per-IP (Đợt 6.2) ──────────────────────────────────────────
+  // Chống flood ẩn danh lên storefront công khai. Miễn trừ tài nguyên tĩnh + robots/
+  // sitemap (allowlist — healthz/fonts/favicon đã trả sớm phía trên). FAIL-OPEN: Redis
+  // lỗi/chưa sẵn sàng (r.degraded) → CHO QUA, tuyệt đối không làm sập storefront.
+  if (redis) {
+    const p = url.pathname;
+    const exempt = p === '/robots.txt' || p === '/sitemap.xml' || p.startsWith('/fonts/') || p === '/favicon.ico';
+    if (!exempt) {
+      const isSearch = p === '/search';
+      const ip = clientIp(req);
+      const rl = await hit(redis, isSearch ? `rl:sf:search:ip:${ip}` : `rl:sf:ip:${ip}`,
+        { limit: isSearch ? SF_SEARCH_RL : SF_READ_RL, windowSec: 60 });
+      if (!rl.allowed && !rl.degraded) {
+        res.writeHead(429, { 'content-type': 'text/html; charset=utf-8', 'retry-after': String(rl.retryAfterSec || 60), 'cache-control': 'no-store' });
+        return res.end(RL_HTML);
+      }
+    }
   }
 
   try {
@@ -280,7 +397,9 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         )).rows.map((p) => ({ ...p, image: imgUrl(p.image_key), available: Number(p.available) }));
         return { products: rows, total };
       };
-      const pageNo = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
+      // Trần CỨNG số trang (100): OFFSET lớn = quét sâu tốn kém; kẻ tấn công không được
+      // đẩy ?page=99999 để ép DB nhảy offset khổng lồ. parseInt + kẹp [1, 100].
+      const pageNo = Math.min(100, Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1));
       const offset = (pageNo - 1) * PAGE_SIZE;
 
       // Trang chi tiết sản phẩm: /p/:slug (?variant= chọn biến thể — SSR đổi giá/tồn/ảnh).
@@ -352,7 +471,9 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
 
       // Tìm kiếm: /search?q=... (LIKE theo tên; RLS store_products lọc active).
       if (url.pathname === '/search') {
-        const q = (url.searchParams.get('q') ?? '').trim().slice(0, 100);
+        // Trần CỨNG độ dài q (~80 ký tự): cắt bớt để một truy vấn tìm không phình chi phí
+        // full-scan LIKE (khuếch đại). Token vẫn giới hạn 8 (dưới) nên đủ cho tìm thật.
+        const q = (url.searchParams.get('q') ?? '').trim().slice(0, 80);
         let products = [], total = 0;
         if (q) {
           // KHÔNG DẤU (0048) + ĐẢO TỪ (#26): tách q theo khoảng trắng → MỌI token phải

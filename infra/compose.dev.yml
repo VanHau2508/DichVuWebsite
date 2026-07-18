@@ -254,8 +254,14 @@ services:
       # Ảnh thumbnail trong giỏ (origin thêm vào CSP img-src — xem http.js).
       MEDIA_PUBLIC_BASE: /media-public
       PORT: "3060"
+      # Rate-limit per-IP (Đợt 6.2): cổng NGOÀI chặn flood ghi giỏ/checkout. FAIL-OPEN.
+      REDIS_URL: redis://redis:6379
+      CHECKOUT_RL_PER_MIN: "120"
     volumes:
       - ../apps/checkout/src:/app/src:ro
+      # Bộ đếm rate-limit DÙNG CHUNG (không copy): gắn thẳng file gốc của auth vào image
+      # tối giản này để `import '../ratelimit.js'` giải được. RO. Chỉ luồng dev cần mount.
+      - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -274,8 +280,14 @@ services:
       DATABASE_URL: postgres://app_payment:devpassword@postgres:5432/app
       SEPAY_WEBHOOK_KEY: dev-sepay-secret-key-12345
       PORT: "3070"
+      # Rate-limit per-IP webhook (Đợt 6.2): 120/60s/IP; nâng nếu 1 IP SePay post nhiều
+      # hơn. FAIL-OPEN — không bao giờ âm thầm bỏ thông báo thanh toán thật.
+      REDIS_URL: redis://redis:6379
+      SEPAY_WEBHOOK_RL_PER_MIN: "120"
     volumes:
       - ../apps/payment/src:/app/src:ro
+      # Bộ đếm rate-limit DÙNG CHUNG (không copy) — xem chú thích ở service checkout.
+      - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -360,9 +372,15 @@ services:
       DATABASE_URL: postgres://app_store:devpassword@postgres:5432/app
       MEDIA_PUBLIC_BASE: /media-public
       PORT: "3050"
+      # Rate-limit per-IP (Đợt 6.2): đọc chung 240/60s, TÌM KIẾM 30/60s. FAIL-OPEN.
+      REDIS_URL: redis://redis:6379
+      SF_READ_RL_PER_MIN: "240"
+      SF_SEARCH_RL_PER_MIN: "30"
     volumes:
       # Mount PHẢI khớp CMD (node src/server.js → /app/src).
       - ../apps/storefront/src:/app/src:ro
+      # Bộ đếm rate-limit DÙNG CHUNG (không copy) — xem chú thích ở service checkout.
+      - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -14,6 +14,7 @@
  */
 
 import http from 'node:http';
+import net from 'node:net';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import pg from 'pg';
@@ -22,6 +23,9 @@ import { buildVietQR } from './vietqr.js';
 import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
 import { runReq, makeLog, health } from './obs.js';
 import { isProvince, regionOf } from './provinces.js';
+// Bộ đếm rate-limit DÙNG CHUNG với auth (atomic Lua, FAIL-OPEN khi Redis lỗi). File
+// gắn vào /app/ratelimit.js qua bind-mount trong compose.dev.yml (không copy, không sửa).
+import { hit } from '../ratelimit.js';
 
 const PORT = Number(process.env.PORT ?? 3060);
 // Mặc định phí ship nền tảng (shop chưa cấu hình → dùng số này). Dùng `??` không đủ:
@@ -75,6 +79,91 @@ const CART_TTL_DAYS = 30;
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
 
 const log = makeLog('checkout');
+
+// ── Rate-limit hạ tầng (Đợt 6.2) ───────────────────────────────────────────────
+// Image checkout là bản TỐI GIẢN (chỉ src + pg), KHÔNG có ioredis. Rate-limit chỉ cần
+// EVAL (cho ratelimit.js) + DEL, nên tự nói RESP qua net (built-in) — không thêm
+// dependency, không rebuild image (khớp luồng dev: bind-mount + restart). Ngữ nghĩa
+// GIỐNG cấu hình Redis của auth: Redis chưa sẵn sàng / lệnh quá hạn → REJECT NGAY (không
+// treo); nuốt lỗi socket. hit() bắt mọi lỗi → FAIL-OPEN, không bao giờ làm sập checkout.
+function respParse(b, i) {
+  if (i >= b.length) return { ok: false };
+  const type = b[i];
+  const nl = b.indexOf('\r\n', i + 1);
+  if (nl < 0) return { ok: false };
+  const line = b.toString('latin1', i + 1, nl);
+  const after = nl + 2;
+  if (type === 0x2b) return { ok: true, value: line, next: after };
+  if (type === 0x2d) return { ok: true, value: new Error(line), next: after, err: true };
+  if (type === 0x3a) return { ok: true, value: Number(line), next: after };
+  if (type === 0x24) {
+    const len = Number(line);
+    if (len < 0) return { ok: true, value: null, next: after };
+    const end = after + len;
+    if (end + 2 > b.length) return { ok: false };
+    return { ok: true, value: b.toString('utf8', after, end), next: end + 2 };
+  }
+  if (type === 0x2a) {
+    const n = Number(line);
+    if (n < 0) return { ok: true, value: null, next: after };
+    const arr = []; let p = after;
+    for (let k = 0; k < n; k++) { const el = respParse(b, p); if (!el.ok) return { ok: false }; arr.push(el.value); p = el.next; }
+    return { ok: true, value: arr, next: p };
+  }
+  return { ok: false };
+}
+function makeRedis(url, { commandTimeout = 1000 } = {}) {
+  const u = new URL(url);
+  const host = u.hostname, port = Number(u.port || 6379);
+  let sock = null, ready = false, buf = Buffer.alloc(0);
+  const pending = []; // resolver theo ĐÚNG thứ tự Redis trả lời (1 kết nối = FIFO)
+  function fail(err) {
+    ready = false;
+    while (pending.length) { const p = pending.shift(); clearTimeout(p.timer); p.reject(err); }
+    if (sock) { sock.removeAllListeners(); sock.destroy(); sock = null; }
+    setTimeout(connect, 500).unref();
+  }
+  function connect() {
+    try {
+      sock = net.connect({ host, port });
+      sock.setNoDelay(true);
+      sock.on('connect', () => { ready = true; });
+      sock.on('error', () => {});
+      sock.on('close', () => fail(new Error('redis closed')));
+      sock.on('data', (chunk) => {
+        buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
+        let out;
+        while (pending.length && (out = respParse(buf, 0)).ok) {
+          buf = buf.subarray(out.next);
+          const p = pending.shift(); clearTimeout(p.timer);
+          out.err ? p.reject(out.value) : p.resolve(out.value);
+        }
+      });
+    } catch { ready = false; setTimeout(connect, 500).unref(); }
+  }
+  function send2(args) {
+    return new Promise((resolve, reject) => {
+      if (!ready || !sock) return reject(new Error('redis not ready')); // enableOfflineQueue:false
+      let cmd = `*${args.length}\r\n`;
+      for (const a of args) { const s = String(a); cmd += `$${Buffer.byteLength(s)}\r\n${s}\r\n`; }
+      const timer = setTimeout(() => fail(new Error('redis timeout')), commandTimeout);
+      pending.push({ resolve, reject, timer });
+      sock.write(cmd);
+    });
+  }
+  connect();
+  return {
+    eval: (script, numkeys, ...rest) => send2(['EVAL', script, numkeys, ...rest]),
+    del: (key) => send2(['DEL', key]),
+  };
+}
+// REDIS_URL vắng → không dựng client → gate tự bỏ qua (fail-open). Không chặn khởi động.
+const redis = process.env.REDIS_URL ? makeRedis(process.env.REDIS_URL, { commandTimeout: 1000 }) : null;
+// Cổng NGOÀI per-IP cho thao tác GHI (POST/PATCH giỏ + checkout). 120/60s: rộng cho khách
+// thật (giỏ đua 10 request đồng thời vẫn lọt), đủ chặt để chặn flood. Chỉnh được qua env.
+const CO_RL = Number(process.env.CHECKOUT_RL_PER_MIN) || 120;
+const RL_HTML = '<!doctype html><meta charset="utf-8"><title>Quá nhanh</title><body style="font-family:system-ui,sans-serif;text-align:center;padding:48px 16px"><h1>Bạn thao tác quá nhanh</h1><p>Vui lòng thử lại sau chút.</p></body>';
+
 const genToken = () => crypto.randomBytes(32).toString('base64url');
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -754,6 +843,20 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   const route = ROUTES.find((r) => r.m === req.method && r.p === url.pathname);
   if (!route) return send(res, 404, { error: 'không tìm thấy' });
   if (!sameOrigin(req)) return send(res, 403, { error: 'origin không hợp lệ' });
+
+  // ── Cổng rate-limit per-IP (Đợt 6.2) ──────────────────────────────────────────
+  // Lớp NGOÀI theo IP, CHỈ bao thao tác GHI (POST/PATCH giỏ + checkout); GET đọc miễn
+  // trừ. KHÔNG đụng advisory-lock / trần-pending bên trong — đó là lớp trong theo SĐT/
+  // nguồn. FAIL-OPEN: Redis lỗi (rl.degraded) → cho qua. Form không-JS → HTML thân thiện;
+  // đường JSON → 429 JSON. Cả hai kèm Retry-After để client lùi lịch.
+  if (redis && req.method !== 'GET') {
+    const rl = await hit(redis, `rl:co:ip:${clientIp(req)}`, { limit: CO_RL, windowSec: 60 });
+    if (!rl.allowed && !rl.degraded) {
+      const retry = String(rl.retryAfterSec || 60);
+      if (route.form) { res.writeHead(429, { 'content-type': 'text/html; charset=utf-8', 'retry-after': retry, 'cache-control': 'no-store' }); return res.end(RL_HTML); }
+      return send(res, 429, { error: 'Bạn thao tác quá nhanh, thử lại sau chút' }, { 'retry-after': retry });
+    }
+  }
 
   try {
     const host = String(req.headers.host ?? '').split(':')[0].trim().toLowerCase();

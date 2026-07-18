@@ -224,10 +224,19 @@ services:
       MAX_PENDING_ORDERS_PER_PHONE: ${MAX_PENDING_ORDERS_PER_PHONE:-8}
       ORDER_HASH_PEPPER: ${ORDER_HASH_PEPPER:?}   # PEPPER băm IP khách (HMAC) — bắt buộc ở prod
       MEDIA_PUBLIC_BASE: ${MEDIA_PUBLIC_BASE:?}   # ảnh thumbnail trong giỏ (img-src CSP)
+      REDIS_URL: redis://redis:6379               # rate-limit per-IP (Đợt 6.2); vắng → gate tự tắt (fail-open)
+      CHECKOUT_RL_PER_MIN: ${CHECKOUT_RL_PER_MIN:-120}
       PORT: "3060"
+    volumes:
+      # Bộ đếm rate-limit DÙNG CHUNG với auth. Image build từ context ../apps/checkout nên
+      # KHÔNG có packages/ — mount file vào /app/ratelimit.js để `import '../ratelimit.js'`
+      # giải được. Thiếu mount → service fail healthcheck lúc khởi động (Caddy không route
+      # tới upstream unhealthy) → deploy fail AN TOÀN, không phục vụ bản vỡ. RO.
+      - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
     deploy: { resources: { limits: { memory: 192m } } }
     depends_on:
       postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
 
   payment:
     build: { context: ../apps/payment }
@@ -237,10 +246,16 @@ services:
       APP_ENV: production
       DATABASE_URL: postgres://app_payment:${APP_PAYMENT_PASSWORD:?}@postgres:5432/app
       SEPAY_WEBHOOK_KEY: ${SEPAY_WEBHOOK_KEY:?}
+      REDIS_URL: redis://redis:6379               # rate-limit webhook per-IP (Đợt 6.2); vắng → fail-open
+      SEPAY_WEBHOOK_RL_PER_MIN: ${SEPAY_WEBHOOK_RL_PER_MIN:-120}
       PORT: "3070"
+    volumes:
+      # Xem chú thích checkout: mount bộ đếm rate-limit dùng chung (image không có packages/).
+      - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
     deploy: { resources: { limits: { memory: 160m } } }
     depends_on:
       postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
 
   worker:
     build: { context: ../apps/worker }
@@ -321,10 +336,17 @@ services:
       PLATFORM_BRAND: ${PLATFORM_BRAND:-Nền Tảng}
       PLATFORM_CONTACT_EMAIL: ${PLATFORM_CONTACT_EMAIL:-lienhe@nentang.vn}
       PLATFORM_CONTACT_PHONE: ${PLATFORM_CONTACT_PHONE:-}
+      REDIS_URL: redis://redis:6379               # rate-limit đọc/tìm-kiếm per-IP (Đợt 6.2); vắng → fail-open
+      SF_READ_RL_PER_MIN: ${SF_READ_RL_PER_MIN:-240}
+      SF_SEARCH_RL_PER_MIN: ${SF_SEARCH_RL_PER_MIN:-30}
       PORT: "3050"
+    volumes:
+      # Xem chú thích checkout: mount bộ đếm rate-limit dùng chung (image không có packages/).
+      - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
     deploy: { resources: { limits: { memory: 256m } } }
     depends_on:
       postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
 
   # admin.nentang.vn (Caddyfile) → seller-admin:3001. BFF SSR: cầm cookie phiên của
   # trình duyệt, gọi NỘI BỘ auth/seller/platform. Không đụng DB, không giữ secret DB.

@@ -184,6 +184,29 @@ function compose(topic, p) {
         { url: p.link, label: 'Đặt mật khẩu mới' }),
     };
   }
+  // Tài khoản khách (0083): brand = tên shop (p.shop_name) + link về domain shop (brandOf p.link).
+  if (topic === 'customer.email_verify') {
+    return {
+      subject: `Xác minh email — ${p.shop_name ?? 'cửa hàng'}`,
+      text: `Cảm ơn bạn đã tạo tài khoản tại ${p.shop_name ?? 'cửa hàng'}.\n\nXác minh email của bạn (hết hạn sau 24 giờ):\n${p.link}\n\nNếu bạn không tạo tài khoản, hãy bỏ qua email này.`,
+      html: emailHtml(p, `Xác minh email — ${p.shop_name ?? 'cửa hàng'}`,
+        par(`Cảm ơn bạn đã tạo tài khoản tại <strong>${escHtml(p.shop_name ?? 'cửa hàng')}</strong>.`) +
+        par('Bấm nút bên dưới để xác minh email (hết hạn sau 24 giờ).') +
+        par('<span style="color:#6b7280">Nếu bạn không tạo tài khoản, hãy bỏ qua email này.</span>'),
+        { url: p.link, label: 'Xác minh email' }),
+    };
+  }
+  if (topic === 'customer.password_reset') {
+    return {
+      subject: `Đặt lại mật khẩu — ${p.shop_name ?? 'cửa hàng'}`,
+      text: `Chúng tôi nhận được yêu cầu đặt lại mật khẩu tài khoản của bạn tại ${p.shop_name ?? 'cửa hàng'}.\n\nMở link sau để đặt mật khẩu mới (hết hạn sau 30 phút, dùng một lần):\n${p.link}\n\nNếu bạn KHÔNG yêu cầu, hãy bỏ qua email này.`,
+      html: emailHtml(p, `Đặt lại mật khẩu — ${p.shop_name ?? 'cửa hàng'}`,
+        par('Chúng tôi nhận được yêu cầu đặt lại mật khẩu tài khoản của bạn.') +
+        par('Bấm nút bên dưới để đặt mật khẩu mới (hết hạn sau 30 phút, dùng một lần).') +
+        par('<span style="color:#6b7280">Nếu bạn KHÔNG yêu cầu, hãy bỏ qua email này.</span>'),
+        { url: p.link, label: 'Đặt mật khẩu mới' }),
+    };
+  }
   if (topic === 'user.invited') {
     // HỢP ĐỒNG với Đợt 5.5 (service ghi outbox 'user.invited'): payload CHÍNH XÁC là
     // {to, shop_name, role, accept_url, expires_days} — đổi tên trường phải đổi CẢ HAI phía.

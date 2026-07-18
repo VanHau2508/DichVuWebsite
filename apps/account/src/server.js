@@ -101,13 +101,90 @@ async function doRegister(req, res, ctx) {
   // có) → NUỐT, trả trang trung tính Y HỆT (must-fix #3: không rò email nào đã đăng ký, KHÔNG auto-login).
   const hash = await hashPassword(password);
   try {
-    await withShop(ctx.shopId, (c) => c.query(
-      `INSERT INTO customers (shop_id, email, password_hash, full_name) VALUES (current_shop_id(), $1, $2, $3)`,
-      [email, hash, fullName]));
+    await withShop(ctx.shopId, async (c) => {
+      const cu = (await c.query(
+        `INSERT INTO customers (shop_id, email, password_hash, full_name) VALUES (current_shop_id(), $1, $2, $3) RETURNING id`,
+        [email, hash, fullName])).rows[0];
+      await issueVerify(c, ctx, cu.id, email); // token verify + outbox — cùng tx (ADR-006)
+    });
     log('info', 'customer_registered', { shop: ctx.shopId });
-  } catch (e) { if (e.code !== '23505') throw e; /* email đã tồn tại → trang trung tính */ }
-  // TODO commit 3: gửi email verify (mới) / nhắc đăng nhập (đã có). Trang trung tính cho cả hai.
+  } catch (e) { if (e.code !== '23505') throw e; /* email đã tồn tại → trang trung tính, không gửi gì */ }
   return sendHtml(res, 200, V.renderRegisterDone(ctx.shopName));
+}
+
+// ── quên / đặt lại mật khẩu + xác minh email ─────────────────────────────────
+const RESET_TTL_MS = 30 * 60_000, VERIFY_TTL_MS = 24 * 3600_000, FORGOT_FLOOR_MS = 500;
+const linkOf = (ctx, path) => `https://${ctx.host}${path}`;
+// Tạo token verify email + đẩy outbox (worker gửi). Dùng lúc đăng ký + gửi-lại.
+async function issueVerify(c, ctx, customerId, email) {
+  const token = generateToken();
+  await c.query(`INSERT INTO customer_email_verifications (shop_id, customer_id, token_hash, expires_at) VALUES (current_shop_id(), $1, $2, now() + ($3||' ms')::interval)`, [customerId, sha256(token), String(VERIFY_TTL_MS)]);
+  await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'customer.email_verify', $1)`,
+    [{ to: email, shop_name: ctx.shopName, link: linkOf(ctx, `/account/verify?token=${token}`) }]);
+}
+
+async function pageForgot(req, res, ctx) { return sendHtml(res, 200, V.renderForgot(ctx.shopName)); }
+async function doForgot(req, res, ctx) {
+  if (!sameOrigin(req)) return send(res, 403, { error: 'origin' });
+  const t0 = Date.now();
+  const f = await readForm(req);
+  const email = String(f.email ?? '').trim().toLowerCase();
+  const rl = await hit(redis, `rl:cust:forgot:ip:${ctx.shopId}:${ctx.ip}`, { limit: 10, windowSec: 3600 }).catch(() => ({ allowed: true }));
+  if (rl.allowed && EMAIL_RE.test(email)) {
+    await withShop(ctx.shopId, async (c) => {
+      const cu = (await c.query(`SELECT id FROM customers WHERE shop_id = current_shop_id() AND lower(email) = $1 AND status = 'active'`, [email])).rows[0];
+      if (!cu) return;
+      const token = generateToken();
+      await c.query(`INSERT INTO customer_password_reset_tokens (shop_id, customer_id, token_hash, expires_at) VALUES (current_shop_id(), $1, $2, now() + ($3||' ms')::interval)`, [cu.id, sha256(token), String(RESET_TTL_MS)]);
+      await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'customer.password_reset', $1)`,
+        [{ to: email, shop_name: ctx.shopName, link: linkOf(ctx, `/account/reset?token=${token}`) }]);
+    }).catch(() => {});
+  }
+  const wait = FORGOT_FLOOR_MS - (Date.now() - t0);       // sàn thời gian → chống enumeration qua timing
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  return sendHtml(res, 200, V.renderForgot(ctx.shopName, { sent: true }));
+}
+async function pageReset(req, res, ctx, q) {
+  const token = String(q.get('token') ?? '');
+  const valid = token && await withShop(ctx.shopId, (c) => c.query(
+    `SELECT 1 FROM customer_password_reset_tokens WHERE shop_id = current_shop_id() AND token_hash = $1 AND used_at IS NULL AND expires_at > now()`, [sha256(token)]).then((r) => r.rowCount === 1)).catch(() => false);
+  return sendHtml(res, valid ? 200 : 400, V.renderReset(ctx.shopName, token, { invalid: !valid }));
+}
+async function doReset(req, res, ctx) {
+  if (!sameOrigin(req)) return send(res, 403, { error: 'origin' });
+  const f = await readForm(req);
+  const token = String(f.token ?? ''), password = String(f.password ?? '');
+  const pwErr = passwordError(password, { shopName: ctx.shopName });
+  if (pwErr) return sendHtml(res, 400, V.renderReset(ctx.shopName, token, { error: pwErr[0].toUpperCase() + pwErr.slice(1) + '.' }));
+  const hash = await hashPassword(password);
+  const custId = await withShop(ctx.shopId, async (c) => {
+    // Token DÙNG-MỘT-LẦN atomic (UPDATE ... WHERE used_at IS NULL RETURNING) → chống đua/replay.
+    const r = await c.query(`UPDATE customer_password_reset_tokens SET used_at = now() WHERE shop_id = current_shop_id() AND token_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING customer_id`, [sha256(token)]);
+    return r.rows[0]?.customer_id ?? null;
+  });
+  if (!custId) return sendHtml(res, 400, V.renderReset(ctx.shopName, token, { invalid: true }));
+  await withCustomer(ctx.shopId, custId, async (c) => {
+    // Đổi MK + đánh dấu email đã xác minh (token email = bằng chứng sở hữu) + THU HỒI MỌI phiên.
+    await c.query(`UPDATE customers SET password_hash = $1, email_verified_at = coalesce(email_verified_at, now()), updated_at = now() WHERE id = current_customer_id()`, [hash]);
+    await c.query(`UPDATE customer_sessions SET revoked_at = now() WHERE customer_id = current_customer_id() AND revoked_at IS NULL`);
+  });
+  return sendHtml(res, 200, V.renderLogin(ctx.shopName, { notice: 'Đã đổi mật khẩu. Vui lòng đăng nhập lại.' }));
+}
+async function pageVerify(req, res, ctx, q) {
+  const token = String(q.get('token') ?? '');
+  const custId = token && await withShop(ctx.shopId, (c) => c.query(
+    `UPDATE customer_email_verifications SET verified_at = now() WHERE shop_id = current_shop_id() AND token_hash = $1 AND verified_at IS NULL AND expires_at > now() RETURNING customer_id`, [sha256(token)]).then((r) => r.rows[0]?.customer_id ?? null)).catch(() => null);
+  if (custId) await withCustomer(ctx.shopId, custId, (c) => c.query(`UPDATE customers SET email_verified_at = coalesce(email_verified_at, now()) WHERE id = current_customer_id()`)).catch(() => {});
+  return sendHtml(res, custId ? 200 : 400, V.renderVerified(ctx.shopName, { ok: !!custId }));
+}
+async function doResendVerify(req, res, ctx) {
+  if (!sameOrigin(req)) return send(res, 403, { error: 'origin' });
+  if (!ctx.customer) return redirect(res, '/account/login');
+  if (!ctx.customer.email_verified_at && ctx.customer.email) {
+    const rl = await hit(redis, `rl:cust:verify:${ctx.shopId}:${ctx.customer.id}`, { limit: 5, windowSec: 3600 }).catch(() => ({ allowed: true }));
+    if (rl.allowed) await withShop(ctx.shopId, (c) => issueVerify(c, ctx, ctx.customer.id, ctx.customer.email)).catch(() => {});
+  }
+  return redirect(res, '/account?sent=1');
 }
 
 async function doLogin(req, res, ctx) {
@@ -143,9 +220,9 @@ async function doLogout(req, res, ctx) {
   return redirect(res, '/account/login?bye=1');
 }
 
-async function pageDashboard(req, res, ctx) {
+async function pageDashboard(req, res, ctx, q) {
   if (!ctx.customer) return redirect(res, '/account/login');
-  return sendHtml(res, 200, V.renderDashboard(ctx.shopName, ctx.customer));
+  return sendHtml(res, 200, V.renderDashboard(ctx.shopName, ctx.customer, { notice: q.get('sent') === '1' ? 'Đã gửi lại email xác minh.' : null }));
 }
 
 // ── lịch sử đơn (RLS customer_orders_read: CHỈ đơn của mình) ──────────────────
@@ -280,6 +357,12 @@ const ROUTES = [
   { m: 'GET', re: /^\/account\/register$/, fn: pageRegister, auth: false },
   { m: 'POST', re: /^\/account\/register$/, fn: doRegister, auth: false },
   { m: 'POST', re: /^\/account\/logout$/, fn: doLogout, auth: false },
+  { m: 'GET', re: /^\/account\/forgot$/, fn: pageForgot, auth: false },
+  { m: 'POST', re: /^\/account\/forgot$/, fn: doForgot, auth: false },
+  { m: 'GET', re: /^\/account\/reset$/, fn: pageReset, auth: false },
+  { m: 'POST', re: /^\/account\/reset$/, fn: doReset, auth: false },
+  { m: 'GET', re: /^\/account\/verify$/, fn: pageVerify, auth: false },
+  { m: 'POST', re: /^\/account\/resend-verify$/, fn: doResendVerify, auth: false },
   { m: 'GET', re: /^\/account\/orders$/, fn: pageOrders },
   { m: 'GET', re: /^\/account\/orders\/(\d+)$/, fn: pageOrderDetail },
   { m: 'POST', re: /^\/account\/claim$/, fn: doClaim },
@@ -304,7 +387,7 @@ const server = http.createServer(async (req, res) => {
     if (!route) return sendHtml(res, 404, '<!doctype html><meta charset=utf-8><title>404</title><p>Không tìm thấy trang.</p>');
     const cookies = parseCookies(req);
     const customer = await loadCustomer(shopId, cookies[CUSTOMER_COOKIE]);
-    const ctx = { shopId, ip: clientIp(req), customer, shopName: await shopName(shopId) };
+    const ctx = { shopId, host, ip: clientIp(req), customer, shopName: await shopName(shopId) };
     return await route.fn(req, res, ctx, url.searchParams, m.slice(1));
   } catch (e) {
     log('error', 'handler_error', { message: e.message, path: req.url });

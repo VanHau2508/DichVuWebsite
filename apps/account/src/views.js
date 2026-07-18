@@ -174,5 +174,42 @@ export function renderAddresses(shopName, addresses, provinces, { editing, form 
       </form></div>`);
 }
 
+export function renderForgot(shopName, { error, sent } = {}) {
+  if (sent) return layout('Kiểm tra email', shopName, `
+    <h1>Đã gửi hướng dẫn</h1>
+    <div class="card"><p>Nếu email này có tài khoản, chúng tôi đã gửi link đặt lại mật khẩu (hết hạn sau 30 phút). Kiểm tra hộp thư (cả spam).</p>
+      <p class="muted"><a href="/account/login">← Về đăng nhập</a></p></div>`, { back: 'auth' });
+  return layout('Quên mật khẩu', shopName, `
+    <h1>Quên mật khẩu</h1>
+    <p class="muted">Nhập email tài khoản — chúng tôi gửi link đặt lại mật khẩu.</p>
+    ${errBox(error)}
+    <div class="card"><form method="POST" action="/account/forgot">
+      <label>Email</label><input name="email" type="email" required autocomplete="email">
+      <button class="btn" type="submit" style="width:100%;margin-top:14px">Gửi link đặt lại</button>
+    </form><p class="muted" style="margin:12px 0 0"><a href="/account/login">← Về đăng nhập</a></p></div>`, { back: 'auth' });
+}
+
+export function renderReset(shopName, token, { error, invalid } = {}) {
+  if (invalid) return layout('Link không hợp lệ', shopName, `
+    <h1>Link đã hết hạn</h1>
+    <div class="card"><p>Link đặt lại mật khẩu không hợp lệ hoặc đã hết hạn (dùng một lần, 30 phút).</p>
+      <p><a class="btn alt sm" href="/account/forgot">Yêu cầu link mới</a></p></div>`, { back: 'auth' });
+  return layout('Đặt mật khẩu mới', shopName, `
+    <h1>Đặt mật khẩu mới</h1>
+    ${errBox(error)}
+    <div class="card"><form method="POST" action="/account/reset">
+      <input type="hidden" name="token" value="${esc(token)}">
+      <label>Mật khẩu mới (tối thiểu 10 ký tự)</label><input name="password" type="password" required autocomplete="new-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:14px">Đổi mật khẩu</button>
+    </form><p class="muted" style="margin:8px 0 0">Đổi mật khẩu sẽ đăng xuất khỏi mọi thiết bị.</p></div>`, { back: 'auth' });
+}
+
+export function renderVerified(shopName, { ok: okv } = {}) {
+  return layout('Xác minh email', shopName, `
+    <h1>${okv ? 'Đã xác minh email ✓' : 'Link không hợp lệ'}</h1>
+    <div class="card"><p>${okv ? 'Cảm ơn bạn đã xác minh email.' : 'Link xác minh không hợp lệ hoặc đã hết hạn.'}</p>
+      <p><a class="btn alt sm" href="/account">Về tài khoản</a></p></div>`, { back: 'auth' });
+}
+
 export const _layout = layout;
 export { errBox, okBox };

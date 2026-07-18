@@ -108,10 +108,41 @@ async function main() {
   r = await acc(host, 'POST', '/account/login', { origin: O, form: { email: `khong-ton-tai-${uniq()}@x.vn`, password: pw } });
   r.status === 401 && r.body.includes('không đúng') ? ok('email không tồn tại → 401 lỗi CHUNG (enum-safe)') : bad('email lạ lộ khác', r.status);
   r = await acc(host, 'POST', '/account/login', { origin: O, form: { email, password: pw } });
-  const tok = r.setTok;
+  let tok = r.setTok;
   r.status === 303 && r.location === '/account' && tok ? ok('đăng nhập đúng → 303 /account + set cookie') : bad('đăng nhập lỗi', `${r.status} ${r.location}`);
   r = await acc(host, 'GET', '/account', { cookie: tok });
   r.status === 200 && r.body.includes(email) ? ok('dashboard hiện email khách') : bad('dashboard lỗi', r.status);
+
+  sect('3b. Xác minh email + quên/đặt lại mật khẩu (token 1 lần, thu hồi phiên)');
+  const outLink = (topic, to) => owner.query(`SELECT payload->>'link' AS l FROM outbox WHERE topic=$1 AND payload->>'to'=$2 ORDER BY id DESC LIMIT 1`, [topic, to]).then((r) => r.rows[0]?.l ?? null);
+  // Đăng ký đã tạo outbox verify (mục 2). Lấy link → GET verify → email_verified_at set.
+  const vLink = await outLink('customer.email_verify', email);
+  const vTok = vLink ? new URL(vLink).searchParams.get('token') : null;
+  vTok ? ok('đăng ký sinh outbox customer.email_verify (link về domain shop)') : bad('không có outbox verify');
+  r = await acc(host, 'GET', `/account/verify?token=${vTok}`);
+  r.status === 200 && r.body.includes('Đã xác minh') ? ok('GET verify token → xác minh email') : bad('verify lỗi', r.status);
+  const verified = (await owner.query(`SELECT email_verified_at FROM customers WHERE shop_id=$1 AND lower(email)=lower($2)`, [A.shopId, email])).rows[0].email_verified_at;
+  verified ? ok('DB: email_verified_at đã set') : bad('email chưa verify trong DB');
+  // Forgot email KHÔNG tồn tại → vẫn 200 (enum-safe), không outbox.
+  r = await acc(host, 'POST', '/account/forgot', { origin: O, form: { email: `khong-${uniq()}@x.vn` } });
+  r.status === 200 && r.body.includes('Đã gửi') ? ok('forgot email lạ → 200 trung tính (enum-safe)') : bad('forgot lộ email lạ', r.status);
+  // Forgot email THẬT → outbox reset.
+  r = await acc(host, 'POST', '/account/forgot', { origin: O, form: { email } });
+  const rLink = await outLink('customer.password_reset', email);
+  const rTok = rLink ? new URL(rLink).searchParams.get('token') : null;
+  r.status === 200 && rTok ? ok('forgot email thật → 200 + outbox reset') : bad('không có outbox reset', r.status);
+  r = await acc(host, 'GET', `/account/reset?token=${rTok}`);
+  r.status === 200 && r.body.includes('mật khẩu mới') ? ok('GET reset token hợp lệ → form') : bad('form reset lỗi', r.status);
+  const newPw = 'mat khau moi 2026 abc';
+  r = await acc(host, 'POST', '/account/reset', { origin: O, form: { token: rTok, password: newPw } });
+  r.status === 200 && r.body.includes('Đăng nhập') ? ok('đặt MK mới → về trang đăng nhập') : bad('reset lỗi', r.status);
+  // Token dùng LẠI → vô hiệu.
+  r = await acc(host, 'GET', `/account/reset?token=${rTok}`);
+  r.status === 400 && r.body.includes('hết hạn') ? ok('reuse token reset → 400 (dùng-một-lần)') : bad('token tái dùng được', r.status);
+  // Đăng nhập bằng MK MỚI (MK cũ vô hiệu — nhưng chưa test cũ; test mới đủ).
+  r = await acc(host, 'POST', '/account/login', { origin: O, form: { email, password: newPw } });
+  r.status === 303 && r.setTok ? ok('đăng nhập bằng MK MỚI thành công') : bad('MK mới không đăng nhập được', r.status);
+  tok = r.setTok; // phiên cũ đã bị reset thu hồi → dùng phiên MỚI cho các mục sau
 
   sect('4. CSRF + cô lập shop');
   r = await acc(host, 'POST', '/account/login', { form: { email, password: pw } }); // KHÔNG origin

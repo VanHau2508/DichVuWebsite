@@ -25,6 +25,7 @@ import { MEDIA_ROUTES, initMedia, mediaPublicUrl } from './media.js';
 import { THEME_ADMIN_ROUTES } from './theme.js';
 import { PAYMENT_CONFIG_ROUTES } from './payment-config.js';
 import { ORDER_ROUTES } from './orders.js';
+import { COD_ROUTES } from './cod.js';
 import { DASHBOARD_ROUTES } from './dashboard.js';
 import { CONTENT_ROUTES } from './content.js';
 import { BLOG_ROUTES } from './blog.js';
@@ -291,6 +292,7 @@ const ROUTES = [
   ...THEME_ADMIN_ROUTES,
   ...PAYMENT_CONFIG_ROUTES,
   ...ORDER_ROUTES,
+  ...COD_ROUTES,
   ...DASHBOARD_ROUTES,
   ...CONTENT_ROUTES,
   ...BLOG_ROUTES,

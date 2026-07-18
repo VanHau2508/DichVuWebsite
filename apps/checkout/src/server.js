@@ -261,15 +261,20 @@ async function resolveCoupon(c, code, subtotal) {
 async function summarize(c, cartId, province = null) {
   const items = (await c.query(
     `SELECT ci.variant_id, ci.qty, v.price_vnd, v.weight_gram, v.title AS variant_title, v.sku, p.title AS product_title, p.slug,
+            pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct,
             (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key
        FROM cart_items ci JOIN variants v ON v.id = ci.variant_id JOIN products p ON p.id = v.product_id
+       LEFT JOIN LATERAL promo_effective(p.id, v.price_vnd, now()) pe ON true
       WHERE ci.cart_id = $1 ORDER BY ci.created_at`, [cartId],
   )).rows;
   let subtotal = 0;
   const out = items.map((it) => {
-    const unit = Number(it.price_vnd); // GIÁ THẬT từ variants
+    // GIÁ HIỆU LỰC: promo_effective (flash sale 0082) NẾU đang chạy, không thì giá gốc variants.
+    const base = Number(it.price_vnd);
+    const unit = it.sale_price_vnd != null ? Number(it.sale_price_vnd) : base;
     subtotal += unit * it.qty;
-    return { variant_id: it.variant_id, product_title: it.product_title, variant_title: it.variant_title, sku: it.sku, unit_price_vnd: unit, qty: it.qty, line_total_vnd: unit * it.qty, image: imgUrl(it.image_key) };
+    return { variant_id: it.variant_id, product_title: it.product_title, variant_title: it.variant_title, sku: it.sku, unit_price_vnd: unit, qty: it.qty, line_total_vnd: unit * it.qty, image: imgUrl(it.image_key),
+      ...(it.sale_price_vnd != null ? { orig_unit_price_vnd: base, sale_off_pct: Number(it.sale_off_pct) } : {}) };
   });
   const cfg = await shopShipping(c);
   const shipping = computeShipping(cfg, subtotal, items, province); // chế độ HIỂN THỊ: chưa rõ tỉnh → ước tính nội miền
@@ -525,8 +530,10 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     // Phòng thủ nhiều lớp: loại biến thể MỒ CÔI khỏi đơn (đã vào giỏ TRƯỚC khi shop thu hẹp
     // phân loại) — không bao giờ reserve/snapshot theo giá/tồn cũ. Giỏ rỗng ra → fail dưới.
     const items = (await c.query(
-      `SELECT ci.variant_id, ci.qty, v.price_vnd, v.weight_gram, v.title AS variant_title, v.sku, p.title AS product_title
+      `SELECT ci.variant_id, ci.qty, v.price_vnd, v.weight_gram, v.title AS variant_title, v.sku, p.title AS product_title,
+              pe.price_vnd AS sale_price_vnd, pe.promotion_id
          FROM cart_items ci JOIN variants v ON v.id = ci.variant_id JOIN products p ON p.id = v.product_id
+         LEFT JOIN LATERAL promo_effective(p.id, v.price_vnd, now()) pe ON true
         WHERE ci.cart_id = $1 AND ${VARIANT_NOT_ORPHAN_SQL}
         ORDER BY ci.created_at`, [cart.id],
     )).rows;
@@ -562,10 +569,20 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       const available = lvl ? lvl.on_hand - lvl.reserved : 0;
       if (it.qty > available) fail(422, `hết hàng: ${it.product_title}`, { variant_id: it.variant_id });
       await c.query(`UPDATE inventory_levels SET reserved = reserved + $2, updated_at = now() WHERE variant_id = $1`, [it.variant_id, it.qty]);
-      const unit = Number(it.price_vnd);
+      // GIÁ HIỆU LỰC = flash sale (0082) nếu đang chạy TẠI now() của tx, không thì giá gốc.
+      // orig = giá gốc CHỈ khi có sale (snapshot thông tin — không cộng vào tiền nào).
+      const base = Number(it.price_vnd);
+      const unit = it.sale_price_vnd != null ? Number(it.sale_price_vnd) : base;
       subtotal += unit * it.qty;
-      lines.push({ variant_id: it.variant_id, title: it.product_title + (it.variant_title ? ` - ${it.variant_title}` : ''), sku: it.sku, unit, qty: it.qty });
+      lines.push({ variant_id: it.variant_id, title: it.product_title + (it.variant_title ? ` - ${it.variant_title}` : ''), sku: it.sku, unit, qty: it.qty,
+        orig: it.sale_price_vnd != null ? base : null, promotion_id: it.sale_price_vnd != null ? it.promotion_id : null });
     }
+    // Vòng trung thực GIÁ no-JS: subtotal (đã sale, trước coupon) khách ĐÃ THẤY (hidden
+    // subtotal_seen) khác subtotal tính lại tại now() (promo vừa hết → tăng, hoặc vừa bật →
+    // giảm) → 409 NGAY TRONG transaction (rollback reserve/coupon/idem) → checkoutPlace dựng
+    // lại form với giá mới. So khớp CẢ HAI chiều (như ship_seen). API JSON không gửi
+    // subtotal_seen → expectedSubtotal null → bỏ qua cổng (đọc giá hiện hành).
+    if (f.expectedSubtotal != null && subtotal !== f.expectedSubtotal) fail(409, 'giá sản phẩm vừa cập nhật', { subtotal_vnd: subtotal });
     // Chế độ CHỐT ĐƠN: không rõ tỉnh → tính LIÊN MIỀN (bảo vệ shop — xem computeShipping).
     const shipping = computeShipping(await shopShipping(c), subtotal, items, address?.province, { assumeFarWhenUnknown: true });
     // Vòng trung thực phí no-JS: phí khách ĐÃ THẤY (hidden ship_seen, chỉ form gửi) khác phí
@@ -622,10 +639,10 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       // unit_cost_vnd (0081): snapshot GIÁ VỐN qua subquery — cost không bao giờ vào object
       // JS của service công khai (không lọt log/response); chưa khai giá vốn → NULL (không 0).
       await c.query(
-        `INSERT INTO order_lines (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty, unit_cost_vnd)
+        `INSERT INTO order_lines (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty, unit_cost_vnd, orig_unit_price_vnd, promotion_id)
          VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6,
-                 (SELECT cost_vnd FROM variant_costs WHERE shop_id = current_shop_id() AND variant_id = $2))`,
-        [order.id, ln.variant_id, ln.title, ln.sku, ln.unit, ln.qty],
+                 (SELECT cost_vnd FROM variant_costs WHERE shop_id = current_shop_id() AND variant_id = $2), $7, $8)`,
+        [order.id, ln.variant_id, ln.title, ln.sku, ln.unit, ln.qty, ln.orig, ln.promotion_id],
       );
     }
     // Guard status='active' + kiểm rowCount: lớp phòng thủ THỨ HAI sau FOR UPDATE. Nếu vì
@@ -707,6 +724,9 @@ async function checkoutPlace(req, res, form, ctx) {
   // Phí ship khách ĐÃ THẤY trên form (hidden ship_seen). Thiếu/rác → null = bỏ so khớp
   // (form của ta luôn gửi); chỉ dùng để SO SÁNH trong createOrderTx, không vào total.
   f.expectedShipping = /^\d{1,9}$/.test(String(form.ship_seen ?? '')) ? Number(form.ship_seen) : null;
+  // Subtotal (đã sale, trước coupon) khách ĐÃ THẤY (hidden subtotal_seen) — vòng trung thực
+  // GIÁ: promo bật/tắt giữa lúc khách điền form → createOrderTx 409 → dựng lại form giá mới.
+  f.expectedSubtotal = /^\d{1,12}$/.test(String(form.subtotal_seen ?? '')) ? Number(form.subtotal_seen) : null;
 
   // (c) Leo thang: nguồn (IP) đã nhiều đơn CHỜ → bắt trả lời câu hỏi toán (ký HMAC).
   if (ctx.ip) {
@@ -730,6 +750,11 @@ async function checkoutPlace(req, res, form, ctx) {
     if (err.statusCode === 409 && err.body?.shipping_vnd != null) {
       return reRender({ error: `Phí giao hàng tới ${f.address.province} là ${new Intl.NumberFormat('vi-VN').format(err.body.shipping_vnd)}₫ — tổng đơn đã được cập nhật, vui lòng kiểm tra và bấm Đặt hàng lại.` });
     }
+    // GIÁ sản phẩm vừa đổi (flash sale bật/tắt) → dựng lại form: summarize phát subtotal_seen
+    // MỚI (giá hiện hành) → khách thấy giá đúng, bấm Đặt hàng lại là xong.
+    if (err.statusCode === 409 && err.body?.subtotal_vnd != null) {
+      return reRender({ error: 'Giá sản phẩm vừa được cập nhật (khuyến mãi thay đổi) — vui lòng kiểm tra và bấm Đặt hàng lại.' });
+    }
     if (err.statusCode) return sendHtml(res, err.statusCode, renderError(shopName, err.body?.error ?? 'Không đặt được đơn.'));
     throw err;
   }
@@ -745,7 +770,7 @@ async function orderLookup(req, res, _body, ctx, query) {
          FROM orders WHERE order_number = $1 AND lookup_token_hash = $2`, [number, hashToken(token)],
     )).rows[0];
     if (!o) return null;
-    const lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
+    const lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, orig_unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
     return { order_number: o.order_number, status: o.status, payment_status: o.payment_status, payment_method: o.payment_method, subtotal_vnd: Number(o.subtotal_vnd), shipping_vnd: Number(o.shipping_vnd), total_vnd: Number(o.total_vnd), customer_name: o.customer_name, lines };
   });
   if (!data) return send(res, 404, { error: 'không tìm thấy đơn' });
@@ -780,7 +805,7 @@ async function getSuccessPage(req, res, _body, ctx, query) {
          FROM orders WHERE order_number = $1 AND lookup_token_hash = $2`, [number, hashToken(token)],
     )).rows[0];
     if (!o) return null;
-    o.lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
+    o.lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, orig_unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
     let pay = null;
     if (o.payment_method === 'qr' && o.payment_status !== 'paid') {
       pay = (await c.query(`SELECT bank_bin, account_number, account_name FROM shop_payment_config WHERE shop_id = current_shop_id()`)).rows[0] ?? null;

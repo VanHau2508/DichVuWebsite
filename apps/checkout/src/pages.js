@@ -106,7 +106,7 @@ const itemsBlock = (items) => items.map((it) => `
     ${it.image ? `<img class="cthumb" src="${esc(it.image)}" alt="" loading="lazy" width="52" height="52">` : '<div class="cthumb ph"></div>'}
     <div>
     <div>${esc(it.product_title)}${it.variant_title ? ` — <span class="muted">${esc(it.variant_title)}</span>` : ''}</div>
-    <div class="muted">${money(it.unit_price_vnd)} / sp</div>
+    <div class="muted">${it.orig_unit_price_vnd ? `<s>${money(it.orig_unit_price_vnd)}</s> <span style="color:#b91c1c;font-weight:600">${money(it.unit_price_vnd)}</span> <span style="color:#b91c1c">-${esc(it.sale_off_pct)}%</span>` : money(it.unit_price_vnd)} / sp</div>
     <form method="POST" action="/cart/update" class="qty" style="margin-top:6px">
       <input type="hidden" name="variant_id" value="${esc(it.variant_id)}">
       <input type="number" name="qty" value="${it.qty}" min="0" max="1000" inputmode="numeric" aria-label="Số lượng">
@@ -180,6 +180,7 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
       <input type="hidden" name="idempotency_key" value="${esc(idemToken)}">
       <input type="hidden" name="ct" value="${esc(opts.formTs ?? '')}">
       <input type="hidden" name="ship_seen" value="${Number(s.shipping_vnd)}">
+      <input type="hidden" name="subtotal_seen" value="${Number(s.subtotal_vnd)}">
       <div class="card"><h2>Người nhận</h2>
         <label>Họ tên *</label><input name="name" required maxlength="120" autocomplete="name" value="${v(pf.name)}">
         <label>Số điện thoại *</label><input name="phone" required inputmode="tel" autocomplete="tel" placeholder="09xxxxxxxx" value="${v(pf.phone)}">
@@ -237,7 +238,7 @@ export function renderOrder(shopName, o, pay, qr, justPlaced = false) {
       <p>Đơn <strong>#${o.order_number}</strong> · <span class="badge ok">${esc(statusVi)}</span></p></div>
     ${payBlock}
     <div class="card"><h2>Chi tiết đơn</h2>
-      ${o.lines.map((l) => `<div class="tot"><span class="muted">${esc(l.title_snapshot)} × ${l.qty}</span><span>${money(Number(l.unit_price_vnd) * l.qty)}</span></div>`).join('')}
+      ${o.lines.map((l) => `<div class="tot"><span class="muted">${esc(l.title_snapshot)} × ${l.qty}${l.orig_unit_price_vnd ? ` <span style="color:#b91c1c">(KM, tiết kiệm ${money((Number(l.orig_unit_price_vnd) - Number(l.unit_price_vnd)) * l.qty)})</span>` : ''}</span><span>${money(Number(l.unit_price_vnd) * l.qty)}</span></div>`).join('')}
       <div class="tot"><span class="muted">Phí giao hàng</span><span>${money(o.shipping_vnd)}</span></div>
       <div class="tot grand"><span>Tổng cộng</span><span>${money(o.total_vnd)}</span></div>
       <p class="muted" style="margin-top:8px">Giao tới: ${esc(o.customer_name)}</p>

@@ -651,9 +651,11 @@ async function createManualOrder(res, ctx, body) {
       [num, paymentMethod, name, phone, email, address, subtotal, shipping, total, hashToken(lookupToken), paymentRef, qrAccount, note],
     )).rows[0];
     for (const ln of lines) {
+      // unit_cost_vnd (0081): snapshot giá vốn hiện hành lúc tạo đơn — mirror checkout.
       await c.query(
-        `INSERT INTO order_lines (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty)
-         VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6)`,
+        `INSERT INTO order_lines (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty, unit_cost_vnd)
+         VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6,
+                 (SELECT cost_vnd FROM variant_costs WHERE shop_id = current_shop_id() AND variant_id = $2))`,
         [order.id, ln.variant_id, ln.title, ln.sku, ln.unit, ln.qty],
       );
     }
@@ -728,7 +730,7 @@ async function reconcileEditLines(c, o, P, fail) {
   const shipped = (await c.query(
     `SELECT 1 FROM shipment_lines sl JOIN shipments s ON s.id = sl.shipment_id WHERE s.order_id = $1 LIMIT 1`, [o.id])).rows[0];
   if (shipped) fail(409, 'đơn đã có vận đơn — không sửa được dòng hàng (dùng đổi-trả/hoàn nếu cần)');
-  const cur = (await c.query(`SELECT variant_id, unit_price_vnd, qty, title_snapshot, sku_snapshot FROM order_lines WHERE order_id = $1`, [o.id])).rows;
+  const cur = (await c.query(`SELECT variant_id, unit_price_vnd, unit_cost_vnd, qty, title_snapshot, sku_snapshot FROM order_lines WHERE order_id = $1`, [o.id])).rows;
   const curByVid = new Map(cur.map((l) => [l.variant_id, l]));
   const desired = new Map();
   for (const l of P.lines0) desired.set(l.variant_id, (desired.get(l.variant_id) ?? 0) + l.qty);
@@ -741,16 +743,19 @@ async function reconcileEditLines(c, o, P, fail) {
     const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [vid])).rows[0];
     if (newQty > 0) {
       if (curByVid.has(vid)) {
+        // Dòng GIỮ NGUYÊN: mang lại CẢ unit_cost_vnd CŨ (0081) — y như đang giữ giá/title/sku.
+        // Quên = mỗi lần sửa đơn re-cost theo giá nhập HÔM NAY → lãi quá khứ trôi lặng lẽ.
         const ol = curByVid.get(vid);
-        targetLines.push({ variant_id: vid, unit: Number(ol.unit_price_vnd), qty: newQty, title: ol.title_snapshot, sku: ol.sku_snapshot });
+        targetLines.push({ variant_id: vid, unit: Number(ol.unit_price_vnd), cost: ol.unit_cost_vnd != null ? Number(ol.unit_cost_vnd) : null, qty: newQty, title: ol.title_snapshot, sku: ol.sku_snapshot });
       } else {
         const v = (await c.query(
-          `SELECT v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title
+          `SELECT v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title, vc.cost_vnd
              FROM variants v JOIN products p ON p.id = v.product_id AND p.status = 'active' AND p.deleted_at IS NULL
+             LEFT JOIN variant_costs vc ON vc.shop_id = v.shop_id AND vc.variant_id = v.id
             WHERE v.id = $1 AND ${VARIANT_NOT_ORPHAN_SQL}`, [vid],
         )).rows[0];
         if (!v) fail(422, 'sản phẩm mới thêm không tồn tại hoặc ngừng bán');
-        targetLines.push({ variant_id: vid, unit: Number(v.price_vnd), qty: newQty, title: v.product_title + (v.variant_title ? ` - ${v.variant_title}` : ''), sku: v.sku });
+        targetLines.push({ variant_id: vid, unit: Number(v.price_vnd), cost: v.cost_vnd != null ? Number(v.cost_vnd) : null, qty: newQty, title: v.product_title + (v.variant_title ? ` - ${v.variant_title}` : ''), sku: v.sku });
       }
     }
     if (delta > 0) {
@@ -771,8 +776,8 @@ async function reconcileEditLines(c, o, P, fail) {
   await c.query(`DELETE FROM order_lines WHERE order_id = $1`, [o.id]);
   for (const t of targetLines) {
     await c.query(
-      `INSERT INTO order_lines (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty)
-       VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6)`, [o.id, t.variant_id, t.title, t.sku, t.unit, t.qty],
+      `INSERT INTO order_lines (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty, unit_cost_vnd)
+       VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6, $7)`, [o.id, t.variant_id, t.title, t.sku, t.unit, t.qty, t.cost],
     );
   }
   const note = P.hasNote ? P.noteVal : o.note;
@@ -862,9 +867,11 @@ async function editPaidOrder(res, ctx, body, params) {
 
       if (refundNeeded > 0) {
         // Bút toán hoàn (append-only 0070) — tiền chủ shop tự chuyển lại khách (nền tảng không giữ tiền).
+        // kind='edit_adjustment' (0081): header đơn ĐÃ hạ xuống tổng mới ở reconcileEditLines →
+        // báo cáo LOẠI phiếu này khỏi phép trừ doanh thu (kẻo trừ ĐÚP cùng một khoản chênh).
         await c.query(
-          `INSERT INTO refunds (shop_id, order_id, amount_vnd, reason, restock, created_by)
-           VALUES (current_shop_id(), $1, $2, $3, false, $4)`, [orderId, refundNeeded, 'điều chỉnh đơn (sửa giảm)', ctx.user.id],
+          `INSERT INTO refunds (shop_id, order_id, amount_vnd, reason, restock, created_by, kind)
+           VALUES (current_shop_id(), $1, $2, $3, false, $4, 'edit_adjustment')`, [orderId, refundNeeded, 'điều chỉnh đơn (sửa giảm)', ctx.user.id],
         );
         await audit(c, 'order.refund_partial', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, amount_vnd: refundNeeded, refunded_total_vnd: refundsSum + refundNeeded, reason: 'sửa đơn giảm' } });
       }
@@ -909,8 +916,8 @@ async function createReturn(res, ctx, body, params) {
       if (o.status !== 'delivered') fail(409, 'chỉ nhận trả hàng cho đơn ĐÃ GIAO (khách đã nhận). Đơn chưa giao: huỷ/hoàn thay vì trả.');
 
       // Dòng đơn + giá snapshot. Gộp qty trả trùng biến thể.
-      const ol = (await c.query(`SELECT variant_id, unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [orderId])).rows;
-      const orderByVid = new Map(ol.map((l) => [l.variant_id, { unit: Number(l.unit_price_vnd), qty: l.qty }]));
+      const ol = (await c.query(`SELECT variant_id, unit_price_vnd, unit_cost_vnd, qty FROM order_lines WHERE order_id = $1`, [orderId])).rows;
+      const orderByVid = new Map(ol.map((l) => [l.variant_id, { unit: Number(l.unit_price_vnd), cost: l.unit_cost_vnd != null ? Number(l.unit_cost_vnd) : null, qty: l.qty }]));
       // Đã trả trước (cộng dồn qua các phiếu trả của đơn này).
       const prevRet = new Map();
       for (const rrow of (await c.query(
@@ -927,7 +934,7 @@ async function createReturn(res, ctx, body, params) {
         const remaining = line.qty - (prevRet.get(vid) ?? 0);
         if (qty > remaining) fail(422, `trả quá số đã mua: biến thể chỉ còn ${Math.max(0, remaining)} có thể trả`);
         refund += line.unit * qty;
-        retLines.push({ variant_id: vid, qty, unit: line.unit });
+        retLines.push({ variant_id: vid, qty, unit: line.unit, cost: line.cost });
       }
 
       // Trần hoàn = đã thu − đã hoàn (neo amount_paid như v2; lazy: cột 0 → total).
@@ -941,9 +948,11 @@ async function createReturn(res, ctx, body, params) {
          VALUES (current_shop_id(), $1, $2, $3, $4, $5) RETURNING id`, [orderId, reason, refund, restock, ctx.user.id],
       )).rows[0];
       for (const t of retLines) {
+        // unit_cost_vnd (0081): copy snapshot GIÁ VỐN từ dòng đơn → SQL đảo COGS đọc thẳng
+        // return_lines không join ngược. Dòng đơn NULL → NULL (COGS gốc chưa từng ghi).
         await c.query(
-          `INSERT INTO return_lines (shop_id, return_id, variant_id, qty, unit_price_vnd)
-           VALUES (current_shop_id(), $1, $2, $3, $4)`, [ret.id, t.variant_id, t.qty, t.unit],
+          `INSERT INTO return_lines (shop_id, return_id, variant_id, qty, unit_price_vnd, unit_cost_vnd)
+           VALUES (current_shop_id(), $1, $2, $3, $4, $5)`, [ret.id, t.variant_id, t.qty, t.unit, t.cost],
         );
       }
       // Nhập lại kho (nếu hàng còn bán được) — khoá theo THỨ TỰ variant_id (chống deadlock).
@@ -959,9 +968,10 @@ async function createReturn(res, ctx, body, params) {
         }
       }
       // Bút toán hoàn (0070) — tiền chủ shop tự chuyển lại. restock cờ ghi nhận ý định.
+      // kind='rma' (0081): phân loại nguồn phiếu — báo cáo trừ như 'refund' thường.
       await c.query(
-        `INSERT INTO refunds (shop_id, order_id, amount_vnd, reason, restock, created_by)
-         VALUES (current_shop_id(), $1, $2, $3, $4, $5)`, [orderId, refund, reason ? `Đổi-trả: ${reason}` : 'Đổi-trả hàng', restock, ctx.user.id],
+        `INSERT INTO refunds (shop_id, order_id, amount_vnd, reason, restock, created_by, kind)
+         VALUES (current_shop_id(), $1, $2, $3, $4, $5, 'rma')`, [orderId, refund, reason ? `Đổi-trả: ${reason}` : 'Đổi-trả hàng', restock, ctx.user.id],
       );
       await c.query(`UPDATE orders SET amount_paid_vnd = $2 WHERE id = $1`, [orderId, collected]); // neo đã-thu
 

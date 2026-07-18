@@ -619,9 +619,12 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       [num, paymentMethod, name, phoneCanon ?? phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount, couponCode, ipHash],
     )).rows[0];
     for (const ln of lines) {
+      // unit_cost_vnd (0081): snapshot GIÁ VỐN qua subquery — cost không bao giờ vào object
+      // JS của service công khai (không lọt log/response); chưa khai giá vốn → NULL (không 0).
       await c.query(
-        `INSERT INTO order_lines (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty)
-         VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6)`,
+        `INSERT INTO order_lines (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty, unit_cost_vnd)
+         VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6,
+                 (SELECT cost_vnd FROM variant_costs WHERE shop_id = current_shop_id() AND variant_id = $2))`,
         [order.id, ln.variant_id, ln.title, ln.sku, ln.unit, ln.qty],
       );
     }

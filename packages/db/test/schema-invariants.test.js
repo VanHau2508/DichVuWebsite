@@ -234,6 +234,47 @@ describe('Composite foreign key', () => {
   });
 });
 
+describe('Giá vốn (0081) — bí mật kinh doanh, không rò ra vai công khai', () => {
+  test('app_store KHÔNG có bất kỳ quyền nào trên variant_costs', async () => {
+    // Lý do variant_costs là BẢNG RIÊNG (không ALTER variants): app_store/app_checkout có
+    // SELECT table-level trên variants → cột mới tự phủ. Bảng riêng thì phải giữ ZERO grant.
+    const { rows } = await owner.query(`
+      SELECT has_table_privilege('app_store','variant_costs','SELECT') AS sel,
+             has_table_privilege('app_store','variant_costs','INSERT') AS ins,
+             has_table_privilege('app_store','variant_costs','UPDATE') AS upd,
+             has_table_privilege('app_store','variant_costs','DELETE') AS del
+    `);
+    assert.deepEqual(rows[0], { sel: false, ins: false, upd: false, del: false },
+      'storefront đọc được giá vốn = lộ bí mật kinh doanh của shop');
+  });
+
+  test('app_checkout CHỈ SELECT variant_costs (snapshot lúc đặt), không ghi', async () => {
+    const { rows } = await owner.query(`
+      SELECT has_table_privilege('app_checkout','variant_costs','SELECT') AS sel,
+             has_table_privilege('app_checkout','variant_costs','INSERT') AS ins,
+             has_table_privilege('app_checkout','variant_costs','UPDATE') AS upd,
+             has_table_privilege('app_checkout','variant_costs','DELETE') AS del
+    `);
+    assert.deepEqual(rows[0], { sel: true, ins: false, upd: false, del: false });
+  });
+
+  test('app_expiry KHÔNG đọc được order_lines.unit_cost_vnd (column-list 0022 không phủ cột mới)', async () => {
+    const { rows } = await owner.query(
+      `SELECT has_column_privilege('app_expiry','order_lines','unit_cost_vnd','SELECT') AS sel`,
+    );
+    assert.equal(rows[0].sel, false, 'worker không có việc gì với giá vốn');
+  });
+
+  test('app_rw sửa/xoá được variant_costs (giá vốn HIỆN HÀNH, không phải chứng từ)', async () => {
+    const { rows } = await owner.query(`
+      SELECT has_table_privilege('app_rw','variant_costs','UPDATE') AS upd,
+             has_table_privilege('app_rw','variant_costs','DELETE') AS del
+    `);
+    assert.equal(rows[0].upd, true);
+    assert.equal(rows[0].del, true);
+  });
+});
+
 describe('Kiểu dữ liệu tiền tệ', () => {
   test('mọi cột tiền là bigint, không phải float/numeric', async () => {
     const { rows } = await owner.query(`

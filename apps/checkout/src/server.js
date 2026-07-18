@@ -99,9 +99,16 @@ function fail(statusCode, error, extra = {}) { throw Object.assign(new Error(err
 const isInt = (x) => Number.isInteger(x);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-async function findCart(c, token) {
+async function findCart(c, token, { forUpdate = false } = {}) {
   if (!token) return null;
-  const r = await c.query(`SELECT id FROM carts WHERE token_hash = $1 AND status = 'active' AND expires_at > now()`, [hashToken(token)]);
+  // forUpdate: KHOÁ HÀNG giỏ khi TẠO ĐƠN (createOrderTx). Không có nó, N request đồng thời
+  // (khác Idempotency-Key, cùng cart cookie) đều đọc giỏ 'active' TRƯỚC khi cái nào commit
+  // → 1 giỏ đẻ N đơn + reserved phình N (kiểm toán tấn công Đợt 6). FOR UPDATE tuần tự hoá:
+  // cái sau chờ cái trước commit rồi RE-CHECK status='active' (READ COMMITTED) → thấy
+  // 'converted' → 0 dòng → fail. Các nơi CHỈ ĐỌC (getCart/summarize/render) không dùng khoá.
+  const r = await c.query(
+    `SELECT id FROM carts WHERE token_hash = $1 AND status = 'active' AND expires_at > now()${forUpdate ? ' FOR UPDATE' : ''}`,
+    [hashToken(token)]);
   return r.rows[0] ?? null;
 }
 
@@ -424,7 +431,7 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       fail(409, 'đơn đang được xử lý, thử lại');
     }
 
-    const cart = await findCart(c, token);
+    const cart = await findCart(c, token, { forUpdate: true });
     if (!cart) fail(400, 'giỏ hàng trống hoặc hết hạn');
     // Phòng thủ nhiều lớp: loại biến thể MỒ CÔI khỏi đơn (đã vào giỏ TRƯỚC khi shop thu hẹp
     // phân loại) — không bao giờ reserve/snapshot theo giá/tồn cũ. Giỏ rỗng ra → fail dưới.
@@ -529,7 +536,11 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
         [order.id, ln.variant_id, ln.title, ln.sku, ln.unit, ln.qty],
       );
     }
-    await c.query(`UPDATE carts SET status = 'converted', updated_at = now() WHERE id = $1`, [cart.id]);
+    // Guard status='active' + kiểm rowCount: lớp phòng thủ THỨ HAI sau FOR UPDATE. Nếu vì
+    // lý do nào giỏ đã bị chuyển đổi (đua lọt qua) → 0 dòng → fail, ROLLBACK cả reserve +
+    // idempotency (chưa commit) → KHÔNG đẻ đơn trùng.
+    const conv = await c.query(`UPDATE carts SET status = 'converted', updated_at = now() WHERE id = $1 AND status = 'active'`, [cart.id]);
+    if (conv.rowCount !== 1) fail(409, 'giỏ hàng vừa được đặt ở một yêu cầu khác');
 
     // Outbox: sự kiện email xác nhận đơn — GHI TRONG CÙNG transaction. Rollback →
     // không có dòng này → không email ma (ADR-006). Payload self-contained (worker

@@ -51,7 +51,7 @@ describe('vai trò database', () => {
     assert.deepEqual(rows.map((r) => r.relname), []);
   });
 
-  for (const table of ['audit_logs', 'inventory_ledger', 'refunds', 'returns', 'return_lines', 'cod_remittances']) {
+  for (const table of ['audit_logs', 'inventory_ledger', 'refunds', 'returns', 'return_lines', 'cod_remittances', 'shipment_lines']) {
     test(`app_rw không sửa/xoá được ${table} (append-only)`, async () => {
       const { rows } = await owner.query(`
         SELECT has_table_privilege('app_rw','${table}','UPDATE') AS upd,

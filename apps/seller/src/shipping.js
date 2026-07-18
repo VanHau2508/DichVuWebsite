@@ -132,21 +132,34 @@ async function createCarrierShipment(res, ctx, body, params) {
     if (!o) return { code: 404 };
     const cfg = (await c.query(`SELECT provider, token_enc, ghn_shop_id, pickup, enabled FROM shop_shipping_config WHERE shop_id = current_shop_id()`)).rows[0];
     if (!cfg?.enabled) return { code: 400, error: 'shop chưa kết nối hãng vận chuyển' };
-    if (o.status !== 'confirmed') return { code: 409, error: `không thể tạo vận đơn từ trạng thái ${o.status} (cần xác nhận đơn trước)` };
-    const live = (await c.query(`SELECT status, tracking_number FROM shipments WHERE order_id = $1 AND status IN ('created','in_transit') LIMIT 1`, [orderId])).rows[0];
-    if (live) {
-      return { code: 409, error: live.status === 'created' && live.tracking_number
-        ? `vận đơn ${live.tracking_number} ĐÃ tạo trên hãng nhưng chưa chốt được — kiểm tra trên portal hãng trước khi thử lại`
-        : 'đơn đã có vận đơn đang chạy' };
+    // SPLIT (0080): tạo vận đơn hãng cho đơn 'confirmed' HOẶC 'shipped'+còn hàng (gửi tiếp
+    // phần chưa gửi bằng hãng). Carrier v1 gửi TRỌN phần CÒN LẠI (không tách tuỳ ý qua hãng).
+    if (!['confirmed', 'shipped'].includes(o.status)) return { code: 409, error: `không thể tạo vận đơn từ trạng thái ${o.status} (cần xác nhận đơn trước)` };
+    // Claim 'created' đang KẸT (finalize_failed) → hướng dẫn đối soát vận đơn (không tạo mới đè).
+    const stuck = (await c.query(`SELECT tracking_number FROM shipments WHERE order_id = $1 AND status = 'created' AND provider_status = 'finalize_failed' LIMIT 1`, [orderId])).rows[0];
+    if (stuck) return { code: 409, error: `vận đơn ${stuck.tracking_number} ĐÃ tạo trên hãng nhưng chưa chốt được — kiểm tra portal hãng / đối soát vận đơn trước khi thử lại` };
+    // Dòng CÒN LẠI = qty − đã gửi − đang claim('created'). Guard luỹ kế DƯỚI orders FOR UPDATE
+    // (thay index 0046): claim đua thứ 2 thấy planned của claim 1 → remaining 0 → chặn.
+    const ol = (await c.query(
+      `SELECT ol.id, ol.variant_id, ol.qty, ol.unit_price_vnd, ol.title_snapshot, ol.shipped_qty,
+              coalesce((SELECT sum(sl.qty)::int FROM shipment_lines sl JOIN shipments s ON s.id = sl.shipment_id
+                         WHERE sl.order_line_id = ol.id AND s.status = 'created'), 0) AS planned
+         FROM order_lines ol WHERE ol.order_id = $1`, [orderId])).rows;
+    const remaining = ol.map((l) => ({ order_line_id: l.id, variant_id: l.variant_id, qty: l.qty - l.shipped_qty - l.planned, unit: Number(l.unit_price_vnd), title: l.title_snapshot }))
+      .filter((x) => x.qty > 0);
+    if (remaining.length === 0) return { code: 409, error: 'đơn đã gửi đủ — không còn hàng để tạo vận đơn' };
+    // COD giao qua hãng KHÔNG tách trong v1: phải là đơn CHƯA gửi gì (codAmount=total_vnd đúng).
+    const anyShipped = ol.some((l) => l.shipped_qty > 0 || l.planned > 0);
+    if (o.payment_method === 'cod' && o.payment_status === 'unpaid' && anyShipped) {
+      return { code: 409, error: 'đơn COD giao qua hãng phải gửi TRỌN một lần — đã gửi một phần rồi, không tạo vận đơn hãng thu hộ được (giao tay phần còn lại)' };
     }
-    const lines = (await c.query(`SELECT title_snapshot, qty, unit_price_vnd FROM order_lines WHERE order_id = $1`, [orderId])).rows;
     const sid = (await c.query(
       `INSERT INTO shipments (shop_id, order_id, carrier, status, provider) VALUES (current_shop_id(), $1, $2, 'created', $2) RETURNING id`,
       [orderId, cfg.provider])).rows[0].id;
-    return { code: 200, cfg, o, lines, sid };
-  }).catch((e) => {
-    if (e.code === '23505') return { code: 409, error: 'đơn đã có vận đơn đang chạy' }; // backstop index 0046
-    throw e;
+    for (const s of remaining) {
+      await c.query(`INSERT INTO shipment_lines (shop_id, shipment_id, order_line_id, variant_id, qty, unit_price_vnd) VALUES (current_shop_id(), $1, $2, $3, $4, $5)`, [sid, s.order_line_id, s.variant_id, s.qty, s.unit]);
+    }
+    return { code: 200, cfg, o, lines: remaining.map((s) => ({ title_snapshot: s.title, qty: s.qty, unit_price_vnd: s.unit })), sid };
   });
   if (claim.code !== 200) return send(res, claim.code, { error: claim.error ?? 'không tìm thấy đơn' });
   const { cfg, o, lines, sid } = claim;
@@ -184,7 +197,7 @@ async function createCarrierShipment(res, ctx, body, params) {
   try {
     fin = await withTenant(ctx.shopId, async (c) => {
       const cur = (await c.query(`SELECT id, status, order_number, customer_email, payment_status FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
-      if (cur.status !== 'confirmed') {
+      if (!['confirmed', 'shipped'].includes(cur.status)) {
         // Đơn đổi trạng thái trong lúc gọi hãng (hiếm): vận đơn ĐÃ tồn tại phía hãng.
         await c.query(`UPDATE shipments SET status = 'cancelled', tracking_number = $2, provider_status = 'orphan' WHERE id = $1`, [sid, created.tracking]);
         return { code: 409, error: `đơn đã đổi trạng thái (${cur.status}) trong lúc tạo — vận đơn ${created.tracking} ĐÃ tạo trên ${cfg.provider.toUpperCase()}, vui lòng huỷ trên trang hãng` };
@@ -231,9 +244,9 @@ async function reconcileShipment(res, ctx, body, params) {
       await audit(c, 'shipping.reconcile_cancel', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, tracking: sh.tracking_number } });
       return { code: 200, action };
     }
-    if (o.status !== 'confirmed') {
+    if (!['confirmed', 'shipped'].includes(o.status)) {
       await c.query(`UPDATE shipments SET status = 'cancelled', provider_status = 'orphan' WHERE id = $1`, [sh.id]);
-      return { code: 409, error: `đơn không còn ở trạng thái xác nhận (${o.status})` };
+      return { code: 409, error: `đơn không còn ở trạng thái giao được (${o.status})` };
     }
     await consumeAndShip(c, ctx, o, {
       tracking: sh.tracking_number, carrier: (sh.provider ?? '').toUpperCase(), shipmentId: sh.id,

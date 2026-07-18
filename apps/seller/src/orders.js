@@ -87,14 +87,14 @@ async function getOrder(res, ctx, _b, params) {
   const orderId = params[1];
   const data = await withTenant(ctx.shopId, async (c) => {
     const o = (await c.query(
-      `SELECT id, order_number, status, payment_status, payment_method, subtotal_vnd, shipping_vnd, total_vnd,
+      `SELECT id, order_number, status, payment_status, payment_method, fulfillment_status, subtotal_vnd, shipping_vnd, total_vnd,
               customer_name, customer_phone, customer_email, shipping_address, note, created_at, paid_at, shipped_at, delivered_at
          FROM orders WHERE id = $1`, [orderId],
     )).rows[0];
     if (!o) return null;
     // Ảnh dòng hàng: ưu tiên ảnh RIÊNG của biến thể, không có thì lấy ảnh CHÍNH của sản phẩm.
     o.lines = (await c.query(
-      `SELECT ol.variant_id, ol.title_snapshot, ol.sku_snapshot, ol.unit_price_vnd, ol.qty,
+      `SELECT ol.id AS order_line_id, ol.variant_id, ol.title_snapshot, ol.sku_snapshot, ol.unit_price_vnd, ol.qty, ol.shipped_qty,
               (SELECT m.public_key FROM media m
                  JOIN variants v ON v.product_id = m.product_id
                 WHERE v.id = ol.variant_id AND m.status = 'ready' AND m.deleted_at IS NULL
@@ -102,7 +102,12 @@ async function getOrder(res, ctx, _b, params) {
                 ORDER BY (m.variant_id IS NOT NULL) DESC, m.position, m.created_at LIMIT 1) AS image_key
          FROM order_lines ol WHERE ol.order_id = $1`, [o.id]
     )).rows.map(({ image_key, ...l }) => ({ ...l, image_url: image_key ? `${MEDIA_PUBLIC_BASE}/${image_key}` : null }));
-    o.shipments = (await c.query(`SELECT carrier, tracking_number, status, provider, carrier_fee_vnd, provider_status FROM shipments WHERE order_id = $1`, [o.id])).rows;
+    o.shipments = (await c.query(
+      `SELECT s.id, s.carrier, s.tracking_number, s.status, s.provider, s.carrier_fee_vnd, s.provider_status,
+              coalesce((SELECT json_agg(json_build_object('order_line_id', sl.order_line_id, 'sku', ol.sku_snapshot, 'qty', sl.qty))
+                          FROM shipment_lines sl JOIN order_lines ol ON ol.id = sl.order_line_id
+                         WHERE sl.shipment_id = s.id), '[]') AS lines
+         FROM shipments s WHERE s.order_id = $1 ORDER BY s.created_at`, [o.id])).rows;
     // Lịch sử hoàn tiền (bút toán 0070). LEFT JOIN users: người thao tác đã rời shop →
     // email NULL nhưng dòng VẪN hiện (mirror audit-log.js — không nuốt chứng từ).
     o.refunds = (await c.query(
@@ -200,14 +205,15 @@ async function bulkMarkPaid(res, ctx, body) {
   return send(res, 200, { ok: true, paid, skipped });
 }
 
-// Chuyển trạng thái đơn giản (confirm/deliver).
-function makeTransition(from, to, tsCol, action) {
+// Chuyển trạng thái đơn giản (confirm/deliver). guard(o) tuỳ chọn → chuỗi lỗi 409 hoặc null.
+function makeTransition(from, to, tsCol, action, guard = null) {
   return async (res, ctx, params) => {
     const orderId = params[1];
     const out = await withTenant(ctx.shopId, async (c) => {
-      const o = (await c.query(`SELECT id, status, order_number, customer_email FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
+      const o = (await c.query(`SELECT id, status, fulfillment_status, order_number, customer_email FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
       if (!o) return { code: 404 };
       if (!from.includes(o.status)) return { code: 409, cur: o.status };
+      if (guard) { const g = guard(o); if (g) return { code: 4092, msg: g }; }
       await c.query(`UPDATE orders SET status = $1${tsCol ? `, ${tsCol} = now()` : ''} WHERE id = $2`, [to, orderId]);
       o.status = to;
       await audit(c, action, { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, to } });
@@ -215,6 +221,7 @@ function makeTransition(from, to, tsCol, action) {
       return { code: 200 };
     });
     if (out.code === 404) return send(res, 404, { error: 'không tìm thấy đơn' });
+    if (out.code === 4092) return send(res, 409, { error: out.msg });
     if (out.code === 409) return send(res, 409, { error: `không thể chuyển từ ${out.cur}` });
     return send(res, 200, { ok: true, status: to });
   };
@@ -227,58 +234,105 @@ function makeTransition(from, to, tsCol, action) {
  * 'ship' (giữ bất biến tổng delta ledger == on_hand). shipmentId có sẵn (đường hãng —
  * dòng claim đã tạo trước) → UPDATE; không có → INSERT dòng mới.
  */
-export async function consumeAndShip(c, ctx, o, { tracking, carrier = null, shipmentId = null, provider = null, fee = null, providerStatus = null }) {
-  const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
+export async function consumeAndShip(c, ctx, o, { shipmentId, tracking, carrier = null, provider = null, fee = null, providerStatus = null }) {
+  // SPLIT SHIPMENT (0080): tiêu tồn CHỈ SUBSET dòng của vận đơn NÀY (đọc shipment_lines đã
+  // ghi lúc tạo vận đơn), KHÔNG phải toàn đơn. Mỗi dòng: on_hand-=qty, reserved-=qty, ĐÚNG 1
+  // ledger 'ship' (bất biến 0009); luỹ kế order_lines.shipped_qty (CHECK<=qty backstop).
+  const lines = (await c.query(
+    `SELECT order_line_id, variant_id, qty FROM shipment_lines WHERE shipment_id = $1 ORDER BY variant_id`, [shipmentId],
+  )).rows;
   for (const ln of lines) {
     const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [ln.variant_id])).rows[0];
-    if (!lvl) continue; // biến thể không theo dõi tồn (không nên xảy ra sau reserve)
-    const nextOnHand = Math.max(0, lvl.on_hand - ln.qty);
-    const nextReserved = Math.max(0, lvl.reserved - ln.qty);
-    await c.query(`UPDATE inventory_levels SET on_hand = $2, reserved = $3, updated_at = now() WHERE variant_id = $1`, [ln.variant_id, nextOnHand, nextReserved]);
-    const delta = nextOnHand - lvl.on_hand; // = -qty (âm); dùng thay đổi thực tế để khớp invariant
-    if (delta !== 0) {
-      await c.query(
-        `INSERT INTO inventory_ledger (shop_id, variant_id, delta, kind, reason, actor_id)
-         VALUES (current_shop_id(), $1, $2, 'ship', $3, $4)`,
-        [ln.variant_id, delta, `đơn #${o.order_number}`, ctx.user.id],
-      );
+    if (lvl) {
+      const nextOnHand = Math.max(0, lvl.on_hand - ln.qty);
+      const nextReserved = Math.max(0, lvl.reserved - ln.qty);
+      await c.query(`UPDATE inventory_levels SET on_hand = $2, reserved = $3, updated_at = now() WHERE variant_id = $1`, [ln.variant_id, nextOnHand, nextReserved]);
+      const delta = nextOnHand - lvl.on_hand; // = -qty (âm) thực tế → khớp bất biến ledger
+      if (delta !== 0) {
+        await c.query(
+          `INSERT INTO inventory_ledger (shop_id, variant_id, delta, kind, reason, actor_id)
+           VALUES (current_shop_id(), $1, $2, 'ship', $3, $4)`,
+          [ln.variant_id, delta, `đơn #${o.order_number}`, ctx.user.id],
+        );
+      }
     }
+    await c.query(`UPDATE order_lines SET shipped_qty = shipped_qty + $2 WHERE id = $1`, [ln.order_line_id, ln.qty]);
   }
-  if (shipmentId) {
-    await c.query(
-      `UPDATE shipments SET carrier = $2, tracking_number = $3, status = 'in_transit',
-              carrier_fee_vnd = $4, provider_status = $5, synced_at = now() WHERE id = $1`,
-      [shipmentId, carrier, tracking, fee, providerStatus],
-    );
-  } else {
-    await c.query(`INSERT INTO shipments (shop_id, order_id, carrier, tracking_number, status) VALUES (current_shop_id(), $1, $2, $3, 'in_transit')`, [o.id, carrier, tracking]);
-  }
-  await c.query(`UPDATE orders SET status = 'shipped', shipped_at = now() WHERE id = $1`, [o.id]);
-  o.status = 'shipped';
-  await audit(c, 'order.shipped', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId: o.id, tracking, ...(provider ? { provider } : {}) } });
+  // Chốt vận đơn: created → in_transit + tracking (đường hãng: dòng claim đã có sẵn).
+  await c.query(
+    `UPDATE shipments SET carrier = $2, tracking_number = $3, status = 'in_transit',
+            carrier_fee_vnd = $4, provider_status = $5, synced_at = now() WHERE id = $1`,
+    [shipmentId, carrier, tracking, fee, providerStatus],
+  );
+  // fulfillment_status: 'fulfilled' nếu MỌI dòng đã gửi đủ, else 'partial'. status='shipped'
+  // ngay kiện ĐẦU (giữ nguyên — tự chặn cancel/edit/refund-release vốn gate pending/confirmed).
+  const remain = (await c.query(`SELECT 1 FROM order_lines WHERE order_id = $1 AND shipped_qty < qty LIMIT 1`, [o.id])).rows[0];
+  const ff = remain ? 'partial' : 'fulfilled';
+  await c.query(`UPDATE orders SET status = 'shipped', shipped_at = coalesce(shipped_at, now()), fulfillment_status = $2 WHERE id = $1`, [o.id, ff]);
+  o.status = 'shipped'; o.fulfillment_status = ff;
+  await audit(c, 'order.shipped', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId: o.id, tracking, fulfillment: ff, ...(provider ? { provider } : {}) } });
   await statusEvent(c, o, { tracking_number: tracking });
 }
 
+// GIAO TAY — hỗ trợ GỬI MỘT PHẦN (0080). body.lines=[{order_line_id, qty}] = subset; RỖNG =
+// gửi TẤT CẢ phần còn lại (tương thích ngược). Khoá đơn FOR UPDATE; còn-lại = qty − đã_gửi −
+// đang_claim('created'); vượt → 422 (backstop DB CHECK shipped_qty<=qty). Cho phép status
+// 'confirmed' HOẶC 'shipped'+còn hàng (gửi tiếp kiện sau). MỌI lỗi THROW → ROLLBACK.
 async function shipOrder(res, ctx, body, params) {
   const orderId = params[1];
+  const fail = (statusCode, msg) => { throw Object.assign(new Error(msg), { statusCode }); };
   const tracking = String(body.tracking_number ?? '').trim();
   const carrier = String(body.carrier ?? '').trim();
   if (tracking.length < 1 || tracking.length > 64) return send(res, 400, { error: 'mã vận đơn không hợp lệ' });
-  const out = await withTenant(ctx.shopId, async (c) => {
-    const o = (await c.query(`SELECT id, status, order_number, customer_email FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
-    if (!o) return { code: 404 };
-    if (o.status !== 'confirmed') return { code: 409, cur: o.status }; // idempotent: ship lần 2 → 409
-    // Chặn giao TAY khi đang có vận đơn hãng chạy (kể cả claim 'created' đang chờ chốt)
-    // — cùng guard với đường hãng, index 0046 làm backstop DB.
-    const live = (await c.query(`SELECT 1 FROM shipments WHERE order_id = $1 AND status IN ('created','in_transit')`, [orderId])).rows[0];
-    if (live) return { code: 4091 };
-    await consumeAndShip(c, ctx, o, { tracking, carrier: carrier || null });
-    return { code: 200 };
-  }).catch((e) => (e.code === '23505' ? { code: 4091 } : Promise.reject(e)));
-  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy đơn' });
-  if (out.code === 4091) return send(res, 409, { error: 'đơn đã có vận đơn đang chạy' });
-  if (out.code === 409) return send(res, 409, { error: `không thể giao từ ${out.cur}` });
-  return send(res, 200, { ok: true, status: 'shipped', tracking_number: tracking });
+  const rawLines = Array.isArray(body?.lines) ? body.lines : null; // null = gửi tất cả còn lại
+  const want = new Map();
+  if (rawLines) {
+    for (const l of rawLines) {
+      if (!l || !UUID_RE.test(String(l.order_line_id ?? '')) || !Number.isInteger(Number(l.qty)) || Number(l.qty) < 1) continue;
+      const k = String(l.order_line_id);
+      want.set(k, (want.get(k) ?? 0) + Number(l.qty));
+    }
+    if (want.size === 0) return send(res, 400, { error: 'chọn ít nhất 1 dòng hàng để gửi' });
+  }
+  try {
+    const out = await withTenant(ctx.shopId, async (c) => {
+      const o = (await c.query(`SELECT id, status, order_number, customer_email FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
+      if (!o) fail(404, 'không tìm thấy đơn');
+      if (!['confirmed', 'shipped'].includes(o.status)) fail(409, `không thể giao từ ${o.status}`);
+      // Dòng đơn + đã gửi + đang claim (created) → còn lại có thể gửi.
+      const ol = (await c.query(
+        `SELECT ol.id, ol.variant_id, ol.qty, ol.unit_price_vnd, ol.shipped_qty,
+                coalesce((SELECT sum(sl.qty)::int FROM shipment_lines sl JOIN shipments s ON s.id = sl.shipment_id
+                           WHERE sl.order_line_id = ol.id AND s.status = 'created'), 0) AS planned
+           FROM order_lines ol WHERE ol.order_id = $1`, [orderId])).rows;
+      const byId = new Map(ol.map((l) => [l.id, l]));
+      let ship;
+      if (!rawLines) {
+        ship = ol.map((l) => ({ order_line_id: l.id, variant_id: l.variant_id, qty: l.qty - l.shipped_qty - l.planned, unit: Number(l.unit_price_vnd) })).filter((x) => x.qty > 0);
+      } else {
+        ship = [];
+        for (const [olid, qty] of want) {
+          const l = byId.get(olid);
+          if (!l) fail(422, 'có dòng không thuộc đơn này');
+          const remaining = l.qty - l.shipped_qty - l.planned;
+          if (qty > remaining) fail(422, `gửi quá số còn lại: dòng chỉ còn ${Math.max(0, remaining)} chưa gửi`);
+          ship.push({ order_line_id: olid, variant_id: l.variant_id, qty, unit: Number(l.unit_price_vnd) });
+        }
+      }
+      if (ship.length === 0) fail(409, 'đơn đã gửi đủ — không còn hàng để giao');
+      // Tạo vận đơn (created) + shipment_lines → consumeAndShip tiêu tồn subset + chốt.
+      const sh = (await c.query(`INSERT INTO shipments (shop_id, order_id, carrier, status) VALUES (current_shop_id(), $1, $2, 'created') RETURNING id`, [orderId, carrier || null])).rows[0];
+      for (const s of ship) {
+        await c.query(`INSERT INTO shipment_lines (shop_id, shipment_id, order_line_id, variant_id, qty, unit_price_vnd) VALUES (current_shop_id(), $1, $2, $3, $4, $5)`, [sh.id, s.order_line_id, s.variant_id, s.qty, s.unit]);
+      }
+      await consumeAndShip(c, ctx, o, { shipmentId: sh.id, tracking, carrier: carrier || null });
+      return { fulfillment: o.fulfillment_status };
+    });
+    return send(res, 200, { ok: true, status: 'shipped', fulfillment_status: out.fulfillment, tracking_number: tracking });
+  } catch (err) {
+    if (err.statusCode) return send(res, err.statusCode, { error: err.message });
+    throw err;
+  }
 }
 
 async function cancelOrder(res, ctx, _body, params) {
@@ -452,7 +506,10 @@ async function refundOrder(res, ctx, body, params) {
 }
 
 const confirmOrder = makeTransition(['pending'], 'confirmed', null, 'order.confirmed');
-const deliverOrder = makeTransition(['shipped'], 'delivered', 'delivered_at', 'order.delivered');
+// Giao xong: đòi fulfillment='fulfilled' (0080) — không cho chốt 'delivered' khi CÒN kiện
+// chưa gửi (đơn giao một phần). Đơn cũ (backfill) và giao đủ đều 'fulfilled'.
+const deliverOrder = makeTransition(['shipped'], 'delivered', 'delivered_at', 'order.delivered',
+  (o) => (o.fulfillment_status === 'fulfilled' ? null : 'còn kiện chưa gửi — hoàn tất giao các phần còn lại trước khi đánh dấu đã giao'));
 
 // ── TẠO ĐƠN THỦ CÔNG (nhân viên chốt đơn qua Facebook/Zalo rồi gõ vào hệ thống) ──
 // Mirror bất biến của checkout createOrderTx: giá 100% server-side từ variants.price_vnd
@@ -665,6 +722,12 @@ function parseEditBody(body) {
 // kiểm tồn+reserve / giảm nhả, thay order_lines, cập nhật header (KHÔNG đụng payment_status/
 // amount_paid — phần đó do nơi gọi tự xử theo v1/v2). `fail` THROW → ROLLBACK.
 async function reconcileEditLines(c, o, P, fail) {
+  // Chặn sửa khi đơn đã có VẬN ĐƠN (kể cả claim 'created' của hãng): sửa xoá+chèn lại
+  // order_lines sẽ vỡ FK shipment_lines→order_lines + reset shipped_qty (0080). Đơn đang
+  // giao dở phải xử qua đổi-trả/hoàn, không sửa dòng.
+  const shipped = (await c.query(
+    `SELECT 1 FROM shipment_lines sl JOIN shipments s ON s.id = sl.shipment_id WHERE s.order_id = $1 LIMIT 1`, [o.id])).rows[0];
+  if (shipped) fail(409, 'đơn đã có vận đơn — không sửa được dòng hàng (dùng đổi-trả/hoàn nếu cần)');
   const cur = (await c.query(`SELECT variant_id, unit_price_vnd, qty, title_snapshot, sku_snapshot FROM order_lines WHERE order_id = $1`, [o.id])).rows;
   const curByVid = new Map(cur.map((l) => [l.variant_id, l]));
   const desired = new Map();

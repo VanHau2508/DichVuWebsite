@@ -106,6 +106,14 @@ const offPct = (price, cmp) => Math.round((1 - Number(price) / Number(cmp)) * 10
 const compareHtml = (price, cmp) =>
   (cmp != null && Number(cmp) > Number(price)
     ? ` <s class="cmp">${money(cmp)}</s><span class="off">-${offPct(price, cmp)}%</span>` : '');
+// Flash sale (0082) ĐÈ compare_at: giá sale ĐẬM + gạch giá GỐC + badge -X% (off_pct từ
+// promo_effective — đúng cho giá đang hiện). Hết promo → compare_at trở lại (0067).
+// Tái dùng class .cmp/.off (theme-safe, không ép màu tuỳ biến của shop).
+const salePriceHtml = (base, sale, off) =>
+  `<strong>${money(sale)}</strong> <s class="cmp">${money(base)}</s><span class="off">-${esc(off)}%</span>`;
+// Giá hiển thị của một mục (thẻ/related): sale nếu có, không thì giá gốc + compare_at.
+const priceLine = (base, sale, off, cmp) =>
+  (sale != null ? salePriceHtml(base, sale, off) : `${money(base)}${compareHtml(base, cmp)}`);
 
 // Thẻ sản phẩm dùng chung (lưới trang chủ / danh mục / tìm kiếm). Escape mọi field người bán.
 function productCards(products) {
@@ -113,7 +121,7 @@ function productCards(products) {
     const out = Number(p.available) <= 0;
     return `<a class="card${out ? ' is-out' : ''}" href="/p/${esc(p.slug)}">
           <div class="thumb">${out ? '<span class="soldout-tag">Hết hàng</span>' : ''}${p.image ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy">` : `<span class="ph">${I_IMG}</span>`}</div>
-          <div class="body"><div class="name">${esc(p.title)}</div><div class="price">${money(p.price_vnd)}${compareHtml(p.price_vnd, p.compare_at_vnd)}</div><span class="cta">Xem chi tiết →</span></div>
+          <div class="body"><div class="name">${esc(p.title)}</div><div class="price">${priceLine(p.price_vnd, p.sale_price_vnd, p.sale_off_pct, p.compare_at_vnd)}</div><span class="cta">Xem chi tiết →</span></div>
         </a>`;
   }).join('');
 }
@@ -203,7 +211,7 @@ const SECTIONS = {
     const visual = feat
       ? `<a class="hero-media" href="/p/${esc(feat.slug)}">
           <img src="${esc(feat.image)}" alt="${esc(feat.title)}">
-          <span class="hero-card"><span class="hc-name">${esc(feat.title)}</span><span class="hc-price">${money(feat.price_vnd)}</span></span>
+          <span class="hero-card"><span class="hc-name">${esc(feat.title)}</span><span class="hc-price">${feat.sale_price_vnd != null ? `${money(feat.sale_price_vnd)} <span class="off">-${esc(feat.sale_off_pct)}%</span>` : money(feat.price_vnd)}</span></span>
         </a>`
       : `<div class="hero-media deco" aria-hidden="true">${I_SHIELD}</div>`;
     const ghost = (Array.isArray(ctx.categories) && ctx.categories.length)
@@ -614,7 +622,13 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
     selector = `<div class="opt"><div class="opt-name">Phân loại</div><div class="chips">${chips}</div></div>`;
   }
 
-  const price = selected ? selected.price_vnd : p.price_vnd;
+  // Flash sale (0082): giá HIỆU LỰC của biến thể đang chọn (microdata itemprop=price PHẢI là
+  // giá bán thực cho Google Merchant). base = giá gốc để gạch ngang khi có sale.
+  const base = selected ? selected.price_vnd : p.price_vnd;
+  const saleNow = selected ? selected.sale_price_vnd : null;
+  const price = saleNow != null ? saleNow : base;
+  // Khung giờ flash sale — text TĨNH (không countdown JS, hợp CSP). ends_at giờ VN.
+  const promoText = (saleNow != null && p.promo) ? `<div class="flash-sale" style="margin:8px 0;font-weight:600;color:#e11d48">⚡ Flash sale${p.promo.title ? ' · ' + esc(p.promo.title) : ''} — đến ${esc(new Intl.DateTimeFormat('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }).format(new Date(p.promo.ends_at)))}</div>` : '';
   const selAvail = selected ? av(selected) : 0;
   const totalAvail = variants.reduce((s, v) => s + av(v), 0);
   const soldOut = totalAvail <= 0;
@@ -686,9 +700,10 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
           ${ratingSummary}
           ${skuHtml}
           <div class="price" itemprop="offers" itemscope itemtype="https://schema.org/Offer">
-            <span itemprop="price" content="${esc(String(Number(price)))}">${money(price)}</span>${compareHtml(price, selected?.compare_at_vnd)}
+            <span itemprop="price" content="${esc(String(Number(price)))}">${money(price)}</span>${saleNow != null ? ` <s class="cmp">${money(base)}</s><span class="off">-${esc(selected.sale_off_pct)}%</span>` : compareHtml(price, selected?.compare_at_vnd)}
             <meta itemprop="priceCurrency" content="VND"><link itemprop="availability" href="${availability}">
           </div>
+          ${promoText}
           ${stockBadge}
           ${selector}
           ${actions}

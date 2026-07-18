@@ -266,6 +266,30 @@ async function main() {
   cspB.includes("default-src 'none'") && cspB.includes("img-src 'self' data:") && !cspB.includes('script-src')
     ? ok('CSP giữ nguyên — không origin mới, vẫn không script') : bad('CSP đổi', cspB);
 
+  // ── Flash sale (0082): giá sale + gạch giá gốc + badge + khung giờ, đè compare_at ──
+  sect('Flash sale hiển thị storefront');
+  const saleSlug = `sale-${uniq()}`;
+  const sp = await mkProduct(A.shopId, A.cookie, { title: 'SP Flash Sale', slug: saleSlug, price_vnd: 200000, status: 'active', variants: [{ sku: `FS-${uniq()}`, price_vnd: 200000 }] });
+  const svid = (await owner.query(`SELECT id FROM variants WHERE product_id=$1`, [sp.json.id])).rows[0].id;
+  await owner.query(`INSERT INTO inventory_levels (shop_id, variant_id, on_hand) VALUES ($1,$2,20) ON CONFLICT (shop_id,variant_id) DO UPDATE SET on_hand=20`, [A.shopId, svid]);
+  const { rows: [promo] } = await owner.query(
+    `INSERT INTO promotions (shop_id,title,kind,value,scope,starts_at,ends_at,active)
+     VALUES ($1,'Sale 25','percent',25,'all', now()-interval '1 hour', now()+interval '3 hour', true) RETURNING id`, [A.shopId]);
+  // Trang chủ (thẻ lưới): giá sale 150.000 + gạch 200.000 + badge -25%.
+  r = await sf(A.host, '/');
+  const money150 = /150[.,]000/, money200 = /200[.,]000/;
+  r.body.includes('SP Flash Sale') && money150.test(r.body) && money200.test(r.body) && r.body.includes('-25%')
+    ? ok('thẻ lưới: giá sale 150k + gạch 200k + badge -25%') : bad('thẻ sale sai', r.body.match(/SP Flash Sale[\s\S]{0,200}/)?.[0]);
+  // PDP: microdata itemprop=price = giá HIỆU LỰC (150000) + khung giờ flash sale.
+  r = await sf(A.host, `/p/${saleSlug}`);
+  r.body.includes('itemprop="price" content="150000"') ? ok('PDP microdata price = giá SALE 150000 (Google Merchant)') : bad('microdata không phải giá sale', r.body.match(/itemprop="price"[^>]*/)?.[0]);
+  r.body.includes('Flash sale') && /đến \d{2}:\d{2}/.test(r.body) ? ok('PDP khung giờ "Flash sale — đến HH:MM" (text tĩnh, no-JS)') : bad('thiếu text khung giờ');
+  // Tắt promo → giá về gốc (không worker/cron, đọc kế tiếp tự cập nhật).
+  await owner.query(`UPDATE promotions SET active=false WHERE id=$1`, [promo.id]);
+  r = await sf(A.host, `/p/${saleSlug}`);
+  r.body.includes('itemprop="price" content="200000"') && !r.body.includes('Flash sale')
+    ? ok('tắt promo → giá về gốc 200000, hết khung giờ (tự cập nhật)') : bad('promo tắt vẫn hiện sale', r.body.match(/itemprop="price"[^>]*/)?.[0]);
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

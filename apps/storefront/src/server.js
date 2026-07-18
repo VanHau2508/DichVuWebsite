@@ -385,16 +385,22 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
                     ORDER BY v.position LIMIT 1) AS compare_at_vnd`;
       const productGrid = async (whereJoin = '', args = [], offset = 0) => {
         const total = Number((await c.query(`SELECT count(*)::int n FROM products p ${whereJoin}`, args)).rows[0].n);
+        // Flash sale (0082): promo_effective trên p.price_vnd (giá thẻ = giá 'từ' rẻ nhất).
+        // pe = LATERAL nguồn giá DUY NHẤT → thẻ hiện giá sale + gạch giá gốc, KHÔNG drift.
         const rows = (await c.query(
           `SELECT p.id, p.slug, p.title, p.price_vnd,
+                  pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct,
                   (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
                   ${cardCompareSql},
                   (SELECT coalesce(sum(il.on_hand - il.reserved), 0)
                      FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
                     WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS available
-             FROM products p ${whereJoin} ORDER BY ${GRID_SORTS[sortKey]} LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
+             FROM products p
+             LEFT JOIN LATERAL promo_effective(p.id, p.price_vnd, now()) pe ON true
+             ${whereJoin} ORDER BY ${GRID_SORTS[sortKey]} LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
           args,
-        )).rows.map((p) => ({ ...p, image: imgUrl(p.image_key), available: Number(p.available) }));
+        )).rows.map((p) => ({ ...p, image: imgUrl(p.image_key), available: Number(p.available),
+          sale_price_vnd: p.sale_price_vnd != null ? Number(p.sale_price_vnd) : null, sale_off_pct: p.sale_off_pct != null ? Number(p.sale_off_pct) : null }));
         return { products: rows, total };
       };
       // Trần CỨNG số trang (100): OFFSET lớn = quét sâu tốn kém; kẻ tấn công không được
@@ -412,11 +418,16 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         // available = on_hand - reserved (KHỚP checkout: không có dòng inventory = 0 = hết hàng).
         // Lọc biến thể MỒ CÔI ngay tại query → selected/totalAvail/selector (theme.js)
         // đều kế thừa danh sách đã lọc, không cần sửa theme.
+        // Flash sale (0082): promo_effective per biến thể (base = v.price_vnd RIÊNG → SP đa biến
+        // thể ra giá sale đúng từng biến thể). ?variant= đổi giá sale theo biến thể được chọn.
         const variants = (await c.query(
-          `SELECT v.id, v.title, v.sku, v.price_vnd, v.compare_at_vnd, coalesce(il.on_hand - il.reserved, 0) AS available
+          `SELECT v.id, v.title, v.sku, v.price_vnd, v.compare_at_vnd, coalesce(il.on_hand - il.reserved, 0) AS available,
+                  pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct, pe.promotion_id
              FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
+             LEFT JOIN LATERAL promo_effective(v.product_id, v.price_vnd, now()) pe ON true
             WHERE v.product_id = $1 AND ${VARIANT_NOT_ORPHAN_SQL}
-            ORDER BY v.position`, [p.id])).rows;
+            ORDER BY v.position`, [p.id])).rows.map((v) => ({ ...v,
+          sale_price_vnd: v.sale_price_vnd != null ? Number(v.sale_price_vnd) : null, sale_off_pct: v.sale_off_pct != null ? Number(v.sale_off_pct) : null }));
         // Trục biến thể (Màu/Size...) — RLS store_* chỉ trả option của SP đang bán.
         p.options = (await c.query(
           `SELECT o.id, o.name, o.position,
@@ -430,6 +441,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         const vmap = new Map();
         for (const r of vov) { if (!vmap.has(r.variant_id)) vmap.set(r.variant_id, {}); vmap.get(r.variant_id)[r.option_id] = r.option_value_id; }
         p.variants = variants.map((v) => ({ ...v, values: vmap.get(v.id) ?? {} }));
+        // Khung giờ flash sale: title + ends_at của promo áp cho biến thể ĐẦU có sale → theme.js
+        // hiện text tĩnh "Flash sale — đến HH:MM dd/mm" (KHÔNG countdown JS, hợp CSP).
+        const salePromoId = p.variants.find((v) => v.promotion_id)?.promotion_id ?? null;
+        p.promo = salePromoId
+          ? ((await c.query(`SELECT title, ends_at FROM promotions WHERE id = $1 AND active`, [salePromoId])).rows[0] ?? null)
+          : null;
         // Ảnh: kèm variant_id → storefront đổi ảnh theo biến thể (NULL = ảnh chung sản phẩm).
         p.media = (await c.query(`SELECT public_key, variant_id FROM media WHERE product_id = $1 ORDER BY position, created_at`, [p.id]))
           .rows.map((m) => ({ url: imgUrl(m.public_key), variant_id: m.variant_id }));
@@ -439,13 +456,15 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
             WHERE pc.product_id = $1 ORDER BY c.position LIMIT 1`, [p.id])).rows[0] ?? null;
         // Sản phẩm liên quan: cùng danh mục, đang bán, khác chính nó (RLS store_products lọc active).
         p.related = (await c.query(
-          `SELECT DISTINCT p2.id, p2.slug, p2.title, p2.price_vnd,
+          `SELECT DISTINCT p2.id, p2.slug, p2.title, p2.price_vnd, pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct,
                   (SELECT m.public_key FROM media m WHERE m.product_id = p2.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
                   (SELECT coalesce(sum(il.on_hand - il.reserved), 0) FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
                     WHERE v.product_id = p2.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS available
              FROM products p2 JOIN product_categories pc2 ON pc2.product_id = p2.id
+             LEFT JOIN LATERAL promo_effective(p2.id, p2.price_vnd, now()) pe ON true
             WHERE pc2.category_id IN (SELECT category_id FROM product_categories WHERE product_id = $1) AND p2.id <> $1
-            LIMIT 8`, [p.id])).rows.map((r) => ({ ...r, image: imgUrl(r.image_key), available: Number(r.available) }));
+            LIMIT 8`, [p.id])).rows.map((r) => ({ ...r, image: imgUrl(r.image_key), available: Number(r.available),
+          sale_price_vnd: r.sale_price_vnd != null ? Number(r.sale_price_vnd) : null, sale_off_pct: r.sale_off_pct != null ? Number(r.sale_off_pct) : null }));
         // Đánh giá: RLS store_reviews chỉ trả APPROVED của SP đang hiện.
         p.reviewStats = (await c.query(
           `SELECT count(*)::int AS n, coalesce(round(avg(rating)::numeric, 1), 0) AS avg FROM product_reviews WHERE product_id = $1`, [p.id])).rows[0];

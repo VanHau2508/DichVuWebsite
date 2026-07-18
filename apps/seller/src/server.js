@@ -33,6 +33,7 @@ import { BLOG_ROUTES } from './blog.js';
 import { EXPORT_ROUTES } from './export.js';
 import { DOMAIN_ROUTES } from './domains.js';
 import { COUPON_ROUTES } from './coupons.js';
+import { PROMOTION_ROUTES } from './promotions.js';
 import { SHIPPING_ROUTES } from './shipping.js';
 import { REVIEW_ROUTES } from './reviews.js';
 import { CUSTOMER_ROUTES } from './customers.js';
@@ -301,6 +302,7 @@ const ROUTES = [
   ...EXPORT_ROUTES,
   ...DOMAIN_ROUTES,
   ...COUPON_ROUTES,
+  ...PROMOTION_ROUTES,
   ...SHIPPING_ROUTES,
   ...REVIEW_ROUTES,
   ...CUSTOMER_ROUTES,

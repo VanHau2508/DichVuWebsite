@@ -624,123 +624,179 @@ async function createManualOrder(res, ctx, body) {
 // nhả; (3) MỌI lỗi trong tx THROW → ROLLBACK (oversell có thể xảy ra giữa vòng lặp sau
 // khi đã reserve biến thể trước — return {code} sẽ COMMIT reserve dở dang). Phí ship GIỮ
 // NGUYÊN trừ khi ghi đè (không tự tính lại — tránh đổi phí bất ngờ khi trộn region/flat).
-async function editOrder(res, ctx, body, params) {
-  const orderId = params[1];
-  const fail = (statusCode, msg) => { throw Object.assign(new Error(msg), { statusCode }); };
-
+// Parse + validate body sửa đơn (dùng chung v1 unpaid + v2 paid). Trả {ok, ...fields}
+// hoặc {error} (nơi gọi trả 400). KHÔNG chạm DB.
+function parseEditBody(body) {
   const rawLines = Array.isArray(body?.lines) ? body.lines : [];
   const lines0 = rawLines.filter((l) => l && UUID_RE.test(String(l.variant_id ?? '')) && Number.isInteger(Number(l.qty)) && Number(l.qty) >= 1 && Number(l.qty) <= 1000)
     .map((l) => ({ variant_id: String(l.variant_id), qty: Number(l.qty) }));
-  if (lines0.length === 0 || lines0.length > 50) return send(res, 400, { error: 'đơn cần 1-50 dòng hàng hợp lệ' });
+  if (lines0.length === 0 || lines0.length > 50) return { error: 'đơn cần 1-50 dòng hàng hợp lệ' };
   const name = String(body?.customer?.name ?? '').trim();
   const phone = canonPhone(String(body?.customer?.phone ?? '').trim());
-  if (!name || name.length > 120) return send(res, 400, { error: 'thiếu tên khách (≤120 ký tự)' });
-  if (!phone) return send(res, 400, { error: 'SĐT không hợp lệ (tối thiểu 8 số)' });
+  if (!name || name.length > 120) return { error: 'thiếu tên khách (≤120 ký tự)' };
+  if (!phone) return { error: 'SĐT không hợp lệ (tối thiểu 8 số)' };
   const email = String(body?.customer?.email ?? '').trim().toLowerCase() || null;
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return send(res, 400, { error: 'email không hợp lệ' });
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: 'email không hợp lệ' };
   const addressLine = String(body?.customer?.address_line ?? '').trim().slice(0, 300) || null;
   const province = String(body?.customer?.province ?? '').trim().slice(0, 60) || null;
-  if (province && !isProvince(province)) return send(res, 400, { error: 'tỉnh/thành không hợp lệ (chọn theo danh sách 34 tỉnh thành)' });
+  if (province && !isProvince(province)) return { error: 'tỉnh/thành không hợp lệ (chọn theo danh sách 34 tỉnh thành)' };
   const hasNote = Object.prototype.hasOwnProperty.call(body ?? {}, 'note');
   const noteVal = hasNote ? (String(body.note ?? '').trim().slice(0, 500) || null) : undefined;
   const shipOverride = body?.ship_fee_vnd != null && body.ship_fee_vnd !== '' ? Number(body.ship_fee_vnd) : null;
-  if (shipOverride != null && !(Number.isInteger(shipOverride) && shipOverride >= 0 && shipOverride <= 10_000_000)) {
-    return send(res, 400, { error: 'phí ship ghi đè không hợp lệ' });
-  }
+  if (shipOverride != null && !(Number.isInteger(shipOverride) && shipOverride >= 0 && shipOverride <= 10_000_000)) return { error: 'phí ship ghi đè không hợp lệ' };
+  return { ok: true, lines0, name, phone, email, addressLine, province, hasNote, noteVal, shipOverride };
+}
 
+// Đối chiếu dòng hàng + tồn kho + tính tiền — LÕI CHUNG v1/v2. Đơn `o` ĐÃ khoá FOR UPDATE
+// và ĐÃ qua guard trạng thái ở nơi gọi. Khoá biến thể theo THỨ TỰ (chống deadlock), tăng
+// kiểm tồn+reserve / giảm nhả, thay order_lines, cập nhật header (KHÔNG đụng payment_status/
+// amount_paid — phần đó do nơi gọi tự xử theo v1/v2). `fail` THROW → ROLLBACK.
+async function reconcileEditLines(c, o, P, fail) {
+  const cur = (await c.query(`SELECT variant_id, unit_price_vnd, qty, title_snapshot, sku_snapshot FROM order_lines WHERE order_id = $1`, [o.id])).rows;
+  const curByVid = new Map(cur.map((l) => [l.variant_id, l]));
+  const desired = new Map();
+  for (const l of P.lines0) desired.set(l.variant_id, (desired.get(l.variant_id) ?? 0) + l.qty);
+  const allVids = [...new Set([...curByVid.keys(), ...desired.keys()])].sort((a, b) => a.localeCompare(b));
+  const targetLines = [];
+  for (const vid of allVids) {
+    const oldQty = curByVid.get(vid)?.qty ?? 0;
+    const newQty = desired.get(vid) ?? 0;
+    const delta = newQty - oldQty;
+    const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [vid])).rows[0];
+    if (newQty > 0) {
+      if (curByVid.has(vid)) {
+        const ol = curByVid.get(vid);
+        targetLines.push({ variant_id: vid, unit: Number(ol.unit_price_vnd), qty: newQty, title: ol.title_snapshot, sku: ol.sku_snapshot });
+      } else {
+        const v = (await c.query(
+          `SELECT v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title
+             FROM variants v JOIN products p ON p.id = v.product_id AND p.status = 'active' AND p.deleted_at IS NULL
+            WHERE v.id = $1 AND ${VARIANT_NOT_ORPHAN_SQL}`, [vid],
+        )).rows[0];
+        if (!v) fail(422, 'sản phẩm mới thêm không tồn tại hoặc ngừng bán');
+        targetLines.push({ variant_id: vid, unit: Number(v.price_vnd), qty: newQty, title: v.product_title + (v.variant_title ? ` - ${v.variant_title}` : ''), sku: v.sku });
+      }
+    }
+    if (delta > 0) {
+      const available = lvl ? lvl.on_hand - lvl.reserved : 0;
+      if (delta > available) fail(422, `hết hàng: cần thêm ${delta}, còn ${Math.max(0, available)}`);
+      await c.query(`UPDATE inventory_levels SET reserved = reserved + $2, updated_at = now() WHERE variant_id = $1`, [vid, delta]);
+    } else if (delta < 0) {
+      await c.query(`UPDATE inventory_levels SET reserved = GREATEST(0, reserved + $2), updated_at = now() WHERE variant_id = $1`, [vid, delta]);
+    }
+  }
+  let subtotal = 0;
+  for (const t of targetLines) subtotal += t.unit * t.qty;
+  const discount = Number(o.discount_vnd);
+  const shipping = P.shipOverride != null ? P.shipOverride : Number(o.shipping_vnd);
+  const total = subtotal + shipping - discount;
+  if (total < 0) fail(422, 'tổng đơn âm (giảm giá vượt tiền hàng + ship) — điều chỉnh lại');
+
+  await c.query(`DELETE FROM order_lines WHERE order_id = $1`, [o.id]);
+  for (const t of targetLines) {
+    await c.query(
+      `INSERT INTO order_lines (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty)
+       VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6)`, [o.id, t.variant_id, t.title, t.sku, t.unit, t.qty],
+    );
+  }
+  const note = P.hasNote ? P.noteVal : o.note;
+  const address = (P.addressLine || P.province) ? { ...(P.addressLine ? { line: P.addressLine } : {}), ...(P.province ? { province: P.province } : {}) } : null;
+  // Header CHUNG (khách/địa chỉ/tiền) — payment_status/amount_paid_vnd để nơi gọi tự set.
+  await c.query(
+    `UPDATE orders SET customer_name = $2, customer_phone = $3, customer_email = $4, shipping_address = $5,
+            subtotal_vnd = $6, shipping_vnd = $7, total_vnd = $8, note = $9 WHERE id = $1`,
+    [o.id, P.name, P.phone, P.email, address, subtotal, shipping, total, note],
+  );
+  // Audit diff from→to.
+  const changed = {};
+  const setIf = (k, from, to) => { if (String(from ?? '') !== String(to ?? '')) changed[k] = { from: from ?? null, to: to ?? null }; };
+  setIf('subtotal_vnd', Number(o.subtotal_vnd), subtotal);
+  setIf('shipping_vnd', Number(o.shipping_vnd), shipping);
+  setIf('total_vnd', Number(o.total_vnd), total);
+  setIf('customer_name', o.customer_name, P.name);
+  setIf('customer_phone', o.customer_phone, P.phone);
+  const lineChg = [];
+  for (const vid of allVids) {
+    const from = curByVid.get(vid)?.qty ?? 0, to = desired.get(vid) ?? 0;
+    if (from !== to) lineChg.push({ sku: curByVid.get(vid)?.sku_snapshot ?? targetLines.find((t) => t.variant_id === vid)?.sku ?? '', from, to });
+  }
+  return { subtotal, shipping, total, changed, lineChg };
+}
+
+// v1: sửa đơn CHƯA THANH TOÁN (pending/confirmed + unpaid). perm orders.write, không step-up.
+async function editOrder(res, ctx, body, params) {
+  const orderId = params[1];
+  const fail = (statusCode, msg) => { throw Object.assign(new Error(msg), { statusCode }); };
+  const P = parseEditBody(body);
+  if (P.error) return send(res, 400, { error: P.error });
   try {
     const out = await withTenant(ctx.shopId, async (c) => {
       const o = (await c.query(
-        `SELECT id, order_number, status, payment_status, payment_method, subtotal_vnd, shipping_vnd, discount_vnd, total_vnd,
-                customer_name, customer_phone, customer_email, shipping_address, note
-           FROM orders WHERE id = $1 FOR UPDATE`, [orderId],
+        `SELECT id, order_number, status, payment_status, subtotal_vnd, shipping_vnd, discount_vnd, total_vnd,
+                customer_name, customer_phone, note FROM orders WHERE id = $1 FOR UPDATE`, [orderId],
       )).rows[0];
       if (!o) fail(404, 'không tìm thấy đơn');
       if (!['pending', 'confirmed'].includes(o.status)) fail(409, 'chỉ sửa được đơn chưa gửi hãng (pending/confirmed)');
-      if (o.payment_status !== 'unpaid') fail(409, 'chỉ sửa được đơn CHƯA thanh toán — đơn đã trả cần hoàn/thu bù (chưa hỗ trợ)');
-
-      const cur = (await c.query(`SELECT variant_id, unit_price_vnd, qty, title_snapshot, sku_snapshot FROM order_lines WHERE order_id = $1`, [orderId])).rows;
-      const curByVid = new Map(cur.map((l) => [l.variant_id, l]));
-
-      // Gộp dòng trùng biến thể (form chọn 2 slot cùng SP) → 1 dòng cộng dồn qty.
-      const desired = new Map();
-      for (const l of lines0) desired.set(l.variant_id, (desired.get(l.variant_id) ?? 0) + l.qty);
-
-      // Union biến thể cũ+mới, SORT → khoá FOR UPDATE thứ tự cố định (chống deadlock).
-      const allVids = [...new Set([...curByVid.keys(), ...desired.keys()])].sort((a, b) => a.localeCompare(b));
-      const targetLines = [];
-      for (const vid of allVids) {
-        const oldQty = curByVid.get(vid)?.qty ?? 0;
-        const newQty = desired.get(vid) ?? 0;
-        const delta = newQty - oldQty;
-        // Khoá hàng tồn của biến thể (cả tăng lẫn giảm) trước khi đổi.
-        const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [vid])).rows[0];
-        if (newQty > 0) {
-          if (curByVid.has(vid)) {
-            const ol = curByVid.get(vid);
-            targetLines.push({ variant_id: vid, unit: Number(ol.unit_price_vnd), qty: newQty, title: ol.title_snapshot, sku: ol.sku_snapshot });
-          } else {
-            // Dòng MỚI: snapshot giá HIỆN TẠI, chỉ SP active + biến thể không mồ côi.
-            const v = (await c.query(
-              `SELECT v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title
-                 FROM variants v JOIN products p ON p.id = v.product_id AND p.status = 'active' AND p.deleted_at IS NULL
-                WHERE v.id = $1 AND ${VARIANT_NOT_ORPHAN_SQL}`, [vid],
-            )).rows[0];
-            if (!v) fail(422, 'sản phẩm mới thêm không tồn tại hoặc ngừng bán');
-            targetLines.push({ variant_id: vid, unit: Number(v.price_vnd), qty: newQty, title: v.product_title + (v.variant_title ? ` - ${v.variant_title}` : ''), sku: v.sku });
-          }
-        }
-        if (delta > 0) {
-          const available = lvl ? lvl.on_hand - lvl.reserved : 0;
-          if (delta > available) fail(422, `hết hàng: cần thêm ${delta}, còn ${Math.max(0, available)}`);
-          await c.query(`UPDATE inventory_levels SET reserved = reserved + $2, updated_at = now() WHERE variant_id = $1`, [vid, delta]);
-        } else if (delta < 0) {
-          await c.query(`UPDATE inventory_levels SET reserved = GREATEST(0, reserved + $2), updated_at = now() WHERE variant_id = $1`, [vid, delta]);
-        }
-      }
-
-      let subtotal = 0;
-      for (const t of targetLines) subtotal += t.unit * t.qty;
-      const discount = Number(o.discount_vnd);
-      const shipping = shipOverride != null ? shipOverride : Number(o.shipping_vnd);
-      const total = subtotal + shipping - discount;
-      if (total < 0) fail(422, 'tổng đơn âm (giảm giá vượt tiền hàng + ship) — điều chỉnh lại');
-
-      // Thay dòng: xoá hết rồi chèn lại theo target (snapshot đã giữ trong targetLines).
-      await c.query(`DELETE FROM order_lines WHERE order_id = $1`, [orderId]);
-      for (const t of targetLines) {
-        await c.query(
-          `INSERT INTO order_lines (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty)
-           VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6)`, [orderId, t.variant_id, t.title, t.sku, t.unit, t.qty],
-        );
-      }
-      const note = hasNote ? noteVal : o.note;
-      const address = (addressLine || province) ? { ...(addressLine ? { line: addressLine } : {}), ...(province ? { province } : {}) } : null;
-      await c.query(
-        `UPDATE orders SET customer_name = $2, customer_phone = $3, customer_email = $4, shipping_address = $5,
-                subtotal_vnd = $6, shipping_vnd = $7, total_vnd = $8, note = $9 WHERE id = $1`,
-        [orderId, name, phone, email, address, subtotal, shipping, total, note],
-      );
-
-      // Audit diff from→to (mirror 5.6): header thay đổi + tóm tắt dòng đổi qty (theo sku).
-      const changed = {};
-      const setIf = (k, from, to) => { if (String(from ?? '') !== String(to ?? '')) changed[k] = { from: from ?? null, to: to ?? null }; };
-      setIf('subtotal_vnd', Number(o.subtotal_vnd), subtotal);
-      setIf('shipping_vnd', Number(o.shipping_vnd), shipping);
-      setIf('total_vnd', Number(o.total_vnd), total);
-      setIf('customer_name', o.customer_name, name);
-      setIf('customer_phone', o.customer_phone, phone);
-      const lineChg = [];
-      for (const vid of allVids) {
-        const from = curByVid.get(vid)?.qty ?? 0, to = desired.get(vid) ?? 0;
-        if (from !== to) lineChg.push({ sku: curByVid.get(vid)?.sku_snapshot ?? targetLines.find((t) => t.variant_id === vid)?.sku ?? '', from, to });
-      }
-      const meta = { orderId, order_number: Number(o.order_number), ...(Object.keys(changed).length ? { changed } : {}), ...(lineChg.length ? { lines: lineChg.slice(0, 40) } : {}) };
+      if (o.payment_status !== 'unpaid') fail(409, 'đơn đã thanh toán — dùng "Sửa đơn đã trả" (hoàn/thu bù, cần xác thực lại)');
+      const r = await reconcileEditLines(c, o, P, fail);
+      const meta = { orderId, order_number: Number(o.order_number), ...(Object.keys(r.changed).length ? { changed: r.changed } : {}), ...(r.lineChg.length ? { lines: r.lineChg.slice(0, 40) } : {}) };
       await audit(c, 'order.edited', { actorId: ctx.user.id, ip: ctx.ip, metadata: meta });
-
-      return { subtotal, shipping, total, order_number: Number(o.order_number) };
+      return { subtotal: r.subtotal, shipping: r.shipping, total: r.total, order_number: Number(o.order_number) };
     });
     return send(res, 200, { ok: true, order_number: out.order_number, subtotal_vnd: out.subtotal, shipping_vnd: out.shipping, total_vnd: out.total });
+  } catch (err) {
+    if (err.statusCode) return send(res, err.statusCode, { error: err.message });
+    throw err;
+  }
+}
+
+// v2: sửa đơn ĐÃ THANH TOÁN (pending/confirmed + paid). Vì sinh TIỀN-RA → route mang bar
+// cao NHƯ refund (perm 'refund' + step-up). Chỉ hỗ trợ GIẢM/GIỮ tổng: chênh dư được HOÀN
+// (bút toán refunds 0070, tiền chủ shop tự chuyển). TĂNG tổng (thu thêm) chưa hỗ trợ (409).
+//
+// TIỀN ĐÃ THU = amount_paid_vnd (khoá lúc sửa lần đầu = total lúc đó; lazy — legacy dùng
+// total_vnd nếu cột =0). net giữ = đã thu − đã hoàn; refund = net − tổng mới.
+async function editPaidOrder(res, ctx, body, params) {
+  const orderId = params[1];
+  const fail = (statusCode, msg) => { throw Object.assign(new Error(msg), { statusCode }); };
+  const P = parseEditBody(body);
+  if (P.error) return send(res, 400, { error: P.error });
+  try {
+    const out = await withTenant(ctx.shopId, async (c) => {
+      const o = (await c.query(
+        `SELECT id, order_number, status, payment_status, subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, amount_paid_vnd,
+                customer_name, customer_phone, customer_email, note FROM orders WHERE id = $1 FOR UPDATE`, [orderId],
+      )).rows[0];
+      if (!o) fail(404, 'không tìm thấy đơn');
+      if (!['pending', 'confirmed'].includes(o.status)) fail(409, 'chỉ sửa được đơn chưa gửi hãng (pending/confirmed)');
+      if (o.payment_status !== 'paid') fail(409, 'đơn chưa thanh toán — dùng "Sửa đơn" thường');
+
+      // Tiền khách đã thực trả (khoá lần đầu; lazy: cột 0 = chưa khoá → dùng total hiện tại
+      // vì đơn chưa từng sửa nên total == số đã thu).
+      const collected = Number(o.amount_paid_vnd) > 0 ? Number(o.amount_paid_vnd) : Number(o.total_vnd);
+      const refundsSum = Number((await c.query(`SELECT coalesce(sum(amount_vnd),0)::bigint AS s FROM refunds WHERE order_id = $1`, [orderId])).rows[0].s);
+
+      const r = await reconcileEditLines(c, o, P, fail);
+      const netHeld = collected - refundsSum;         // tiền chủ shop đang giữ của đơn này
+      const refundNeeded = netHeld - r.total;         // >0: hoàn bớt; <0: khách còn thiếu
+      if (refundNeeded < 0) fail(409, `tăng tổng trên đơn ĐÃ TRẢ chưa hỗ trợ (khách còn thiếu ${-refundNeeded}đ) — tạo đơn mới cho phần thêm, hoặc giảm bớt`);
+
+      // Khoá amount_paid_vnd = số đã thu (để lần sửa sau tính đúng); total đã set = tổng mới.
+      await c.query(`UPDATE orders SET amount_paid_vnd = $2 WHERE id = $1`, [orderId, collected]);
+
+      if (refundNeeded > 0) {
+        // Bút toán hoàn (append-only 0070) — tiền chủ shop tự chuyển lại khách (nền tảng không giữ tiền).
+        await c.query(
+          `INSERT INTO refunds (shop_id, order_id, amount_vnd, reason, restock, created_by)
+           VALUES (current_shop_id(), $1, $2, $3, false, $4)`, [orderId, refundNeeded, 'điều chỉnh đơn (sửa giảm)', ctx.user.id],
+        );
+        await audit(c, 'order.refund_partial', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, amount_vnd: refundNeeded, refunded_total_vnd: refundsSum + refundNeeded, reason: 'sửa đơn giảm' } });
+      }
+      const meta = { orderId, order_number: Number(o.order_number), paid_edit: true, ...(refundNeeded > 0 ? { refund_vnd: refundNeeded } : {}), ...(Object.keys(r.changed).length ? { changed: r.changed } : {}), ...(r.lineChg.length ? { lines: r.lineChg.slice(0, 40) } : {}) };
+      await audit(c, 'order.edited', { actorId: ctx.user.id, ip: ctx.ip, metadata: meta });
+      return { subtotal: r.subtotal, shipping: r.shipping, total: r.total, order_number: Number(o.order_number), refund_vnd: refundNeeded };
+    });
+    return send(res, 200, { ok: true, order_number: out.order_number, subtotal_vnd: out.subtotal, shipping_vnd: out.shipping, total_vnd: out.total, refund_vnd: out.refund_vnd });
   } catch (err) {
     if (err.statusCode) return send(res, err.statusCode, { error: err.message });
     throw err;
@@ -755,6 +811,7 @@ export const ORDER_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/bulk/mark-paid$`), perm: 'orders.write', fn: (res, ctx, b) => bulkMarkPaid(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/orders/${UUID}$`), perm: 'orders.read', fn: (res, ctx, b, p) => getOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/edit$`), perm: 'orders.write', fn: (res, ctx, b, p) => editOrder(res, ctx, b, p) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/edit-paid$`), perm: 'refund', stepUp: true, fn: (res, ctx, b, p) => editPaidOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/confirm$`), perm: 'orders.write', fn: (res, ctx, b, p) => confirmOrder(res, ctx, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/ship$`), perm: 'orders.write', fn: (res, ctx, b, p) => shipOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/deliver$`), perm: 'orders.write', fn: (res, ctx, b, p) => deliverOrder(res, ctx, p) },

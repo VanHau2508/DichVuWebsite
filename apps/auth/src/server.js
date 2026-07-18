@@ -56,6 +56,14 @@ const RESET_LINK_BASE = process.env.RESET_LINK_BASE ?? 'https://admin.nentang.vn
 // token. Cờ này phải được BẬT TƯỜNG MINH, mặc định tắt.
 const DEV_RESET_TOKEN_STASH = process.env.DEV_RESET_TOKEN_STASH === '1';
 
+// Sàn thời gian phản hồi /forgot: chống dò email tồn tại qua ĐỊNH THỜI (CWE-208).
+// Nhánh email tồn tại chạy full transaction (token+outbox+audit ~5 round-trip), nhánh
+// không tồn tại/bị rate-limit chỉ 1 SELECT → chênh thời gian rò email có thật. Đệm MỌI
+// nhánh tới cùng sàn (như login luôn verifyPassword với DUMMY_HASH) → mọi phản hồi ~bằng
+// nhau, chênh vài ms công thật chìm dưới sàn + jitter mạng. Rate-limit 10/giờ/IP là lớp hai.
+const FORGOT_FLOOR_MS = Math.max(0, Number(process.env.FORGOT_FLOOR_MS ?? 300) || 0);
+const napMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
 if (!MFA_ENC_KEY) throw new Error('thiếu MFA_ENC_KEY');
 
 // Hai cờ nguy hiểm không bao giờ được cùng tồn tại với production.
@@ -604,6 +612,7 @@ async function mfaDisable(req, res, body, ctx) {
 }
 
 async function forgot(req, res, body, ctx) {
+  const startedAt = Date.now();
   const email = String(body.email ?? '').toLowerCase().trim();
 
   const rl = await hit(redis, `rl:forgot:ip:${ctx.ip}`, { limit: 10, windowSec: 3600 });
@@ -643,6 +652,10 @@ async function forgot(req, res, body, ctx) {
       }
     }
   }
+  // Đệm tới sàn cố định (chống định thời): áp cho MỌI nhánh trên (tồn tại / không tồn tại /
+  // rate-limited) → thời gian phản hồi ~bằng nhau, không rò email có thật.
+  const elapsed = Date.now() - startedAt;
+  if (elapsed < FORGOT_FLOOR_MS) await napMs(FORGOT_FLOOR_MS - elapsed);
   return send(res, 200, { ok: true });
 }
 

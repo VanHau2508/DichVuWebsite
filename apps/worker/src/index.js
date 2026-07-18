@@ -251,10 +251,16 @@ function compose(topic, p) {
 // email giao dịch = tự hại). Khi nào thêm email marketing/newsletter MỚI phải thêm header
 // (mailto + one-click RFC 8058). Bounce/complaint handling nằm ở RELAY (Resend/SES dashboard
 // + suppression list của relay) — xem docs/35 mục deliverability.
-async function deliverNotification(topic, payload) {
+async function deliverNotification(topic, payload, outboxId) {
   if (!payload?.to) return; // không có email → bỏ qua (ZNS sau này dùng payload.phone)
+  // DEDUP theo outboxId (mirror tgsent): queue at-least-once — nếu job gửi email XONG rồi
+  // chết/lỗi ở bước sau → retry → KHÔNG gửi email TRÙNG cho khách. Đánh dấu SAU khi
+  // sendMail thành công (lỗi relay tạm thời vẫn được thử lại). Redis chung với queue.
+  const rc = outboxId ? await queue.client : null;
+  if (rc && (await rc.get(`emailsent:${outboxId}`))) return;
   const { subject, text, html } = compose(topic, payload);
   await transport.sendMail({ from: FROM, to: payload.to, subject, text, ...(html ? { html } : {}) });
+  if (rc) await rc.set(`emailsent:${outboxId}`, '1', 'EX', 86400);
 }
 
 // ── poller: outbox → queue ───────────────────────────────────────────────────
@@ -296,7 +302,7 @@ const worker = new Worker('email', async (job) => {
   await deliverTelegram(topic, payload, shopId, outboxId);
   // Cờ test: email bounce vĩnh viễn → để kiểm dead-letter (chỉ dev/test).
   if (payload?.to === 'bounce@test.invalid') throw new Error('simulated permanent bounce');
-  await deliverNotification(topic, payload);
+  await deliverNotification(topic, payload, outboxId);
   // KHÔNG log địa chỉ email (PII). Log topic + số đơn để truy vết.
   if (payload?.to) log('info', 'email_sent', { topic, order: payload.order_number });
 }, { connection, concurrency: 5 });

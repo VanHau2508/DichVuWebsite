@@ -271,6 +271,35 @@ services:
       timeout: 3s
       retries: 5
 
+  account:
+    build:
+      # Context = repo root: server.js import packages/auth/src qua đường tương đối (mẫu auth).
+      context: ..
+      dockerfile: apps/account/Dockerfile
+    restart: unless-stopped
+    environment:
+      # app_customer: vai trò đăng nhập KHÁCH (least-priv, 0083). RLS 2 trục shop+customer.
+      DATABASE_URL: postgres://app_customer:devpassword@postgres:5432/app
+      REDIS_URL: redis://redis:6379
+      PORT: "3062"
+      CUST_SESSION_TTL_HOURS: "720"
+      MEDIA_PUBLIC_BASE: /media-public
+    volumes:
+      # Dev: mount src + test để lặp không rebuild; packages/auth/src COPY sẵn trong image.
+      - ../apps/account/src:/app/apps/account/src:ro
+      - ../apps/account/test:/app/apps/account/test:ro
+      - ../packages/auth/src:/app/packages/auth/src:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3062/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   payment:
     build:
       context: ../apps/payment
@@ -459,6 +488,7 @@ services:
       - ../apps/platform/test:/work/apps/platform/test:ro
       - ../apps/seller/test:/work/apps/seller/test:ro
       - ../apps/seller-admin/test:/work/apps/seller-admin/test:ro
+      - ../apps/account/test:/work/apps/account/test:ro
       - ../apps/storefront/test:/work/apps/storefront/test:ro
       - ../apps/checkout/test:/work/apps/checkout/test:ro
       - ../apps/payment/test:/work/apps/payment/test:ro

@@ -24,6 +24,7 @@ import { otpauthURL } from '../../../packages/auth/src/totp.js';
 import { seal, open } from '../../../packages/auth/src/secretbox.js';
 import { generateToken, hashToken, generateRecoveryCode } from '../../../packages/auth/src/tokens.js';
 import { hit, reset as resetRate } from '../../../packages/auth/src/ratelimit.js';
+import { passwordError } from '../../../packages/auth/src/password-policy.js';
 import crypto from 'node:crypto';
 
 import {
@@ -109,25 +110,8 @@ function validEmail(x) {
 // nên danh sách chỉ cần các biến thể ≥10 ký tự hay gặp (kèm ngữ cảnh VN).
 // Blocklist tĩnh trong code: auth là dịch vụ toàn cục, không có ngữ cảnh shop
 // lúc đăng ký nên không chặn được "tên shop + 123" per-tenant tại đây.
-const WEAK_PASSWORDS = new Set([
-  '1234567890', '0123456789', '12345678910', '1234567891', '12345678901',
-  '9876543210', '1111111111', '0000000000', 'aaaaaaaaaa', 'abcdefghij',
-  'abcd1234567', 'a1b2c3d4e5', '1q2w3e4r5t', 'qwertyuiop', 'qwerty1234',
-  'qwerty12345', 'password12', 'password123', 'password1234', 'passw0rd123',
-  'p@ssword123', 'iloveyou12', 'iloveyou123', 'admin12345', 'adminadmin',
-  'administrator', 'welcome12345',
-  'matmatkhau', 'matkhau123', 'matkhau1234', 'matkhau12345', 'daylamatkhau',
-  'khongbiet1', 'khongbiet123', 'khongchobiet', 'vietnam123', 'vietnam1234',
-  'hanoi12345', 'saigon12345', 'anhyeuem123', 'emyeuanh123', 'bongda12345',
-  'xinchao123', 'xinchao1234', 'congchua123', 'hoangtu123', 'thanhcong123',
-]);
-// Trả CHUỖI LỖI tiếng Việt hoặc null nếu hợp lệ (thay validPassword boolean cũ).
-function passwordError(x) {
-  // Tối thiểu 10 ký tự. Không áp luật phức tạp rối rắm (NIST khuyến nghị độ dài).
-  if (typeof x !== 'string' || x.length < 10 || x.length > 1024) return 'mật khẩu tối thiểu 10 ký tự';
-  if (WEAK_PASSWORDS.has(x.trim().toLowerCase())) return 'mật khẩu quá phổ biến, hãy chọn mật khẩu khác';
-  return null;
-}
+// passwordError + WEAK_PASSWORDS hoist ra packages/auth/src/password-policy.js (dùng chung
+// với apps/account cho khách; bản khách thêm ngữ cảnh chặn tên shop). Hành vi seller nguyên vẹn.
 
 // ── session ──────────────────────────────────────────────────────────────────
 async function createSession(userId, { mfaSatisfied, ip, ua, ttlMs }) {

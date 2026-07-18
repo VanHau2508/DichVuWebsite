@@ -1,0 +1,18 @@
+{
+  "name": "@nentang/account-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Dịch vụ HTTP tài khoản khách hàng storefront (per-shop): đăng nhập, lịch sử đơn, sổ địa chỉ.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "ioredis": "^5.4.1",
+    "pg": "^8.13.1"
+  }
+}

@@ -120,6 +120,12 @@ nentang.vn, www.nentang.vn {
 	handle @checkout {
 		reverse_proxy checkout:3060
 	}
+	# Tài khoản khách (0083): /account* → service account (cùng host shop → cookie
+	# __Host-cust_session chia sẻ với storefront + checkout). Service tự đặt CSP/no-store.
+	@account path /account /account/*
+	handle @account {
+		reverse_proxy account:3062
+	}
 	handle {
 		reverse_proxy storefront:3050
 	}
@@ -142,6 +148,12 @@ https:// {
 	@checkout path /cart /cart/* /checkout /checkout/*
 	handle @checkout {
 		reverse_proxy checkout:3060
+	}
+	# Tài khoản khách (0083): /account* → service account (cùng host shop → cookie
+	# __Host-cust_session chia sẻ với storefront + checkout). Service tự đặt CSP/no-store.
+	@account path /account /account/*
+	handle @account {
+		reverse_proxy account:3062
 	}
 	handle {
 		reverse_proxy storefront:3050

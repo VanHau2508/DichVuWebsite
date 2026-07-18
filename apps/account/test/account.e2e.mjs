@@ -107,6 +107,52 @@ async function main() {
   r = await acc(B.host, 'POST', '/account/register', { origin: `https://${B.host}`, form: { email, password: pw } });
   r.status === 200 && N(await custCount(B.shopId, email)) === 1 ? ok('cùng email đăng ký ở shop B → tài khoản độc lập') : bad('per-store email lỗi', r.status);
 
+  sect('6. Lịch sử đơn (RLS chỉ đơn của mình) + chi tiết + nhận đơn cũ');
+  const custId = (await owner.query(`SELECT id FROM customers WHERE shop_id=$1 AND lower(email)=lower($2)`, [A.shopId, email])).rows[0].id;
+  const otherCust = (await owner.query(`INSERT INTO customers (shop_id,email,password_hash) VALUES ($1,$2,'H') RETURNING id`, [A.shopId, `other-${uniq()}@x.vn`])).rows[0].id;
+  const mkOrder = async (num, custIdOrNull, tokenHash) => (await owner.query(
+    `INSERT INTO orders (shop_id,order_number,total_vnd,subtotal_vnd,customer_id,lookup_token_hash,customer_name,customer_phone,status,payment_status)
+     VALUES ($1,$2,150000,150000,$3,$4,'Khách','0900','delivered','paid') RETURNING id`, [A.shopId, num, custIdOrNull, tokenHash])).rows[0].id;
+  const crypto = await import('node:crypto');
+  const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+  const gTok = 'guest-token-' + uniq() + uniq();
+  await mkOrder(9001, custId, null);          // đơn của mình
+  await mkOrder(9002, otherCust, null);       // đơn khách KHÁC cùng shop
+  const guestId = await mkOrder(9003, null, sha(gTok)); // đơn vãng lai (claim được)
+  r = await acc(host, 'GET', '/account/orders', { cookie: tok });
+  r.status === 200 && r.body.includes('#9001') && !r.body.includes('#9002') ? ok('lịch sử: thấy đơn của mình (9001), KHÔNG thấy đơn khách khác (9002)') : bad('lịch sử rò đơn người khác', r.body.match(/#900\d/g)?.join());
+  r = await acc(host, 'GET', '/account/orders/9001', { cookie: tok });
+  r.status === 200 && r.body.includes('Đơn #9001') ? ok('chi tiết đơn 9001 của mình → 200') : bad('chi tiết đơn lỗi', r.status);
+  r = await acc(host, 'GET', '/account/orders/9002', { cookie: tok });
+  r.status === 404 ? ok('chi tiết đơn 9002 (khách khác) → 404 (IDOR chặn)') : bad('IDOR đọc đơn người khác', r.status);
+  // Claim SAI token → đơn vẫn vãng lai.
+  r = await acc(host, 'POST', '/account/claim', { origin: O, cookie: tok, form: { order_number: '9003', token: 'token-sai-hoan-toan' } });
+  let own = (await owner.query(`SELECT customer_id FROM orders WHERE id=$1`, [guestId])).rows[0].customer_id;
+  own === null ? ok('claim SAI token → đơn vẫn vãng lai (không cướp)') : bad('claim sai token vẫn gán', own);
+  // Claim ĐÚNG token → đơn về tài khoản.
+  r = await acc(host, 'POST', '/account/claim', { origin: O, cookie: tok, form: { order_number: '9003', token: gTok } });
+  own = (await owner.query(`SELECT customer_id FROM orders WHERE id=$1`, [guestId])).rows[0].customer_id;
+  own === custId ? ok('claim ĐÚNG token → đơn 9003 về tài khoản') : bad('claim đúng token thất bại', own);
+
+  sect('6b. Sổ địa chỉ CRUD + 1-default + IDOR');
+  r = await acc(host, 'POST', '/account/addresses/add', { origin: O, cookie: tok, form: { recipient_name: 'Nguyễn A', phone: '0911222333', line1: '12 Lê Lợi', province: 'Hà Nội', is_default: '1' } });
+  r.status === 303 ? ok('thêm địa chỉ (mặc định) → 303') : bad('thêm địa chỉ lỗi', `${r.status} ${r.body.slice(0,120)}`);
+  r = await acc(host, 'POST', '/account/addresses/add', { origin: O, cookie: tok, form: { recipient_name: 'Nguyễn B', phone: '0911222444', line1: '5 Bà Triệu', province: 'TP. Hồ Chí Minh', is_default: '1' } });
+  const addrs = (await owner.query(`SELECT id, recipient_name, is_default FROM customer_addresses WHERE customer_id=$1 ORDER BY created_at`, [custId])).rows;
+  const nDefault = addrs.filter((a) => a.is_default).length;
+  addrs.length === 2 && nDefault === 1 && addrs.find((a) => a.recipient_name === 'Nguyễn B').is_default
+    ? ok('2 địa chỉ, ĐÚNG 1 mặc định (đổi sang cái mới)') : bad('nhiều mặc định', JSON.stringify(addrs));
+  r = await acc(host, 'GET', '/account/addresses', { cookie: tok });
+  r.status === 200 && r.body.includes('12 Lê Lợi') && r.body.includes('Mặc định') ? ok('trang địa chỉ liệt kê + badge mặc định') : bad('trang địa chỉ lỗi');
+  // IDOR: xoá địa chỉ của khách khác (tạo địa chỉ cho otherCust) → RLS chặn, còn nguyên.
+  const otherAddr = (await owner.query(`INSERT INTO customer_addresses (shop_id,customer_id,recipient_name,phone,line1) VALUES ($1,$2,'Khác','09','X') RETURNING id`, [A.shopId, otherCust])).rows[0].id;
+  await acc(host, 'POST', '/account/addresses/delete', { origin: O, cookie: tok, form: { id: otherAddr } });
+  const stillThere = (await owner.query(`SELECT count(*)::int n FROM customer_addresses WHERE id=$1`, [otherAddr])).rows[0].n;
+  N(stillThere) === 1 ? ok('xoá địa chỉ khách khác → RLS chặn, còn nguyên (IDOR)') : bad('xoá được địa chỉ người khác');
+  // Xoá địa chỉ của mình → 0 còn 1.
+  await acc(host, 'POST', '/account/addresses/delete', { origin: O, cookie: tok, form: { id: addrs[0].id } });
+  N((await owner.query(`SELECT count(*)::int n FROM customer_addresses WHERE customer_id=$1`, [custId])).rows[0].n) === 1 ? ok('xoá địa chỉ của mình → còn 1') : bad('xoá địa chỉ mình lỗi');
+
   sect('5. Đăng xuất → phiên revoked');
   r = await acc(host, 'POST', '/account/logout', { origin: O, cookie: tok });
   r.status === 303 && /\/account\/login/.test(r.location ?? '') ? ok('đăng xuất → 303 login') : bad('logout lỗi', `${r.status} ${r.location}`);

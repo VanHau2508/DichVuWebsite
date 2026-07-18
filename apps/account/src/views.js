@@ -92,5 +92,87 @@ export function renderDashboard(shopName, cust, { notice } = {}) {
     </div>`);
 }
 
+const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v ?? 0)) + '₫';
+const dt = (ts) => new Intl.DateTimeFormat('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(ts));
+const ORDER_ST = { pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn', returned: 'Đã trả' };
+const PAY_ST = { unpaid: 'Chưa thanh toán', paid: 'Đã thanh toán', refunded: 'Đã hoàn tiền' };
+
+export function renderOrders(shopName, orders, { page = 1, hasMore = false, notice } = {}) {
+  const base = '/account';
+  const rows = orders.length ? orders.map((o) => `<tr>
+      <td><a href="${base}/orders/${esc(o.order_number)}">#${esc(o.order_number)}</a></td>
+      <td class="muted">${dt(o.created_at)}</td>
+      <td>${money(o.total_vnd)}</td>
+      <td><span class="badge">${esc(ORDER_ST[o.status] ?? o.status)}</span></td></tr>`).join('')
+    : '<tr><td colspan="4" class="muted">Chưa có đơn hàng nào gắn với tài khoản.</td></tr>';
+  const pager = (page > 1 || hasMore) ? `<div class="row" style="margin-top:10px">
+      ${page > 1 ? `<a class="btn alt sm" href="${base}/orders?page=${page - 1}">← Trước</a>` : '<span></span>'}
+      ${hasMore ? `<a class="btn alt sm" href="${base}/orders?page=${page + 1}">Sau →</a>` : ''}</div>` : '';
+  return layout('Đơn hàng của tôi', shopName, `
+    <div class="hd"><h1>Đơn hàng của tôi</h1><a class="btn alt sm" href="${base}">← Tài khoản</a></div>
+    ${okBox(notice)}
+    <div class="card"><table><thead><tr><th>Mã đơn</th><th>Ngày đặt</th><th>Tổng tiền</th><th>Trạng thái</th></tr></thead><tbody>${rows}</tbody></table>${pager}</div>
+    <div class="card"><h2>Nhận đơn đã đặt trước đây</h2>
+      <p class="muted">Nếu bạn từng đặt đơn KHÔNG đăng nhập, nhập <strong>mã đơn</strong> và <strong>mã tra cứu</strong> (trong email/trang xác nhận đơn) để gắn đơn vào tài khoản.</p>
+      <form method="POST" action="${base}/claim">
+        <div class="row"><div style="flex:1"><label>Mã đơn</label><input name="order_number" inputmode="numeric" required placeholder="123"></div>
+        <div style="flex:2"><label>Mã tra cứu</label><input name="token" required placeholder="dán mã tra cứu"></div></div>
+        <button class="btn sm" type="submit" style="margin-top:12px">Nhận đơn</button>
+      </form></div>`);
+}
+
+export function renderOrderDetail(shopName, o, lines) {
+  const base = '/account';
+  const addr = o.shipping_address && typeof o.shipping_address === 'object' ? o.shipping_address : {};
+  const addrStr = [addr.line || addr.line1, addr.ward, addr.district, addr.province].filter(Boolean).join(', ');
+  const lineRows = lines.map((l) => `<tr>
+      <td>${esc(l.title_snapshot)}${l.sku_snapshot ? ` <span class="muted">${esc(l.sku_snapshot)}</span>` : ''}</td>
+      <td class="muted">×${esc(l.qty)}</td><td style="text-align:right">${money(Number(l.unit_price_vnd) * l.qty)}</td></tr>`).join('');
+  return layout(`Đơn #${o.order_number}`, shopName, `
+    <div class="hd"><h1>Đơn #${esc(o.order_number)}</h1><a class="btn alt sm" href="${base}/orders">← Danh sách đơn</a></div>
+    <div class="card"><p class="muted" style="margin:0">Đặt ngày ${dt(o.created_at)} · <span class="badge">${esc(ORDER_ST[o.status] ?? o.status)}</span> <span class="badge">${esc(PAY_ST[o.payment_status] ?? o.payment_status)}</span></p></div>
+    <div class="card"><h2>Sản phẩm</h2>
+      <table><tbody>${lineRows}</tbody></table>
+      <div class="row" style="margin-top:10px"><span class="muted">Tạm tính</span><span>${money(o.subtotal_vnd)}</span></div>
+      <div class="row"><span class="muted">Phí giao hàng</span><span>${money(o.shipping_vnd)}</span></div>
+      ${Number(o.discount_vnd) > 0 ? `<div class="row"><span class="muted">Giảm giá</span><span>-${money(o.discount_vnd)}</span></div>` : ''}
+      <div class="row" style="font-weight:700;border-top:1px solid var(--bd);padding-top:8px;margin-top:6px"><span>Tổng cộng</span><span>${money(o.total_vnd)}</span></div></div>
+    <div class="card"><h2>Giao đến</h2>
+      <p class="muted" style="margin:0">${esc(o.customer_name || '(đã ẩn danh)')} · ${esc(o.customer_phone || '')}<br>${esc(addrStr || '—')}</p></div>`);
+}
+
+export function renderAddresses(shopName, addresses, provinces, { editing, form = {}, error } = {}) {
+  const base = '/account';
+  const opts = (sel) => provinces.map((p) => `<option${p === sel ? ' selected' : ''}>${esc(p)}</option>`).join('');
+  const cards = addresses.length ? addresses.map((a) => `<div class="card">
+      <div class="row"><div><strong>${esc(a.recipient_name)}</strong> · ${esc(a.phone)}${a.is_default ? ' <span class="badge">Mặc định</span>' : ''}
+        <div class="muted" style="font-size:.9rem">${esc([a.line1, a.ward, a.district, a.province].filter(Boolean).join(', '))}</div></div>
+        <div class="row" style="gap:6px">
+          ${a.is_default ? '' : `<form method="POST" action="${base}/addresses/default" style="margin:0"><input type="hidden" name="id" value="${esc(a.id)}"><button class="btn alt sm" type="submit">Đặt mặc định</button></form>`}
+          <a class="btn alt sm" href="${base}/addresses?edit=${esc(a.id)}">Sửa</a>
+          <form method="POST" action="${base}/addresses/delete" style="margin:0"><input type="hidden" name="id" value="${esc(a.id)}"><button class="btn warn sm" type="submit">Xoá</button></form>
+        </div></div></div>`).join('') : '<div class="card"><p class="muted" style="margin:0">Chưa có địa chỉ nào.</p></div>';
+  const f = editing || form;
+  const formTitle = editing ? 'Sửa địa chỉ' : 'Thêm địa chỉ mới';
+  const action = editing ? `${base}/addresses/edit` : `${base}/addresses/add`;
+  return layout('Sổ địa chỉ', shopName, `
+    <div class="hd"><h1>Sổ địa chỉ</h1><a class="btn alt sm" href="${base}">← Tài khoản</a></div>
+    ${errBox(error)}
+    ${cards}
+    <div class="card"><h2>${formTitle}</h2>
+      <form method="POST" action="${action}">
+        ${editing ? `<input type="hidden" name="id" value="${esc(editing.id)}">` : ''}
+        <div class="row"><div style="flex:1"><label>Người nhận</label><input name="recipient_name" required maxlength="120" value="${esc(f.recipient_name)}"></div>
+        <div style="flex:1"><label>Số điện thoại</label><input name="phone" required maxlength="20" value="${esc(f.phone)}"></div></div>
+        <label>Địa chỉ (số nhà, đường)</label><input name="line1" required maxlength="200" value="${esc(f.line1)}">
+        <div class="row"><div style="flex:1"><label>Phường/Xã</label><input name="ward" maxlength="100" value="${esc(f.ward)}"></div>
+        <div style="flex:1"><label>Quận/Huyện</label><input name="district" maxlength="100" value="${esc(f.district)}"></div></div>
+        <label>Tỉnh/Thành</label><select name="province"><option value="">— Chọn —</option>${opts(f.province)}</select>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" name="is_default" value="1"${f.is_default ? ' checked' : ''} style="width:auto"> Đặt làm địa chỉ mặc định</label>
+        <button class="btn" type="submit" style="margin-top:12px">${editing ? 'Lưu thay đổi' : 'Thêm địa chỉ'}</button>
+        ${editing ? ` <a class="btn alt" href="${base}/addresses">Huỷ</a>` : ''}
+      </form></div>`);
+}
+
 export const _layout = layout;
 export { errBox, okBox };

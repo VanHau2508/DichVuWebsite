@@ -200,6 +200,7 @@ const SECTIONS = {
       ${ctx.categories.slice(0, 4).map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}
       ${ctx.hasBlog ? '<a href="/blog">Blog</a>' : ''}
       <a href="/checkout/lookup">Tra cứu đơn</a>
+      <a href="/account">Tài khoản</a>
       <a href="/cart" class="cart"><span class="i">${I_CART}</span>Giỏ hàng</a>
     </nav>
   </div></header>`,

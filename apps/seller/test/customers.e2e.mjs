@@ -152,8 +152,18 @@ async function main() {
   // Huỷ đơn pending rồi ẩn danh.
   const oid2 = (await owner.query(`SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, n2])).rows[0].id;
   await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oid2}/cancel`, { cookie: A.cookie, origin: OS });
+  // Tài khoản khách (0083) khớp SĐT P2 + địa chỉ + phiên → erase phải ẩn danh cả account.
+  const rnd = Math.random().toString(36).slice(2, 8);
+  const acctId = (await owner.query(`INSERT INTO customers (shop_id,email,password_hash,full_name,phone) VALUES ($1,$2,'H','Tên P2',$3) RETURNING id`, [A.shopId, `p2-${rnd}@x.vn`, P2])).rows[0].id;
+  await owner.query(`INSERT INTO customer_addresses (shop_id,customer_id,recipient_name,phone,line1) VALUES ($1,$2,'P2','09','L')`, [A.shopId, acctId]);
+  await owner.query(`INSERT INTO customer_sessions (shop_id,customer_id,token_hash,expires_at) VALUES ($1,$2,$3,now()+interval '1 day')`, [A.shopId, acctId, `hash-${rnd}`]);
   r = await rq(SELLER, 'POST', `/shops/${A.shopId}/customers/${P2}/erase`, { cookie: A.cookie, origin: OS });
   r.status === 200 && r.json.orders_anonymized === 2 ? ok('erase 200 — ẩn danh 2 đơn') : bad('erase lỗi', r.raw);
+  const acct = (await owner.query(`SELECT status, email, phone FROM customers WHERE id=$1`, [acctId])).rows[0];
+  const acctAddr = Number((await owner.query(`SELECT count(*)::int n FROM customer_addresses WHERE customer_id=$1`, [acctId])).rows[0].n);
+  const acctSess = Number((await owner.query(`SELECT count(*)::int n FROM customer_sessions WHERE customer_id=$1 AND revoked_at IS NULL`, [acctId])).rows[0].n);
+  acct.status === 'anonymized' && acct.email === null && acct.phone === null && acctAddr === 0 && acctSess === 0 && r.json.accounts_anonymized === 1
+    ? ok('tài khoản khách khớp SĐT: status=anonymized + email/phone NULL + địa chỉ xoá + phiên revoke') : bad('account chưa ẩn danh', `${JSON.stringify(acct)} addr=${acctAddr} sess=${acctSess} acc=${r.json.accounts_anonymized}`);
   const anon = (await owner.query(
     `SELECT customer_name, customer_phone, customer_email, shipping_address, client_ip_hash, anonymized_at, total_vnd, status
        FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, n2])).rows[0];

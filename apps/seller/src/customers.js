@@ -107,6 +107,21 @@ async function eraseCustomer(res, ctx, _b, params) {
         WHERE verified AND order_number = ANY($1::int[])`, [nums],
     );
     await c.query(`DELETE FROM customer_notes WHERE phone = $1`, [phone]);
+    // Tài khoản khách (0083): ẩn danh account khớp — theo customer_id của đơn vừa ẩn + theo
+    // SĐT đã đăng ký. app_rw KHÔNG chạm password_hash (0083 siết cột) nhưng status=
+    // 'anonymized' chặn đăng nhập (loadCustomer đòi status='active'); xoá địa chỉ + thu hồi
+    // phiên. password_hash còn (Argon2 salted, vô hại) — worker app_expiry xoá nốt nếu cần.
+    const custIds = (await c.query(`SELECT DISTINCT customer_id FROM orders WHERE customer_phone IS NULL AND anonymized_at IS NOT NULL AND order_number = ANY($1::bigint[]) AND customer_id IS NOT NULL`, [nums])).rows.map((r) => r.customer_id);
+    const custErased = await c.query(
+      `UPDATE customers SET email = NULL, full_name = '(đã ẩn danh)', phone = NULL,
+              status = 'anonymized', anonymized_at = now(), updated_at = now()
+        WHERE (phone = $1 OR id = ANY($2::uuid[])) AND status <> 'anonymized'
+        RETURNING id`, [phone, custIds]);
+    const erasedIds = custErased.rows.map((r) => r.id);
+    if (erasedIds.length) {
+      await c.query(`DELETE FROM customer_addresses WHERE customer_id = ANY($1::uuid[])`, [erasedIds]);
+      await c.query(`UPDATE customer_sessions SET revoked_at = now() WHERE customer_id = ANY($1::uuid[]) AND revoked_at IS NULL`, [erasedIds]);
+    }
     // Outbox: gỡ to/link/customer_name khỏi payload các đơn của khách (RLS scope shop này).
     await c.query(
       `UPDATE outbox SET payload = payload - 'to' - 'link' - 'customer_name'
@@ -114,9 +129,9 @@ async function eraseCustomer(res, ctx, _b, params) {
     );
     await audit(c, 'customer.erased', {
       actorId: ctx.user.id, ip: ctx.ip,
-      metadata: { phone_masked: '•••' + phone.slice(-3), orders: ord.rowCount, reviews: rev.rowCount },
+      metadata: { phone_masked: '•••' + phone.slice(-3), orders: ord.rowCount, reviews: rev.rowCount, accounts: erasedIds.length },
     });
-    return { code: 200, body: { ok: true, orders_anonymized: ord.rowCount, reviews_anonymized: rev.rowCount } };
+    return { code: 200, body: { ok: true, orders_anonymized: ord.rowCount, reviews_anonymized: rev.rowCount, accounts_anonymized: erasedIds.length } };
   });
   return send(res, out.code, out.body);
 }

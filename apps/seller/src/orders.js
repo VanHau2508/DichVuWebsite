@@ -111,6 +111,19 @@ async function getOrder(res, ctx, _b, params) {
         WHERE r.order_id = $1 ORDER BY r.created_at, r.id`, [o.id],
     )).rows.map((r) => ({ ...r, amount_vnd: Number(r.amount_vnd) }));
     o.refunded_total_vnd = o.refunds.reduce((s, r) => s + r.amount_vnd, 0);
+    // Đổi-trả (RMA 0078): lịch sử phiếu trả + qty ĐÃ TRẢ mỗi biến thể (form trả biết còn
+    // trả được bao nhiêu). LEFT JOIN users: người thao tác đã rời shop → email NULL, dòng còn.
+    o.returns = (await c.query(
+      `SELECT r.id, r.reason, r.refund_vnd, r.restocked, r.created_at, u.email AS created_by_email,
+              coalesce((SELECT sum(rl.qty)::int FROM return_lines rl WHERE rl.return_id = r.id), 0) AS qty
+         FROM returns r LEFT JOIN users u ON u.id = r.created_by
+        WHERE r.order_id = $1 ORDER BY r.created_at, r.id`, [o.id],
+    )).rows.map((r) => ({ ...r, refund_vnd: Number(r.refund_vnd), qty: Number(r.qty) }));
+    const retByVid = new Map();
+    for (const rr of (await c.query(
+      `SELECT rl.variant_id, sum(rl.qty)::int AS q FROM return_lines rl JOIN returns r ON r.id = rl.return_id
+        WHERE r.order_id = $1 GROUP BY rl.variant_id`, [o.id])).rows) retByVid.set(rr.variant_id, Number(rr.q));
+    o.lines = o.lines.map((l) => ({ ...l, returned_qty: retByVid.get(l.variant_id) ?? 0 }));
     // Khối lượng ƯỚC TÍNH cho form vận đơn (prefill, shop sửa được): Σ qty × cân biến thể
     // SỐNG (NULL → mặc định shop). KHÔNG snapshot trên order_lines — shop đổi cân sau khi
     // đơn tạo thì prefill lệch, chấp nhận v1; phí ship ĐÃ THU của khách chốt tại
@@ -803,6 +816,115 @@ async function editPaidOrder(res, ctx, body, params) {
   }
 }
 
+// ── ĐỔI-TRẢ (RMA) v1 ─────────────────────────────────────────────────────────
+// Khách ĐÃ NHẬN hàng (đơn 'delivered') trả lại vài/ toàn bộ món → HOÀN tiền phần trả +
+// NHẬP LẠI KHO (nếu hàng còn bán được). Sinh tiền-ra + đổi tồn → route bar cao NHƯ refund
+// (perm 'refund' + STEP-UP). Đổi hàng (trả A lấy B) = trả + tạo đơn mới, chưa gộp (v2).
+//
+// BẤT BIẾN: (1) chỉ trả đơn 'delivered'; (2) qty trả mỗi biến thể ≤ đã mua − đã trả trước
+// (khoá đơn FOR UPDATE → cộng dồn chính xác, không trả quá); (3) hoàn = Σ(qty × giá
+// SNAPSHOT dòng đơn), ≤ số CÒN CÓ THỂ HOÀN (đã thu − đã hoàn); (4) restock: on_hand +=
+// qty + ledger 'receive' (mirror adjust); (5) tái dùng refunds (0070) cho tiền +
+// returns/return_lines (0078) cho chứng từ trả → nhất quán lịch sử. MỌI lỗi THROW → ROLLBACK.
+async function createReturn(res, ctx, body, params) {
+  const orderId = params[1];
+  const fail = (statusCode, msg) => { throw Object.assign(new Error(msg), { statusCode }); };
+  const rawLines = Array.isArray(body?.lines) ? body.lines : [];
+  const lines0 = rawLines.filter((l) => l && UUID_RE.test(String(l.variant_id ?? '')) && Number.isInteger(Number(l.qty)) && Number(l.qty) >= 1 && Number(l.qty) <= 100000)
+    .map((l) => ({ variant_id: String(l.variant_id), qty: Number(l.qty) }));
+  if (lines0.length === 0 || lines0.length > 50) return send(res, 400, { error: 'chọn 1-50 dòng hàng để trả' });
+  const reason = String(body?.reason ?? '').trim().slice(0, 500) || null;
+  const restock = body?.restock === true || body?.restock === 'true' || body?.restock === 'on';
+
+  try {
+    const out = await withTenant(ctx.shopId, async (c) => {
+      const o = (await c.query(
+        `SELECT id, order_number, status, payment_status, total_vnd, amount_paid_vnd, customer_email
+           FROM orders WHERE id = $1 FOR UPDATE`, [orderId],
+      )).rows[0];
+      if (!o) fail(404, 'không tìm thấy đơn');
+      if (o.status !== 'delivered') fail(409, 'chỉ nhận trả hàng cho đơn ĐÃ GIAO (khách đã nhận). Đơn chưa giao: huỷ/hoàn thay vì trả.');
+
+      // Dòng đơn + giá snapshot. Gộp qty trả trùng biến thể.
+      const ol = (await c.query(`SELECT variant_id, unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [orderId])).rows;
+      const orderByVid = new Map(ol.map((l) => [l.variant_id, { unit: Number(l.unit_price_vnd), qty: l.qty }]));
+      // Đã trả trước (cộng dồn qua các phiếu trả của đơn này).
+      const prevRet = new Map();
+      for (const rrow of (await c.query(
+        `SELECT rl.variant_id, sum(rl.qty)::int AS q FROM return_lines rl JOIN returns r ON r.id = rl.return_id
+          WHERE r.order_id = $1 GROUP BY rl.variant_id`, [orderId])).rows) prevRet.set(rrow.variant_id, Number(rrow.q));
+      const want = new Map();
+      for (const l of lines0) want.set(l.variant_id, (want.get(l.variant_id) ?? 0) + l.qty);
+
+      let refund = 0;
+      const retLines = [];
+      for (const [vid, qty] of want) {
+        const line = orderByVid.get(vid);
+        if (!line) fail(422, 'có dòng không thuộc đơn này');
+        const remaining = line.qty - (prevRet.get(vid) ?? 0);
+        if (qty > remaining) fail(422, `trả quá số đã mua: biến thể chỉ còn ${Math.max(0, remaining)} có thể trả`);
+        refund += line.unit * qty;
+        retLines.push({ variant_id: vid, qty, unit: line.unit });
+      }
+
+      // Trần hoàn = đã thu − đã hoàn (neo amount_paid như v2; lazy: cột 0 → total).
+      const collected = Number(o.amount_paid_vnd) > 0 ? Number(o.amount_paid_vnd) : Number(o.total_vnd);
+      const refundsSum = Number((await c.query(`SELECT coalesce(sum(amount_vnd),0)::bigint AS s FROM refunds WHERE order_id = $1`, [orderId])).rows[0].s);
+      if (refund > collected - refundsSum) fail(422, `số hoàn ${refund}đ vượt số còn có thể hoàn (đã thu ${collected}, đã hoàn ${refundsSum})`);
+
+      // Phiếu trả + dòng trả.
+      const ret = (await c.query(
+        `INSERT INTO returns (shop_id, order_id, reason, refund_vnd, restocked, created_by)
+         VALUES (current_shop_id(), $1, $2, $3, $4, $5) RETURNING id`, [orderId, reason, refund, restock, ctx.user.id],
+      )).rows[0];
+      for (const t of retLines) {
+        await c.query(
+          `INSERT INTO return_lines (shop_id, return_id, variant_id, qty, unit_price_vnd)
+           VALUES (current_shop_id(), $1, $2, $3, $4)`, [ret.id, t.variant_id, t.qty, t.unit],
+        );
+      }
+      // Nhập lại kho (nếu hàng còn bán được) — khoá theo THỨ TỰ variant_id (chống deadlock).
+      if (restock) {
+        for (const t of [...retLines].sort((a, b) => a.variant_id.localeCompare(b.variant_id))) {
+          await c.query(`INSERT INTO inventory_levels (shop_id, variant_id) VALUES (current_shop_id(), $1) ON CONFLICT (shop_id, variant_id) DO NOTHING`, [t.variant_id]);
+          await c.query(`SELECT on_hand FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [t.variant_id]);
+          await c.query(`UPDATE inventory_levels SET on_hand = on_hand + $2, updated_at = now() WHERE variant_id = $1`, [t.variant_id, t.qty]);
+          await c.query(
+            `INSERT INTO inventory_ledger (shop_id, variant_id, delta, kind, reason, actor_id)
+             VALUES (current_shop_id(), $1, $2, 'receive', $3, $4)`, [t.variant_id, t.qty, `Trả hàng đơn #${Number(o.order_number)}`, ctx.user.id],
+          );
+        }
+      }
+      // Bút toán hoàn (0070) — tiền chủ shop tự chuyển lại. restock cờ ghi nhận ý định.
+      await c.query(
+        `INSERT INTO refunds (shop_id, order_id, amount_vnd, reason, restock, created_by)
+         VALUES (current_shop_id(), $1, $2, $3, $4, $5)`, [orderId, refund, reason ? `Đổi-trả: ${reason}` : 'Đổi-trả hàng', restock, ctx.user.id],
+      );
+      await c.query(`UPDATE orders SET amount_paid_vnd = $2 WHERE id = $1`, [orderId, collected]); // neo đã-thu
+
+      // Trạng thái: TRẢ HẾT mọi dòng → đơn 'returned' + returned_at. Hoàn CHẠM đủ đã-thu →
+      // payment_status='refunded'. Trả một phần → giữ 'delivered'.
+      const totalOrdered = ol.reduce((s, l) => s + l.qty, 0);
+      const totalReturned = [...prevRet.values()].reduce((s, q) => s + q, 0) + retLines.reduce((s, t) => s + t.qty, 0);
+      const refundedAfter = refundsSum + refund;
+      const fullReturn = totalReturned >= totalOrdered;
+      const fullRefund = refundedAfter >= collected;
+      if (fullReturn || fullRefund) {
+        await c.query(
+          `UPDATE orders SET ${fullReturn ? "status = 'returned', returned_at = now(), " : ''}${fullRefund ? "payment_status = 'refunded'" : 'id = id'} WHERE id = $1`, [orderId],
+        );
+        if (fullReturn) { o.status = 'returned'; await statusEvent(c, o); }
+      }
+      await audit(c, 'order.returned_rma', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, order_number: Number(o.order_number), refund_vnd: refund, restocked: restock, lines: retLines.map((t) => ({ variant_id: t.variant_id, qty: t.qty })).slice(0, 40), full: fullReturn } });
+      return { return_id: ret.id, refund_vnd: refund, restocked: restock, full_return: fullReturn };
+    });
+    return send(res, 200, { ok: true, ...out });
+  } catch (err) {
+    if (err.statusCode) return send(res, err.statusCode, { error: err.message });
+    throw err;
+  }
+}
+
 export const ORDER_ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/orders$`), perm: 'orders.read', fn: (res, ctx, b, p, q) => listOrders(res, ctx, b, p, q) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders$`), perm: 'orders.write', fn: (res, ctx, b) => createManualOrder(res, ctx, b) },
@@ -812,6 +934,7 @@ export const ORDER_ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/orders/${UUID}$`), perm: 'orders.read', fn: (res, ctx, b, p) => getOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/edit$`), perm: 'orders.write', fn: (res, ctx, b, p) => editOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/edit-paid$`), perm: 'refund', stepUp: true, fn: (res, ctx, b, p) => editPaidOrder(res, ctx, b, p) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/return$`), perm: 'refund', stepUp: true, fn: (res, ctx, b, p) => createReturn(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/confirm$`), perm: 'orders.write', fn: (res, ctx, b, p) => confirmOrder(res, ctx, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/ship$`), perm: 'orders.write', fn: (res, ctx, b, p) => shipOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/deliver$`), perm: 'orders.write', fn: (res, ctx, b, p) => deliverOrder(res, ctx, p) },

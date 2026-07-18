@@ -236,6 +236,27 @@ async function main() {
   tB.revenue_goods_vnd === 77000 && !String(tA.revenue_goods_vnd).includes('77')
     ? ok('shop B thấy đúng 77.000 của mình; shop A không đổi') : bad('lẫn tenant', `A=${tA.revenue_goods_vnd} B=${tB.revenue_goods_vnd}`);
 
+  sect('10. Test CHÉO /stats ↔ /reports: hai trang MỘT quy tắc sổ cái, khớp từng đồng');
+  // stats.revenue.d7 = Σ total_vnd(ever-paid, paid 7 ngày VN) − Σ refunds(kind≠edit, 7 ngày)
+  // reports cùng cửa sổ: (revenue_goods + shipping) − refunds = Σ total − Σ refunds — PHẢI bằng.
+  // Fixture sẵn ca ác: o2 full-refund vắt cửa sổ (paid hôm qua, phiếu hôm nay) + o4 edit-paid.
+  HOST = A.host;
+  const st = await rq(SELLER, 'GET', `/shops/${shopId}/stats`, { cookie: oc });
+  const tv = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+  const from7 = new Date(Date.parse(tv + 'T00:00:00Z') - 6 * 86400e3).toISOString().slice(0, 10);
+  const rp7 = (await sales(`?from=${from7}&to=${tv}`)).json.totals;
+  const lhs = N(st.json.revenue.d7);
+  const rhs = N(rp7.revenue_goods_vnd) + N(rp7.shipping_income_vnd) - N(rp7.refunds_vnd);
+  lhs === rhs ? ok(`stats.d7 (${lhs}) === reports 7 ngày (${rhs}) — kể cả full-refund vắt cửa sổ + edit-paid`)
+    : bad('HAI TRANG HAI SỐ', `stats=${lhs} reports=${rhs}`);
+  // Đơn full-refund (o2) vẫn nằm trong doanh thu stats (ever-paid) — chứng minh dashboard ĐÃ đổi quy tắc.
+  const stAll = N(st.json.revenue.all);
+  const dbAll = (await owner.query(`
+    SELECT (SELECT coalesce(sum(total_vnd),0)::bigint FROM orders WHERE shop_id=$1 AND paid_at IS NOT NULL)
+         - (SELECT coalesce(sum(r.amount_vnd),0)::bigint FROM refunds r JOIN orders o ON o.id=r.order_id AND o.paid_at IS NOT NULL
+             WHERE r.shop_id=$1 AND r.kind <> 'edit_adjustment') AS v`, [shopId])).rows[0].v;
+  stAll === N(dbAll) ? ok(`stats.revenue.all=${stAll} khớp sổ cái ever-paid − phiếu(≠edit)`) : bad('stats.all lệch sổ cái', `${stAll} kv ${dbAll}`);
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

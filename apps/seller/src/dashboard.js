@@ -4,9 +4,12 @@
  * Chạy qua withTenant → RLS cô lập theo shop. Perm 'orders.read' (khai ở route, router
  * cưỡng chế) — cần đọc đơn mới thấy doanh thu.
  *
- * "Doanh thu" = đơn ĐÃ THANH TOÁN (payment_status='paid'), tính theo paid_at. Mốc ngày
- * theo giờ VN (Asia/Ho_Chi_Minh) để "hôm nay" khớp cảm nhận người bán, không lệch theo
- * giờ UTC của container. pg trả bigint dạng CHUỖI → Number() ở tầng trả JSON.
+ * "Doanh thu" = đơn ĐÃ TỪNG thanh toán (EVER-PAID: paid_at IS NOT NULL — quy tắc sổ cái
+ * 0081, ĐỒNG BỘ với trang Báo cáo): refundOrder lật payment_status='refunded' nhưng GIỮ
+ * paid_at → lọc theo payment_status làm đơn full-refund rớt ngược khỏi kỳ đã đóng. Doanh
+ * thu đứng yên ở ngày thu tiền; phiếu hoàn trừ tại NGÀY PHIẾU (mọi kind trừ
+ * 'edit_adjustment' — phiếu chênh sửa-đơn-đã-trả đã phản ánh qua header đơn bị hạ).
+ * Mốc ngày theo giờ VN (Asia/Ho_Chi_Minh). pg trả bigint dạng CHUỖI → Number().
  */
 import { send } from './http.js';
 import { withTenant } from './db.js';
@@ -20,13 +23,13 @@ async function stats(res, ctx) {
   const out = await withTenant(ctx.shopId, async (c) => {
     const k = (await c.query(`
       SELECT
-        coalesce(sum(total_vnd) FILTER (WHERE payment_status = 'paid'
+        coalesce(sum(total_vnd) FILTER (WHERE paid_at IS NOT NULL
           AND paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh' >= date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh')), 0) AS rev_today,
-        coalesce(sum(total_vnd) FILTER (WHERE payment_status = 'paid'
+        coalesce(sum(total_vnd) FILTER (WHERE paid_at IS NOT NULL
           AND paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh' >= date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '6 days'), 0) AS rev_7d,
-        coalesce(sum(total_vnd) FILTER (WHERE payment_status = 'paid'), 0) AS rev_all,
+        coalesce(sum(total_vnd) FILTER (WHERE paid_at IS NOT NULL), 0) AS rev_all,
         -- Kỳ 7 ngày LIỀN TRƯỚC [today-13, today-6) → tính % tăng/giảm so với 7 ngày này.
-        coalesce(sum(total_vnd) FILTER (WHERE payment_status = 'paid'
+        coalesce(sum(total_vnd) FILTER (WHERE paid_at IS NOT NULL
           AND paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh' >= date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '13 days'
           AND paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh' <  date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '6 days'), 0) AS rev_prev7,
         count(*) FILTER (WHERE created_at AT TIME ZONE 'Asia/Ho_Chi_Minh' >= date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh')) AS orders_today,
@@ -37,9 +40,10 @@ async function stats(res, ctx) {
         count(*) FILTER (WHERE status = 'cancelled') AS n_cancelled,
         count(*) FILTER (WHERE payment_status <> 'paid' AND status NOT IN ('cancelled', 'refunded', 'returned')) AS n_unpaid
       FROM orders`)).rows[0];
-    // Hoàn MỘT PHẦN (0070) trừ khỏi doanh thu theo NGÀY TẠO bút toán. CHỈ đơn còn
-    // payment_status='paid': đơn hoàn TOÀN BỘ đã lật 'refunded' và tự rớt khỏi
-    // rev_* ở trên — trừ thêm bút toán của nó là trừ ĐÚP.
+    // Hoàn tiền (0070) trừ khỏi doanh thu theo NGÀY TẠO bút toán — MỌI phiếu trên đơn
+    // từng paid (ever-paid ở trên KHÔNG loại đơn refunded khỏi doanh thu nữa nên không
+    // trừ đúp), TRỪ kind='edit_adjustment' (0081): phiếu chênh sửa-đơn-đã-trả đã phản
+    // ánh qua header đơn bị hạ — trừ thêm là trừ ĐÚP đúng khoản chênh.
     const rf = (await c.query(`
       SELECT
         coalesce(sum(r.amount_vnd) FILTER (WHERE r.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh' >= date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh')), 0) AS rf_today,
@@ -48,7 +52,7 @@ async function stats(res, ctx) {
           AND r.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh' < date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '6 days'), 0) AS rf_prev7,
         coalesce(sum(r.amount_vnd), 0) AS rf_all
       FROM refunds r JOIN orders o ON o.id = r.order_id
-      WHERE o.payment_status = 'paid'`)).rows[0];
+      WHERE o.paid_at IS NOT NULL AND r.kind <> 'edit_adjustment'`)).rows[0];
     // Bán chạy 30 ngày + ẢNH: gộp theo tên/sku (snapshot), lấy biến thể GẦN NHẤT làm đại
     // diện → resolve ảnh (ưu tiên ảnh riêng biến thể, không có thì ảnh chính sản phẩm).
     const top = (await c.query(`
@@ -63,7 +67,7 @@ async function stats(res, ctx) {
                  sum(l.qty)::int AS qty, sum(l.qty * l.unit_price_vnd)::bigint AS revenue,
                  (array_agg(l.variant_id ORDER BY o.paid_at DESC))[1] AS vid
             FROM order_lines l JOIN orders o ON o.id = l.order_id
-           WHERE o.payment_status = 'paid' AND o.paid_at >= now() - interval '30 days'
+           WHERE o.paid_at >= now() - interval '30 days'
            GROUP BY l.title_snapshot, l.sku_snapshot
            ORDER BY revenue DESC LIMIT 5
         ) t`)).rows;
@@ -75,15 +79,15 @@ async function stats(res, ctx) {
                date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '${DAYS - 1} days',
                date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh'),
                interval '1 day') AS d
-        LEFT JOIN orders o ON o.payment_status = 'paid'
+        LEFT JOIN orders o ON o.paid_at IS NOT NULL
              AND date_trunc('day', o.paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh') = d
        GROUP BY d ORDER BY d`)).rows;
-    // Bút toán hoàn một phần theo ngày (giờ VN) — trừ vào series cùng logic với rf ở trên.
+    // Bút toán hoàn theo ngày (giờ VN) — trừ vào series cùng quy tắc sổ cái với rf ở trên.
     const rfByDay = (await c.query(`
       SELECT to_char(date_trunc('day', r.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh'), 'YYYY-MM-DD') AS day,
              sum(r.amount_vnd)::bigint AS refunded
         FROM refunds r JOIN orders o ON o.id = r.order_id
-       WHERE o.payment_status = 'paid' AND r.created_at >= now() - interval '${DAYS + 1} days'
+       WHERE o.paid_at IS NOT NULL AND r.kind <> 'edit_adjustment' AND r.created_at >= now() - interval '${DAYS + 1} days'
        GROUP BY 1`)).rows;
     const rfMap = new Map(rfByDay.map((r) => [r.day, Number(r.refunded)]));
     for (const s of series) s.revenue = Number(s.revenue) - (rfMap.get(s.day) ?? 0);

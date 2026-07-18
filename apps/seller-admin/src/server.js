@@ -872,6 +872,59 @@ async function couponDelete(req, res, me, cookie, shopId, id) {
   await sellerApi('DELETE', `/shops/${shopId}/coupons/${id}`, { cookie });
   return redirect(res, `/shops/${shopId}/coupons`);
 }
+// ── Flash sale (khuyến mãi tự động; catalog.write) ───────────────────────────
+async function promotionsPage(res, me, cookie, shopId, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'promotions');
+  const r = await sellerApi('GET', `/shops/${shopId}/promotions`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.status === 403 ? 'Chỉ chủ shop / quản trị / nhân viên sản phẩm quản lý được flash sale.' : (r.json?.error ?? 'Không tải được flash sale.')));
+  return sendHtml(res, err ? 400 : 200, V.renderPromotions(ctx, shopId, r.json, notice, err));
+}
+async function promotionCreate(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const body = { title: f.title, kind: f.kind, value: f.value, scope: f.scope, starts_at: f.starts_at, ends_at: f.ends_at };
+  const r = await sellerApi('POST', `/shops/${shopId}/promotions`, { cookie, body });
+  if (r.status !== 201) return promotionsPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không tạo được chương trình.');
+  // scope=products → sang trang chi tiết để chọn SP; scope=all → về danh sách kèm cảnh báo (nếu có).
+  if (f.scope === 'products') return redirect(res, `/shops/${shopId}/promotions/${r.json.id}`);
+  return promotionsPage(res, me, cookie, shopId, r.json.warning ? `Đã tạo. ${r.json.warning}` : 'Đã tạo chương trình flash sale.', null);
+}
+async function promotionDetailPage(res, me, cookie, shopId, id, q, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'promotions');
+  const r = await sellerApi('GET', `/shops/${shopId}/promotions/${id}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tìm thấy chương trình.'));
+  let picker = null;
+  const pq = (q ?? '').trim().slice(0, 100);
+  if (pq && r.json.scope === 'products') {
+    const pr = await sellerApi('GET', `/shops/${shopId}/products?q=${encodeURIComponent(pq)}`, { cookie });
+    picker = { q: pq, products: pr.status === 200 ? (pr.json.products ?? []) : [], truncated: pr.json?.truncated === true };
+  } else if (pq) picker = { q: pq, products: [] };
+  return sendHtml(res, 200, V.renderPromotionDetail(ctx, shopId, r.json, picker, err));
+}
+async function promotionEnd(req, res, me, cookie, shopId, id) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  await sellerApi('PATCH', `/shops/${shopId}/promotions/${id}`, { cookie, body: { active: false } });
+  return redirect(res, `/shops/${shopId}/promotions`);
+}
+async function promotionDelete(req, res, me, cookie, shopId, id) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  await sellerApi('DELETE', `/shops/${shopId}/promotions/${id}`, { cookie });
+  return redirect(res, `/shops/${shopId}/promotions`);
+}
+async function promotionAddProduct(req, res, me, cookie, shopId, id) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await sellerApi('POST', `/shops/${shopId}/promotions/${id}/products`, { cookie, body: { product_id: f.product_id } });
+  if (r.status !== 200) return promotionDetailPage(res, me, cookie, shopId, id, null, r.json?.error ?? 'Không thêm được sản phẩm.');
+  return redirect(res, `/shops/${shopId}/promotions/${id}`);
+}
+async function promotionRemoveProduct(req, res, me, cookie, shopId, id, productId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  await sellerApi('DELETE', `/shops/${shopId}/promotions/${id}/products/${productId}`, { cookie });
+  return redirect(res, `/shops/${shopId}/promotions/${id}`);
+}
 async function productCategoriesSave(req, res, me, cookie, shopId, pid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const params = await readFormAll(req);
@@ -1953,6 +2006,13 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/coupons$`).exec(p)) && req.method === 'POST') return couponCreate(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/coupons/${UUID}/toggle$`).exec(p)) && req.method === 'POST') return couponToggle(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/coupons/${UUID}/delete$`).exec(p)) && req.method === 'POST') return couponDelete(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/promotions$`).exec(p)) && req.method === 'GET') return promotionsPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/promotions$`).exec(p)) && req.method === 'POST') return promotionCreate(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/promotions/${UUID}$`).exec(p)) && req.method === 'GET') return promotionDetailPage(res, me, cookie, m[1], m[2], url.searchParams.get('q'), null);
+    if ((m = new RegExp(`^/shops/${UUID}/promotions/${UUID}/end$`).exec(p)) && req.method === 'POST') return promotionEnd(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/promotions/${UUID}/delete$`).exec(p)) && req.method === 'POST') return promotionDelete(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/promotions/${UUID}/products$`).exec(p)) && req.method === 'POST') return promotionAddProduct(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/promotions/${UUID}/products/${UUID}/remove$`).exec(p)) && req.method === 'POST') return promotionRemoveProduct(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'GET') return productDetail(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'POST') return productUpdate(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/(publish|archive)$`).exec(p)) && req.method === 'POST') return productStatus(res, me, cookie, m[1], m[2], m[3]);

@@ -200,7 +200,8 @@ function sideNav(ctx) {
           + it(`${base}/cod`, 'Đối soát COD', IC_COIN, ctx.active === 'cod', ORDER_ROLES.has(ctx.role))
           + it(`${base}/products`, 'Sản phẩm', IC_BOX, ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/categories`, 'Danh mục', IC_TAG, ctx.active === 'categories', CATALOG_ROLES.has(ctx.role))
-          + it(`${base}/coupons`, 'Khuyến mãi', IC_TICKET, ctx.active === 'coupons', CATALOG_ROLES.has(ctx.role))
+          + it(`${base}/promotions`, 'Flash sale', IC_TREND, ctx.active === 'promotions', CATALOG_ROLES.has(ctx.role))
+          + it(`${base}/coupons`, 'Mã giảm giá', IC_TICKET, ctx.active === 'coupons', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/reviews`, 'Đánh giá', IC_STAR, ctx.active === 'reviews', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/pages`, 'Trang nội dung', IC_FILE, ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/blog`, 'Blog', IC_NEWS, ctx.active === 'blog', CONTENT_ROLES.has(ctx.role))
@@ -1548,8 +1549,9 @@ export function renderCoupons(ctx, shopId, data, notice, err) {
       <form method="POST" action="${base}/coupons/${esc(c.id)}/toggle" style="margin:0"><input type="hidden" name="active" value="${c.active ? '' : '1'}"><button class="btn alt sm" type="submit">${c.active ? 'Tắt' : 'Bật'}</button></form>
       <form method="POST" action="${base}/coupons/${esc(c.id)}/delete" style="margin:0"><button class="btn warn sm" type="submit">Xoá</button></form>
     </div></td></tr>`).join('');
-  return layout('Khuyến mãi', ctx, `
-    <h1>Khuyến mãi</h1>
+  return layout('Mã giảm giá', ctx, `
+    <h1>Mã giảm giá</h1>
+    <p class="muted">Khách <strong>nhập mã</strong> ở giỏ hàng để được giảm. Muốn giảm giá <strong>tự động theo khung giờ</strong> (không cần mã) → dùng <a href="${base}/promotions">Flash sale</a>.</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
     <div class="card"><h2 style="margin-top:0">Tạo mã giảm giá</h2>
@@ -1567,6 +1569,98 @@ export function renderCoupons(ctx, shopId, data, notice, err) {
     <div class="card">${cps.length
       ? `<table><thead><tr><th>Mã</th><th>Ưu đãi</th><th>Đã dùng</th><th>Hết hạn</th><th>Trạng thái</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
       : '<p class="muted">Chưa có mã giảm giá. Tạo ở trên để chạy khuyến mãi.</p>'}</div>`);
+}
+
+// Flash sale (0082): chương trình giảm giá TỰ ĐỘNG theo khung giờ (không mã). Storefront tự
+// hiện giá sale + gạch giá gốc. Danh sách nhóm theo trạng thái + form tạo (no-JS).
+const PROMO_STATUS = { off: ['Đã tắt', 'archived'], upcoming: ['Sắp diễn ra', 'pending'], running: ['Đang chạy', 'active'], ended: ['Đã kết thúc', 'archived'] };
+// datetime-local value theo GIỜ VN (input hiển thị giờ địa phương của khách; ta gửi chuỗi
+// VN wall-clock, seller parse +07:00). Format ISO ts → 'YYYY-MM-DDTHH:MM' giờ VN.
+const vnLocal = (ts) => { const p = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(ts)).reduce((o, x) => (o[x.type] = x.value, o), {}); return `${p.year}-${p.month}-${p.day}T${p.hour === '24' ? '00' : p.hour}:${p.minute}`; };
+const vnFull = (ts) => new Intl.DateTimeFormat('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(ts));
+export function renderPromotions(ctx, shopId, data, notice, err) {
+  const base = `/shops/${esc(shopId)}`;
+  const ps = data?.promotions ?? [];
+  const fmtVal = (p) => p.kind === 'percent' ? `-${esc(p.value)}%` : `-${money(p.value)}`;
+  const scopeTxt = (p) => p.scope === 'all' ? 'Toàn shop' : `${esc(p.product_count ?? 0)} sản phẩm`;
+  const row = (p) => `<tr>
+    <td><a href="${base}/promotions/${esc(p.id)}">${esc(p.title)}</a></td>
+    <td><strong>${fmtVal(p)}</strong></td>
+    <td class="muted">${scopeTxt(p)}</td>
+    <td class="muted" style="font-size:.85rem">${vnFull(p.starts_at)}<br>→ ${vnFull(p.ends_at)}</td>
+    <td>${badge(PROMO_STATUS[p.status]?.[1] ?? 'archived', PROMO_STATUS[p.status]?.[0] ?? p.status)}</td>
+    <td style="text-align:right"><div class="thumb-act" style="justify-content:flex-end">
+      ${p.active ? `<form method="POST" action="${base}/promotions/${esc(p.id)}/end" style="margin:0"><button class="btn alt sm" type="submit">Kết thúc sớm</button></form>` : ''}
+      <form method="POST" action="${base}/promotions/${esc(p.id)}/delete" style="margin:0"><button class="btn warn sm" type="submit">Xoá</button></form>
+    </div></td></tr>`;
+  const table = ps.length
+    ? `<table><thead><tr><th>Tên</th><th>Ưu đãi</th><th>Phạm vi</th><th>Thời gian (giờ VN)</th><th>Trạng thái</th><th></th></tr></thead><tbody>${ps.map(row).join('')}</tbody></table>`
+    : '<p class="muted">Chưa có chương trình. Tạo ở trên để chạy flash sale.</p>';
+  return layout('Flash sale', ctx, `
+    <h1>Flash sale — khuyến mãi tự động</h1>
+    <p class="muted">Giảm giá <strong>tự động theo khung giờ</strong> (khách KHÔNG cần nhập mã). Cửa hàng tự hiện giá sale + gạch giá gốc + badge %. Hết giờ giá tự về như cũ.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
+    <div class="card"><h2 style="margin-top:0">Tạo chương trình</h2>
+      <form method="POST" action="${base}/promotions">
+        <div class="filters" style="align-items:end">
+          <div><label>Tên chương trình</label><input name="title" required maxlength="120" placeholder="Sale cuối tuần" style="width:200px"></div>
+          <div><label>Loại giảm</label><select name="kind"><option value="percent">% phần trăm</option><option value="fixed">Số tiền (đ)</option></select></div>
+          <div><label>Giá trị</label><input name="value" type="number" min="1" required placeholder="20" style="width:110px"></div>
+          <div><label>Phạm vi</label><select name="scope"><option value="all">Toàn bộ sản phẩm</option><option value="products">Chọn sản phẩm</option></select></div>
+        </div>
+        <div class="filters" style="align-items:end;margin-top:8px">
+          <div><label>Bắt đầu (giờ VN)</label><input name="starts_at" type="datetime-local" required style="width:210px"></div>
+          <div><label>Kết thúc (giờ VN)</label><input name="ends_at" type="datetime-local" required style="width:210px"></div>
+          <button class="btn" type="submit">Tạo chương trình</button>
+        </div>
+      </form>
+      <p class="muted" style="font-size:.82rem;margin-bottom:0">Chọn "Chọn sản phẩm" rồi bấm vào chương trình để thêm từng sản phẩm. Nhiều chương trình trùng sản phẩm → khách hưởng mức giảm <strong>sâu nhất</strong> (không cộng dồn).</p>
+    </div>
+    <div class="card">${table}</div>`);
+}
+
+// Chi tiết chương trình + picker sản phẩm 2 bước (scope=products). data từ GET /promotions/:id;
+// picker {q, products, truncated} từ GET /products?q= (tìm không dấu). No-JS: mỗi SP 1 form Thêm.
+export function renderPromotionDetail(ctx, shopId, p, picker, err) {
+  const base = `/shops/${esc(shopId)}`;
+  const fmtVal = p.kind === 'percent' ? `-${esc(p.value)}%` : `-${money(p.value)}`;
+  const chosen = p.products ?? [];
+  const chosenIds = new Set(chosen.map((x) => x.product_id));
+  const warnFixed = p.kind === 'fixed' ? chosen.filter((x) => Number(p.value) >= Number(x.price_vnd)) : [];
+  const chosenRows = chosen.length ? chosen.map((x) => `<tr>
+      <td>${esc(x.title)}</td><td class="num">${money(x.price_vnd)}</td>
+      <td style="text-align:right"><form method="POST" action="${base}/promotions/${esc(p.id)}/products/${esc(x.product_id)}/remove" style="margin:0"><button class="btn warn sm" type="submit">Gỡ</button></form></td>
+    </tr>`).join('') : `<tr><td colspan="3" class="muted">Chưa chọn sản phẩm nào — chương trình chưa áp cho ai.</td></tr>`;
+  const found = picker?.products ?? [];
+  const pickRows = found.map((v) => `<tr>
+      <td>${esc(v.title)}</td><td class="num">${money(v.price_vnd)}</td>
+      <td style="text-align:right">${chosenIds.has(v.id)
+        ? '<span class="muted">đã thêm</span>'
+        : `<form method="POST" action="${base}/promotions/${esc(p.id)}/products" style="margin:0"><input type="hidden" name="product_id" value="${esc(v.id)}"><button class="btn alt sm" type="submit">Thêm</button></form>`}</td>
+    </tr>`).join('');
+  return layout('Chi tiết flash sale', ctx, `
+    <a class="muted" href="${base}/promotions">← Danh sách flash sale</a>
+    <h1>${esc(p.title)}</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <div class="card"><span class="pill">${badge(PROMO_STATUS[p.status]?.[1] ?? 'archived', PROMO_STATUS[p.status]?.[0] ?? p.status)}</span>
+      <span class="pill">Ưu đãi <strong>${fmtVal}</strong></span>
+      <span class="pill">${p.scope === 'all' ? 'Toàn shop' : 'Chọn sản phẩm'}</span>
+      <p class="muted" style="margin:10px 0 0">Từ <strong>${vnFull(p.starts_at)}</strong> đến <strong>${vnFull(p.ends_at)}</strong> (giờ VN).</p>
+    </div>
+    ${p.scope === 'all' ? `<div class="card"><p class="muted" style="margin:0">Phạm vi TOÀN SHOP — mọi sản phẩm đang bán đều được giảm ${fmtVal} trong khung giờ.</p></div>` : `
+    ${warnFixed.length ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb"><p style="margin:0" class="muted">⚠ ${warnFixed.length} sản phẩm có giá ≤ mức giảm cố định — sẽ về 0đ khi sale.</p></div>` : ''}
+    <div class="card"><h2 style="margin-top:0">Sản phẩm trong chương trình</h2>
+      <table><thead><tr><th>Sản phẩm</th><th class="num">Giá</th><th></th></tr></thead><tbody>${chosenRows}</tbody></table></div>
+    <div class="card"><h2 style="margin-top:0">Thêm sản phẩm</h2>
+      <form method="GET" action="${base}/promotions/${esc(p.id)}" class="filters" style="align-items:end">
+        <div><label>Tìm sản phẩm (tên / SKU)</label><input name="q" value="${esc(picker?.q ?? '')}" maxlength="100" placeholder="tên hoặc mã SKU" style="width:240px"></div>
+        <button class="btn alt sm" type="submit">Tìm</button>
+      </form>
+      ${picker?.q ? (found.length
+        ? `<table style="margin-top:10px"><thead><tr><th>Sản phẩm</th><th class="num">Giá</th><th></th></tr></thead><tbody>${pickRows}</tbody></table>${picker.truncated ? '<p class="muted" style="font-size:.82rem">Chỉ hiện 100 kết quả đầu — gõ rõ hơn để lọc.</p>' : ''}`
+        : '<p class="muted" style="margin-top:10px">Không tìm thấy sản phẩm.</p>')
+        : '<p class="muted" style="margin-top:10px">Gõ từ khoá rồi bấm Tìm để thêm sản phẩm.</p>'}</div>`}`);
 }
 
 // Blog: danh sách bài viết.

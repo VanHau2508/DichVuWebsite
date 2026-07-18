@@ -172,6 +172,26 @@ async function resolveShop(hostname) {
   const { rows } = await db.query(`SELECT shop_id FROM domains WHERE hostname = $1 AND verified_at IS NOT NULL`, [hostname]);
   return rows[0]?.shop_id ?? null;
 }
+const CUSTOMER_COOKIE = '__Host-cust_session';
+// Khách đăng nhập (0083): đọc cookie __Host-cust_session → phiên hợp lệ + khách active. Trả
+// {id, full_name, phone, email, addr} để prefill + stamp orders.customer_id. app_checkout có
+// SELECT customers/customer_sessions/customer_addresses theo cột (KHÔNG password_hash). Địa chỉ
+// đọc theo customer_id RÚT TỪ PHIÊN (không từ form) — không IDOR.
+async function resolveCustomer(shopId, req) {
+  const tok = parseCookies(req)[CUSTOMER_COOKIE];
+  if (!tok) return null;
+  return withTenant(shopId, async (c) => {
+    const cu = (await c.query(
+      `SELECT cu.id, cu.full_name, cu.phone, cu.email FROM customer_sessions s JOIN customers cu ON cu.id = s.customer_id
+        WHERE s.token_hash = $1 AND s.shop_id = current_shop_id() AND s.revoked_at IS NULL AND s.expires_at > now() AND cu.status = 'active'`,
+      [sha256(tok)])).rows[0];
+    if (!cu) return null;
+    const addr = (await c.query(
+      `SELECT recipient_name, phone, line1, ward, district, province FROM customer_addresses
+        WHERE customer_id = $1 ORDER BY is_default DESC, created_at LIMIT 1`, [cu.id])).rows[0] ?? null;
+    return { ...cu, addr };
+  }).catch(() => null);
+}
 async function withTenant(shopId, fn) {
   const c = await db.connect();
   try {
@@ -628,12 +648,14 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     )).rows[0].value;
 
     const lookupToken = genToken();
+    // customer_id (0083): ĐÓNG DẤU khách đăng nhập → đơn tự vào lịch sử /account/orders. RÚT
+    // TỪ PHIÊN (ctx.customerId), KHÔNG từ form. FK composite (shop_id,customer_id) chống gán chéo.
     const order = (await c.query(
       `INSERT INTO orders (shop_id, order_number, status, payment_status, payment_method,
          customer_name, customer_phone, customer_email, shipping_address,
-         subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, lookup_token_hash, payment_ref, qr_account, coupon_code, client_ip_hash)
-       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id`,
-      [num, paymentMethod, name, phoneCanon ?? phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount, couponCode, ipHash],
+         subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, lookup_token_hash, payment_ref, qr_account, coupon_code, client_ip_hash, customer_id)
+       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING id`,
+      [num, paymentMethod, name, phoneCanon ?? phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount, couponCode, ipHash, ctx.customerId ?? null],
     )).rows[0];
     for (const ln of lines) {
       // unit_cost_vnd (0081): snapshot GIÁ VỐN qua subquery — cost không bao giờ vào object
@@ -682,7 +704,8 @@ async function checkout(req, res, body, ctx) {
   const f = parseOrderInput({ name: body.customer?.name, phone: body.customer?.phone, email: body.customer?.email, address: body.address, payment_method: body.payment_method });
   if (f.error) return send(res, 400, { error: f.error });
   const token = parseCookies(req)[CART_COOKIE];
-  const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, ctx, token, idemKey, f));
+  const cust = await resolveCustomer(ctx.shopId, req);
+  const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, customerId: cust?.id ?? null }, token, idemKey, f));
   return send(res, out.code, out.body, out.replay ? { 'idempotency-replayed': 'true' } : {});
 }
 
@@ -741,8 +764,9 @@ async function checkoutPlace(req, res, form, ctx) {
   }
 
   const token = parseCookies(req)[CART_COOKIE];
+  const cust = await resolveCustomer(ctx.shopId, req);
   try {
-    const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, ctx, token, idemKey, f));
+    const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, customerId: cust?.id ?? null }, token, idemKey, f));
     return redirect(res, `/checkout/success?number=${out.body.order_number}&token=${encodeURIComponent(out.body.lookup_token)}&placed=1`);
   } catch (err) {
     // Phí ship đã cập nhật (ship_seen lệch) → dựng lại form: summarize theo tỉnh đã chọn
@@ -785,7 +809,14 @@ async function getCheckoutPage(req, res, _body, ctx) {
     return cart ? summarize(c, cart.id) : { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 };
   });
   if (!summary.items.length) return redirect(res, '/cart');       // giỏ trống → về giỏ
-  return sendHtml(res, 200, renderCheckout(await getShopName(ctx.shopId), summary, genToken(), { formTs: issueFormTs() }));
+  // Khách đăng nhập → điền nhanh tên/SĐT/email + địa chỉ mặc định đã lưu (no-JS, prefill).
+  const cust = await resolveCustomer(ctx.shopId, req);
+  const prefill = cust ? {
+    name: cust.full_name ?? '', phone: cust.phone ?? '', email: cust.email ?? '',
+    address_line: cust.addr?.line1 ?? '', province: cust.addr?.province ?? '',
+    logged_in: true,
+  } : undefined;
+  return sendHtml(res, 200, renderCheckout(await getShopName(ctx.shopId), summary, genToken(), { formTs: issueFormTs(), prefill }));
 }
 
 async function getLookupPage(req, res, _body, ctx) {

@@ -7,6 +7,7 @@ import { base32Decode } from '../../../packages/auth/src/base32.js';
 
 const AUTH = 'http://auth:3020', PLATFORM = 'http://platform:3030';
 const ACC = new URL(process.env.ACCOUNT_URL ?? 'http://account:3062');
+const CO = new URL(process.env.CHECKOUT_URL ?? 'http://checkout:3060');
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 4 });
 const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic='user.invited' AND payload->>'to'=$1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
@@ -58,6 +59,21 @@ async function makeStaff() {
 }
 const mkShop = async (staff, slug) => { const r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staff, origin: OO }); return { shopId: r.json.id, host: `${slug}.nentang.vn` }; };
 const N = (x) => Number(x);
+// Gọi checkout service với Host shop + cart cookie + cust cookie (đăng nhập).
+function co(host, method, path, { json, cartTok, custTok, idem } = {}) {
+  return new Promise((resolve, reject) => {
+    const data = json !== undefined ? JSON.stringify(json) : null;
+    const headers = { host, origin: `https://${host}` };
+    if (data != null) { headers['content-type'] = 'application/json'; headers['content-length'] = Buffer.byteLength(data); }
+    const cks = []; if (cartTok) cks.push(`__Host-cart=${cartTok}`); if (custTok) cks.push(`__Host-cust_session=${custTok}`);
+    if (cks.length) headers.cookie = cks.join('; ');
+    if (idem) headers['idempotency-key'] = idem;
+    const req = http.request({ hostname: CO.hostname, port: CO.port, path, method, headers }, (rs) => {
+      let b = ''; rs.on('data', (d) => (b += d)); rs.on('end', () => { let j = null; try { j = b ? JSON.parse(b) : null; } catch {} let tok = cartTok; for (const c of rs.headers['set-cookie'] ?? []) { const m = /^__Host-cart=([^;]*)/.exec(c); if (m) tok = m[1]; } resolve({ status: rs.statusCode, json: j, body: b, cartTok: tok }); });
+    });
+    req.on('error', reject); if (data != null) req.write(data); req.end();
+  });
+}
 
 async function main() {
   const staff = await makeStaff();
@@ -152,6 +168,27 @@ async function main() {
   // Xoá địa chỉ của mình → 0 còn 1.
   await acc(host, 'POST', '/account/addresses/delete', { origin: O, cookie: tok, form: { id: addrs[0].id } });
   N((await owner.query(`SELECT count(*)::int n FROM customer_addresses WHERE customer_id=$1`, [custId])).rows[0].n) === 1 ? ok('xoá địa chỉ của mình → còn 1') : bad('xoá địa chỉ mình lỗi');
+
+  sect('7. Tích hợp checkout: đăng nhập → prefill + đặt đơn tự vào lịch sử (customer_id)');
+  // Sản phẩm + tồn cho shop A (owner SQL).
+  const pId = (await owner.query(`INSERT INTO products (shop_id,slug,title,price_vnd,status) VALUES ($1,$2,'SP Checkout',90000,'active') RETURNING id`, [A.shopId, `sp-${uniq()}`])).rows[0].id;
+  const vId = (await owner.query(`INSERT INTO variants (shop_id,product_id,sku,price_vnd) VALUES ($1,$2,$3,90000) RETURNING id`, [A.shopId, pId, `SKU-${uniq()}`])).rows[0].id;
+  await owner.query(`INSERT INTO inventory_levels (shop_id,variant_id,on_hand) VALUES ($1,$2,50)`, [A.shopId, vId]);
+  // GET /checkout khi đăng nhập → prefill tên/SĐT khách (đã có địa chỉ 'Nguyễn B' mặc định).
+  let cart = (await co(host, 'POST', '/cart/items', { json: { variant_id: vId, qty: 1 } })).cartTok;
+  let r2 = await new Promise((rs) => { const req = http.request({ hostname: CO.hostname, port: CO.port, path: '/checkout', method: 'GET', headers: { host, accept: 'text/html', cookie: `__Host-cart=${cart}; __Host-cust_session=${tok}` } }, (x) => { let b = ''; x.on('data', (d) => b += d); x.on('end', () => rs({ status: x.statusCode, body: b })); }); req.end(); });
+  r2.status === 200 && r2.body.includes('Nguyễn Khách') ? ok('GET /checkout đăng nhập → prefill tên khách') : bad('không prefill', r2.body.match(/name="name"[^>]*/)?.[0]);
+  // Đặt đơn qua JSON path với cust cookie → order.customer_id = khách.
+  const rr = await co(host, 'POST', '/checkout', { json: { customer: { name: 'Nguyễn Khách', phone: '0900111222', email }, address: { line: '1 Test', province: 'Hà Nội' }, payment_method: 'cod' }, cartTok: cart, custTok: tok, idem: `cust-${uniq()}` });
+  const stampedId = rr.json?.order_number ? (await owner.query(`SELECT customer_id FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, rr.json.order_number])).rows[0]?.customer_id : null;
+  rr.status === 201 && stampedId === custId ? ok('đặt đơn khi đăng nhập → orders.customer_id = khách (stamp)') : bad('không stamp customer_id', `${rr.status} ${stampedId}`);
+  r = await acc(host, 'GET', '/account/orders', { cookie: tok });
+  r.body.includes(`#${rr.json.order_number}`) ? ok('đơn vừa đặt TỰ xuất hiện trong lịch sử /account/orders') : bad('đơn không vào lịch sử');
+  // Khách VÃNG LAI (không cust cookie) vẫn đặt được, customer_id NULL.
+  let cart2 = (await co(host, 'POST', '/cart/items', { json: { variant_id: vId, qty: 1 } })).cartTok;
+  const rg = await co(host, 'POST', '/checkout', { json: { customer: { name: 'Vãng Lai', phone: '0900999888' }, address: { line: 'x', province: 'Hà Nội' }, payment_method: 'cod' }, cartTok: cart2, idem: `guest-${uniq()}` });
+  const guestCid = rg.json?.order_number ? (await owner.query(`SELECT customer_id FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, rg.json.order_number])).rows[0]?.customer_id : 'x';
+  rg.status === 201 && guestCid === null ? ok('khách VÃNG LAI vẫn đặt được, customer_id NULL (tương thích ngược)') : bad('khách vãng lai lỗi', `${rg.status} ${guestCid}`);
 
   sect('5. Đăng xuất → phiên revoked');
   r = await acc(host, 'POST', '/account/logout', { origin: O, cookie: tok });

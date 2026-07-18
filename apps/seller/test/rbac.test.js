@@ -65,6 +65,14 @@ test('bốn vai trò khớp CHECK của DB', () => {
   assert.deepEqual(ROLES.sort(), ['admin', 'catalog_manager', 'order_manager', 'owner']);
 });
 
+test('reports.read: owner + admin xem báo cáo lãi; manager thì không (giá vốn = bí mật kinh doanh)', () => {
+  assert.equal(can('owner', 'reports.read'), true);
+  assert.equal(can('admin', 'reports.read'), true);
+  assert.equal(can('catalog_manager', 'reports.read'), false); // NHẬP được cost (catalog.write) nhưng không XEM lãi
+  assert.equal(can('order_manager', 'reports.read'), false);
+  assert.equal(needsStepUp('reports.read'), false); // xem hằng ngày, không step-up
+});
+
 test('privacy.erase: CHỈ owner + bắt buộc step-up (ẩn danh là thao tác huỷ dữ liệu)', () => {
   assert.equal(can('owner', 'privacy.erase'), true);
   assert.equal(can('admin', 'privacy.erase'), false);

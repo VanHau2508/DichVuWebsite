@@ -117,6 +117,8 @@ async function main() {
   // Seed tồn PHẢI kèm ledger 'receive' (giữ bất biến tổng delta == on_hand cho check dưới).
   await owner.query(`INSERT INTO inventory_levels (shop_id, variant_id, on_hand) VALUES ($1,$2,10) ON CONFLICT (shop_id,variant_id) DO UPDATE SET on_hand=10`, [A.shopId, redM]);
   await owner.query(`INSERT INTO inventory_ledger (shop_id, variant_id, delta, kind, reason) VALUES ($1,$2,10,'receive','seed test')`, [A.shopId, redM]);
+  // + giá VỐN (0081) trên biến thể sắp mồ côi — tổ hợp mới KHÔNG được kế thừa (cùng lớp bug).
+  await owner.query(`INSERT INTO variant_costs (shop_id, variant_id, cost_vnd) VALUES ($1,$2,300000) ON CONFLICT (shop_id,variant_id) DO UPDATE SET cost_vnd=300000`, [A.shopId, redM]);
   // ĐỔI TÊN trục 'Màu'→'Mau' → mọi biến thể cũ thành MỒ CÔI (khoá combo lệch), rồi
   // THÊM 'Vàng' → tổ hợp mới lấy biến thể mồ côi từ pool. Nó KHÔNG được kế thừa 480k/tồn 10.
   r = await a.put(`/products/${pid}/options`, { options: [{ name: 'Mau', values: ['Đỏ', 'Xanh'] }, { name: 'Size', values: ['M', 'L', 'XL'] }] });
@@ -131,6 +133,10 @@ async function main() {
     ? ok('tổ hợp Vàng = GIÁ SẢN PHẨM 500k (không kế thừa giá khuyến mãi 480k)') : bad('tổ hợp mới sai giá', JSON.stringify(vang));
   vang.every((x) => Number(x.avail) === 0)
     ? ok('tổ hợp Vàng tồn BÁN ĐƯỢC = 0 (không kế thừa tồn ảo)') : bad('tổ hợp mới có tồn ảo', JSON.stringify(vang));
+  const vangCost = Number((await owner.query(
+    `SELECT count(*)::int n FROM variant_costs vc JOIN variants v ON v.id = vc.variant_id
+      WHERE v.product_id = $1 AND v.title LIKE 'Vàng /%'`, [pid])).rows[0].n);
+  vangCost === 0 ? ok('tổ hợp Vàng KHÔNG kế thừa giá vốn biến thể mồ côi (variant_costs đã xoá)') : bad(`tổ hợp mới mang cost ma: ${vangCost} dòng`);
   // Bất biến ledger: tổng delta == on_hand cho mọi variant của SP (reset tồn phải ghi ledger).
   const ledgerOk = (await owner.query(
     `SELECT count(*)::int bad FROM (
@@ -157,6 +163,23 @@ async function main() {
   r.status === 400 ? ok('giá âm → 400') : bad('không chặn giá âm', r.raw);
   r = await S(Bs.shopId, Bs.cookie).patch(`/products/${pid}/variants/${anyV.id}`, { price_vnd: 1000 });
   r.status === 404 ? ok('shop B PATCH giá biến thể shop A → 404 (cô lập)') : bad('rò sửa giá chéo shop', r.raw);
+
+  sect('3b. Giá vốn (0081): PATCH nhập/sửa/xoá + cô lập');
+  const anyV2 = (await a.get(`/products/${pid}`)).json.variants[0];
+  r = await a.patch(`/products/${pid}/variants/${anyV2.id}`, { cost_vnd: 350000 });
+  r.status === 200 ? ok('PATCH chỉ cost_vnd (không trường variants nào) → 200') : bad('cost-only PATCH lỗi', r.raw);
+  let vGot = (await a.get(`/products/${pid}`)).json.variants.find((v) => v.id === anyV2.id);
+  Number(vGot.cost_vnd) === 350000 ? ok('getProduct trả cost_vnd=350.000') : bad(`cost đọc sai: ${vGot.cost_vnd}`);
+  r = await a.patch(`/products/${pid}/variants/${anyV2.id}`, { cost_vnd: 999.5 });
+  r.status === 400 ? ok('cost thập phân → 400') : bad('không chặn cost rác', r.raw);
+  r = await a.patch(`/products/${pid}/variants/${anyV2.id}`, { cost_vnd: null });
+  vGot = (await a.get(`/products/${pid}`)).json.variants.find((v) => v.id === anyV2.id);
+  r.status === 200 && vGot.cost_vnd == null ? ok('cost=null → xoá dòng (getProduct trả null)') : bad('xoá cost lỗi', `${r.status} ${vGot.cost_vnd}`);
+  r = await S(Bs.shopId, Bs.cookie).patch(`/products/${pid}/variants/${anyV2.id}`, { cost_vnd: 1000 });
+  r.status === 404 ? ok('shop B PATCH cost biến thể shop A → 404 (cô lập)') : bad('rò cost chéo shop', r.raw);
+  const auditCost = (await owner.query(
+    `SELECT metadata FROM audit_logs WHERE shop_id=$1 AND action='variant.updated' AND metadata->'changed'->'cost_vnd' IS NOT NULL ORDER BY created_at DESC LIMIT 1`, [A.shopId])).rows;
+  auditCost.length === 1 ? ok('audit variant.updated ghi diff cost_vnd from/to') : bad('thiếu audit cost');
 
   sect('4. Validation + cô lập chéo shop');
   r = await a.put(`/products/${pid}/options`, { options: [{ name: 'A', values: Array.from({ length: 11 }, (_, i) => `a${i}`) }, { name: 'B', values: Array.from({ length: 11 }, (_, i) => `b${i}`) }] });

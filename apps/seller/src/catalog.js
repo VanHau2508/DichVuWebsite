@@ -31,6 +31,9 @@ const validWeight = (w) => w === null || (isInt(w) && w >= 1 && w <= 50000);
 // Giá GẠCH NGANG (compare-at, 0067): CHỈ hiển thị — checkout luôn tính price_vnd.
 // null = xoá. Khi đặt phải > giá bán (kiểm ở từng handler, cần biết giá hiệu lực).
 const validCompareAt = (x) => x === null || (isInt(x) && x >= 0 && x <= MAX_PRICE);
+// Giá VỐN (0081): bảng riêng variant_costs — null = xoá. KHÔNG validate cost<giá bán
+// (bán lỗ chủ đích là hợp lệ — flash sale/xả kho; UI chỉ cảnh báo mềm).
+const validCost = (x) => x === null || (isInt(x) && x >= 0 && x <= MAX_PRICE);
 const validTitle = (x) => typeof x === 'string' && x.trim().length >= 1 && x.length <= 200;
 const validSku = (x) => typeof x === 'string' && x.trim().length >= 1 && x.length <= 64;
 const validSlug = (x) => typeof x === 'string' && SLUG_RE.test(x);
@@ -41,7 +44,7 @@ const likeEscape = (s) => s.replace(/[%_\\]/g, '\\$&');
 // ── audit diff TRƯỚC/SAU (rà soát #9): 'nhân viên hạ giá 500k→50k' phải chứng
 // minh được từ nhật ký. Chỉ ALLOWLIST trường NGHIỆP VỤ (giá, SKU, tiêu đề, trạng
 // thái, cân, giá gạch) — không PII, không mô tả dài. Chỉ ghi trường THAY ĐỔI thật.
-const NUMERIC_AUDIT_FIELDS = ['price_vnd', 'compare_at_vnd', 'weight_gram'];
+const NUMERIC_AUDIT_FIELDS = ['price_vnd', 'compare_at_vnd', 'weight_gram', 'cost_vnd'];
 function diffChanged(oldRow, want) {
   const changed = {};
   for (const [k, v] of Object.entries(want)) {
@@ -199,7 +202,9 @@ async function getProduct(res, ctx, _body, params) {
     );
     if (p.rows.length === 0) return null;
     const variants = await c.query(
-      `SELECT id, title, sku, price_vnd, position, weight_gram, compare_at_vnd FROM variants WHERE product_id = $1 ORDER BY position`,
+      `SELECT v.id, v.title, v.sku, v.price_vnd, v.position, v.weight_gram, v.compare_at_vnd, vc.cost_vnd
+         FROM variants v LEFT JOIN variant_costs vc ON vc.shop_id = v.shop_id AND vc.variant_id = v.id
+        WHERE v.product_id = $1 ORDER BY v.position`,
       [productId],
     );
     const cats = await c.query(`SELECT category_id FROM product_categories WHERE product_id = $1`, [productId]);
@@ -352,13 +357,20 @@ async function updateVariant(res, ctx, body, params) {
     if (!validCompareAt(body.compare_at_vnd)) return send(res, 400, { error: 'giá gạch không hợp lệ' });
     args.push(body.compare_at_vnd); sets.push(`compare_at_vnd = $${args.length}`); want.compare_at_vnd = body.compare_at_vnd;
   }
-  if (!sets.length) return send(res, 400, { error: 'không có trường nào để cập nhật' });
+  // Giá VỐN (0081): sống ở bảng RIÊNG variant_costs (không phải cột variants) — xử lý
+  // ngoài mảng sets. null = xoá dòng. Request CHỈ có cost_vnd vẫn hợp lệ.
+  const hasCost = body.cost_vnd !== undefined;
+  if (hasCost && !validCost(body.cost_vnd)) return send(res, 400, { error: 'giá vốn không hợp lệ (số nguyên ≥ 0, để trống = xoá)' });
+  if (hasCost) want.cost_vnd = body.cost_vnd;
+  if (!sets.length && !hasCost) return send(res, 400, { error: 'không có trường nào để cập nhật' });
   try {
     const out = await withTenant(ctx.shopId, async (c) => {
       // Đọc bản ghi TRƯỚC UPDATE (FOR UPDATE, cùng transaction): audit ghi from/to
-      // (rà soát #9) + dùng luôn cho check giá gạch bên dưới.
+      // (rà soát #9) + dùng luôn cho check giá gạch bên dưới. cost cũ từ variant_costs.
       const cur = await c.query(
-        `SELECT sku, price_vnd, weight_gram, compare_at_vnd FROM variants WHERE id = $1 AND product_id = $2 FOR UPDATE`,
+        `SELECT v.sku, v.price_vnd, v.weight_gram, v.compare_at_vnd, vc.cost_vnd
+           FROM variants v LEFT JOIN variant_costs vc ON vc.shop_id = v.shop_id AND vc.variant_id = v.id
+          WHERE v.id = $1 AND v.product_id = $2 FOR UPDATE OF v`,
         [variantId, productId],
       );
       if (!cur.rows.length) return { code: 404 };
@@ -367,12 +379,23 @@ async function updateVariant(res, ctx, body, params) {
         const effPrice = body.price_vnd !== undefined ? body.price_vnd : Number(cur.rows[0].price_vnd);
         if (body.compare_at_vnd <= effPrice) return { code: 400 };
       }
-      args.push(variantId, productId);
-      const r = await c.query(`UPDATE variants SET ${sets.join(', ')} WHERE id = $${args.length - 1} AND product_id = $${args.length}`, args);
-      if (r.rowCount === 1) {
-        await audit(c, 'variant.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: withChanged({ productId, variantId }, diffChanged(cur.rows[0], want)) });
+      if (sets.length) {
+        args.push(variantId, productId);
+        const r = await c.query(`UPDATE variants SET ${sets.join(', ')} WHERE id = $${args.length - 1} AND product_id = $${args.length}`, args);
+        if (r.rowCount !== 1) return { code: 404 };
       }
-      return { code: r.rowCount === 1 ? 200 : 404 };
+      if (hasCost) {
+        // KHÔNG hồi tố: đơn đã đặt giữ snapshot cũ (order_lines.unit_cost_vnd).
+        if (body.cost_vnd === null) await c.query(`DELETE FROM variant_costs WHERE variant_id = $1`, [variantId]);
+        else await c.query(
+          `INSERT INTO variant_costs (shop_id, variant_id, cost_vnd, updated_by)
+           VALUES (current_shop_id(), $1, $2, $3)
+           ON CONFLICT (shop_id, variant_id) DO UPDATE SET cost_vnd = $2, updated_by = $3, updated_at = now()`,
+          [variantId, body.cost_vnd, ctx.user.id],
+        );
+      }
+      await audit(c, 'variant.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: withChanged({ productId, variantId }, diffChanged(cur.rows[0], want)) });
+      return { code: 200 };
     });
     if (out.code === 400) return send(res, 400, { error: 'giá gạch phải lớn hơn giá bán' });
     if (out.code === 404) return send(res, 404, { error: 'không tìm thấy biến thể' });
@@ -515,8 +538,11 @@ async function saveProductOptions(res, ctx, body, params) {
         // nếu không nó KẾ THỪA giá khuyến mãi/tồn của biến thể cũ → bán sai giá + oversell.
         // weight_gram cùng lớp bug: reset NULL, không kế thừa cân cũ → tính sai phí ship.
         // compare_at_vnd cùng lớp bug: reset NULL, không kế thừa giá gạch cũ → badge % sai.
+        // cost_vnd (0081) cùng lớp bug: XOÁ dòng variant_costs — tổ hợp mới không kế thừa
+        // giá vốn của biến thể cũ → báo cáo lãi không bịa COGS sai hàng.
         variantId = pool.shift();
         await c.query(`UPDATE variants SET title = $2, position = $3, price_vnd = $4, weight_gram = NULL, compare_at_vnd = NULL WHERE id = $1`, [variantId, title, ci, basePrice]);
+        await c.query(`DELETE FROM variant_costs WHERE variant_id = $1`, [variantId]);
         // Hạ on_hand = reserved (available về 0; GIỮ reserve của đơn đang chờ — CHECK reserved<=on_hand).
         const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1`, [variantId])).rows[0];
         if (lvl && Number(lvl.on_hand) > Number(lvl.reserved)) {

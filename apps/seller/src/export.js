@@ -26,19 +26,23 @@ const genToken = () => crypto.randomBytes(32).toString('base64url');
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 
 // ── CSV: RFC 4180 + BOM UTF-8 (Excel đọc đúng tiếng Việt) + chống formula injection ──
+// EXPORT cho reports.js tái dùng (CSV báo cáo P&L) — một serializer duy nhất toàn app.
 const BOM = '﻿';
-function csvCell(v) {
+export function csvCell(v) {
   if (v === null || v === undefined) return '';
   // Date (pg trả timestamptz thành Date) → ISO-8601: máy đọc được, KHÔNG phụ thuộc
   // timezone container (String(Date) cho chuỗi dài, giờ địa phương, không tất định).
   let s = v instanceof Date ? v.toISOString() : String(v);
   // Excel/Sheets THỰC THI ô bắt đầu bằng = + - @ TAB CR LF (bỏ khoảng trắng đầu rồi
   // thấy =) → chèn ' để vô hiệu (dữ liệu người bán/khách nhập = không tin được).
-  if (/^[=+\-@\t\r\n]/.test(s)) s = `'${s}`;
+  // MIỄN cho giá trị THUẦN SỐ (0081): '-500000' (kỳ lỗ trong P&L) không phải formula —
+  // chèn ' biến nó thành TEXT, SUM() của Excel bỏ qua ô → người dùng cộng sổ sai.
+  const pureNumber = typeof v === 'number' || /^-?\d+(\.\d+)?$/.test(s);
+  if (!pureNumber && /^[=+\-@\t\r\n]/.test(s)) s = `'${s}`;
   if (/[",\r\n]/.test(s)) s = `"${s.replace(/"/g, '""')}"`;
   return s;
 }
-function toCsv(headers, rows) {
+export function toCsv(headers, rows) {
   const out = [headers.join(',')];
   for (const r of rows) out.push(headers.map((h) => csvCell(r[h])).join(','));
   return BOM + out.join('\r\n') + '\r\n';
@@ -73,9 +77,11 @@ async function buildExport(c) {
   const products = (await c.query(
     `SELECT id, slug, title, price_vnd, status, created_at, description
        FROM products WHERE deleted_at IS NULL ORDER BY created_at`)).rows;
+  // cost_vnd (0081): giá vốn trong bản export — hợp lệ vì perm 'export' owner-only + step-up.
   const variants = (await c.query(
-    `SELECT v.id, v.product_id, v.sku, v.title, v.price_vnd, v.position, il.on_hand, il.reserved
+    `SELECT v.id, v.product_id, v.sku, v.title, v.price_vnd, vc.cost_vnd, v.position, il.on_hand, il.reserved
        FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
+       LEFT JOIN variant_costs vc ON vc.shop_id = v.shop_id AND vc.variant_id = v.id
       ORDER BY v.product_id, v.position`)).rows;
   const orders = (await c.query(
     `SELECT order_number, status, payment_status, payment_method,
@@ -110,7 +116,7 @@ async function buildExport(c) {
 
   const entries = [
     { name: 'products.csv', data: buf(toCsv(['id', 'slug', 'title', 'price_vnd', 'status', 'created_at', 'description'], products)) },
-    { name: 'variants.csv', data: buf(toCsv(['id', 'product_id', 'sku', 'title', 'price_vnd', 'position', 'on_hand', 'reserved'], variants)) },
+    { name: 'variants.csv', data: buf(toCsv(['id', 'product_id', 'sku', 'title', 'price_vnd', 'cost_vnd', 'position', 'on_hand', 'reserved'], variants)) },
     { name: 'orders.csv', data: buf(toCsv(['order_number', 'status', 'payment_status', 'payment_method', 'subtotal_vnd', 'shipping_vnd', 'discount_vnd', 'total_vnd', 'customer_name', 'customer_phone', 'customer_email', 'shipping_address', 'payment_ref', 'created_at', 'paid_at', 'shipped_at', 'delivered_at', 'cancelled_at'], orders)) },
     { name: 'order_lines.csv', data: buf(toCsv(['order_number', 'title_snapshot', 'sku_snapshot', 'unit_price_vnd', 'qty'], lines)) },
     { name: 'customers.csv', data: buf(toCsv(['customer_name', 'customer_phone', 'customer_email', 'order_count', 'paid_total_vnd', 'last_order_at'], customers)) },

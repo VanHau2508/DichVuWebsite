@@ -622,28 +622,34 @@ async function sweepTracking() {
       c = await expiryDb.connect();
       await c.query('BEGIN');
       if (st.state === 'delivered') {
-        // COD hãng giao xong = shipper ĐÃ THU tiền khách (thu hộ) → tự flip unpaid→paid
-        // (0066). QR giữ nguyên bất biến "chỉ webhook đặt paid". CASE trong CÙNG câu
-        // UPDATE + guard status='shipped' → nguyên tử, idempotent như cũ.
+        // SPLIT (0080): đánh dấu KIỆN NÀY delivered TRƯỚC (loại khỏi kiểm "còn kiện chưa giao").
+        await c.query(`UPDATE shipments SET status = 'delivered', provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
+        // Chốt ĐƠN 'delivered' CHỈ khi: mọi dòng gửi đủ (fulfillment='fulfilled') VÀ KHÔNG còn
+        // kiện anh em 'created'/'in_transit'/'returned' (mọi kiện đã delivered/cancelled). COD
+        // unpaid→paid CASE (0066) CƯỠI trên UPDATE có guard → đơn giao MỘT PHẦN KHÔNG paid sớm.
         const upd = await c.query(
           `UPDATE orders SET status = 'delivered', delivered_at = now(),
                   payment_status = CASE WHEN payment_method = 'cod' AND payment_status = 'unpaid' THEN 'paid' ELSE payment_status END,
                   paid_at = CASE WHEN payment_method = 'cod' AND payment_status = 'unpaid' THEN now() ELSE paid_at END
-            WHERE id = $1 AND status = 'shipped'`, [s.order_id]);
-        await c.query(`UPDATE shipments SET status = 'delivered', provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
+            WHERE id = $1 AND status = 'shipped' AND fulfillment_status = 'fulfilled'
+              AND NOT EXISTS (SELECT 1 FROM shipments s2 WHERE s2.order_id = $1 AND s2.status IN ('created','in_transit','returned'))`,
+          [s.order_id]);
         if (upd.rowCount === 1 && s.customer_email) {
           await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.status_changed', $2)`,
             [s.shop_id, { to: s.customer_email, order_number: Number(s.order_number), status: 'delivered', total_vnd: Number(s.total_vnd), tracking_number: s.tracking_number }]);
         }
         if (upd.rowCount === 1) { delivered++; log('info', 'tracking_delivered', { order_number: Number(s.order_number), provider: s.provider }); }
       } else if (st.state === 'returned') {
-        // Hàng HOÀN (bom hàng): trước đây đơn kẹt 'shipped' mãi. Chốt đơn 'returned' +
-        // mốc returned_at, guard status='shipped' = idempotent (mirror nhánh delivered).
-        // KHÔNG cộng lại on_hand: hàng chưa chắc về kho/có thể hỏng, và app_expiry cố
-        // tình KHÔNG có quyền on_hand/ledger (0022) — chủ shop tự Điều chỉnh tồn khi
-        // nhận hàng thật. Reserve đã trả lúc ship (consumeAndShip) nên không còn gì release.
-        const upd = await c.query(`UPDATE orders SET status = 'returned', returned_at = now() WHERE id = $1 AND status = 'shipped'`, [s.order_id]);
+        // Hàng HOÀN (bom hàng): đánh dấu kiện TRƯỚC. KHÔNG cộng lại on_hand (app_expiry cố tình
+        // không có quyền — chủ shop tự Điều chỉnh khi nhận hàng thật). Reserve đã trả lúc ship.
         await c.query(`UPDATE shipments SET status = 'returned', provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
+        // SPLIT (0080): chốt ĐƠN 'returned' CHỈ khi MỌI kiện đã returned (không còn created/
+        // in_transit/delivered). Trộn delivered+returned → GIỮ 'shipped', shop tự xử (v1).
+        const upd = await c.query(
+          `UPDATE orders SET status = 'returned', returned_at = now()
+            WHERE id = $1 AND status = 'shipped'
+              AND NOT EXISTS (SELECT 1 FROM shipments s2 WHERE s2.order_id = $1 AND s2.status IN ('created','in_transit','delivered'))`,
+          [s.order_id]);
         // Outbox KHÔNG có 'to' → chỉ Telegram cho shop, không email khách bom hàng.
         // Gate rowCount===1 (như delivered) → exactly-once dù sweep chạy lặp.
         if (upd.rowCount === 1) {

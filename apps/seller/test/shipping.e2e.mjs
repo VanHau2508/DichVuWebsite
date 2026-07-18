@@ -228,6 +228,41 @@ async function main() {
     [A.shopId, o1.num]);
   ob.rows.length === 1 && ob.rows[0].payload.tracking_number ? ok('outbox email "đã giao" kèm tracking cho khách') : bad('thiếu outbox delivered', String(ob.rows.length));
 
+  // ── 3b. TÁCH VẬN ĐƠN (0080): kiện tay + kiện hãng → worker chốt đơn ĐÚNG lúc ──
+  // Đơn 2 sp, giao TAY 1 + giao HÃNG 1 (2 kiện). Hãng báo GIAO kiện hãng → worker KHÔNG
+  // được chốt đơn 'delivered' vì còn kiện TAY in_transit (provider NULL, worker không poll,
+  // không có tín hiệu giao) → guard NOT EXISTS sibling giữ đơn 'shipped'. Shop tự xác nhận
+  // giao xong (deliverOrder) mới chốt. COD-hãng cấm tách → dùng đơn TRẢ TRƯỚC (set paid).
+  sect('3b. Tách vận đơn: giao tay + hãng, worker order-aware');
+  const oS = await placeCod(A, vid, `split-${uniq()}@mail.vn`);
+  await a.post(`/orders/${oS.id}/confirm`, {});
+  await owner.query(`UPDATE orders SET payment_status='paid', paid_at=now() WHERE id=$1`, [oS.id]);
+  let ods = (await a.get(`/orders/${oS.id}`)).json;
+  const olS = ods.lines[0].order_line_id;
+  r = await a.post(`/orders/${oS.id}/ship`, { tracking_number: 'TAY-S1', lines: [{ order_line_id: olS, qty: 1 }] });
+  ods = (await a.get(`/orders/${oS.id}`)).json;
+  r.status === 200 && ods.fulfillment_status === 'partial' && Number(ods.lines[0].shipped_qty) === 1
+    ? ok('giao tay 1/2 → shipped/partial, shipped_qty=1') : bad('giao tay split lỗi', `${r.status} ff=${ods.fulfillment_status}`);
+  r = await a.post(`/orders/${oS.id}/carrier-shipment`, TO);
+  ods = (await a.get(`/orders/${oS.id}`)).json;
+  r.status === 200 && ods.fulfillment_status === 'fulfilled' && ods.shipments.length === 2
+    ? ok('giao hãng phần CÒN LẠI → fulfilled, 2 kiện (tay + hãng)') : bad('carrier split lỗi', `${r.status} ff=${ods.fulfillment_status} n=${ods.shipments?.length}`);
+  stub.ghtkStatus = 5; // hãng báo ĐÃ GIAO kiện hãng
+  await (await fetch(`${WORKER}/internal/tracking-sweep`, { method: 'POST' })).json();
+  ods = (await a.get(`/orders/${oS.id}`)).json;
+  const carrierShip = ods.shipments.find((s) => s.provider === 'ghtk');
+  const manualShip = ods.shipments.find((s) => !s.provider);
+  ods.status === 'shipped' && carrierShip?.status === 'delivered' && manualShip?.status === 'in_transit'
+    ? ok('kiện hãng delivered NHƯNG đơn GIỮ shipped (còn kiện tay) — worker không chốt sớm')
+    : bad('đơn flip sai khi còn kiện tay', `${ods.status} c=${carrierShip?.status} m=${manualShip?.status}`);
+  const noOb = await owner.query(`SELECT count(*)::int n FROM outbox WHERE shop_id=$1 AND topic='order.status_changed' AND payload->>'status'='delivered' AND (payload->>'order_number')::int=$2`, [A.shopId, oS.num]);
+  noOb.rows[0].n === 0 ? ok('CHƯA có email "đã giao" (đơn chưa giao xong)') : bad('email giao sớm', String(noOb.rows[0].n));
+  r = await a.post(`/orders/${oS.id}/deliver`, {}); // shop tự xác nhận kiện tay đã giao
+  ods = (await a.get(`/orders/${oS.id}`)).json;
+  r.status === 200 && ods.status === 'delivered'
+    ? ok('shop xác nhận giao xong → đơn delivered (mọi kiện xong)') : bad('deliver sau split lỗi', `${r.status} ${ods.status}`);
+  stub.ghtkStatus = 4; // trả stub về đang giao cho các mục sau
+
   // ── 4. Hãng lỗi → nhả claim, đơn còn nguyên, retry được ────────────────────
   sect('4. Hãng từ chối → không kẹt');
   const o2 = await placeCod(A, vid, null);

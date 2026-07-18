@@ -894,6 +894,10 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited) {
   // Đơn đã trả / đã giao → seller từ chối (409) nên không hiện nút (khỏi dẫn user vào ngõ cụt).
   const editable = ['pending', 'confirmed'].includes(o.status) && o.payment_status === 'unpaid';
   const editAction = editable ? `<a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/edit">Sửa đơn</a>` : '';
+  // Sửa đơn ĐÃ TRẢ (v2): đơn paid + chưa gửi hãng, owner/admin (perm 'refund' + step-up ở seller).
+  // Giảm tổng → tự tạo phiếu hoàn phần chênh; tăng tổng chưa hỗ trợ. Nút dẫn sang trang riêng.
+  const editPaidAction = (o.payment_status === 'paid' && ['pending', 'confirmed'].includes(o.status) && ['owner', 'admin'].includes(ctx.role))
+    ? `<a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/edit-paid">Sửa đơn đã trả</a>` : '';
   let actions = '';
   if (o.status === 'pending') actions = act('confirm', 'Xác nhận đơn') + act('cancel', 'Huỷ đơn', 'btn warn sm');
   else if (o.status === 'confirmed') actions = `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/ship" class="actions" style="align-items:end">
@@ -960,11 +964,11 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited) {
       <a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/print" target="_blank" rel="noopener">🖨 In đơn</a>
     </div>
     <h1>Đơn hàng #${esc(o.order_number)}</h1>
-    ${edited ? `<div class="notice ok">✓ Đã lưu sửa đơn — tồn kho &amp; tổng tiền đã cập nhật theo thay đổi.</div>` : ''}
+    ${edited ? `<div class="notice ok">✓ Đã lưu sửa đơn — tồn kho &amp; tổng tiền đã cập nhật theo thay đổi.${Number(edited) > 0 ? ` Đã tạo <strong>phiếu hoàn ${money(Number(edited))}</strong> — hãy chuyển khoản lại cho khách.` : ''}</div>` : ''}
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <div class="card"><span class="pill">${badge(o.status, STATUS[o.status] ?? o.status)}</span>
       <span class="pill">${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} ${esc(o.payment_method?.toUpperCase() ?? '')}</span>
-      <div class="actions">${(editAction + actions + payAction + refundAction) || '<span class="muted">Không có thao tác.</span>'}</div></div>
+      <div class="actions">${(editAction + editPaidAction + actions + payAction + refundAction) || '<span class="muted">Không có thao tác.</span>'}</div></div>
     ${o.status === 'returned' ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg)">
       <h2 style="margin-top:0">↩️ Đơn bị hoàn (bom hàng)</h2>
       <p class="muted" style="margin-bottom:0">Hãng vận chuyển báo hàng đang/đã hoàn về. Khi <strong>nhận lại hàng thực tế</strong>,
@@ -1003,7 +1007,8 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited) {
 // variant_id[]/qty[] trùng tên, ghép theo CHỈ SỐ (DOM order: mỗi hàng variant_id trước qty).
 export function renderOrderEdit(ctx, shopId, o, variants, err, form, picker) {
   const base = `/shops/${esc(shopId)}`;
-  const eurl = `${base}/orders/${esc(o.id)}/edit`;
+  const paid = picker?.mode === 'paid'; // v2: sửa đơn ĐÃ TRẢ (route /edit-paid, giảm → hoàn)
+  const eurl = `${base}/orders/${esc(o.id)}/edit${paid ? '-paid' : ''}`;
   const pq = picker?.q ?? '';
   // <optgroup> theo sản phẩm cho slot THÊM dòng (mirror renderOrderNew).
   const byProduct = new Map();
@@ -1044,8 +1049,10 @@ export function renderOrderEdit(ctx, shopId, o, variants, err, form, picker) {
   const prov = src.province ?? '';
   return layout(`Sửa đơn #${o.order_number}`, ctx, `
     <a class="muted" href="${base}/orders/${esc(o.id)}">← Về chi tiết đơn #${esc(o.order_number)}</a>
-    <h1>Sửa đơn #${esc(o.order_number)}</h1>
+    <h1>Sửa đơn${paid ? ' đã trả' : ''} #${esc(o.order_number)}</h1>
     <p class="muted" style="margin-top:-6px">Sửa số lượng, thêm/bớt hàng, đổi khách nhận hoặc phí ship. Hệ thống <strong>tính lại tồn kho &amp; tổng tiền</strong> khi lưu. Dòng cũ giữ <strong>giá lúc chốt</strong> (snapshot); dòng thêm mới lấy giá hiện tại.</p>
+    ${paid ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg)"><h2 style="margin-top:0">💰 Đơn đã thanh toán ${money(o.total_vnd)}${Number(o.refunded_total_vnd) > 0 ? ` · đã hoàn ${money(o.refunded_total_vnd)}` : ''}</h2>
+      <p class="muted" style="margin-bottom:0"><strong>GIẢM tổng</strong> → hệ thống tự tạo <strong>phiếu hoàn</strong> phần chênh (bạn chuyển khoản lại cho khách; nền tảng không giữ tiền). <strong>TĂNG tổng</strong> chưa hỗ trợ — tạo đơn mới cho phần thêm. Thao tác này cần <strong>xác nhận lại mật khẩu</strong>.</p></div>` : ''}
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${variants.length ? `<div class="card"><form method="GET" action="${eurl}" class="actions" style="align-items:end;flex-wrap:wrap">
       <div style="flex:1 1 220px"><label>Tìm sản phẩm cho ô THÊM dòng (tên / SKU — không cần dấu)</label>
@@ -1080,10 +1087,33 @@ export function renderOrderEdit(ctx, shopId, o, variants, err, form, picker) {
         </div>
       </div>
       <div class="actions">
-        <button class="btn" type="submit">Lưu sửa đơn</button>
+        <button class="btn" type="submit">${paid ? 'Lưu — hoàn phần chênh nếu giảm' : 'Lưu sửa đơn'}</button>
         <a class="btn alt" href="${base}/orders/${esc(o.id)}">Huỷ</a>
       </div>
     </form>`);
+}
+
+// Interstitial step-up cho SỬA ĐƠN ĐÃ TRẢ (v2): mang TOÀN BỘ body sửa (dòng + khách + phí +
+// ghi chú) qua màn xác nhận mật khẩu bằng hidden input → sau step-up retry KHÔNG mất dữ liệu
+// người dùng đã nhập (mirror renderRefundStepUp/platform renew, nhưng body phức tạp hơn).
+export function renderEditPaidStepUp(ctx, shopId, oid, err, body) {
+  const base = `/shops/${esc(shopId)}`;
+  const hid = (name, val) => `<input type="hidden" name="${esc(name)}" value="${esc(val ?? '')}">`;
+  const lineHid = (body.lines ?? []).map((l) => hid('variant_id', l.variant_id) + hid('qty', l.qty)).join('');
+  const cf = body.customer ?? {};
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận mật khẩu</h1>
+    <p class="muted">Sửa đơn ĐÃ THANH TOÁN (có thể sinh hoàn tiền) cần xác thực lại. Nhập mật khẩu để lưu thay đổi.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${base}/orders/${esc(oid)}/edit-paid/step-up">
+      ${lineHid}
+      ${hid('name', cf.name)}${hid('phone', cf.phone)}${hid('email', cf.email)}${hid('address_line', cf.address_line)}${hid('province', cf.province)}
+      ${hid('ship_fee_vnd', body.ship_fee_vnd)}${hid('note', body.note)}
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận &amp; lưu</button>
+    </form>
+    <a class="muted" href="${base}/orders/${esc(oid)}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
 }
 
 // Trang IN đơn — HTML độc lập, tối ưu in (không sidebar, no-JS). User bấm Ctrl+P.

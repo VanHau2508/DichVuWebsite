@@ -357,6 +357,77 @@ async function orderEditSubmit(req, res, me, cookie, shopId, oid) {
   return orderEditPage(res, me, cookie, shopId, oid, r.json?.error ?? 'Không lưu được sửa đơn.', form, f.get('picker_q') ?? '');
 }
 
+// ── SỬA ĐƠN ĐÃ TRẢ v2 (BFF → seller POST .../edit-paid; perm refund + STEP-UP) ────
+// GET: mở form chế độ 'paid' (chỉ đơn paid + pending/confirmed + owner/admin). Step-up
+// KHÔNG cần để XEM (GET seller không đòi) — chỉ POST /edit-paid mới đòi; ta xử ở submit.
+async function orderEditPaidPage(res, me, cookie, shopId, oid, err, form, q) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const or = await sellerApi('GET', `/shops/${shopId}/orders/${oid}`, { cookie });
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+  if (or.status !== 200) return sendHtml(res, or.status, V.renderError(ctx, or.json?.error ?? 'Không tìm thấy đơn.'));
+  const o = or.json;
+  const canPaidEdit = o.payment_status === 'paid' && ['pending', 'confirmed'].includes(o.status) && ['owner', 'admin'].includes(roleFor(me, shopId));
+  if (!canPaidEdit) {
+    const why = o.payment_status !== 'paid' ? 'Đơn chưa thanh toán — dùng "Sửa đơn" thường.'
+      : !['pending', 'confirmed'].includes(o.status) ? 'Chỉ sửa được đơn chưa gửi hãng (Chờ xử lý / Đã xác nhận).'
+        : 'Chỉ chủ cửa hàng hoặc quản trị mới sửa đơn đã trả.';
+    return orderDetail(res, me, cookie, shopId, oid, why);
+  }
+  const pq = (q ?? '').trim().slice(0, 100);
+  const sv = await sellerApi('GET', `/shops/${shopId}/sellable-variants${pq ? `?q=${encodeURIComponent(pq)}` : ''}`, { cookie });
+  if (sv.status !== 200) return sendHtml(res, sv.status, V.renderError(ctx, sv.json?.error ?? 'Không tải được danh sách sản phẩm.'));
+  return sendHtml(res, err ? 400 : 200, V.renderOrderEdit(ctx, shopId, o, sv.json.variants ?? [], err, form, { q: pq, truncated: sv.json.truncated === true, mode: 'paid' }));
+}
+
+// Đọc form sửa (chung v1) → dựng body {lines, customer, ship_fee_vnd, note}.
+function readEditBody(f) {
+  const vids = f.getAll('variant_id'), qtys = f.getAll('qty');
+  const lines = [];
+  for (let i = 0; i < vids.length; i++) {
+    if (!vids[i]) continue;
+    const qty = Number(qtys[i] ?? 0);
+    if (!Number.isFinite(qty) || qty < 1) continue;
+    lines.push({ variant_id: vids[i], qty });
+  }
+  return {
+    lines,
+    customer: { name: (f.get('name') ?? '').trim(), phone: (f.get('phone') ?? '').trim(), email: (f.get('email') ?? '').trim(), address_line: (f.get('address_line') ?? '').trim(), province: (f.get('province') ?? '').trim() },
+    ship_fee_vnd: (f.get('ship_fee_vnd') ?? '').trim(),
+    note: (f.get('note') ?? '').trim(),
+  };
+}
+// Lõi: forward tới seller /edit-paid (giả định đã step-up; seller kiểm lại). 200 → banner
+// kèm số hoàn; 403 step_up_required (cửa sổ hết giữa chừng) → interstitial lại; lỗi khác → form.
+async function doEditPaid(res, me, cookie, shopId, oid, body) {
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/edit-paid`, { cookie, body });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}?edited=1${Number(r.json?.refund_vnd) > 0 ? `&refund=${Number(r.json.refund_vnd)}` : ''}`);
+  if (r.json?.step_up_required) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+    return sendHtml(res, 200, V.renderEditPaidStepUp(ctx, shopId, oid, null, body));
+  }
+  const form = { ...body.customer, ship_fee_vnd: body.ship_fee_vnd, note: body.note, lines: body.lines };
+  return orderEditPaidPage(res, me, cookie, shopId, oid, r.json?.error ?? 'Không lưu được sửa đơn.', form, '');
+}
+async function orderEditPaidSubmit(req, res, me, cookie, shopId, oid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const body = readEditBody(await readFormAll(req));
+  // Chưa step-up → interstitial mang toàn bộ body (retry không mất dữ liệu). Đã step-up → làm luôn.
+  if (steppedUp(me)) return doEditPaid(res, me, cookie, shopId, oid, body);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+  return sendHtml(res, 200, V.renderEditPaidStepUp(ctx, shopId, oid, null, body));
+}
+async function orderEditPaidStepUp(req, res, me, cookie, shopId, oid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req);
+  const body = readEditBody(f);
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.get('password') ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+    return sendHtml(res, 401, V.renderEditPaidStepUp(ctx, shopId, oid, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.', body));
+  }
+  return doEditPaid(res, me, cookie, shopId, oid, body);
+}
+
 // Tạo vận đơn QUA HÃNG từ chi tiết đơn (form prefill) → seller gọi API hãng.
 async function carrierShipment(req, res, me, cookie, shopId, oid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -1671,9 +1742,12 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/orders/bulk-confirm$`).exec(p)) && req.method === 'POST') return ordersBulkConfirm(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/bulk-mark-paid$`).exec(p)) && req.method === 'POST') return ordersBulkMarkPaid(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/print-batch$`).exec(p)) && req.method === 'GET') return ordersPrintBatch(res, me, cookie, m[1], url.searchParams);
-    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}$`).exec(p)) && req.method === 'GET') return orderDetail(res, me, cookie, m[1], m[2], null, url.searchParams.get('edited') === '1');
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}$`).exec(p)) && req.method === 'GET') return orderDetail(res, me, cookie, m[1], m[2], null, url.searchParams.get('edited') === '1' ? (url.searchParams.get('refund') ?? '1') : null);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/edit$`).exec(p)) && req.method === 'GET') return orderEditPage(res, me, cookie, m[1], m[2], null, null, url.searchParams.get('q') ?? '');
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/edit$`).exec(p)) && req.method === 'POST') return orderEditSubmit(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/edit-paid$`).exec(p)) && req.method === 'GET') return orderEditPaidPage(res, me, cookie, m[1], m[2], null, null, url.searchParams.get('q') ?? '');
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/edit-paid$`).exec(p)) && req.method === 'POST') return orderEditPaidSubmit(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/edit-paid/step-up$`).exec(p)) && req.method === 'POST') return orderEditPaidStepUp(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/print$`).exec(p)) && req.method === 'GET') return orderPrint(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/(confirm|ship|cancel|deliver|mark-paid)$`).exec(p)) && req.method === 'POST') return orderAction(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr$`).exec(p)) && req.method === 'POST') return markPaidQrConfirm(res, me, cookie, m[1], m[2]);

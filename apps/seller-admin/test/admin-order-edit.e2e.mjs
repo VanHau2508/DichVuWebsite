@@ -171,7 +171,9 @@ async function main() {
   await owner.query(`UPDATE orders SET payment_status='paid', paid_at=now() WHERE id=$1`, [o2.orderId]);
   const durl2 = `/shops/${A.shopId}/orders/${o2.orderId}`;
   r = await adm('GET', durl2, { cookie: cookieA });
-  r.status === 200 && !r.body.includes(`${o2.orderId}/edit`) ? ok('đơn đã trả: chi tiết ẨN nút "Sửa đơn"') : bad('đơn đã trả vẫn hiện nút Sửa đơn', r.body.slice(0, 200));
+  // Đơn đã trả: ẨN nút "Sửa đơn" (v1 unpaid, link kết thúc /edit") — nhưng CÓ nút "Sửa đơn
+  // đã trả" (v2, link /edit-paid"). Phân biệt bằng dấu nháy đóng để /edit-paid không khớp nhầm.
+  r.status === 200 && !r.body.includes(`${o2.orderId}/edit"`) ? ok('đơn đã trả: ẨN nút "Sửa đơn" (v1); có nút v2 /edit-paid') : bad('đơn đã trả vẫn hiện nút Sửa đơn v1', r.body.slice(0, 200));
 
   r = await adm('GET', `${durl2}/edit`, { cookie: cookieA });
   r.status === 409 && /thanh toán|CHƯA thanh toán/.test(r.body) ? ok('mở /edit đơn đã trả → 409 kèm lý do (không vào form chết)') : bad('mở /edit đơn đã trả không bị chặn', `${r.status} ${r.body.slice(0, 160)}`);

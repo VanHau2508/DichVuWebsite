@@ -512,6 +512,43 @@ async function reviewAction(res, me, cookie, shopId, rid, action) {
   return redirect(res, `/shops/${shopId}/reviews${r.status !== 200 ? '' : action === 'approve' ? '?status=pending' : '?status=pending'}`);
 }
 
+// ── Đối soát COD với hãng (orders.read xem; ghi phiếu = payment.write = CHỦ SHOP) ──
+// GET: nạp reconciliation (đơn chờ + per-hãng + lịch sử) → render. POST: gom order_ids đã tick
+// (no-JS multi-select) + số THỰC nhận → forward seller POST /cod/remittances. 200 → redirect
+// kèm kỳ vọng/thực nhận/chênh để hiện banner; lỗi seller (400/409/422/403) → render lại kèm lỗi.
+async function codPage(res, me, cookie, shopId, done, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'cod');
+  const r = await sellerApi('GET', `/shops/${shopId}/cod/reconciliation`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status === 403 ? 403 : r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được đối soát COD.'));
+  return sendHtml(res, err ? 400 : 200, V.renderCodReconcile(ctx, shopId, r.json, roleFor(me, shopId) === 'owner', done, err));
+}
+async function codRemittanceSubmit(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  // Ghi phiếu = payment.write (seller cưỡng chế OWNER). Chặn sớm ở BFF cho vai trò khác.
+  if (roleFor(me, shopId) !== 'owner') {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'cod');
+    return sendHtml(res, 403, V.renderError(ctx, 'Chỉ chủ cửa hàng mới ghi được phiếu chuyển tiền COD.'));
+  }
+  const f = await readFormAll(req); // getAll: ô tick order_ids trùng tên
+  const orderIds = f.getAll('order_ids').filter((x) => /^[0-9a-f-]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(x));
+  // Không tick đơn nào → báo thân thiện, KHÔNG gọi API.
+  if (orderIds.length === 0) return codPage(res, me, cookie, shopId, null, 'Hãy tick ít nhất một đơn để đối soát.');
+  const body = { amount_vnd: parseVnd(f.get('amount_vnd')), order_ids: orderIds };
+  const carrier = String(f.get('carrier') ?? '').trim();
+  if (carrier) body.carrier = carrier;
+  const remittedAt = String(f.get('remitted_at') ?? '').trim();
+  if (remittedAt) body.remitted_at = remittedAt;
+  const note = String(f.get('note') ?? '').trim();
+  if (note) body.note = note.slice(0, 500);
+  const r = await sellerApi('POST', `/shops/${shopId}/cod/remittances`, { cookie, body });
+  if (r.status === 200) {
+    const q = new URLSearchParams({ done: '1', expected: String(r.json.expected_vnd), received: String(r.json.amount_vnd), disc: String(r.json.discrepancy_vnd), count: String(r.json.order_count) });
+    return redirect(res, `/shops/${shopId}/cod?${q.toString()}`);
+  }
+  return codPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không ghi được phiếu chuyển tiền.');
+}
+
 // Phục hồi vận đơn finalize_failed (đã tạo trên hãng nhưng chốt hỏng).
 async function carrierReconcile(req, res, me, cookie, shopId, oid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -1917,6 +1954,15 @@ async function handle(req, res, url, p) {
     // Đánh giá sản phẩm (content.write = owner/admin ở seller).
     if ((m = new RegExp(`^/shops/${UUID}/reviews$`).exec(p)) && req.method === 'GET') return reviewsPage(res, me, cookie, m[1], url.searchParams.get('status'));
     if ((m = new RegExp(`^/shops/${UUID}/reviews/${UUID}/(approve|reject|delete)$`).exec(p)) && req.method === 'POST') return reviewAction(res, me, cookie, m[1], m[2], m[3]);
+
+    // Đối soát COD với hãng (orders.read xem; ghi phiếu = payment.write = owner ở seller).
+    if ((m = new RegExp(`^/shops/${UUID}/cod$`).exec(p)) && req.method === 'GET') {
+      const done = url.searchParams.get('done') === '1'
+        ? { expected: url.searchParams.get('expected') ?? '0', received: url.searchParams.get('received') ?? '0', disc: url.searchParams.get('disc') ?? '0', count: url.searchParams.get('count') ?? '0' }
+        : null;
+      return codPage(res, me, cookie, m[1], done, null);
+    }
+    if ((m = new RegExp(`^/shops/${UUID}/cod/remittances$`).exec(p)) && req.method === 'POST') return codRemittanceSubmit(req, res, me, cookie, m[1]);
 
     // Thông báo Telegram (shop.write = owner/admin ở seller).
     if ((m = new RegExp(`^/shops/${UUID}/notify$`).exec(p)) && req.method === 'GET') return notifyPage(res, me, cookie, m[1], null, null);

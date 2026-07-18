@@ -184,6 +184,7 @@ const IC_BELL = ic('<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path 
 const IC_STAR = ic('<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>');
 const IC_HEART = ic('<circle cx="12" cy="8" r="3.5"/><path d="M5 20v-1.5a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6V20"/>');
 const IC_LOG = ic('<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 11h7M9 15h7M9 19h4"/>');
+const IC_COIN = ic('<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6"/>');
 
 // Điều hướng dọc trong 1 shop (sidebar) — chỉ hiện mục vai trò được phép.
 function sideNav(ctx) {
@@ -193,6 +194,7 @@ function sideNav(ctx) {
   const t = it(`${base}/overview`, 'Tổng quan', IC_CHART, ctx.active === 'overview', ORDER_ROLES.has(ctx.role))
           + it(`${base}/orders`, 'Đơn hàng', IC_ORDER, ctx.active === 'orders', ORDER_ROLES.has(ctx.role))
           + it(`${base}/customers`, 'Khách hàng', IC_HEART, ctx.active === 'customers', ORDER_ROLES.has(ctx.role))
+          + it(`${base}/cod`, 'Đối soát COD', IC_COIN, ctx.active === 'cod', ORDER_ROLES.has(ctx.role))
           + it(`${base}/products`, 'Sản phẩm', IC_BOX, ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/categories`, 'Danh mục', IC_TAG, ctx.active === 'categories', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/coupons`, 'Khuyến mãi', IC_TICKET, ctx.active === 'coupons', CATALOG_ROLES.has(ctx.role))
@@ -2476,6 +2478,89 @@ export function renderResetDone() {
   return layout('Đặt lại mật khẩu', {}, `<div class="center"><div class="card"><h1>Đã đổi mật khẩu ✅</h1>
     <p class="muted">Mật khẩu đã được đặt lại và mọi phiên cũ đã bị đăng xuất. Đăng nhập bằng mật khẩu mới.</p>
     <a class="btn" href="/login">Đăng nhập</a></div></div>`);
+}
+
+// ── ĐỐI SOÁT COD với hãng (đường tiền: đơn COD giao-qua-hãng, kỳ vọng = tổng − phí hãng) ──
+// No-JS multi-select: ô tick "order_ids" ở cột đầu bảng "đang chờ" gắn form="codf" (thuộc
+// tính form HTML5) → cùng POST với form "Ghi phiếu chuyển tiền" dù nằm ngoài <form> — GIỐNG
+// bulk xác nhận đơn (renderOrders). CHỈ chủ shop (payment.write) thấy ô tick + form ghi phiếu;
+// vai trò khác xem danh sách chờ + lịch sử ở chế độ chỉ-đọc.
+export function renderCodReconcile(ctx, shopId, data, isOwner, done, err) {
+  const base = `/shops/${esc(shopId)}`;
+  const outstanding = data.outstanding ?? [];
+  const byCarrier = data.by_carrier ?? [];
+  const remittances = data.remittances ?? [];
+  const provOf = (p) => (p ? String(p).toUpperCase() : '—');
+  // Hãng phân biệt trong danh sách chờ → gợi ý cho ô chọn hãng của phiếu (vẫn cho để trống).
+  const providers = [...new Set(outstanding.map((o) => o.provider).filter(Boolean))];
+  const carrierCards = byCarrier.map((c) => `<div class="metric"><div class="l">${esc(provOf(c.provider))} · ${esc(c.count)} đơn</div>
+    <div class="v">${money(c.expected_vnd)}</div></div>`).join('');
+  const rows = outstanding.map((o) => `<tr>
+    ${isOwner ? `<td><input type="checkbox" name="order_ids" value="${esc(o.id)}" form="codf" aria-label="Chọn đơn ${esc(o.order_number)}"></td>` : ''}
+    <td><a href="${base}/orders/${esc(o.id)}">#${esc(o.order_number)}</a></td>
+    <td class="muted">${dt(o.delivered_at)}</td>
+    <td>${esc(provOf(o.provider))}${o.carrier ? ` <span class="muted">${esc(o.carrier)}</span>` : ''}</td>
+    <td class="right num">${money(o.total_vnd)}</td>
+    <td class="right num muted">${money(o.carrier_fee_vnd)}</td>
+    <td class="right num"><strong>${money(o.expected_net_vnd)}</strong></td>
+  </tr>`).join('');
+  const colspan = isOwner ? 7 : 6;
+  // Banner thành công sau khi ghi phiếu (kỳ vọng vs thực nhận + chênh lệch).
+  const disc = done ? Number(done.disc) : 0;
+  const doneNotice = done ? `<div class="notice success">✓ Đã ghi phiếu chuyển tiền cho <strong>${esc(done.count)} đơn</strong> — kỳ vọng ${money(done.expected)}, thực nhận <strong>${money(done.received)}</strong>, chênh lệch <strong>${money(disc)}</strong> ${disc < 0 ? '(hãng còn nợ)' : '(đủ/dư)'}.</div>` : '';
+  const recordCard = isOwner ? `
+    <div class="card"><h2 style="margin-top:0">Ghi phiếu chuyển tiền</h2>
+      <p class="muted" style="margin-top:-4px">Tick các đơn hãng vừa chuyển tiền ở bảng trên, nhập <strong>số tiền THỰC nhận</strong> rồi ghi phiếu. Hệ thống so với kỳ vọng và tính <strong>chênh lệch</strong> (âm = hãng còn nợ).</p>
+      <form id="codf" method="POST" action="${base}/cod/remittances">
+        <div class="grid2">
+          <div><label>Hãng (tuỳ chọn)</label>
+            <select name="carrier"><option value="">— Không xác định / tất cả —</option>
+              ${providers.map((pv) => `<option value="${esc(pv)}">${esc(provOf(pv))}</option>`).join('')}</select></div>
+          <div><label>Số tiền THỰC nhận (đ)</label><input name="amount_vnd" inputmode="numeric" required placeholder="vd 520000"></div>
+        </div>
+        <div class="grid2">
+          <div><label>Ngày nhận (tuỳ chọn)</label><input name="remitted_at" type="date"></div>
+          <div><label>Ghi chú (tuỳ chọn)</label><input name="note" maxlength="500" placeholder="sao kê GHN 18/07…"></div>
+        </div>
+        <button class="btn" type="submit" style="margin-top:12px">Ghi phiếu chuyển tiền</button>
+      </form>
+    </div>` : '';
+  const histRows = remittances.map((r) => {
+    const d = Number(r.discrepancy_vnd);
+    return `<tr><td class="muted">${dt(r.remitted_at ?? r.created_at)}</td>
+      <td>${esc(provOf(r.carrier))}</td>
+      <td class="num">${esc(r.order_count)}</td>
+      <td class="right num">${money(r.expected_vnd)}</td>
+      <td class="right num"><strong>${money(r.amount_vnd)}</strong></td>
+      <td class="right num" style="color:${d < 0 ? 'var(--bad)' : 'var(--good)'};font-weight:700">${money(d)}</td>
+      <td>${esc(r.note ?? '') || '<span class="muted">—</span>'}</td>
+      <td class="muted">${esc(r.created_by_email ?? '—')}</td></tr>`;
+  }).join('');
+  return layout('Đối soát COD', ctx, `
+    <h1>Đối soát COD với hãng</h1>
+    <p class="muted" style="margin-top:-6px">Đơn COD đã giao qua hãng — hãng thu hộ tiền rồi chuyển lại (đã trừ phí). <strong>Kỳ vọng nhận = tổng đơn − phí hãng</strong>. Đối chiếu với số hãng thực chuyển để phát hiện thiếu/thất thoát.</p>
+    ${doneNotice}
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <div class="metrics">
+      <div class="metric" style="border-color:color-mix(in srgb,var(--pri) 30%,var(--bd))"><div class="l">Tổng đang chờ đối soát</div>
+        <div class="v">${money(data.total_outstanding_vnd ?? 0)}</div></div>
+      ${carrierCards}
+    </div>
+    <div class="card"><h2 style="margin-top:0">Đơn chờ đối soát (${esc(outstanding.length)})</h2>
+      ${outstanding.length ? `<table><thead><tr>${isOwner ? '<th></th>' : ''}<th>Đơn</th><th>Ngày giao</th><th>Hãng</th><th class="right">Tổng COD</th><th class="right">Phí hãng</th><th class="right">Kỳ vọng nhận</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><td colspan="${colspan - 1}" class="muted">Tổng kỳ vọng</td><td class="right num"><strong>${money(data.total_outstanding_vnd ?? 0)}</strong></td></tr></tfoot></table>
+        ${isOwner ? '<p class="muted" style="margin:12px 0 0;font-size:.85rem">Tick các đơn thuộc phiếu chuyển tiền của hãng ở cột đầu, rồi ghi phiếu bên dưới.</p>' : '<p class="muted" style="margin:12px 0 0;font-size:.85rem">Chỉ chủ cửa hàng mới ghi được phiếu chuyển tiền.</p>'}`
+        : '<p class="muted">Không có đơn COD nào đang chờ đối soát.</p>'}
+    </div>
+    ${recordCard}
+    <div class="card"><h2 style="margin-top:0">Lịch sử đối soát</h2>
+      ${remittances.length ? `<table><thead><tr><th>Ngày</th><th>Hãng</th><th>Số đơn</th><th class="right">Kỳ vọng</th><th class="right">Thực nhận</th><th class="right">Chênh lệch</th><th>Ghi chú</th><th>Người ghi</th></tr></thead>
+        <tbody>${histRows}</tbody></table>
+        <p class="muted" style="margin:12px 0 0;font-size:.85rem">Chênh lệch <span style="color:var(--bad);font-weight:700">âm (đỏ)</span> = hãng còn nợ; <span style="color:var(--good);font-weight:700">≥0 (xanh)</span> = đủ/dư.</p>`
+        : '<p class="muted">Chưa có phiếu đối soát nào.</p>'}
+    </div>
+    <a class="btn alt" href="${base}/overview">← Về tổng quan</a>`);
 }
 
 export function renderError(ctx, msg) {

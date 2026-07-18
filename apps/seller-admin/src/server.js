@@ -943,10 +943,13 @@ async function variantPrice(req, res, me, cookie, shopId, pid, vid) {
   const wraw = String(f.weight_gram ?? '').trim();
   // Giá gạch (compare-at, chỉ hiển thị): '' = xoá; rác → -1 (seller trả 400 tiếng Việt).
   const craw = String(f.compare_at_vnd ?? '').trim();
+  // Giá vốn (0081, bảng variant_costs): '' = xoá dòng; rác → -1 (seller 400).
+  const coraw = String(f.cost_vnd ?? '').trim();
   const body = {
     price_vnd: parseVnd(f.price_vnd),
     weight_gram: wraw === '' ? null : (Number.isFinite(Number(wraw)) ? Math.round(Number(wraw)) : -1),
     compare_at_vnd: craw === '' ? null : (Number.isFinite(Number(craw)) ? Math.round(Number(craw)) : -1),
+    cost_vnd: coraw === '' ? null : (Number.isFinite(Number(coraw)) ? Math.round(Number(coraw)) : -1),
   };
   const r = await sellerApi('PATCH', `/shops/${shopId}/products/${pid}/variants/${vid}`, { cookie, body });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/products/${pid}`);
@@ -1388,6 +1391,61 @@ async function exportDownload(res, me, cookie, shopId, token) {
   let msg = 'Không tải được — link có thể đã hết hạn.';
   try { const j = JSON.parse(r.bytes.toString('utf8')); if (j?.error) msg = j.error; } catch {}
   return exportPage(res, me, cookie, shopId, null, msg);
+}
+
+// ── Báo cáo lợi nhuận (0081) — owner/admin (seller cưỡng chế 'reports.read') ──
+async function reportsPage(res, me, cookie, shopId, q) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'reports');
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const qs = new URLSearchParams();
+  for (const k of ['from', 'to']) { const v = (q.get(k) ?? '').trim(); if (DATE_RE.test(v)) qs.set(k, v); }
+  if (['day', 'month'].includes(q.get('group'))) qs.set('group', q.get('group'));
+  if (['revenue', 'profit', 'qty'].includes(q.get('sort'))) qs.set('sort', q.get('sort'));
+  const r = await sellerApi('GET', `/shops/${shopId}/reports/sales${qs.size ? `?${qs}` : ''}`, { cookie });
+  // 403 = order_manager/catalog_manager gõ tay URL (nav vốn ẩn) — trang lỗi rõ ràng.
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error === 'forbidden' || r.status === 403 ? 'Chỉ chủ shop / quản trị viên xem được báo cáo lợi nhuận.' : (r.json?.error ?? 'Không tải được báo cáo.')));
+  const todayVN = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+  return sendHtml(res, 200, V.renderReports(ctx, shopId, r.json, { todayVN }));
+}
+// POST xuất CSV báo cáo → chưa step-up thì interstitial (mang theo type/from/to/group).
+function reportExportFields(f) {
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  return {
+    type: f.type === 'products' ? 'products' : 'pnl',
+    from: DATE_RE.test(String(f.from ?? '').trim()) ? String(f.from).trim() : '',
+    to: DATE_RE.test(String(f.to ?? '').trim()) ? String(f.to).trim() : '',
+    ...(['day', 'month'].includes(f.group) ? { group: f.group } : {}),
+  };
+}
+async function doReportExport(res, me, cookie, shopId, fields) {
+  const qs = new URLSearchParams(Object.entries(fields).filter(([, v]) => v));
+  const r = await sellerDownload(`/shops/${shopId}/reports/export?${qs}`, { cookie });
+  // filename PHẢI ASCII thuần — ký tự ngoài Latin-1 trong header → Node ném ERR_INVALID_CHAR (500).
+  const fname = ['bao-cao', fields.type, fields.from, fields.to].filter(Boolean).join('-') + '.csv';
+  if (r.status === 200) return sendDownload(res, r.bytes, { filename: fname, contentType: r.contentType ?? 'text/csv; charset=utf-8' });
+  let msg = 'Không xuất được báo cáo.';
+  try { const j = JSON.parse(r.bytes.toString('utf8')); if (j?.error) msg = j.error; } catch {}
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'reports');
+  return sendHtml(res, 400, V.renderError(ctx, msg));
+}
+async function reportsExportCreate(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const fields = reportExportFields(await readForm(req));
+  if (steppedUp(me)) return doReportExport(res, me, cookie, shopId, fields);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'reports');
+  return sendHtml(res, 200, V.renderReportsStepUp(ctx, shopId, fields, null));
+}
+async function reportsExportStepUp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const fields = reportExportFields(f);
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'reports');
+    return sendHtml(res, 401, V.renderReportsStepUp(ctx, shopId, fields, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.'));
+  }
+  return doReportExport(res, me, cookie, shopId, fields);
 }
 
 // ── Tên miền tùy chỉnh (owner + step-up) ─────────────────────────────────────
@@ -1938,6 +1996,9 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/members/${UUID}/remove$`).exec(p)) && req.method === 'POST') return memberRemove(res, me, cookie, m[1], m[2]);
 
     // Xuất dữ liệu (owner).
+    if ((m = new RegExp(`^/shops/${UUID}/reports$`).exec(p)) && req.method === 'GET') return reportsPage(res, me, cookie, m[1], url.searchParams);
+    if ((m = new RegExp(`^/shops/${UUID}/reports/export$`).exec(p)) && req.method === 'POST') return reportsExportCreate(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/reports/export/step-up$`).exec(p)) && req.method === 'POST') return reportsExportStepUp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/export$`).exec(p)) && req.method === 'GET') return exportPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/export$`).exec(p)) && req.method === 'POST') return exportCreate(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/export/step-up$`).exec(p)) && req.method === 'POST') return exportStepUp(req, res, me, cookie, m[1]);

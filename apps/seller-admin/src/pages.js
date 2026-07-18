@@ -142,6 +142,7 @@ const ORDER_ROLES = new Set(['owner', 'admin', 'order_manager']);
 const CONTENT_ROLES = new Set(['owner', 'admin']);
 const MEMBER_READ_ROLES = new Set(['owner', 'admin']); // xem nhân sự; SỬA chỉ owner (seller cưỡng chế)
 const EXPORT_ROLES = new Set(['owner']); // xuất dữ liệu: CHỈ chủ shop (seller cưỡng chế perm 'export')
+const REPORT_ROLES = new Set(['owner', 'admin']); // báo cáo lãi: owner/admin (seller cưỡng chế 'reports.read' — ẩn nav chỉ là mỹ quan)
 const DOMAIN_ROLES = new Set(['owner']); // tên miền: CHỈ chủ shop (seller cưỡng chế 'domain.write')
 const PAYMENT_ROLES = new Set(['owner']); // thanh toán: CHỈ chủ shop (seller cưỡng chế 'payment.write' + step-up)
 const SHIPPING_ROLES = new Set(['owner', 'admin']); // vận chuyển: owner/admin (seller cưỡng chế 'shop.write' + step-up)
@@ -174,6 +175,7 @@ const IC_FILE = ic('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9
 const IC_USERS = ic('<circle cx="9" cy="8" r="3"/><path d="M4 20v-1a5 5 0 0 1 10 0v1"/><path d="M17 8a3 3 0 0 1 0 6"/><path d="M20 20v-1a4 4 0 0 0-3-3.8"/>');
 const IC_GLOBE = ic('<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18"/>');
 const IC_DOWN = ic('<path d="M12 4v10"/><path d="M8 12l4 4 4-4"/><path d="M5 20h14"/>');
+const IC_TREND = ic('<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>');
 const IC_PALETTE = ic('<circle cx="13.5" cy="6.5" r="1.2"/><circle cx="17" cy="10" r="1.2"/><circle cx="8.5" cy="7" r="1.2"/><circle cx="6.5" cy="11.5" r="1.2"/><path d="M12 3a9 9 0 1 0 0 18 1.8 1.8 0 0 0 1.8-1.8 1.8 1.8 0 0 1 1.8-1.8H17a4 4 0 0 0 4-4 9 9 0 0 0-9-8.4z"/>');
 const IC_CARD = ic('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/><path d="M7 15h4"/>');
 const IC_CHART = ic('<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7" y="12" width="3" height="5"/><rect x="12" y="8" width="3" height="9"/><rect x="17" y="5" width="3" height="12"/>');
@@ -192,6 +194,7 @@ function sideNav(ctx) {
   const base = `/shops/${esc(ctx.shopId)}`;
   const it = (href, label, icon, on, show) => (show ? `<a href="${href}"${on ? ' class="on"' : ''}>${icon}<span>${label}</span></a>` : '');
   const t = it(`${base}/overview`, 'Tổng quan', IC_CHART, ctx.active === 'overview', ORDER_ROLES.has(ctx.role))
+          + it(`${base}/reports`, 'Báo cáo', IC_TREND, ctx.active === 'reports', REPORT_ROLES.has(ctx.role))
           + it(`${base}/orders`, 'Đơn hàng', IC_ORDER, ctx.active === 'orders', ORDER_ROLES.has(ctx.role))
           + it(`${base}/customers`, 'Khách hàng', IC_HEART, ctx.active === 'customers', ORDER_ROLES.has(ctx.role))
           + it(`${base}/cod`, 'Đối soát COD', IC_COIN, ctx.active === 'cod', ORDER_ROLES.has(ctx.role))
@@ -753,7 +756,154 @@ export function renderOverview(ctx, shopId, s) {
           <td class="num right"><strong style="color:${l.available <= 0 ? '#b91c1c' : '#b45309'}">${esc(l.available)}</strong></td></tr>`).join('')}
       </tbody></table>
       <p class="muted" style="font-size:.82rem;margin-bottom:0">Chỉnh ngưỡng cảnh báo trong <a href="${base}/settings">Cài đặt</a>. Email nhắc gửi hằng ngày nếu shop có email liên hệ.</p></div>` : ''}
-    <p class="muted" style="font-size:.82rem">Doanh thu chỉ tính đơn <strong>đã thanh toán</strong>; mốc ngày theo giờ Việt Nam.</p>`);
+    ${REPORT_ROLES.has(ctx.role) ? `<p style="margin-top:4px"><a class="btn alt sm" href="${base}/reports">Xem báo cáo lợi nhuận chi tiết →</a></p>` : ''}
+    <p class="muted" style="font-size:.82rem">Doanh thu ghi tại <strong>ngày thanh toán</strong> (đơn đã từng thu tiền), hoàn tiền trừ tại ngày phiếu; mốc ngày theo giờ Việt Nam.</p>`);
+}
+
+// ── BÁO CÁO LỢI NHUẬN (0081) ─────────────────────────────────────────────────
+// Chart 2 chuỗi/bucket (thuần + lãi gộp) — mở rộng revenueChart, CO GIÃN theo n
+// (red-team: 92 bucket với gap=6 → cột <1px + nhãn đè nhau): gap thích ứng, nhãn
+// stride=ceil(n/8). Bucket lỗ (lãi âm) vẽ vạch mờ dưới trục + tooltip số thật.
+function profitChart(series) {
+  const pts = (Array.isArray(series) ? series : []).filter((p) => p && p.bucket);
+  if (!pts.length) return '';
+  const n = pts.length;
+  const W = 720, H = 190, BOTTOM = 24, TOP = 12;
+  const base = H - BOTTOM;
+  const gap = n > 62 ? 1 : n > 31 ? 2 : 6;      // cột luôn ≥ ~2px
+  const inner = n > 31 ? 0 : 2;                  // khe giữa 2 cột cùng bucket
+  const bw = Math.max(2, (W - gap * (n - 1)) / n);
+  const colw = Math.max(1, (bw - inner) / 2);
+  const rev = pts.map((p) => Number(p.net_revenue_vnd) || 0);
+  const pro = pts.map((p) => Number(p.gross_profit_vnd) || 0);
+  const max = Math.max(...rev, ...pro, 1);
+  const q = (v) => Math.round(v * 10) / 10;
+  const lb = (b) => { const p = String(b).split('-'); return p.length === 3 ? `${Number(p[2])}/${Number(p[1])}` : `${Number(p[1])}/${p[0].slice(2)}`; };
+  const bar = (x, v, color, title) => {
+    if (v > 0) {
+      const h = Math.max(2, (v / max) * (base - TOP)), y = q(base - h);
+      return `<rect x="${q(x)}" y="${y}" width="${q(colw)}" height="${q(h)}" rx="2" fill="${color}"><title>${title}</title></rect>`;
+    }
+    // 0 hoặc ÂM: vạch mờ 2px trên trục — tooltip vẫn mang số thật (CSV giữ số âm).
+    return `<rect x="${q(x)}" y="${base - 2}" width="${q(colw)}" height="2" fill="var(--bd)"><title>${title}</title></rect>`;
+  };
+  const bars = pts.map((p, i) => {
+    const x = i * (bw + gap);
+    const t = `${esc(lb(p.bucket))} · thuần ${esc(money(rev[i]))} · lãi gộp ${esc(money(pro[i]))}`;
+    return bar(x, rev[i], 'var(--pri)', t) + bar(x + colw + inner, pro[i], 'var(--good)', t);
+  }).join('');
+  const stride = Math.max(1, Math.ceil(n / 8));
+  const labels = pts.map((p, i) => ((i % stride === 0 || i === n - 1)
+    ? `<text x="${(i * (bw + gap) + bw / 2).toFixed(1)}" y="${H - 7}" text-anchor="middle" font-size="11" fill="var(--mut)">${esc(lb(p.bucket))}</text>` : '')).join('');
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Doanh thu thuần và lãi gộp theo ${n} kỳ">
+      <line x1="0" y1="${base}" x2="${W}" y2="${base}" stroke="var(--bd)" stroke-width="1"/>
+      ${bars}${labels}</svg>
+    <p class="muted" style="font-size:.82rem;margin:6px 0 0"><span style="color:var(--pri)">■</span> Doanh thu thuần &nbsp; <span style="color:var(--good)">■</span> Lãi gộp — kỳ lỗ hiện vạch mờ (di chuột xem số âm).</p>`;
+}
+
+// Trang Báo cáo — no-JS: form GET from/to + preset link server-side (mang đủ tham số),
+// khối P&L dọc đúng thứ tự kế toán, badge độ phủ giá vốn, bảng lãi theo SP ('—' khi
+// thiếu cost), bảng theo kỳ, 2 nút xuất CSV (owner). d = JSON /reports/sales.
+export function renderReports(ctx, shopId, d, f) {
+  const base = `/shops/${esc(shopId)}/reports`;
+  const { from, to, group } = d.range;
+  const t = d.totals, cc = t.cost_coverage;
+  const qs = (o) => Object.entries(o).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+  const sort = d.sort ?? 'revenue';
+  // Preset giờ VN — link mang from/to (KHÔNG reset ngầm khi bấm).
+  const tv = f.todayVN, mStart = tv.slice(0, 8) + '01';
+  const prevM = (() => { let [y, m] = tv.slice(0, 7).split('-').map(Number); m--; if (m < 1) { m = 12; y--; } const s = `${y}-${String(m).padStart(2, '0')}`; const last = new Date(Date.UTC(y, m, 0)).getUTCDate(); return { from: `${s}-01`, to: `${s}-${String(last).padStart(2, '0')}` }; })();
+  const addD = (s, k) => new Date(Date.parse(s + 'T00:00:00Z') + k * 86400e3).toISOString().slice(0, 10);
+  const presets = [
+    { l: '7 ngày', from: addD(tv, -6), to: tv }, { l: '30 ngày', from: addD(tv, -29), to: tv },
+    { l: 'Tháng này', from: mStart, to: tv }, { l: 'Tháng trước', ...prevM },
+  ].map((p) => `<a class="btn ${p.from === from && p.to === to ? '' : 'alt '}sm" href="${base}?${qs({ from: p.from, to: p.to })}">${esc(p.l)}</a>`).join(' ');
+  const neg = (v) => Number(v) < 0 ? ' style="color:#b91c1c"' : '';
+  const provisional = cc.pct < 100 ? ' <span class="muted" style="font-weight:400">(tạm tính)</span>' : '';
+  // P&L dọc: (−)/(+) chữ rõ ràng, số âm đỏ.
+  const pnlRow = (label, v, { bold, sign } = {}) => `<tr${bold ? ' style="font-weight:700"' : ''}>
+      <td>${sign ? `<span class="muted">(${sign})</span> ` : ''}${label}</td>
+      <td class="num right"${neg(v)}>${money(v)}</td></tr>`;
+  const covBadge = cc.pct < 100 ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb;margin-top:10px">
+      <p style="margin:0" class="muted">⚠ Giá vốn mới phủ <strong>${esc(cc.pct)}%</strong> doanh thu hàng — còn <strong>${esc(cc.lines_missing_cost)}</strong> dòng đơn chưa có giá vốn
+      (${money(cc.revenue_missing_cost_vnd)} doanh thu chưa tính lãi). Nhập thêm ở trang <a href="/shops/${esc(shopId)}/products">Sản phẩm</a> → từng biến thể.</p></div>` : '';
+  const sortLink = (k, label) => sort === k ? `<strong>${label}</strong>` : `<a href="${base}?${qs({ from, to, group, sort: k })}">${label}</a>`;
+  const prodRows = (d.by_product ?? []).map((p) => `<tr>
+      <td>${esc(p.title)} <span class="muted">${esc(p.sku ?? '')}</span></td>
+      <td class="num right">${esc(p.qty)}</td>
+      <td class="num right">${money(p.revenue_vnd)}</td>
+      <td class="num right">${p.cogs_vnd == null ? '<span class="muted">—</span>' : money(p.cogs_vnd)}</td>
+      <td class="num right"${p.profit_vnd != null ? neg(p.profit_vnd) : ''}>${p.profit_vnd == null ? '<span class="muted">—</span>' : money(p.profit_vnd)}</td>
+      <td class="num right">${p.margin_pct == null ? '<span class="muted">—</span>' : esc(p.margin_pct) + '%'}</td></tr>`).join('');
+  const bucketRows = d.series.map((s) => `<tr>
+      <td class="num">${esc(s.bucket)}</td><td class="num right">${esc(s.orders_paid)}</td>
+      <td class="num right">${money(s.net_revenue_vnd)}</td>
+      <td class="num right"${neg(s.gross_profit_vnd)}>${money(s.gross_profit_vnd)}</td>
+      <td class="num right"${neg(s.operating_profit_vnd)}>${money(s.operating_profit_vnd)}</td></tr>`).join('');
+  const exportBtns = EXPORT_ROLES.has(ctx.role) ? `<div class="actions" style="margin-top:10px">
+      <form method="POST" action="${base}/export"><input type="hidden" name="type" value="pnl"><input type="hidden" name="from" value="${esc(from)}"><input type="hidden" name="to" value="${esc(to)}"><input type="hidden" name="group" value="${esc(group)}"><button class="btn alt sm" type="submit">Xuất CSV theo kỳ</button></form>
+      <form method="POST" action="${base}/export"><input type="hidden" name="type" value="products"><input type="hidden" name="from" value="${esc(from)}"><input type="hidden" name="to" value="${esc(to)}"><button class="btn alt sm" type="submit">Xuất CSV theo sản phẩm</button></form>
+    </div>` : '';
+  return layout('Báo cáo', ctx, `
+    <h1>Báo cáo lợi nhuận</h1>
+    <div class="card">
+      <form method="GET" action="${base}" class="actions" style="align-items:end">
+        <div><label>Từ ngày</label><input type="date" name="from" value="${esc(from)}"></div>
+        <div><label>Đến ngày</label><input type="date" name="to" value="${esc(to)}"></div>
+        <input type="hidden" name="sort" value="${esc(sort)}">
+        <button class="btn sm" type="submit">Xem</button>
+        <span style="flex:1"></span>${presets}
+      </form>
+      ${group === 'month' ? '<p class="muted" style="font-size:.82rem;margin:8px 0 0">Kỳ dài — số liệu gộp theo <strong>tháng</strong>.</p>' : ''}
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="l">Doanh thu thuần</div><div class="v">${money(t.net_revenue_vnd)}</div><div class="l">${esc(t.orders_paid)} đơn đã thu tiền</div></div>
+      <div class="metric"><div class="l">Lãi gộp${provisional}</div><div class="v"${neg(t.gross_profit_vnd)}>${money(t.gross_profit_vnd)}</div>
+        <div class="l">${t.net_revenue_vnd > 0 ? `biên ${Math.round((t.gross_profit_vnd / t.net_revenue_vnd) * 100)}%` : ''}</div></div>
+      <div class="metric"><div class="l">Lãi vận hành${provisional}</div><div class="v"${neg(t.operating_profit_vnd)}>${money(t.operating_profit_vnd)}</div><div class="l">gồm ship & phí hãng</div></div>
+      <div class="metric"><div class="l">Giá trị TB/đơn</div><div class="v">${money(t.orders_paid > 0 ? Math.round(t.net_revenue_vnd / t.orders_paid) : 0)}</div></div>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Doanh thu thuần & lãi gộp theo ${group === 'month' ? 'tháng' : 'ngày'}</h2>
+      ${profitChart(d.series) || '<p class="muted">Chưa có dữ liệu trong kỳ.</p>'}</div>
+    <div class="card"><h2 style="margin-top:0">Kết quả kinh doanh (P&amp;L)</h2>
+      <table><tbody>
+        ${pnlRow('Doanh thu hàng', t.revenue_goods_vnd)}
+        ${pnlRow('Hoàn tiền <span class="muted" style="font-weight:400;font-size:.82rem">(phiếu hoàn có thể gồm phần ship)</span>', -t.refunds_vnd, { sign: '−' })}
+        ${pnlRow('Doanh thu thuần', t.net_revenue_vnd, { bold: true })}
+        ${pnlRow('Giá vốn hàng bán (COGS)', -t.cogs_vnd, { sign: '−' })}
+        ${pnlRow('Giá vốn hàng trả về kho', t.cogs_reversal_vnd, { sign: '+' })}
+        ${pnlRow(`LÃI GỘP${provisional}`, t.gross_profit_vnd, { bold: true })}
+        ${pnlRow('Thu phí ship của khách', t.shipping_income_vnd, { sign: '+' })}
+        ${pnlRow('Phí hãng vận chuyển <span class="muted" style="font-weight:400;font-size:.82rem">(báo giá lúc tạo vận đơn)</span>', -t.carrier_fee_vnd, { sign: '−' })}
+        ${pnlRow(`Lãi vận hành${provisional}`, t.operating_profit_vnd, { bold: true })}
+      </tbody></table>
+      ${covBadge}
+      ${exportBtns}
+    </div>
+    <div class="card"><h2 style="margin-top:0">Lãi theo sản phẩm${d.products_truncated ? ' <span class="muted" style="font-size:.82rem">(top 100)</span>' : ''}</h2>
+      ${prodRows ? `<table><thead><tr><th>Sản phẩm</th><th class="right">${sortLink('qty', 'SL')}</th><th class="right">${sortLink('revenue', 'Doanh thu')}</th><th class="right">Giá vốn</th><th class="right">${sortLink('profit', 'Lãi')}</th><th class="right">Biên</th></tr></thead><tbody>${prodRows}</tbody></table>
+      <p class="muted" style="font-size:.8rem;margin-bottom:0">Doanh thu theo dòng hàng, CHƯA trừ giảm giá cấp đơn + hoàn/trả. Dòng "—" chưa có giá vốn.</p>` : '<p class="muted">Chưa có dữ liệu.</p>'}</div>
+    <div class="card"><h2 style="margin-top:0">Theo ${group === 'month' ? 'tháng' : 'ngày'}</h2>
+      <table><thead><tr><th>Kỳ</th><th class="right">Đơn</th><th class="right">Thuần</th><th class="right">Lãi gộp</th><th class="right">Lãi VH</th></tr></thead><tbody>${bucketRows}</tbody></table></div>
+    <p class="muted" style="font-size:.82rem">Doanh thu ghi tại <strong>ngày thanh toán</strong>; hoàn/trả trừ tại <strong>ngày phiếu</strong>; giá vốn chốt tại <strong>thời điểm đặt hàng</strong>; số kỳ cũ có thể thay đổi khi sửa đơn đã trả; mốc ngày giờ Việt Nam. Lãi vận hành chưa gồm phí nền tảng/quảng cáo/đóng gói.</p>`);
+}
+
+// Interstitial mật khẩu cho xuất CSV báo cáo — mang theo type/from/to/group (hidden).
+export function renderReportsStepUp(ctx, shopId, fields, err) {
+  const base = `/shops/${esc(shopId)}/reports`;
+  const keep = Object.entries(fields ?? {}).filter(([k, v]) => v != null && k !== 'password')
+    .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('');
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận mật khẩu</h1>
+    <p class="muted">Xuất báo cáo là thao tác nhạy cảm — nhập mật khẩu của bạn để tiếp tục.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${base}/export/step-up">
+      ${keep}
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận &amp; tải CSV</button>
+    </form>
+    <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
 }
 
 export function renderDashboard(ctx, shops, isStaff = false) {
@@ -1573,12 +1723,21 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
     const cls = l.available <= 0 ? 'zero' : (l.available < 5 ? 'low' : '');
     return `<span class="stock ${cls} num">${l.available}</span> <span class="muted num" style="font-size:.82rem">(tồn ${l.on_hand} · giữ ${l.reserved})</span>`;
   };
+  // Biên lãi gợi ý server-render cạnh ô giá vốn (0081): đủ giá + vốn → "biên ~X%";
+  // vốn ≥ giá bán → cảnh báo MỀM đỏ (bán lỗ chủ đích hợp lệ — seller không chặn).
+  const marginHint = (v) => {
+    if (v.cost_vnd == null) return '';
+    const price = Number(v.price_vnd), cost = Number(v.cost_vnd);
+    if (cost >= price) return '<div style="color:#b91c1c;font-size:.78rem">⚠ vốn ≥ giá bán</div>';
+    return price > 0 ? `<div class="muted" style="font-size:.78rem">biên ~${Math.round(((price - cost) / price) * 100)}%</div>` : '';
+  };
   const rows = (p.variants ?? []).map((v) => `<tr>
     <td>${esc(v.sku)}${v.title ? ` <span class="muted">${esc(v.title)}</span>` : ''}</td>
     <td class="num right"><form method="POST" action="${base}/variants/${esc(v.id)}/price" class="inline" id="vw-${esc(v.id)}">
       <input name="price_vnd" type="number" min="0" step="1000" value="${esc(v.price_vnd)}" style="width:110px" aria-label="Giá biến thể (VND)">
       <button class="btn alt sm" type="submit">Lưu</button></form></td>
     <td class="num right"><input form="vw-${esc(v.id)}" name="compare_at_vnd" type="number" min="0" step="1000" value="${esc(v.compare_at_vnd ?? '')}" placeholder="không KM" style="width:110px" aria-label="Giá gạch (VND)"></td>
+    <td class="num right"><input form="vw-${esc(v.id)}" name="cost_vnd" type="number" min="0" step="1000" value="${esc(v.cost_vnd ?? '')}" placeholder="chưa nhập" style="width:110px" aria-label="Giá vốn (VND)">${marginHint(v)}</td>
     <td><input form="vw-${esc(v.id)}" name="weight_gram" type="number" min="1" max="50000" value="${esc(v.weight_gram ?? '')}" placeholder="mặc định" style="width:90px" aria-label="Khối lượng (gram)"></td>
     <td>${stock(v.id)}</td>
     <td><form method="POST" action="${base}/variants/${esc(v.id)}/inventory" class="inline">
@@ -1610,7 +1769,8 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
       </form>
     </div>
     <div class="card"><h2 style="margin-top:0">Biến thể & tồn kho</h2>
-      <table><thead><tr><th>SKU / Phân loại</th><th class="right">Giá</th><th class="right">Giá gạch (đ)</th><th>Nặng (g)</th><th>Có thể bán</th><th>Điều chỉnh tồn</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <table><thead><tr><th>SKU / Phân loại</th><th class="right">Giá</th><th class="right">Giá gạch (đ)</th><th class="right">Giá vốn (đ)</th><th>Nặng (g)</th><th>Có thể bán</th><th>Điều chỉnh tồn</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <p class="muted" style="font-size:.82rem">Giá vốn KHÔNG hiện với khách; nhân viên sản phẩm nhập được, chỉ owner/admin xem báo cáo lãi. Đơn đã đặt giữ giá vốn tại thời điểm đặt.</p>
       <h2>Thêm biến thể lẻ</h2>
       <p class="muted" style="font-size:.85rem">Dùng khi KHÔNG dùng phân loại đa trục ở trên (thêm tay từng biến thể).</p>
       <form method="POST" action="${base}/variants" class="inline">

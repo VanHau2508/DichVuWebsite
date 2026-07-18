@@ -297,9 +297,12 @@ async function orderDetail(res, me, cookie, shopId, oid, err, edited, returned) 
   const r = await sellerApi('GET', `/shops/${shopId}/orders/${oid}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tìm thấy đơn.'));
-  // Kết nối hãng VC (nếu có) → hiện card "Tạo vận đơn qua hãng" khi đơn đã xác nhận.
-  // Lỗi tải config KHÔNG được làm sập trang đơn → nuốt, coi như chưa kết nối.
-  const shipping = r.json.status === 'confirmed'
+  // Kết nối hãng VC (nếu có) → hiện card "Tạo vận đơn qua hãng" khi đơn còn hàng chưa gửi
+  // (confirmed, hoặc shipped mà mới giao MỘT PHẦN — 0080). Lỗi tải config KHÔNG được làm
+  // sập trang đơn → nuốt, coi như chưa kết nối.
+  const needShipping = r.json.status === 'confirmed'
+    || (r.json.status === 'shipped' && r.json.fulfillment_status !== 'fulfilled');
+  const shipping = needShipping
     ? await sellerApi('GET', `/shops/${shopId}/shipping`, { cookie }).then((sr) => (sr.status === 200 ? sr.json : null)).catch(() => null)
     : null;
   return sendHtml(res, err ? 409 : 200, V.renderOrderDetail(ctx, shopId, r.json, err, shipping, edited, returned));
@@ -690,7 +693,18 @@ async function orderPrint(res, me, cookie, shopId, oid) {
 async function orderAction(req, res, me, cookie, shopId, oid, action) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   let body;
-  if (action === 'ship') { const f = await readForm(req); body = { tracking_number: String(f.tracking_number ?? '').trim(), carrier: String(f.carrier ?? '').trim() }; }
+  if (action === 'ship') {
+    const f = await readFormAll(req); // getAll: order_line_id[]/ship_qty[] song song (giao MỘT PHẦN 0080)
+    body = { tracking_number: String(f.get('tracking_number') ?? '').trim(), carrier: String(f.get('carrier') ?? '').trim() };
+    const ids = f.getAll('order_line_id'), qtys = f.getAll('ship_qty');
+    const lines = [];
+    for (let i = 0; i < ids.length; i++) {
+      const q = Number(String(qtys[i] ?? '').trim());
+      if (ids[i] && Number.isFinite(q) && q > 0) lines.push({ order_line_id: ids[i], qty: Math.round(q) });
+    }
+    // Có chọn dòng → gửi subset; không dòng nào (form cũ) → bỏ lines = seller gửi TRỌN còn lại.
+    if (lines.length) body.lines = lines;
+  }
   const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/${action}`, { cookie, body });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}`);
   // Lỗi (403 quyền / 409 sai trạng thái / 400) → render lại chi tiết kèm thông báo.

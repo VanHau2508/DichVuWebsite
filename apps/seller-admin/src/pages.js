@@ -906,18 +906,43 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   const hasReturnable = (o.lines ?? []).some((l) => Number(l.qty) - Number(l.returned_qty ?? 0) > 0);
   const returnAction = (o.status === 'delivered' && hasReturnable && ['owner', 'admin'].includes(ctx.role))
     ? `<a class="btn warn sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/return">Nhận trả hàng</a>` : '';
+  // GIAO MỘT PHẦN (0080): còn phải gửi mỗi dòng = qty − shipped_qty. Nút "Đã giao xong" CHỈ
+  // hiện khi đã gửi ĐỦ (fulfillment='fulfilled') — khớp guard seller (deliver partial → 409).
+  const remLines = (o.lines ?? []).map((l) => ({ ...l, remaining: Number(l.qty) - Number(l.shipped_qty ?? 0) })).filter((l) => l.remaining > 0);
+  const canShipManual = ['confirmed', 'shipped'].includes(o.status) && remLines.length > 0;
   let actions = '';
   if (o.status === 'pending') actions = act('confirm', 'Xác nhận đơn') + act('cancel', 'Huỷ đơn', 'btn warn sm');
-  else if (o.status === 'confirmed') actions = `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/ship" class="actions" style="align-items:end">
-      <div><label>Mã vận đơn</label><input name="tracking_number" required maxlength="64" style="width:180px"></div>
-      <div><label>Đơn vị VC</label><input name="carrier" maxlength="40" style="width:120px" placeholder="GHN..."></div>
-      <button class="btn sm" type="submit">Giao hàng (nhập tay)</button></form>` + act('cancel', 'Huỷ đơn', 'btn warn sm');
-  else if (o.status === 'shipped') actions = act('deliver', 'Đã giao xong');
+  else if (o.status === 'confirmed') actions = act('cancel', 'Huỷ đơn', 'btn warn sm');
+  else if (o.status === 'shipped' && o.fulfillment_status === 'fulfilled') actions = act('deliver', 'Đã giao xong');
+  // Card giao tay per-dòng: SL mặc định = còn lại; giảm để TÁCH kiện, gửi nốt sau. order_line_id[]
+  // đứng TRƯỚC ship_qty[] mỗi hàng → server zip theo chỉ số (dòng SL 0 bị bỏ, gửi kiện sau).
+  const shipCard = canShipManual ? `
+    <div class="card"><h2 style="margin-top:0">Giao hàng (nhập tay)</h2>
+      <p class="muted">Số lượng gửi mỗi mặt hàng — mặc định = còn lại. Gửi ÍT hơn → đơn "Giao một phần", gửi nốt kiện sau.</p>
+      <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/ship">
+        <table><tbody>
+          ${remLines.map((l) => `<tr>
+            <td>${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span></td>
+            <td class="muted" style="text-align:right;white-space:nowrap">còn ${l.remaining}/${esc(l.qty)}</td>
+            <td style="text-align:right"><input type="hidden" name="order_line_id" value="${esc(l.order_line_id)}"><input name="ship_qty" type="number" min="0" max="${l.remaining}" value="${l.remaining}" inputmode="numeric" style="width:78px" aria-label="Số lượng gửi ${esc(l.title_snapshot)}"></td>
+          </tr>`).join('')}
+        </tbody></table>
+        <div class="grid2" style="margin-top:8px">
+          <div><label>Mã vận đơn</label><input name="tracking_number" required maxlength="64"></div>
+          <div><label>Đơn vị VC</label><input name="carrier" maxlength="40" placeholder="GHN..."></div>
+        </div>
+        <button class="btn" type="submit" style="margin-top:12px">Giao kiện này</button>
+      </form>
+    </div>` : '';
   // Tạo vận đơn QUA HÃNG (GHN/GHTK) — chỉ khi đơn đã xác nhận + shop đã kết nối hãng.
   // Form prefill từ địa chỉ đơn; shop sửa/bổ sung quận-huyện trước khi đẩy sang hãng.
   const addr = typeof o.shipping_address === 'object' && o.shipping_address ? o.shipping_address : {};
-  const carrierCard = (o.status === 'confirmed' && shipping?.connected) ? `
-    <div class="card"><h2 style="margin-top:0">Tạo vận đơn qua ${esc((shipping.provider ?? '').toUpperCase())}</h2>
+  // Card tạo vận đơn HÃNG: đơn còn hàng chưa gửi (confirmed / shipped-partial) + đã kết nối.
+  // Hãng gửi TRỌN phần CÒN LẠI (một kiện hãng/đơn). ẨN khi COD chưa thu mà đã gửi một phần —
+  // seller cấm tách COD-hãng (409) → tránh dẫn user vào ngõ cụt.
+  const codSplitBlocked = o.payment_method === 'cod' && o.payment_status !== 'paid' && o.fulfillment_status !== 'unfulfilled';
+  const carrierCard = (['confirmed', 'shipped'].includes(o.status) && o.fulfillment_status !== 'fulfilled' && shipping?.connected && !codSplitBlocked) ? `
+    <div class="card"><h2 style="margin-top:0">Tạo vận đơn qua ${esc((shipping.provider ?? '').toUpperCase())}${o.fulfillment_status === 'partial' ? ' (phần còn lại)' : ''}</h2>
       <p class="muted">Đẩy đơn sang hãng — hãng trả <strong>mã vận đơn + phí</strong>, đơn tự chuyển "Đang giao".
         ${o.payment_method === 'cod' && o.payment_status !== 'paid'
           ? `Hãng sẽ <strong>thu hộ COD ${money(o.total_vnd)}</strong>.`
@@ -974,6 +999,19 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
         ${o.returns.map((r) => `<tr><td class="muted">${dt(r.created_at)}</td><td>${esc(r.qty)}</td><td><strong>${money(r.refund_vnd)}</strong></td><td class="muted">${r.restocked ? 'có' : 'không'}</td><td>${esc(r.reason ?? '') || '<span class="muted">—</span>'}</td><td class="muted">${esc(r.created_by_email ?? '—')}</td></tr>`).join('')}
       </tbody></table>
     </div>` : '';
+  // Danh sách KIỆN HÀNG (0080): mỗi vận đơn + mặt hàng trong kiện (shipment_lines từ getOrder).
+  // Đơn nhiều kiện thấy rõ kiện nào chứa gì + trạng thái từng kiện. Thay <p> vận đơn cũ.
+  const shipmentsCard = (o.shipments ?? []).length ? `
+    <div class="card"><h2>Kiện hàng / vận đơn</h2>
+      <table><thead><tr><th>Mã vận đơn</th><th>Trạng thái</th><th>Hãng</th><th>Mặt hàng</th></tr></thead><tbody>
+        ${o.shipments.map((s) => `<tr>
+          <td><strong>${esc(s.tracking_number ?? '(đang tạo)')}</strong> ${esc(s.carrier ?? '')}</td>
+          <td>${esc(SHIP_ST[s.status] ?? s.status)}</td>
+          <td class="muted">${s.provider ? esc(s.provider.toUpperCase()) : 'giao tay'}${s.carrier_fee_vnd != null ? ` · ${money(s.carrier_fee_vnd)}` : ''}</td>
+          <td class="muted">${(s.lines ?? []).length ? s.lines.map((sl) => `${esc(sl.sku ?? '?')}×${esc(sl.qty)}`).join(', ') : '—'}</td>
+        </tr>`).join('')}
+      </tbody></table>
+    </div>` : '';
   return layout(`Đơn #${o.order_number}`, ctx, `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
       <a class="muted" href="/shops/${esc(shopId)}/orders">← Danh sách đơn</a>
@@ -985,6 +1023,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <div class="card"><span class="pill">${badge(o.status, STATUS[o.status] ?? o.status)}</span>
       <span class="pill">${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} ${esc(o.payment_method?.toUpperCase() ?? '')}</span>
+      ${['confirmed', 'shipped'].includes(o.status) && ['partial', 'fulfilled'].includes(o.fulfillment_status) ? `<span class="pill">${badge(o.fulfillment_status === 'fulfilled' ? 'delivered' : 'shipped', o.fulfillment_status === 'fulfilled' ? 'Đã gửi đủ' : 'Giao một phần')}</span>` : ''}
       <div class="actions">${(editAction + editPaidAction + actions + payAction + refundAction + returnAction) || '<span class="muted">Không có thao tác.</span>'}</div></div>
     ${o.status === 'returned' ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg)">
       <h2 style="margin-top:0">↩️ Đơn bị hoàn (bom hàng)</h2>
@@ -992,13 +1031,15 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
         vào trang sản phẩm → <strong>Điều chỉnh tồn</strong> để cộng lại số lượng — hệ thống KHÔNG tự cộng
         vì hàng có thể hỏng/thiếu khi về tới nơi.</p></div>` : ''}
     <div class="card"><h2>Sản phẩm</h2><table><tbody>
-      ${(o.lines ?? []).map((l) => `<tr><td><div class="pcell">${l.image_url ? `<img class="pthumb" src="${esc(l.image_url)}" alt="" loading="lazy" width="44" height="44">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0">${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span>${Number(l.returned_qty) > 0 ? ` <span class="muted">· đã trả ${esc(l.returned_qty)}</span>` : ''}</div></div></td><td class="muted">${money(l.unit_price_vnd)} × ${esc(l.qty)}</td><td style="text-align:right">${money(Number(l.unit_price_vnd) * l.qty)}</td></tr>`).join('')}
+      ${(o.lines ?? []).map((l) => `<tr><td><div class="pcell">${l.image_url ? `<img class="pthumb" src="${esc(l.image_url)}" alt="" loading="lazy" width="44" height="44">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0">${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span>${Number(l.shipped_qty) > 0 ? ` <span class="muted">· đã gửi ${esc(l.shipped_qty)}/${esc(l.qty)}</span>` : ''}${Number(l.returned_qty) > 0 ? ` <span class="muted">· đã trả ${esc(l.returned_qty)}</span>` : ''}</div></div></td><td class="muted">${money(l.unit_price_vnd)} × ${esc(l.qty)}</td><td style="text-align:right">${money(Number(l.unit_price_vnd) * l.qty)}</td></tr>`).join('')}
     </tbody></table>
       <div style="text-align:right;margin-top:8px" class="muted">Tạm tính ${money(o.subtotal_vnd)} · Ship ${money(o.shipping_vnd)}</div>
       <div style="text-align:right;font-weight:700;font-size:1.1rem">Tổng ${money(o.total_vnd)}</div></div>
+    ${shipCard}
     ${refundHistory}
     ${returnHistory}
     ${carrierCard}
+    ${shipmentsCard}
     ${(o.shipments ?? []).some((s) => s.provider_status === 'finalize_failed') ? `
     <div class="card" style="border-color:#fca5a5;background:#fef2f2">
       <h2 style="margin-top:0;color:#b91c1c">⚠ Vận đơn cần phục hồi</h2>
@@ -1013,7 +1054,6 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
       <p>${esc(o.customer_name)} · ${esc(o.customer_phone ?? '')}${o.customer_email ? ` · ${esc(o.customer_email)}` : ''}</p>
       ${o.note ? `<p class="muted">📝 Ghi chú nội bộ: ${esc(o.note)}</p>` : ''}
       ${o.shipping_address ? `<p class="muted">${esc(typeof o.shipping_address === 'object' ? [o.shipping_address.line, o.shipping_address.province].filter(Boolean).join(', ') || JSON.stringify(o.shipping_address) : o.shipping_address)}</p>` : ''}
-      ${(o.shipments ?? []).map((s) => `<p class="muted">Vận đơn: <strong>${esc(s.tracking_number ?? '(đang tạo)')}</strong> ${esc(s.carrier ?? '')} (${esc(SHIP_ST[s.status] ?? s.status)})${s.provider ? ` · qua ${esc(s.provider.toUpperCase())}` : ''}${s.carrier_fee_vnd != null ? ` · phí hãng ${money(s.carrier_fee_vnd)}` : ''}</p>`).join('')}
       <p class="muted">Tạo: ${dt(o.created_at)}</p></div>`);
 }
 

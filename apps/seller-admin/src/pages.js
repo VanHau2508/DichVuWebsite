@@ -888,8 +888,12 @@ export function renderOrders(ctx, shopId, data, filter) {
     <a class="btn alt" href="/">← Về bảng điều khiển</a>`);
 }
 
-export function renderOrderDetail(ctx, shopId, o, err, shipping) {
+export function renderOrderDetail(ctx, shopId, o, err, shipping, edited) {
   const act = (path, label, cls = 'btn sm', extra = '') => `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/${path}">${extra}<button class="${cls}" type="submit">${label}</button></form>`;
+  // "Sửa đơn" CHỈ khi đơn còn sửa được: chưa gửi hãng (pending/confirmed) VÀ chưa thanh toán.
+  // Đơn đã trả / đã giao → seller từ chối (409) nên không hiện nút (khỏi dẫn user vào ngõ cụt).
+  const editable = ['pending', 'confirmed'].includes(o.status) && o.payment_status === 'unpaid';
+  const editAction = editable ? `<a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/edit">Sửa đơn</a>` : '';
   let actions = '';
   if (o.status === 'pending') actions = act('confirm', 'Xác nhận đơn') + act('cancel', 'Huỷ đơn', 'btn warn sm');
   else if (o.status === 'confirmed') actions = `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/ship" class="actions" style="align-items:end">
@@ -956,10 +960,11 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping) {
       <a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/print" target="_blank" rel="noopener">🖨 In đơn</a>
     </div>
     <h1>Đơn hàng #${esc(o.order_number)}</h1>
+    ${edited ? `<div class="notice ok">✓ Đã lưu sửa đơn — tồn kho &amp; tổng tiền đã cập nhật theo thay đổi.</div>` : ''}
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <div class="card"><span class="pill">${badge(o.status, STATUS[o.status] ?? o.status)}</span>
       <span class="pill">${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} ${esc(o.payment_method?.toUpperCase() ?? '')}</span>
-      <div class="actions">${(actions + payAction + refundAction) || '<span class="muted">Không có thao tác.</span>'}</div></div>
+      <div class="actions">${(editAction + actions + payAction + refundAction) || '<span class="muted">Không có thao tác.</span>'}</div></div>
     ${o.status === 'returned' ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg)">
       <h2 style="margin-top:0">↩️ Đơn bị hoàn (bom hàng)</h2>
       <p class="muted" style="margin-bottom:0">Hãng vận chuyển báo hàng đang/đã hoàn về. Khi <strong>nhận lại hàng thực tế</strong>,
@@ -988,6 +993,97 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping) {
       ${o.shipping_address ? `<p class="muted">${esc(typeof o.shipping_address === 'object' ? [o.shipping_address.line, o.shipping_address.province].filter(Boolean).join(', ') || JSON.stringify(o.shipping_address) : o.shipping_address)}</p>` : ''}
       ${(o.shipments ?? []).map((s) => `<p class="muted">Vận đơn: <strong>${esc(s.tracking_number ?? '(đang tạo)')}</strong> ${esc(s.carrier ?? '')} (${esc(SHIP_ST[s.status] ?? s.status)})${s.provider ? ` · qua ${esc(s.provider.toUpperCase())}` : ''}${s.carrier_fee_vnd != null ? ` · phí hãng ${money(s.carrier_fee_vnd)}` : ''}</p>`).join('')}
       <p class="muted">Tạo: ${dt(o.created_at)}</p></div>`);
+}
+
+// Trang SỬA ĐƠN (declarative) — mirror renderOrderNew. Form POST TOÀN BỘ tập dòng mong
+// muốn; seller tính lại giá/tồn. No-JS thêm/bớt dòng (CSP cấm JS):
+//  • Dòng HIỆN CÓ: hidden variant_id + ô SL (giữ giá snapshot hiển thị). Đặt SL = 0 → BFF
+//    lọc bỏ trước khi POST ⇒ "xoá dòng" (biến thể vắng khỏi lines = seller coi như bỏ).
+//  • THÊM dòng: 5 slot chọn từ sellable-variants (?q= lọc, giống form tạo đơn tay).
+// variant_id[]/qty[] trùng tên, ghép theo CHỈ SỐ (DOM order: mỗi hàng variant_id trước qty).
+export function renderOrderEdit(ctx, shopId, o, variants, err, form, picker) {
+  const base = `/shops/${esc(shopId)}`;
+  const eurl = `${base}/orders/${esc(o.id)}/edit`;
+  const pq = picker?.q ?? '';
+  // <optgroup> theo sản phẩm cho slot THÊM dòng (mirror renderOrderNew).
+  const byProduct = new Map();
+  for (const v of variants) { if (!byProduct.has(v.product_title)) byProduct.set(v.product_title, []); byProduct.get(v.product_title).push(v); }
+  const options = () => [...byProduct.entries()].map(([pt, vs]) => `<optgroup label="${esc(pt)}">${vs.map((v) =>
+    `<option value="${esc(v.id)}">${esc(v.variant_title ? `${pt} — ${v.variant_title}` : pt)}${v.sku ? ` [${esc(v.sku)}]` : ''} · ${money(v.price_vnd)} · còn ${esc(v.available)}</option>`).join('')}</optgroup>`).join('');
+  // Nhãn/giá tra cứu để hiển thị lại dòng sau khi POST lỗi (form.lines mất snapshot).
+  const info = new Map();
+  for (const l of (o.lines ?? [])) info.set(l.variant_id, { label: l.title_snapshot, sku: l.sku_snapshot, unit: l.unit_price_vnd, image_url: l.image_url });
+  for (const v of variants) if (!info.has(v.id)) info.set(v.id, { label: v.variant_title ? `${v.product_title} — ${v.variant_title}` : v.product_title, sku: v.sku, unit: v.price_vnd });
+  // Tập dòng đang sửa: lần đầu = dòng hiện tại của đơn; sau lỗi = đúng giá trị đã gõ.
+  const rows = Array.isArray(form?.lines)
+    ? form.lines.map((r) => ({ variant_id: r.variant_id, qty: r.qty }))
+    : (o.lines ?? []).map((l) => ({ variant_id: l.variant_id, qty: l.qty }));
+  const curRows = rows.map((r) => {
+    const it = info.get(r.variant_id) ?? {};
+    const lbl = it.label ?? r.variant_id;
+    return `<div class="grid2" style="grid-template-columns:1fr 90px;align-items:end">
+      <div><label>${esc(lbl)}${it.sku ? ` <span class="muted">${esc(it.sku)}</span>` : ''}${it.unit != null ? ` <span class="muted">· ${money(it.unit)}/cái</span>` : ''}</label>
+        <input type="hidden" name="variant_id" value="${esc(r.variant_id)}">
+        <div class="muted" style="font-size:.8rem">Đặt SL = 0 để xoá dòng này khỏi đơn.</div></div>
+      <div><label>SL</label><input name="qty" type="number" min="0" max="1000" value="${esc(r.qty)}" inputmode="numeric"></div>
+    </div>`;
+  }).join('');
+  // 5 slot THÊM dòng mới (rỗng — mirror renderOrderNew slot; để trống = bỏ qua).
+  const addSlot = (i) => `<div class="grid2" style="grid-template-columns:1fr 90px;align-items:end">
+    <div><label>Thêm sản phẩm ${i + 1} (tuỳ chọn)</label>
+      <select name="variant_id">
+        <option value="">— Bỏ trống —</option>${options()}
+      </select></div>
+    <div><label>SL</label><input name="qty" type="number" min="1" max="1000" value="1" inputmode="numeric"></div>
+  </div>`;
+  // Nguồn giá trị khách: sau lỗi = form; lần đầu = trạng thái đơn hiện tại.
+  const addr = (typeof o.shipping_address === 'object' && o.shipping_address) ? o.shipping_address : {};
+  const cur = { name: o.customer_name ?? '', phone: o.customer_phone ?? '', email: o.customer_email ?? '', address_line: addr.line ?? '', province: addr.province ?? '', ship_fee_vnd: o.shipping_vnd ?? '', note: o.note ?? '' };
+  const src = form ?? cur;
+  const v = (k) => esc(src[k] ?? '');
+  const prov = src.province ?? '';
+  return layout(`Sửa đơn #${o.order_number}`, ctx, `
+    <a class="muted" href="${base}/orders/${esc(o.id)}">← Về chi tiết đơn #${esc(o.order_number)}</a>
+    <h1>Sửa đơn #${esc(o.order_number)}</h1>
+    <p class="muted" style="margin-top:-6px">Sửa số lượng, thêm/bớt hàng, đổi khách nhận hoặc phí ship. Hệ thống <strong>tính lại tồn kho &amp; tổng tiền</strong> khi lưu. Dòng cũ giữ <strong>giá lúc chốt</strong> (snapshot); dòng thêm mới lấy giá hiện tại.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${variants.length ? `<div class="card"><form method="GET" action="${eurl}" class="actions" style="align-items:end;flex-wrap:wrap">
+      <div style="flex:1 1 220px"><label>Tìm sản phẩm cho ô THÊM dòng (tên / SKU — không cần dấu)</label>
+        <input name="q" value="${esc(pq)}" maxlength="100" placeholder="ghe sofa, SKU…"></div>
+      <button class="btn alt sm" type="submit">Lọc danh sách</button>
+      ${pq ? `<a class="muted" href="${eurl}" style="align-self:center">Xoá lọc</a>` : ''}
+      ${picker?.truncated ? `<p class="muted" style="flex-basis:100%;margin:6px 0 0">⚠ Đang hiện 500 biến thể đầu — còn nhiều hơn, hãy tìm kiếm để thu hẹp.</p>` : ''}
+      <p class="muted" style="flex-basis:100%;margin:6px 0 0">Lưu ý: bấm "Lọc danh sách" sẽ tải lại trang theo trạng thái đơn hiện tại — hãy lọc TRƯỚC khi nhập thay đổi.</p>
+    </form></div>` : ''}
+    <form method="POST" action="${eurl}">
+      <input type="hidden" name="picker_q" value="${esc(pq)}">
+      <div class="card"><h2 style="margin-top:0">Hàng trong đơn</h2>
+        ${curRows || '<p class="muted">Đơn chưa có dòng hàng nào — thêm ít nhất 1 dòng bên dưới.</p>'}
+      </div>
+      <div class="card"><h2 style="margin-top:0">Thêm hàng${pq ? ` <span class="muted" style="font-weight:400;font-size:.85rem">(đang lọc theo “${esc(pq)}”)</span>` : ''}</h2>
+        ${variants.length ? [0, 1, 2, 3, 4].map(addSlot).join('') : '<p class="muted" style="margin:0">Chưa có sản phẩm đang bán nào để thêm.</p>'}
+      </div>
+      <div class="card"><h2 style="margin-top:0">Khách nhận</h2>
+        <div class="grid2">
+          <div><label>Họ tên *</label><input name="name" required maxlength="120" value="${v('name')}"></div>
+          <div><label>SĐT *</label><input name="phone" required inputmode="tel" placeholder="09xxxxxxxx" value="${v('phone')}"></div>
+        </div>
+        <label>Email (tuỳ chọn)</label><input name="email" type="email" value="${v('email')}">
+        <label>Địa chỉ giao</label><input name="address_line" maxlength="300" placeholder="Số nhà, đường, phường/xã, quận/huyện" value="${v('address_line')}">
+        <label>Tỉnh / Thành (tuỳ chọn — cần đúng để tạo vận đơn hãng)</label>
+        <select name="province"><option value="">— Không ghi —</option>${PROVINCES.map((p) => `<option value="${esc(p)}"${prov === p ? ' selected' : ''}>${esc(p)}</option>`).join('')}</select>
+      </div>
+      <div class="card"><h2 style="margin-top:0">Phí &amp; ghi chú</h2>
+        <div class="grid2">
+          <div><label>Phí ship (đ — bỏ trống = giữ phí hiện tại)</label><input name="ship_fee_vnd" inputmode="numeric" placeholder="vd 25000" value="${v('ship_fee_vnd')}"></div>
+          <div><label>Ghi chú nội bộ (tuỳ chọn)</label><input name="note" maxlength="500" value="${v('note')}"></div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn" type="submit">Lưu sửa đơn</button>
+        <a class="btn alt" href="${base}/orders/${esc(o.id)}">Huỷ</a>
+      </div>
+    </form>`);
 }
 
 // Trang IN đơn — HTML độc lập, tối ưu in (không sidebar, no-JS). User bấm Ctrl+P.

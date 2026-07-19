@@ -363,6 +363,14 @@ async function summarize(c, cartId, province = null, coords = null) {
     distance_mode: cfg.mode === 'distance' };
 }
 
+// Shop có BẬT thanh toán QR (VietQR) đầy đủ chưa? Mặc định shop chỉ-COD KHÔNG có row → false →
+// checkout ẨN radio QR (chống ngõ-cụt: trước đây radio QR luôn hiện, khách chọn → fail(400) →
+// trang lỗi cụt mất data). Điều kiện KHỚP createOrderTx (qr_enabled + bank_bin + account_number).
+async function shopQrEnabled(c) {
+  const cfg = (await c.query(`SELECT qr_enabled, bank_bin, account_number FROM shop_payment_config WHERE shop_id = current_shop_id()`)).rows[0];
+  return !!(cfg && cfg.qr_enabled && cfg.bank_bin && cfg.account_number);
+}
+
 // Tên shop (cho header trang HTML). app_checkout có SELECT shops (policy checkout_shop).
 async function getShopName(shopId) {
   try { return await withTenant(shopId, async (c) => (await c.query(`SELECT name FROM shops WHERE id = current_shop_id()`)).rows[0]?.name ?? null); }
@@ -780,7 +788,7 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       const cfg = (await c.query(
         `SELECT bank_bin, account_number, account_name, qr_enabled FROM shop_payment_config WHERE shop_id = current_shop_id()`,
       )).rows[0];
-      if (!cfg || !cfg.qr_enabled || !cfg.bank_bin || !cfg.account_number) fail(400, 'shop chưa bật thanh toán QR');
+      if (!cfg || !cfg.qr_enabled || !cfg.bank_bin || !cfg.account_number) fail(400, 'shop chưa bật thanh toán QR', { qr_unavailable: true });
       paymentRef = 'NTG' + crypto.randomBytes(6).toString('hex').toUpperCase(); // duy nhất (UNIQUE ở orders)
       qrAccount = cfg.account_number; // snapshot tài khoản nhận → webhook đối chiếu
       qrString = buildVietQR({ bankBin: cfg.bank_bin, accountNumber: cfg.account_number, amountVnd: total, content: paymentRef });
@@ -929,17 +937,18 @@ async function checkoutPlace(req, res, form, ctx) {
   // Sinh idem MỚI ở đây và ràng buộc challenge vào chính idem đó (chống replay).
   const reRender = async ({ needChallenge, ...opts }) => {
     const token = parseCookies(req)[CART_COOKIE];
-    const summary = await withTenant(ctx.shopId, async (c) => {
+    const { summary, qrEnabled } = await withTenant(ctx.shopId, async (c) => {
       const cart = await findCart(c, token);
+      if (!cart) return { summary: { items: [] }, qrEnabled: false };
       // Tỉnh đã chọn hợp lệ → tổng dựng lại TÍNH THEO TỈNH (ship_seen mới = phí đúng → vòng
       // xác nhận phí hội tụ sau đúng một cú bấm). Toạ độ (nếu có) → ship theo km khớp lúc chốt.
-      return cart ? summarize(c, cart.id, isProvince(String(form.province ?? '')) ? String(form.province) : null, parseCoords(form.lat, form.lng)) : { items: [] };
+      return { summary: await summarize(c, cart.id, isProvince(String(form.province ?? '')) ? String(form.province) : null, parseCoords(form.lat, form.lng)), qrEnabled: await shopQrEnabled(c) };
     });
     if (!summary.items.length) return redirect(res, '/cart');
     const idem = genToken();
     const prefill = { name: form.name, phone: form.phone, email: form.email, address_line: form.address_line, province: form.province, payment_method: form.payment_method, address_choice: form.address_choice, logged_in: !!cust, lat: form.lat, lng: form.lng };
     const g = gpsOpts(summary);
-    return sendHtml(res, opts.status ?? 200, renderCheckout(shopName, summary, idem, { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], gps: g.gps, nonce: g.nonce, challenge: needChallenge ? issueChallenge(idem) : undefined, ...opts }), {}, g.nonce);
+    return sendHtml(res, opts.status ?? 200, renderCheckout(shopName, summary, idem, { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], gps: g.gps, nonce: g.nonce, qrEnabled, challenge: needChallenge ? issueChallenge(idem) : undefined, ...opts }), {}, g.nonce);
   };
 
   // ── Lớp BOT no-JS ────────────────────────────────────────────────────────────
@@ -1008,6 +1017,11 @@ async function checkoutPlace(req, res, form, ctx) {
     if (err.statusCode === 409 && err.body?.subtotal_vnd != null) {
       return reRender({ error: 'Giá sản phẩm vừa được cập nhật (khuyến mãi thay đổi) — vui lòng kiểm tra và bấm Đặt hàng lại.' });
     }
+    // QR không khả dụng (shop tắt QR giữa chừng) → dựng lại form GIỮ dữ liệu (reRender ẩn radio QR
+    // → còn COD) thay vì trang lỗi cụt mất data. Chống ngõ-cụt trên đường tới hạn.
+    if (err.statusCode === 400 && err.body?.qr_unavailable) {
+      return reRender({ error: 'Cửa hàng hiện chỉ nhận thanh toán khi nhận hàng (COD) — đã chuyển về COD, vui lòng bấm Đặt hàng lại.' });
+    }
     if (err.statusCode) return sendHtml(res, err.statusCode, renderError(shopName, err.body?.error ?? 'Không đặt được đơn.'));
     throw err;
   }
@@ -1033,9 +1047,10 @@ async function orderLookup(req, res, _body, ctx, query) {
 // ── trang HTML (không JS) ────────────────────────────────────────────────────
 async function getCheckoutPage(req, res, _body, ctx) {
   const token = parseCookies(req)[CART_COOKIE];
-  const summary = await withTenant(ctx.shopId, async (c) => {
+  const { summary, qrEnabled } = await withTenant(ctx.shopId, async (c) => {
     const cart = await findCart(c, token);
-    return cart ? summarize(c, cart.id) : { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 };
+    if (!cart) return { summary: { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 }, qrEnabled: false };
+    return { summary: await summarize(c, cart.id), qrEnabled: await shopQrEnabled(c) };
   });
   if (!summary.items.length) return redirect(res, '/cart');       // giỏ trống → về giỏ
   // Khách đăng nhập → điền nhanh tên/SĐT/email + CHỌN NHANH địa chỉ đã lưu (no-JS radio).
@@ -1047,7 +1062,7 @@ async function getCheckoutPage(req, res, _body, ctx) {
   } : undefined;
   const g = gpsOpts(summary);
   return sendHtml(res, 200, renderCheckout(await getShopName(ctx.shopId), summary, genToken(),
-    { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], gps: g.gps, nonce: g.nonce }), {}, g.nonce);
+    { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], gps: g.gps, nonce: g.nonce, qrEnabled }), {}, g.nonce);
 }
 
 async function getLookupPage(req, res, _body, ctx) {

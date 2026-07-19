@@ -203,7 +203,10 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
   const pf = opts.prefill ?? {};
   const addresses = opts.addresses ?? [];
   const v = (x) => esc(x ?? '');
-  const pm = pf.payment_method === 'qr' ? 'qr' : 'cod';
+  // QR chỉ hiện khi shop ĐÃ bật thanh toán QR (opts.qrEnabled). Shop chỉ-COD → ẩn radio QR + ép COD
+  // (chống ngõ-cụt: chọn QR ở shop chưa bật → fail(400) → trang lỗi cụt mất data).
+  const qrOn = opts.qrEnabled === true;
+  const pm = qrOn && pf.payment_method === 'qr' ? 'qr' : 'cod';
   const ch = opts.challenge;
   const provinceOpts = (sel) => PROVINCES.map((p) => `<option value="${esc(p)}"${sel === p ? ' selected' : ''}>${esc(p)}</option>`).join('');
   const honeypot = `<input class="hp" type="text" name="company" tabindex="-1" autocomplete="off" aria-hidden="true">`;
@@ -265,7 +268,7 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
       ${recipient}
       <div class="card pay"><h2>Thanh toán</h2>
         <label><input type="radio" name="payment_method" value="cod"${pm === 'cod' ? ' checked' : ''}> Thanh toán khi nhận hàng (COD)</label>
-        <label><input type="radio" name="payment_method" value="qr"${pm === 'qr' ? ' checked' : ''}> Chuyển khoản QR (VietQR)</label>
+        ${qrOn ? `<label><input type="radio" name="payment_method" value="qr"${pm === 'qr' ? ' checked' : ''}> Chuyển khoản QR (VietQR)</label>` : ''}
       </div>
       ${ch ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb"><h2>Xác minh</h2>
         <p class="muted">Để chống đặt hàng tự động, vui lòng trả lời: <strong>${esc(ch.a)} + ${esc(ch.b)} = ?</strong></p>

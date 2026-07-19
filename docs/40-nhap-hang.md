@@ -95,7 +95,31 @@ PATCH  /shops/:id/purchase-orders/:pid               sửa header/thay toàn b�
 POST   /shops/:id/purchase-orders/:pid/order         draft → ordered
 POST   /shops/:id/purchase-orders/:pid/receive       → received (NGUYÊN TỬ: tồn + giá vốn)
 POST   /shops/:id/purchase-orders/:pid/cancel        draft/ordered → cancelled
+
+GET    /shops/:id/purchasable-variants[?q=]          chọn biến thể (gồm SP nháp/ẩn) + giá vốn
+GET    /shops/:id/purchasing/report[?from&to]        tổng nhập theo kỳ + theo NCC + theo SP
+
+POST   /shops/:id/stocktakes                          tạo phiên {scope:'all'|'list', variant_ids?}
+GET    /shops/:id/stocktakes                          liệt kê
+GET    /shops/:id/stocktakes/:sid                     chi tiết + dòng (system_qty / counted / on_hand_now)
+PATCH  /shops/:id/stocktakes/:sid                     ghi số đếm {counts:[{variant_id, counted_qty}]}
+POST   /shops/:id/stocktakes/:sid/complete            chốt → điều chỉnh tồn + ledger 'adjust'
+POST   /shops/:id/stocktakes/:sid/cancel              huỷ phiên (không đụng tồn)
 ```
+
+## Kiểm kê — chốt 2 lượt, chặn đếm < đang-giữ
+
+`createStocktake` chụp `system_qty = on_hand` lúc tạo (tham chiếu). Đếm ghi vào `counted_qty`
+(NULL = chưa đếm). `completeStocktake` chốt dưới `FOR UPDATE`, **2 lượt** (chỉ dòng đã đếm):
+- **Lượt 1** (thứ tự `variant_id`): khoá `inventory_levels`, đọc `on_hand` **sống** + `reserved`.
+  **CHẶN nếu `counted_qty < reserved`** → 409 (đặt `on_hand < reserved` vi phạm CHECK 0009; phải
+  huỷ/giao đơn đang giữ hàng trước).
+- **Lượt 2**: `on_hand = counted_qty`; ghi **đúng 1** ledger `kind='adjust'` `delta = counted − live`
+  (bỏ qua nếu delta=0 — không rác ledger); **ghi đè `system_qty = on_hand sống`** (chứng từ phản ánh
+  cơ sở chênh thực, không phải snapshot cũ lúc tạo). Bất biến `Σledger==on_hand` giữ nguyên.
+
+`scope='all'` chụp mọi biến thể không mồ côi; **>500 → 422** (chia lô). `counted`/`complete`/`cancel`
+chỉ khi status `counting` (guard dưới `FOR UPDATE`); phiên `completed`/`cancelled` = terminal.
 
 Trần: ≤200 dòng/phiếu, qty 1–100.000, giá nhập 0–100 tỷ (khớp MAX_PRICE); `subtotal_vnd` cache
 tính ở SQL (`bigint`, tránh tràn Number JS). Dòng trùng biến thể → 400 (gộp vào 1 dòng).
@@ -103,9 +127,11 @@ tính ở SQL (`bigint`, tránh tràn Number JS). Dòng trùng biến thể → 
 ## Test
 
 `schema-invariants` +2 (5 bảng zero-grant vai công khai / đủ CRUD app_rw) — tổng 27 xanh.
-`purchasing.e2e` 32: NCC CRUD + ẩn chặn phiếu; phiếu subtotal cache; nhận cộng tồn + 1 ledger
+`purchasing.e2e` 50: NCC CRUD + ẩn chặn phiếu; phiếu subtotal cache; nhận cộng tồn + 1 ledger
 receive/dòng + Σledger==on_hand; giá vốn NULL→giá nhập, bình quân gia quyền di động,
-on_hand-cũ-0→giá nhập; terminal 409×3; phiếu rỗng 400; RBAC order_manager 403; IDOR chéo-shop 404.
+on_hand-cũ-0→giá nhập; terminal 409×3; phiếu rỗng 400; purchasable gồm SP nháp + giá vốn;
+kiểm kê snapshot→đếm→chốt adjust ledger + system_qty ghi đè, chặn counted<reserved 409, terminal
+409, scope=all; báo cáo nhập theo kỳ/NCC/SP; RBAC order_manager 403; IDOR chéo-shop 404.
 
 ## Cắt v1 → v2
 

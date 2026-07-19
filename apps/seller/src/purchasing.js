@@ -328,7 +328,244 @@ async function receivePurchaseOrder(res, ctx, poId) {
   return send(res, 200, { ok: true, ...summary });
 }
 
+// ─────────────────── BIẾN THỂ CÓ THỂ NHẬP (chọn khi lập phiếu/kiểm kê) ────────
+// Như listSellableVariants (orders.js) NHƯNG KHÔNG lọc product.status='active' — nhập kho
+// được cho cả SP nháp/ẩn (nhập trước, bán sau). Kèm giá vốn hiện hành để UI tham chiếu.
+async function listPurchasableVariants(res, ctx, query) {
+  const q = (query?.get('q') ?? '').trim().slice(0, 100);
+  const args = [];
+  let filterSql = '';
+  if (q) { args.push('%' + q.replace(/[%_\\]/g, '\\$&') + '%'); filterSql = ` AND (vn_unaccent(p.title) LIKE vn_unaccent($${args.length}) OR v.sku ILIKE $${args.length})`; }
+  const rows = await withTenant(ctx.shopId, async (c) =>
+    (await c.query(
+      `SELECT v.id, p.title AS product_title, v.title AS variant_title, v.sku, v.price_vnd,
+              coalesce(il.on_hand, 0)::int AS on_hand, vc.cost_vnd
+         FROM variants v
+         JOIN products p ON p.id = v.product_id AND p.deleted_at IS NULL
+         LEFT JOIN inventory_levels il ON il.variant_id = v.id
+         LEFT JOIN variant_costs vc ON vc.shop_id = v.shop_id AND vc.variant_id = v.id
+        WHERE ${VARIANT_NOT_ORPHAN_SQL}${filterSql}
+        ORDER BY p.title, v.title NULLS FIRST, v.sku LIMIT 500`, args)).rows);
+  return send(res, 200, {
+    variants: rows.map((r) => ({ ...r, price_vnd: Number(r.price_vnd), cost_vnd: r.cost_vnd == null ? null : Number(r.cost_vnd) })),
+    ...(rows.length === 500 ? { truncated: true } : {}),
+  });
+}
+
+// ─────────────────────────── BÁO CÁO NHẬP HÀNG ───────────────────────────────
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TZ = 'Asia/Ho_Chi_Minh';
+const todayVN = () => new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+const realDate = (s) => { const d = new Date(s + 'T00:00:00Z'); return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s; };
+const addDays = (s, k) => new Date(Date.parse(s + 'T00:00:00Z') + k * 86400e3).toISOString().slice(0, 10);
+// Khoảng sargable theo received_at, giờ VN (như reports.js): [00:00 from VN, 00:00 to+1 VN).
+const rangeSql = (col, i) => `${col} >= ($${i}::date::timestamp AT TIME ZONE '${TZ}') AND ${col} < (($${i + 1}::date + 1)::timestamp AT TIME ZONE '${TZ}')`;
+
+// GET /shops/:id/purchasing/report?from&to — tổng nhập theo kỳ (phiếu ĐÃ nhận, theo received_at).
+async function purchasingReport(res, ctx, query) {
+  const to = query.get('to') ?? todayVN();
+  const from = query.get('from') ?? addDays(to, -29);
+  if (!DATE_RE.test(from) || !DATE_RE.test(to) || !realDate(from) || !realDate(to)) return send(res, 400, { error: 'ngày không hợp lệ (YYYY-MM-DD)' });
+  if (from > to) return send(res, 400, { error: 'từ-ngày phải ≤ đến-ngày' });
+  if (Math.round((Date.parse(to) - Date.parse(from)) / 86400e3) + 1 > 366) return send(res, 400, { error: 'khoảng tối đa 366 ngày' });
+  const data = await withTenant(ctx.shopId, async (c) => {
+    const totals = (await c.query(
+      `SELECT count(*)::int AS po_count, coalesce(sum(subtotal_vnd), 0)::bigint AS value
+         FROM purchase_orders WHERE status = 'received' AND ${rangeSql('received_at', 1)}`, [from, to])).rows[0];
+    const bySupplier = (await c.query(
+      `SELECT s.name AS supplier_name, count(*)::int AS po_count, coalesce(sum(po.subtotal_vnd), 0)::bigint AS value
+         FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id
+        WHERE po.status = 'received' AND ${rangeSql('po.received_at', 1)}
+        GROUP BY s.name ORDER BY value DESC LIMIT 100`, [from, to])).rows;
+    const byProduct = (await c.query(
+      `SELECT l.title_snapshot AS title, l.sku_snapshot AS sku, sum(l.qty)::bigint AS qty,
+              coalesce(sum(l.qty::bigint * l.unit_cost_vnd), 0)::bigint AS value
+         FROM purchase_order_lines l JOIN purchase_orders po ON po.id = l.po_id
+        WHERE po.status = 'received' AND ${rangeSql('po.received_at', 1)}
+        GROUP BY l.title_snapshot, l.sku_snapshot ORDER BY value DESC LIMIT 101`, [from, to])).rows;
+    return { totals, bySupplier, byProduct };
+  });
+  return send(res, 200, {
+    range: { from, to },
+    totals: { po_count: data.totals.po_count, value_vnd: Number(data.totals.value) },
+    by_supplier: data.bySupplier.map((r) => ({ supplier_name: r.supplier_name, po_count: r.po_count, value_vnd: Number(r.value) })),
+    by_product: data.byProduct.slice(0, 100).map((r) => ({ title: r.title, sku: r.sku, qty: Number(r.qty), value_vnd: Number(r.value) })),
+    products_truncated: data.byProduct.length > 100,
+  });
+}
+
+// ─────────────────────────── KIỂM KÊ (stocktake) ─────────────────────────────
+const MAX_COUNTED = 1_000_000_000; // < int4 max — on_hand là int4
+
+// POST — tạo phiên đếm. scope 'all' (mọi biến thể không mồ côi) hoặc 'list' (variant_ids).
+// system_qty snapshot on_hand LÚC TẠO (tham chiếu); on_hand SỐNG mới là cơ sở tính chênh lúc chốt.
+async function createStocktake(res, ctx, body) {
+  const scope = body?.scope === 'all' ? 'all' : 'list';
+  const note = str(body?.note, 1000);
+  let ids = null;
+  if (scope === 'list') {
+    const raw = Array.isArray(body?.variant_ids) ? body.variant_ids : [];
+    const seen = new Set();
+    ids = [];
+    for (const x of raw) { const v = String(x); if (!UUID_RE.test(v)) fail(400, 'variant_id không hợp lệ'); if (!seen.has(v)) { seen.add(v); ids.push(v); } }
+    if (ids.length === 0) fail(400, 'chọn ít nhất 1 biến thể để kiểm kê');
+    if (ids.length > 500) fail(400, 'tối đa 500 biến thể/phiên (chia nhỏ phiên)');
+  }
+  const out = await withTenant(ctx.shopId, async (c) => {
+    // Tập biến thể mục tiêu (không mồ côi). scope 'all' đếm trước — chặn phiên khổng lồ.
+    const targets = (await c.query(
+      scope === 'all'
+        ? `SELECT v.id, coalesce(il.on_hand, 0)::int AS on_hand FROM variants v
+             LEFT JOIN inventory_levels il ON il.variant_id = v.id
+            WHERE ${VARIANT_NOT_ORPHAN_SQL} ORDER BY v.id`
+        : `SELECT v.id, coalesce(il.on_hand, 0)::int AS on_hand FROM variants v
+             LEFT JOIN inventory_levels il ON il.variant_id = v.id
+            WHERE v.id = ANY($1) AND ${VARIANT_NOT_ORPHAN_SQL} ORDER BY v.id`,
+      scope === 'all' ? [] : [ids])).rows;
+    if (scope === 'all' && targets.length > 500) fail(422, `shop có ${targets.length} biến thể (>500) — kiểm kê theo danh sách/lô thay vì toàn bộ`);
+    if (targets.length === 0) fail(400, 'không có biến thể hợp lệ để kiểm kê');
+    const num = (await c.query(
+      `INSERT INTO shop_counters (shop_id, name, value) VALUES (current_shop_id(), 'stocktake_number', 1)
+       ON CONFLICT (shop_id, name) DO UPDATE SET value = shop_counters.value + 1 RETURNING value`)).rows[0].value;
+    const st = (await c.query(
+      `INSERT INTO stocktakes (shop_id, stocktake_number, status, note, created_by)
+       VALUES (current_shop_id(), $1, 'counting', $2, $3) RETURNING id`, [num, note, ctx.user.id])).rows[0];
+    for (const t of targets) {
+      await c.query(
+        `INSERT INTO stocktake_lines (shop_id, stocktake_id, variant_id, system_qty)
+         VALUES (current_shop_id(), $1, $2, $3)`, [st.id, t.id, t.on_hand]);
+    }
+    await audit(c, 'stocktake.created', { actorId: ctx.user.id, ip: ctx.ip, metadata: { stocktakeId: st.id, number: Number(num), lines: targets.length, scope } });
+    return { id: st.id, stocktake_number: Number(num), lines: targets.length };
+  });
+  return send(res, 201, out);
+}
+
+async function listStocktakes(res, ctx) {
+  const rows = await withTenant(ctx.shopId, async (c) =>
+    (await c.query(
+      `SELECT st.id, st.stocktake_number, st.status, st.note, st.completed_at, st.created_at,
+              (SELECT count(*)::int FROM stocktake_lines l WHERE l.stocktake_id = st.id) AS line_count,
+              (SELECT count(*)::int FROM stocktake_lines l WHERE l.stocktake_id = st.id AND l.counted_qty IS NOT NULL) AS counted_count
+         FROM stocktakes st ORDER BY st.stocktake_number DESC LIMIT 200`)).rows);
+  return send(res, 200, { stocktakes: rows, ...(rows.length === 200 ? { truncated: true } : {}) });
+}
+
+async function getStocktake(res, ctx, stId) {
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const st = (await c.query(`SELECT id, stocktake_number, status, note, completed_at, created_at FROM stocktakes WHERE id = $1`, [stId])).rows[0];
+    if (!st) return null;
+    const lines = (await c.query(
+      `SELECT l.id, l.variant_id, l.system_qty, l.counted_qty,
+              coalesce(il.on_hand, 0)::int AS on_hand_now, p.title AS product_title, v.title AS variant_title, v.sku
+         FROM stocktake_lines l
+         JOIN variants v ON v.id = l.variant_id JOIN products p ON p.id = v.product_id
+         LEFT JOIN inventory_levels il ON il.variant_id = l.variant_id
+        WHERE l.stocktake_id = $1 ORDER BY p.title, v.title NULLS FIRST, v.sku`, [stId])).rows;
+    return { ...st, lines };
+  });
+  if (!out) return send(res, 404, { error: 'không tìm thấy phiên kiểm kê' });
+  return send(res, 200, out);
+}
+
+// PATCH — ghi số ĐẾM cho các dòng (chỉ khi 'counting'). counts:[{variant_id, counted_qty|null}].
+async function countStocktake(res, ctx, stId, body) {
+  const raw = Array.isArray(body?.counts) ? body.counts : [];
+  if (raw.length === 0 || raw.length > 500) return send(res, 400, { error: 'cần 1-500 dòng đếm' });
+  const counts = [];
+  const seen = new Set();
+  for (const x of raw) {
+    const vid = String(x?.variant_id ?? '');
+    if (!UUID_RE.test(vid)) return send(res, 400, { error: 'variant_id không hợp lệ' });
+    if (seen.has(vid)) return send(res, 400, { error: 'variant_id trùng trong lô đếm' });
+    seen.add(vid);
+    let cq = x?.counted_qty;
+    if (cq === null || cq === undefined || cq === '') cq = null;
+    else { cq = Number(cq); if (!(isInt(cq) && cq >= 0 && cq <= MAX_COUNTED)) return send(res, 400, { error: `số đếm phải là số nguyên 0-${MAX_COUNTED} (để trống = chưa đếm)` }); }
+    counts.push({ variant_id: vid, counted_qty: cq });
+  }
+  const updated = await withTenant(ctx.shopId, async (c) => {
+    const st = (await c.query(`SELECT status FROM stocktakes WHERE id = $1 FOR UPDATE`, [stId])).rows[0];
+    if (!st) fail(404, 'không tìm thấy phiên kiểm kê');
+    if (st.status !== 'counting') fail(409, 'phiên đã chốt/huỷ, không ghi đếm được');
+    let n = 0;
+    for (const cnt of counts) {
+      const r = await c.query(`UPDATE stocktake_lines SET counted_qty = $3 WHERE stocktake_id = $1 AND variant_id = $2`, [stId, cnt.variant_id, cnt.counted_qty]);
+      n += r.rowCount;
+    }
+    return n;
+  });
+  return send(res, 200, { ok: true, updated });
+}
+
+/**
+ * POST complete — chốt kiểm kê: điều chỉnh on_hand về số ĐẾM, ghi ledger 'adjust' cho chênh lệch.
+ * 2 LƯỢT dưới FOR UPDATE (chỉ dòng ĐÃ đếm; dòng chưa đếm bỏ qua):
+ *  Lượt 1 (thứ tự variant_id, chống deadlock): khoá inventory_levels, đọc on_hand SỐNG + reserved.
+ *          CHẶN nếu counted_qty < reserved (đặt on_hand < reserved vi phạm CHECK 0009) → 409.
+ *  Lượt 2: on_hand = counted_qty; ghi ĐÚNG 1 ledger 'adjust' delta=counted−live (nếu ≠0);
+ *          GHI ĐÈ system_qty = on_hand SỐNG đã dùng (chứng từ phản ánh cơ sở chênh thực).
+ */
+async function completeStocktake(res, ctx, stId) {
+  const summary = await withTenant(ctx.shopId, async (c) => {
+    const st = (await c.query(`SELECT status, stocktake_number FROM stocktakes WHERE id = $1 FOR UPDATE`, [stId])).rows[0];
+    if (!st) fail(404, 'không tìm thấy phiên kiểm kê');
+    if (st.status !== 'counting') fail(409, 'phiên đã chốt hoặc đã huỷ');
+    const num = Number(st.stocktake_number);
+    const lines = (await c.query(
+      `SELECT id, variant_id, counted_qty FROM stocktake_lines
+        WHERE stocktake_id = $1 AND counted_qty IS NOT NULL ORDER BY variant_id`, [stId])).rows;
+    if (lines.length === 0) fail(400, 'chưa đếm dòng nào — không có gì để chốt');
+    // Lượt 1: khoá + đọc on_hand sống + reserved; chặn counted < reserved.
+    for (const ln of lines) {
+      await c.query(`INSERT INTO inventory_levels (shop_id, variant_id) VALUES (current_shop_id(), $1) ON CONFLICT (shop_id, variant_id) DO NOTHING`, [ln.variant_id]);
+      const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [ln.variant_id])).rows[0];
+      ln._live = Number(lvl.on_hand);
+      ln._reserved = Number(lvl.reserved);
+      if (ln.counted_qty < ln._reserved) fail(409, `biến thể đang giữ ${ln._reserved} cho đơn — không thể đặt tồn về ${ln.counted_qty} (huỷ/giao đơn giữ hàng trước)`);
+    }
+    // Lượt 2: áp dụng.
+    let adjusted = 0, deltaSum = 0;
+    for (const ln of lines) {
+      const delta = ln.counted_qty - ln._live;
+      await c.query(`UPDATE stocktake_lines SET system_qty = $2 WHERE id = $1`, [ln.id, ln._live]); // chứng từ = cơ sở thực
+      if (delta !== 0) {
+        await c.query(`UPDATE inventory_levels SET on_hand = $2, updated_at = now() WHERE variant_id = $1`, [ln.variant_id, ln.counted_qty]);
+        await c.query(
+          `INSERT INTO inventory_ledger (shop_id, variant_id, delta, kind, reason, actor_id)
+           VALUES (current_shop_id(), $1, $2, 'adjust', $3, $4)`, [ln.variant_id, delta, `Kiểm kê #${num}`, ctx.user.id]);
+        adjusted++; deltaSum += delta;
+      }
+    }
+    await c.query(`UPDATE stocktakes SET status = 'completed', completed_at = now(), completed_by = $2 WHERE id = $1`, [stId, ctx.user.id]);
+    await audit(c, 'stocktake.completed', { actorId: ctx.user.id, ip: ctx.ip, metadata: { stocktakeId: stId, number: num, countedLines: lines.length, adjustedLines: adjusted, netDelta: deltaSum } });
+    return { stocktake_number: num, counted_lines: lines.length, adjusted_lines: adjusted, net_delta: deltaSum };
+  });
+  return send(res, 200, { ok: true, ...summary });
+}
+
+async function cancelStocktake(res, ctx, stId) {
+  await withTenant(ctx.shopId, async (c) => {
+    const st = (await c.query(`SELECT status FROM stocktakes WHERE id = $1 FOR UPDATE`, [stId])).rows[0];
+    if (!st) fail(404, 'không tìm thấy phiên kiểm kê');
+    if (st.status !== 'counting') fail(409, 'phiên đã chốt/huỷ');
+    await c.query(`UPDATE stocktakes SET status = 'cancelled' WHERE id = $1`, [stId]);
+    await audit(c, 'stocktake.cancelled', { actorId: ctx.user.id, ip: ctx.ip, metadata: { stocktakeId: stId } });
+  });
+  return send(res, 200, { ok: true });
+}
+
 export const PURCHASING_ROUTES = [
+  // Biến thể có thể nhập + báo cáo
+  { m: 'GET', re: new RegExp(`^/shops/${UUID}/purchasable-variants$`), perm: 'inventory.manage', fn: (res, ctx, b, p, q) => listPurchasableVariants(res, ctx, q) },
+  { m: 'GET', re: new RegExp(`^/shops/${UUID}/purchasing/report$`), perm: 'inventory.manage', fn: (res, ctx, b, p, q) => purchasingReport(res, ctx, q) },
+  // Kiểm kê
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/stocktakes$`), perm: 'inventory.manage', fn: (res, ctx, b) => createStocktake(res, ctx, b) },
+  { m: 'GET', re: new RegExp(`^/shops/${UUID}/stocktakes$`), perm: 'inventory.manage', fn: (res, ctx) => listStocktakes(res, ctx) },
+  { m: 'GET', re: new RegExp(`^/shops/${UUID}/stocktakes/${UUID}$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => getStocktake(res, ctx, p[1]) },
+  { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/stocktakes/${UUID}$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => countStocktake(res, ctx, p[1], b) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/stocktakes/${UUID}/complete$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => completeStocktake(res, ctx, p[1]) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/stocktakes/${UUID}/cancel$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => cancelStocktake(res, ctx, p[1]) },
   // Nhà cung cấp
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/suppliers$`), perm: 'inventory.manage', fn: (res, ctx, b) => createSupplier(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/suppliers$`), perm: 'inventory.manage', fn: (res, ctx, b, p, q) => listSuppliers(res, ctx, q) },

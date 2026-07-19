@@ -190,6 +190,82 @@ async function main() {
   r = await rq(SELLER, 'GET', `/shops/${shopId}/purchase-orders/${po1}`, { cookie: B.oc });
   r.status === 404 ? ok('B gọi URL shop A (không phải thành viên) → 404') : bad('non-member phải 404', r.status);
 
+  // ── BIẾN THỂ CÓ THỂ NHẬP (kể cả SP nháp/ẩn) ──────────────────────────────────
+  sect('purchasable-variants: gồm cả SP nháp (khác sellable-variants)');
+  const draftP = await rq(SELLER, 'POST', `/shops/${shopId}/products`, { body: { title: 'Nháp', slug: `sp-${uniq()}`, price_vnd: 10000, status: 'draft', variants: [{ sku: `DR-${uniq()}`, price_vnd: 10000 }] }, cookie: oc, origin: OS });
+  const draftVid = (await rq(SELLER, 'GET', `/shops/${shopId}/products/${draftP.json.id}`, { cookie: oc })).json.variants[0].id;
+  const pv = await rq(SELLER, 'GET', `/shops/${shopId}/purchasable-variants`, { cookie: oc });
+  const sv = await rq(SELLER, 'GET', `/shops/${shopId}/sellable-variants`, { cookie: oc });
+  pv.json.variants.some((v) => v.id === draftVid) && !sv.json.variants.some((v) => v.id === draftVid)
+    ? ok('SP nháp: có trong purchasable, KHÔNG có trong sellable') : bad('purchasable/sellable lọc sai', `pv=${pv.json.variants.some((v) => v.id === draftVid)} sv=${sv.json.variants.some((v) => v.id === draftVid)}`);
+  pv.json.variants.find((v) => v.id === V1)?.cost_vnd === 170000 ? ok('purchasable kèm giá vốn hiện hành (V1=170.000)') : bad('purchasable thiếu cost', JSON.stringify(pv.json.variants.find((v) => v.id === V1)));
+
+  // ── KIỂM KÊ ──────────────────────────────────────────────────────────────────
+  sect('Kiểm kê: tạo phiên (list) → snapshot system_qty = on_hand hiện tại');
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/stocktakes`, { body: { scope: 'list', variant_ids: [V1, V2], note: 'kho A' }, cookie: oc, origin: OS });
+  const st1 = r.json?.id;
+  r.status === 201 && r.json.lines === 2 ? ok(`tạo phiên kiểm kê #${r.json.stocktake_number} (2 dòng)`) : bad('tạo kiểm kê lỗi', r.raw);
+  let sd = (await rq(SELLER, 'GET', `/shops/${shopId}/stocktakes/${st1}`, { cookie: oc })).json;
+  const sysV1 = sd.lines.find((l) => l.variant_id === V1)?.system_qty;
+  N(sysV1) === 20 ? ok('system_qty V1 = 20 (snapshot lúc tạo)') : bad('snapshot system_qty sai', sysV1);
+
+  sect('Đếm → chốt: on_hand về số đếm, 1 ledger adjust cho chênh, dòng khớp KHÔNG ghi ledger');
+  r = await rq(SELLER, 'PATCH', `/shops/${shopId}/stocktakes/${st1}`, { body: { counts: [{ variant_id: V1, counted_qty: 18 }, { variant_id: V2, counted_qty: 10 }] }, cookie: oc, origin: OS });
+  r.status === 200 && r.json.updated === 2 ? ok('ghi đếm 2 dòng (V1=18 thiếu 2, V2=10 khớp)') : bad('ghi đếm lỗi', r.raw);
+  const lgBefore = (await ledgerOf(V1)).filter((x) => x.kind === 'adjust' && x.reason.includes('Kiểm kê')).length;
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/stocktakes/${st1}/complete`, { cookie: oc, origin: OS });
+  const h3V1 = await onHandOf(V1), h3V2 = await onHandOf(V2);
+  const adjRows = (await ledgerOf(V1)).filter((x) => x.kind === 'adjust' && x.reason.includes('Kiểm kê'));
+  r.status === 200 && h3V1 === 18 && h3V2 === 10 && r.json.adjusted_lines === 1 && r.json.net_delta === -2
+    ? ok('chốt: V1 20→18, V2 khớp 10; adjusted_lines=1, net_delta=-2') : bad('chốt kiểm kê sai', `${r.status} V1=${h3V1} V2=${h3V2} ${JSON.stringify(r.json)}`);
+  adjRows.length === lgBefore + 1 && adjRows[adjRows.length - 1].delta === -2
+    ? ok('đúng 1 ledger adjust delta=-2 cho V1 (V2 khớp không ghi)') : bad('ledger adjust sai', JSON.stringify(adjRows));
+  // Σledger==on_hand vẫn đúng sau adjust.
+  const sumV1b = (await ledgerOf(V1)).reduce((s, x) => s + x.delta, 0);
+  sumV1b === h3V1 ? ok(`bất biến Σledger(${sumV1b}) == on_hand(${h3V1}) sau kiểm kê`) : bad('Σledger != on_hand sau kiểm kê', `${sumV1b} vs ${h3V1}`);
+  // system_qty ghi đè = on_hand sống đã dùng (20).
+  sd = (await rq(SELLER, 'GET', `/shops/${shopId}/stocktakes/${st1}`, { cookie: oc })).json;
+  N(sd.lines.find((l) => l.variant_id === V1)?.system_qty) === 20 && sd.status === 'completed'
+    ? ok('sau chốt: system_qty=20 (cơ sở chênh thực), status=completed') : bad('system_qty ghi đè sai', JSON.stringify(sd.lines));
+
+  sect('Terminal: chốt lại / đếm lại phiên đã hoàn → 409');
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/stocktakes/${st1}/complete`, { cookie: oc, origin: OS });
+  r.status === 409 ? ok('chốt lại phiên đã hoàn → 409') : bad('chốt-lại phải 409', r.status);
+  r = await rq(SELLER, 'PATCH', `/shops/${shopId}/stocktakes/${st1}`, { body: { counts: [{ variant_id: V1, counted_qty: 5 }] }, cookie: oc, origin: OS });
+  r.status === 409 ? ok('đếm phiên đã hoàn → 409') : bad('đếm-đã-hoàn phải 409', r.status);
+
+  sect('CHẶN đếm < đang-giữ (reserved) — không đặt on_hand < reserved');
+  // Đặt đơn tay giữ 5 của V1 (on_hand 18, reserved 5). Kiểm kê đếm 3 (<5) → chốt 409.
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/orders`, { body: { idempotency_key: `resv-${uniq()}`, lines: [{ variant_id: V1, qty: 5 }], customer: { name: 'Giữ', phone: '0912000111' }, payment_method: 'cod' }, cookie: oc, origin: OS });
+  r.status === 201 ? ok('đơn tay giữ 5 của V1 (reserved=5)') : bad('tạo đơn giữ lỗi', r.raw);
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/stocktakes`, { body: { scope: 'list', variant_ids: [V1] }, cookie: oc, origin: OS });
+  const st2 = r.json.id;
+  await rq(SELLER, 'PATCH', `/shops/${shopId}/stocktakes/${st2}`, { body: { counts: [{ variant_id: V1, counted_qty: 3 }] }, cookie: oc, origin: OS });
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/stocktakes/${st2}/complete`, { cookie: oc, origin: OS });
+  const h4V1 = await onHandOf(V1);
+  r.status === 409 && h4V1 === 18 ? ok('đếm 3 < giữ 5 → chốt 409, on_hand giữ nguyên 18') : bad('chặn counted<reserved sai', `${r.status} on_hand=${h4V1}`);
+  await rq(SELLER, 'POST', `/shops/${shopId}/stocktakes/${st2}/cancel`, { cookie: oc, origin: OS });
+
+  sect('scope=all: gồm mọi biến thể không mồ côi của shop');
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/stocktakes`, { body: { scope: 'all' }, cookie: oc, origin: OS });
+  r.status === 201 && r.json.lines >= 4 ? ok(`scope=all tạo phiên ${r.json.lines} dòng`) : bad('scope=all lỗi', r.raw);
+  await rq(SELLER, 'POST', `/shops/${shopId}/stocktakes/${r.json.id}/cancel`, { cookie: oc, origin: OS });
+
+  // ── BÁO CÁO NHẬP HÀNG ────────────────────────────────────────────────────────
+  sect('Báo cáo nhập: tổng theo kỳ (phiếu đã nhận) + theo NCC + theo SP');
+  r = await rq(SELLER, 'GET', `/shops/${shopId}/purchasing/report`, { cookie: oc });
+  r.status === 200 && r.json.totals.po_count >= 3 && r.json.totals.value_vnd > 0 && r.json.by_supplier.length >= 1 && r.json.by_product.length >= 1
+    ? ok(`báo cáo: ${r.json.totals.po_count} phiếu, ${r.json.totals.value_vnd}đ, ${r.json.by_supplier.length} NCC`) : bad('báo cáo nhập sai', r.raw);
+  r = await rq(SELLER, 'GET', `/shops/${shopId}/purchasing/report?from=2020-13-40&to=2020-01-01`, { cookie: oc });
+  r.status === 400 ? ok('ngày sai → 400') : bad('ngày sai phải 400', r.status);
+
+  sect('RBAC + IDOR trên kiểm kê/báo cáo');
+  r = await rq(SELLER, 'GET', `/shops/${shopId}/stocktakes`, { cookie: omc });
+  const r2 = await rq(SELLER, 'GET', `/shops/${shopId}/purchasing/report`, { cookie: omc });
+  r.status === 403 && r2.status === 403 ? ok('order_manager: stocktakes + report → 403') : bad('RBAC kiểm kê/báo cáo sai', `${r.status}/${r2.status}`);
+  r = await rq(SELLER, 'GET', `/shops/${B.shopId}/stocktakes/${st1}`, { cookie: B.oc });
+  r.status === 404 ? ok('B đọc phiên kiểm kê A qua ngữ cảnh B → 404 (RLS)') : bad('IDOR kiểm kê', r.status);
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

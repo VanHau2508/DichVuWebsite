@@ -76,13 +76,14 @@ async function main() {
   const p = await rq(SELLER, 'POST', `/shops/${A.shopId}/products`, { body: { title: `SP ${uniq()}`, slug: `sp-${uniq()}`, price_vnd: 100000, status: 'active', variants: [{ sku: `K-${uniq()}`, price_vnd: 100000 }] }, cookie: A.oc, origin: OS });
   const vid = (await rq(SELLER, 'GET', `/shops/${A.shopId}/products/${p.json.id}`, { cookie: A.oc })).json.variants[0].id;
   await rq(SELLER, 'POST', `/shops/${A.shopId}/variants/${vid}/inventory/adjust`, { body: { delta: 500, reason: 'seed' }, cookie: A.oc, origin: OS });
-  // Bật ship theo km qua seller PATCH (validate + CHECK).
-  let r = await rq(SELLER, 'PATCH', `/shops/${A.shopId}`, { body: {
+  // Bật ship theo km qua seller PATCH (validate + CHECK). over = hành vi ngoài bán kính.
+  const patchShip = (over) => rq(SELLER, 'PATCH', `/shops/${A.shopId}`, { body: {
     name: 'Shop KM', ship_mode: 'distance', ship_origin_lat: ORIGIN.lat, ship_origin_lng: ORIGIN.lng,
     ship_base_vnd: CFG.base, ship_per_km_vnd: CFG.perKm, ship_max_km: CFG.maxKm, ship_road_factor: 1.0,
-    ship_fee_vnd: CFG.near, ship_fee_far_vnd: CFG.far, ship_from_province: 'Hà Nội',
+    ship_fee_vnd: CFG.near, ship_fee_far_vnd: CFG.far, ship_from_province: 'Hà Nội', ship_over_max_behavior: over,
   }, cookie: A.oc, origin: OS });
-  r.status === 200 ? ok('bật ship theo km (gốc HN, base 5k, 2k/km, trần 20km, sàn vùng 20k)') : bad('bật distance lỗi', r.body);
+  let r = await patchShip('region');
+  r.status === 200 ? ok('bật ship theo km (gốc HN, base 5k, 2k/km, trần 20km, sàn vùng 20k, ngoài-bán-kính=vùng)') : bad('bật distance lỗi', r.body);
 
   async function order(coords, province = 'Hà Nội') {
     const cart = (await co(A.host, 'POST', '/cart/items', { json: { variant_id: vid, qty: 1 } })).cartTok;
@@ -103,10 +104,16 @@ async function main() {
   N(r.json?.shipping_vnd) === CFG.near
     ? ok(`toạ-độ-giả-sát-shop → phí = SÀN vùng ${CFG.near}đ (không phải 7k)`) : bad('sàn phí không áp', `ship=${r.json?.shipping_vnd} kỳ vọng=${CFG.near}`);
 
-  sect('3. km > trần → 422 NGOÀI VÙNG GIAO (không về 0, không NaN)');
-  r = await order(at(30)); // ~30km > 20
-  r.status === 422 && /ngoài vùng giao/i.test(r.body)
-    ? ok('~30km (>trần 20) → 422 ngoài vùng giao') : bad('không chặn ngoài vùng', `${r.status} ${r.body.slice(0, 120)}`);
+  sect('3. NGOÀI bán kính (TOÀN QUỐC): rơi PHÍ VÙNG liên miền — KHÔNG per-km vô lý, KHÔNG từ chối');
+  r = await order(at(30), 'TP. Hồ Chí Minh'); // ~30km>20 + tỉnh XA → phí vùng liên miền (vd Cà Mau→Hà Nội)
+  r.status === 201 && N(r.json?.shipping_vnd) === CFG.far
+    ? ok(`ngoài bán kính + tỉnh xa → phí vùng liên miền ${CFG.far}đ (KHÔNG 30×${CFG.perKm}, KHÔNG từ chối)`) : bad('ngoài bán kính không rơi phí vùng', `${r.status} ship=${r.json?.shipping_vnd}`);
+
+  sect('3b. Shop CHỈ giao nội thành (reject) → ngoài bán kính = 422 "ngoài vùng giao"');
+  await patchShip('reject');
+  r = await order(at(30), 'Hà Nội');
+  r.status === 422 && /ngoài vùng giao/i.test(r.body) ? ok('reject: ~30km (>trần) → 422 ngoài vùng giao (như tieutieu chỉ nội thành)') : bad('reject không chặn', `${r.status} ${r.body.slice(0, 120)}`);
+  await patchShip('region'); // trả về mặc định toàn quốc cho các test sau
 
   sect('4. KHÔNG coords (no-JS/từ chối GPS) → phí VÙNG (không 0, không NaN)');
   r = await order(null, 'Hà Nội'); // Hà Nội = from → near 20k

@@ -168,6 +168,9 @@ async function updateShopProfile(res, ctx, body) {
   if (shipMaxKm != null && (!Number.isInteger(shipMaxKm) || shipMaxKm < 1 || shipMaxKm > 500)) return send(res, 400, { error: 'trần km không hợp lệ (1–500)' });
   const roadFactor = parseNum(body.ship_road_factor);
   if (roadFactor != null && (!Number.isFinite(roadFactor) || roadFactor < 1.0 || roadFactor > 3.0)) return send(res, 400, { error: 'hệ số đường bộ không hợp lệ (1.0–3.0)' });
+  // Ngoài bán kính nội thành: 'region' (toàn quốc — rơi phí vùng qua hãng) | 'reject' (chỉ giao nội thành).
+  const overMax = String(body.ship_over_max_behavior ?? '').trim() || 'region';
+  if (!['region', 'reject'].includes(overMax)) return send(res, 400, { error: 'hành vi ngoài bán kính không hợp lệ' });
   if (shipMode === 'distance') {
     if (originLat == null || originLng == null) return send(res, 400, { error: 'bật ship theo km cần toạ độ gốc cửa hàng' });
     if (shipBase == null || shipPerKm == null || shipMaxKm == null) return send(res, 400, { error: 'bật ship theo km cần phí cơ bản, phí/km và trần km' });
@@ -190,10 +193,11 @@ async function updateShopProfile(res, ctx, body) {
               ship_fee_far_vnd = $10, ship_extra_per_500g_vnd = $11, default_weight_gram = $12, ship_from_province = $13,
               pii_retention_months = $14,
               ship_mode = $15, ship_origin_lat = $16, ship_origin_lng = $17, ship_base_vnd = $18,
-              ship_per_km_vnd = $19, ship_max_km = $20, ship_road_factor = COALESCE($21, ship_road_factor)
+              ship_per_km_vnd = $19, ship_max_km = $20, ship_road_factor = COALESCE($21, ship_road_factor),
+              ship_over_max_behavior = $22
         WHERE id = current_shop_id()`,
       [name, email || null, phone || null, address || null, shipFee, freeThreshold, lowStock, maxIp, maxPhone, shipFar, extra500, defWeight, fromProv, piiMonths,
-       shipMode, originLat, originLng, shipBase, shipPerKm, shipMaxKm, roadFactor],
+       shipMode, originLat, originLng, shipBase, shipPerKm, shipMaxKm, roadFactor, overMax],
     );
     await audit(c, 'shop.profile_updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: {} });
     return { code: 200, body: { ok: true } };

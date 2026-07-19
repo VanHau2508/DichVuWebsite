@@ -231,7 +231,7 @@ async function findCart(c, token, { forUpdate = false } = {}) {
 // ngược). Dùng CHUNG cho summarize (hiển thị) và createOrderTx (tính đơn) → luôn khớp.
 async function shopShipping(c) {
   const s = (await c.query(`SELECT ship_fee_vnd, free_ship_threshold_vnd, ship_fee_far_vnd, ship_extra_per_500g_vnd, default_weight_gram, ship_from_province,
-              ship_mode, ship_origin_lat, ship_origin_lng, ship_base_vnd, ship_per_km_vnd, ship_max_km, ship_road_factor FROM shops WHERE id = current_shop_id()`)).rows[0] ?? {};
+              ship_mode, ship_origin_lat, ship_origin_lng, ship_base_vnd, ship_per_km_vnd, ship_max_km, ship_road_factor, ship_over_max_behavior FROM shops WHERE id = current_shop_id()`)).rows[0] ?? {};
   return {
     fee: s.ship_fee_vnd != null ? Number(s.ship_fee_vnd) : SHIP_FEE,
     threshold: s.free_ship_threshold_vnd != null ? Number(s.free_ship_threshold_vnd) : null,
@@ -247,6 +247,7 @@ async function shopShipping(c) {
     perKm: s.ship_per_km_vnd != null ? Number(s.ship_per_km_vnd) : null,
     maxKm: s.ship_max_km != null ? Number(s.ship_max_km) : null,
     roadFactor: s.ship_road_factor != null ? Number(s.ship_road_factor) : 1.3,
+    overMax: s.ship_over_max_behavior ?? 'region', // ngoài bán kính nội thành: 'region' (toàn quốc) | 'reject' (chỉ nội thành)
   };
 }
 // Khoảng cách giao (mét) từ gốc shop tới toạ độ khách — CHỈ khi shop bật distance + toạ độ hợp lệ
@@ -289,7 +290,12 @@ function computeShipping(cfg, subtotal, items, province, { assumeFarWhenUnknown 
   // Distance CHỈ khi shop bật + server xác thực coords hợp lệ (trong VN). Client KHÔNG tự chọn chế độ.
   if (cfg.mode === 'distance' && coordsValid && distanceMeters != null) {
     const km = Math.ceil(distanceMeters / 1000);                    // ceil → nhích coords vài mét không đổi phí
-    if (cfg.maxKm != null && km > cfg.maxKm) return null;           // NGOÀI VÙNG — thắng cả freeship (deliverability)
+    // NGOÀI bán kính giao nội thành: nền tảng TOÀN QUỐC → rơi phí VÙNG (giao qua hãng, KHÔNG per-km
+    // vô lý Cà Mau→Hà Nội); shop CHỈ giao nội thành ('reject') → 422 ngoài-vùng (thắng cả freeship).
+    if (cfg.maxKm != null && km > cfg.maxKm) {
+      if (cfg.overMax === 'reject') return null;
+      return freeship ? 0 : regionFeeCore(cfg, items, province, assumeFarWhenUnknown);
+    }
     if (freeship) return 0;
     const fee = cfg.base + km * cfg.perKm + weightSurcharge(cfg, items);
     // SÀN PHÍ (red-team): không thấp hơn bậc vùng → toạ-độ-giả-sát-shop KHÔNG rẻ hơn khách-xa-trung-thực.

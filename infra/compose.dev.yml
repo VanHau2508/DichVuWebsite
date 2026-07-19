@@ -343,6 +343,9 @@ services:
       # Pool riêng, role hẹp: vòng đời thuê bao — past_due/cancelled + treo shop (0033).
       DATABASE_URL_BILLING: postgres://app_billing:devpassword@postgres:5432/app
       SUBSCRIPTION_SWEEP_MS: "3600000"
+      # Pool riêng, role hẹp: điểm thưởng — tích (vesting) + thu-hồi (clawback/reversal) (0086).
+      DATABASE_URL_LOYALTY: postgres://app_loyalty:devpassword@postgres:5432/app
+      LOYALTY_SWEEP_MS: "300000"
       SUBSCRIPTION_GRACE_DAYS: "7"
       # Email liên hệ nền tảng trong copy nhắc hạn thuê bao (e2e assert xác định).
       PLATFORM_CONTACT_EMAIL: lienhe@nentang.vn
@@ -477,6 +480,7 @@ services:
       SEPAY_WEBHOOK_KEY: dev-sepay-secret-key-12345
       DATABASE_URL_CHECKOUT: postgres://app_checkout:devpassword@postgres:5432/app
       DATABASE_URL_CUSTOMER: postgres://app_customer:devpassword@postgres:5432/app
+      DATABASE_URL_LOYALTY: postgres://app_loyalty:devpassword@postgres:5432/app
       ACCOUNT_URL: http://account:3062
       MEDIA_PUBLIC_BASE: /media-public
       MEDIA_PRIVATE_BASE: http://minio:9000/media-private

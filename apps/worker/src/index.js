@@ -56,6 +56,11 @@ const DOMAINVERIFY_GIVEUP_HOURS = Number(process.env.DOMAINVERIFY_GIVEUP_HOURS ?
 // Pool RIÊNG cho vòng đời thuê bao (role app_billing cực hẹp — 0033). Thiếu env → tắt.
 const BILLING_URL = process.env.DATABASE_URL_BILLING;
 const billingDb = BILLING_URL ? new pg.Pool({ connectionString: BILLING_URL, max: 2 }) : null;
+// Pool RIÊNG cho điểm thưởng (role app_loyalty cực hẹp — 0086). Thiếu env → TẮT tính năng.
+// Tích điểm (vesting: chỉ đơn paid ≥ N ngày) + thu-hồi (clawback/reversal đơn terminal).
+const LOYALTY_URL = process.env.DATABASE_URL_LOYALTY;
+const loyaltyDb = LOYALTY_URL ? new pg.Pool({ connectionString: LOYALTY_URL, max: 2 }) : null;
+const LOYALTY_SWEEP_MS = Number(process.env.LOYALTY_SWEEP_MS ?? 300000);
 // Poll trạng thái vận đơn hãng VC (GHN/GHTK — 0044). Dùng CHUNG pool app_expiry (role
 // tự động hoá vòng đời đơn). Cần thêm SHIPPING_ENC_KEY (giải mã token per-shop) — thiếu → tắt.
 const SHIPPING_ENC_KEY = process.env.SHIPPING_ENC_KEY ?? '';
@@ -790,6 +795,70 @@ async function sweepPiiRetention() {
   return { anonymized: total };
 }
 
+// ── sweep: TÍCH ĐIỂM THƯỞNG (0086) ───────────────────────────────────────────
+// Choke point DUY NHẤT để tích điểm: quét đơn ĐÃ THANH TOÁN (paid_at) của khách ĐĂNG NHẬP
+// (customer_id) đã qua VESTING (paid_at ≤ now − vesting_days) và CHƯA terminal (huỷ/hoàn) →
+// đơn hoàn trong cửa sổ vesting KHÔNG bao giờ tích (clawback hiếm). Cơ số = net HÀNG
+// (subtotal − discount − points_discount, LOẠI ship + LOẠI phần trả bằng điểm → chống farming
+// redeem→earn). Idempotent: UNIQUE loyalty_ledger_earn_once + INSERT ON CONFLICT DO NOTHING
+// RETURNING (chỉ cộng cache khi lô THỰC SỰ chèn → không double-count khi sweep chạy đè).
+// Kỷ luật chống crash-loop: nuốt mọi lỗi, không throw ra setInterval.
+async function sweepLoyaltyEarn() {
+  if (!loyaltyDb) return { earned: 0 };
+  let total = 0;
+  const client = await loyaltyDb.connect();
+  try {
+    for (let round = 0; round < 20; round++) {
+      await client.query('BEGIN');
+      // Chọn đơn đủ điều kiện tích điểm > 0 chưa có bút toán earn. KHÔNG dùng FOR UPDATE:
+      // app_loyalty chỉ có SELECT theo CỘT (né PII như app_expiry) → row-lock đòi quyền bảng.
+      // Idempotency đã có ở UNIQUE loyalty_ledger_earn_once + INSERT ON CONFLICT DO NOTHING
+      // RETURNING (hai sweep chồng: chỉ một INSERT thắng, bên kia no-op — không cộng đúp).
+      // Chỉ điểm > 0 → đơn nhỏ không lọt vòng quét vô hạn (không thể ghi earn delta=0).
+      const rows = (await client.query(
+        `SELECT o.id, o.shop_id, o.customer_id, o.paid_at,
+                floor(GREATEST(o.subtotal_vnd - o.discount_vnd - o.points_discount_vnd, 0) / 1000.0)::int
+                  * c.earn_points_per_1000 AS points
+           FROM orders o JOIN shop_loyalty_config c ON c.shop_id = o.shop_id
+          WHERE c.enabled = true
+            AND o.customer_id IS NOT NULL
+            AND o.paid_at IS NOT NULL
+            AND o.paid_at <= now() - make_interval(days => c.earn_vesting_days)
+            AND o.status NOT IN ('cancelled','refunded','returned')
+            AND floor(GREATEST(o.subtotal_vnd - o.discount_vnd - o.points_discount_vnd, 0) / 1000.0)::int
+                  * c.earn_points_per_1000 > 0
+            AND NOT EXISTS (SELECT 1 FROM loyalty_ledger l
+                             WHERE l.shop_id = o.shop_id AND l.order_id = o.id AND l.kind = 'earn')
+          ORDER BY o.paid_at LIMIT 500`)).rows;
+      if (rows.length === 0) { await client.query('COMMIT'); break; }
+      for (const r of rows) {
+        const points = Number(r.points);
+        // Chèn bút toán earn (idempotent); CHỈ cộng cache khi thực sự chèn (RETURNING).
+        const ins = await client.query(
+          `INSERT INTO loyalty_ledger (shop_id, customer_id, kind, delta, order_id, reason)
+           VALUES ($1, $2, 'earn', $3, $4, 'Tích điểm đơn hàng') ON CONFLICT DO NOTHING RETURNING id`,
+          [r.shop_id, r.customer_id, points, r.id]);
+        if (ins.rowCount === 1) {
+          // Cộng số dư nguyên tử (khoá dòng balances → không lost-update với redeem/clawback).
+          await client.query(
+            `INSERT INTO loyalty_balances (shop_id, customer_id, balance_points) VALUES ($1, $2, $3)
+             ON CONFLICT (shop_id, customer_id)
+             DO UPDATE SET balance_points = loyalty_balances.balance_points + $3, updated_at = now()`,
+            [r.shop_id, r.customer_id, points]);
+          total++;
+        }
+      }
+      await client.query('COMMIT');
+      if (rows.length < 500) break;
+    }
+    if (total) log('info', 'loyalty_earn_sweep', { n: total });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    log('error', 'loyalty_earn_sweep_error', { message: e.message });
+  } finally { client.release(); }
+  return { earned: total };
+}
+
 // ── sweep: CẢNH BÁO ĐƯỜNG TIỀN + VẬN HÀNH ────────────────────────────────────
 // Đẩy cảnh báo tới ALERT_WEBHOOK_URL (webhook chung — Slack/Discord/Mattermost nhận {text};
 // Telegram/Zalo qua cầu nối) khi: (1) giao dịch tiền CHƯA KHỚP tồn đọng (tiền về, chưa vào
@@ -1042,6 +1111,7 @@ const billingTimer = billingDb ? setInterval(sweepSubscriptions, SUBSCRIPTION_SW
 const trackingTimer = (expiryDb && TRACKING_ON) ? setInterval(sweepTracking, TRACKING_SWEEP_MS) : null;
 const piiTimer = expiryDb ? setInterval(sweepPiiRetention, PII_SWEEP_MS) : null;
 const staleTimer = (expiryDb && TELEGRAM_ON) ? setInterval(sweepStaleOrders, STALE_SWEEP_MS) : null;
+const loyaltyEarnTimer = loyaltyDb ? setInterval(sweepLoyaltyEarn, LOYALTY_SWEEP_MS) : null;
 
 // ── HTTP: health + stats (cho e2e kiểm dead-letter) ──────────────────────────
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -1116,6 +1186,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(r));
   }
+  // Kích hoạt tích điểm ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/loyalty-earn-sweep' && req.method === 'POST') {
+    const r = await sweepLoyaltyEarn();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   // Kích hoạt quét cảnh báo đường tiền ngay (nội bộ — cho cron + e2e xác định).
   if (url.pathname === '/internal/alert-sweep' && req.method === 'POST') {
     const r = await sweepMoneyAlerts();
@@ -1148,11 +1224,12 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (lowstockTimer) clearInterval(lowstockTimer);
     if (piiTimer) clearInterval(piiTimer);
     if (staleTimer) clearInterval(staleTimer);
+    if (loyaltyEarnTimer) clearInterval(loyaltyEarnTimer);
     clearInterval(outboxGcTimer);
     clearInterval(alertTimer);
     if (tgLinkTimer) clearInterval(tgLinkTimer);
     await worker.close().catch(() => {});
     await queue.close().catch(() => {});
-    server.close(async () => { await db.end().catch(() => {}); await expiryDb?.end().catch(() => {}); await domainDb?.end().catch(() => {}); await billingDb?.end().catch(() => {}); process.exit(0); });
+    server.close(async () => { await db.end().catch(() => {}); await expiryDb?.end().catch(() => {}); await domainDb?.end().catch(() => {}); await billingDb?.end().catch(() => {}); await loyaltyDb?.end().catch(() => {}); process.exit(0); });
   });
 }

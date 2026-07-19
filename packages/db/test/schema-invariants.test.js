@@ -311,6 +311,36 @@ describe('Nhập hàng (0085) — giá nhập + NCC là bí mật KD, CHỈ app_
   });
 });
 
+describe('Điểm thưởng (0086) — sổ cái append-only + cô lập vai', () => {
+  test('loyalty_ledger APPEND-ONLY: không vai nào UPDATE/DELETE được (điểm = nợ phải trả)', async () => {
+    for (const role of ['app_checkout', 'app_loyalty', 'app_rw', 'app_customer']) {
+      const { rows } = await owner.query(`
+        SELECT has_table_privilege($1,'loyalty_ledger','UPDATE') AS upd,
+               has_table_privilege($1,'loyalty_ledger','DELETE') AS del`, [role]);
+      assert.equal(rows[0].upd, false, `${role}: KHÔNG được UPDATE loyalty_ledger`);
+      assert.equal(rows[0].del, false, `${role}: KHÔNG được DELETE loyalty_ledger`);
+    }
+  });
+
+  test('app_store (bề mặt công khai nhất) có ZERO quyền trên 3 bảng điểm thưởng', async () => {
+    for (const table of ['loyalty_ledger', 'loyalty_balances', 'shop_loyalty_config']) {
+      const { rows } = await owner.query(`
+        SELECT has_table_privilege('app_store',$1,'SELECT') AS sel,
+               has_table_privilege('app_store',$1,'INSERT') AS ins,
+               has_table_privilege('app_store',$1,'UPDATE') AS upd,
+               has_table_privilege('app_store',$1,'DELETE') AS del`, [table]);
+      assert.deepEqual(rows[0], { sel: false, ins: false, upd: false, del: false }, `${table}: app_store phải ZERO`);
+    }
+  });
+
+  test('app_loyalty (worker) không phải superuser, không BYPASSRLS (sweep cross-shop qua policy)', async () => {
+    const { rows } = await owner.query(`SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname='app_loyalty'`);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].rolsuper, false);
+    assert.equal(rows[0].rolbypassrls, false);
+  });
+});
+
 describe('Kiểu dữ liệu tiền tệ', () => {
   test('mọi cột tiền là bigint, không phải float/numeric', async () => {
     const { rows } = await owner.query(`

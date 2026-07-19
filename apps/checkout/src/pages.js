@@ -208,6 +208,9 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
   const provinceOpts = (sel) => PROVINCES.map((p) => `<option value="${esc(p)}"${sel === p ? ' selected' : ''}>${esc(p)}</option>`).join('');
   const honeypot = `<input class="hp" type="text" name="company" tabindex="-1" autocomplete="off" aria-hidden="true">`;
   const emailField = `<label>Email (tuỳ chọn — nhận xác nhận đơn)</label><input name="email" type="email" autocomplete="email" value="${v(pf.email)}">`;
+  // Nút định vị GPS (0089) — CHỈ khi shop ship theo km + có geocoder (opts.gps). type=button → không submit.
+  const gpsBtn = opts.gps ? `<button type="button" id="use-gps" class="btn alt" style="width:auto;padding:10px 16px;margin-bottom:6px">📍 Dùng vị trí hiện tại</button>
+      <div id="gps-hint" class="muted" style="font-size:.85rem;margin-bottom:8px"></div>` : '';
 
   // Khách ĐĂNG NHẬP + có địa chỉ đã lưu → CHỌN NHANH (radio no-JS). Chọn "địa chỉ khác" (:checked)
   // mở ô nhập tay. Địa chỉ đã lưu KHÔNG required (khách có thể chọn radio) — server validate.
@@ -226,6 +229,7 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
         <input type="radio" name="address_choice" value="new" id="addr-new"${chosen === 'new' ? ' checked' : ''}>
         <label for="addr-new" class="addr-opt addr-newlbl">+ Giao tới địa chỉ khác</label>
         <div class="addr-new">
+          ${gpsBtn}
           <label>Họ tên</label><input name="name" maxlength="120" autocomplete="name" value="${v(pf.name)}">
           <label>Số điện thoại</label><input name="phone" inputmode="tel" autocomplete="tel" placeholder="09xxxxxxxx" value="${v(pf.phone)}">
           <label>Địa chỉ giao hàng</label><textarea name="address_line" rows="2" maxlength="300" autocomplete="street-address" placeholder="Số nhà, đường, phường/xã, quận/huyện">${v(pf.address_line)}</textarea>
@@ -236,6 +240,7 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
       ${honeypot}</div>`;
   } else {
     recipient = `<div class="card"><h2>Người nhận</h2>
+      ${gpsBtn}
       <label>Họ tên *</label><input name="name" required maxlength="120" autocomplete="name" value="${v(pf.name)}">
       <label>Số điện thoại *</label><input name="phone" required inputmode="tel" autocomplete="tel" placeholder="09xxxxxxxx" value="${v(pf.phone)}">
       ${emailField}
@@ -255,8 +260,8 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
       <input type="hidden" name="ct" value="${esc(opts.formTs ?? '')}">
       <input type="hidden" name="ship_seen" value="${s.ship_out_of_range ? '' : Number(s.shipping_vnd)}">
       <input type="hidden" name="subtotal_seen" value="${Number(s.subtotal_vnd)}">
-      <input type="hidden" name="lat" value="${v(pf.lat)}">
-      <input type="hidden" name="lng" value="${v(pf.lng)}">
+      <input type="hidden" name="lat" id="f-lat" value="${v(pf.lat)}">
+      <input type="hidden" name="lng" id="f-lng" value="${v(pf.lng)}">
       ${recipient}
       <div class="card pay"><h2>Thanh toán</h2>
         <label><input type="radio" name="payment_method" value="cod"${pm === 'cod' ? ' checked' : ''}> Thanh toán khi nhận hàng (COD)</label>
@@ -269,7 +274,43 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
       </div>` : ''}
       <div class="checkout-submit"><button class="btn" type="submit">Đặt hàng · ${money(s.total_vnd)}</button></div>
     </form>
-    <a class="btn alt" href="/cart" style="margin-top:8px">Quay lại giỏ</a>`);
+    <a class="btn alt" href="/cart" style="margin-top:8px">Quay lại giỏ</a>
+    ${opts.gps ? gpsScript(opts.nonce) : ''}`);
+}
+
+// Lớp JS GPS first-party (1 khối <script nonce>, không framework/không phụ thuộc ngoài). XSS-SAFE:
+// dữ liệu địa chỉ từ provider CHỈ set qua .value / .textContent (KHÔNG innerHTML); addEventListener
+// (KHÔNG onclick nội tuyến — nonce không phủ inline handler). Không nội suy dữ liệu server/user vào
+// THÂN script (chỉ nonce). Tắt JS/từ chối GPS/lỗi → không đụng form (fallback no-JS trọn vẹn).
+function gpsScript(nonce) {
+  return `<script nonce="${esc(nonce)}">(function(){
+  var btn=document.getElementById('use-gps'); if(!btn||!navigator.geolocation) return;
+  var lat=document.getElementById('f-lat'), lng=document.getElementById('f-lng'), hint=document.getElementById('gps-hint');
+  var prov=document.querySelector('select[name=province]'), line=document.querySelector('textarea[name=address_line]');
+  var shipSeen=document.querySelector('input[name=ship_seen]'), newRadio=document.getElementById('addr-new');
+  function say(t){ if(hint) hint.textContent=t; }
+  function money(n){ try{ return Number(n).toLocaleString('vi-VN')+'đ'; }catch(e){ return String(n); } }
+  btn.addEventListener('click', function(){
+    if(newRadio) newRadio.checked=true;
+    say('Đang lấy vị trí…'); btn.disabled=true;
+    navigator.geolocation.getCurrentPosition(function(pos){
+      var c=pos.coords;
+      fetch('/checkout/geocode',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({lat:c.latitude,lng:c.longitude,accuracy:c.accuracy})})
+      .then(function(r){return r.json();}).then(function(d){
+        btn.disabled=false;
+        if(!d||!d.available){ say('Không lấy được địa chỉ tự động — vui lòng nhập tay.'); return; }
+        if(lat) lat.value=c.latitude; if(lng) lng.value=c.longitude;
+        if(d.address){
+          if(line && d.address.line && !line.value) line.value=d.address.line;
+          if(prov && d.address.province){ for(var i=0;i<prov.options.length;i++){ if(prov.options[i].value===d.address.province){ prov.selectedIndex=i; break; } } }
+        }
+        if(d.need_province){ say('Đã lấy vị trí — vui lòng CHỌN tỉnh/thành để tính phí.'); }
+        else if(d.out_of_range){ say('Địa chỉ ngoài vùng giao — chọn địa chỉ gần hơn hoặc liên hệ shop.'); }
+        else { say('Đã lấy địa chỉ. Phí giao: '+(d.shipping_vnd!=null?money(d.shipping_vnd):'—')); if(shipSeen && d.ship_seen!=null) shipSeen.value=d.ship_seen; }
+      }).catch(function(){ btn.disabled=false; say('Không lấy được địa chỉ — nhập tay giúp shop.'); });
+    }, function(){ btn.disabled=false; say('Bạn chưa cho phép định vị — vui lòng nhập địa chỉ tay.'); }, {enableHighAccuracy:true, timeout:10000});
+  });
+})();</script>`;
 }
 
 export function renderOrder(shopName, o, pay, qr, justPlaced = false) {

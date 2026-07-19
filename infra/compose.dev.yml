@@ -257,6 +257,10 @@ services:
       # Rate-limit per-IP (Đợt 6.2): cổng NGOÀI chặn flood ghi giỏ/checkout. FAIL-OPEN.
       REDIS_URL: redis://redis:6379
       CHECKOUT_RL_PER_MIN: "120"
+      # GPS reverse-geocode (0089): dev dùng STUB in-process (KHÔNG gọi mạng). Prod: GEOCODE_PROVIDER=goong
+      # + GEOCODE_API_KEY thật (rsapi.goong.io). Có key → GEOCODE_ON=true → nút "Dùng vị trí" bật.
+      GEOCODE_PROVIDER: stub
+      GEOCODE_API_KEY: dev-geocode-key
     volumes:
       - ../apps/checkout/src:/app/src:ro
       # Bộ đếm rate-limit DÙNG CHUNG (không copy): gắn thẳng file gốc của auth vào image

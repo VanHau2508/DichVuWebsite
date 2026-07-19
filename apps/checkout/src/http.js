@@ -29,10 +29,14 @@ export function send(res, status, body, headers = {}) {
 // prod đặt base tuyệt đối (CDN) thì origin đó được thêm vào img-src. KHỚP default server.js.
 const MEDIA_ORIGIN = (() => { try { return new URL(process.env.MEDIA_PUBLIC_BASE ?? '/media-public').origin; } catch { return ''; } })();
 const HTML_CSP = `default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:${MEDIA_ORIGIN ? ' ' + MEDIA_ORIGIN : ''}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
-export function sendHtml(res, status, html, headers = {}) {
+// nonce → CHỈ trang checkout (GPS): thêm script-src 'nonce-X' (KHÔNG script ngoài) + connect-src 'self'
+// (để fetch('/checkout/geocode') không bị default-src 'none' chặn). 'unsafe-inline' GIỮ ở style-src,
+// TUYỆT ĐỐI không lọt vào script-src (nếu lọt → trình duyệt bỏ nonce → vỡ). Trang khác nonce='' → khoá cứng như cũ.
+const htmlCsp = (nonce) => nonce ? `${HTML_CSP}; script-src 'nonce-${nonce}'; connect-src 'self'` : HTML_CSP;
+export function sendHtml(res, status, html, headers = {}, nonce = '') {
   res.writeHead(status, {
     'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
-    'content-security-policy': HTML_CSP, 'x-content-type-options': 'nosniff',
+    'content-security-policy': htmlCsp(nonce), 'x-content-type-options': 'nosniff',
     // no-referrer: /checkout/success mang lookup token trong URL; strict-origin-when-cross
     // -origin sẽ gửi CẢ URL (kèm token) làm Referer khi bấm link same-origin → rò token vào
     // log tầng storefront. CSRF dùng Origin (sameOrigin), KHÔNG dùng Referer nên đổi vô hại.

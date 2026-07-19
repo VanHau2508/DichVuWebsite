@@ -24,6 +24,7 @@ import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrS
 import { runReq, makeLog, health } from './obs.js';
 import { isProvince, regionOf } from './provinces.js';
 import { haversineKm, inVietnam } from './geo.js';
+import { reverseGeocode, normalizeProvince, GEOCODE_ON } from './geocode.js';
 // Bộ đếm rate-limit DÙNG CHUNG với auth (atomic Lua, FAIL-OPEN khi Redis lỗi). File
 // gắn vào /app/ratelimit.js qua bind-mount trong compose.dev.yml (không copy, không sửa).
 import { hit } from '../ratelimit.js';
@@ -358,7 +359,8 @@ async function summarize(c, cartId, province = null, coords = null) {
   const coupon = cc ? await resolveCoupon(c, cc, subtotal) : null;
   const discount = coupon?.discount ?? 0;
   return { items: out, subtotal_vnd: subtotal, shipping_vnd: outOfRange ? null : shipping, discount_vnd: discount, coupon_code: coupon?.code ?? null,
-    total_vnd: outOfRange ? null : subtotal - discount + shipping, fee_region_pending: feeRegionPending, ship_out_of_range: outOfRange };
+    total_vnd: outOfRange ? null : subtotal - discount + shipping, fee_region_pending: feeRegionPending, ship_out_of_range: outOfRange,
+    distance_mode: cfg.mode === 'distance' };
 }
 
 // Tên shop (cho header trang HTML). app_checkout có SELECT shops (policy checkout_shop).
@@ -849,6 +851,58 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
   }
 }
 
+// ── GPS reverse-geocode (0089): toạ độ → địa chỉ + phí. Guest same-origin, JS gọi. ──────────
+const GEO_RL_PER_MIN = Number(process.env.GEOCODE_RL_PER_MIN ?? 12);
+const GEO_SHOP_DAILY = Number(process.env.GEOCODE_SHOP_DAILY ?? 2000);
+const GEO_PLATFORM_DAILY = Number(process.env.GEOCODE_PLATFORM_DAILY ?? 50000);
+// NGÂN SÁCH gọi provider — FAIL-CLOSED (KHÁC checkout fail-open): Redis lỗi/thiếu/vượt trần →
+// KHÔNG gọi Goong (soft-fallback nhập tay). Đốt quota API bản đồ = mất tiền/DoS; mất-tiện-ích an toàn hơn.
+async function geoRateOk(ipHash, shopId) {
+  if (!redis) return false;
+  const day = new Date().toISOString().slice(0, 10);
+  const rs = await Promise.all([
+    hit(redis, `rl:geo:ip:${ipHash}`, { limit: GEO_RL_PER_MIN, windowSec: 60 }),
+    hit(redis, `rl:geo:shop:${shopId}:${day}`, { limit: GEO_SHOP_DAILY, windowSec: 86400 }),
+    hit(redis, `rl:geo:plat:${day}`, { limit: GEO_PLATFORM_DAILY, windowSec: 86400 }),
+  ]).catch(() => null);
+  return rs != null && rs.every((r) => r.allowed && !r.degraded); // degraded (Redis lỗi) → fail-closed
+}
+// Bật lớp JS GPS khi shop ship theo km + có key geocoder. Sinh nonce/response (no-store → không lo cache).
+const gpsOpts = (summary) => {
+  const gps = summary.distance_mode === true && GEOCODE_ON;
+  return { gps, nonce: gps ? crypto.randomBytes(16).toString('base64') : '' };
+};
+async function geocode(req, res, body, ctx) {
+  const soft = (reason) => send(res, 200, { available: false, reason }); // KHÔNG BAO GIỜ 500 → checkout không chết
+  if (!GEOCODE_ON) return soft('off');
+  const lat = Number(body?.lat), lng = Number(body?.lng);
+  if (!(Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180)) return send(res, 400, { error: 'toạ độ không hợp lệ' });
+  if (!inVietnam(lat, lng)) return soft('outside_vn');
+  const ipHash = ctx.ip ? hashIp(ctx.ip) : 'noip';
+  if (!(await geoRateOk(ipHash, ctx.shopId))) return soft('busy'); // đốt quota / spam → nhập tay
+  let addr;
+  try { addr = await reverseGeocode({ lat, lng }); } catch { return soft('geocode_failed'); }
+  const province = normalizeProvince(addr.province); // null → ép khách chọn tỉnh tay (không ghi tỉnh lạ)
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const cfg = await shopShipping(c);
+    if (cfg.mode !== 'distance') return { reason: 'not_distance' };
+    const token = parseCookies(req)[CART_COOKIE];
+    const cart = await findCart(c, token);
+    if (!cart) return { reason: 'no_cart' };
+    return { s: await summarize(c, cart.id, province, { lat, lng }), dist: resolveShipDistance(cfg, { lat, lng }).distanceMeters };
+  });
+  if (out.reason) return soft(out.reason);
+  const s = out.s;
+  return send(res, 200, {
+    available: true,
+    address: { line: addr.line, province: province ?? '', district: addr.district, ward: addr.ward },
+    need_province: province == null,           // JS: ép chọn tỉnh tay
+    distance_km: out.dist != null ? Math.ceil(out.dist / 1000) : null,
+    shipping_vnd: s.shipping_vnd, total_vnd: s.total_vnd, out_of_range: s.ship_out_of_range === true,
+    ship_seen: s.shipping_vnd,                 // JS đặt hidden ship_seen → honesty-loop khớp
+  });
+}
+
 // API JSON (e2e + tích hợp): Idempotency-Key ở HEADER. Lỗi nghiệp vụ do dispatcher bắt.
 async function checkout(req, res, body, ctx) {
   const idemKey = req.headers['idempotency-key'];
@@ -884,7 +938,8 @@ async function checkoutPlace(req, res, form, ctx) {
     if (!summary.items.length) return redirect(res, '/cart');
     const idem = genToken();
     const prefill = { name: form.name, phone: form.phone, email: form.email, address_line: form.address_line, province: form.province, payment_method: form.payment_method, address_choice: form.address_choice, logged_in: !!cust, lat: form.lat, lng: form.lng };
-    return sendHtml(res, opts.status ?? 200, renderCheckout(shopName, summary, idem, { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], challenge: needChallenge ? issueChallenge(idem) : undefined, ...opts }));
+    const g = gpsOpts(summary);
+    return sendHtml(res, opts.status ?? 200, renderCheckout(shopName, summary, idem, { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], gps: g.gps, nonce: g.nonce, challenge: needChallenge ? issueChallenge(idem) : undefined, ...opts }), {}, g.nonce);
   };
 
   // ── Lớp BOT no-JS ────────────────────────────────────────────────────────────
@@ -990,8 +1045,9 @@ async function getCheckoutPage(req, res, _body, ctx) {
     address_line: cust.addr?.line1 ?? '', province: cust.addr?.province ?? '',
     logged_in: true,
   } : undefined;
+  const g = gpsOpts(summary);
   return sendHtml(res, 200, renderCheckout(await getShopName(ctx.shopId), summary, genToken(),
-    { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [] }));
+    { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], gps: g.gps, nonce: g.nonce }), {}, g.nonce);
 }
 
 async function getLookupPage(req, res, _body, ctx) {
@@ -1046,6 +1102,7 @@ const ROUTES = [
   { m: 'POST', p: '/cart/coupon', fn: applyCouponForm, form: true },
   { m: 'POST', p: '/cart/points', fn: applyPointsForm, form: true },
   { m: 'POST', p: '/checkout', fn: checkout },
+  { m: 'POST', p: '/checkout/geocode', fn: geocode },
   { m: 'POST', p: '/checkout/place', fn: checkoutPlace, form: true },
   { m: 'GET', p: '/checkout', fn: getCheckoutPage },
   { m: 'GET', p: '/checkout/lookup', fn: getLookupPage },

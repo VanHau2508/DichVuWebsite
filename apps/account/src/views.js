@@ -71,8 +71,11 @@ export function renderRegisterDone(shopName) {
     </div>`, { back: 'auth' });
 }
 
-export function renderDashboard(shopName, cust, { notice } = {}) {
+export function renderDashboard(shopName, cust, { notice, loyalty = null } = {}) {
   const base = '/account';
+  const loyaltyCard = loyalty ? `<div class="card" style="flex:1;min-width:220px"><h2>Điểm thưởng</h2>
+        <p class="muted" style="margin:0 0 8px">Bạn có <strong>${esc(loyalty.balance)}</strong> điểm — đổi lấy giảm giá khi mua.</p>
+        <a class="btn alt sm" href="${base}/points">Xem điểm →</a></div>` : '';
   const unverified = !cust.email_verified_at ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb">
       <div class="row"><span>⚠ Email <strong>chưa xác minh</strong>.</span>
       <form method="POST" action="${base}/resend-verify" style="margin:0"><button class="btn alt sm" type="submit">Gửi lại email xác minh</button></form></div></div>` : '';
@@ -89,7 +92,30 @@ export function renderDashboard(shopName, cust, { notice } = {}) {
         <p class="muted">Xem lịch sử đơn đã đặt.</p><a class="btn alt sm" href="${base}/orders">Xem đơn hàng →</a></div>
       <div class="card" style="flex:1;min-width:220px"><h2>Sổ địa chỉ</h2>
         <p class="muted">Lưu địa chỉ để điền nhanh khi thanh toán.</p><a class="btn alt sm" href="${base}/addresses">Quản lý địa chỉ →</a></div>
+      ${loyaltyCard}
     </div>`);
+}
+
+const POINT_KIND = { earn: 'Tích điểm', redeem: 'Đổi điểm', reversal: 'Hoàn điểm (đơn huỷ/hoàn)', clawback: 'Thu hồi (đơn huỷ/hoàn)', adjust: 'Điều chỉnh' };
+export function renderPoints(shopName, { balance, perPoint, rows, page = 1, hasMore = false }) {
+  const base = '/account';
+  const valueStr = perPoint > 0 && balance > 0 ? ` <span class="muted" style="font-size:1rem;font-weight:400">(~${money(balance * perPoint)})</span>` : '';
+  const trs = rows.length ? rows.map((r) => `<tr>
+      <td class="muted">${dt(r.created_at)}</td>
+      <td>${esc(POINT_KIND[r.kind] ?? r.kind)}</td>
+      <td style="font-weight:600;color:${Number(r.delta) >= 0 ? '#16a34a' : '#dc2626'}">${Number(r.delta) >= 0 ? '+' : ''}${esc(r.delta)}</td></tr>`).join('')
+    : '<tr><td colspan="3" class="muted">Chưa có hoạt động điểm nào.</td></tr>';
+  const pager = (page > 1 || hasMore) ? `<div class="row" style="margin-top:10px">
+      ${page > 1 ? `<a class="btn alt sm" href="${base}/points?page=${page - 1}">← Trước</a>` : '<span></span>'}
+      ${hasMore ? `<a class="btn alt sm" href="${base}/points?page=${page + 1}">Sau →</a>` : ''}</div>` : '';
+  return layout('Điểm thưởng', shopName, `
+    <div class="hd"><h1>Điểm thưởng</h1><a class="btn alt sm" href="${base}">← Tài khoản</a></div>
+    <div class="card" style="text-align:center">
+      <p class="muted" style="margin:0 0 4px">Số dư điểm khả dụng</p>
+      <p style="font-size:2rem;font-weight:800;margin:0">${esc(balance)}${valueStr}</p>
+      <p class="muted" style="margin:8px 0 0;font-size:.85rem">Dùng điểm để giảm giá tiền hàng khi thanh toán đơn mới.</p></div>
+    <div class="card"><h2>Lịch sử điểm</h2>
+      <table><thead><tr><th>Ngày</th><th>Hoạt động</th><th>Điểm</th></tr></thead><tbody>${trs}</tbody></table>${pager}</div>`);
 }
 
 const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v ?? 0)) + '₫';

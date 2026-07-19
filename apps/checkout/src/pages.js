@@ -121,6 +121,7 @@ const itemsBlock = (items) => items.map((it) => `
 const totalsBlock = (s) => `
   <div class="tot"><span class="muted">Tạm tính</span><span>${money(s.subtotal_vnd)}</span></div>
   ${s.discount_vnd ? `<div class="tot"><span class="muted">Giảm giá${s.coupon_code ? ` (${esc(s.coupon_code)})` : ''}</span><span style="color:#0e9f6e">−${money(s.discount_vnd)}</span></div>` : ''}
+  ${s.points_discount_vnd ? `<div class="tot"><span class="muted">Đổi ${esc(s.loyalty?.applied_points ?? '')} điểm</span><span style="color:#0e9f6e">−${money(s.points_discount_vnd)}</span></div>` : ''}
   <div class="tot"><span class="muted">Phí giao hàng</span><span>${money(s.shipping_vnd)}</span></div>
   ${s.fee_region_pending ? `<div class="muted" style="font-size:.82rem">Phí trên tính theo giao nội miền — có thể thêm phụ phí liên miền tuỳ tỉnh/thành nhận hàng (chốt ở bước Đặt hàng).</div>` : ''}
   <div class="tot grand"><span>Tổng cộng</span><span>${money(s.total_vnd)}</span></div>`;
@@ -136,6 +137,22 @@ const couponBlock = (s) => `<div class="card">
       </form>`}
   ${s.coupon_error ? `<div class="muted" style="color:#b91c1c;margin-top:8px">${esc(s.coupon_error)}</div>` : ''}
 </div>`;
+
+// Widget ĐỔI ĐIỂM trên giỏ (no-JS: POST /cart/points → PRG). Chỉ hiện khi shop bật + khách đăng nhập.
+const loyaltyBlock = (s) => {
+  const L = s.loyalty; if (!L) return '';
+  const val = L.per_point_vnd ? ` <span class="muted" style="font-weight:400">(~${money(L.balance * L.per_point_vnd)})</span>` : '';
+  const body = L.applied_points > 0
+    ? `<div class="tot"><span>Đang đổi <strong>${esc(L.applied_points)}</strong> điểm — giảm ${money(s.points_discount_vnd)}</span>
+        <form method="POST" action="/cart/points" style="margin:0"><input type="hidden" name="points" value="0"><button class="qtybtn" type="submit" style="width:auto;color:#b91c1c">Gỡ</button></form></div>`
+    : (L.max_points > 0
+      ? `<form method="POST" action="/cart/points" class="qty" style="margin:0">
+          <input name="points" type="number" min="0" max="${esc(L.max_points)}" placeholder="Đổi điểm (tối đa ${esc(L.max_points)})" inputmode="numeric" aria-label="Số điểm đổi">
+          <button class="qtybtn" type="submit" style="width:auto">Đổi điểm</button>
+        </form>`
+      : '<div class="muted" style="font-size:.85rem">Chưa đủ điểm để đổi cho đơn này.</div>');
+  return `<div class="card"><div style="font-weight:600;margin-bottom:8px">🎁 Bạn có ${esc(L.balance)} điểm${val}</div>${body}</div>`;
+};
 
 export function renderError(shopName, msg) {
   return page('Có lỗi', shopName, `<div class="card empty"><h1>Rất tiếc</h1><p>${esc(msg)}</p>
@@ -161,6 +178,7 @@ export function renderCart(shopName, s) {
   return page('Giỏ hàng', shopName, `<h1>Giỏ hàng</h1>
     <div class="card">${itemsBlock(s.items)}</div>
     ${couponBlock(s)}
+    ${loyaltyBlock(s)}
     <div class="card">${totalsBlock(s)}</div>
     <a class="btn" href="/checkout">Thanh toán</a>
     <a class="btn alt" href="/" style="margin-top:8px">Tiếp tục mua sắm</a>`);

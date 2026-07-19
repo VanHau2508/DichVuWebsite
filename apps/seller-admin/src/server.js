@@ -1694,6 +1694,61 @@ async function stocktakeCancel(res, me, cookie, shopId, sid) {
   return stocktakeDetailPage(res, me, cookie, shopId, sid, null, r.json?.error ?? 'Không huỷ được.');
 }
 
+// ── Điểm thưởng (0086) — owner/admin (loyalty.write) + step-up khi lưu ────────
+function loyaltyFields(f) {
+  return {
+    enabled: (f.get('enabled') ?? '') === '1',
+    earn_points_per_1000: Number(f.get('earn_points_per_1000') ?? 1),
+    redeem_vnd_per_point: Number(f.get('redeem_vnd_per_point') ?? 100),
+    earn_vesting_days: Number(f.get('earn_vesting_days') ?? 7),
+    min_redeem_points: Number(f.get('min_redeem_points') ?? 0),
+    max_redeem_pct: Number(f.get('max_redeem_pct') ?? 50),
+  };
+}
+const LOYALTY_ADMIN_ROLES = new Set(['owner', 'admin']);
+async function loyaltyPage(res, me, cookie, shopId, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'loyalty');
+  if (!LOYALTY_ADMIN_ROLES.has(roleFor(me, shopId))) return sendHtml(res, 403, V.renderError(ctx, 'Chỉ chủ shop / quản trị viên dùng được Điểm thưởng.'));
+  const [cfg, rep] = await Promise.all([
+    sellerApi('GET', `/shops/${shopId}/loyalty`, { cookie }),
+    sellerApi('GET', `/shops/${shopId}/reports/loyalty`, { cookie }).catch(() => null),
+  ]);
+  if (cfg.status !== 200) return sendHtml(res, cfg.status, V.renderError(ctx, cfg.status === 403 ? 'Chỉ chủ shop / quản trị viên dùng được Điểm thưởng.' : (cfg.json?.error ?? 'Không tải được cấu hình.')));
+  const report = rep && rep.status === 200 ? rep.json : null; // 403 (manager) → ẩn báo cáo, vẫn xem/sửa cấu hình
+  return sendHtml(res, err ? 400 : 200, V.renderLoyalty(ctx, shopId, cfg.json, report, notice, err));
+}
+async function doLoyaltySave(res, me, cookie, shopId, fields) {
+  const r = await sellerApi('PUT', `/shops/${shopId}/loyalty`, { cookie, body: fields });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/loyalty?notice=saved`);
+  if (r.json?.step_up_required) { // seller cưỡng chế step-up (phòng khi cờ local lệch)
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'loyalty');
+    return sendHtml(res, 200, V.renderLoyaltyStepUp(ctx, shopId, fields, null));
+  }
+  return loyaltyPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không lưu được cấu hình.');
+}
+async function loyaltySave(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (!LOYALTY_ADMIN_ROLES.has(roleFor(me, shopId))) return sendHtml(res, 403, V.renderError(shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'loyalty'), 'Chỉ chủ shop / quản trị viên.'));
+  const fields = loyaltyFields(await readFormAll(req));
+  if (!steppedUp(me)) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'loyalty');
+    return sendHtml(res, 200, V.renderLoyaltyStepUp(ctx, shopId, fields, null));
+  }
+  return doLoyaltySave(res, me, cookie, shopId, fields);
+}
+async function loyaltyStepUp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req);
+  const fields = loyaltyFields(f);
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.get('password') ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'loyalty');
+    return sendHtml(res, 401, V.renderLoyaltyStepUp(ctx, shopId, fields, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.'));
+  }
+  return doLoyaltySave(res, me, cookie, shopId, fields);
+}
+
 // ── Tên miền tùy chỉnh (owner + step-up) ─────────────────────────────────────
 async function domainsPage(res, me, cookie, shopId, notice, err) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -2252,6 +2307,9 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/reports$`).exec(p)) && req.method === 'GET') return reportsPage(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/reports/export$`).exec(p)) && req.method === 'POST') return reportsExportCreate(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/reports/export/step-up$`).exec(p)) && req.method === 'POST') return reportsExportStepUp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/loyalty$`).exec(p)) && req.method === 'GET') return loyaltyPage(res, me, cookie, m[1], url.searchParams.get('notice') === 'saved' ? 'Đã lưu cấu hình điểm thưởng.' : null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/loyalty$`).exec(p)) && req.method === 'POST') return loyaltySave(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/loyalty/step-up$`).exec(p)) && req.method === 'POST') return loyaltyStepUp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/export$`).exec(p)) && req.method === 'GET') return exportPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/export$`).exec(p)) && req.method === 'POST') return exportCreate(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/export/step-up$`).exec(p)) && req.method === 'POST') return exportStepUp(req, res, me, cookie, m[1]);

@@ -222,7 +222,14 @@ async function doLogout(req, res, ctx) {
 
 async function pageDashboard(req, res, ctx, q) {
   if (!ctx.customer) return redirect(res, '/account/login');
-  return sendHtml(res, 200, V.renderDashboard(ctx.shopName, ctx.customer, { notice: q.get('sent') === '1' ? 'Đã gửi lại email xác minh.' : null }));
+  // Điểm thưởng (0086): chỉ hiện thẻ khi shop BẬT chương trình. Lỗi đọc → nuốt (không sập dashboard).
+  const loyalty = await withCustomer(ctx.shopId, ctx.customer.id, async (c) => {
+    const cfg = (await c.query(`SELECT enabled FROM shop_loyalty_config WHERE shop_id = current_shop_id()`)).rows[0];
+    if (!cfg?.enabled) return null;
+    const bal = (await c.query(`SELECT balance_points FROM loyalty_balances WHERE customer_id = current_customer_id()`)).rows[0];
+    return { balance: Math.max(0, bal ? Number(bal.balance_points) : 0) };
+  }).catch(() => null);
+  return sendHtml(res, 200, V.renderDashboard(ctx.shopName, ctx.customer, { notice: q.get('sent') === '1' ? 'Đã gửi lại email xác minh.' : null, loyalty }));
 }
 
 // ── lịch sử đơn (RLS customer_orders_read: CHỈ đơn của mình) ──────────────────
@@ -236,6 +243,25 @@ async function pageOrders(req, res, ctx, q) {
     [PAGE + 1, (page - 1) * PAGE]).then((r) => r.rows));
   const notice = q.get('claimed') === '1' ? 'Đã nhận đơn vào tài khoản.' : null;
   return sendHtml(res, 200, V.renderOrders(ctx.shopName, rows.slice(0, PAGE), { page, hasMore: rows.length > PAGE, notice }));
+}
+// ── Điểm thưởng (0086): số dư + lịch sử (RLS 2 trục self-scoped) ──────────────
+async function pagePoints(req, res, ctx, q) {
+  if (!ctx.customer) return redirect(res, '/account/login');
+  const page = Math.min(200, Math.max(1, parseInt(q.get('page') ?? '1', 10) || 1));
+  const out = await withCustomer(ctx.shopId, ctx.customer.id, async (c) => {
+    const cfg = (await c.query(`SELECT enabled, redeem_vnd_per_point FROM shop_loyalty_config WHERE shop_id = current_shop_id()`)).rows[0];
+    const bal = (await c.query(`SELECT balance_points FROM loyalty_balances WHERE customer_id = current_customer_id()`)).rows[0];
+    const rows = (await c.query(
+      `SELECT kind, delta, created_at FROM loyalty_ledger WHERE customer_id = current_customer_id()
+        ORDER BY id DESC LIMIT $1 OFFSET $2`, [PAGE + 1, (page - 1) * PAGE])).rows;
+    return { cfg, balance: bal ? Number(bal.balance_points) : 0, rows };
+  });
+  if (!out.cfg?.enabled && out.balance === 0 && out.rows.length === 0) return redirect(res, '/account'); // shop không dùng điểm
+  return sendHtml(res, 200, V.renderPoints(ctx.shopName, {
+    balance: Math.max(0, out.balance), // hiển thị clamp ≥0 (nợ điểm không hiện âm)
+    perPoint: Number(out.cfg?.redeem_vnd_per_point ?? 0),
+    rows: out.rows.slice(0, PAGE), page, hasMore: out.rows.length > PAGE,
+  }));
 }
 async function pageOrderDetail(req, res, ctx, q, params) {
   if (!ctx.customer) return redirect(res, '/account/login');
@@ -364,6 +390,7 @@ const ROUTES = [
   { m: 'GET', re: /^\/account\/verify$/, fn: pageVerify, auth: false },
   { m: 'POST', re: /^\/account\/resend-verify$/, fn: doResendVerify, auth: false },
   { m: 'GET', re: /^\/account\/orders$/, fn: pageOrders },
+  { m: 'GET', re: /^\/account\/points$/, fn: pagePoints },
   { m: 'GET', re: /^\/account\/orders\/(\d+)$/, fn: pageOrderDetail },
   { m: 'POST', re: /^\/account\/claim$/, fn: doClaim },
   { m: 'GET', re: /^\/account\/addresses$/, fn: pageAddresses },

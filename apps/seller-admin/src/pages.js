@@ -148,6 +148,7 @@ const PAYMENT_ROLES = new Set(['owner']); // thanh toán: CHỈ chủ shop (sell
 const SHIPPING_ROLES = new Set(['owner', 'admin']); // vận chuyển: owner/admin (seller cưỡng chế 'shop.write' + step-up)
 const AUDIT_ROLES = new Set(['owner', 'admin']); // nhật ký hoạt động: owner/admin (seller cưỡng chế 'audit.read')
 const INVENTORY_ROLES = new Set(['owner', 'admin']); // nhập hàng/NCC/kiểm kê: owner/admin (seller cưỡng chế 'inventory.manage' — giá nhập/NCC là bí mật KD)
+const LOYALTY_ROLES = new Set(['owner', 'admin']); // điểm thưởng: owner/admin (seller cưỡng chế 'loyalty.write' + step-up)
 const ROLE_LABEL = { owner: 'Chủ shop', admin: 'Quản trị', catalog_manager: 'Quản lý sản phẩm', order_manager: 'Quản lý đơn' };
 const INVITE_ROLES = ['admin', 'catalog_manager', 'order_manager']; // KHÔNG mời owner qua đây
 const PSTATUS = { draft: 'Nháp', active: 'Đang bán', archived: 'Lưu trữ' };
@@ -190,6 +191,7 @@ const IC_LOG = ic('<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 
 const IC_COIN = ic('<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6"/>');
 const IC_WAREHOUSE = ic('<path d="M3 21V8l9-5 9 5v13"/><path d="M3 21h18"/><rect x="7" y="13" width="10" height="8"/><path d="M7 17h10"/>');
 const IC_CLIP = ic('<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4a1.5 1.5 0 0 1 3 0h0a1.5 1.5 0 0 1-3 0z" fill="currentColor"/><path d="M9 11h6M9 15h6"/>');
+const IC_GIFT = ic('<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M5 12v9h14v-9"/><path d="M12 8v13"/><path d="M12 8S10.5 4 8.5 4 6 6 6 6s1 2 3 2M12 8s1.5-4 3.5-4S18 6 18 6s-1 2-3 2"/>');
 
 // Điều hướng dọc trong 1 shop (sidebar) — chỉ hiện mục vai trò được phép.
 function sideNav(ctx) {
@@ -207,6 +209,7 @@ function sideNav(ctx) {
           + it(`${base}/stocktakes`, 'Kiểm kê', IC_CLIP, ctx.active === 'stocktakes', INVENTORY_ROLES.has(ctx.role))
           + it(`${base}/promotions`, 'Flash sale', IC_TREND, ctx.active === 'promotions', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/coupons`, 'Mã giảm giá', IC_TICKET, ctx.active === 'coupons', CATALOG_ROLES.has(ctx.role))
+          + it(`${base}/loyalty`, 'Điểm thưởng', IC_GIFT, ctx.active === 'loyalty', LOYALTY_ROLES.has(ctx.role))
           + it(`${base}/reviews`, 'Đánh giá', IC_STAR, ctx.active === 'reviews', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/pages`, 'Trang nội dung', IC_FILE, ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/blog`, 'Blog', IC_NEWS, ctx.active === 'blog', CONTENT_ROLES.has(ctx.role))
@@ -3150,6 +3153,63 @@ export function renderStocktakeDetail(ctx, shopId, st, notice, err) {
     <div class="toolbar"><h1 style="margin:0">Kiểm kê #${esc(st.stocktake_number)} ${badge(ST_BADGE[st.status], ST_STATUS[st.status] ?? st.status)}</h1></div>
     ${st.note ? `<p class="muted" style="margin-top:-6px">${esc(st.note)}</p>` : ''}
     ${body}`);
+}
+
+// ── ĐIỂM THƯỞNG (0086): cấu hình + báo cáo nợ ────────────────────────────────
+export function renderLoyalty(ctx, shopId, cfg, report, notice, err) {
+  const base = `/shops/${esc(shopId)}`;
+  const c = cfg ?? {};
+  const num = (k, d) => esc(c[k] ?? d);
+  const rep = report;
+  const reportCard = rep ? `<div class="card"><h2 style="margin-top:0">Nợ điểm hiện tại</h2>
+    <p style="margin:0;font-size:1.15rem">Đang lưu hành <strong>${esc(rep.outstanding_points)}</strong> điểm ·
+      ước tính nợ <strong>${money(rep.liability_vnd)}</strong>
+      <span class="muted">(${esc(rep.members_with_points)} khách có điểm${rep.members_in_debt ? `, ${esc(rep.members_in_debt)} khách đang nợ điểm` : ''})</span></p>
+    <p class="muted" style="margin:8px 0 0;font-size:.85rem">Đây là chỉ số nợ phải trả (điểm khách có thể đổi thành giảm giá) — KHÔNG phải chi phí kỳ này. Chi phí điểm đã tính khi khách ĐỔI (giảm doanh thu lúc tiêu).</p>
+    <table style="margin-top:10px"><tbody>
+      <tr><td>Đã phát (tích)</td><td class="right num">${esc(rep.movements.earned)}</td></tr>
+      <tr><td>Đã đổi</td><td class="right num">${esc(rep.movements.redeemed)}</td></tr>
+      <tr><td>Hoàn (đơn huỷ/hoàn)</td><td class="right num">${esc(rep.movements.reversed)}</td></tr>
+      <tr><td>Thu hồi (đơn huỷ/hoàn)</td><td class="right num">${esc(rep.movements.clawed_back)}</td></tr>
+      ${rep.movements.adjusted ? `<tr><td>Điều chỉnh tay</td><td class="right num">${esc(rep.movements.adjusted)}</td></tr>` : ''}
+    </tbody></table></div>` : '';
+  return layout('Điểm thưởng', ctx, `
+    <h1>Điểm thưởng khách hàng</h1>
+    <p class="muted" style="margin-top:-6px">Khách tích điểm khi mua (đã thanh toán), đổi điểm thành giảm giá ở lần mua sau — giữ chân khách quay lại.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="notice success">${esc(notice)}</div>` : ''}
+    <div class="card"><form method="POST" action="${base}/loyalty">
+      <label style="display:flex;gap:8px;align-items:center;font-weight:600"><input type="checkbox" name="enabled" value="1"${c.enabled ? ' checked' : ''} style="width:auto"> Bật chương trình điểm thưởng</label>
+      <div class="grid2" style="margin-top:12px">
+        <div><label>Tích điểm: số điểm cho mỗi 1.000đ tiền hàng</label><input name="earn_points_per_1000" type="number" min="1" max="1000" value="${num('earn_points_per_1000', 1)}" inputmode="numeric"></div>
+        <div><label>Đổi điểm: 1 điểm = bao nhiêu đồng giảm giá</label><input name="redeem_vnd_per_point" type="number" min="1" max="1000000" value="${num('redeem_vnd_per_point', 100)}" inputmode="numeric"></div>
+      </div>
+      <div class="grid2">
+        <div><label>Số ngày chờ cộng điểm (chống hoàn đơn — nên ≥ hạn đổi/trả)</label><input name="earn_vesting_days" type="number" min="0" max="365" value="${num('earn_vesting_days', 7)}" inputmode="numeric"></div>
+        <div><label>Giảm tối đa mỗi đơn (% tiền hàng)</label><input name="max_redeem_pct" type="number" min="1" max="100" value="${num('max_redeem_pct', 50)}" inputmode="numeric"></div>
+      </div>
+      <label>Ngưỡng đổi tối thiểu (điểm) — 0 = không giới hạn</label><input name="min_redeem_points" type="number" min="0" value="${num('min_redeem_points', 0)}" inputmode="numeric" style="max-width:200px">
+      <p class="muted" style="font-size:.85rem;margin:10px 0 0">Ví dụ: tích 1 điểm/1.000đ + đổi 100đ/điểm = hoàn ~10% dưới dạng điểm. Điểm chỉ giảm tiền HÀNG, không giảm phí ship.</p>
+      <button class="btn" type="submit" style="margin-top:14px">Lưu cấu hình</button>
+    </form></div>
+    ${reportCard}`);
+}
+
+export function renderLoyaltyStepUp(ctx, shopId, fields, err) {
+  const base = `/shops/${esc(shopId)}/loyalty`;
+  const keep = Object.entries(fields ?? {}).filter(([k, v]) => v != null && k !== 'password')
+    .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('');
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận mật khẩu</h1>
+    <p class="muted">Đổi cấu hình điểm thưởng chạm đường tiền — nhập mật khẩu của bạn để tiếp tục.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${base}/step-up">
+      ${keep}
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận &amp; lưu</button>
+    </form>
+    <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
 }
 
 export function renderError(ctx, msg) {

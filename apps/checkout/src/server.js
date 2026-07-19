@@ -396,9 +396,30 @@ async function addItemForm(req, res, form, ctx) {  // form từ trang sản ph�
 
 async function getCart(req, res, _body, ctx) {  // HTML (trình duyệt) hoặc JSON (API/e2e)
   const token = parseCookies(req)[CART_COOKIE];
+  const cust = await resolveCustomer(ctx.shopId, req); // đăng nhập? → widget đổi điểm
   const summary = await withTenant(ctx.shopId, async (c) => {
+    if (cust?.id) await c.query(`SELECT set_config('app.customer_id', $1, true)`, [cust.id]);
     const cart = await findCart(c, token);
-    return cart ? summarize(c, cart.id) : { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 };
+    const base = cart ? await summarize(c, cart.id) : { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 };
+    // Điểm thưởng (0086): CHỈ khi shop BẬT + khách ĐĂNG NHẬP. Hiển thị số dư + số điểm đang áp +
+    // giảm giá (client-side chỉ để XEM; checkout re-tính dưới khoá là chân lý). Điểm giảm tiền HÀNG.
+    if (cust?.id && cart) {
+      const cfg = (await c.query(`SELECT enabled, redeem_vnd_per_point, max_redeem_pct FROM shop_loyalty_config WHERE shop_id = current_shop_id()`)).rows[0];
+      if (cfg?.enabled) {
+        const bal = (await c.query(`SELECT balance_points FROM loyalty_balances WHERE customer_id = current_customer_id()`)).rows[0];
+        const balance = Math.max(0, bal ? Number(bal.balance_points) : 0);
+        const perPoint = Number(cfg.redeem_vnd_per_point);
+        const goods = base.subtotal_vnd - (base.discount_vnd ?? 0);
+        const maxPoints = Math.max(0, Math.min(balance, Math.floor(goods / perPoint), Math.floor((goods * Number(cfg.max_redeem_pct) / 100) / perPoint)));
+        const want = Number((await c.query(`SELECT points_redeem FROM carts WHERE id = $1`, [cart.id])).rows[0]?.points_redeem ?? 0);
+        const applied = Math.min(want, maxPoints);
+        const pointsDiscount = applied * perPoint;
+        base.loyalty = { balance, per_point_vnd: perPoint, max_points: maxPoints, applied_points: applied };
+        base.points_discount_vnd = pointsDiscount;
+        base.total_vnd = base.total_vnd - pointsDiscount; // total hiển thị đã trừ điểm (chân lý ở checkout)
+      }
+    }
+    return base;
   });
   if (wantsHtml(req)) return sendHtml(res, 200, renderCart(await getShopName(ctx.shopId), summary));
   return send(res, 200, summary);

@@ -40,6 +40,7 @@ import { CUSTOMER_ROUTES } from './customers.js';
 import { NOTIFY_ROUTES } from './notify.js';
 import { AUDIT_ROUTES } from './audit-log.js';
 import { PURCHASING_ROUTES } from './purchasing.js';
+import { LOYALTY_CONFIG_ROUTES } from './loyalty-config.js';
 import { isProvince } from './provinces.js';
 import { runReq, makeLog, health } from './obs.js';
 
@@ -310,6 +311,7 @@ const ROUTES = [
   ...NOTIFY_ROUTES,
   ...AUDIT_ROUTES,
   ...PURCHASING_ROUTES,
+  ...LOYALTY_CONFIG_ROUTES,
 ];
 
 const server = http.createServer((req, res) => runReq(req, res, async () => {

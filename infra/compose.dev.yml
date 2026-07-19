@@ -485,6 +485,7 @@ services:
       DATABASE_URL_CHECKOUT: postgres://app_checkout:devpassword@postgres:5432/app
       DATABASE_URL_CUSTOMER: postgres://app_customer:devpassword@postgres:5432/app
       DATABASE_URL_LOYALTY: postgres://app_loyalty:devpassword@postgres:5432/app
+      DATABASE_URL_SIGNUP: postgres://app_signup:devpassword@postgres:5432/app
       ACCOUNT_URL: http://account:3062
       MEDIA_PUBLIC_BASE: /media-public
       MEDIA_PRIVATE_BASE: http://minio:9000/media-private

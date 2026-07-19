@@ -28,13 +28,14 @@ async function rq(base, method, path, { body, cookie, origin } = {}) {
 const login = async (e, p) => ck((await rq(AUTH, 'POST', '/auth/login', { body: { email: e, password: p }, origin: OA })).sc);
 const uidOf = async (e) => (await owner.query('SELECT id FROM users WHERE email=$1', [e])).rows[0]?.id ?? null;
 // node:http với Host shop + form/json + cookie giỏ.
-function co(host, method, path, { json, form, cartTok } = {}) {
+function co(host, method, path, { json, form, cartTok, idem } = {}) {
   return new Promise((resolve, reject) => {
     const data = json !== undefined ? JSON.stringify(json) : form !== undefined ? new URLSearchParams(form).toString() : null;
     const headers = { host, origin: `https://${host}` };
     if (json !== undefined) headers['content-type'] = 'application/json';
     else if (form !== undefined) headers['content-type'] = 'application/x-www-form-urlencoded';
     if (data != null) headers['content-length'] = Buffer.byteLength(data);
+    if (idem) headers['idempotency-key'] = idem;
     if (cartTok) headers.cookie = `__Host-cart=${cartTok}`;
     const req = http.request({ hostname: CO.hostname, port: CO.port, path, method, headers }, (rs) => {
       let b = ''; rs.on('data', (d) => (b += d)); rs.on('end', () => { let j = null; try { j = b ? JSON.parse(b) : null; } catch {} let tok = cartTok; for (const c of rs.headers['set-cookie'] ?? []) { const m = /^__Host-cart=([^;]*)/.exec(c); if (m) tok = m[1]; } resolve({ status: rs.statusCode, json: j, body: b, cartTok: tok, location: rs.headers.location }); });
@@ -99,6 +100,15 @@ async function main() {
   g = await co(A.host, 'GET', '/checkout', { cartTok: cart });
   g.status === 200 && /value="qr"/.test(g.body) && /value="cod"/.test(g.body)
     ? ok('GET /checkout: shop bật QR → có CẢ COD lẫn QR') : bad('shop bật QR nhưng radio QR không hiện', g.body.match(/payment_method[^>]*/g)?.join(' | '));
+
+  sect('4. Trang xác nhận HIỆN mã tra cứu (khách vãng lai tra được đơn) — BLOCKER');
+  cart = await newCart();
+  const place = await co(A.host, 'POST', '/checkout', { json: { customer: { name: 'Khách Vãng Lai', phone: '0987654321' }, address: { line: '9 Test', province: 'Hà Nội' }, payment_method: 'cod' }, cartTok: cart, idem: `k-${uniq()}` });
+  const num = place.json?.order_number, tok = place.json?.lookup_token;
+  const succ = await co(A.host, 'GET', `/checkout/success?number=${num}&token=${encodeURIComponent(tok ?? '')}&placed=1`);
+  succ.status === 200 && tok && succ.body.includes(tok) && /Mã tra cứu/.test(succ.body) && succ.body.includes(`number=${num}`)
+    ? ok(`trang xác nhận IN mã tra cứu (token) dạng chữ + link → khách vãng lai tra được đơn #${num}`)
+    : bad('trang xác nhận KHÔNG hiện mã tra cứu', `num=${num} có-token-trong-body=${tok ? succ.body.includes(tok) : 'no-token'}`);
 
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();

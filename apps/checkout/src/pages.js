@@ -316,7 +316,7 @@ function gpsScript(nonce) {
 })();</script>`;
 }
 
-export function renderOrder(shopName, o, pay, qr, justPlaced = false) {
+export function renderOrder(shopName, o, pay, qr, justPlaced = false, lookupToken = '') {
   const paid = o.payment_status === 'paid';
   const statusVi = { pending: 'Chờ xử lý', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ' }[o.status] ?? o.status;
   const head = (o.payment_method === 'qr' && !paid && o.status !== 'cancelled') ? '<meta http-equiv="refresh" content="8">' : '';
@@ -351,8 +351,14 @@ export function renderOrder(shopName, o, pay, qr, justPlaced = false) {
       ${o.lines.map((l) => `<div class="tot"><span class="muted">${esc(l.title_snapshot)} × ${l.qty}${l.orig_unit_price_vnd ? ` <span style="color:#b91c1c">(KM, tiết kiệm ${money((Number(l.orig_unit_price_vnd) - Number(l.unit_price_vnd)) * l.qty)})</span>` : ''}</span><span>${money(Number(l.unit_price_vnd) * l.qty)}</span></div>`).join('')}
       <div class="tot"><span class="muted">Phí giao hàng</span><span>${money(o.shipping_vnd)}</span></div>
       <div class="tot grand"><span>Tổng cộng</span><span>${money(o.total_vnd)}</span></div>
-      <p class="muted" style="margin-top:8px">Giao tới: ${esc(o.customer_name)}</p>
-      ${justPlaced ? '<p class="muted">Lưu lại đường link/số đơn + mã này để tra cứu sau.</p>' : ''}</div>
+      <p class="muted" style="margin-top:8px">Giao tới: ${esc(o.customer_name)}</p></div>
+    ${lookupToken ? `<div class="card" style="border-color:#93c5fd;background:#eff6ff">
+      <h2 style="margin-top:0">📌 Mã tra cứu đơn — hãy lưu lại</h2>
+      <p class="muted" style="margin:0 0 10px">Dùng <strong>số đơn + mã</strong> dưới đây để tra cứu đơn bất cứ lúc nào, kể cả khi bạn không có tài khoản.</p>
+      <div class="row"><span class="muted">Số đơn</span><span><strong>#${o.order_number}</strong></span></div>
+      <div class="row"><span class="muted">Mã tra cứu</span><span><strong style="font-family:monospace;word-break:break-all;user-select:all">${esc(lookupToken)}</strong></span></div>
+      <a class="btn" style="margin-top:12px" href="/checkout/success?number=${o.order_number}&token=${encodeURIComponent(lookupToken)}">Mở trang tra cứu đơn này</a>
+      <p class="muted" style="margin:8px 0 0;font-size:.85rem">Mẹo: lưu (bookmark) link trên hoặc chụp màn hình. ${justPlaced ? 'Nếu bạn nhập email, mã này cũng được gửi vào email.' : ''}</p></div>` : ''}
     <a class="btn alt" href="/checkout/lookup">Tra cứu đơn khác</a>
     <a class="btn alt" href="/" style="margin-top:8px">Tiếp tục mua sắm</a>`, head);
 }

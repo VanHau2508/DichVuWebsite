@@ -1103,7 +1103,7 @@ async function getSuccessPage(req, res, _body, ctx, query) {
   if (data.pay?.bank_bin && data.pay?.account_number) {
     qr = await qrSvg(buildVietQR({ bankBin: data.pay.bank_bin, accountNumber: data.pay.account_number, amountVnd: Number(data.o.total_vnd), content: data.o.payment_ref }));
   }
-  return sendHtml(res, 200, renderOrder(shopName, data.o, data.pay, qr, justPlaced));
+  return sendHtml(res, 200, renderOrder(shopName, data.o, data.pay, qr, justPlaced, token));
 }
 
 // ── router ───────────────────────────────────────────────────────────────────

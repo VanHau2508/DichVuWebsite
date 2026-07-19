@@ -366,6 +366,49 @@ async function cancelOrder(res, ctx, _body, params) {
   return send(res, 200, { ok: true, status: 'cancelled' });
 }
 
+// BOM HÀNG / HOÀN VỀ — đơn ĐANG GIAO (shipped) khách KHÔNG NHẬN → hàng về shop. Vá 2 lỗ audit:
+//  (1) đơn TÁCH-VẬN-ĐƠN bỏ dở (gửi 3/5 rồi thôi) → reserve phần CHƯA gửi kẹt vĩnh viễn (cancel gate
+//      pending/confirmed, deliver đòi fulfilled) → NHẢ reserve phần chưa gửi.
+//  (2) đơn GIAO TAY/hãng bị bom → kẹt 'shipped' (RMA đòi 'delivered') → RESTOCK phần ĐÃ gửi (hàng về).
+// restock (mặc định true): hàng bom còn bán được → on_hand += shipped + ledger 'receive'; false = hàng
+// hỏng, ghi nhận mất (không restock) nhưng VẪN nhả reserve. KHÔNG tự hoàn tiền (COD bom = chưa thu;
+// đơn đã trả → shop hoàn qua nút Hoàn tiền riêng). Khoá on_hand theo variant_id (chống deadlock).
+async function markReturnedBomb(res, ctx, body, params) {
+  const orderId = params[1];
+  const reason = String(body?.reason ?? '').trim().slice(0, 500) || null;
+  const restock = body?.restock !== false && body?.restock !== 'false' && body?.restock !== 'off'; // mặc định TRUE
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const o = (await c.query(`SELECT id, status, payment_status, coupon_code, order_number, customer_email, customer_name FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
+    if (!o) return { code: 404 };
+    if (o.status !== 'shipped') return { code: 409, cur: o.status };
+    const lines = (await c.query(`SELECT variant_id, qty, shipped_qty FROM order_lines WHERE order_id = $1 ORDER BY variant_id`, [orderId])).rows;
+    for (const ln of lines) {
+      const shipped = Number(ln.shipped_qty), unshipped = Number(ln.qty) - shipped;
+      if (restock && shipped > 0) { // hàng vật lý đã gửi về kho → nhập lại (mirror RMA restock)
+        await c.query(`INSERT INTO inventory_levels (shop_id, variant_id) VALUES (current_shop_id(), $1) ON CONFLICT (shop_id, variant_id) DO NOTHING`, [ln.variant_id]);
+        await c.query(`SELECT on_hand FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [ln.variant_id]);
+        await c.query(`UPDATE inventory_levels SET on_hand = on_hand + $2, updated_at = now() WHERE variant_id = $1`, [ln.variant_id, shipped]);
+        await c.query(`INSERT INTO inventory_ledger (shop_id, variant_id, delta, kind, reason, actor_id) VALUES (current_shop_id(), $1, $2, 'receive', $3, $4)`,
+          [ln.variant_id, shipped, `Hoàn về (bom) đơn #${o.order_number}`, ctx.user.id]);
+      }
+      if (unshipped > 0) { // phần CHƯA gửi (đơn tách bỏ dở) → nhả reserve (chưa xuất kho, on_hand giữ)
+        await c.query(`UPDATE inventory_levels SET reserved = GREATEST(0, reserved - $2), updated_at = now() WHERE variant_id = $1`, [ln.variant_id, unshipped]);
+      }
+    }
+    await c.query(`UPDATE orders SET status = 'returned', returned_at = now() WHERE id = $1`, [orderId]);
+    if (o.coupon_code && o.payment_status !== 'paid') {
+      await c.query(`UPDATE coupons SET used_count = GREATEST(used_count - 1, 0) WHERE shop_id = current_shop_id() AND upper(code) = upper($1)`, [o.coupon_code]);
+    }
+    o.status = 'returned';
+    await audit(c, 'order.returned_bomb', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, reason, restock } });
+    await statusEvent(c, o);
+    return { code: 200 };
+  });
+  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy đơn' });
+  if (out.code === 409) return send(res, 409, { error: `chỉ hoàn-về đơn ĐANG GIAO (shipped); đơn hiện ${out.cur}` });
+  return send(res, 200, { ok: true, status: 'returned' });
+}
+
 // Đánh dấu ĐÃ NHẬN TIỀN cho đơn COD (thu tiền mặt khi giao). CHỈ COD — đơn QR do
 // webhook đối soát đặt paid; KHÔNG có đường nào cho người dùng tự đặt QR paid (bất
 // biến chống gian lận "đã trả"). Idempotent: guard payment_status<>'paid'.
@@ -1017,6 +1060,7 @@ export const ORDER_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/ship$`), perm: 'orders.write', fn: (res, ctx, b, p) => shipOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/deliver$`), perm: 'orders.write', fn: (res, ctx, b, p) => deliverOrder(res, ctx, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/cancel$`), perm: 'orders.write', fn: (res, ctx, b, p) => cancelOrder(res, ctx, b, p) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-returned$`), perm: 'orders.write', fn: (res, ctx, b, p) => markReturnedBomb(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid$`), perm: 'orders.write', fn: (res, ctx, b, p) => markPaid(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr$`), perm: 'payment.write', stepUp: true, fn: (res, ctx, b, p) => markPaidQr(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/refund$`), perm: 'refund', stepUp: true, fn: (res, ctx, b, p) => refundOrder(res, ctx, b, p) },

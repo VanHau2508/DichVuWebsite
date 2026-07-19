@@ -1099,6 +1099,12 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   if (o.status === 'pending') actions = act('confirm', 'Xác nhận đơn') + act('cancel', 'Huỷ đơn', 'btn warn sm');
   else if (o.status === 'confirmed') actions = act('cancel', 'Huỷ đơn', 'btn warn sm');
   else if (o.status === 'shipped' && o.fulfillment_status === 'fulfilled') actions = act('deliver', 'Đã giao xong');
+  // BOM HÀNG / HOÀN VỀ (audit #58): đơn ĐANG GIAO khách không nhận → hàng về. Restock phần đã gửi +
+  // nhả reserve phần chưa gửi (đơn tách bỏ dở) → tồn sạch. Hiện cho MỌI đơn shipped (đủ/một-phần).
+  if (o.status === 'shipped' && ['owner', 'admin'].includes(ctx.role)) {
+    actions += act('mark-returned', '↩ Bom hàng / Hoàn về', 'btn warn sm',
+      '<label style="display:block;font-size:.82rem;margin-bottom:6px"><input type="checkbox" name="restock" checked style="width:auto"> Nhập lại kho (bỏ tick nếu hàng hỏng)</label>');
+  }
   // Card giao tay per-dòng: SL mặc định = còn lại; giảm để TÁCH kiện, gửi nốt sau. order_line_id[]
   // đứng TRƯỚC ship_qty[] mỗi hàng → server zip theo chỉ số (dòng SL 0 bị bỏ, gửi kiện sau).
   const shipCard = canShipManual ? `

@@ -704,6 +704,10 @@ async function orderAction(req, res, me, cookie, shopId, oid, action) {
     }
     // Có chọn dòng → gửi subset; không dòng nào (form cũ) → bỏ lines = seller gửi TRỌN còn lại.
     if (lines.length) body.lines = lines;
+  } else if (action === 'mark-returned') {
+    // Bom hàng: checkbox "Nhập lại kho" (checked → restock; bỏ → hàng hỏng không nhập lại).
+    const f = await readFormAll(req);
+    body = { restock: f.get('restock') != null, reason: String(f.get('reason') ?? '').trim() };
   }
   const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/${action}`, { cookie, body });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}`);
@@ -2231,7 +2235,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/edit-paid$`).exec(p)) && req.method === 'POST') return orderEditPaidSubmit(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/edit-paid/step-up$`).exec(p)) && req.method === 'POST') return orderEditPaidStepUp(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/print$`).exec(p)) && req.method === 'GET') return orderPrint(res, me, cookie, m[1], m[2]);
-    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/(confirm|ship|cancel|deliver|mark-paid)$`).exec(p)) && req.method === 'POST') return orderAction(req, res, me, cookie, m[1], m[2], m[3]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/(confirm|ship|cancel|deliver|mark-paid|mark-returned)$`).exec(p)) && req.method === 'POST') return orderAction(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr$`).exec(p)) && req.method === 'POST') return markPaidQrConfirm(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr/step-up$`).exec(p)) && req.method === 'POST') return markPaidQrStepUp(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/refund$`).exec(p)) && req.method === 'POST') return refundConfirm(req, res, me, cookie, m[1], m[2]);

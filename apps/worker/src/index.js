@@ -859,6 +859,80 @@ async function sweepLoyaltyEarn() {
   return { earned: total };
 }
 
+// ── sweep: THU HỒI ĐIỂM khi đơn HUỶ/HOÀN/TRẢ (0086) ──────────────────────────
+// Đơn về TERMINAL (cancelled/refunded/returned = huỷ / hoàn toàn bộ / trả toàn bộ):
+//   (A) HOÀN điểm ĐÃ ĐỔI (reversal +): trả lại số điểm khách tiêu trên đơn — ĐỘC LẬP paid_at
+//       nên bắt cả đơn CHƯA-thanh-toán bị huỷ mà đã đổi điểm (không để khách mất điểm oan).
+//   (B) THU HỒI điểm ĐÃ TÍCH (clawback −): claw TOÀN BỘ điểm đã tích cho đơn (chính xác vì
+//       terminal = cả đơn mất) — CÓ THỂ đẩy số dư ÂM = NỢ điểm (earn tương lai bù; redeem
+//       đọc balance ≥0 nên không tiêu vào nợ; hiển thị GREATEST(0,·)). Vesting (tích chậm N
+//       ngày) đã chặn phần lớn: đơn hoàn TRONG cửa sổ CHƯA tích → không cần clawback.
+// Idempotent per-order: UNIQUE reversal_once/clawback_once + INSERT ON CONFLICT RETURNING (một
+// sweep DUY NHẤT, không double-clawback). KHÔNG prorate: partial-refund (status còn 'delivered')
+// KHÔNG đụng điểm ở v1. Nuốt mọi lỗi, không throw ra setInterval.
+async function sweepLoyaltyClawback() {
+  if (!loyaltyDb) return { reversed: 0, clawed: 0 };
+  let reversed = 0, clawed = 0;
+  const client = await loyaltyDb.connect();
+  const bumpBalance = (shopId, cid, delta) => client.query(
+    `INSERT INTO loyalty_balances (shop_id, customer_id, balance_points) VALUES ($1, $2, $3)
+     ON CONFLICT (shop_id, customer_id)
+     DO UPDATE SET balance_points = loyalty_balances.balance_points + $3, updated_at = now()`, [shopId, cid, delta]);
+  try {
+    // (A) Hoàn điểm đã đổi.
+    for (let round = 0; round < 20; round++) {
+      await client.query('BEGIN');
+      const rows = (await client.query(
+        `SELECT o.id, o.shop_id, o.customer_id, o.points_redeemed
+           FROM orders o
+          WHERE o.status IN ('cancelled','refunded','returned')
+            AND o.customer_id IS NOT NULL AND o.points_redeemed > 0
+            AND NOT EXISTS (SELECT 1 FROM loyalty_ledger l
+                             WHERE l.shop_id = o.shop_id AND l.order_id = o.id AND l.kind = 'reversal')
+          ORDER BY o.id LIMIT 500`)).rows;
+      if (rows.length === 0) { await client.query('COMMIT'); break; }
+      for (const r of rows) {
+        const pts = Number(r.points_redeemed);
+        const ins = await client.query(
+          `INSERT INTO loyalty_ledger (shop_id, customer_id, kind, delta, order_id, reason)
+           VALUES ($1, $2, 'reversal', $3, $4, 'Hoàn điểm đơn huỷ/hoàn') ON CONFLICT DO NOTHING RETURNING id`,
+          [r.shop_id, r.customer_id, pts, r.id]);
+        if (ins.rowCount === 1) { await bumpBalance(r.shop_id, r.customer_id, pts); reversed++; }
+      }
+      await client.query('COMMIT');
+      if (rows.length < 500) break;
+    }
+    // (B) Thu hồi điểm đã tích (full clawback → có thể âm = nợ).
+    for (let round = 0; round < 20; round++) {
+      await client.query('BEGIN');
+      const rows = (await client.query(
+        `SELECT o.id, o.shop_id, o.customer_id, e.delta AS earned
+           FROM orders o
+           JOIN loyalty_ledger e ON e.shop_id = o.shop_id AND e.order_id = o.id AND e.kind = 'earn'
+          WHERE o.status IN ('cancelled','refunded','returned')
+            AND NOT EXISTS (SELECT 1 FROM loyalty_ledger l
+                             WHERE l.shop_id = o.shop_id AND l.order_id = o.id AND l.kind = 'clawback')
+          ORDER BY o.id LIMIT 500`)).rows;
+      if (rows.length === 0) { await client.query('COMMIT'); break; }
+      for (const r of rows) {
+        const earned = Number(r.earned);
+        const ins = await client.query(
+          `INSERT INTO loyalty_ledger (shop_id, customer_id, kind, delta, order_id, reason)
+           VALUES ($1, $2, 'clawback', $3, $4, 'Thu hồi điểm đơn huỷ/hoàn') ON CONFLICT DO NOTHING RETURNING id`,
+          [r.shop_id, r.customer_id, -earned, r.id]);
+        if (ins.rowCount === 1) { await bumpBalance(r.shop_id, r.customer_id, -earned); clawed++; }
+      }
+      await client.query('COMMIT');
+      if (rows.length < 500) break;
+    }
+    if (reversed || clawed) log('info', 'loyalty_clawback_sweep', { reversed, clawed });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    log('error', 'loyalty_clawback_sweep_error', { message: e.message });
+  } finally { client.release(); }
+  return { reversed, clawed };
+}
+
 // ── sweep: CẢNH BÁO ĐƯỜNG TIỀN + VẬN HÀNH ────────────────────────────────────
 // Đẩy cảnh báo tới ALERT_WEBHOOK_URL (webhook chung — Slack/Discord/Mattermost nhận {text};
 // Telegram/Zalo qua cầu nối) khi: (1) giao dịch tiền CHƯA KHỚP tồn đọng (tiền về, chưa vào
@@ -1112,6 +1186,7 @@ const trackingTimer = (expiryDb && TRACKING_ON) ? setInterval(sweepTracking, TRA
 const piiTimer = expiryDb ? setInterval(sweepPiiRetention, PII_SWEEP_MS) : null;
 const staleTimer = (expiryDb && TELEGRAM_ON) ? setInterval(sweepStaleOrders, STALE_SWEEP_MS) : null;
 const loyaltyEarnTimer = loyaltyDb ? setInterval(sweepLoyaltyEarn, LOYALTY_SWEEP_MS) : null;
+const loyaltyClawTimer = loyaltyDb ? setInterval(sweepLoyaltyClawback, LOYALTY_SWEEP_MS) : null;
 
 // ── HTTP: health + stats (cho e2e kiểm dead-letter) ──────────────────────────
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -1192,6 +1267,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(r));
   }
+  // Kích hoạt thu-hồi/hoàn điểm đơn terminal ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/loyalty-clawback-sweep' && req.method === 'POST') {
+    const r = await sweepLoyaltyClawback();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   // Kích hoạt quét cảnh báo đường tiền ngay (nội bộ — cho cron + e2e xác định).
   if (url.pathname === '/internal/alert-sweep' && req.method === 'POST') {
     const r = await sweepMoneyAlerts();
@@ -1225,6 +1306,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (piiTimer) clearInterval(piiTimer);
     if (staleTimer) clearInterval(staleTimer);
     if (loyaltyEarnTimer) clearInterval(loyaltyEarnTimer);
+    if (loyaltyClawTimer) clearInterval(loyaltyClawTimer);
     clearInterval(outboxGcTimer);
     clearInterval(alertTimer);
     if (tgLinkTimer) clearInterval(tgLinkTimer);

@@ -275,6 +275,42 @@ describe('Giá vốn (0081) — bí mật kinh doanh, không rò ra vai công kh
   });
 });
 
+describe('Nhập hàng (0085) — giá nhập + NCC là bí mật KD, CHỈ app_rw thấy', () => {
+  const PURCHASING = ['suppliers', 'purchase_orders', 'purchase_order_lines', 'stocktakes', 'stocktake_lines'];
+
+  test('MỌI vai login app_* (trừ app_rw) có ZERO quyền trên 5 bảng nhập hàng', async () => {
+    // Bất biến DURABLE: giá nhập/thông tin NCC nhạy như variant_costs (0081). Không rò ra
+    // BẤT KỲ vai công khai nào — kể cả vai thêm về sau. Kiểm ĐỘNG mọi vai login app_* (trừ
+    // app_rw người ghi hợp lệ; app_owner là chủ DDL nên has_privilege luôn true — loại trừ).
+    const roles = (await owner.query(
+      `SELECT rolname FROM pg_roles WHERE rolcanlogin AND rolname LIKE 'app\\_%'
+         AND rolname NOT IN ('app_rw', 'app_owner') ORDER BY rolname`)).rows.map((r) => r.rolname);
+    assert.ok(roles.length >= 3, `quá ít vai login để kiểm (${roles.length}) — query sai?`);
+    const leaks = [];
+    for (const role of roles) {
+      for (const table of PURCHASING) {
+        for (const priv of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
+          const { rows } = await owner.query(`SELECT has_table_privilege($1, $2, $3) AS ok`, [role, table, priv]);
+          if (rows[0].ok) leaks.push(`${role} có ${priv} trên ${table}`);
+        }
+      }
+    }
+    assert.deepEqual(leaks, [], 'vai công khai chạm được bí mật nhập hàng → siết grant trong migration mới');
+  });
+
+  test('app_rw có đủ CRUD trên 5 bảng nhập hàng (giá vốn hiện hành + chứng từ sửa-trước-chốt)', async () => {
+    for (const table of PURCHASING) {
+      const { rows } = await owner.query(`
+        SELECT has_table_privilege('app_rw','${table}','SELECT') AS sel,
+               has_table_privilege('app_rw','${table}','INSERT') AS ins,
+               has_table_privilege('app_rw','${table}','UPDATE') AS upd,
+               has_table_privilege('app_rw','${table}','DELETE') AS del
+      `);
+      assert.deepEqual(rows[0], { sel: true, ins: true, upd: true, del: true }, `${table}: app_rw phải đủ CRUD`);
+    }
+  });
+});
+
 describe('Kiểu dữ liệu tiền tệ', () => {
   test('mọi cột tiền là bigint, không phải float/numeric', async () => {
     const { rows } = await owner.query(`

@@ -147,6 +147,7 @@ const DOMAIN_ROLES = new Set(['owner']); // tên miền: CHỈ chủ shop (selle
 const PAYMENT_ROLES = new Set(['owner']); // thanh toán: CHỈ chủ shop (seller cưỡng chế 'payment.write' + step-up)
 const SHIPPING_ROLES = new Set(['owner', 'admin']); // vận chuyển: owner/admin (seller cưỡng chế 'shop.write' + step-up)
 const AUDIT_ROLES = new Set(['owner', 'admin']); // nhật ký hoạt động: owner/admin (seller cưỡng chế 'audit.read')
+const INVENTORY_ROLES = new Set(['owner', 'admin']); // nhập hàng/NCC/kiểm kê: owner/admin (seller cưỡng chế 'inventory.manage' — giá nhập/NCC là bí mật KD)
 const ROLE_LABEL = { owner: 'Chủ shop', admin: 'Quản trị', catalog_manager: 'Quản lý sản phẩm', order_manager: 'Quản lý đơn' };
 const INVITE_ROLES = ['admin', 'catalog_manager', 'order_manager']; // KHÔNG mời owner qua đây
 const PSTATUS = { draft: 'Nháp', active: 'Đang bán', archived: 'Lưu trữ' };
@@ -187,6 +188,8 @@ const IC_STAR = ic('<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1
 const IC_HEART = ic('<circle cx="12" cy="8" r="3.5"/><path d="M5 20v-1.5a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6V20"/>');
 const IC_LOG = ic('<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 11h7M9 15h7M9 19h4"/>');
 const IC_COIN = ic('<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6"/>');
+const IC_WAREHOUSE = ic('<path d="M3 21V8l9-5 9 5v13"/><path d="M3 21h18"/><rect x="7" y="13" width="10" height="8"/><path d="M7 17h10"/>');
+const IC_CLIP = ic('<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4a1.5 1.5 0 0 1 3 0h0a1.5 1.5 0 0 1-3 0z" fill="currentColor"/><path d="M9 11h6M9 15h6"/>');
 
 // Điều hướng dọc trong 1 shop (sidebar) — chỉ hiện mục vai trò được phép.
 function sideNav(ctx) {
@@ -200,6 +203,8 @@ function sideNav(ctx) {
           + it(`${base}/cod`, 'Đối soát COD', IC_COIN, ctx.active === 'cod', ORDER_ROLES.has(ctx.role))
           + it(`${base}/products`, 'Sản phẩm', IC_BOX, ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/categories`, 'Danh mục', IC_TAG, ctx.active === 'categories', CATALOG_ROLES.has(ctx.role))
+          + it(`${base}/purchasing`, 'Nhập hàng', IC_WAREHOUSE, ctx.active === 'purchasing', INVENTORY_ROLES.has(ctx.role))
+          + it(`${base}/stocktakes`, 'Kiểm kê', IC_CLIP, ctx.active === 'stocktakes', INVENTORY_ROLES.has(ctx.role))
           + it(`${base}/promotions`, 'Flash sale', IC_TREND, ctx.active === 'promotions', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/coupons`, 'Mã giảm giá', IC_TICKET, ctx.active === 'coupons', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/reviews`, 'Đánh giá', IC_STAR, ctx.active === 'reviews', CONTENT_ROLES.has(ctx.role))
@@ -2855,6 +2860,296 @@ export function renderCodReconcile(ctx, shopId, data, isOwner, done, err) {
         : '<p class="muted">Chưa có phiếu đối soát nào.</p>'}
     </div>
     <a class="btn alt" href="${base}/overview">← Về tổng quan</a>`);
+}
+
+// ── NHẬP HÀNG (0085): NCC + phiếu nhập + kiểm kê + báo cáo nhập ────────────────
+const PO_STATUS = { draft: 'Nháp', ordered: 'Đã đặt', received: 'Đã nhận', cancelled: 'Đã huỷ' };
+const PO_BADGE = { draft: 'draft', ordered: 'confirmed', received: 'delivered', cancelled: 'cancelled' };
+const ST_STATUS = { counting: 'Đang đếm', completed: 'Đã chốt', cancelled: 'Đã huỷ' };
+const ST_BADGE = { counting: 'draft', completed: 'delivered', cancelled: 'cancelled' };
+// Thanh điều hướng phụ dùng chung cho khu Kho.
+function invTabs(shopId, active) {
+  const base = `/shops/${esc(shopId)}`;
+  const t = (href, label, on) => `<a class="btn ${on ? '' : 'alt '}sm" href="${href}">${label}</a>`;
+  return `<div class="actions" style="flex-wrap:wrap;margin-bottom:16px">
+    ${t(`${base}/purchasing`, 'Phiếu nhập', active === 'po')}
+    ${t(`${base}/suppliers`, 'Nhà cung cấp', active === 'suppliers')}
+    ${t(`${base}/stocktakes`, 'Kiểm kê', active === 'stocktakes')}
+    ${t(`${base}/purchasing/report`, 'Báo cáo nhập', active === 'report')}
+  </div>`;
+}
+
+// Danh sách phiếu nhập.
+export function renderPurchasing(ctx, shopId, data, filter) {
+  const base = `/shops/${esc(shopId)}`;
+  const pos = data.purchase_orders ?? [];
+  const cur = filter?.status ?? '';
+  const tab = (val, label) => `<a class="btn ${cur === val ? '' : 'alt '}sm" href="${base}/purchasing${val ? `?status=${val}` : ''}">${label}</a>`;
+  const rows = pos.map((o) => `<tr>
+    <td><a href="${base}/purchasing/${esc(o.id)}">#${esc(o.po_number)}</a></td>
+    <td>${badge(PO_BADGE[o.status], PO_STATUS[o.status] ?? o.status)}</td>
+    <td>${esc(o.supplier_name)}</td>
+    <td class="right num">${esc(o.line_count)}</td>
+    <td class="right num"><strong>${money(o.subtotal_vnd)}</strong></td>
+    <td class="muted">${o.received_at ? dt(o.received_at) : dt(o.created_at)}</td></tr>`).join('');
+  return layout('Phiếu nhập', ctx, `${invTabs(shopId, 'po')}
+    <div class="toolbar"><h1 style="margin:0">Phiếu nhập hàng</h1>
+      <a class="btn" href="${base}/purchasing/new">+ Tạo phiếu nhập</a></div>
+    <div class="actions" style="flex-wrap:wrap;margin-bottom:12px">${tab('', 'Tất cả')}${tab('draft', 'Nháp')}${tab('ordered', 'Đã đặt')}${tab('received', 'Đã nhận')}${tab('cancelled', 'Đã huỷ')}</div>
+    <div class="card">${pos.length ? `<table><thead><tr><th>Phiếu</th><th>Trạng thái</th><th>Nhà cung cấp</th><th class="right">Dòng</th><th class="right">Trị giá</th><th>Ngày</th></tr></thead><tbody>${rows}</tbody></table>${data.truncated ? '<p class="muted" style="margin:12px 0 0">⚠ Hiện 200 phiếu gần nhất.</p>' : ''}` : '<p class="muted" style="margin:0">Chưa có phiếu nhập nào. Tạo phiếu để nhập kho + cập nhật giá vốn.</p>'}</div>`);
+}
+
+// Nhà cung cấp: danh sách + form tạo/sửa (inline).
+export function renderSuppliers(ctx, shopId, suppliers, opts = {}) {
+  const base = `/shops/${esc(shopId)}`;
+  const ed = opts.editing; // đối tượng NCC đang sửa (nếu có)
+  const list = suppliers ?? [];
+  const rows = list.map((s) => `<tr${s.is_active ? '' : ' style="opacity:.55"'}>
+    <td><a href="${base}/suppliers?edit=${esc(s.id)}">${esc(s.name)}</a>${s.is_active ? '' : ' <span class="badge archived">Đã ẩn</span>'}</td>
+    <td class="muted">${esc(s.phone ?? '') || '—'}</td>
+    <td class="muted">${esc(s.contact ?? '') || '—'}</td>
+    <td class="muted">${esc(s.email ?? '') || '—'}</td></tr>`).join('');
+  const f = (k) => esc(ed?.[k] ?? '');
+  const formCard = `<div class="card"><h2 style="margin-top:0">${ed ? `Sửa: ${esc(ed.name)}` : 'Thêm nhà cung cấp'}</h2>
+    <form method="POST" action="${base}/suppliers${ed ? `/${esc(ed.id)}` : ''}">
+      <div class="grid2">
+        <div><label>Tên NCC *</label><input name="name" required maxlength="200" value="${f('name')}"></div>
+        <div><label>SĐT</label><input name="phone" maxlength="40" value="${f('phone')}"></div>
+      </div>
+      <div class="grid2">
+        <div><label>Người liên hệ</label><input name="contact" maxlength="200" value="${f('contact')}"></div>
+        <div><label>Email</label><input name="email" type="email" maxlength="200" value="${f('email')}"></div>
+      </div>
+      <label>Địa chỉ</label><input name="address" maxlength="500" value="${f('address')}">
+      <label>Ghi chú</label><input name="note" maxlength="1000" value="${f('note')}">
+      ${ed ? `<label style="display:flex;gap:8px;align-items:center;font-weight:500;margin-top:8px"><input type="checkbox" name="is_active" value="1"${ed.is_active ? ' checked' : ''} style="width:auto"> Đang hoạt động (bỏ tick = ẩn khỏi danh sách chọn)</label>` : ''}
+      <div class="actions" style="margin-top:12px"><button class="btn" type="submit">${ed ? 'Lưu' : 'Thêm NCC'}</button>${ed ? `<a class="btn alt" href="${base}/suppliers">Huỷ</a>` : ''}</div>
+    </form></div>`;
+  return layout('Nhà cung cấp', ctx, `${invTabs(shopId, 'suppliers')}
+    <h1>Nhà cung cấp</h1>
+    ${opts.err ? `<div class="err">${esc(opts.err)}</div>` : ''}
+    ${opts.notice ? `<div class="notice success">${esc(opts.notice)}</div>` : ''}
+    ${formCard}
+    <div class="card"><div class="toolbar"><h2 style="margin:0">Danh sách</h2>
+      <a class="btn alt sm" href="${base}/suppliers${opts.showInactive ? '' : '?all=1'}">${opts.showInactive ? 'Chỉ NCC hoạt động' : 'Hiện cả NCC đã ẩn'}</a></div>
+      ${list.length ? `<table><thead><tr><th>Tên</th><th>SĐT</th><th>Liên hệ</th><th>Email</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted" style="margin:0">Chưa có nhà cung cấp nào.</p>'}</div>`);
+}
+
+// Slot chọn biến thể + SL + giá nhập (dùng chung New/Edit phiếu).
+function poLineSlot(base, i, byProduct, chosen, required) {
+  const options = (sel) => [...byProduct.entries()].map(([pt, vs]) => `<optgroup label="${esc(pt)}">${vs.map((v) =>
+    `<option value="${esc(v.id)}"${sel === v.id ? ' selected' : ''}>${esc(v.variant_title ? `${pt} — ${v.variant_title}` : pt)}${v.sku ? ` [${esc(v.sku)}]` : ''} · tồn ${esc(v.on_hand)}${v.cost_vnd != null ? ` · vốn ${money(v.cost_vnd)}` : ''}</option>`).join('')}</optgroup>`).join('');
+  const c = chosen[i];
+  return `<div class="grid2" style="grid-template-columns:1fr 80px 130px;align-items:end;gap:0 10px">
+    <div><label>Hàng ${i + 1}${required ? ' *' : ''}</label>
+      <select name="variant_id"${required ? ' required' : ''}>
+        <option value="">— ${required ? 'Chọn hàng' : 'Bỏ trống'} —</option>${options(c?.variant_id)}
+      </select></div>
+    <div><label>SL</label><input name="qty" type="number" min="1" max="100000" value="${c ? esc(c.qty) : ''}" inputmode="numeric"></div>
+    <div><label>Giá nhập (đ)</label><input name="unit_cost" type="number" min="0" value="${c ? esc(c.unit_cost_vnd) : ''}" inputmode="numeric" placeholder="0"></div>
+  </div>`;
+}
+
+function poVariantsByProduct(variants) {
+  const byProduct = new Map();
+  for (const v of variants ?? []) { if (!byProduct.has(v.product_title)) byProduct.set(v.product_title, []); byProduct.get(v.product_title).push(v); }
+  return byProduct;
+}
+
+// Tạo phiếu nhập mới.
+export function renderPurchaseOrderNew(ctx, shopId, variants, suppliers, err, form, picker) {
+  const base = `/shops/${esc(shopId)}`;
+  const pq = picker?.q ?? '';
+  const byProduct = poVariantsByProduct(variants);
+  const chosen = Array.isArray(form?.lines) ? form.lines : [];
+  const activeSuppliers = (suppliers ?? []).filter((s) => s.is_active);
+  const supOptions = activeSuppliers.map((s) => `<option value="${esc(s.id)}"${form?.supplier_id === s.id ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
+  const nSlots = Math.max(10, chosen.length + 2);
+  const slots = Array.from({ length: nSlots }, (_, i) => poLineSlot(base, i, byProduct, chosen, i === 0)).join('');
+  return layout('Tạo phiếu nhập', ctx, `${invTabs(shopId, 'po')}
+    <a class="muted" href="${base}/purchasing">← Danh sách phiếu</a>
+    <h1>Tạo phiếu nhập</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${activeSuppliers.length === 0 ? `<div class="notice warn">Chưa có nhà cung cấp đang hoạt động. <a href="${base}/suppliers">Thêm nhà cung cấp</a> trước.</div>` : ''}
+    <div class="card"><form method="GET" action="${base}/purchasing/new" class="actions" style="align-items:end;flex-wrap:wrap">
+      <div style="flex:1 1 220px"><label>Tìm hàng cho ô chọn (tên / SKU — không dấu)</label>
+        <input name="q" value="${esc(pq)}" maxlength="100" placeholder="ao thun, SKU…"></div>
+      <button class="btn alt sm" type="submit">Lọc danh sách</button>
+      ${pq ? `<a class="muted" href="${base}/purchasing/new" style="align-self:center">Xoá lọc</a>` : ''}
+      ${picker?.truncated ? '<p class="muted" style="flex-basis:100%;margin:6px 0 0">⚠ Hiện 500 biến thể đầu — tìm để thu hẹp.</p>' : ''}
+    </form></div>
+    <form method="POST" action="${base}/purchasing/new">
+      <input type="hidden" name="picker_q" value="${esc(pq)}">
+      <div class="card"><h2 style="margin-top:0">Nhà cung cấp</h2>
+        <select name="supplier_id" required><option value="">— Chọn nhà cung cấp —</option>${supOptions}</select>
+        <label>Ghi chú phiếu (tuỳ chọn)</label><input name="note" maxlength="1000" value="${esc(form?.note ?? '')}">
+      </div>
+      <div class="card"><h2 style="margin-top:0">Hàng nhập${pq ? ` <span class="muted" style="font-weight:400;font-size:.85rem">(lọc “${esc(pq)}”)</span>` : ''}</h2>
+        <p class="muted" style="margin-top:-4px">Giá nhập là giá/đơn vị của lô này — dùng để tính giá vốn bình quân. 0 = hàng tặng.</p>
+        ${slots}</div>
+      <button class="btn" type="submit"${activeSuppliers.length === 0 ? ' disabled' : ''}>Tạo phiếu (nháp)</button>
+    </form>`);
+}
+
+// Sửa phiếu nhập (draft/ordered).
+export function renderPurchaseOrderEdit(ctx, shopId, po, variants, suppliers, err, picker) {
+  const base = `/shops/${esc(shopId)}`;
+  const pq = picker?.q ?? '';
+  const byProduct = poVariantsByProduct(variants);
+  const chosen = (po.lines ?? []).map((l) => ({ variant_id: l.variant_id, qty: l.qty, unit_cost_vnd: l.unit_cost_vnd }));
+  const activeSuppliers = (suppliers ?? []).filter((s) => s.is_active || s.id === po.supplier_id);
+  const supOptions = activeSuppliers.map((s) => `<option value="${esc(s.id)}"${po.supplier_id === s.id ? ' selected' : ''}>${esc(s.name)}${s.is_active ? '' : ' (đã ẩn)'}</option>`).join('');
+  const nSlots = Math.max(chosen.length + 3, 8);
+  const slots = Array.from({ length: nSlots }, (_, i) => poLineSlot(base, i, byProduct, chosen, i === 0)).join('');
+  return layout('Sửa phiếu nhập', ctx, `${invTabs(shopId, 'po')}
+    <a class="muted" href="${base}/purchasing/${esc(po.id)}">← Phiếu #${esc(po.po_number)}</a>
+    <h1>Sửa phiếu nhập #${esc(po.po_number)}</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <div class="card"><form method="GET" action="${base}/purchasing/${esc(po.id)}/edit" class="actions" style="align-items:end;flex-wrap:wrap">
+      <div style="flex:1 1 220px"><label>Tìm hàng cho ô chọn</label><input name="q" value="${esc(pq)}" maxlength="100" placeholder="tên / SKU"></div>
+      <button class="btn alt sm" type="submit">Lọc</button>${pq ? `<a class="muted" href="${base}/purchasing/${esc(po.id)}/edit" style="align-self:center">Xoá lọc</a>` : ''}
+    </form></div>
+    <form method="POST" action="${base}/purchasing/${esc(po.id)}/edit">
+      <input type="hidden" name="picker_q" value="${esc(pq)}">
+      <div class="card"><h2 style="margin-top:0">Nhà cung cấp</h2>
+        <select name="supplier_id" required>${supOptions}</select>
+        <label>Ghi chú</label><input name="note" maxlength="1000" value="${esc(po.note ?? '')}"></div>
+      <div class="card"><h2 style="margin-top:0">Hàng nhập (thay toàn bộ)</h2>${slots}</div>
+      <button class="btn" type="submit">Lưu phiếu</button>
+    </form>`);
+}
+
+// Chi tiết phiếu nhập + hành động theo trạng thái.
+export function renderPurchaseOrderDetail(ctx, shopId, po, notice, err) {
+  const base = `/shops/${esc(shopId)}`;
+  const lineRows = (po.lines ?? []).map((l) => `<tr>
+    <td>${esc(l.title_snapshot ?? '')}${l.sku_snapshot ? ` <span class="muted">[${esc(l.sku_snapshot)}]</span>` : ''}</td>
+    <td class="right num">${esc(l.qty)}</td>
+    <td class="right num">${money(l.unit_cost_vnd)}</td>
+    <td class="right num"><strong>${money(l.qty * l.unit_cost_vnd)}</strong></td>
+    <td class="right num muted">${esc(l.on_hand)}</td></tr>`).join('');
+  const canEdit = po.status === 'draft' || po.status === 'ordered';
+  const actions = [];
+  if (po.status === 'draft') actions.push(`<form method="POST" action="${base}/purchasing/${esc(po.id)}/order" style="display:inline"><button class="btn alt" type="submit">Đánh dấu đã đặt</button></form>`);
+  if (canEdit) actions.push(`<a class="btn" href="${base}/purchasing/${esc(po.id)}/receive">Nhận hàng →</a>`);
+  if (canEdit) actions.push(`<a class="btn alt" href="${base}/purchasing/${esc(po.id)}/edit">Sửa phiếu</a>`);
+  if (canEdit) actions.push(`<form method="POST" action="${base}/purchasing/${esc(po.id)}/cancel" style="display:inline"><button class="btn warn" type="submit">Huỷ phiếu</button></form>`);
+  return layout(`Phiếu #${po.po_number}`, ctx, `${invTabs(shopId, 'po')}
+    <a class="muted" href="${base}/purchasing">← Danh sách phiếu</a>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="notice success">${esc(notice)}</div>` : ''}
+    <div class="toolbar"><h1 style="margin:0">Phiếu nhập #${esc(po.po_number)} ${badge(PO_BADGE[po.status], PO_STATUS[po.status] ?? po.status)}</h1></div>
+    <div class="card"><p style="margin:0"><strong>Nhà cung cấp:</strong> ${esc(po.supplier_name)}${po.supplier_active === false ? ' <span class="badge archived">đã ẩn</span>' : ''}</p>
+      ${po.note ? `<p class="muted" style="margin:6px 0 0">Ghi chú: ${esc(po.note)}</p>` : ''}
+      ${po.received_at ? `<p class="muted" style="margin:6px 0 0">Đã nhận: ${dt(po.received_at)}</p>` : (po.ordered_at ? `<p class="muted" style="margin:6px 0 0">Đã đặt: ${dt(po.ordered_at)}</p>` : '')}</div>
+    <div class="card"><h2 style="margin-top:0">Hàng${po.status === 'received' ? '' : ' dự kiến'}</h2>
+      ${(po.lines ?? []).length ? `<table><thead><tr><th>Hàng</th><th class="right">SL</th><th class="right">Giá nhập</th><th class="right">Thành tiền</th><th class="right">Tồn hiện tại</th></tr></thead>
+        <tbody>${lineRows}</tbody><tfoot><tr><td colspan="3" class="right"><strong>Tổng trị giá</strong></td><td class="right num"><strong>${money(po.subtotal_vnd)}</strong></td><td></td></tr></tfoot></table>`
+        : '<p class="muted" style="margin:0">Phiếu chưa có dòng hàng nào.</p>'}</div>
+    ${actions.length ? `<div class="actions" style="flex-wrap:wrap">${actions.join('')}</div>` : ''}`);
+}
+
+// Trang XÁC NHẬN nhận hàng (preview: hàng + SL + giá nhập → tồn sẽ tăng). Không hoàn tác.
+export function renderPurchaseOrderReceive(ctx, shopId, po) {
+  const base = `/shops/${esc(shopId)}`;
+  const rows = (po.lines ?? []).map((l) => `<tr>
+    <td>${esc(l.title_snapshot ?? '')}${l.sku_snapshot ? ` <span class="muted">[${esc(l.sku_snapshot)}]</span>` : ''}</td>
+    <td class="right num muted">${esc(l.on_hand)}</td>
+    <td class="right num">+${esc(l.qty)}</td>
+    <td class="right num"><strong>${esc(l.on_hand + l.qty)}</strong></td>
+    <td class="right num">${money(l.unit_cost_vnd)}</td></tr>`).join('');
+  return layout(`Nhận phiếu #${po.po_number}`, ctx, `${invTabs(shopId, 'po')}
+    <a class="muted" href="${base}/purchasing/${esc(po.id)}">← Phiếu #${esc(po.po_number)}</a>
+    <h1>Xác nhận nhận hàng — phiếu #${esc(po.po_number)}</h1>
+    <div class="notice warn">Nhận hàng sẽ <strong>cộng tồn kho</strong> và <strong>cập nhật giá vốn bình quân</strong> cho từng biến thể. Thao tác <strong>không hoàn tác</strong> (điều chỉnh sai dùng Kiểm kê).</div>
+    <div class="card"><table><thead><tr><th>Hàng</th><th class="right">Tồn nay</th><th class="right">Nhận</th><th class="right">Tồn sau</th><th class="right">Giá nhập</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      <p style="margin:12px 0 0" class="right"><strong>Tổng trị giá nhập: ${money(po.subtotal_vnd)}</strong></p></div>
+    <form method="POST" action="${base}/purchasing/${esc(po.id)}/receive">
+      <div class="actions"><button class="btn" type="submit">Xác nhận nhận hàng</button><a class="btn alt" href="${base}/purchasing/${esc(po.id)}">Quay lại</a></div>
+    </form>`);
+}
+
+// Báo cáo nhập hàng theo kỳ.
+export function renderPurchasingReport(ctx, shopId, data, opts = {}) {
+  const base = `/shops/${esc(shopId)}`;
+  const r = data.range ?? {};
+  const supRows = (data.by_supplier ?? []).map((s) => `<tr><td>${esc(s.supplier_name)}</td><td class="right num">${esc(s.po_count)}</td><td class="right num"><strong>${money(s.value_vnd)}</strong></td></tr>`).join('');
+  const prodRows = (data.by_product ?? []).map((p) => `<tr><td>${esc(p.title ?? '')}${p.sku ? ` <span class="muted">[${esc(p.sku)}]</span>` : ''}</td><td class="right num">${esc(p.qty)}</td><td class="right num">${money(p.value_vnd)}</td></tr>`).join('');
+  return layout('Báo cáo nhập', ctx, `${invTabs(shopId, 'report')}
+    <h1>Báo cáo nhập hàng</h1>
+    <div class="card"><form method="GET" action="${base}/purchasing/report" class="actions" style="align-items:end;flex-wrap:wrap">
+      <div><label>Từ ngày</label><input type="date" name="from" value="${esc(r.from ?? '')}"></div>
+      <div><label>Đến ngày</label><input type="date" name="to" value="${esc(r.to ?? '')}"></div>
+      <button class="btn alt sm" type="submit">Xem</button></form></div>
+    ${opts.err ? `<div class="err">${esc(opts.err)}</div>` : ''}
+    <div class="card"><h2 style="margin-top:0">Tổng kỳ ${esc(r.from ?? '')} → ${esc(r.to ?? '')}</h2>
+      <p style="margin:0;font-size:1.1rem">Đã nhận <strong>${esc(data.totals?.po_count ?? 0)}</strong> phiếu · trị giá <strong>${money(data.totals?.value_vnd ?? 0)}</strong></p></div>
+    <div class="card"><h2 style="margin-top:0">Theo nhà cung cấp</h2>
+      ${supRows ? `<table><thead><tr><th>Nhà cung cấp</th><th class="right">Phiếu</th><th class="right">Trị giá</th></tr></thead><tbody>${supRows}</tbody></table>` : '<p class="muted" style="margin:0">Chưa có phiếu nhận nào trong kỳ.</p>'}</div>
+    <div class="card"><h2 style="margin-top:0">Theo hàng${data.products_truncated ? ' <span class="muted" style="font-weight:400;font-size:.85rem">(top 100)</span>' : ''}</h2>
+      ${prodRows ? `<table><thead><tr><th>Hàng</th><th class="right">SL nhập</th><th class="right">Trị giá</th></tr></thead><tbody>${prodRows}</tbody></table>` : '<p class="muted" style="margin:0">—</p>'}</div>`);
+}
+
+// Kiểm kê: danh sách + form tạo phiên.
+export function renderStocktakes(ctx, shopId, list, opts = {}) {
+  const base = `/shops/${esc(shopId)}`;
+  const rows = (list ?? []).map((s) => `<tr>
+    <td><a href="${base}/stocktakes/${esc(s.id)}">#${esc(s.stocktake_number)}</a></td>
+    <td>${badge(ST_BADGE[s.status], ST_STATUS[s.status] ?? s.status)}</td>
+    <td class="right num">${esc(s.counted_count)}/${esc(s.line_count)}</td>
+    <td class="muted">${esc(s.note ?? '') || '—'}</td>
+    <td class="muted">${s.completed_at ? dt(s.completed_at) : dt(s.created_at)}</td></tr>`).join('');
+  return layout('Kiểm kê', ctx, `${invTabs(shopId, 'stocktakes')}
+    <h1>Kiểm kê kho</h1>
+    ${opts.err ? `<div class="err">${esc(opts.err)}</div>` : ''}
+    ${opts.notice ? `<div class="notice success">${esc(opts.notice)}</div>` : ''}
+    <div class="card"><h2 style="margin-top:0">Tạo phiên kiểm kê</h2>
+      <p class="muted" style="margin-top:-4px">Chụp tồn hệ thống lúc tạo, bạn đếm thực tế rồi chốt — chênh lệch tự điều chỉnh tồn (ghi sổ kho).</p>
+      <form method="POST" action="${base}/stocktakes">
+        <label>Ghi chú (tuỳ chọn)</label><input name="note" maxlength="1000" placeholder="Kiểm kê cuối tháng, kho A…">
+        <label style="display:flex;gap:8px;align-items:center;font-weight:500;margin-top:10px"><input type="radio" name="scope" value="all" checked style="width:auto"> Toàn bộ biến thể của shop (tối đa 500)</label>
+        <button class="btn" type="submit" style="margin-top:12px">Bắt đầu đếm</button>
+      </form></div>
+    <div class="card"><h2 style="margin-top:0">Các phiên</h2>
+      ${rows ? `<table><thead><tr><th>Phiên</th><th>Trạng thái</th><th class="right">Đã đếm</th><th>Ghi chú</th><th>Ngày</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted" style="margin:0">Chưa có phiên kiểm kê nào.</p>'}</div>`);
+}
+
+// Chi tiết + ghi số đếm cho một phiên kiểm kê.
+export function renderStocktakeDetail(ctx, shopId, st, notice, err) {
+  const base = `/shops/${esc(shopId)}`;
+  const counting = st.status === 'counting';
+  const lineRows = (st.lines ?? []).map((l) => {
+    const nameCell = `${esc(l.product_title ?? '')}${l.variant_title ? ` — ${esc(l.variant_title)}` : ''}${l.sku ? ` <span class="muted">[${esc(l.sku)}]</span>` : ''}`;
+    const diff = l.counted_qty == null ? null : Number(l.counted_qty) - Number(l.system_qty);
+    const diffCell = diff == null ? '<span class="muted">—</span>' : (diff === 0 ? '0' : `<span style="color:var(--${diff > 0 ? 'good' : 'bad'});font-weight:700">${diff > 0 ? '+' : ''}${esc(diff)}</span>`);
+    if (counting) {
+      return `<tr><td>${nameCell}</td><td class="right num">${counting ? esc(l.on_hand_now) : esc(l.system_qty)}</td>
+        <td style="width:110px"><input type="hidden" name="variant_id" value="${esc(l.variant_id)}"><input name="counted_qty" type="number" min="0" inputmode="numeric" value="${l.counted_qty == null ? '' : esc(l.counted_qty)}" style="margin:0" aria-label="Số đếm ${esc(l.sku ?? '')}"></td></tr>`;
+    }
+    return `<tr><td>${nameCell}</td><td class="right num">${esc(l.system_qty)}</td><td class="right num">${l.counted_qty == null ? '<span class="muted">chưa đếm</span>' : esc(l.counted_qty)}</td><td class="right">${diffCell}</td></tr>`;
+  }).join('');
+  const head = counting
+    ? '<tr><th>Hàng</th><th class="right">Tồn hệ thống</th><th>Số đếm thực tế</th></tr>'
+    : '<tr><th>Hàng</th><th class="right">Tồn (lúc chốt)</th><th class="right">Đã đếm</th><th class="right">Chênh</th></tr>';
+  const body = counting
+    ? `<form method="POST" action="${base}/stocktakes/${esc(st.id)}/count">
+        <div class="card"><table><thead>${head}</thead><tbody>${lineRows}</tbody></table></div>
+        <div class="actions" style="flex-wrap:wrap"><button class="btn alt" type="submit">Lưu số đếm</button></div>
+       </form>
+       <form method="POST" action="${base}/stocktakes/${esc(st.id)}/complete" style="margin-top:12px">
+        <div class="notice info">Chốt sẽ điều chỉnh tồn về số đã đếm (chỉ các dòng đã nhập số) + ghi sổ kho. Dòng chưa đếm giữ nguyên.</div>
+        <div class="actions"><button class="btn" type="submit">Chốt kiểm kê</button>
+          <button class="btn warn" type="submit" formaction="${base}/stocktakes/${esc(st.id)}/cancel">Huỷ phiên</button></div>
+       </form>`
+    : `<div class="card"><table><thead>${head}</thead><tbody>${lineRows}</tbody></table></div>`;
+  return layout(`Kiểm kê #${st.stocktake_number}`, ctx, `${invTabs(shopId, 'stocktakes')}
+    <a class="muted" href="${base}/stocktakes">← Danh sách kiểm kê</a>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="notice success">${esc(notice)}</div>` : ''}
+    <div class="toolbar"><h1 style="margin:0">Kiểm kê #${esc(st.stocktake_number)} ${badge(ST_BADGE[st.status], ST_STATUS[st.status] ?? st.status)}</h1></div>
+    ${st.note ? `<p class="muted" style="margin-top:-6px">${esc(st.note)}</p>` : ''}
+    ${body}`);
 }
 
 export function renderError(ctx, msg) {

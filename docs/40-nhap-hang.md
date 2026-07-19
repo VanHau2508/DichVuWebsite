@@ -133,6 +133,19 @@ on_hand-cũ-0→giá nhập; terminal 409×3; phiếu rỗng 400; purchasable g�
 kiểm kê snapshot→đếm→chốt adjust ledger + system_qty ghi đè, chặn counted<reserved 409, terminal
 409, scope=all; báo cáo nhập theo kỳ/NCC/SP; RBAC order_manager 403; IDOR chéo-shop 404.
 
+## Giao diện (seller-admin BFF, no-JS + CSP nghiêm)
+
+Nav thêm **"Nhập hàng"** + **"Kiểm kê"** (owner/admin — INVENTORY_ROLES; seller cưỡng chế
+`inventory.manage`, ẩn nav chỉ là mỹ quan). Khu Nhập hàng có thanh tab phụ (Phiếu nhập · Nhà
+cung cấp · Kiểm kê · Báo cáo). Trang: danh sách/chi tiết phiếu; form tạo/sửa phiếu (chọn NCC +
+slot biến thể/SL/giá nhập, tìm hàng `?q=` không dấu); **trang xác nhận nhận hàng** (preview
+tồn-nay → tồn-sau + cảnh báo không hoàn tác); NCC list + form tạo/sửa/ẩn; kiểm kê list + form
+đếm (ô số/dòng) + chốt/huỷ; báo cáo nhập. Mọi POST qua `sameOrigin` (CSRF); slot dùng
+`variant_id[]/qty[]/unit_cost[]` song song (getAll). 403 seller → trang lỗi rõ ràng.
+
+Test BFF: `admin-purchasing.e2e` 17 (nav, tạo NCC, tạo phiếu→nhận (tồn 5→15, vốn 50k), kiểm kê
+scope=all→đếm lệch→chốt (tồn 15→14, ledger adjust −1), RBAC order_manager 403, CSRF 403).
+
 ## Cắt v1 → v2
 
 Nhiều kho/địa điểm (hiện MỘT kho) · nhận **một phần** phiếu (hiện nhận trọn) · công nợ NCC/thanh

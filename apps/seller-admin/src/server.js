@@ -1501,6 +1501,199 @@ async function reportsExportStepUp(req, res, me, cookie, shopId) {
   return doReportExport(res, me, cookie, shopId, fields);
 }
 
+// ── NHẬP HÀNG (0085) — owner/admin (seller cưỡng chế 'inventory.manage') ──────
+// Trang lỗi thống nhất khi seller trả 403 (order/catalog_manager gõ tay URL — nav vốn ẩn).
+function invForbidden(r) { return r.status === 403; }
+const invDenyMsg = 'Chỉ chủ shop / quản trị viên dùng được khu Nhập hàng (giá nhập, nhà cung cấp là bí mật kinh doanh).';
+const STOCKTAKE_NOTICE = { counted: 'Đã lưu số đếm.', completed: 'Đã chốt kiểm kê — tồn kho đã điều chỉnh theo số đếm.' };
+
+async function purchasingPage(res, me, cookie, shopId, q) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'purchasing');
+  const status = ['draft', 'ordered', 'received', 'cancelled'].includes(q.get('status')) ? q.get('status') : '';
+  const r = await sellerApi('GET', `/shops/${shopId}/purchase-orders${status ? `?status=${status}` : ''}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tải được phiếu nhập.')));
+  return sendHtml(res, 200, V.renderPurchasing(ctx, shopId, r.json, { status }));
+}
+
+async function suppliersPage(res, me, cookie, shopId, q, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'purchasing');
+  const showInactive = q?.get('all') === '1';
+  const editId = q?.get('edit') ?? null;
+  // Luôn nạp cả NCC đã ẩn để tìm được đối tượng đang sửa; lọc hiển thị theo showInactive.
+  const r = await sellerApi('GET', `/shops/${shopId}/suppliers?all=1`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tải được nhà cung cấp.')));
+  const all = r.json.suppliers ?? [];
+  const editing = editId ? all.find((s) => s.id === editId) ?? null : null;
+  const list = showInactive ? all : all.filter((s) => s.is_active);
+  return sendHtml(res, err ? 400 : 200, V.renderSuppliers(ctx, shopId, list, { notice, err, editing, showInactive }));
+}
+function supplierBody(f) {
+  return {
+    name: (f.get('name') ?? '').trim(), contact: (f.get('contact') ?? '').trim(),
+    phone: (f.get('phone') ?? '').trim(), email: (f.get('email') ?? '').trim(),
+    address: (f.get('address') ?? '').trim(), note: (f.get('note') ?? '').trim(),
+  };
+}
+async function supplierCreate(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req);
+  const r = await sellerApi('POST', `/shops/${shopId}/suppliers`, { cookie, body: supplierBody(f) });
+  if (r.status !== 201) return suppliersPage(res, me, cookie, shopId, new URLSearchParams(), null, r.json?.error ?? 'Không thêm được nhà cung cấp.');
+  return redirect(res, `/shops/${shopId}/suppliers?notice=created`);
+}
+async function supplierUpdate(req, res, me, cookie, shopId, sid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req);
+  const body = { ...supplierBody(f), is_active: (f.get('is_active') ?? '') === '1' };
+  const r = await sellerApi('PATCH', `/shops/${shopId}/suppliers/${sid}`, { cookie, body });
+  if (r.status !== 200) return suppliersPage(res, me, cookie, shopId, new URLSearchParams(`edit=${sid}`), null, r.json?.error ?? 'Không lưu được.');
+  return redirect(res, `/shops/${shopId}/suppliers?notice=saved`);
+}
+
+// Gom các slot dòng phiếu (variant_id[]/qty[]/unit_cost[] song song) → mảng dòng (bỏ slot rỗng).
+function poLinesFromForm(f) {
+  const vids = f.getAll('variant_id'), qtys = f.getAll('qty'), costs = f.getAll('unit_cost');
+  const lines = [];
+  for (let i = 0; i < vids.length; i++) {
+    if (!vids[i]) continue;
+    lines.push({ variant_id: vids[i], qty: Number(qtys[i] ?? 0), unit_cost_vnd: Number(costs[i] ?? 0) });
+  }
+  return lines;
+}
+async function poNewPage(res, me, cookie, shopId, err, form, q) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'purchasing');
+  const pq = (q ?? '').trim().slice(0, 100);
+  const [pv, sup] = await Promise.all([
+    sellerApi('GET', `/shops/${shopId}/purchasable-variants${pq ? `?q=${encodeURIComponent(pq)}` : ''}`, { cookie }),
+    sellerApi('GET', `/shops/${shopId}/suppliers`, { cookie }),
+  ]);
+  if (pv.status !== 200) return sendHtml(res, pv.status, V.renderError(ctx, invForbidden(pv) ? invDenyMsg : (pv.json?.error ?? 'Không tải được danh sách hàng.')));
+  return sendHtml(res, err ? 400 : 200, V.renderPurchaseOrderNew(ctx, shopId, pv.json.variants ?? [], sup.json?.suppliers ?? [], err, form ?? {}, { q: pq, truncated: pv.json.truncated === true }));
+}
+async function poNewSubmit(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req);
+  const lines = poLinesFromForm(f);
+  const body = { supplier_id: f.get('supplier_id') ?? '', note: (f.get('note') ?? '').trim(), lines };
+  const r = await sellerApi('POST', `/shops/${shopId}/purchase-orders`, { cookie, body });
+  if (r.status === 201) return redirect(res, `/shops/${shopId}/purchasing/${r.json.id}`);
+  const form = { supplier_id: body.supplier_id, note: body.note, lines };
+  return poNewPage(res, me, cookie, shopId, r.json?.error ?? 'Không tạo được phiếu.', form, f.get('picker_q') ?? '');
+}
+async function poDetailPage(res, me, cookie, shopId, pid, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'purchasing');
+  const r = await sellerApi('GET', `/shops/${shopId}/purchase-orders/${pid}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tìm thấy phiếu nhập.')));
+  return sendHtml(res, err ? 409 : 200, V.renderPurchaseOrderDetail(ctx, shopId, r.json, notice, err));
+}
+async function poEditPage(res, me, cookie, shopId, pid, err, q) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'purchasing');
+  const pq = (q ?? '').trim().slice(0, 100);
+  const r = await sellerApi('GET', `/shops/${shopId}/purchase-orders/${pid}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tìm thấy phiếu.')));
+  if (!['draft', 'ordered'].includes(r.json.status)) return poDetailPage(res, me, cookie, shopId, pid, null, 'Phiếu đã chốt/huỷ, không sửa được.');
+  const [pv, sup] = await Promise.all([
+    sellerApi('GET', `/shops/${shopId}/purchasable-variants${pq ? `?q=${encodeURIComponent(pq)}` : ''}`, { cookie }),
+    sellerApi('GET', `/shops/${shopId}/suppliers?all=1`, { cookie }),
+  ]);
+  return sendHtml(res, err ? 400 : 200, V.renderPurchaseOrderEdit(ctx, shopId, r.json, pv.json?.variants ?? [], sup.json?.suppliers ?? [], err, { q: pq }));
+}
+async function poEditSubmit(req, res, me, cookie, shopId, pid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req);
+  const body = { supplier_id: f.get('supplier_id') ?? '', note: (f.get('note') ?? '').trim(), lines: poLinesFromForm(f) };
+  const r = await sellerApi('PATCH', `/shops/${shopId}/purchase-orders/${pid}`, { cookie, body });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/purchasing/${pid}`);
+  return poEditPage(res, me, cookie, shopId, pid, r.json?.error ?? 'Không lưu được phiếu.', f.get('picker_q') ?? '');
+}
+async function poAction(res, me, cookie, shopId, pid, action) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/purchase-orders/${pid}/${action}`, { cookie });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/purchasing/${pid}`);
+  return poDetailPage(res, me, cookie, shopId, pid, null, r.json?.error ?? 'Không thực hiện được.');
+}
+async function poReceivePage(res, me, cookie, shopId, pid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'purchasing');
+  const r = await sellerApi('GET', `/shops/${shopId}/purchase-orders/${pid}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tìm thấy phiếu.')));
+  if (!['draft', 'ordered'].includes(r.json.status)) return poDetailPage(res, me, cookie, shopId, pid, null, 'Phiếu đã chốt/huỷ.');
+  if ((r.json.lines ?? []).length === 0) return poDetailPage(res, me, cookie, shopId, pid, null, 'Phiếu chưa có dòng hàng — thêm hàng trước khi nhận.');
+  return sendHtml(res, 200, V.renderPurchaseOrderReceive(ctx, shopId, r.json));
+}
+async function poReceiveSubmit(res, me, cookie, shopId, pid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/purchase-orders/${pid}/receive`, { cookie });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/purchasing/${pid}?notice=received`);
+  return poDetailPage(res, me, cookie, shopId, pid, null, r.json?.error ?? 'Không nhận được hàng.');
+}
+async function purchasingReportPage(res, me, cookie, shopId, q) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'purchasing');
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const qs = new URLSearchParams();
+  for (const k of ['from', 'to']) { const v = (q.get(k) ?? '').trim(); if (DATE_RE.test(v)) qs.set(k, v); }
+  const r = await sellerApi('GET', `/shops/${shopId}/purchasing/report${qs.size ? `?${qs}` : ''}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tải được báo cáo nhập.')));
+  return sendHtml(res, 200, V.renderPurchasingReport(ctx, shopId, r.json));
+}
+
+// ── Kiểm kê ──────────────────────────────────────────────────────────────────
+async function stocktakesPage(res, me, cookie, shopId, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'stocktakes');
+  const r = await sellerApi('GET', `/shops/${shopId}/stocktakes`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tải được kiểm kê.')));
+  return sendHtml(res, err ? 400 : 200, V.renderStocktakes(ctx, shopId, r.json.stocktakes ?? [], { notice, err }));
+}
+async function stocktakeCreate(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req);
+  const body = { scope: 'all', note: (f.get('note') ?? '').trim() };
+  const r = await sellerApi('POST', `/shops/${shopId}/stocktakes`, { cookie, body });
+  if (r.status === 201) return redirect(res, `/shops/${shopId}/stocktakes/${r.json.id}`);
+  return stocktakesPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không tạo được phiên kiểm kê.');
+}
+async function stocktakeDetailPage(res, me, cookie, shopId, sid, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'stocktakes');
+  const r = await sellerApi('GET', `/shops/${shopId}/stocktakes/${sid}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tìm thấy phiên kiểm kê.')));
+  return sendHtml(res, err ? 409 : 200, V.renderStocktakeDetail(ctx, shopId, r.json, notice, err));
+}
+async function stocktakeCount(req, res, me, cookie, shopId, sid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req);
+  const vids = f.getAll('variant_id'), cqs = f.getAll('counted_qty');
+  const counts = [];
+  for (let i = 0; i < vids.length; i++) {
+    const raw = (cqs[i] ?? '').trim();
+    if (raw === '') continue; // ô để trống = chưa đếm, bỏ qua (không ghi đè null lên số cũ)
+    counts.push({ variant_id: vids[i], counted_qty: Number(raw) });
+  }
+  if (counts.length === 0) return redirect(res, `/shops/${shopId}/stocktakes/${sid}`);
+  const r = await sellerApi('PATCH', `/shops/${shopId}/stocktakes/${sid}`, { cookie, body: { counts } });
+  if (r.status !== 200) return stocktakeDetailPage(res, me, cookie, shopId, sid, null, r.json?.error ?? 'Không lưu được số đếm.');
+  return redirect(res, `/shops/${shopId}/stocktakes/${sid}?notice=counted`);
+}
+async function stocktakeComplete(res, me, cookie, shopId, sid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/stocktakes/${sid}/complete`, { cookie });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/stocktakes/${sid}?notice=completed`);
+  return stocktakeDetailPage(res, me, cookie, shopId, sid, null, r.json?.error ?? 'Không chốt được kiểm kê.');
+}
+async function stocktakeCancel(res, me, cookie, shopId, sid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/stocktakes/${sid}/cancel`, { cookie });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/stocktakes`);
+  return stocktakeDetailPage(res, me, cookie, shopId, sid, null, r.json?.error ?? 'Không huỷ được.');
+}
+
 // ── Tên miền tùy chỉnh (owner + step-up) ─────────────────────────────────────
 async function domainsPage(res, me, cookie, shopId, notice, err) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -2063,6 +2256,28 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/export$`).exec(p)) && req.method === 'POST') return exportCreate(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/export/step-up$`).exec(p)) && req.method === 'POST') return exportStepUp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/export/download$`).exec(p)) && req.method === 'GET') return exportDownload(res, me, cookie, m[1], url.searchParams.get('token') ?? '');
+
+    // Nhập hàng (owner/admin — inventory.manage). Route CỤ THỂ (new/report/edit/receive/order/cancel) TRƯỚC :id.
+    if ((m = new RegExp(`^/shops/${UUID}/suppliers$`).exec(p)) && req.method === 'GET') return suppliersPage(res, me, cookie, m[1], url.searchParams, url.searchParams.get('notice') ? 'Đã lưu nhà cung cấp.' : null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/suppliers$`).exec(p)) && req.method === 'POST') return supplierCreate(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/suppliers/${UUID}$`).exec(p)) && req.method === 'POST') return supplierUpdate(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/purchasing$`).exec(p)) && req.method === 'GET') return purchasingPage(res, me, cookie, m[1], url.searchParams);
+    if ((m = new RegExp(`^/shops/${UUID}/purchasing/new$`).exec(p)) && req.method === 'GET') return poNewPage(res, me, cookie, m[1], null, null, url.searchParams.get('q') ?? '');
+    if ((m = new RegExp(`^/shops/${UUID}/purchasing/new$`).exec(p)) && req.method === 'POST') return poNewSubmit(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/purchasing/report$`).exec(p)) && req.method === 'GET') return purchasingReportPage(res, me, cookie, m[1], url.searchParams);
+    if ((m = new RegExp(`^/shops/${UUID}/purchasing/${UUID}/edit$`).exec(p)) && req.method === 'GET') return poEditPage(res, me, cookie, m[1], m[2], null, url.searchParams.get('q') ?? '');
+    if ((m = new RegExp(`^/shops/${UUID}/purchasing/${UUID}/edit$`).exec(p)) && req.method === 'POST') return poEditSubmit(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/purchasing/${UUID}/receive$`).exec(p)) && req.method === 'GET') return poReceivePage(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/purchasing/${UUID}/receive$`).exec(p)) && req.method === 'POST') return poReceiveSubmit(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/purchasing/${UUID}/(order|cancel)$`).exec(p)) && req.method === 'POST') return poAction(res, me, cookie, m[1], m[3], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/purchasing/${UUID}$`).exec(p)) && req.method === 'GET') return poDetailPage(res, me, cookie, m[1], m[2], url.searchParams.get('notice') === 'received' ? 'Đã nhận hàng — tồn kho và giá vốn đã cập nhật.' : null, null);
+    // Kiểm kê.
+    if ((m = new RegExp(`^/shops/${UUID}/stocktakes$`).exec(p)) && req.method === 'GET') return stocktakesPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/stocktakes$`).exec(p)) && req.method === 'POST') return stocktakeCreate(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/stocktakes/${UUID}/count$`).exec(p)) && req.method === 'POST') return stocktakeCount(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/stocktakes/${UUID}/complete$`).exec(p)) && req.method === 'POST') return stocktakeComplete(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/stocktakes/${UUID}/cancel$`).exec(p)) && req.method === 'POST') return stocktakeCancel(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/stocktakes/${UUID}$`).exec(p)) && req.method === 'GET') return stocktakeDetailPage(res, me, cookie, m[1], m[2], STOCKTAKE_NOTICE[url.searchParams.get('notice')] ?? null, null);
 
     // Tên miền (owner).
     if ((m = new RegExp(`^/shops/${UUID}/domains$`).exec(p)) && req.method === 'GET') return domainsPage(res, me, cookie, m[1], null, null);

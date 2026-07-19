@@ -435,6 +435,23 @@ async function applyCouponForm(req, res, form, ctx) {  // form trang giỏ → 3
   }
 }
 
+// Đổi điểm (0086): stamp số điểm khách muốn đổi lên giỏ. Số dư + trần cắt ở checkout (chân lý
+// dưới khoá) — đây chỉ ghi ý định. Khách chưa đăng nhập vẫn stamp được nhưng checkout bỏ qua.
+async function applyPointsForm(req, res, form, ctx) {
+  const token = parseCookies(req)[CART_COOKIE];
+  const want = Math.max(0, Math.min(10_000_000, parseInt(form.points ?? '0', 10) || 0));
+  try {
+    await withTenant(ctx.shopId, async (c) => {
+      const cart = await findCart(c, token);
+      if (cart) await c.query(`UPDATE carts SET points_redeem = $2, updated_at = now() WHERE id = $1`, [cart.id, want]);
+    });
+    return redirect(res, '/cart');
+  } catch (err) {
+    if (err.statusCode) return sendHtml(res, err.statusCode, renderError(await getShopName(ctx.shopId), err.body?.error ?? 'Không áp được điểm.'));
+    throw err;
+  }
+}
+
 async function updateItemForm(req, res, form, ctx) {  // form giỏ (cập nhật/xoá) → 303 /cart
   const variantId = String(form.variant_id ?? ''), qty = parseInt(form.qty ?? '', 10);
   if (!UUID_RE.test(variantId) || !isInt(qty) || qty < 0 || qty > 1000) return sendHtml(res, 400, renderError(await getShopName(ctx.shopId), 'Yêu cầu không hợp lệ.'));
@@ -523,15 +540,20 @@ function parseOrderInput(raw) {
   // Email đi thẳng tới worker→nodemailer. Validate chặt + cấm CR/LF (chống header/SMTP injection).
   if (email !== null && (email.length > 254 || /[\r\n\s]/.test(email) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) return { error: 'email không hợp lệ' };
   if (!['cod', 'qr'].includes(paymentMethod)) return { error: 'phương thức thanh toán không hợp lệ' };
-  return { name, phone: phoneCanon, email, address, paymentMethod }; // phone đã chuẩn hoá → trần theo-SĐT luôn khớp
+  // Đổi điểm (0086): số điểm khách muốn đổi (API JSON). null = không truyền → checkout đọc từ giỏ.
+  // Server cắt theo trần + số dư dưới khoá; đây chỉ nhận số nguyên ≥0 (bỏ rác).
+  const pointsRedeem = raw.points_redeem != null && raw.points_redeem !== '' && Number.isFinite(Number(raw.points_redeem))
+    ? Math.max(0, Math.trunc(Number(raw.points_redeem))) : null;
+  return { name, phone: phoneCanon, email, address, paymentMethod, pointsRedeem }; // phone đã chuẩn hoá → trần theo-SĐT luôn khớp
 }
 
 // Lõi tạo đơn (transaction). Ném fail() khi lỗi nghiệp vụ → withTenant ROLLBACK.
 async function createOrderTx(c, ctx, token, idemKey, f) {
   const { name, phone, email, address, paymentMethod } = f;
   {
-    // request_hash: nội dung ĐƠN, KHÔNG gồm bất kỳ giá/total nào client gửi.
-    const requestHash = sha256(idemKey + JSON.stringify({ name, phone, email, address, paymentMethod }));
+    // request_hash: nội dung ĐƠN, KHÔNG gồm bất kỳ giá/total nào client gửi. GỒM pointsRedeem
+    // (input khách chọn như payment_method) → retry cùng key khác số điểm → 422, không double-spend.
+    const requestHash = sha256(idemKey + JSON.stringify({ name, phone, email, address, paymentMethod, pointsRedeem: f.pointsRedeem ?? null }));
     // Idempotency: giành key.
     const claim = await c.query(
       `INSERT INTO idempotency_keys (shop_id, key, request_hash, status)
@@ -544,6 +566,10 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       if (ex.status === 'completed') return { code: ex.response_code, body: ex.response_body, replay: true };
       fail(409, 'đơn đang được xử lý, thử lại');
     }
+
+    // Đặt GUC danh tính khách (0083) → RLS 2 trục cho loyalty_ledger/balances (đổi điểm dưới).
+    // Chỉ khi ĐĂNG NHẬP; guest → NULL → không đọc/ghi được điểm (fail-closed).
+    if (ctx.customerId) await c.query(`SELECT set_config('app.customer_id', $1, true)`, [ctx.customerId]);
 
     const cart = await findCart(c, token, { forUpdate: true });
     if (!cart) fail(400, 'giỏ hàng trống hoặc hết hạn');
@@ -626,7 +652,34 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
         if (claim.rowCount === 1) { discount = cp.discount; couponCode = cp.code; }
       }
     }
-    const total = subtotal - discount + shipping;
+    // ── ĐỔI ĐIỂM (0086): CHỈ khách ĐĂNG NHẬP. Giảm giá tiền HÀNG (không giảm ship). NGUYÊN TỬ:
+    // khoá số dư FOR UPDATE (đọc CHÂN LÝ dưới khoá — chống double-spend + lost-update với worker
+    // tích/thu-hồi), cắt theo 3 trần (số dư / tiền hàng còn lại / %tiền hàng), trừ + ghi sổ.
+    let pointsRedeemed = 0, pointsDiscount = 0;
+    if (ctx.customerId) {
+      const lc = (await c.query(`SELECT enabled, redeem_vnd_per_point, min_redeem_points, max_redeem_pct FROM shop_loyalty_config WHERE shop_id = current_shop_id()`)).rows[0];
+      // want = số điểm khách muốn đổi: từ input JSON (f.pointsRedeem) hoặc đã stamp trên giỏ (form).
+      const want = f.pointsRedeem != null ? Math.max(0, Math.trunc(Number(f.pointsRedeem)) || 0)
+        : Number((await c.query(`SELECT points_redeem FROM carts WHERE id = $1`, [cart.id])).rows[0]?.points_redeem ?? 0);
+      if (lc?.enabled && want > 0) {
+        const bal = (await c.query(`SELECT balance_points FROM loyalty_balances WHERE shop_id = current_shop_id() AND customer_id = $1 FOR UPDATE`, [ctx.customerId])).rows[0];
+        const balance = bal ? Number(bal.balance_points) : 0;
+        const goods = subtotal - discount;                 // tiền HÀNG còn lại (sau sale + coupon)
+        const perPoint = Number(lc.redeem_vnd_per_point);
+        const maxPoints = Math.max(0, Math.min(
+          balance,                                          // (1) số dư khả dụng
+          Math.floor(goods / perPoint),                    // (2) không vượt tiền hàng
+          Math.floor((goods * Number(lc.max_redeem_pct) / 100) / perPoint), // (3) % tiền hàng/đơn
+        ));
+        const pts = Math.min(want, maxPoints);
+        if (pts > 0 && pts >= Number(lc.min_redeem_points ?? 0)) {
+          pointsRedeemed = pts;
+          pointsDiscount = pts * perPoint;
+          await c.query(`UPDATE loyalty_balances SET balance_points = balance_points - $2, updated_at = now() WHERE shop_id = current_shop_id() AND customer_id = $1`, [ctx.customerId, pts]);
+        }
+      }
+    }
+    const total = subtotal - discount - pointsDiscount + shipping;
 
     // QR: cần cấu hình ngân hàng của shop + mã đối soát duy nhất.
     let paymentRef = null;
@@ -653,10 +706,20 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     const order = (await c.query(
       `INSERT INTO orders (shop_id, order_number, status, payment_status, payment_method,
          customer_name, customer_phone, customer_email, shipping_address,
-         subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, lookup_token_hash, payment_ref, qr_account, coupon_code, client_ip_hash, customer_id)
-       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING id`,
-      [num, paymentMethod, name, phoneCanon ?? phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount, couponCode, ipHash, ctx.customerId ?? null],
+         subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, lookup_token_hash, payment_ref, qr_account, coupon_code, client_ip_hash, customer_id,
+         points_redeemed, points_discount_vnd)
+       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id`,
+      [num, paymentMethod, name, phoneCanon ?? phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount, couponCode, ipHash, ctx.customerId ?? null, pointsRedeemed, pointsDiscount],
     )).rows[0];
+    // Sổ điểm ĐỔI (0086): ghi SAU khi có order.id → UNIQUE loyalty_ledger_redeem_once(shop,order)
+    // = đúng 1 dòng/đơn. Số dư đã trừ ở trên (cùng tx, khoá FOR UPDATE) → nguyên tử. Nếu tx
+    // rollback (đua giỏ 409 dưới) thì cả trừ điểm lẫn đơn cùng biến mất.
+    if (pointsRedeemed > 0) {
+      await c.query(
+        `INSERT INTO loyalty_ledger (shop_id, customer_id, kind, delta, order_id, reason)
+         VALUES (current_shop_id(), $1, 'redeem', $2, $3, 'Đổi điểm khi đặt đơn')`,
+        [ctx.customerId, -pointsRedeemed, order.id]);
+    }
     for (const ln of lines) {
       // unit_cost_vnd (0081): snapshot GIÁ VỐN qua subquery — cost không bao giờ vào object
       // JS của service công khai (không lọt log/response); chưa khai giá vốn → NULL (không 0).
@@ -689,7 +752,7 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       );
     }
 
-    const response = { order_number: Number(num), subtotal_vnd: subtotal, shipping_vnd: shipping, discount_vnd: discount, coupon_code: couponCode, total_vnd: total, status: 'pending', payment_status: 'unpaid', payment_method: paymentMethod, lookup_token: lookupToken };
+    const response = { order_number: Number(num), subtotal_vnd: subtotal, shipping_vnd: shipping, discount_vnd: discount, coupon_code: couponCode, points_redeemed: pointsRedeemed, points_discount_vnd: pointsDiscount, total_vnd: total, status: 'pending', payment_status: 'unpaid', payment_method: paymentMethod, lookup_token: lookupToken };
     if (paymentMethod === 'qr') { response.payment_ref = paymentRef; response.qr_string = qrString; }
     await c.query(`UPDATE idempotency_keys SET status = 'completed', response_code = 201, response_body = $2 WHERE key = $1`, [idemKey, response]);
     log('info', 'order_created', { orderNumber: Number(num), total });
@@ -701,7 +764,7 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
 async function checkout(req, res, body, ctx) {
   const idemKey = req.headers['idempotency-key'];
   if (typeof idemKey !== 'string' || idemKey.length < 8 || idemKey.length > 200) return send(res, 400, { error: 'thiếu/không hợp lệ Idempotency-Key' });
-  const f = parseOrderInput({ name: body.customer?.name, phone: body.customer?.phone, email: body.customer?.email, address: body.address, payment_method: body.payment_method });
+  const f = parseOrderInput({ name: body.customer?.name, phone: body.customer?.phone, email: body.customer?.email, address: body.address, payment_method: body.payment_method, points_redeem: body.points_redeem });
   if (f.error) return send(res, 400, { error: f.error });
   const token = parseCookies(req)[CART_COOKIE];
   const cust = await resolveCustomer(ctx.shopId, req);
@@ -869,6 +932,7 @@ const ROUTES = [
   { m: 'POST', p: '/cart/add', fn: addItemForm, form: true },
   { m: 'POST', p: '/cart/update', fn: updateItemForm, form: true },
   { m: 'POST', p: '/cart/coupon', fn: applyCouponForm, form: true },
+  { m: 'POST', p: '/cart/points', fn: applyPointsForm, form: true },
   { m: 'POST', p: '/checkout', fn: checkout },
   { m: 'POST', p: '/checkout/place', fn: checkoutPlace, form: true },
   { m: 'GET', p: '/checkout', fn: getCheckoutPage },

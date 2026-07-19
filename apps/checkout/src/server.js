@@ -697,7 +697,14 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       if (nPh >= capPhone) fail(429, 'Số điện thoại này có quá nhiều đơn chưa xử lý. Vui lòng liên hệ cửa hàng.');
     }
 
-    // Khoá tồn + reserve + snapshot. Giá lấy từ variants (server-side).
+    // Khoá tồn THEO THỨ TỰ variant_id (nhất quán MỌI tx) TRƯỚC khi xử lý → chống DEADLOCK Postgres:
+    // 2 checkout/flash-sale chạm ≥2 biến thể chung ngược thứ tự (giỏ A: v1,v2; giỏ B: v2,v1) sẽ ôm
+    // khoá chéo → Postgres huỷ 1 tx → khách nhận 500 ngay nút Đặt hàng lúc CAO ĐIỂM. Khoá sắp xếp
+    // trước = mọi tx giành khoá cùng thứ tự → không bao giờ chéo. (Đơn tay seller đã làm thế.)
+    for (const vid of [...new Set(items.map((i) => i.variant_id))].sort()) {
+      await c.query(`SELECT 1 FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [vid]);
+    }
+    // Khoá tồn + reserve + snapshot. Giá lấy từ variants (server-side). (Biến thể đã khoá ở trên.)
     let subtotal = 0;
     const lines = [];
     for (const it of items) {

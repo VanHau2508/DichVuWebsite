@@ -98,7 +98,13 @@ nentang.vn, www.nentang.vn {
 		dns cloudflare {env.CF_API_TOKEN}
 	}
 	import security_headers
-	reverse_proxy storefront:3050
+	# Self-serve signup (0091): /signup* → service signup (SSR no-JS, vai app_signup). TRƯỚC catch-all.
+	handle /signup* {
+		reverse_proxy signup:3064
+	}
+	handle {
+		reverse_proxy storefront:3050
+	}
 }
 
 # ── Storefront trên subdomain nền tảng ───────────────────────────────────────

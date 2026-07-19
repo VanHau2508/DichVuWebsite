@@ -61,6 +61,10 @@ const billingDb = BILLING_URL ? new pg.Pool({ connectionString: BILLING_URL, max
 const LOYALTY_URL = process.env.DATABASE_URL_LOYALTY;
 const loyaltyDb = LOYALTY_URL ? new pg.Pool({ connectionString: LOYALTY_URL, max: 2 }) : null;
 const LOYALTY_SWEEP_MS = Number(process.env.LOYALTY_SWEEP_MS ?? 300000);
+// Self-serve signup (0091): pool app_signup (least-priv — chỉ chạm shop_signups) để GC nháp treo.
+const SIGNUP_URL = process.env.DATABASE_URL_SIGNUP;
+const signupDb = SIGNUP_URL ? new pg.Pool({ connectionString: SIGNUP_URL, max: 2 }) : null;
+const SIGNUP_SWEEP_MS = Number(process.env.SIGNUP_SWEEP_MS ?? 300000); // 5 phút
 // Poll trạng thái vận đơn hãng VC (GHN/GHTK — 0044). Dùng CHUNG pool app_expiry (role
 // tự động hoá vòng đời đơn). Cần thêm SHIPPING_ENC_KEY (giải mã token per-shop) — thiếu → tắt.
 const SHIPPING_ENC_KEY = process.env.SHIPPING_ENC_KEY ?? '';
@@ -187,6 +191,20 @@ function compose(topic, p) {
         par('Bấm nút bên dưới để đặt mật khẩu mới (hết hạn sau 30 phút, dùng một lần).') +
         par(`<span style="color:#6b7280">Nếu bạn KHÔNG yêu cầu, hãy bỏ qua email này — mật khẩu của bạn không thay đổi.</span>`),
         { url: p.link, label: 'Đặt mật khẩu mới' }),
+    };
+  }
+  // Self-serve signup (0091): kích hoạt cửa hàng vừa đăng ký. Cấp NỀN TẢNG (outbox shop_id NULL —
+  // shop chưa tồn tại). p = {to, name, slug, link}. Bấm link → provision (verify-trước-provision).
+  if (topic === 'signup.verify') {
+    const url = p.link, storeAddr = `${p.slug ?? ''}.${(process.env.PLATFORM_DOMAIN ?? 'nentang.vn')}`;
+    return {
+      subject: `Kích hoạt cửa hàng "${p.name ?? ''}" — ${PLATFORM_BRAND}`,
+      text: `Cảm ơn bạn đã đăng ký mở cửa hàng "${p.name ?? ''}" tại ${storeAddr}.\n\nBấm link sau để KÍCH HOẠT cửa hàng (hết hạn sau 30 phút):\n${url}\n\nNếu bạn KHÔNG đăng ký, hãy bỏ qua email này — không có gì được tạo.`,
+      html: emailHtml({ shop_name: PLATFORM_BRAND }, `Kích hoạt cửa hàng của bạn`,
+        par(`Cảm ơn bạn đã đăng ký mở cửa hàng <strong>${escHtml(p.name ?? '')}</strong> tại <strong>${escHtml(storeAddr)}</strong>.`) +
+        par('Bấm nút bên dưới để kích hoạt cửa hàng (hết hạn sau 30 phút).') +
+        par('<span style="color:#6b7280">Nếu bạn KHÔNG đăng ký, hãy bỏ qua email này — không có gì được tạo.</span>'),
+        { url, label: 'Kích hoạt cửa hàng' }),
     };
   }
   // Tài khoản khách (0083): brand = tên shop (p.shop_name) + link về domain shop (brandOf p.link).
@@ -795,6 +813,23 @@ async function sweepPiiRetention() {
   return { anonymized: total };
 }
 
+// ── sweep: GC NHÁP SIGNUP TREO (0091) ────────────────────────────────────────
+// Nháp pending quá hạn (chưa verify) → chuyển 'expired' (GIẢI PHÓNG slug: UNIQUE partial chỉ WHERE
+// pending) → người khác đăng ký lại slug được. GIỮ row (vẫn đếm cho trần per-IP theo giờ). Dọn hẳn
+// row 'expired' cũ > 24h (không phình bảng). Provisioned giữ (liên kết signup→shop, audit). Vai
+// app_signup (chỉ chạm shop_signups). Nuốt mọi lỗi (không throw ra setInterval).
+async function sweepSignups() {
+  if (!signupDb) return { expired: 0 };
+  let expired = 0;
+  try {
+    const up = await signupDb.query(`UPDATE shop_signups SET status='expired' WHERE status='pending' AND expires_at < now()`);
+    expired = up.rowCount;
+    await signupDb.query(`DELETE FROM shop_signups WHERE status='expired' AND created_at < now() - interval '24 hours'`);
+    if (expired) log('info', 'signup_drafts_expired', { n: expired }); // KHÔNG log email/slug
+  } catch (e) { log('error', 'signup_sweep_error', { message: e.message }); }
+  return { expired };
+}
+
 // ── sweep: TÍCH ĐIỂM THƯỞNG (0086) ───────────────────────────────────────────
 // Choke point DUY NHẤT để tích điểm: quét đơn ĐÃ THANH TOÁN (paid_at) của khách ĐĂNG NHẬP
 // (customer_id) đã qua VESTING (paid_at ≤ now − vesting_days) và CHƯA terminal (huỷ/hoàn) →
@@ -1187,6 +1222,7 @@ const piiTimer = expiryDb ? setInterval(sweepPiiRetention, PII_SWEEP_MS) : null;
 const staleTimer = (expiryDb && TELEGRAM_ON) ? setInterval(sweepStaleOrders, STALE_SWEEP_MS) : null;
 const loyaltyEarnTimer = loyaltyDb ? setInterval(sweepLoyaltyEarn, LOYALTY_SWEEP_MS) : null;
 const loyaltyClawTimer = loyaltyDb ? setInterval(sweepLoyaltyClawback, LOYALTY_SWEEP_MS) : null;
+const signupTimer = signupDb ? setInterval(sweepSignups, SIGNUP_SWEEP_MS) : null;
 
 // ── HTTP: health + stats (cho e2e kiểm dead-letter) ──────────────────────────
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -1253,6 +1289,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   // Kích hoạt dọn outbox ngay (nội bộ — cho cron + e2e xác định).
   if (url.pathname === '/internal/pii-sweep' && req.method === 'POST') {
     const r = await sweepPiiRetention();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
+  // Kích hoạt GC nháp signup treo ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/signup-sweep' && req.method === 'POST') {
+    const r = await sweepSignups();
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(r));
   }

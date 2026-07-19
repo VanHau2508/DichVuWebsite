@@ -98,6 +98,10 @@ shop.localtest {
 nentang.vn, www.nentang.vn {
 	tls internal
 	import security_headers
+	# Self-serve signup (0091): /signup* → service signup (SSR no-JS, vai app_signup). TRƯỚC catch-all.
+	handle /signup* {
+		reverse_proxy signup:3064
+	}
 	handle /media-public/* {
 		reverse_proxy minio:9000
 	}

@@ -379,6 +379,9 @@ services:
       # Pool riêng, role hẹp: điểm thưởng — tích (vesting) + thu-hồi (clawback/reversal) (0086).
       DATABASE_URL_LOYALTY: postgres://app_loyalty:devpassword@postgres:5432/app
       LOYALTY_SWEEP_MS: "300000"
+      # Pool riêng, role hẹp app_signup: GC nháp self-serve signup treo → giải phóng slug (0091).
+      DATABASE_URL_SIGNUP: postgres://app_signup:devpassword@postgres:5432/app
+      SIGNUP_SWEEP_MS: "300000"
       SUBSCRIPTION_GRACE_DAYS: "7"
       # Email liên hệ nền tảng trong copy nhắc hạn thuê bao (e2e assert xác định).
       PLATFORM_CONTACT_EMAIL: lienhe@nentang.vn

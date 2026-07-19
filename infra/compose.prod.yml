@@ -257,6 +257,26 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
 
+  # Self-serve signup (0091): tự đăng ký shop công khai (nentang.vn/signup*). Vai app_signup least-priv.
+  # Build context = repo root (Dockerfile COPY packages/auth/src) → KHÔNG cần mount như checkout/payment.
+  signup:
+    build: { context: .., dockerfile: apps/signup/Dockerfile }
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgres://app_signup:${APP_SIGNUP_PASSWORD:?}@postgres:5432/app
+      REDIS_URL: redis://redis:6379              # rate-limit + advisory-lock DB là sàn (fail-open Redis)
+      PORT: "3064"
+      PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
+      TRIAL_DAYS: ${TRIAL_DAYS:-14}
+      IP_PEPPER: ${ORDER_HASH_PEPPER:?}          # dùng chung PEPPER băm IP (HMAC) — bắt buộc ở prod
+      SIGNUP_FORM_SECRET: ${SIGNUP_FORM_SECRET:?} # HMAC form-ts chống bot POST-thẳng + timing
+    deploy: { resources: { limits: { memory: 160m } } }
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
   worker:
     build: { context: ../apps/worker }
     restart: unless-stopped
@@ -279,6 +299,10 @@ services:
       # định 7) — nhắc hạn tính grace_days_left từ nó nên PHẢI truyền qua để copy khớp
       # đúng thời điểm treo shop thật (đặt trong .env thì đổi cả hai cùng lúc).
       SUBSCRIPTION_GRACE_DAYS: ${SUBSCRIPTION_GRACE_DAYS:-7}
+      # Self-serve signup (0091): pool app_signup GC nháp treo → giải phóng slug + gửi email verify.
+      DATABASE_URL_SIGNUP: postgres://app_signup:${APP_SIGNUP_PASSWORD:?}@postgres:5432/app
+      SIGNUP_SWEEP_MS: ${SIGNUP_SWEEP_MS:-300000}
+      PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
       # Thương hiệu + email liên hệ nền tảng trong email/Telegram NHẮC HẠN thuê bao.
       PLATFORM_BRAND: ${PLATFORM_BRAND:-Nền Tảng}
       PLATFORM_CONTACT_EMAIL: ${PLATFORM_CONTACT_EMAIL:-lienhe@nentang.vn}

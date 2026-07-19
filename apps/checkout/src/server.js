@@ -1090,6 +1090,8 @@ async function getSuccessPage(req, res, _body, ctx, query) {
     )).rows[0];
     if (!o) return null;
     o.lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, orig_unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
+    // Mã vận đơn (0092) → khách tự tra GHN/GHTK. Chỉ vận đơn ĐÃ có mã.
+    o.shipments = (await c.query(`SELECT carrier, tracking_number, status FROM shipments WHERE order_id = $1 AND tracking_number IS NOT NULL ORDER BY created_at`, [o.id])).rows;
     let pay = null;
     if (o.payment_method === 'qr' && o.payment_status !== 'paid') {
       pay = (await c.query(`SELECT bank_bin, account_number, account_name FROM shop_payment_config WHERE shop_id = current_shop_id()`)).rows[0] ?? null;

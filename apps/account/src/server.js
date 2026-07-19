@@ -273,10 +273,12 @@ async function pageOrderDetail(req, res, ctx, q, params) {
          FROM orders WHERE customer_id = current_customer_id() AND order_number = $1`, [num])).rows[0];
     if (!o) return null;
     const lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
-    return { o, lines };
+    // Mã vận đơn (0092) → khách tự tra GHN/GHTK ngay trong tài khoản.
+    const shipments = (await c.query(`SELECT carrier, tracking_number, status FROM shipments WHERE order_id = $1 AND tracking_number IS NOT NULL ORDER BY created_at`, [o.id])).rows;
+    return { o, lines, shipments };
   });
   if (!out) return sendHtml(res, 404, '<!doctype html><meta charset=utf-8><title>404</title><p>Không tìm thấy đơn.</p>');
-  return sendHtml(res, 200, V.renderOrderDetail(ctx.shopName, out.o, out.lines));
+  return sendHtml(res, 200, V.renderOrderDetail(ctx.shopName, out.o, out.lines, out.shipments));
 }
 // "Nhận đơn cũ": UPDATE mù gate bằng GUC claim_token_hash (RLS chỉ hiện dòng đúng token).
 async function doClaim(req, res, ctx) {

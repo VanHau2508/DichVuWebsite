@@ -147,7 +147,16 @@ export function renderOrders(shopName, orders, { page = 1, hasMore = false, noti
       </form></div>`);
 }
 
-export function renderOrderDetail(shopName, o, lines) {
+// Vận đơn: tên hãng + link tra cứu công khai của hãng.
+const carrierName = (c) => ({ ghn: 'GHN', ghtk: 'GHTK' }[String(c ?? '').toLowerCase()] ?? (c || 'Hãng vận chuyển'));
+const carrierTrackUrl = (c, code) => {
+  if (!code) return null;
+  const k = String(c ?? '').toLowerCase();
+  if (k === 'ghn') return `https://donhang.ghn.vn/?order_code=${encodeURIComponent(code)}`;
+  if (k === 'ghtk') return `https://i.ghtk.vn/?order_code=${encodeURIComponent(code)}`;
+  return null;
+};
+export function renderOrderDetail(shopName, o, lines, shipments = []) {
   const base = '/account';
   const addr = o.shipping_address && typeof o.shipping_address === 'object' ? o.shipping_address : {};
   const addrStr = [addr.line || addr.line1, addr.ward, addr.district, addr.province].filter(Boolean).join(', ');
@@ -163,6 +172,9 @@ export function renderOrderDetail(shopName, o, lines) {
       <div class="row"><span class="muted">Phí giao hàng</span><span>${money(o.shipping_vnd)}</span></div>
       ${Number(o.discount_vnd) > 0 ? `<div class="row"><span class="muted">Giảm giá</span><span>-${money(o.discount_vnd)}</span></div>` : ''}
       <div class="row" style="font-weight:700;border-top:1px solid var(--bd);padding-top:8px;margin-top:6px"><span>Tổng cộng</span><span>${money(o.total_vnd)}</span></div></div>
+    ${(shipments?.length) ? `<div class="card"><h2>Vận chuyển</h2>
+      ${shipments.map((s) => `<div class="row"><span class="muted">${esc(carrierName(s.carrier))}</span><span><strong style="user-select:all">${esc(s.tracking_number)}</strong></span></div>
+        ${carrierTrackUrl(s.carrier, s.tracking_number) ? `<a class="btn alt sm" style="margin-top:8px" href="${carrierTrackUrl(s.carrier, s.tracking_number)}" target="_blank" rel="noopener noreferrer">Tra cứu vận đơn ${esc(carrierName(s.carrier))} →</a>` : ''}`).join('')}</div>` : ''}
     <div class="card"><h2>Giao đến</h2>
       <p class="muted" style="margin:0">${esc(o.customer_name || '(đã ẩn danh)')} · ${esc(o.customer_phone || '')}<br>${esc(addrStr || '—')}</p></div>`);
 }

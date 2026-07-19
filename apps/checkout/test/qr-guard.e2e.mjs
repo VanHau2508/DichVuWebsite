@@ -110,6 +110,14 @@ async function main() {
     ? ok(`trang xác nhận IN mã tra cứu (token) dạng chữ + link → khách vãng lai tra được đơn #${num}`)
     : bad('trang xác nhận KHÔNG hiện mã tra cứu', `num=${num} có-token-trong-body=${tok ? succ.body.includes(tok) : 'no-token'}`);
 
+  sect('5. Khi có vận đơn → trang tra cứu HIỆN mã vận đơn + link hãng (khách tự theo dõi shipment)');
+  const oid = (await owner.query(`SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, num])).rows[0].id;
+  await owner.query(`INSERT INTO shipments (shop_id, order_id, carrier, tracking_number, status) VALUES ($1,$2,'ghn','GHN-TEST-9988','in_transit')`, [A.shopId, oid]);
+  const succ2 = await co(A.host, 'GET', `/checkout/success?number=${num}&token=${encodeURIComponent(tok ?? '')}`);
+  succ2.status === 200 && /Vận chuyển/.test(succ2.body) && succ2.body.includes('GHN-TEST-9988') && succ2.body.includes('donhang.ghn.vn/?order_code=GHN-TEST-9988')
+    ? ok('trang tra cứu hiện mã vận đơn GHN-TEST-9988 + link donhang.ghn.vn → khách tra được shipment')
+    : bad('không hiện mã vận đơn', `vận-chuyển=${/Vận chuyển/.test(succ2.body)} code=${succ2.body.includes('GHN-TEST-9988')}`);
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

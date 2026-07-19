@@ -10,6 +10,15 @@ import { PROVINCES } from './provinces.js';
 const AMP = /&/g, LT = /</g, GT = />/g, QUOT = /"/g, APOS = /'/g;
 export const esc = (s) => String(s ?? '').replace(AMP, '&amp;').replace(LT, '&lt;').replace(GT, '&gt;').replace(QUOT, '&quot;').replace(APOS, '&#39;');
 const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + '₫';
+// Vận đơn: tên hãng + link tra cứu công khai của hãng (khách tự theo dõi shipment).
+const carrierName = (c) => ({ ghn: 'GHN', ghtk: 'GHTK' }[String(c ?? '').toLowerCase()] ?? (c || 'Hãng vận chuyển'));
+const carrierTrackUrl = (c, code) => {
+  if (!code) return null;
+  const k = String(c ?? '').toLowerCase();
+  if (k === 'ghn') return `https://donhang.ghn.vn/?order_code=${encodeURIComponent(code)}`;
+  if (k === 'ghtk') return `https://i.ghtk.vn/?order_code=${encodeURIComponent(code)}`;
+  return null;
+};
 
 // Icon giỏ nội tuyến (đồng bộ với storefront; là markup nên hợp CSP).
 const I_CART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="20" r="1"/><circle cx="17" cy="20" r="1"/><path d="M2 3h2l2.4 12.3a1 1 0 0 0 1 .8h8.7a1 1 0 0 0 1-.8L21 7H5.6"/></svg>';
@@ -347,6 +356,10 @@ export function renderOrder(shopName, o, pay, qr, justPlaced = false, lookupToke
       <h1>${justPlaced ? 'Đặt hàng thành công 🎉' : `Đơn hàng #${o.order_number}`}</h1>
       <p>Đơn <strong>#${o.order_number}</strong> · <span class="badge ok">${esc(statusVi)}</span></p></div>
     ${payBlock}
+    ${(o.shipments?.length) ? `<div class="card"><h2>Vận chuyển</h2>
+      <p class="muted" style="margin:0 0 8px">Đơn đã được gửi qua đơn vị vận chuyển. Theo dõi hành trình bằng mã dưới đây:</p>
+      ${o.shipments.map((s) => `<div class="row"><span class="muted">${esc(carrierName(s.carrier))}</span><span><strong style="user-select:all">${esc(s.tracking_number)}</strong></span></div>
+        ${carrierTrackUrl(s.carrier, s.tracking_number) ? `<a class="btn alt" style="margin-top:8px" href="${carrierTrackUrl(s.carrier, s.tracking_number)}" target="_blank" rel="noopener noreferrer">Tra cứu vận đơn ${esc(carrierName(s.carrier))} →</a>` : ''}`).join('')}</div>` : ''}
     <div class="card"><h2>Chi tiết đơn</h2>
       ${o.lines.map((l) => `<div class="tot"><span class="muted">${esc(l.title_snapshot)} × ${l.qty}${l.orig_unit_price_vnd ? ` <span style="color:#b91c1c">(KM, tiết kiệm ${money((Number(l.orig_unit_price_vnd) - Number(l.unit_price_vnd)) * l.qty)})</span>` : ''}</span><span>${money(Number(l.unit_price_vnd) * l.qty)}</span></div>`).join('')}
       <div class="tot"><span class="muted">Phí giao hàng</span><span>${money(o.shipping_vnd)}</span></div>

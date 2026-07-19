@@ -35,9 +35,14 @@ const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
 async function statusEvent(c, order, extra = {}) {
   if (!order.customer_email) return;
+  // shop_name → email báo trạng thái hiện ĐÚNG brand cửa hàng (trước đây thiếu → rơi về 'nentang.vn');
+  // customer_name → cá nhân hoá "Chào <tên>". Email builder (worker compose) đã dùng 2 field này +
+  // tracking_number (shipped truyền qua extra) — chỉ thiếu ở payload nên bổ sung tại đây.
+  const shopName = (await c.query(`SELECT name FROM shops WHERE id = current_shop_id()`)).rows[0]?.name ?? null;
   await c.query(
     `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.status_changed', $1)`,
-    [{ to: order.customer_email, order_number: Number(order.order_number), status: order.status, ...extra }],
+    [{ to: order.customer_email, order_number: Number(order.order_number), status: order.status,
+       shop_name: shopName, customer_name: order.customer_name ?? null, ...extra }],
   );
 }
 

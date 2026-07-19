@@ -96,3 +96,62 @@ export function renderError(msg) {
   return layout('Lỗi', `<div class="card"><h1>Có lỗi xảy ra</h1><p class="lede">${esc(msg)}</p>
     <p class="foot"><a href="/signup">Thử lại</a></p></div>`);
 }
+
+// Trang XÁC NHẬN verify (GET — KHÔNG side-effect). Bấm nút = POST → provision. token trong hidden field.
+export function renderVerifyConfirm(name, slug, token, ct, domain = 'nentang.vn') {
+  return layout('Kích hoạt cửa hàng', `
+    <div class="card">
+      <h1>Kích hoạt cửa hàng</h1>
+      <p class="lede">Xác nhận tạo cửa hàng <strong>${esc(name)}</strong> tại
+        <strong>${esc(slug)}.${esc(domain)}</strong>.</p>
+      <form method="POST" action="/signup/verify">
+        <input type="hidden" name="token" value="${esc(token)}">
+        <input type="hidden" name="ct" value="${esc(ct)}">
+        <button class="btn" type="submit">Kích hoạt cửa hàng của tôi</button>
+      </form>
+    </div>`);
+}
+
+// Provision xong — KHÔNG auto-login (parity): mời đăng nhập ở admin.
+export function renderVerifyDone(name, slug, domain = 'nentang.vn') {
+  return layout('Cửa hàng đã sẵn sàng', `
+    <div class="card ok-hero">
+      <div class="big">🎉</div>
+      <h1>Cửa hàng đã sẵn sàng!</h1>
+      <p class="lede"><strong>${esc(name)}</strong> đã được tạo tại
+        <a href="https://${esc(slug)}.${esc(domain)}">${esc(slug)}.${esc(domain)}</a>.</p>
+      <a class="btn" href="https://admin.${esc(domain)}/">Đăng nhập để bắt đầu bán hàng</a>
+      <p class="muted" style="margin-top:14px">Dùng email + mật khẩu vừa đăng ký.</p>
+    </div>`);
+}
+
+// Link verify hỏng / đã dùng / hết hạn — TRUNG TÍNH (không phân biệt lý do).
+export function renderVerifyInvalid(domain = 'nentang.vn') {
+  return layout('Liên kết không hợp lệ', `
+    <div class="card">
+      <h1>Liên kết không còn hiệu lực</h1>
+      <p class="lede">Liên kết xác minh đã được dùng, hết hạn, hoặc không hợp lệ.</p>
+      <p class="foot"><a href="/signup">Đăng ký lại</a></p>
+    </div>`);
+}
+
+// Email đã có TÀI KHOẢN đã xác minh — self-serve KHÔNG bind mù (nhánh c acceptInvitation).
+export function renderVerifyLoginRequired(domain = 'nentang.vn') {
+  return layout('Đăng nhập để tiếp tục', `
+    <div class="card">
+      <h1>Email này đã có tài khoản</h1>
+      <p class="lede">Email bạn dùng đã có tài khoản trên nền tảng. Vì lý do an toàn, hãy
+        <strong>đăng nhập</strong> rồi tạo cửa hàng từ tài khoản của bạn.</p>
+      <a class="btn" href="https://admin.${esc(domain)}/">Đăng nhập</a>
+    </div>`);
+}
+
+// Slug bị người khác lấy giữa lúc đăng ký và kích hoạt (hiếm).
+export function renderVerifySlugTaken(domain = 'nentang.vn') {
+  return layout('Địa chỉ đã có người dùng', `
+    <div class="card">
+      <h1>Địa chỉ cửa hàng vừa bị lấy</h1>
+      <p class="lede">Rất tiếc, địa chỉ này vừa được người khác đăng ký. Vui lòng đăng ký lại với tên khác.</p>
+      <p class="foot"><a href="/signup">Đăng ký lại</a></p>
+    </div>`);
+}

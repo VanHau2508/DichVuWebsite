@@ -26,6 +26,7 @@ import { isSlugDenied, isDisposableEmail } from './denylist.js';
 
 const PORT = Number(process.env.PORT ?? 3064);
 const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN ?? 'nentang.vn';
+const TRIAL_DAYS = Math.max(0, Number(process.env.TRIAL_DAYS ?? 14) || 0); // đồng bộ platform/0056
 const DRAFT_TTL_MIN = Number(process.env.SIGNUP_DRAFT_TTL_MIN ?? 30);
 const SIGNUP_IP_CAP = Number(process.env.SIGNUP_IP_CAP ?? 5);       // trần nháp/IP/giờ (sàn DB)
 const SIGNUP_RL_LIMIT = Number(process.env.SIGNUP_RL_LIMIT ?? 20);  // lớp đầu Redis/IP/giờ
@@ -151,11 +152,81 @@ async function checkSlug(req, res, q) {
   return send(res, 200, { available: free });
 }
 
+// ── VERIFY + PROVISION (signup-3) — nguyên tử 1-tx ──────────────────────────
+// GET verify: CHỈ hiển thị trang xác nhận (KHÔNG side-effect) → prefetch/quét-link email không
+// provision. Provision chỉ khi POST (bấm nút) + sameOrigin.
+async function pageVerify(req, res, q) {
+  const token = String(q.get('token') ?? '');
+  const d = token ? (await db.query(
+    `SELECT name, slug FROM shop_signups WHERE token_hash=$1 AND status='pending' AND expires_at>now()`,
+    [sha256(token)]).then((r) => r.rows[0]).catch(() => null)) : null;
+  if (!d) return sendHtml(res, 200, V.renderVerifyInvalid(PLATFORM_DOMAIN));
+  return sendHtml(res, 200, V.renderVerifyConfirm(d.name, d.slug, token, issueFormTs(), PLATFORM_DOMAIN));
+}
+
+async function doVerify(req, res) {
+  if (!sameOrigin(req)) return send(res, 403, { error: 'origin' });
+  const f = await readForm(req);
+  const token = String(f.token ?? '');
+  if (!token) return sendHtml(res, 200, V.renderVerifyInvalid(PLATFORM_DOMAIN));
+  let out;
+  try {
+    out = await withSignupTx(async (c) => {
+      // CLAIM-FIRST atomic: pending→provisioned dưới khoá dòng → 2 verify song song CHỈ 1 thắng
+      // (cái kia thấy status đã đổi → 0 dòng → trung tính). Token 1-lần. Tx fail → status hoàn nguyên.
+      const d = (await c.query(
+        `UPDATE shop_signups SET status='provisioned'
+          WHERE token_hash=$1 AND status='pending' AND expires_at>now()
+          RETURNING id, email, password_hash, slug, name, plan_code, locale, currency, timezone`,
+        [sha256(token)])).rows[0];
+      if (!d) return { kind: 'invalid' };
+      // Reserve slug (CÙNG key draft) + tái kiểm (slug có thể bị admin lấy giữa chừng, hiếm).
+      await c.query(`SELECT pg_advisory_xact_lock(hashtextextended('signup-slug:'||$1, 0))`, [d.slug]);
+      if (!(await slugFree(c, d.slug))) throw Object.assign(new Error('slug taken'), { code: 'SLUG_TAKEN' });
+      // OWNER = user nội sinh (mẫu acceptInvitation 0020, 3 nhánh). shop_id/user_id LUÔN server-derived.
+      const ex = (await c.query(`SELECT id, email_verified_at FROM users WHERE email=$1`, [d.email])).rows[0];
+      let userId;
+      if (!ex) { // (a) email mới → tạo user đã-xác-minh (token chứng minh email)
+        userId = (await c.query(`INSERT INTO users (email, password_hash, email_verified_at) VALUES ($1,$2,now()) RETURNING id`, [d.email, d.password_hash])).rows[0].id;
+      } else if (ex.email_verified_at === null) { // (b) user chưa-verify (kẻ chiếm trước) → CLAIM
+        userId = ex.id;
+        await c.query(`UPDATE users SET password_hash=$1, email_verified_at=now(), mfa_enabled=false WHERE id=$2`, [d.password_hash, userId]);
+        await c.query(`UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, [userId]);
+      } else { // (c) email ĐÃ verify (chủ hợp lệ) → self-serve KHÔNG có phiên → 403 login_required
+        throw Object.assign(new Error('login required'), { code: 'LOGIN_REQUIRED' });
+      }
+      // Provision shop (mirror platform createShop:145-169; invariant current_period_end cưỡng chế CHECK 0091).
+      const shopId = (await c.query(
+        `INSERT INTO shops (slug, name, status, locale, currency, timezone, created_via)
+         VALUES ($1,$2,'onboarding',$3,$4,$5,'self_serve') RETURNING id`,
+        [d.slug, d.name, d.locale, d.currency, d.timezone])).rows[0].id;
+      await c.query(`INSERT INTO domains (shop_id, hostname, verification_token, verified_at, is_primary) VALUES ($1,$2,$3,now(),true)`,
+        [shopId, `${d.slug}.${PLATFORM_DOMAIN}`, generateToken()]);
+      await c.query(`INSERT INTO subscriptions (shop_id, plan_code, status, current_period_end) VALUES ($1,$2,'trial', now() + ($3 || ' days')::interval)`,
+        [shopId, d.plan_code, String(TRIAL_DAYS)]);
+      await c.query(`INSERT INTO memberships (shop_id, user_id, role) VALUES ($1,$2,'owner')`, [shopId, userId]);
+      await c.query(`INSERT INTO audit_logs (shop_id, actor_type, actor_id, action, metadata) VALUES ($1,'system',NULL,'shop.created',$2)`,
+        [shopId, { slug: d.slug, plan_code: d.plan_code, created_via: 'self_serve' }]);
+      await c.query(`UPDATE shop_signups SET provisioned_shop_id=$1 WHERE id=$2`, [shopId, d.id]);
+      return { kind: 'ok', name: d.name, slug: d.slug };
+    });
+  } catch (e) {
+    if (e && e.code === 'LOGIN_REQUIRED') return sendHtml(res, 200, V.renderVerifyLoginRequired(PLATFORM_DOMAIN));
+    if (e && (e.code === 'SLUG_TAKEN' || e.code === '23505')) return sendHtml(res, 409, V.renderVerifySlugTaken(PLATFORM_DOMAIN));
+    throw e;
+  }
+  if (out.kind === 'invalid') return sendHtml(res, 200, V.renderVerifyInvalid(PLATFORM_DOMAIN));
+  log('info', 'shop_provisioned', {}); // KHÔNG log slug/email (PII). KHÔNG auto-login (parity).
+  return sendHtml(res, 200, V.renderVerifyDone(out.name, out.slug, PLATFORM_DOMAIN));
+}
+
 // ── router ───────────────────────────────────────────────────────────────────
 const ROUTES = [
   { m: 'GET', re: /^\/signup\/?$/, fn: pageSignup },
   { m: 'POST', re: /^\/signup$/, fn: doSignup },
   { m: 'GET', re: /^\/signup\/check-slug$/, fn: checkSlug },
+  { m: 'GET', re: /^\/signup\/verify$/, fn: pageVerify },
+  { m: 'POST', re: /^\/signup\/verify$/, fn: doVerify },
 ];
 
 const server = http.createServer(async (req, res) => {

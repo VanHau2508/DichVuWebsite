@@ -177,7 +177,7 @@ const CUSTOMER_COOKIE = '__Host-cust_session';
 // {id, full_name, phone, email, addr} để prefill + stamp orders.customer_id. app_checkout có
 // SELECT customers/customer_sessions/customer_addresses theo cột (KHÔNG password_hash). Địa chỉ
 // đọc theo customer_id RÚT TỪ PHIÊN (không từ form) — không IDOR.
-async function resolveCustomer(shopId, req) {
+async function resolveCustomer(shopId, req, { withAddresses = false } = {}) {
   const tok = parseCookies(req)[CUSTOMER_COOKIE];
   if (!tok) return null;
   return withTenant(shopId, async (c) => {
@@ -186,12 +186,17 @@ async function resolveCustomer(shopId, req) {
         WHERE s.token_hash = $1 AND s.shop_id = current_shop_id() AND s.revoked_at IS NULL AND s.expires_at > now() AND cu.status = 'active'`,
       [sha256(tok)])).rows[0];
     if (!cu) return null;
-    const addr = (await c.query(
-      `SELECT recipient_name, phone, line1, ward, district, province FROM customer_addresses
-        WHERE customer_id = $1 ORDER BY is_default DESC, created_at LIMIT 1`, [cu.id])).rows[0] ?? null;
-    return { ...cu, addr };
+    // Địa chỉ đọc theo customer_id RÚT TỪ PHIÊN (không từ form) → chống IDOR. withAddresses:
+    // nạp CẢ danh sách để checkout hiện "chọn nhanh địa chỉ" (khớp address_choice trong bộ nhớ →
+    // id địa chỉ khách khác không có trong list → không dùng được, không cần query riêng).
+    const rows = (await c.query(
+      `SELECT id, recipient_name, phone, line1, ward, district, province, is_default FROM customer_addresses
+        WHERE customer_id = $1 ORDER BY is_default DESC, created_at${withAddresses ? '' : ' LIMIT 1'}`, [cu.id])).rows;
+    return { ...cu, addr: rows[0] ?? null, ...(withAddresses ? { addresses: rows } : {}) };
   }).catch(() => null);
 }
+// Gộp các trường địa chỉ đã lưu thành 1 dòng địa chỉ giao (line1 + ward/district; province riêng).
+function savedAddrLine(a) { return [a.line1, a.ward, a.district].filter(Boolean).join(', '); }
 async function withTenant(shopId, fn) {
   const c = await db.connect();
   try {
@@ -799,6 +804,10 @@ async function checkoutPlace(req, res, form, ctx) {
   const idemKey = String(form.idempotency_key ?? '');
   if (idemKey.length < 8 || idemKey.length > 200) return sendHtml(res, 400, renderError(shopName, 'Phiên thanh toán không hợp lệ, vui lòng tải lại trang.'));
 
+  // Khách đăng nhập (+ địa chỉ đã lưu) — nạp SỚM để "chọn nhanh địa chỉ" + giữ lựa chọn khi
+  // dựng lại form. addresses chỉ chứa địa chỉ CỦA phiên này → address_choice lạ không khớp (IDOR).
+  const cust = await resolveCustomer(ctx.shopId, req, { withAddresses: true });
+
   // Dựng lại trang thanh toán (giữ dữ liệu đã nhập) — dùng khi cần thử lại / hỏi xác minh.
   // Sinh idem MỚI ở đây và ràng buộc challenge vào chính idem đó (chống replay).
   const reRender = async ({ needChallenge, ...opts }) => {
@@ -811,8 +820,8 @@ async function checkoutPlace(req, res, form, ctx) {
     });
     if (!summary.items.length) return redirect(res, '/cart');
     const idem = genToken();
-    const prefill = { name: form.name, phone: form.phone, email: form.email, address_line: form.address_line, province: form.province, payment_method: form.payment_method };
-    return sendHtml(res, opts.status ?? 200, renderCheckout(shopName, summary, idem, { formTs: issueFormTs(), prefill, challenge: needChallenge ? issueChallenge(idem) : undefined, ...opts }));
+    const prefill = { name: form.name, phone: form.phone, email: form.email, address_line: form.address_line, province: form.province, payment_method: form.payment_method, address_choice: form.address_choice, logged_in: !!cust };
+    return sendHtml(res, opts.status ?? 200, renderCheckout(shopName, summary, idem, { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], challenge: needChallenge ? issueChallenge(idem) : undefined, ...opts }));
   };
 
   // ── Lớp BOT no-JS ────────────────────────────────────────────────────────────
@@ -823,7 +832,19 @@ async function checkoutPlace(req, res, form, ctx) {
   if (!ts.valid || ts.age > FORM_MAX_AGE_MS) return reRender({ error: 'Phiên thanh toán đã hết hạn. Vui lòng kiểm tra thông tin và bấm Đặt hàng lại.' });
   if (ts.age < MIN_FILL_MS) return reRender({ error: 'Bạn thao tác hơi nhanh — vui lòng bấm Đặt hàng lại để xác nhận.' });
 
-  const f = parseOrderInput({ name: form.name, phone: form.phone, email: form.email, address: form.address_line ? { line: String(form.address_line).slice(0, 300), province: form.province ? String(form.province).slice(0, 60) : undefined } : null, payment_method: form.payment_method });
+  // CHỌN NHANH địa chỉ đã lưu (khách đăng nhập): address_choice = <uuid> → dùng địa chỉ đó
+  // (khớp trong cust.addresses = đã lọc theo customer_id phiên → id lạ không có = IDOR-safe).
+  // Không chọn / 'new' / guest → dùng ô nhập tay. Địa chỉ lạ/đã xoá → dựng lại form nhắc chọn lại.
+  let inName = form.name, inPhone = form.phone, inLine = form.address_line, inProvince = form.province;
+  const addrChoice = String(form.address_choice ?? '');
+  if (cust && UUID_RE.test(addrChoice)) {
+    const saved = (cust.addresses ?? []).find((a) => a.id === addrChoice);
+    if (!saved) return reRender({ error: 'Địa chỉ đã lưu không còn khả dụng — vui lòng chọn lại hoặc nhập địa chỉ mới.' });
+    inName = saved.recipient_name; inPhone = saved.phone; inLine = savedAddrLine(saved); inProvince = saved.province;
+    // Đồng bộ vào form → reRender (honesty-loop ship) tính phí theo ĐÚNG tỉnh của địa chỉ đã lưu.
+    form.name = inName; form.phone = inPhone; form.address_line = inLine; form.province = inProvince;
+  }
+  const f = parseOrderInput({ name: inName, phone: inPhone, email: form.email, address: inLine ? { line: String(inLine).slice(0, 300), province: inProvince ? String(inProvince).slice(0, 60) : undefined } : null, payment_method: form.payment_method });
   if (f.error) return reRender({ error: f.error });
   // Form NGƯỜI MUA bắt buộc chọn tỉnh (API JSON /checkout vẫn tuỳ chọn — tương thích ngược,
   // nhưng không rõ tỉnh thì bị tính phí liên miền ở createOrderTx).
@@ -848,7 +869,6 @@ async function checkoutPlace(req, res, form, ctx) {
   }
 
   const token = parseCookies(req)[CART_COOKIE];
-  const cust = await resolveCustomer(ctx.shopId, req);
   try {
     const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, customerId: cust?.id ?? null }, token, idemKey, f));
     return redirect(res, `/checkout/success?number=${out.body.order_number}&token=${encodeURIComponent(out.body.lookup_token)}&placed=1`);
@@ -893,14 +913,15 @@ async function getCheckoutPage(req, res, _body, ctx) {
     return cart ? summarize(c, cart.id) : { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 };
   });
   if (!summary.items.length) return redirect(res, '/cart');       // giỏ trống → về giỏ
-  // Khách đăng nhập → điền nhanh tên/SĐT/email + địa chỉ mặc định đã lưu (no-JS, prefill).
-  const cust = await resolveCustomer(ctx.shopId, req);
+  // Khách đăng nhập → điền nhanh tên/SĐT/email + CHỌN NHANH địa chỉ đã lưu (no-JS radio).
+  const cust = await resolveCustomer(ctx.shopId, req, { withAddresses: true });
   const prefill = cust ? {
     name: cust.full_name ?? '', phone: cust.phone ?? '', email: cust.email ?? '',
     address_line: cust.addr?.line1 ?? '', province: cust.addr?.province ?? '',
     logged_in: true,
   } : undefined;
-  return sendHtml(res, 200, renderCheckout(await getShopName(ctx.shopId), summary, genToken(), { formTs: issueFormTs(), prefill }));
+  return sendHtml(res, 200, renderCheckout(await getShopName(ctx.shopId), summary, genToken(),
+    { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [] }));
 }
 
 async function getLookupPage(req, res, _body, ctx) {

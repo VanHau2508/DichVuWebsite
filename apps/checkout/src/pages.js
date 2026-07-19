@@ -81,6 +81,18 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--pri);box
 .pay label:has(input:checked){border-color:var(--pri);background:var(--wash);box-shadow:0 0 0 3px color-mix(in srgb,var(--pri) 15%,transparent)}
 .pay input{width:auto;accent-color:var(--pri)}
 .hp{position:absolute;left:-9999px;width:1px;height:1px;opacity:0}
+.addr-pick{border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
+.addr-opt{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border:1.5px solid var(--bd);border-radius:var(--r);cursor:pointer;background:var(--card);transition:border-color .15s,background .15s;font-weight:500}
+.addr-opt input{width:auto;accent-color:var(--pri);margin-top:3px}
+.addr-opt:hover{border-color:color-mix(in srgb,var(--pri) 40%,var(--bd))}
+.addr-opt:has(input:checked){border-color:var(--pri);background:var(--wash)}
+.addr-newlbl{font-weight:600;color:var(--pri)}
+#addr-new{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}
+#addr-new:checked~.addr-newlbl{border-color:var(--pri);background:var(--wash)}
+.addr-new{display:none;margin-top:2px}
+#addr-new:checked~.addr-new{display:block}
+.badge-def{display:inline-block;font-size:.7rem;background:var(--goodbg);color:var(--good);padding:1px 7px;border-radius:var(--pill);font-weight:600;vertical-align:middle}
+@media(max-width:680px){.checkout-submit{position:sticky;bottom:0;z-index:15;margin:14px -20px 0;padding:12px 20px calc(12px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--card) 92%,transparent);backdrop-filter:saturate(180%) blur(10px);-webkit-backdrop-filter:saturate(180%) blur(10px);border-top:1px solid var(--bd)}}
 .bank{background:var(--surf);border:1px solid var(--bd);border-radius:var(--r);padding:14px}.bank .row{border-color:var(--bd)}
 .qrbox{text-align:center;margin:14px 0}.qrbox svg{max-width:220px;height:auto;border:1px solid var(--bd);border-radius:var(--r);padding:8px;background:#fff}
 .badge{display:inline-flex;align-items:center;gap:5px;padding:5px 13px;border-radius:var(--pill);font-size:.82rem;font-weight:600;line-height:1.3}
@@ -186,9 +198,50 @@ export function renderCart(shopName, s) {
 
 export function renderCheckout(shopName, s, idemToken, opts = {}) {
   const pf = opts.prefill ?? {};
+  const addresses = opts.addresses ?? [];
   const v = (x) => esc(x ?? '');
   const pm = pf.payment_method === 'qr' ? 'qr' : 'cod';
   const ch = opts.challenge;
+  const provinceOpts = (sel) => PROVINCES.map((p) => `<option value="${esc(p)}"${sel === p ? ' selected' : ''}>${esc(p)}</option>`).join('');
+  const honeypot = `<input class="hp" type="text" name="company" tabindex="-1" autocomplete="off" aria-hidden="true">`;
+  const emailField = `<label>Email (tuỳ chọn — nhận xác nhận đơn)</label><input name="email" type="email" autocomplete="email" value="${v(pf.email)}">`;
+
+  // Khách ĐĂNG NHẬP + có địa chỉ đã lưu → CHỌN NHANH (radio no-JS). Chọn "địa chỉ khác" (:checked)
+  // mở ô nhập tay. Địa chỉ đã lưu KHÔNG required (khách có thể chọn radio) — server validate.
+  const hasSaved = pf.logged_in && addresses.length > 0;
+  let recipient;
+  if (hasSaved) {
+    const chosen = (pf.address_choice === 'new' || addresses.some((a) => a.id === pf.address_choice)) ? pf.address_choice : addresses[0].id;
+    const savedRadios = addresses.map((a) => {
+      const line = [a.line1, a.ward, a.district, a.province].filter(Boolean).join(', ');
+      return `<label class="addr-opt"><input type="radio" name="address_choice" value="${esc(a.id)}"${chosen === a.id ? ' checked' : ''}>
+        <span><strong>${esc(a.recipient_name)}</strong> · ${esc(a.phone)}${a.is_default ? ' <span class="badge-def">Mặc định</span>' : ''}<br><span class="muted">${esc(line)}</span></span></label>`;
+    }).join('');
+    recipient = `<div class="card"><h2>Giao tới</h2>
+      <fieldset class="addr-pick">
+        ${savedRadios}
+        <input type="radio" name="address_choice" value="new" id="addr-new"${chosen === 'new' ? ' checked' : ''}>
+        <label for="addr-new" class="addr-opt addr-newlbl">+ Giao tới địa chỉ khác</label>
+        <div class="addr-new">
+          <label>Họ tên</label><input name="name" maxlength="120" autocomplete="name" value="${v(pf.name)}">
+          <label>Số điện thoại</label><input name="phone" inputmode="tel" autocomplete="tel" placeholder="09xxxxxxxx" value="${v(pf.phone)}">
+          <label>Địa chỉ giao hàng</label><textarea name="address_line" rows="2" maxlength="300" autocomplete="street-address" placeholder="Số nhà, đường, phường/xã, quận/huyện">${v(pf.address_line)}</textarea>
+          <label>Tỉnh / Thành phố</label><select name="province" autocomplete="address-level1"><option value="">— Chọn tỉnh/thành —</option>${provinceOpts(pf.province)}</select>
+        </div>
+      </fieldset>
+      ${emailField}
+      ${honeypot}</div>`;
+  } else {
+    recipient = `<div class="card"><h2>Người nhận</h2>
+      <label>Họ tên *</label><input name="name" required maxlength="120" autocomplete="name" value="${v(pf.name)}">
+      <label>Số điện thoại *</label><input name="phone" required inputmode="tel" autocomplete="tel" placeholder="09xxxxxxxx" value="${v(pf.phone)}">
+      ${emailField}
+      <label>Địa chỉ giao hàng *</label><textarea name="address_line" required rows="2" maxlength="300" autocomplete="street-address" placeholder="Số nhà, đường, phường/xã, quận/huyện">${v(pf.address_line)}</textarea>
+      <label>Tỉnh / Thành phố *</label><select name="province" required autocomplete="address-level1">
+        <option value="" disabled${pf.province ? '' : ' selected'}>— Chọn tỉnh/thành —</option>${provinceOpts(pf.province)}</select>
+      ${honeypot}</div>`;
+  }
+
   return page('Thanh toán', shopName, `<h1>Thanh toán</h1>
     ${opts.error ? `<div class="card" style="border-color:#fca5a5;background:#fef2f2;color:#b91c1c"><strong>${esc(opts.error)}</strong></div>` : ''}
     <div class="card"><h2>Đơn hàng</h2>
@@ -199,17 +252,7 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
       <input type="hidden" name="ct" value="${esc(opts.formTs ?? '')}">
       <input type="hidden" name="ship_seen" value="${Number(s.shipping_vnd)}">
       <input type="hidden" name="subtotal_seen" value="${Number(s.subtotal_vnd)}">
-      <div class="card"><h2>Người nhận</h2>
-        <label>Họ tên *</label><input name="name" required maxlength="120" autocomplete="name" value="${v(pf.name)}">
-        <label>Số điện thoại *</label><input name="phone" required inputmode="tel" autocomplete="tel" placeholder="09xxxxxxxx" value="${v(pf.phone)}">
-        <label>Email (tuỳ chọn — nhận xác nhận đơn)</label><input name="email" type="email" autocomplete="email" value="${v(pf.email)}">
-        <label>Địa chỉ giao hàng *</label><textarea name="address_line" required rows="2" maxlength="300" autocomplete="street-address" placeholder="Số nhà, đường, phường/xã, quận/huyện">${v(pf.address_line)}</textarea>
-        <label>Tỉnh / Thành phố *</label><select name="province" required autocomplete="address-level1">
-          <option value="" disabled${pf.province ? '' : ' selected'}>— Chọn tỉnh/thành —</option>
-          ${PROVINCES.map((p) => `<option value="${esc(p)}"${pf.province === p ? ' selected' : ''}>${esc(p)}</option>`).join('')}
-        </select>
-        <input class="hp" type="text" name="company" tabindex="-1" autocomplete="off" aria-hidden="true">
-      </div>
+      ${recipient}
       <div class="card pay"><h2>Thanh toán</h2>
         <label><input type="radio" name="payment_method" value="cod"${pm === 'cod' ? ' checked' : ''}> Thanh toán khi nhận hàng (COD)</label>
         <label><input type="radio" name="payment_method" value="qr"${pm === 'qr' ? ' checked' : ''}> Chuyển khoản QR (VietQR)</label>
@@ -219,7 +262,7 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
         <input type="hidden" name="challenge_sig" value="${esc(ch.sig)}">
         <input name="challenge_answer" required inputmode="numeric" maxlength="4" style="max-width:120px" placeholder="Kết quả">
       </div>` : ''}
-      <button class="btn" type="submit">Đặt hàng · ${money(s.total_vnd)}</button>
+      <div class="checkout-submit"><button class="btn" type="submit">Đặt hàng · ${money(s.total_vnd)}</button></div>
     </form>
     <a class="btn alt" href="/cart" style="margin-top:8px">Quay lại giỏ</a>`);
 }

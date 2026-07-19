@@ -2034,6 +2034,15 @@ async function settingsSave(req, res, me, cookie, shopId) {
     low_stock_threshold: String(f.low_stock_threshold ?? '').trim(),
     max_pending_per_ip: String(f.max_pending_per_ip ?? '').trim(),
     max_pending_per_phone: String(f.max_pending_per_phone ?? '').trim(),
+    // Ship theo km (0089): forward nguyên sang seller (nơi validate + mirror CHECK distance-requires-config).
+    ship_mode: String(f.ship_mode ?? '').trim(),
+    ship_origin_lat: String(f.ship_origin_lat ?? '').trim(),
+    ship_origin_lng: String(f.ship_origin_lng ?? '').trim(),
+    ship_base_vnd: String(f.ship_base_vnd ?? '').trim(),
+    ship_per_km_vnd: String(f.ship_per_km_vnd ?? '').trim(),
+    ship_max_km: String(f.ship_max_km ?? '').trim(),
+    ship_road_factor: String(f.ship_road_factor ?? '').trim(),
+    ship_over_max_behavior: String(f.ship_over_max_behavior ?? '').trim(),
   };
   const r = await sellerApi('PATCH', `/shops/${shopId}`, { cookie, body });
   if (r.status === 200) return settingsPage(res, me, cookie, shopId, 'Đã lưu hồ sơ cửa hàng.', null);

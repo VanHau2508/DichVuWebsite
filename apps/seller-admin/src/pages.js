@@ -342,6 +342,8 @@ export function renderShopSettings(ctx, shopId, shop, notice, err) {
     return layout('Cài đặt', ctx, `<h1>Cài đặt cửa hàng</h1><div class="card"><p class="muted">Chỉ <strong>chủ cửa hàng</strong> hoặc <strong>quản trị</strong> mới sửa hồ sơ.</p></div>`);
   }
   const s = shop ?? {};
+  const shipMode = s.ship_mode === 'distance' ? 'distance' : 'region';       // mặc định vùng
+  const overMax = s.ship_over_max_behavior === 'reject' ? 'reject' : 'region'; // mặc định giao toàn quốc
   return layout('Cài đặt cửa hàng', ctx, `
     <h1>Cài đặt cửa hàng</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
@@ -386,6 +388,30 @@ export function renderShopSettings(ctx, shopId, shop, notice, err) {
           <div><label>Cảnh báo sắp hết hàng khi tồn ≤</label><input name="low_stock_threshold" value="${esc(s.low_stock_threshold ?? '')}" inputmode="numeric" maxlength="5" placeholder="mặc định 5" style="width:200px"></div>
         </div>
         <p class="muted" style="font-size:.8rem;margin:6px 0 0">Nội miền = cùng miền Bắc/Trung/Nam với tỉnh gửi hàng. Cân đơn = tổng khối lượng biến thể (khai ở từng sản phẩm; trống = mặc định). VD: phí 30.000đ, miễn phí từ 500.000đ → đơn ≥ 500k được free ship (miễn cả phụ phí cân).</p>
+
+        <h2 style="margin:22px 0 4px;font-size:1.05rem">Ship theo khoảng cách (km) <span class="muted" style="font-weight:400;font-size:.8rem">— tuỳ chọn nâng cao</span></h2>
+        <p class="muted" style="margin:0 0 10px;font-size:.85rem">Khi bật, khách bấm <strong>“📍 Dùng vị trí hiện tại”</strong> lúc thanh toán → phí giao <strong>tính ngay theo quãng đường</strong> từ cửa hàng tới khách (hợp lý cho <strong>khách gần</strong>, shipper riêng của bạn). Phí km <strong>chồng lên</strong> phí vùng ở trên — luôn lấy mức cao hơn, nên khách gần không bao giờ rẻ bất thường.</p>
+        <div class="actions" style="align-items:center;flex-wrap:wrap;gap:18px">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:600"><input type="radio" name="ship_mode" value="region"${shipMode === 'region' ? ' checked' : ''} style="width:auto"> Tắt — chỉ tính phí vùng</label>
+          <label style="display:flex;align-items:center;gap:6px;font-weight:600"><input type="radio" name="ship_mode" value="distance"${shipMode === 'distance' ? ' checked' : ''} style="width:auto"> Bật ship theo km</label>
+        </div>
+        <div class="actions" style="align-items:end;flex-wrap:wrap;margin-top:10px">
+          <div><label>Vĩ độ cửa hàng (latitude)</label><input name="ship_origin_lat" value="${esc(s.ship_origin_lat ?? '')}" inputmode="decimal" maxlength="12" placeholder="vd 21.028511" style="width:180px"></div>
+          <div><label>Kinh độ cửa hàng (longitude)</label><input name="ship_origin_lng" value="${esc(s.ship_origin_lng ?? '')}" inputmode="decimal" maxlength="12" placeholder="vd 105.804817" style="width:180px"></div>
+        </div>
+        <p class="muted" style="font-size:.8rem;margin:6px 0 0">Lấy toạ độ: mở <strong>Google Maps</strong> → bấm giữ (điện thoại) hoặc chuột phải (máy tính) đúng vị trí cửa hàng → hiện dãy số như <em>21.028511, 105.804817</em> → số đầu là <strong>Vĩ độ</strong>, số sau là <strong>Kinh độ</strong>.</p>
+        <div class="actions" style="align-items:end;flex-wrap:wrap;margin-top:10px">
+          <div><label>Phí cơ bản (VND)</label><input name="ship_base_vnd" value="${esc(s.ship_base_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="vd 15000" style="width:160px"></div>
+          <div><label>Phí mỗi km (VND)</label><input name="ship_per_km_vnd" value="${esc(s.ship_per_km_vnd ?? '')}" inputmode="numeric" maxlength="7" placeholder="vd 4000" style="width:150px"></div>
+          <div><label>Bán kính giao tối đa (km)</label><input name="ship_max_km" value="${esc(s.ship_max_km ?? '')}" inputmode="numeric" maxlength="3" placeholder="vd 20 (1–500)" style="width:180px"></div>
+          <div><label>Hệ số đường bộ</label><input name="ship_road_factor" value="${esc(s.ship_road_factor ?? '')}" inputmode="decimal" maxlength="4" placeholder="1.3 (mặc định)" style="width:150px"></div>
+        </div>
+        <p class="muted" style="font-size:.8rem;margin:8px 0 4px"><strong>Ngoài bán kính giao tối đa</strong> (vd khách ở tỉnh khác, cách hàng nghìn km):</p>
+        <div class="actions" style="align-items:center;flex-wrap:wrap;gap:18px">
+          <label style="display:flex;align-items:center;gap:6px"><input type="radio" name="ship_over_max_behavior" value="region"${overMax === 'region' ? ' checked' : ''} style="width:auto"> Vẫn giao toàn quốc — tính <strong>phí vùng liên miền</strong> ở trên (khuyến nghị)</label>
+          <label style="display:flex;align-items:center;gap:6px"><input type="radio" name="ship_over_max_behavior" value="reject"${overMax === 'reject' ? ' checked' : ''} style="width:auto"> Chỉ giao trong bán kính — từ chối đơn xa</label>
+        </div>
+        <p class="muted" style="font-size:.8rem;margin:6px 0 0">Phí km = <em>phí cơ bản + (số km × phí mỗi km × hệ số đường bộ)</em>, nhưng không thấp hơn phí vùng. Ví dụ cửa hàng Hà Nội, khách cách 5km: 15.000 + 5×4.000×1.3 ≈ 41.000đ. Khách ở TP.HCM (ngoài bán kính) → rơi về phí liên miền, <strong>không</strong> tính nghìn km. Bật ship theo km <strong>bắt buộc</strong> khai toạ độ + phí cơ bản + phí/km + bán kính, và ở phần trên phải có <strong>tỉnh gửi hàng</strong> + <strong>phí liên miền</strong> (làm mức dự phòng khi khách không bật định vị).</p>
 
         <h2 style="margin:22px 0 4px;font-size:1.05rem">Chống đơn ảo</h2>
         <p class="muted" style="margin:0 0 10px;font-size:.85rem">Trần số đơn <strong>chưa xử lý</strong> cùng lúc từ một nguồn mạng / một SĐT. Để trống = dùng mặc định nền tảng. Đặt thấp hơn nếu bị spam; đặt cao hơn nếu nhiều khách thật dùng chung mạng.</p>

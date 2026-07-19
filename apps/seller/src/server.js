@@ -100,6 +100,8 @@ async function getShop(res, ctx) {
               contact_email, contact_phone, business_address,
               ship_fee_vnd, free_ship_threshold_vnd, low_stock_threshold,
               ship_fee_far_vnd, ship_extra_per_500g_vnd, default_weight_gram, ship_from_province,
+              ship_mode, ship_origin_lat, ship_origin_lng, ship_base_vnd, ship_per_km_vnd,
+              ship_max_km, ship_road_factor, ship_over_max_behavior,
               max_pending_per_ip, max_pending_per_phone, pii_retention_months, logo_key, require_mfa
          FROM shops WHERE id = $1`,
       [ctx.shopId],

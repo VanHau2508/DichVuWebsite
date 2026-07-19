@@ -134,9 +134,12 @@ const totalsBlock = (s) => `
   <div class="tot"><span class="muted">Tạm tính</span><span>${money(s.subtotal_vnd)}</span></div>
   ${s.discount_vnd ? `<div class="tot"><span class="muted">Giảm giá${s.coupon_code ? ` (${esc(s.coupon_code)})` : ''}</span><span style="color:#0e9f6e">−${money(s.discount_vnd)}</span></div>` : ''}
   ${s.points_discount_vnd ? `<div class="tot"><span class="muted">Đổi ${esc(s.loyalty?.applied_points ?? '')} điểm</span><span style="color:#0e9f6e">−${money(s.points_discount_vnd)}</span></div>` : ''}
-  <div class="tot"><span class="muted">Phí giao hàng</span><span>${money(s.shipping_vnd)}</span></div>
-  ${s.fee_region_pending ? `<div class="muted" style="font-size:.82rem">Phí trên tính theo giao nội miền — có thể thêm phụ phí liên miền tuỳ tỉnh/thành nhận hàng (chốt ở bước Đặt hàng).</div>` : ''}
-  <div class="tot grand"><span>Tổng cộng</span><span>${money(s.total_vnd)}</span></div>`;
+  ${s.ship_out_of_range
+    ? `<div class="tot"><span class="muted">Phí giao hàng</span><span style="color:#b91c1c">Ngoài vùng giao</span></div>
+       <div class="muted" style="font-size:.82rem;color:#b91c1c">Địa chỉ vượt bán kính giao của cửa hàng — chọn địa chỉ gần hơn hoặc liên hệ cửa hàng.</div>`
+    : `<div class="tot"><span class="muted">Phí giao hàng</span><span>${money(s.shipping_vnd)}</span></div>
+       ${s.fee_region_pending ? `<div class="muted" style="font-size:.82rem">Phí trên tính theo giao nội miền — có thể thêm phụ phí liên miền tuỳ tỉnh/thành nhận hàng (chốt ở bước Đặt hàng).</div>` : ''}`}
+  <div class="tot grand"><span>Tổng cộng</span><span>${s.ship_out_of_range ? '—' : money(s.total_vnd)}</span></div>`;
 
 // Ô nhập mã giảm giá trên trang giỏ (no-JS: POST /cart/coupon → PRG). Rỗng = gỡ mã.
 const couponBlock = (s) => `<div class="card">
@@ -250,8 +253,10 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
     <form method="POST" action="/checkout/place">
       <input type="hidden" name="idempotency_key" value="${esc(idemToken)}">
       <input type="hidden" name="ct" value="${esc(opts.formTs ?? '')}">
-      <input type="hidden" name="ship_seen" value="${Number(s.shipping_vnd)}">
+      <input type="hidden" name="ship_seen" value="${s.ship_out_of_range ? '' : Number(s.shipping_vnd)}">
       <input type="hidden" name="subtotal_seen" value="${Number(s.subtotal_vnd)}">
+      <input type="hidden" name="lat" value="${v(pf.lat)}">
+      <input type="hidden" name="lng" value="${v(pf.lng)}">
       ${recipient}
       <div class="card pay"><h2>Thanh toán</h2>
         <label><input type="radio" name="payment_method" value="cod"${pm === 'cod' ? ' checked' : ''}> Thanh toán khi nhận hàng (COD)</label>

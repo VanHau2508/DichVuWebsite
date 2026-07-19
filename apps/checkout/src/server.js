@@ -23,6 +23,7 @@ import { buildVietQR } from './vietqr.js';
 import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
 import { runReq, makeLog, health } from './obs.js';
 import { isProvince, regionOf } from './provinces.js';
+import { haversineKm, inVietnam } from './geo.js';
 // Bộ đếm rate-limit DÙNG CHUNG với auth (atomic Lua, FAIL-OPEN khi Redis lỗi). File
 // gắn vào /app/ratelimit.js qua bind-mount trong compose.dev.yml (không copy, không sửa).
 import { hit } from '../ratelimit.js';
@@ -229,7 +230,8 @@ async function findCart(c, token, { forUpdate = false } = {}) {
 // Phí ship theo shop (đọc trong tenant context). NULL → mặc định nền tảng (tương thích
 // ngược). Dùng CHUNG cho summarize (hiển thị) và createOrderTx (tính đơn) → luôn khớp.
 async function shopShipping(c) {
-  const s = (await c.query(`SELECT ship_fee_vnd, free_ship_threshold_vnd, ship_fee_far_vnd, ship_extra_per_500g_vnd, default_weight_gram, ship_from_province FROM shops WHERE id = current_shop_id()`)).rows[0] ?? {};
+  const s = (await c.query(`SELECT ship_fee_vnd, free_ship_threshold_vnd, ship_fee_far_vnd, ship_extra_per_500g_vnd, default_weight_gram, ship_from_province,
+              ship_mode, ship_origin_lat, ship_origin_lng, ship_base_vnd, ship_per_km_vnd, ship_max_km, ship_road_factor FROM shops WHERE id = current_shop_id()`)).rows[0] ?? {};
   return {
     fee: s.ship_fee_vnd != null ? Number(s.ship_fee_vnd) : SHIP_FEE,
     threshold: s.free_ship_threshold_vnd != null ? Number(s.free_ship_threshold_vnd) : null,
@@ -237,28 +239,65 @@ async function shopShipping(c) {
     extraPer500g: s.ship_extra_per_500g_vnd != null ? Number(s.ship_extra_per_500g_vnd) : 0,
     defaultWeightGram: Number(s.default_weight_gram ?? 500),
     fromRegion: regionOf(s.ship_from_province), // null nếu shop chưa khai / tên lạ → bỏ bậc vùng
+    // Ship theo km (0089). mode='distance' + gốc + đơn giá; NULL/region → hành vi 0063 y nguyên.
+    mode: s.ship_mode ?? 'region',
+    originLat: s.ship_origin_lat != null ? Number(s.ship_origin_lat) : null,
+    originLng: s.ship_origin_lng != null ? Number(s.ship_origin_lng) : null,
+    base: s.ship_base_vnd != null ? Number(s.ship_base_vnd) : null,
+    perKm: s.ship_per_km_vnd != null ? Number(s.ship_per_km_vnd) : null,
+    maxKm: s.ship_max_km != null ? Number(s.ship_max_km) : null,
+    roadFactor: s.ship_road_factor != null ? Number(s.ship_road_factor) : 1.3,
   };
+}
+// Khoảng cách giao (mét) từ gốc shop tới toạ độ khách — CHỈ khi shop bật distance + toạ độ hợp lệ
+// (trong VN). haversine × road_factor. Trả {coordsValid, distanceMeters}. Client gửi coords là INPUT.
+function resolveShipDistance(cfg, coords) {
+  if (cfg.mode !== 'distance' || !coords || cfg.originLat == null || cfg.originLng == null) return { coordsValid: false, distanceMeters: null };
+  if (!inVietnam(coords.lat, coords.lng)) return { coordsValid: false, distanceMeters: null }; // ngoài VN → rơi phí vùng
+  return { coordsValid: true, distanceMeters: haversineKm(cfg.originLat, cfg.originLng, coords.lat, coords.lng) * 1000 * cfg.roadFactor };
+}
+// Toạ độ từ form (hidden lat/lng JS GPS đặt) — CHỈ nhận khi hữu hạn + trong biên (chống NaN).
+function parseCoords(latRaw, lngRaw) {
+  const lat = Number(latRaw), lng = Number(lngRaw);
+  return (Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) ? { lat, lng } : null;
 }
 // Phí ship 2 bậc vùng (nội miền / liên miền) + phụ phí cân (mỗi 500g vượt 500g đầu).
 // HAI CHẾ ĐỘ một hàm: HIỂN THỊ (assumeFarWhenUnknown=false — chưa rõ tỉnh → ước tính
 // nội miền + ghi chú) và CHỐT ĐƠN (true — không rõ tỉnh → tính LIÊN MIỀN, bảo vệ shop:
 // Origin header giả được bằng curl nên người mua rành kỹ thuật không né được phí xa).
 // items: [{qty, weight_gram}] — weight_gram NULL → dùng cân mặc định của shop.
-function computeShipping(cfg, subtotal, items, province, { assumeFarWhenUnknown = false } = {}) {
-  if (!items.length) return 0;
-  if (cfg.threshold != null && subtotal >= cfg.threshold) return 0; // đủ ngưỡng miễn phí ship — miễn TOÀN BỘ (kể cả phụ phí cân)
+// Phụ phí cân: mỗi 500g vượt 500g đầu.
+function weightSurcharge(cfg, items) {
+  if (!(cfg.extraPer500g > 0)) return 0;
+  const grams = items.reduce((s, it) => s + it.qty * (it.weight_gram != null ? Number(it.weight_gram) : cfg.defaultWeightGram), 0);
+  return Math.ceil(Math.max(0, grams - 500) / 500) * cfg.extraPer500g;
+}
+// Phí VÙNG core (2 bậc nội/liên miền + phụ phí cân), KHÔNG freeship — dùng làm SÀN cho distance + path region (0063).
+function regionFeeCore(cfg, items, province, assumeFarWhenUnknown) {
   let fee = cfg.fee;
   if (cfg.feeFar != null && cfg.fromRegion) {
     const to = regionOf(province);
-    fee = to == null
-      ? (assumeFarWhenUnknown ? cfg.feeFar : cfg.fee)
-      : (to === cfg.fromRegion ? cfg.fee : cfg.feeFar);
+    fee = to == null ? (assumeFarWhenUnknown ? cfg.feeFar : cfg.fee) : (to === cfg.fromRegion ? cfg.fee : cfg.feeFar);
   }
-  if (cfg.extraPer500g > 0) {
-    const grams = items.reduce((s, it) => s + it.qty * (it.weight_gram != null ? Number(it.weight_gram) : cfg.defaultWeightGram), 0);
-    fee += Math.ceil(Math.max(0, grams - 500) / 500) * cfg.extraPer500g;
+  return fee + weightSurcharge(cfg, items);
+}
+// HAI CHẾ ĐỘ (choke-point phí DUY NHẤT, dùng chung hiển thị + chốt đơn): region (0063) và distance (0089).
+// Trả NULL = NGOÀI VÙNG GIAO (km>max) → caller 422 hard-stop (KHÔNG về 0 = free-ship âm thầm).
+function computeShipping(cfg, subtotal, items, province, { assumeFarWhenUnknown = false, coordsValid = false, distanceMeters = null } = {}) {
+  if (!items.length) return 0;
+  const freeship = cfg.threshold != null && subtotal >= cfg.threshold;
+  // Distance CHỈ khi shop bật + server xác thực coords hợp lệ (trong VN). Client KHÔNG tự chọn chế độ.
+  if (cfg.mode === 'distance' && coordsValid && distanceMeters != null) {
+    const km = Math.ceil(distanceMeters / 1000);                    // ceil → nhích coords vài mét không đổi phí
+    if (cfg.maxKm != null && km > cfg.maxKm) return null;           // NGOÀI VÙNG — thắng cả freeship (deliverability)
+    if (freeship) return 0;
+    const fee = cfg.base + km * cfg.perKm + weightSurcharge(cfg, items);
+    // SÀN PHÍ (red-team): không thấp hơn bậc vùng → toạ-độ-giả-sát-shop KHÔNG rẻ hơn khách-xa-trung-thực.
+    return Math.max(fee, regionFeeCore(cfg, items, province, assumeFarWhenUnknown));
   }
-  return fee;
+  // Region mode / distance fallback (no-JS / từ chối GPS / ngoài VN):
+  if (freeship) return 0;
+  return regionFeeCore(cfg, items, province, assumeFarWhenUnknown);
 }
 
 // Giảm giá thực từ coupon theo subtotal. Cap ≤ subtotal (chỉ giảm hàng, không giảm ship,
@@ -283,7 +322,7 @@ async function resolveCoupon(c, code, subtotal) {
   return discount > 0 ? { code: cp.code, kind: cp.kind, value: Number(cp.value), discount } : null;
 }
 
-async function summarize(c, cartId, province = null) {
+async function summarize(c, cartId, province = null, coords = null) {
   const items = (await c.query(
     `SELECT ci.variant_id, ci.qty, v.price_vnd, v.weight_gram, v.title AS variant_title, v.sku, p.title AS product_title, p.slug,
             pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct,
@@ -302,7 +341,9 @@ async function summarize(c, cartId, province = null) {
       ...(it.sale_price_vnd != null ? { orig_unit_price_vnd: base, sale_off_pct: Number(it.sale_off_pct) } : {}) };
   });
   const cfg = await shopShipping(c);
-  const shipping = computeShipping(cfg, subtotal, items, province); // chế độ HIỂN THỊ: chưa rõ tỉnh → ước tính nội miền
+  const { coordsValid, distanceMeters } = resolveShipDistance(cfg, coords);
+  const shipping = computeShipping(cfg, subtotal, items, province, { coordsValid, distanceMeters }); // HIỂN THỊ: chưa rõ tỉnh → ước tính nội miền
+  const outOfRange = shipping === null; // NGOÀI VÙNG GIAO (distance km>max) → total không tính được
   // Cờ cho UI: shop CÓ phí liên miền nhưng CHƯA rõ tỉnh nhận → hiện ghi chú "chưa gồm phụ phí liên miền".
   const feeRegionPending = items.length > 0 && cfg.feeFar != null && cfg.fromRegion != null
     && regionOf(province) == null && !(cfg.threshold != null && subtotal >= cfg.threshold);
@@ -310,7 +351,8 @@ async function summarize(c, cartId, province = null) {
   const cc = (await c.query(`SELECT coupon_code FROM carts WHERE id = $1`, [cartId])).rows[0]?.coupon_code;
   const coupon = cc ? await resolveCoupon(c, cc, subtotal) : null;
   const discount = coupon?.discount ?? 0;
-  return { items: out, subtotal_vnd: subtotal, shipping_vnd: shipping, discount_vnd: discount, coupon_code: coupon?.code ?? null, total_vnd: subtotal - discount + shipping, fee_region_pending: feeRegionPending };
+  return { items: out, subtotal_vnd: subtotal, shipping_vnd: outOfRange ? null : shipping, discount_vnd: discount, coupon_code: coupon?.code ?? null,
+    total_vnd: outOfRange ? null : subtotal - discount + shipping, fee_region_pending: feeRegionPending, ship_out_of_range: outOfRange };
 }
 
 // Tên shop (cho header trang HTML). app_checkout có SELECT shops (policy checkout_shop).
@@ -556,6 +598,12 @@ function parseOrderInput(raw) {
     // province (tuỳ chọn phía API để tương thích ngược; form BẮT BUỘC ở UI) — phải nằm
     // trong danh sách 34 tỉnh/thành, dùng cho tạo vận đơn hãng VC.
     if (address.province && !isProvince(address.province)) return { error: 'tỉnh/thành không hợp lệ' };
+    // Toạ độ GPS (0089): CHỈ nhận khi HỮU HẠN + trong biên (red-team: 'abc'/Infinity → NaN phí/total).
+    // Rác/thiếu → coords bỏ (undefined) → rơi phí vùng. lat/lng là INPUT; phí tính SERVER.
+    const lat = Number(raw.address.lat), lng = Number(raw.address.lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+      address.lat = lat; address.lng = lng;
+    }
   }
   const paymentMethod = raw.payment_method ?? 'cod';
   if (name.length < 1 || name.length > 120 || /[\r\n]/.test(name)) return { error: 'tên người nhận không hợp lệ' };
@@ -656,7 +704,16 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     // subtotal_seen → expectedSubtotal null → bỏ qua cổng (đọc giá hiện hành).
     if (f.expectedSubtotal != null && subtotal !== f.expectedSubtotal) fail(409, 'giá sản phẩm vừa cập nhật', { subtotal_vnd: subtotal });
     // Chế độ CHỐT ĐƠN: không rõ tỉnh → tính LIÊN MIỀN (bảo vệ shop — xem computeShipping).
-    const shipping = computeShipping(await shopShipping(c), subtotal, items, address?.province, { assumeFarWhenUnknown: true });
+    // Ship theo km (0089): coords từ form (đã finite-validate ở parseOrderInput) → tính OFFLINE
+    // (haversine, KHÔNG gọi API bản đồ → đặt đơn độc lập uptime provider). Server tính lại phí từ
+    // coords → curl giả toạ độ/forge ship_seen vẫn bị tính lại + 409.
+    const shipCfg = await shopShipping(c);
+    const coords = (address?.lat != null && address?.lng != null) ? { lat: address.lat, lng: address.lng } : null;
+    const { coordsValid, distanceMeters } = resolveShipDistance(shipCfg, coords);
+    const shipping = computeShipping(shipCfg, subtotal, items, address?.province, { assumeFarWhenUnknown: true, coordsValid, distanceMeters });
+    // NGOÀI VÙNG GIAO (distance km>max) → sentinel null → 422 hard-stop TRƯỚC cổng 409 + TRƯỚC total
+    // (red-team: null vào 409 → thông điệp sai; vào total → NaN).
+    if (shipping === null) fail(422, 'Địa chỉ ngoài vùng giao của cửa hàng', { out_of_range: true });
     // Vòng trung thực phí no-JS: phí khách ĐÃ THẤY (hidden ship_seen, chỉ form gửi) khác phí
     // thật → 409 NGAY TRONG transaction (rollback reserve/coupon/idem — không TOCTOU) →
     // checkoutPlace dựng lại form với phí đúng cho một cú bấm xác nhận nữa. ship_seen chỉ
@@ -815,12 +872,12 @@ async function checkoutPlace(req, res, form, ctx) {
     const summary = await withTenant(ctx.shopId, async (c) => {
       const cart = await findCart(c, token);
       // Tỉnh đã chọn hợp lệ → tổng dựng lại TÍNH THEO TỈNH (ship_seen mới = phí đúng → vòng
-      // xác nhận phí hội tụ sau đúng một cú bấm).
-      return cart ? summarize(c, cart.id, isProvince(String(form.province ?? '')) ? String(form.province) : null) : { items: [] };
+      // xác nhận phí hội tụ sau đúng một cú bấm). Toạ độ (nếu có) → ship theo km khớp lúc chốt.
+      return cart ? summarize(c, cart.id, isProvince(String(form.province ?? '')) ? String(form.province) : null, parseCoords(form.lat, form.lng)) : { items: [] };
     });
     if (!summary.items.length) return redirect(res, '/cart');
     const idem = genToken();
-    const prefill = { name: form.name, phone: form.phone, email: form.email, address_line: form.address_line, province: form.province, payment_method: form.payment_method, address_choice: form.address_choice, logged_in: !!cust };
+    const prefill = { name: form.name, phone: form.phone, email: form.email, address_line: form.address_line, province: form.province, payment_method: form.payment_method, address_choice: form.address_choice, logged_in: !!cust, lat: form.lat, lng: form.lng };
     return sendHtml(res, opts.status ?? 200, renderCheckout(shopName, summary, idem, { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], challenge: needChallenge ? issueChallenge(idem) : undefined, ...opts }));
   };
 
@@ -836,15 +893,18 @@ async function checkoutPlace(req, res, form, ctx) {
   // (khớp trong cust.addresses = đã lọc theo customer_id phiên → id lạ không có = IDOR-safe).
   // Không chọn / 'new' / guest → dùng ô nhập tay. Địa chỉ lạ/đã xoá → dựng lại form nhắc chọn lại.
   let inName = form.name, inPhone = form.phone, inLine = form.address_line, inProvince = form.province;
+  // Toạ độ GPS (0089): CHỈ cho địa chỉ NHẬP TAY/mới (JS GPS đặt hidden lat/lng). Địa chỉ đã lưu
+  // chưa có toạ độ → bỏ coords → ship theo tỉnh (sàn phí vẫn bảo vệ). Xoá coords khi chọn saved.
+  let inCoords = parseCoords(form.lat, form.lng);
   const addrChoice = String(form.address_choice ?? '');
   if (cust && UUID_RE.test(addrChoice)) {
     const saved = (cust.addresses ?? []).find((a) => a.id === addrChoice);
     if (!saved) return reRender({ error: 'Địa chỉ đã lưu không còn khả dụng — vui lòng chọn lại hoặc nhập địa chỉ mới.' });
-    inName = saved.recipient_name; inPhone = saved.phone; inLine = savedAddrLine(saved); inProvince = saved.province;
+    inName = saved.recipient_name; inPhone = saved.phone; inLine = savedAddrLine(saved); inProvince = saved.province; inCoords = null;
     // Đồng bộ vào form → reRender (honesty-loop ship) tính phí theo ĐÚNG tỉnh của địa chỉ đã lưu.
-    form.name = inName; form.phone = inPhone; form.address_line = inLine; form.province = inProvince;
+    form.name = inName; form.phone = inPhone; form.address_line = inLine; form.province = inProvince; form.lat = ''; form.lng = '';
   }
-  const f = parseOrderInput({ name: inName, phone: inPhone, email: form.email, address: inLine ? { line: String(inLine).slice(0, 300), province: inProvince ? String(inProvince).slice(0, 60) : undefined } : null, payment_method: form.payment_method });
+  const f = parseOrderInput({ name: inName, phone: inPhone, email: form.email, address: inLine ? { line: String(inLine).slice(0, 300), province: inProvince ? String(inProvince).slice(0, 60) : undefined, ...(inCoords ? { lat: inCoords.lat, lng: inCoords.lng } : {}) } : null, payment_method: form.payment_method });
   if (f.error) return reRender({ error: f.error });
   // Form NGƯỜI MUA bắt buộc chọn tỉnh (API JSON /checkout vẫn tuỳ chọn — tương thích ngược,
   // nhưng không rõ tỉnh thì bị tính phí liên miền ở createOrderTx).
@@ -873,6 +933,10 @@ async function checkoutPlace(req, res, form, ctx) {
     const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, customerId: cust?.id ?? null }, token, idemKey, f));
     return redirect(res, `/checkout/success?number=${out.body.order_number}&token=${encodeURIComponent(out.body.lookup_token)}&placed=1`);
   } catch (err) {
+    // NGOÀI VÙNG GIAO (ship theo km, km>max) → dựng lại form báo rõ, KHÔNG phải lỗi phí (409).
+    if (err.statusCode === 422 && err.body?.out_of_range) {
+      return reRender({ error: 'Địa chỉ ngoài vùng giao của cửa hàng — vui lòng chọn địa chỉ gần hơn hoặc liên hệ cửa hàng.' });
+    }
     // Phí ship đã cập nhật (ship_seen lệch) → dựng lại form: summarize theo tỉnh đã chọn
     // phát ship_seen ĐÚNG + idem/formTs mới → khách kiểm tra rồi bấm Đặt hàng lại là xong.
     if (err.statusCode === 409 && err.body?.shipping_vnd != null) {

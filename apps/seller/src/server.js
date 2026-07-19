@@ -150,6 +150,29 @@ async function updateShopProfile(res, ctx, body) {
   if (fromProv && !isProvince(fromProv)) return send(res, 400, { error: 'tỉnh/thành gửi hàng không hợp lệ' });
   // Mirror CHECK shops_ship_far_requires_from — lỗi tiếng Việt thay vì để DB nổ thành 500.
   if (shipFar != null && !fromProv) return send(res, 400, { error: 'cần chọn "Giao hàng từ tỉnh/thành" khi đặt phí liên miền' });
+  // Ship THEO KM (0089): mode + toạ độ gốc + đơn giá. '' → NULL. Mirror CHECK distance-requires-config.
+  const parseNum = (v) => { const t = String(v ?? '').trim(); return t === '' ? null : Number(t); };
+  const shipMode = String(body.ship_mode ?? '').trim() || 'region';
+  if (!['region', 'distance'].includes(shipMode)) return send(res, 400, { error: 'chế độ phí ship không hợp lệ' });
+  const originLat = parseNum(body.ship_origin_lat), originLng = parseNum(body.ship_origin_lng);
+  if (originLat != null && (!Number.isFinite(originLat) || originLat < -90 || originLat > 90)) return send(res, 400, { error: 'vĩ độ gốc không hợp lệ' });
+  if (originLng != null && (!Number.isFinite(originLng) || originLng < -180 || originLng > 180)) return send(res, 400, { error: 'kinh độ gốc không hợp lệ' });
+  // Toạ độ gốc phải trong lãnh thổ VN (red-team: gốc sai → mọi phí sai). Bbox 34 tỉnh chi tiết ở commit sau.
+  if (originLat != null && originLng != null && !(originLat >= 8.0 && originLat <= 23.6 && originLng >= 102.0 && originLng <= 109.6))
+    return send(res, 400, { error: 'toạ độ gốc không nằm trong lãnh thổ Việt Nam' });
+  const shipBase = parseMoney(body.ship_base_vnd);
+  if (shipBase != null && (!Number.isInteger(shipBase) || shipBase < 0 || shipBase > MAX_SHIP)) return send(res, 400, { error: 'phí cơ bản không hợp lệ' });
+  const shipPerKm = parseMoney(body.ship_per_km_vnd);
+  if (shipPerKm != null && (!Number.isInteger(shipPerKm) || shipPerKm < 0 || shipPerKm > MAX_SHIP)) return send(res, 400, { error: 'phí mỗi km không hợp lệ' });
+  const shipMaxKm = parseMoney(body.ship_max_km);
+  if (shipMaxKm != null && (!Number.isInteger(shipMaxKm) || shipMaxKm < 1 || shipMaxKm > 500)) return send(res, 400, { error: 'trần km không hợp lệ (1–500)' });
+  const roadFactor = parseNum(body.ship_road_factor);
+  if (roadFactor != null && (!Number.isFinite(roadFactor) || roadFactor < 1.0 || roadFactor > 3.0)) return send(res, 400, { error: 'hệ số đường bộ không hợp lệ (1.0–3.0)' });
+  if (shipMode === 'distance') {
+    if (originLat == null || originLng == null) return send(res, 400, { error: 'bật ship theo km cần toạ độ gốc cửa hàng' });
+    if (shipBase == null || shipPerKm == null || shipMaxKm == null) return send(res, 400, { error: 'bật ship theo km cần phí cơ bản, phí/km và trần km' });
+    if (!fromProv || shipFar == null) return send(res, 400, { error: 'bật ship theo km cần khai tỉnh gửi + phí liên miền (dự phòng khi khách không bật định vị)' });
+  }
   // Hạn ẩn danh PII (0064): '' → NULL = giữ vĩnh viễn (mặc định). Sàn 6 tháng (đơn còn
   // trong vòng đời khiếu nại/đối soát COD). Bật là MẤT DỮ LIỆU dần → chỉ OWNER đổi được.
   const piiMonths = parseMoney(body.pii_retention_months);
@@ -165,9 +188,12 @@ async function updateShopProfile(res, ctx, body) {
               ship_fee_vnd = $5, free_ship_threshold_vnd = $6, low_stock_threshold = $7,
               max_pending_per_ip = $8, max_pending_per_phone = $9,
               ship_fee_far_vnd = $10, ship_extra_per_500g_vnd = $11, default_weight_gram = $12, ship_from_province = $13,
-              pii_retention_months = $14
+              pii_retention_months = $14,
+              ship_mode = $15, ship_origin_lat = $16, ship_origin_lng = $17, ship_base_vnd = $18,
+              ship_per_km_vnd = $19, ship_max_km = $20, ship_road_factor = COALESCE($21, ship_road_factor)
         WHERE id = current_shop_id()`,
-      [name, email || null, phone || null, address || null, shipFee, freeThreshold, lowStock, maxIp, maxPhone, shipFar, extra500, defWeight, fromProv, piiMonths],
+      [name, email || null, phone || null, address || null, shipFee, freeThreshold, lowStock, maxIp, maxPhone, shipFar, extra500, defWeight, fromProv, piiMonths,
+       shipMode, originLat, originLng, shipBase, shipPerKm, shipMaxKm, roadFactor],
     );
     await audit(c, 'shop.profile_updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: {} });
     return { code: 200, body: { ok: true } };

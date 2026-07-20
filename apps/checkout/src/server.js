@@ -18,7 +18,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import pg from 'pg';
-import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE } from './http.js';
+import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE, BUYNOW_COOKIE, setBuynowCookie, clearBuynowCookie } from './http.js';
 import { buildVietQR } from './vietqr.js';
 import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
 import { runReq, makeLog, health } from './obs.js';
@@ -446,11 +446,18 @@ async function addItemForm(req, res, form, ctx) {  // form từ trang sản ph�
   const variantId = String(form.variant_id ?? ''), qty = parseInt(form.qty ?? '1', 10);
   if (!UUID_RE.test(variantId) || !isInt(qty) || qty < 1 || qty > 1000) return sendHtml(res, 400, renderError(await getShopName(ctx.shopId), 'Yêu cầu không hợp lệ.'));
   const buyNow = form.buynow != null && form.buynow !== '';
-  const token = parseCookies(req)[CART_COOKIE];
   try {
+    if (buyNow) {
+      // "Mua ngay" = giỏ RIÊNG chứa ĐÚNG món này (token=null → giỏ mới), KHÔNG đụng giỏ chính →
+      // thanh toán đúng 1 món (kiểu Shopee), giỏ đang có giữ nguyên. → /checkout?bn=1.
+      const result = await withTenant(ctx.shopId, (c) => cartAddCore(c, null, variantId, qty));
+      setBuynowCookie(res, result.newToken);
+      return redirect(res, '/checkout?bn=1');
+    }
+    const token = parseCookies(req)[CART_COOKIE];
     const result = await withTenant(ctx.shopId, (c) => cartAddCore(c, token, variantId, qty));
     if (result.newToken) setCartCookie(res, result.newToken, CART_TTL_DAYS * 86400);
-    return redirect(res, buyNow ? '/checkout' : '/cart'); // "Mua ngay" → thẳng trang thanh toán
+    return redirect(res, '/cart');
   } catch (err) {
     if (err.statusCode) return sendHtml(res, err.statusCode, renderError(await getShopName(ctx.shopId), err.body?.error ?? 'Không thêm được vào giỏ.'));
     throw err;
@@ -935,6 +942,7 @@ async function checkoutPlace(req, res, form, ctx) {
   const shopName = await getShopName(ctx.shopId);
   const idemKey = String(form.idempotency_key ?? '');
   if (idemKey.length < 8 || idemKey.length > 200) return sendHtml(res, 400, renderError(shopName, 'Phiên thanh toán không hợp lệ, vui lòng tải lại trang.'));
+  const bn = form.bn === '1'; // MUA NGAY → dùng giỏ riêng (cookie __Host-buynow), không đụng giỏ chính
 
   // Khách đăng nhập (+ địa chỉ đã lưu) — nạp SỚM để "chọn nhanh địa chỉ" + giữ lựa chọn khi
   // dựng lại form. addresses chỉ chứa địa chỉ CỦA phiên này → address_choice lạ không khớp (IDOR).
@@ -943,7 +951,7 @@ async function checkoutPlace(req, res, form, ctx) {
   // Dựng lại trang thanh toán (giữ dữ liệu đã nhập) — dùng khi cần thử lại / hỏi xác minh.
   // Sinh idem MỚI ở đây và ràng buộc challenge vào chính idem đó (chống replay).
   const reRender = async ({ needChallenge, ...opts }) => {
-    const token = parseCookies(req)[CART_COOKIE];
+    const token = parseCookies(req)[bn ? BUYNOW_COOKIE : CART_COOKIE];
     const { summary, qrEnabled } = await withTenant(ctx.shopId, async (c) => {
       const cart = await findCart(c, token);
       if (!cart) return { summary: { items: [] }, qrEnabled: false };
@@ -955,7 +963,7 @@ async function checkoutPlace(req, res, form, ctx) {
     const idem = genToken();
     const prefill = { name: form.name, phone: form.phone, email: form.email, address_line: form.address_line, province: form.province, payment_method: form.payment_method, address_choice: form.address_choice, logged_in: !!cust, lat: form.lat, lng: form.lng };
     const g = gpsOpts(summary);
-    return sendHtml(res, opts.status ?? 200, renderCheckout(shopName, summary, idem, { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], gps: g.gps, nonce: g.nonce, qrEnabled, challenge: needChallenge ? issueChallenge(idem) : undefined, ...opts }), {}, g.nonce);
+    return sendHtml(res, opts.status ?? 200, renderCheckout(shopName, summary, idem, { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], gps: g.gps, nonce: g.nonce, qrEnabled, bn, challenge: needChallenge ? issueChallenge(idem) : undefined, ...opts }), {}, g.nonce);
   };
 
   // ── Lớp BOT no-JS ────────────────────────────────────────────────────────────
@@ -1005,9 +1013,10 @@ async function checkoutPlace(req, res, form, ctx) {
     }
   }
 
-  const token = parseCookies(req)[CART_COOKIE];
+  const token = parseCookies(req)[bn ? BUYNOW_COOKIE : CART_COOKIE];
   try {
     const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, customerId: cust?.id ?? null }, token, idemKey, f));
+    if (bn) clearBuynowCookie(res); // giỏ mua-ngay đã chốt đơn → xoá cookie (giỏ chính không đụng)
     return redirect(res, `/checkout/success?number=${out.body.order_number}&token=${encodeURIComponent(out.body.lookup_token)}&placed=1`);
   } catch (err) {
     // NGOÀI VÙNG GIAO (ship theo km, km>max) → dựng lại form báo rõ, KHÔNG phải lỗi phí (409).
@@ -1053,13 +1062,14 @@ async function orderLookup(req, res, _body, ctx, query) {
 
 // ── trang HTML (không JS) ────────────────────────────────────────────────────
 async function getCheckoutPage(req, res, _body, ctx) {
-  const token = parseCookies(req)[CART_COOKIE];
+  const bn = new URL(req.url, 'http://x').searchParams.get('bn') === '1'; // MUA NGAY → giỏ riêng
+  const token = parseCookies(req)[bn ? BUYNOW_COOKIE : CART_COOKIE];
   const { summary, qrEnabled } = await withTenant(ctx.shopId, async (c) => {
     const cart = await findCart(c, token);
     if (!cart) return { summary: { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 }, qrEnabled: false };
     return { summary: await summarize(c, cart.id), qrEnabled: await shopQrEnabled(c) };
   });
-  if (!summary.items.length) return redirect(res, '/cart');       // giỏ trống → về giỏ
+  if (!summary.items.length) return redirect(res, bn ? '/' : '/cart'); // giỏ trống → về giỏ (mua-ngay → về trang chủ)
   // Khách đăng nhập → điền nhanh tên/SĐT/email + CHỌN NHANH địa chỉ đã lưu (no-JS radio).
   const cust = await resolveCustomer(ctx.shopId, req, { withAddresses: true });
   const prefill = cust ? {
@@ -1069,7 +1079,7 @@ async function getCheckoutPage(req, res, _body, ctx) {
   } : undefined;
   const g = gpsOpts(summary);
   return sendHtml(res, 200, renderCheckout(await getShopName(ctx.shopId), summary, genToken(),
-    { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], gps: g.gps, nonce: g.nonce, qrEnabled }), {}, g.nonce);
+    { formTs: issueFormTs(), prefill, addresses: cust?.addresses ?? [], gps: g.gps, nonce: g.nonce, qrEnabled, bn }), {}, g.nonce);
 }
 
 async function getLookupPage(req, res, _body, ctx) {

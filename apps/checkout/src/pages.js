@@ -278,6 +278,7 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
       <input type="hidden" name="ct" value="${esc(opts.formTs ?? '')}">
       <input type="hidden" name="ship_seen" value="${s.ship_out_of_range ? '' : Number(s.shipping_vnd)}">
       <input type="hidden" name="subtotal_seen" value="${Number(s.subtotal_vnd)}">
+      ${opts.bn ? '<input type="hidden" name="bn" value="1">' : ''}
       <input type="hidden" name="lat" id="f-lat" value="${v(pf.lat)}">
       <input type="hidden" name="lng" id="f-lng" value="${v(pf.lng)}">
       ${recipient}
@@ -292,7 +293,7 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
       </div>` : ''}
       <div class="checkout-submit"><button class="btn" type="submit">Đặt hàng · ${money(s.total_vnd)}</button></div>
     </form>
-    <a class="btn alt" href="/cart" style="margin-top:8px">Quay lại giỏ</a>
+    <a class="btn alt" href="${opts.bn ? '/' : '/cart'}" style="margin-top:8px">${opts.bn ? 'Tiếp tục mua sắm' : 'Quay lại giỏ'}</a>
     ${opts.gps ? gpsScript(opts.nonce) : ''}`);
 }
 

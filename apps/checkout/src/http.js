@@ -86,6 +86,16 @@ export function setCartCookie(res, token, maxAgeSec) {
   res.setHeader('set-cookie', `${CART_COOKIE}=${token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}`);
 }
 
+// Giỏ "MUA NGAY" RIÊNG (cookie khác) → thanh toán ĐÚNG 1 món, GIỮ NGUYÊN giỏ chính. TTL ngắn (1h,
+// mua-ngay là ý định tức thời). checkout dùng giỏ này khi có ?bn=1 / form bn=1.
+export const BUYNOW_COOKIE = '__Host-buynow';
+export function setBuynowCookie(res, token) {
+  res.setHeader('set-cookie', `${BUYNOW_COOKIE}=${token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=3600`);
+}
+export function clearBuynowCookie(res) {
+  res.setHeader('set-cookie', `${BUYNOW_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`);
+}
+
 /**
  * Chống CSRF cho domain ĐỘNG: Origin của request đổi trạng thái phải CÙNG HOST với
  * chính domain đang truy cập. Không cần allowlist tĩnh (mỗi shop một domain riêng).

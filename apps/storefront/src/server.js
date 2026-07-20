@@ -241,6 +241,47 @@ function sendHtml(res, status, html, { shopSlug, cache, preview, nonce } = {}) {
   res.end(html);
 }
 
+// Quick-view JSON (Phase 3): trả JSON same-origin, cache như trang catalog (public).
+// KHÔNG chứa data khách → an toàn để CDN dùng chung. img-src/CSP không đổi (chỉ là JSON).
+function sendJson(res, status, obj, { cache } = {}) {
+  const headers = {
+    'content-type': 'application/json; charset=utf-8',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'strict-origin-when-cross-origin',
+  };
+  if (cache) headers['cache-control'] = CACHE_PUBLIC;
+  res.writeHead(status, headers);
+  res.end(JSON.stringify(obj));
+}
+
+// Dựng payload quick-view từ dữ liệu đã đọc (RLS). value_ids của biến thể theo THỨ TỰ trục
+// (options.position) để modal khớp tổ hợp khi khách bấm chip. image_url = ảnh RIÊNG biến thể (nếu có).
+function quickviewJson({ p, variants, options, vov, media }) {
+  const vmap = new Map();
+  for (const r of vov) { if (!vmap.has(r.variant_id)) vmap.set(r.variant_id, {}); vmap.get(r.variant_id)[r.option_id] = r.option_value_id; }
+  const optOrder = options.map((o) => o.id);
+  const images = media.map((m) => imgUrl(m.public_key)).filter(Boolean);
+  const varImg = (vid) => { const m = media.find((mm) => mm.variant_id === vid); return m ? imgUrl(m.public_key) : null; };
+  const num = (x) => (x != null ? Number(x) : null);
+  // compare_at "từ" (chỉ hiển thị): biến thể bán ĐÚNG giá 'từ' (p.price_vnd) có compare > giá.
+  const fromCmp = variants.find((v) => Number(v.price_vnd) === Number(p.price_vnd) && v.compare_at_vnd != null && Number(v.compare_at_vnd) > Number(v.price_vnd));
+  return {
+    slug: p.slug, title: p.title, price_vnd: Number(p.price_vnd),
+    sale_price_vnd: null, sale_off_pct: null,
+    compare_at_vnd: fromCmp ? Number(fromCmp.compare_at_vnd) : null,
+    short_desc: p.description ? String(p.description).replace(/\s+/g, ' ').trim().slice(0, 160) : '',
+    images,
+    options: options.map((o) => ({ id: o.id, name: o.name, values: (o.values || []).map((v) => ({ id: v.id, label: v.value })) })),
+    variants: variants.map((v) => ({
+      id: v.id,
+      value_ids: optOrder.map((oid) => (vmap.get(v.id) || {})[oid]).filter((x) => x != null),
+      price_vnd: Number(v.price_vnd),
+      sale_price_vnd: num(v.sale_price_vnd), sale_off_pct: num(v.sale_off_pct),
+      available: Number(v.available), image_url: varImg(v.id),
+    })),
+  };
+}
+
 // Phông chữ tự-host (Be Vietnam Pro, giấy phép OFL) — nạp sẵn vào RAM, phục vụ
 // /fonts/*.woff2 SAME-ORIGIN (CSP font-src 'self' cho phép). Tên file có version →
 // cache 1 năm immutable. Map key = tên file whitelist sẵn → không lo path traversal.
@@ -400,6 +441,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
           `SELECT p.id, p.slug, p.title, p.price_vnd,
                   pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct,
                   (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
+                  -- Phase 3 thẻ hover: ảnh THỨ HAI (đổi khi rê chuột). NULL nếu SP chỉ 1 ảnh.
+                  (SELECT m2.public_key FROM media m2 WHERE m2.product_id = p.id ORDER BY m2.position, m2.created_at OFFSET 1 LIMIT 1) AS image2_key,
+                  -- Phase 3 thêm-nhanh-vào-giỏ: SP 1 biến thể & 0 trục → thêm thẳng; ngược lại cần chọn (quick-view/PDP).
+                  (SELECT count(*)::int FROM product_options po WHERE po.product_id = p.id) AS option_count,
+                  (SELECT count(*)::int FROM variants v WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS variant_count,
+                  (SELECT v.id FROM variants v WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL} ORDER BY v.position LIMIT 1) AS first_variant_id,
                   ${cardCompareSql},
                   (SELECT coalesce(sum(il.on_hand - il.reserved), 0)
                      FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
@@ -408,7 +455,11 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
              LEFT JOIN LATERAL promo_effective(p.id, p.price_vnd, now()) pe ON true
              ${whereJoin} ORDER BY ${GRID_SORTS[sortKey]} LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
           args,
-        )).rows.map((p) => ({ ...p, image: imgUrl(p.image_key), available: Number(p.available),
+        )).rows.map((p) => ({ ...p, image: imgUrl(p.image_key), image2: imgUrl(p.image2_key), available: Number(p.available),
+          // has_options = có trục HOẶC >1 biến thể → khách phải chọn. default_variant_id chỉ đặt khi
+          // SP "phẳng" (0 trục, đúng 1 biến thể) → thẻ hiện form thêm-nhanh; còn lại → link về PDP/quick-view.
+          has_options: (Number(p.option_count) > 0) || (Number(p.variant_count) > 1),
+          default_variant_id: (Number(p.option_count) === 0 && Number(p.variant_count) === 1) ? p.first_variant_id : null,
           sale_price_vnd: p.sale_price_vnd != null ? Number(p.sale_price_vnd) : null, sale_off_pct: p.sale_off_pct != null ? Number(p.sale_off_pct) : null }));
         return { products: rows, total };
       };
@@ -416,6 +467,31 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       // đẩy ?page=99999 để ép DB nhảy offset khổng lồ. parseInt + kẹp [1, 100].
       const pageNo = Math.min(100, Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1));
       const offset = (pageNo - 1) * PAGE_SIZE;
+
+      // Quick-view JSON (Phase 3): mini trang SP cho modal. Dữ liệu CATALOG công khai (không
+      // data khách) → cache CDN như trang khác. ĐĂNG KÝ TRƯỚC /p/:slug để khớp đúng. Mô hình
+      // theo query trang chi tiết (RLS store_products chỉ trả SP active/hiển thị).
+      const qm = /^\/p\/([a-z0-9-]+)\/quickview$/.exec(url.pathname);
+      if (qm) {
+        const p = (await c.query(`SELECT id, slug, title, description, price_vnd FROM products WHERE slug = $1`, [qm[1]])).rows[0];
+        if (!p) return { ...base, notFound: true };
+        const variants = (await c.query(
+          `SELECT v.id, v.price_vnd, v.compare_at_vnd, coalesce(il.on_hand - il.reserved, 0) AS available,
+                  pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct
+             FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
+             LEFT JOIN LATERAL promo_effective(v.product_id, v.price_vnd, now()) pe ON true
+            WHERE v.product_id = $1 AND ${VARIANT_NOT_ORPHAN_SQL} ORDER BY v.position`, [p.id])).rows;
+        const options = (await c.query(
+          `SELECT o.id, o.name, o.position,
+                  coalesce(json_agg(json_build_object('id', ov.id, 'value', ov.value) ORDER BY ov.position) FILTER (WHERE ov.id IS NOT NULL), '[]') AS values
+             FROM product_options o LEFT JOIN option_values ov ON ov.option_id = o.id
+            WHERE o.product_id = $1 GROUP BY o.id ORDER BY o.position`, [p.id])).rows;
+        const vov = (await c.query(
+          `SELECT vov.variant_id, vov.option_id, vov.option_value_id
+             FROM variant_option_values vov JOIN variants v ON v.id = vov.variant_id WHERE v.product_id = $1`, [p.id])).rows;
+        const media = (await c.query(`SELECT public_key, variant_id FROM media WHERE product_id = $1 ORDER BY position, created_at`, [p.id])).rows;
+        return { ...base, quickview: { p, variants, options, vov, media } };
+      }
 
       // Trang chi tiết sản phẩm: /p/:slug (?variant= chọn biến thể — SSR đổi giá/tồn/ảnh).
       const pm = /^\/p\/([a-z0-9-]+)$/.exec(url.pathname);
@@ -575,6 +651,8 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
 
     if (data.notFound) return sendHtml(res, 404, renderNotFound(), { shopSlug: data.shop?.slug });
     if (data.suspended) return sendHtml(res, 503, renderMaintenance(data.shop.name), { shopSlug: data.shop.slug });
+    // Quick-view (Phase 3): JSON public, cache như catalog. TRƯỚC các nhánh render HTML.
+    if (data.quickview) return sendJson(res, 200, quickviewJson(data.quickview), { cache: true });
 
     // origin tuyệt đối của shop (từ host request) → dựng URL tuyệt đối cho og:image,
     // vì bộ quét mạng xã hội KHÔNG hiểu ảnh đường-dẫn-tương-đối (/media-public/...).

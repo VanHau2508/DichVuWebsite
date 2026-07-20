@@ -101,6 +101,8 @@ const I_BADGE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const I_WALLET = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h13v4"/><path d="M3 7v10a2 2 0 0 0 2 2h14a1 1 0 0 0 1-1v-3"/><path d="M21 11v4h-4a2 2 0 0 1 0-4z"/></svg>';
 const I_SEARCH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>';
 const I_USER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-6 8-6s8 2 8 6"/></svg>';
+// 👁 xem-nhanh (Phase 3): con mắt — mở modal quick-view (không JS → link về trang SP).
+const I_EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
 
 // Giá GẠCH NGANG (compare-at, 0067 — CHỈ hiển thị, checkout luôn tính price_vnd):
 // chỉ render khi compare > giá bán; kèm badge -N%.
@@ -118,13 +120,30 @@ const priceLine = (base, sale, off, cmp) =>
   (sale != null ? salePriceHtml(base, sale, off) : `${money(base)}${compareHtml(base, cmp)}`);
 
 // Thẻ sản phẩm dùng chung (lưới trang chủ / danh mục / tìm kiếm). Escape mọi field người bán.
+// Phase 3 — HTML HỢP LỆ (KHÔNG nhét phần tử tương tác vào trong <a>):
+//   .card (div) ▸ .card-thumb ▸ [ <a.card-media> ảnh1 + ảnh2 + tag hết-hàng ] + [ .card-actions
+//   (👁 quick-view + Thêm vào giỏ) — là ANH EM của <a>, không lồng ] ; .card-body ▸ tên(link)+giá.
+//   No-JS: card-media/tên/👁 → /p/:slug ; thêm-giỏ SP-phẳng = <form> PRG /cart ; SP-nhiều-biến-thể
+//   = <a> về /p/:slug. Có JS: 👁/thêm-nhiều-biến-thể mở quick-view; thêm SP-phẳng mở drawer.
 function productCards(products) {
   return products.map((p) => {
     const out = Number(p.available) <= 0;
-    return `<a class="card${out ? ' is-out' : ''}" href="/p/${esc(p.slug)}">
-          <div class="thumb">${out ? '<span class="soldout-tag">Hết hàng</span>' : ''}${p.image ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy">` : `<span class="ph">${I_IMG}</span>`}<span class="card-go">Xem chi tiết</span></div>
-          <div class="body"><div class="name">${esc(p.title)}</div><div class="price">${priceLine(p.price_vnd, p.sale_price_vnd, p.sale_off_pct, p.compare_at_vnd)}</div></div>
-        </a>`;
+    const href = `/p/${esc(p.slug)}`;
+    // Thêm-nhanh CHỈ khi SP phẳng (server đặt default_variant_id) và còn hàng; ngược lại → link PDP.
+    const quickAdd = !p.has_options && p.default_variant_id && !out;
+    const img2 = p.image2 ? `<img class="card-img2" src="${esc(p.image2)}" alt="" loading="lazy" aria-hidden="true">` : '';
+    const media = `<a class="card-media" href="${href}" aria-label="${esc(p.title)}">${out ? '<span class="soldout-tag">Hết hàng</span>' : ''}${p.image ? `<img class="card-img1" src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy">` : `<span class="ph">${I_IMG}</span>`}${img2}</a>`;
+    const addBtn = quickAdd
+      ? `<form class="card-add-form" method="POST" action="/cart/add"><input type="hidden" name="variant_id" value="${esc(p.default_variant_id)}"><input type="hidden" name="qty" value="1"><button class="card-add" type="submit">${I_CART}<span>Thêm vào giỏ</span></button></form>`
+      : `<a class="card-add" href="${href}">${I_CART}<span>Thêm vào giỏ</span></a>`;
+    const actions = out ? '' : `<div class="card-actions">
+            <a class="card-qv" href="${href}" aria-label="Xem nhanh ${esc(p.title)}">${I_EYE}</a>
+            ${addBtn}
+          </div>`;
+    return `<div class="card${out ? ' is-out' : ''}">
+          <div class="card-thumb">${media}${actions}</div>
+          <div class="card-body"><a class="name" href="${href}">${esc(p.title)}</a><div class="price">${priceLine(p.price_vnd, p.sale_price_vnd, p.sale_off_pct, p.compare_at_vnd)}</div></div>
+        </div>`;
   }).join('');
 }
 // Query sort đính kèm link (bỏ khi 'new' = mặc định → URL sạch).
@@ -301,13 +320,16 @@ const SECTIONS = {
     </div></section>`;
   },
 
-  // Bộ sưu tập: tái sử dụng danh mục của shop → tile lớn dẫn tới /c/:slug. Rỗng nếu chưa có danh mục.
+  // Bộ sưu tập (Phase 3 — bố cục lại + đầu-mục có eyebrow/subtitle + link "Xem tất cả" cho đỡ
+  // "trơ trọi"): tái dùng danh mục của shop → tile lớn dẫn tới /c/:slug. Rỗng nếu chưa có danh mục.
   collections: (props, ctx) => {
-    const cats = Array.isArray(ctx.categories) ? ctx.categories.slice(0, 8) : [];
+    const cats = Array.isArray(ctx.categories) ? ctx.categories.slice(0, 6) : [];
     if (!cats.length) return '';
     return `<section class="section collections" id="bo-suu-tap"><div class="wrap">
-      <div class="section-h"><h2>${esc(props.title || 'Mua theo bộ sưu tập')}</h2></div>
-      <div class="coll-grid">${cats.map((c) => `<a class="coll-tile" href="/c/${esc(c.slug)}"><span class="coll-name">${esc(c.name)}</span><span class="coll-go">Xem tất cả →</span></a>`).join('')}</div>
+      <div class="section-h">
+        <div class="section-h-l"><p class="section-eyebrow">${esc(props.eyebrow || 'Danh mục nổi bật')}</p><h2>${esc(props.title || 'Mua theo bộ sưu tập')}</h2></div>
+      </div>
+      <div class="coll-grid">${cats.map((c) => `<a class="coll-tile" href="/c/${esc(c.slug)}"><span class="coll-name">${esc(c.name)}</span><span class="coll-go">Xem ngay →</span></a>`).join('')}</div>
     </div></section>`;
   },
 
@@ -316,8 +338,12 @@ const SECTIONS = {
       ? `<div class="chips"><a class="chip" href="/">Tất cả</a>${ctx.categories.map((c) => `<a class="chip" href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}</div>`
       : '';
     const cards = ctx.products.length ? productCards(ctx.products) : '<p class="empty">Cửa hàng chưa có sản phẩm nào.</p>';
+    // "Xem tất cả →": trỏ tới lưới toàn shop (mới nhất) — route có sẵn, KHÔNG 404. Kèm chips + lọc.
     return `<section class="section" id="san-pham"><div class="wrap">
-      <div class="section-h"><h2>${esc(props.title || 'Sản phẩm')}</h2></div>
+      <div class="section-h">
+        <div class="section-h-l"><h2>${esc(props.title || 'Sản phẩm')}</h2></div>
+        <a class="section-all" href="/?sort=new">Xem tất cả →</a>
+      </div>
       ${chips}
       ${filterBar(ctx.pageInfo, ctx.query)}
       ${ctx.products.length ? sortBar(ctx.pageInfo) : ''}
@@ -526,6 +552,10 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .btn-primary:hover{background-position:100% 0;transform:translateY(-1px);box-shadow:0 16px 32px -14px color-mix(in srgb,var(--color-primary) 72%,transparent)}
 .btn-ghost{background:var(--color-bg);color:var(--color-text);border-color:color-mix(in srgb,var(--color-primary) 30%,var(--color-border))}.btn-ghost:hover{border-color:var(--color-primary);color:var(--color-primary);background:color-mix(in srgb,var(--color-primary) 6%,var(--color-bg))}
 .section{padding:clamp(48px,6vw,72px) 0}.section-h{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin:0 0 26px}.section-h h2{margin:0;font-size:clamp(1.4rem,2.4vw,1.85rem);font-weight:800;letter-spacing:-.02em}
+/* Đầu-mục section (Phase 3): eyebrow nhỏ + tiêu đề bên trái, link "Xem tất cả →" bên phải. */
+.section-eyebrow{margin:0 0 6px;color:var(--color-accent);font-weight:700;font-size:.74rem;letter-spacing:.14em;text-transform:uppercase}
+.section-all{flex:0 0 auto;align-self:center;font-size:.86rem;font-weight:700;color:var(--color-primary);white-space:nowrap;transition:color .15s,transform .15s}
+.section-all:hover{color:var(--color-primary-dark);transform:translateX(3px)}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 24px}
 .chip{border:1px solid var(--color-border);border-radius:var(--pill);padding:8px 16px;font-size:.86rem;font-weight:500;color:var(--color-muted);background:var(--color-bg);transition:border-color .15s,color .15s,background .15s,box-shadow .15s}
 .chip:hover{border-color:var(--color-primary);color:var(--color-primary);background:color-mix(in srgb,var(--color-primary) 8%,var(--color-bg));box-shadow:0 6px 16px -8px color-mix(in srgb,var(--color-primary) 45%,transparent)}
@@ -539,13 +569,16 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .feat-ic svg{width:23px;height:23px}
 .feat-t{font-weight:700;font-size:.98rem;color:var(--color-text);margin-bottom:3px}
 .feat-d{font-size:.85rem;color:var(--color-muted);line-height:1.5}
-.coll-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:16px}
-.coll-tile{position:relative;display:flex;flex-direction:column;justify-content:flex-end;gap:4px;min-height:128px;padding:18px 20px;border-radius:var(--r-lg);background:linear-gradient(150deg,var(--color-hero-bg),color-mix(in srgb,var(--color-hero-bg) 45%,var(--color-bg)));border:1px solid var(--color-border);overflow:hidden;transition:transform .25s cubic-bezier(.2,.7,.2,1),box-shadow .25s,border-color .25s}
-.coll-tile::after{content:"";position:absolute;top:-26px;right:-26px;width:104px;height:104px;border-radius:50%;background:color-mix(in srgb,var(--color-primary) 8%,transparent);transition:transform .35s}
+/* Bộ sưu tập (Phase 3): tile lớn hơn (min 200px, cao 168px), gradient thương hiệu + mũi tên
+   trượt khi rê. Bố cục 3 cột trên desktop nên khối không còn "trơ trọi" như trước. */
+.coll-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:18px}
+.coll-tile{position:relative;display:flex;flex-direction:column;justify-content:flex-end;gap:6px;min-height:168px;padding:22px 24px;border-radius:var(--r-lg);background:linear-gradient(150deg,var(--color-hero-bg),color-mix(in srgb,var(--color-hero-bg) 40%,var(--color-bg)));border:1px solid var(--color-border);overflow:hidden;transition:transform .25s cubic-bezier(.2,.7,.2,1),box-shadow .25s,border-color .25s}
+.coll-tile::after{content:"";position:absolute;top:-30px;right:-30px;width:120px;height:120px;border-radius:50%;background:color-mix(in srgb,var(--color-primary) 9%,transparent);transition:transform .35s}
 .coll-tile:hover{transform:translateY(-4px);border-color:color-mix(in srgb,var(--color-primary) 42%,var(--color-border));box-shadow:var(--sh)}
-.coll-tile:hover::after{transform:scale(1.3)}
-.coll-name{position:relative;font-family:var(--font-heading);font-weight:700;font-size:1.02rem;color:var(--color-text);line-height:1.3}
-.coll-go{position:relative;font-size:.8rem;font-weight:700;color:var(--color-accent)}
+.coll-tile:hover::after{transform:scale(1.35)}
+.coll-name{position:relative;font-family:var(--font-heading);font-weight:800;font-size:1.1rem;letter-spacing:-.01em;color:var(--color-text);line-height:1.25}
+.coll-go{position:relative;font-size:.82rem;font-weight:700;color:var(--color-accent);transition:transform .2s}
+.coll-tile:hover .coll-go{transform:translateX(4px)}
 .searchbar{display:flex;gap:10px;margin:0 0 24px;max-width:520px}
 .searchbar input{flex:1;padding:12px 16px;border:1px solid var(--color-border);border-radius:var(--pill);font-size:1rem;font-family:inherit;background:var(--color-bg);color:var(--color-text);transition:border-color .15s,box-shadow .15s}
 .searchbar input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 22%,transparent)}
@@ -590,19 +623,34 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
 .blog-more{color:var(--color-primary);font-weight:700;font-size:.92rem}
 .blog-post{max-width:720px}.blog-post h1{margin:10px 0 2px;font-size:2rem;font-weight:800;letter-spacing:-.02em}
 .blog-post p{line-height:1.85;color:var(--color-text);margin:0 0 18px}
-/* Thẻ SP hover "cao cấp": nâng 6px + ảnh phóng 1.06 + thanh "Xem chi tiết" trượt lên từ
-   đáy ảnh. Máy cảm ứng (hover:none) ẩn thanh — cả thẻ vốn là link, không cần lớp phủ. */
-.card{display:flex;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--sh-sm);transition:transform .3s cubic-bezier(.2,.7,.2,1),box-shadow .3s,border-color .3s}
+/* ── Thẻ SP "cao cấp" kiểu ICONDENIM/Shopify (Phase 3) ───────────────────────────
+   Rê chuột: nâng 6px + đổ bóng · ĐỔI sang ảnh thứ 2 (ảnh2 phủ lên, mờ→rõ) · hiện lớp phủ
+   hành-động (👁 xem-nhanh + nút "Thêm vào giỏ" ở giữa) trượt lên. Máy cảm ứng (hover:none):
+   lớp phủ LUÔN hiện (không có trạng thái hover). Chuyển động do rule reduced-motion toàn cục tắt. */
+.card{position:relative;display:flex;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--sh-sm);transition:transform .3s cubic-bezier(.2,.7,.2,1),box-shadow .3s,border-color .3s}
 .card:hover{transform:translateY(-6px);border-color:color-mix(in srgb,var(--color-primary) 30%,var(--color-border));box-shadow:var(--sh-lg)}
-.card .thumb{position:relative;aspect-ratio:1;background:var(--color-surface);overflow:hidden}
-.card .thumb img{width:100%;height:100%;object-fit:cover;transition:transform .5s cubic-bezier(.2,.7,.2,1)}
-.card:hover .thumb img{transform:scale(1.06)}
-.card .thumb .ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#c9c5bd}.card .thumb .ph svg{width:34px;height:34px}
-.card-go{position:absolute;left:0;right:0;bottom:0;z-index:1;background:color-mix(in srgb,var(--color-primary) 92%,#000);color:#fff;font-size:.84rem;font-weight:600;letter-spacing:.03em;text-align:center;padding:11px 8px;transform:translateY(100%);transition:transform .3s cubic-bezier(.2,.7,.2,1)}
-.card:hover .card-go{transform:none}
-@media(hover:none){.card-go{display:none}}
-.card .body{padding:14px 16px 16px;display:flex;flex-direction:column;gap:6px;flex:1}
-.card .name{font-size:.92rem;color:var(--color-text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.6em}
+.card-thumb{position:relative;aspect-ratio:1;background:var(--color-surface);overflow:hidden}
+.card-media{position:absolute;inset:0;display:block}
+.card-media img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:transform .6s cubic-bezier(.2,.7,.2,1),opacity .45s ease}
+.card-img2{opacity:0}
+.card:hover .card-img2{opacity:1}
+.card:hover .card-media img{transform:scale(1.05)}
+.card-media .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#c9c5bd}.card-media .ph svg{width:34px;height:34px}
+/* Lớp phủ hành-động — ANH EM của <a.card-media> (không lồng trong link → HTML hợp lệ). */
+.card-actions{position:absolute;left:0;right:0;bottom:0;z-index:2;display:flex;align-items:center;gap:8px;padding:10px;opacity:0;transform:translateY(10px);transition:opacity .3s cubic-bezier(.2,.7,.2,1),transform .3s cubic-bezier(.2,.7,.2,1);background:linear-gradient(to top,color-mix(in srgb,var(--color-primary) 20%,transparent),transparent)}
+.card:hover .card-actions{opacity:1;transform:none}
+.card-qv{flex:0 0 auto;width:42px;height:42px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--pill);background:var(--color-bg);color:var(--color-text);box-shadow:var(--sh-sm);transition:background .15s,color .15s}
+.card-qv:hover{background:var(--color-primary);color:#fff}
+.card-qv svg{width:19px;height:19px}
+.card-add-form{flex:1;display:flex;margin:0}
+.card-add{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:42px;padding:0 14px;border:0;border-radius:var(--pill);background:var(--color-primary);color:#fff;font-family:inherit;font-size:.85rem;font-weight:700;letter-spacing:.01em;cursor:pointer;box-shadow:var(--sh-sm);transition:background .15s,transform .12s}
+.card-add:hover{background:var(--color-primary-dark)}
+.card-add:active{transform:translateY(1px)}
+.card-add svg{width:17px;height:17px}
+@media(hover:none){.card-actions{opacity:1;transform:none}}
+.card-body{padding:14px 16px 16px;display:flex;flex-direction:column;gap:6px;flex:1}
+.card .name{font-size:.92rem;color:var(--color-text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.6em;transition:color .15s}
+.card .name:hover{color:var(--color-primary)}
 .card .price{font-weight:800;color:var(--color-text);font-size:1.08rem;letter-spacing:-.01em;font-variant-numeric:tabular-nums;margin-top:auto}
 .pd{padding:28px 20px 52px}
 .crumb{font-size:.85rem;color:var(--color-muted);margin:0 0 20px}.crumb a:hover{color:var(--color-primary)}
@@ -625,7 +673,7 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
 .stock.out{background:#fef2f2;color:#b91c1c}
 .soldout-note{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:var(--r);padding:14px 16px;font-weight:600;margin:0 0 22px}
 .card .soldout-tag{position:absolute;top:10px;left:10px;z-index:1;background:rgba(17,24,39,.82);color:#fff;font-size:.76rem;font-weight:600;padding:4px 10px;border-radius:var(--pill);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px)}
-.card.is-out .thumb img{opacity:.55;filter:grayscale(.3)}
+.card.is-out .card-media img{opacity:.55;filter:grayscale(.3)}
 .trust{display:flex;gap:22px;flex-wrap:wrap;color:var(--color-muted);font-size:.85rem;border-top:1px solid var(--color-border);padding-top:18px}
 .trust span{display:inline-flex;align-items:center;gap:6px}.trust svg{width:16px;height:16px;color:var(--color-primary)}
 .content{max-width:720px;margin:0 auto;padding:44px 20px 64px}
@@ -756,7 +804,51 @@ html.cd-lock{overflow:hidden}
 .cd-sub strong{font-variant-numeric:tabular-nums}
 .cd-go{width:100%}
 .cd-view{text-align:center;font-size:.9rem;color:var(--color-muted);text-decoration:underline}
-.cd-view:hover{color:var(--color-primary)}`;
+.cd-view:hover{color:var(--color-primary)}
+/* ── Quick-view modal (Phase 3, chỉ JS — shell TĨNH, JS đổ dữ liệu bằng DOM, KHÔNG innerHTML) ──
+   Tái dùng mẫu backdrop/overlay như drawer giỏ; căn GIỮA màn hình; a11y dialog + trả focus.
+   z-index 72/73: trên header(20)/menu(30)/lightbox(50)/drawer(70-71). [hidden] thắng display. */
+#qv-backdrop{position:fixed;inset:0;z-index:72;background:rgba(17,24,39,.55);opacity:0;transition:opacity .25s}
+#qv-backdrop.open{opacity:1}
+#qv-backdrop[hidden]{display:none}
+#qv-modal{position:fixed;top:50%;left:50%;z-index:73;transform:translate(-50%,-47%);width:min(860px,94vw);max-height:90vh;overflow:auto;background:var(--color-bg);border-radius:var(--r-lg);box-shadow:var(--sh-lg);opacity:0;transition:opacity .25s,transform .3s cubic-bezier(.2,.7,.2,1)}
+#qv-modal.open{opacity:1;transform:translate(-50%,-50%)}
+#qv-modal[hidden]{display:none}
+.qv-close{position:absolute;top:12px;right:12px;z-index:2;background:var(--color-bg);border:1px solid var(--color-border);width:38px;height:38px;border-radius:var(--pill);font-size:1rem;cursor:pointer;color:var(--color-muted);line-height:1}
+.qv-close:hover{color:var(--color-text);background:var(--color-surface)}
+.qv-body{display:grid;grid-template-columns:1fr 1fr;gap:28px;padding:26px}
+.qv-media{display:flex;flex-direction:column;gap:12px}
+.qv-main{aspect-ratio:1;background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--r-lg);overflow:hidden;display:flex;align-items:center;justify-content:center;color:#c4c8cf}
+.qv-main img{width:100%;height:100%;object-fit:cover}
+.qv-thumbs{display:flex;gap:8px;flex-wrap:wrap}
+.qv-thumb{width:60px;height:60px;border:2px solid var(--color-border);border-radius:10px;overflow:hidden;cursor:pointer;padding:0;background:none}
+.qv-thumb.sel{border-color:var(--color-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--color-primary) 30%,transparent)}
+.qv-thumb img{width:100%;height:100%;object-fit:cover}
+.qv-info h2{margin:0 0 12px;font-size:1.4rem;font-weight:800;letter-spacing:-.02em;line-height:1.22}
+.qv-price{font-size:1.5rem;font-weight:800;color:var(--color-primary);margin:0 0 8px;font-variant-numeric:tabular-nums}
+.qv-price .cmp{font-size:.62em}.qv-price .off{font-size:.46em}
+.qv-stock{font-size:.85rem;font-weight:700;margin:0 0 16px}
+.qv-stock.in{color:color-mix(in srgb,var(--color-primary) 82%,#000)}
+.qv-stock.out{color:#b91c1c}
+.qv-desc{font-size:.9rem;color:var(--color-muted);line-height:1.6;margin:0 0 18px}
+.qv-opt{margin:0 0 14px}
+.qv-opt-name{font-size:.82rem;font-weight:600;color:var(--color-muted);margin:0 0 8px}
+.qv-chips{display:flex;gap:8px;flex-wrap:wrap}
+.qv-chip{padding:8px 14px;border:1px solid var(--color-border);border-radius:var(--r-sm);font-size:.88rem;font-family:inherit;color:var(--color-text);background:var(--color-bg);cursor:pointer;transition:border-color .15s,background .15s,box-shadow .15s}
+.qv-chip:hover{border-color:var(--color-primary)}
+.qv-chip.sel{border-color:var(--color-primary);background:var(--color-hero-bg);color:color-mix(in srgb,var(--color-primary) 82%,#000);font-weight:700;box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 16%,transparent)}
+.qv-chip.out{color:var(--color-muted);text-decoration:line-through}
+.qv-chip[disabled]{color:#c4c8cf;background:var(--color-surface);border-style:dashed;cursor:not-allowed;text-decoration:line-through}
+.qv-buy{display:flex;gap:10px;align-items:center;margin:18px 0 14px;flex-wrap:wrap}
+.qv-qty{display:inline-flex;align-items:center;border:1px solid var(--color-border);border-radius:var(--pill)}
+.qv-qty button{background:none;border:0;width:36px;height:38px;font-size:1.1rem;cursor:pointer;color:var(--color-text);line-height:1}
+.qv-qty button:disabled{opacity:.4;cursor:default}
+.qv-qty span{min-width:30px;text-align:center;font-variant-numeric:tabular-nums}
+.qv-add{flex:1;min-width:150px;min-height:44px}
+.qv-add:disabled{opacity:.5;cursor:not-allowed}
+.qv-detail{display:inline-block;font-size:.9rem;font-weight:700;color:var(--color-primary)}
+.qv-detail:hover{text-decoration:underline}
+@media(max-width:640px){.qv-body{grid-template-columns:1fr;gap:18px;padding:20px}.qv-main{max-width:320px;margin:0 auto}}`;
 
 // ── Drawer giỏ hàng (Phase 2): shell TĨNH render server-side trên MỌI trang có nonce ──
 // CACHE-SAFE: trang storefront cache CDN ~60s dùng chung mọi khách → shell TUYỆT ĐỐI không
@@ -774,6 +866,14 @@ const DRAWER_SHELL = `<div id="cart-backdrop" hidden></div>
   </div>
 </aside>
 <template id="cd-empty-tpl"><div class="cd-empty"><p>Giỏ hàng trống</p><a class="btn btn-alt" href="/">Tiếp tục mua sắm</a></div></template>`;
+
+// ── Quick-view modal (Phase 3): shell TĨNH — thân #qv-body do JS dựng bằng DOM (KHÔNG innerHTML).
+// Ẩn + không nội dung khi không JS (thẻ 👁/Thêm-giỏ vẫn là <a> về /p/:slug → suy biến sạch).
+const QUICKVIEW_SHELL = `<div id="qv-backdrop" hidden></div>
+<div id="qv-modal" role="dialog" aria-modal="true" aria-label="Xem nhanh sản phẩm" hidden>
+  <button type="button" id="qv-close" class="qv-close" aria-label="Đóng xem nhanh">✕</button>
+  <div class="qv-body" id="qv-body"></div>
+</div>`;
 
 // Lớp JS DUY NHẤT của storefront (Phase 1 badge + Phase 2 drawer). 1 khối <script nonce> — không
 // framework, không phụ thuộc ngoài (hợp CSP script-src 'nonce'). XSS-SAFE: KHÔNG nội suy dữ liệu
@@ -887,6 +987,156 @@ function cartScript(nonce) {
       .then(function(r){ if(!r.ok){ addForm.submit(); return; } open(); }) // lỗi (hết tồn…) → submit thật, hiện trang lỗi server
       .catch(function(){ addForm.submit(); });
   });
+
+  // ── Quick-view modal (Phase 3) ────────────────────────────────────────────────
+  // 👁 (.card-qv) hoặc "Thêm vào giỏ" bản LINK (a.card-add = SP nhiều biến thể) → mở modal.
+  // Form thêm-nhanh SP phẳng (.card-add-form) → fetch + mở drawer. Dữ liệu quick-view vào DOM
+  // CHỈ qua createElement/textContent/gán thuộc tính — TUYỆT ĐỐI không innerHTML. Lỗi mạng/JSON
+  // → điều hướng /p/:slug (suy biến về trang SP). Tái dùng open() (drawer) sau khi thêm giỏ.
+  var qvModal=document.getElementById('qv-modal'), qvBackdrop=document.getElementById('qv-backdrop'),
+      qvBody=document.getElementById('qv-body'), qvCloseBtn=document.getElementById('qv-close');
+  var qvLastFocus=null, qvClosing=null;
+  function el(tag,cls,txt){ var e=document.createElement(tag); if(cls) e.className=cls; if(txt!=null) e.textContent=txt; return e; }
+  function qvOpen(){
+    if(qvClosing){ clearTimeout(qvClosing); qvClosing=null; }
+    qvLastFocus=document.activeElement;
+    qvBackdrop.hidden=false; qvModal.hidden=false;
+    void qvModal.offsetWidth;
+    qvModal.classList.add('open'); qvBackdrop.classList.add('open');
+    document.documentElement.classList.add('cd-lock');
+    if(qvCloseBtn) qvCloseBtn.focus();
+  }
+  function qvClose(){
+    qvModal.classList.remove('open'); qvBackdrop.classList.remove('open');
+    document.documentElement.classList.remove('cd-lock');
+    qvClosing=setTimeout(function(){ qvModal.hidden=true; qvBackdrop.hidden=true; while(qvBody.firstChild) qvBody.removeChild(qvBody.firstChild); qvClosing=null; },300);
+    if(qvLastFocus&&qvLastFocus.focus) qvLastFocus.focus();
+  }
+  // Giá 1 biến thể → cụm node (giá sale ĐẬM + gạch giá gốc + badge -% nếu có sale; không thì chỉ giá).
+  function qvPriceNodes(v){
+    var frag=document.createDocumentFragment();
+    if(v.sale_price_vnd!=null){
+      frag.appendChild(el('strong',null,vnd(v.sale_price_vnd)));
+      frag.appendChild(document.createTextNode(' '));
+      frag.appendChild(el('s','cmp',vnd(v.price_vnd)));
+      if(v.sale_off_pct!=null) frag.appendChild(el('span','off','-'+v.sale_off_pct+'%'));
+    } else { frag.appendChild(el('strong',null,vnd(v.price_vnd))); }
+    return frag;
+  }
+  function qvBuild(d){
+    while(qvBody.firstChild) qvBody.removeChild(qvBody.firstChild);
+    var variants=d.variants||[], options=d.options||[], images=d.images||[], i, k;
+    var sel={}, def=null; // sel: option_id -> value_id ; def = biến thể còn hàng đầu (hoặc đầu tiên)
+    for(i=0;i<variants.length;i++){ if(variants[i].available>0){ def=variants[i]; break; } }
+    if(!def) def=variants[0]||null;
+    if(def) for(k=0;k<options.length;k++) sel[options[k].id]=def.value_ids[k];
+    function resolve(){ // khớp tổ hợp value_ids đang chọn → biến thể
+      for(var i=0;i<variants.length;i++){ var v=variants[i], m=true; for(var k=0;k<options.length;k++){ if(v.value_ids[k]!==sel[options[k].id]){ m=false; break; } } if(m) return v; }
+      return options.length?null:(variants[0]||null);
+    }
+    // ── Cột ảnh: ảnh chính + dải thumbnail
+    var media=el('div','qv-media'), mainBox=el('div','qv-main'), mainImg=null;
+    if(images.length){ mainImg=document.createElement('img'); mainImg.src=images[0]; mainImg.alt=d.title; mainBox.appendChild(mainImg); }
+    media.appendChild(mainBox);
+    var thumbBtns=[];
+    if(images.length>1){
+      var strip=el('div','qv-thumbs');
+      images.forEach(function(u,idx){
+        var b=el('button','qv-thumb'+(idx===0?' sel':'')); b.type='button';
+        var im=document.createElement('img'); im.src=u; im.alt=''; b.appendChild(im);
+        b.onclick=function(){ if(mainImg) mainImg.src=u; thumbBtns.forEach(function(x){ x.classList.remove('sel'); }); b.classList.add('sel'); };
+        thumbBtns.push(b); strip.appendChild(b);
+      });
+      media.appendChild(strip);
+    }
+    qvBody.appendChild(media);
+    // ── Cột thông tin
+    var info=el('div','qv-info');
+    info.appendChild(el('h2',null,d.title));
+    var priceEl=el('div','qv-price'); info.appendChild(priceEl);
+    var stockEl=el('div','qv-stock'); info.appendChild(stockEl);
+    if(d.short_desc) info.appendChild(el('p','qv-desc',d.short_desc));
+    var chipRefs=[]; // {optId,valId,btn}
+    options.forEach(function(o){
+      var wrap=el('div','qv-opt'); wrap.appendChild(el('div','qv-opt-name',o.name));
+      var chips=el('div','qv-chips');
+      o.values.forEach(function(val){
+        var b=el('button','qv-chip',val.label); b.type='button';
+        b.onclick=function(){ if(b.disabled) return; sel[o.id]=val.id; update(); };
+        chipRefs.push({optId:o.id,valId:val.id,btn:b}); chips.appendChild(b);
+      });
+      wrap.appendChild(chips); info.appendChild(wrap);
+    });
+    var buy=el('div','qv-buy'), qty=1;
+    var qbox=el('div','qv-qty');
+    var minus=el('button',null,'\\u2212'); minus.type='button';
+    var qnum=el('span',null,'1');
+    var plus=el('button',null,'+'); plus.type='button';
+    qbox.appendChild(minus); qbox.appendChild(qnum); qbox.appendChild(plus); buy.appendChild(qbox);
+    var addBtn=el('button','btn btn-primary qv-add','Thêm vào giỏ'); addBtn.type='button';
+    buy.appendChild(addBtn); info.appendChild(buy);
+    var detail=el('a','qv-detail','Xem chi tiết →'); detail.href='/p/'+d.slug; info.appendChild(detail);
+    qvBody.appendChild(info);
+    function update(){
+      var cur=resolve();
+      while(priceEl.firstChild) priceEl.removeChild(priceEl.firstChild);
+      if(cur) priceEl.appendChild(qvPriceNodes(cur)); else priceEl.textContent=vnd(d.price_vnd);
+      var avail=cur?cur.available:0;
+      stockEl.className='qv-stock '+(avail>0?'in':'out');
+      stockEl.textContent=avail>0?(avail<=5?('Chỉ còn '+avail):'Còn hàng'):'Hết hàng';
+      if(cur&&cur.image_url&&mainImg){ mainImg.src=cur.image_url; thumbBtns.forEach(function(x){ x.classList.remove('sel'); }); }
+      chipRefs.forEach(function(ref){ // đổi 1 trục giữ trục khác → có biến thể? còn hàng?
+        var probe={}; for(var key in sel) probe[key]=sel[key]; probe[ref.optId]=ref.valId;
+        var match=null;
+        for(var i=0;i<variants.length;i++){ var v=variants[i], ok=true; for(var k=0;k<options.length;k++){ if(v.value_ids[k]!==probe[options[k].id]){ ok=false; break; } } if(ok){ match=v; break; } }
+        ref.btn.classList.remove('sel','out'); ref.btn.disabled=false;
+        if(!match){ ref.btn.disabled=true; }
+        else { if(sel[ref.optId]===ref.valId) ref.btn.classList.add('sel'); if(match.available<=0) ref.btn.classList.add('out'); }
+      });
+      addBtn.disabled=!(cur&&cur.available>0);
+      if(cur&&cur.available>0&&qty>cur.available){ qty=cur.available; qnum.textContent=String(qty); }
+      minus.disabled=qty<=1;
+    }
+    minus.onclick=function(){ if(qty>1){ qty--; qnum.textContent=String(qty); update(); } };
+    plus.onclick=function(){ var cur=resolve(); if(!cur||qty<cur.available){ qty++; qnum.textContent=String(qty); update(); } };
+    addBtn.onclick=function(){
+      var cur=resolve(); if(!cur||cur.available<=0) return;
+      addBtn.disabled=true;
+      var body=new URLSearchParams(); body.set('variant_id',cur.id); body.set('qty',String(qty));
+      fetch('/cart/add',{method:'POST',credentials:'same-origin',redirect:'follow',headers:{'content-type':'application/x-www-form-urlencoded'},body:body.toString()})
+        .then(function(r){ if(!r.ok){ location.href='/p/'+d.slug; return; } qvClose(); open(); })
+        .catch(function(){ location.href='/p/'+d.slug; });
+    };
+    update();
+  }
+  function qvOpenFor(href){
+    fetch(href+'/quickview',{credentials:'same-origin',headers:{'accept':'application/json'}})
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(d){ if(!d||!d.variants||!d.variants.length){ location.href=href; return; } qvBuild(d); qvOpen(); })
+      .catch(function(){ location.href=href; });
+  }
+  if(qvModal&&qvBackdrop&&qvBody){
+    if(qvCloseBtn) qvCloseBtn.addEventListener('click',qvClose);
+    qvBackdrop.addEventListener('click',qvClose);
+    document.addEventListener('keydown',function(e){ if(e.key==='Escape'&&!qvModal.hidden) qvClose(); });
+    document.addEventListener('click',function(e){ // uỷ quyền: 👁 + "Thêm vào giỏ" bản LINK
+      if(!e.target||!e.target.closest) return;
+      var t=e.target.closest('.card-qv, a.card-add');
+      if(!t) return;
+      if(e.ctrlKey||e.metaKey||e.shiftKey||e.button===1) return; // tôn trọng "mở tab mới"
+      e.preventDefault(); qvOpenFor(t.getAttribute('href'));
+    });
+    document.addEventListener('submit',function(e){ // form thêm-nhanh SP phẳng → drawer
+      var f=e.target;
+      if(!f||!f.classList||!f.classList.contains('card-add-form')) return;
+      if(!drawer) return;
+      e.preventDefault();
+      var body=new URLSearchParams(new FormData(f)).toString();
+      fetch('/cart/add',{method:'POST',credentials:'same-origin',redirect:'follow',headers:{'content-type':'application/x-www-form-urlencoded'},body:body})
+        .then(function(r){ if(!r.ok){ f.submit(); return; } open(); })
+        .catch(function(){ f.submit(); });
+    });
+  }
 })();</script>`;
 }
 
@@ -894,7 +1144,7 @@ function page(title, tokens, bodyHtml, head = '', nonce = '') {
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>${head}<style>${tokensToCss(tokens)}\n${STYLE}</style></head>
-<body>${bodyHtml}${nonce ? DRAWER_SHELL + cartScript(nonce) : ''}</body></html>`;
+<body>${bodyHtml}${nonce ? DRAWER_SHELL + QUICKVIEW_SHELL + cartScript(nonce) : ''}</body></html>`;
 }
 
 // Chèn dải "cam kết" (sau hero) và "bộ sưu tập" (trước lưới sản phẩm) nếu layout đã lưu

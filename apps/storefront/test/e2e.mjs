@@ -319,6 +319,53 @@ async function main() {
   r.body.includes('itemprop="price" content="200000"') && !r.body.includes('Flash sale')
     ? ok('tắt promo → giá về gốc 200000, hết khung giờ (tự cập nhật)') : bad('promo tắt vẫn hiện sale', r.body.match(/itemprop="price"[^>]*/)?.[0]);
 
+  // ── 11. Phase 3: thẻ hover (ảnh2 + lớp phủ 👁/Thêm giỏ) + quick-view modal + endpoint ──
+  sect('11. Phase 3 — thẻ hover + quick-view');
+  const p3Slug = `hover-${uniq()}`;
+  const p3 = await mkProduct(A.shopId, A.cookie, { title: 'SP Hover Phase3', slug: p3Slug, price_vnd: 300000, status: 'active', variants: [{ sku: `H-${uniq()}`, price_vnd: 300000 }] });
+  const p3v = (await owner.query(`SELECT id FROM variants WHERE product_id=$1`, [p3.json.id])).rows[0].id;
+  await owner.query(`INSERT INTO inventory_levels (shop_id, variant_id, on_hand) VALUES ($1,$2,30) ON CONFLICT (shop_id,variant_id) DO UPDATE SET on_hand=30`, [A.shopId, p3v]);
+  // Hai ảnh READY → thẻ có ảnh THỨ HAI để hover đổi ảnh (card-img2).
+  const k1 = `${A.shopId}/11111111-1111-4111-8111-111111111111.webp`;
+  const k2 = `${A.shopId}/22222222-2222-4222-8222-222222222222.webp`;
+  await owner.query(`INSERT INTO media (shop_id,product_id,status,original_key,public_key,position) VALUES ($1,$2,'ready','o1',$3,0),($1,$2,'ready','o2',$4,1)`, [A.shopId, p3.json.id, k1, k2]);
+  r = await sf(A.host, '/');
+  r.body.includes('class="card-media"') && r.body.includes('class="card-img2"') && r.body.includes(`/media-public/${k2}`)
+    ? ok('thẻ có ảnh THỨ HAI (card-img2) để hover đổi ảnh') : bad('thiếu ảnh2 hover', r.body.match(/SP Hover Phase3[\s\S]{0,300}/)?.[0]);
+  r.body.includes('class="card-actions"') && r.body.includes('class="card-qv"') && r.body.includes('Xem nhanh')
+    ? ok('thẻ có lớp phủ hành-động + 👁 quick-view (aria-label)') : bad('thiếu overlay/👁');
+  r.body.includes('class="card-add-form"') && r.body.includes('action="/cart/add"') && r.body.includes(`value="${p3v}"`)
+    ? ok('SP phẳng: thẻ có <form> POST /cart/add (variant_id mặc định + qty=1)') : bad('thiếu form thêm-nhanh SP phẳng');
+  // SP nhiều biến thể (axSlug ở mục 6) → "Thêm vào giỏ" là LINK về PDP (no-JS an toàn).
+  r.body.includes(`<a class="card-add" href="/p/${axSlug}">`) ? ok('SP nhiều biến thể: "Thêm vào giỏ" là LINK về /p/:slug (no-JS)') : bad('multi-variant add không phải link');
+  // HTML HỢP LỆ: không có <form>/<button> LỒNG trong <a class="card-media"> (interactive không trong <a>).
+  const mediaBlocks = r.body.split('<a class="card-media"').slice(1).map((s) => s.slice(0, s.indexOf('</a>')));
+  mediaBlocks.length && !mediaBlocks.some((b) => /<form|<button/.test(b))
+    ? ok('HTML hợp lệ: không lồng <form>/<button> trong <a class="card-media">') : bad('interactive lồng trong <a> media');
+  // "Xem tất cả →" trên đầu-mục lưới SP → route có sẵn (không 404).
+  r.body.includes('Xem tất cả →') && r.body.includes('href="/?sort=new"') ? ok('lưới SP có link "Xem tất cả →" (/?sort=new, route có sẵn)') : bad('thiếu Xem tất cả');
+  // Shell quick-view + script DOM-only.
+  r.body.includes('id="qv-modal"') && r.body.includes('role="dialog"') && r.body.includes('id="qv-backdrop"')
+    ? ok('shell quick-view: #qv-modal role=dialog + #qv-backdrop (ẩn; JS dựng thân)') : bad('thiếu shell quick-view');
+  const sfScript = (r.body.match(/<script nonce="[^"]*">([\s\S]*?)<\/script>/) || [])[1] || '';
+  sfScript.includes("fetch(href+'/quickview'") && sfScript.includes('createElement') && !sfScript.includes('.innerHTML') && !sfScript.includes('insertAdjacentHTML')
+    ? ok('script: fetch quickview + dựng DOM (createElement), KHÔNG .innerHTML/insertAdjacentHTML') : bad('script quick-view thiếu / dùng innerHTML');
+  (r.body.match(/<script/g) || []).length === 1 ? ok('vẫn CHỈ 1 khối <script> (badge + drawer + quick-view chung)') : bad('số <script> khác 1', String((r.body.match(/<script/g) || []).length));
+
+  // Endpoint quick-view JSON (mô hình theo query PDP; RLS store_products lọc active).
+  let qv = await sf(A.host, `/p/${axSlug}/quickview`);
+  let qj = null; try { qj = JSON.parse(qv.body); } catch {}
+  qv.status === 200 && qj && Array.isArray(qj.options) && qj.options.length === 2 && Array.isArray(qj.variants) && qj.variants.length >= 4
+    ? ok('GET /p/:slug/quickview → JSON 2 options + ≥4 variants') : bad('quickview JSON sai', qv.body.slice(0, 200));
+  qj && qj.variants[0] && Array.isArray(qj.variants[0].value_ids) && qj.variants[0].value_ids.length === 2 && ('available' in qj.variants[0]) && ('price_vnd' in qj.variants[0])
+    ? ok('quickview variant có value_ids (2 trục) + available + price_vnd') : bad('variant thiếu field', JSON.stringify(qj?.variants?.[0]));
+  qj && qj.options[0] && Array.isArray(qj.options[0].values) && qj.options[0].values[0] && ('label' in qj.options[0].values[0])
+    ? ok('quickview option có values[{id,label}]') : bad('option values thiếu label');
+  (qv.headers['content-type'] || '').includes('application/json') && (qv.headers['cache-control'] || '').includes('s-maxage')
+    ? ok('quickview: content-type JSON + cache CDN (catalog public)') : bad('quickview header sai', String(qv.headers['cache-control']));
+  qv = await sf(A.host, `/p/${draftSlug}/quickview`);
+  qv.status === 404 ? ok('quickview SP DRAFT → 404 (không lộ dữ liệu chưa bán)') : bad('quickview lộ draft', String(qv.status));
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

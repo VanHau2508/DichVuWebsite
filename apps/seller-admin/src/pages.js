@@ -335,6 +335,28 @@ export function renderTheme(ctx, theme, notice) {
       </div>
     </div>`;
   }).join('');
+  // Menu điều hướng "Sản phẩm" (Phase 5b): 3 toggle shortcut cố định (mặc định BẬT khi chưa
+  // cấu hình → checked khi != false) + tối đa 6 liên kết tuỳ chỉnh (nhãn + URL). Prefill từ
+  // header props đã lưu (topbar). Form no-JS: checkbox không tick = tắt; hàng thiếu nhãn/URL bị bỏ.
+  const navLinks = Array.isArray(topbar.nav_links) ? topbar.nav_links : [];
+  const NAV_ROWS = 6;
+  const navChk = (name, on, label) => `<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:.94rem">
+    <input type="checkbox" name="${name}" value="1"${on !== false ? ' checked' : ''} style="width:auto"> Hiển thị <strong>${esc(label)}</strong></label>`;
+  const navRows = Array.from({ length: NAV_ROWS }, (_, i) => {
+    const l = navLinks[i] ?? {};
+    return `<div class="grid2" style="padding:5px 0">
+      <div><input name="nav_label_${i}" maxlength="40" value="${esc(l.label ?? '')}" placeholder="Tên mục (vd: Về chúng tôi)"></div>
+      <div><input name="nav_url_${i}" maxlength="300" value="${esc(l.url ?? '')}" placeholder="/pages/gioi-thieu hoặc https://…"></div>
+    </div>`;
+  }).join('');
+  const navMenuCard = `<div class="card"><h2 style="margin-top:0">Menu điều hướng (dropdown “Sản phẩm”)</h2>
+    <p class="muted" style="font-size:.85rem;margin-top:0">Bật/tắt 3 lối tắt cố định trong menu “Sản phẩm” và thêm liên kết riêng. Danh mục sản phẩm luôn tự hiện. Liên kết chỉ nhận đường dẫn nội bộ (bắt đầu <code>/</code>) hoặc <code>https://…</code>.</p>
+    ${navChk('menu_show_featured', topbar.menu_show_featured, 'Nổi bật')}
+    ${navChk('menu_show_new', topbar.menu_show_new, 'Hàng mới')}
+    ${navChk('menu_show_sale', topbar.menu_show_sale, 'Khuyến mãi')}
+    <label style="margin-top:10px;display:block">Liên kết tuỳ chỉnh (tối đa ${NAV_ROWS})</label>
+    ${navRows}
+  </div>`;
   const bannerForm = `<form method="POST" action="/shops/${esc(ctx.shopId)}/theme/banner" enctype="multipart/form-data" style="margin-top:16px">
     <div class="card"><h2 style="margin-top:0">Banner trang chủ (ảnh tự tải)</h2>
       <p class="muted" style="font-size:.85rem;margin:0">Tải tối đa ${BANNER_ROWS} ảnh banner riêng cho dải đầu trang. <strong>Có ít nhất 1 banner → thay carousel tự động</strong> (ảnh phủ kín + chữ + nút). Bỏ trống tất cả = dùng hero tự động (chữ + ảnh sản phẩm). Ảnh được nén WebP, tối đa 10MB mỗi ảnh.</p>
@@ -359,6 +381,7 @@ export function renderTheme(ctx, theme, notice) {
         <label>Nội dung</label><input name="topbar_text" maxlength="120" value="${esc(topbar.topbar_text ?? '')}" placeholder="Giao hàng toàn quốc · Thanh toán COD hoặc chuyển khoản QR">
         <p class="muted" style="font-size:.85rem;margin-bottom:0">Để trống = dùng câu mặc định. Chỉ hứa điều shop làm được (phí ship, đổi trả…).</p>
       </div>
+      ${navMenuCard}
       <div class="card"><h2 style="margin-top:0">Nội dung trang chủ (dải hero)</h2>
         <p class="muted" style="font-size:.85rem;margin-top:0">Banner đầu trang tự chuyển tối đa 3 cảnh: cảnh 1 là nội dung dưới đây, cảnh 2-3 lấy tự động từ sản phẩm có ảnh của shop.</p>
         <label>Dòng nhãn nhỏ</label><input name="hero_eyebrow" maxlength="60" value="${esc(hero.eyebrow ?? '')}" placeholder="Cửa hàng chính thức">

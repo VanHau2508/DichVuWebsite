@@ -49,6 +49,41 @@ function sanitizeSlides(raw, shopId) {
   }
   return { slides: out };
 }
+// ── Menu điều hướng "Sản phẩm" (Phase 5b) ────────────────────────────────────
+// Header props có: menu_show_featured/new/sale (bool bật/tắt 3 shortcut cố định) +
+// nav_links = mảng {label,url} tuỳ chỉnh. Khác banner (image_key là capability trỏ file):
+// đây chỉ là text+link → kẹp nhãn + safeLink url + bỏ mục rỗng, cap 6. Text KHÔNG cần
+// validate cứng (storefront esc khi render) nhưng chuẩn hoá tại đây cho gọn/an toàn kép.
+const MAX_NAV_LINKS = 6;
+function sanitizeNavLinks(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const it of raw) {
+    if (!it || typeof it !== 'object') continue;
+    const label = clampStr(it.label, 40);
+    const url = safeLink(it.url);            // nội bộ '/...' hoặc http(s); javascript:/data:/'//' → ''
+    if (!label || !url) continue;            // thiếu nhãn hoặc URL không an toàn → bỏ mục
+    out.push({ label, url });
+    if (out.length >= MAX_NAV_LINKS) break;  // trần 6 mục
+  }
+  return out;
+}
+// Chuẩn hoá props điều hướng trên section header: ép bool 3 toggle + lọc nav_links.
+// Field vắng mặt = KHÔNG đụng (mặc định storefront hiện đủ). Mutate layout tại chỗ.
+function sanitizeHeaderNav(layout) {
+  if (!Array.isArray(layout)) return;
+  const head = layout.find((s) => s && typeof s === 'object' && s.section === 'header');
+  if (!head || !head.props || typeof head.props !== 'object') return;
+  const p = head.props;
+  for (const k of ['menu_show_featured', 'menu_show_new', 'menu_show_sale']) {
+    if (p[k] !== undefined) p[k] = !!p[k]; // ép bool (chống chuỗi/số lạ từ API)
+  }
+  if (p.nav_links !== undefined) {
+    const links = sanitizeNavLinks(p.nav_links);
+    if (links.length) p.nav_links = links; else delete p.nav_links;
+  }
+}
+
 // Đi qua layout, tìm MỌI section có props.slides → validate. Sai key → trả chuỗi lỗi;
 // hợp lệ → thay bằng bản đã chuẩn hoá (rỗng → xoá prop). Mutate layout tại chỗ.
 function validateBannerInLayout(layout, shopId) {
@@ -85,6 +120,7 @@ async function putTheme(res, ctx, body) {
   if (layout != null) {
     const bannerErr = validateBannerInLayout(layout, ctx.shopId);
     if (bannerErr) return send(res, 400, { error: bannerErr });
+    sanitizeHeaderNav(layout); // menu "Sản phẩm": ép bool toggle + lọc nav_links (Phase 5b)
   }
   await withTenant(ctx.shopId, async (c) => {
     await c.query(

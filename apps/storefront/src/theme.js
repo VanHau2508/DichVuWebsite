@@ -263,11 +263,27 @@ const SECTIONS = {
     // (Khuyến mãi = giá tăng dần tạm thời — Phase 2 có thể thêm trang /sale riêng.)
     const catLinks = (Array.isArray(ctx.categories) ? ctx.categories : [])
       .map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('');
+    // Menu "Sản phẩm" tuỳ chỉnh (Phase 5b): shop bật/tắt 3 shortcut cố định + thêm liên kết
+    // riêng. Đọc từ header props (nơi topbar_text được lưu) — merge saved+props để trang con
+    // (props rỗng) vẫn NHẤT QUÁN. KHÔNG cấu hình / field thiếu = coi như TRUE → giữ hành vi cũ.
+    const hp = { ...saved, ...(props && typeof props === 'object' ? props : {}) };
+    const shortcuts = [
+      hp.menu_show_featured !== false ? '<a href="/">Nổi bật</a>' : '',
+      hp.menu_show_new !== false ? '<a href="/?sort=new">Hàng mới</a>' : '',
+      hp.menu_show_sale !== false ? '<a href="/?sort=price_asc">Khuyến mãi</a>' : '',
+    ].join('');
+    // Liên kết tuỳ chỉnh: seller đã sanitize (kẹp nhãn, safeLink url, ≤6) — đây re-lọc khi render
+    // (esc nhãn + normLink url) chống XSS/CSP nếu dữ liệu cũ lọt.
+    const navLinksHtml = (Array.isArray(hp.nav_links) ? hp.nav_links : [])
+      .filter((l) => l && typeof l === 'object' && l.label && l.url)
+      .map((l) => `<a href="${esc(normLink(l.url))}">${esc(l.label)}</a>`).join('');
+    // Ghép các nhóm (shortcut / danh mục / liên kết tuỳ chỉnh) — gạch ngăn giữa nhóm KHÔNG rỗng.
+    const menuInner = [shortcuts, catLinks, navLinksHtml].filter(Boolean)
+      .join('<span class="hnav-sep" aria-hidden="true"></span>');
     const productMenu = `<div class="hnav-drop">
         <a class="hnav-trig" href="/#san-pham" aria-haspopup="true">Sản phẩm<span class="caret" aria-hidden="true">▾</span></a>
         <div class="hnav-menu" role="menu">
-          <a href="/">Nổi bật</a><a href="/?sort=new">Hàng mới</a><a href="/?sort=price_asc">Khuyến mãi</a>
-          ${catLinks ? `<span class="hnav-sep" aria-hidden="true"></span>${catLinks}` : ''}
+          ${menuInner}
         </div>
       </div>`;
     // "Giới thiệu": trỏ trang CMS giới thiệu nếu shop có (khớp slug about-like → trang menu đầu);

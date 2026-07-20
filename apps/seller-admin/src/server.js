@@ -1856,6 +1856,19 @@ async function themeSave(req, res, me, cookie, shopId) {
     let head = layout.find((x) => x && x.section === 'header');
     if (!head) { head = { section: 'header', props: {} }; layout.unshift(head); }
     setOrDel(head.props, 'topbar_text', String(f.topbar_text ?? '').trim().slice(0, 120));
+    // Menu điều hướng "Sản phẩm" (Phase 5b): 3 toggle shortcut + nav_links tuỳ chỉnh.
+    // Checkbox KHÔNG tick → field vắng → tắt (false). Gán bool TƯỜNG MINH (không setOrDel:
+    // false sẽ bị xoá → storefront lại mặc định hiện). Seller re-sanitize label/url + cap 6.
+    head.props.menu_show_featured = !!f.menu_show_featured;
+    head.props.menu_show_new = !!f.menu_show_new;
+    head.props.menu_show_sale = !!f.menu_show_sale;
+    const navLinks = [];
+    for (let i = 0; i < 6; i++) {
+      const label = String(f[`nav_label_${i}`] ?? '').trim().slice(0, 40);
+      const url = String(f[`nav_url_${i}`] ?? '').trim().slice(0, 300);
+      if (label && url) navLinks.push({ label, url }); // bỏ hàng thiếu nhãn hoặc URL
+    }
+    if (navLinks.length) head.props.nav_links = navLinks; else delete head.props.nav_links;
     const hero = findOrInsert('hero', 'header');
     setOrDel(hero.props, 'eyebrow', String(f.hero_eyebrow ?? '').trim().slice(0, 60));
     setOrDel(hero.props, 'title', String(f.hero_title ?? '').trim().slice(0, 120));

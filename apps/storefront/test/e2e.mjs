@@ -407,6 +407,34 @@ async function main() {
   !r.body.includes('class="hero hero-banner') && r.body.includes('hero-track')
     ? ok('bỏ banner → fallback hero tự động (không còn hero-banner)') : bad('fallback hero tự động lỗi', r.body.match(/<section class="hero[^"]*"/)?.[0]);
 
+  // ── Phase 5b: menu header tự chỉnh (toggle shortcut + nav_links) qua HTTP ─────
+  // Shortcut khớp CHUỖI ĐẦY ĐỦ (href+text) vì "/?sort=new" cũng nằm ở link "Xem tất cả".
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/theme`, { cookie: A.cookie, origin: OS, body: { tokens: {}, layout: [
+    { section: 'header', props: { menu_show_new: false, nav_links: [
+      { label: 'NAVLINK-AN-TOAN', url: '/pages/gioi-thieu' },
+      { label: '<b>XSSNAV</b>', url: '/pages/xss' },      // url AN TOÀN, nhãn XSS → nhãn phải esc
+      { label: 'BADURL', url: 'javascript:alert(1)' },    // url độc → seller BỎ NGUYÊN mục
+    ] } },
+    { section: 'product_grid', props: {} },
+  ] } });
+  r = await sf(A.host, '/');
+  !r.body.includes('<a href="/?sort=new">Hàng mới</a>')
+    ? ok('menu_show_new=false → shortcut "Hàng mới" ẩn') : bad('toggle shortcut không ẩn');
+  r.body.includes('href="/pages/gioi-thieu">NAVLINK-AN-TOAN</a>')
+    ? ok('nav_links tuỳ chỉnh render (nhãn + href nội bộ)') : bad('nav_links không render');
+  (r.body.includes('&lt;b&gt;XSSNAV&lt;/b&gt;') && !r.body.includes('<b>XSSNAV</b>'))
+    ? ok('nav_link nhãn XSS bị escape khi render') : bad('nhãn nav_link không escape');
+  (!r.body.includes('>BADURL<') && !r.body.includes('javascript:alert'))
+    ? ok('nav_link url javascript: → seller BỎ nguyên mục (không lọt)') : bad('url javascript: lọt');
+  // Bỏ cấu hình header → 3 shortcut hiện đủ lại (mặc định = hành vi cũ).
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/theme`, { cookie: A.cookie, origin: OS, body: { tokens: {}, layout: [
+    { section: 'header', props: {} },
+    { section: 'product_grid', props: {} },
+  ] } });
+  r = await sf(A.host, '/');
+  r.body.includes('<a href="/?sort=new">Hàng mới</a>')
+    ? ok('bỏ cấu hình header → 3 shortcut hiện đủ (mặc định)') : bad('shortcut mặc định không hiện');
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

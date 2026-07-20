@@ -316,6 +316,7 @@ export function renderTheme(ctx, theme, notice) {
     ${notice ? `<div class="card" style="border-color:#93c5fd;background:#eff6ff;color:#1e40af">${esc(notice)}</div>` : ''}
     <form method="POST" action="/shops/${esc(ctx.shopId)}/theme">
       <div class="card"><h2 style="margin-top:0">Màu sắc thương hiệu</h2>
+        <p class="muted" style="font-size:.85rem;margin-top:0"><strong>Màu chủ đạo</strong> dùng làm nền banner + thanh thông báo (chữ trắng) → nên chọn <strong>màu đậm/tối</strong> để chữ rõ. Màu quá sáng sẽ khó đọc.</p>
         ${THEME_COLORS.map(colorRow).join('')}
       </div>
       <div class="card"><h2 style="margin-top:0">Kiểu chữ & bo góc</h2>

@@ -1850,9 +1850,11 @@ async function themeSave(req, res, me, cookie, shopId) {
       return s;
     };
     const setOrDel = (props, key, val) => { if (val) props[key] = val; else delete props[key]; };
-    // Thanh thông báo: props trên section header (header luôn đứng đầu — afterName chỉ
-    // dùng khi thiếu, khi đó chèn cuối cũng vô hại vì storefront render theo tên section).
-    const head = findOrInsert('header', 'header');
+    // Thanh thông báo: props trên section header. Header PHẢI đứng ĐẦU — storefront render
+    // các section theo THỨ TỰ mảng, header cuối mảng = header rơi xuống đáy trang. Layout
+    // tuỳ chỉnh (API) có thể thiếu header → chèn về ĐẦU (findOrInsert generic sẽ chèn cuối).
+    let head = layout.find((x) => x && x.section === 'header');
+    if (!head) { head = { section: 'header', props: {} }; layout.unshift(head); }
     setOrDel(head.props, 'topbar_text', String(f.topbar_text ?? '').trim().slice(0, 120));
     const hero = findOrInsert('hero', 'header');
     setOrDel(hero.props, 'eyebrow', String(f.hero_eyebrow ?? '').trim().slice(0, 60));

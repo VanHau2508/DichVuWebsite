@@ -365,7 +365,9 @@ const DEFAULT_LAYOUT = [
 ];
 
 const STYLE = `${FONTFACE}
-:root{--r-sm:max(2px,calc(var(--radius)*.75));--r:var(--radius);--r-lg:calc(var(--radius)*1.8);--r-xl:calc(var(--radius)*2.6);--pill:999px;--sh-sm:0 1px 2px rgba(18,16,12,.05),0 2px 6px -2px rgba(18,16,12,.08);--sh:0 10px 26px -14px rgba(18,16,12,.20),0 2px 6px -3px rgba(18,16,12,.08);--sh-lg:0 30px 60px -28px rgba(18,16,12,.34)}
+/* Bo góc dẫn xuất từ token --radius nhưng KẸP TRẦN px (min): token có thể là %, rem hay
+   px lớn (SIZE_RE cho tới 9999px / 100%) — không kẹp thì thẻ/ảnh phình thành blob. */
+:root{--r-sm:clamp(2px,calc(var(--radius)*.75),12px);--r:min(var(--radius),20px);--r-lg:clamp(var(--radius),calc(var(--radius)*1.8),26px);--r-xl:clamp(var(--radius),calc(var(--radius)*2.6),34px);--pill:999px;--sh-sm:0 1px 2px rgba(18,16,12,.05),0 2px 6px -2px rgba(18,16,12,.08);--sh:0 10px 26px -14px rgba(18,16,12,.20),0 2px 6px -3px rgba(18,16,12,.08);--sh-lg:0 30px 60px -28px rgba(18,16,12,.34)}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
 body{margin:0;font-family:var(--font-body);color:var(--color-text);background:var(--color-bg);line-height:1.6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 a{color:inherit;text-decoration:none}img{max-width:100%;display:block}
@@ -379,12 +381,15 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
   .hero .hslide{opacity:0;visibility:hidden}
   .hero .hslide:first-child{opacity:1;visibility:visible}
   .hero-dots{display:none}}
-/* Thanh thông báo (không sticky — cuộn qua là ẩn, nhường chỗ header). */
-.topbar{background:var(--color-primary);color:#fff;text-align:center;font-size:.8rem;font-weight:500;letter-spacing:.02em;padding:8px 16px}
+/* Thanh thông báo (không sticky — cuộn qua là ẩn, nhường chỗ header).
+   Nền NEO TỐI 14% để chữ trắng vẫn đọc được kể cả khi shop chọn màu chủ đạo hơi sáng
+   (mặc định #141414 gần như không đổi). Cùng lý do áp cho gradient hero bên dưới. */
+.topbar{background:color-mix(in srgb,var(--color-primary) 86%,#0a0a0a);color:#fff;text-align:center;font-size:.8rem;font-weight:500;letter-spacing:.02em;padding:8px 16px}
 .hdr{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--color-bg) 86%,transparent);backdrop-filter:saturate(1.5) blur(12px);-webkit-backdrop-filter:saturate(1.5) blur(12px);border-bottom:1px solid color-mix(in srgb,var(--color-border) 70%,transparent)}
 .hdr .wrap{display:flex;align-items:center;justify-content:space-between;min-height:68px;gap:16px}
 /* Brand editorial: chữ HOA giãn cách (khí chất MAISON); logo ảnh giữ nguyên kích thước. */
-.brand{font-family:var(--font-heading);font-weight:800;font-size:1.06rem;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text);white-space:nowrap;display:inline-flex;align-items:center}
+.brand{font-family:var(--font-heading);font-weight:800;font-size:1.06rem;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(52vw,320px);display:inline-flex;align-items:center}
+.brand-logo{max-width:min(52vw,180px)}
 .brand-logo{max-height:40px;max-width:180px;width:auto;display:block}
 .hnav{display:flex;align-items:center;gap:22px;font-size:.86rem;flex-wrap:wrap}
 .hnav a{color:var(--color-muted);font-weight:600;letter-spacing:.02em;transition:color .15s}.hnav a:hover{color:var(--color-primary)}
@@ -393,10 +398,13 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .navtoggle{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
 .navburger{display:none;cursor:pointer;font-size:1.7rem;line-height:1;color:var(--color-text);padding:2px 8px;user-select:none}
 .navtoggle:focus-visible+.navburger{outline:2.5px solid var(--color-primary);outline-offset:2px;border-radius:8px}
-@media(max-width:720px){
+/* Ngưỡng hamburger = 860px (khớp hero 1 cột ở 820px + tránh dồn nav 7 mục ở iPad dọc 768px).
+   Menu mở: nền ĐẶC (không dựa nền blur của header) để chữ luôn đọc được; mỗi mục cao ≥44px. */
+@media(max-width:860px){
   .hdr .wrap{flex-wrap:wrap;row-gap:10px}
   .navburger{display:inline-flex}
-  .hnav{display:none;flex-basis:100%;flex-direction:column;align-items:flex-start;gap:14px;padding:6px 0 4px}
+  .hnav{display:none;flex-basis:100%;flex-direction:column;align-items:stretch;gap:0;padding:4px 0 8px;background:var(--color-bg);border-top:1px solid var(--color-border)}
+  .hnav a{padding:12px 2px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 60%,transparent)}
   .navtoggle:checked~.hnav{display:flex}
 }
 /* ── HERO CAROUSEL (thuần CSS, không JS — hợp CSP default-src 'none') ─────────────
@@ -404,9 +412,13 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
    Cơ chế: các .hslide xếp chồng (grid-area 1/1), mỗi slide chạy cùng @keyframes fade
    với animation-delay lệch nhau 6s → đúng 1 slide hiện tại mỗi thời điểm.
    Số cảnh quyết định lớp .hero-n1/-n2/-n3 (chu kỳ 12s/18s); 1 cảnh = tĩnh, không chấm. */
-.hero{position:relative;overflow:hidden;background:linear-gradient(165deg,color-mix(in srgb,var(--color-primary) 94%,#fff),var(--color-primary-dark));color:#fff}
+.hero{position:relative;overflow:hidden;background:linear-gradient(165deg,color-mix(in srgb,var(--color-primary) 88%,#0a0a0a),color-mix(in srgb,var(--color-primary-dark) 70%,#000));color:#fff}
+.hero .hero-copy{text-shadow:0 1px 12px rgba(0,0,0,.28)}
 .hero::after{content:"";position:absolute;top:-32%;right:-14%;width:58%;aspect-ratio:1;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.10),transparent 64%);pointer-events:none}
 .hero-track{position:relative;z-index:1;display:grid}
+/* WCAG 2.2.2: cho người dùng cách DỪNG banner tự chạy — trỏ chuột / focus bàn phím vào
+   dải hero là tạm dừng mọi cảnh + chấm (đọc kỹ nội dung, bấm CTA không bị "trôi"). */
+.hero:hover .hslide,.hero:focus-within .hslide,.hero:hover .dot,.hero:focus-within .dot{animation-play-state:paused}
 .hslide{grid-area:1/1;opacity:0;visibility:hidden}
 .hero-n1 .hslide{opacity:1;visibility:visible}
 .hero-n2 .hslide{animation:hcycle2 12s infinite}
@@ -417,7 +429,10 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 @keyframes hcycle3{0%{opacity:0;visibility:hidden;transform:translateY(10px)}2.5%{opacity:1;visibility:visible;transform:none}30.8%{opacity:1;visibility:visible;transform:none}33.4%,100%{opacity:0;visibility:hidden}}
 .hero-grid{max-width:1120px;margin:0 auto;padding:56px 20px 60px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
 .hero .eyebrow{display:inline-flex;align-items:center;gap:7px;color:#fff;font-weight:700;font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;margin:0 0 16px;padding:6px 14px;border-radius:var(--pill);background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2)}
-.hero h1,.hero .hero-h{margin:0 0 16px;font-size:clamp(2rem,3.8vw,3.1rem);font-weight:800;letter-spacing:-.025em;line-height:1.08;color:#fff;text-wrap:balance}
+.hero h1,.hero .hero-h{margin:0 0 16px;font-size:clamp(2rem,3.8vw,3.1rem);font-weight:800;letter-spacing:-.025em;line-height:1.08;color:#fff;text-wrap:balance;overflow-wrap:anywhere}
+/* Tên SP ở cảnh 2-3 (người bán nhập, dài tới 200 ký tự) — kẹp 2 dòng để carousel không
+   phình cao (các cảnh chồng grid, cảnh cao nhất quyết định chiều cao chung). */
+.hero .hero-h{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .hero-sub{margin:0;color:rgba(255,255,255,.78);font-size:1.08rem;line-height:1.65;max-width:46ch}
 .hero-sub .cmp{color:rgba(255,255,255,.55)}
 .hero-cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}

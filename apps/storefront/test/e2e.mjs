@@ -129,6 +129,26 @@ async function main() {
     ? ok('badge giỏ: <script nonce> khớp CSP + fetch /cart/summary') : bad('nonce/script badge không khớp', scriptSrc);
   r.headers['x-frame-options'] === 'DENY' ? ok('X-Frame-Options: DENY') : bad('thiếu X-Frame-Options');
 
+  // ── 1b. Drawer giỏ hàng (Phase 2): shell TĨNH, cache-CDN-an-toàn ───────────
+  sect('1b. Drawer giỏ hàng (shell tĩnh)');
+  const aside = (r.body.match(/<aside id="cart-drawer"[\s\S]*?<\/aside>/) || [])[0] || '';
+  aside && aside.includes('role="dialog"') && aside.includes('aria-modal="true"') && aside.includes('aria-label="Giỏ hàng"') && aside.includes(' hidden')
+    && r.body.includes('<div id="cart-backdrop" hidden></div>')
+    ? ok('shell: <aside role=dialog aria-modal hidden> + backdrop hidden') : bad('thiếu/sai drawer shell', aside.slice(0, 200) || 'không có <aside id="cart-drawer">');
+  aside.includes('Giỏ hàng') && aside.includes('Tạm tính') && aside.includes('href="/checkout"') && aside.includes('Thanh toán') && aside.includes('href="/cart"')
+    ? ok('shell: nhãn tĩnh tiếng Việt + link /checkout + /cart') : bad('drawer thiếu nhãn/link tĩnh');
+  r.body.includes('<template id="cd-empty-tpl">') && r.body.includes('Giỏ hàng trống')
+    ? ok('template trạng-thái-rỗng tĩnh (JS clone, không innerHTML)') : bad('thiếu template giỏ rỗng');
+  // Trang cache CDN ~60s dùng chung mọi khách → shell KHÔNG được server-render dữ liệu giỏ/SP:
+  // không tên SP, không giá (₫ + số), vùng item + subtotal rỗng chờ JS.
+  !aside.includes('Áo Thun') && !aside.includes('cd-row') && !/\d\s*₫/.test(aside) && aside.includes('<div class="cd-items" id="cd-items" aria-live="polite"></div>') && aside.includes('<strong id="cd-subtotal"></strong>')
+    ? ok('shell KHÔNG chứa dữ liệu giỏ/sản phẩm server-side (cache-safe)') : bad('drawer lộ dữ liệu per-user vào trang cache', aside);
+  // Vẫn đúng 1 khối <script nonce> duy nhất (drawer mở rộng script badge, không thêm khối mới).
+  (r.body.match(/<script/g) || []).length === 1
+    ? ok('vẫn CHỈ 1 khối <script nonce> duy nhất (badge + drawer chung)') : bad('số khối <script> khác 1', String((r.body.match(/<script/g) || []).length));
+  r.body.includes("fetch('/cart/update'") && r.body.includes("fetch('/cart/add'") && r.body.includes("name==='buynow'")
+    ? ok('script drawer: POST /cart/update + chặn /cart/add trừ Mua ngay (buynow)') : bad('script drawer thiếu logic update/add');
+
   // ── 2. Chi tiết sản phẩm ───────────────────────────────────────────────────
   sect('2. Chi tiết sản phẩm');
   r = await sf(A.host, `/p/${activeSlug}`);

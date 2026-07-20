@@ -716,20 +716,177 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
 .rv-stars input{position:absolute;width:1px;height:1px;opacity:0}
 .rv-stars label{font-size:1.7rem;color:#d1d5db;cursor:pointer;line-height:1}
 .rv-stars input:checked ~ label,.rv-stars label:hover,.rv-stars label:hover ~ label{color:#f59e0b}
-@media(max-width:720px){.pd-grid{grid-template-columns:1fr;gap:24px}.hnav{gap:14px;font-size:.85rem}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.pd-info h1{font-size:1.5rem}.pd-actions .btn{flex:1}}`;
+@media(max-width:720px){.pd-grid{grid-template-columns:1fr;gap:24px}.hnav{gap:14px;font-size:.85rem}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.pd-info h1{font-size:1.5rem}.pd-actions .btn{flex:1}}
+/* ── Drawer giỏ hàng (Phase 2, chỉ hoạt động khi có JS — shell TĨNH, JS đổ dữ liệu) ──
+   z-index 70/71: trên header (20), menu/search (30), lightbox (50). [hidden] phải thắng
+   display:flex → khai display:none tường minh. prefers-reduced-motion: rule toàn cục
+   (*{transition:none!important}) đã tắt slide/fade — không cần rule riêng. */
+html.cd-lock{overflow:hidden}
+#cart-backdrop{position:fixed;inset:0;z-index:70;background:rgba(17,24,39,.5);opacity:0;transition:opacity .25s}
+#cart-backdrop.open{opacity:1}
+#cart-backdrop[hidden]{display:none}
+#cart-drawer{position:fixed;top:0;right:0;bottom:0;z-index:71;width:min(400px,92vw);background:var(--color-bg);display:flex;flex-direction:column;box-shadow:-24px 0 60px -30px rgba(0,0,0,.35);transform:translateX(100%);transition:transform .3s cubic-bezier(.2,.7,.2,1)}
+#cart-drawer.open{transform:none}
+#cart-drawer[hidden]{display:none}
+.cd-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--color-border)}
+.cd-head h2{margin:0;font-size:1.1rem}
+.cd-close{background:none;border:0;font-size:1.15rem;cursor:pointer;color:var(--color-muted);padding:6px 10px;border-radius:8px;line-height:1}
+.cd-close:hover{color:var(--color-text);background:var(--color-surface)}
+.cd-ship{padding:14px 20px;border-bottom:1px solid var(--color-border);background:var(--color-surface)}
+.cd-bar{height:8px;border-radius:var(--pill);background:color-mix(in srgb,var(--color-primary) 14%,var(--color-bg));overflow:hidden}
+.cd-fill{display:block;height:100%;width:0;border-radius:var(--pill);background:var(--color-primary);transition:width .3s}
+.cd-ship-text{margin:8px 0 0;font-size:.85rem;color:var(--color-muted)}
+.cd-items{flex:1;overflow-y:auto;padding:6px 20px}
+.cd-row{display:flex;gap:12px;align-items:flex-start;padding:14px 0;border-bottom:1px solid var(--color-border)}
+.cd-img{width:64px;height:64px;object-fit:cover;border-radius:10px;border:1px solid var(--color-border);background:var(--color-surface);flex:none}
+.cd-mid{flex:1;min-width:0}
+.cd-title{font-size:.92rem;line-height:1.4}
+.cd-var{font-size:.8rem;color:var(--color-muted)}
+.cd-price{font-weight:700;font-size:.9rem;margin-top:2px;font-variant-numeric:tabular-nums}
+.cd-qty{display:inline-flex;align-items:center;gap:2px;margin-top:8px;border:1px solid var(--color-border);border-radius:var(--pill)}
+.cd-btn{background:none;border:0;cursor:pointer;font-size:1rem;color:var(--color-text);width:32px;height:30px;line-height:1;border-radius:var(--pill);padding:0}
+.cd-btn:hover{background:var(--color-surface)}
+.cd-btn:disabled{opacity:.4;cursor:default}
+.cd-num{min-width:26px;text-align:center;font-size:.9rem;font-variant-numeric:tabular-nums}
+.cd-del{width:30px;height:30px;flex:none;color:var(--color-muted);font-size:.85rem}
+.cd-del:hover{color:#b91c1c}
+.cd-empty{text-align:center;padding:48px 10px;color:var(--color-muted);display:flex;flex-direction:column;gap:14px;align-items:center}
+.cd-foot{border-top:1px solid var(--color-border);padding:14px 20px calc(14px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:10px}
+.cd-sub{display:flex;justify-content:space-between;font-size:.95rem}
+.cd-sub strong{font-variant-numeric:tabular-nums}
+.cd-go{width:100%}
+.cd-view{text-align:center;font-size:.9rem;color:var(--color-muted);text-decoration:underline}
+.cd-view:hover{color:var(--color-primary)}`;
 
-// Lớp JS DUY NHẤT của storefront (Phase 1): badge số lượng giỏ. 1 khối <script nonce> — không
+// ── Drawer giỏ hàng (Phase 2): shell TĨNH render server-side trên MỌI trang có nonce ──
+// CACHE-SAFE: trang storefront cache CDN ~60s dùng chung mọi khách → shell TUYỆT ĐỐI không
+// chứa dữ liệu giỏ/sản phẩm — chỉ nhãn tiếng Việt tĩnh; JS fetch /cart/summary (no-store) đổ
+// dữ liệu per-khách. <template> trạng-thái-rỗng cũng tĩnh (JS clone, không innerHTML).
+const DRAWER_SHELL = `<div id="cart-backdrop" hidden></div>
+<aside id="cart-drawer" role="dialog" aria-modal="true" aria-label="Giỏ hàng" hidden>
+  <div class="cd-head"><h2>Giỏ hàng</h2><button type="button" id="cd-close" class="cd-close" aria-label="Đóng giỏ hàng">✕</button></div>
+  <div class="cd-ship" id="cd-ship" hidden><div class="cd-bar"><span class="cd-fill" id="cd-ship-fill"></span></div><p class="cd-ship-text" id="cd-ship-text"></p></div>
+  <div class="cd-items" id="cd-items" aria-live="polite"></div>
+  <div class="cd-foot">
+    <div class="cd-sub"><span>Tạm tính</span><strong id="cd-subtotal"></strong></div>
+    <a class="btn btn-primary cd-go" href="/checkout">Thanh toán</a>
+    <a class="cd-view" href="/cart">Xem giỏ hàng</a>
+  </div>
+</aside>
+<template id="cd-empty-tpl"><div class="cd-empty"><p>Giỏ hàng trống</p><a class="btn btn-alt" href="/">Tiếp tục mua sắm</a></div></template>`;
+
+// Lớp JS DUY NHẤT của storefront (Phase 1 badge + Phase 2 drawer). 1 khối <script nonce> — không
 // framework, không phụ thuộc ngoài (hợp CSP script-src 'nonce'). XSS-SAFE: KHÔNG nội suy dữ liệu
-// server/user vào thân script (chỉ nonce ở thuộc tính); số đếm đặt qua textContent (KHÔNG innerHTML).
-// fetch same-origin /cart/summary (checkout service qua Caddy) gửi kèm cookie __Host-cart. Lỗi/tắt
-// JS → badge vắng lặng lẽ, 🛒 vẫn dẫn tới /cart. count 0 → giữ ẩn.
-function badgeScript(nonce) {
+// server/user vào thân script (chỉ nonce ở thuộc tính); MỌI dữ liệu từ /cart/summary vào DOM qua
+// createElement + textContent + gán thuộc tính (img.src) — TUYỆT ĐỐI không innerHTML.
+// fetch same-origin (checkout service qua Caddy) gửi kèm cookie __Host-cart. Lỗi/tắt JS → mọi thứ
+// rơi về no-JS: 🛒 dẫn /cart, form thêm giỏ PRG, badge vắng lặng lẽ.
+// "Mua ngay" (name=buynow) KHÔNG bị chặn — phải điều hướng /checkout?bn=1 (giỏ riêng 1 món).
+function cartScript(nonce) {
   return `<script nonce="${esc(nonce)}">(function(){
-  var b=document.getElementById('cart-badge'); if(!b||!window.fetch) return;
-  fetch('/cart/summary',{credentials:'same-origin',headers:{'accept':'application/json'}})
-    .then(function(r){return r.ok?r.json():null;})
-    .then(function(d){ if(!d||!d.count) return; b.textContent=(d.count>99?'99+':String(d.count)); b.hidden=false; })
-    .catch(function(){});
+  'use strict';
+  if(!window.fetch) return;
+  var badge=document.getElementById('cart-badge');
+  function setBadge(n){ if(!badge) return; if(n>0){ badge.textContent=(n>99?'99+':String(n)); badge.hidden=false; } else { badge.textContent=''; badge.hidden=true; } }
+  // Định dạng VNĐ thuần JS (không Intl để chắc chắn ổn định): 1234567 → "1.234.567₫".
+  function vnd(n){ n=Math.round(Number(n)||0); return String(n).replace(/\\B(?=(\\d{3})+(?!\\d))/g,'.')+'\\u20ab'; }
+  function getSummary(){ return fetch('/cart/summary',{credentials:'same-origin',headers:{'accept':'application/json'}}).then(function(r){ return r.ok?r.json():null; }); }
+  getSummary().then(function(d){ if(d) setBadge(d.count||0); }).catch(function(){});
+
+  var drawer=document.getElementById('cart-drawer'), backdrop=document.getElementById('cart-backdrop');
+  if(!drawer||!backdrop) return; // trang không có shell (404/bảo trì) → chỉ badge
+  var itemsBox=document.getElementById('cd-items'), subEl=document.getElementById('cd-subtotal'),
+      shipZone=document.getElementById('cd-ship'), shipFill=document.getElementById('cd-ship-fill'),
+      shipText=document.getElementById('cd-ship-text'), closeBtn=document.getElementById('cd-close'),
+      emptyTpl=document.getElementById('cd-empty-tpl');
+  var lastFocus=null, closing=null;
+
+  function btn(txt,label,cls){ var b=document.createElement('button'); b.type='button'; b.className=cls; b.textContent=txt; b.setAttribute('aria-label',label); return b; }
+  // Dựng 1 dòng sản phẩm — CHỈ createElement/textContent/gán thuộc tính (chống XSS lớp 1;
+  // CSP nonce là lớp 2). qty đổi → POST /cart/update rồi re-render toàn bộ (dòng mới tinh).
+  function rowEl(it){
+    var row=document.createElement('div'); row.className='cd-row';
+    var im;
+    if(it.image_url){ im=document.createElement('img'); im.className='cd-img'; im.src=it.image_url; im.alt=''; im.loading='lazy'; }
+    else { im=document.createElement('div'); im.className='cd-img'; }
+    row.appendChild(im);
+    var mid=document.createElement('div'); mid.className='cd-mid';
+    var t=document.createElement('div'); t.className='cd-title'; t.textContent=it.title; mid.appendChild(t);
+    if(it.variant_label){ var v=document.createElement('div'); v.className='cd-var'; v.textContent=it.variant_label; mid.appendChild(v); }
+    var pr=document.createElement('div'); pr.className='cd-price'; pr.textContent=vnd(it.unit_price_vnd); mid.appendChild(pr);
+    var minus=btn('\\u2212','Giảm số lượng','cd-btn'), plus=btn('+','Tăng số lượng','cd-btn'), del=btn('\\u2715','Xoá khỏi giỏ','cd-btn cd-del');
+    var num=document.createElement('span'); num.className='cd-num'; num.textContent=String(it.qty);
+    var q=document.createElement('div'); q.className='cd-qty';
+    q.appendChild(minus); q.appendChild(num); q.appendChild(plus); mid.appendChild(q);
+    row.appendChild(mid); row.appendChild(del);
+    var busy=false;
+    function change(nq){ // khoá nút khi đang gửi (chống double-submit); re-render thay dòng mới
+      if(busy) return; busy=true; minus.disabled=plus.disabled=del.disabled=true;
+      update(it.line_id,nq);
+    }
+    minus.onclick=function(){ change(Math.max(0,it.qty-1)); };
+    plus.onclick=function(){ change(it.qty+1); };
+    del.onclick=function(){ change(0); };
+    return row;
+  }
+  // POST /cart/update form-encoded — ĐÚNG field của form /cart no-JS (variant_id + qty; qty 0 =
+  // xoá). line_id chính là variant_id (checkout /cart/summary). 303 → fetch tự follow, bỏ body.
+  function update(lineId,qty){
+    var body=new URLSearchParams(); body.set('variant_id',lineId); body.set('qty',String(qty));
+    return fetch('/cart/update',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/x-www-form-urlencoded'},body:body.toString()})
+      .then(refresh,refresh); // kể cả lỗi (422 hết tồn…) vẫn re-fetch → drawer về đúng trạng thái server
+  }
+  function refresh(){ return getSummary().then(function(d){ if(d) render(d); }).catch(function(){}); }
+  function render(d){
+    while(itemsBox.firstChild) itemsBox.removeChild(itemsBox.firstChild);
+    setBadge(d.count||0);
+    if(!d.count){ if(emptyTpl&&emptyTpl.content) itemsBox.appendChild(emptyTpl.content.cloneNode(true)); }
+    else for(var i=0;i<d.items.length;i++) itemsBox.appendChild(rowEl(d.items[i]));
+    subEl.textContent=vnd(d.subtotal_vnd||0);
+    var th=d.free_ship_threshold_vnd;
+    if(th!=null&&th>0){ // shop có ngưỡng freeship → thanh tiến độ; không có → ẩn cả vùng
+      shipZone.hidden=false;
+      shipFill.style.width=Math.min(100,Math.round((d.subtotal_vnd||0)/th*100))+'%';
+      var rem=d.free_ship_remaining_vnd;
+      shipText.textContent=(rem!=null&&rem>0)?('Mua thêm '+vnd(rem)+' để được MIỄN PHÍ vận chuyển'):'\\ud83c\\udf89 Đơn của bạn được MIỄN PHÍ vận chuyển';
+    } else shipZone.hidden=true;
+  }
+  function open(){
+    if(closing){ clearTimeout(closing); closing=null; }
+    lastFocus=document.activeElement;
+    backdrop.hidden=false; drawer.hidden=false;
+    void drawer.offsetWidth; // ép reflow để transition translateX chạy từ trạng thái đóng
+    drawer.classList.add('open'); backdrop.classList.add('open');
+    document.documentElement.classList.add('cd-lock'); // khoá scroll body (CSS overflow:hidden)
+    if(closeBtn) closeBtn.focus();
+    refresh();
+  }
+  function close(){
+    drawer.classList.remove('open'); backdrop.classList.remove('open');
+    document.documentElement.classList.remove('cd-lock');
+    closing=setTimeout(function(){ drawer.hidden=true; backdrop.hidden=true; closing=null; },300);
+    if(lastFocus&&lastFocus.focus) lastFocus.focus(); // trả focus về nơi trước khi mở
+  }
+  if(closeBtn) closeBtn.addEventListener('click',close);
+  backdrop.addEventListener('click',close);
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape'&&!drawer.hidden) close(); });
+  // 🛒 header: có JS → mở drawer thay vì điều hướng; không JS → <a href="/cart"> như cũ.
+  // Ctrl/Cmd/Shift-click hoặc chuột giữa = ý định "mở tab mới" → tôn trọng, không chặn.
+  var cartLink=document.querySelector('.hicon.cart');
+  if(cartLink) cartLink.addEventListener('click',function(e){ if(e.ctrlKey||e.metaKey||e.shiftKey||e.button===1) return; e.preventDefault(); open(); });
+  // Form thêm giỏ trang SP: chặn CHỈ nút "Thêm vào giỏ". "Mua ngay" (submitter name=buynow)
+  // GIỮ điều hướng /checkout?bn=1. Trình duyệt cũ không có e.submitter → không chặn (an toàn:
+  // không thể phân biệt nút → để form submit thật). FormData KHÔNG gồm nút không tên → body sạch.
+  var addForm=document.querySelector('form.pd-actions[action="/cart/add"]');
+  if(addForm) addForm.addEventListener('submit',function(e){
+    if(!('submitter' in e)) return;
+    if(e.submitter&&e.submitter.name==='buynow') return;
+    e.preventDefault();
+    var body=new URLSearchParams(new FormData(addForm)).toString();
+    fetch('/cart/add',{method:'POST',credentials:'same-origin',redirect:'follow',headers:{'content-type':'application/x-www-form-urlencoded'},body:body})
+      .then(function(r){ if(!r.ok){ addForm.submit(); return; } open(); }) // lỗi (hết tồn…) → submit thật, hiện trang lỗi server
+      .catch(function(){ addForm.submit(); });
+  });
 })();</script>`;
 }
 
@@ -737,7 +894,7 @@ function page(title, tokens, bodyHtml, head = '', nonce = '') {
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>${head}<style>${tokensToCss(tokens)}\n${STYLE}</style></head>
-<body>${bodyHtml}${nonce ? badgeScript(nonce) : ''}</body></html>`;
+<body>${bodyHtml}${nonce ? DRAWER_SHELL + cartScript(nonce) : ''}</body></html>`;
 }
 
 // Chèn dải "cam kết" (sau hero) và "bộ sưu tập" (trước lưới sản phẩm) nếu layout đã lưu

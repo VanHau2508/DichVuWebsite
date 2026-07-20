@@ -519,6 +519,9 @@ async function getCartSummary(req, res, _body, ctx) {
     return {
       count,
       items: s.items.map((it) => ({
+        // line_id = variant_id: định danh dòng ỔN ĐỊNH để drawer POST /cart/update
+        // (form-encoded variant_id+qty — cùng field trang /cart no-JS dùng).
+        line_id: it.variant_id,
         title: it.product_title, image_url: it.image ?? null, qty: it.qty,
         unit_price_vnd: it.unit_price_vnd, variant_label: it.variant_title ?? null,
       })),

@@ -140,6 +140,10 @@ async function main() {
     ? ok('có giỏ → count=2, subtotal 500k, item {title,qty,unit_price}') : bad('summary giỏ sai', r.raw);
   'free_ship_threshold_vnd' in (r.json ?? {}) && 'free_ship_remaining_vnd' in (r.json ?? {})
     ? ok('có trường free_ship_threshold_vnd + free_ship_remaining_vnd') : bad('thiếu trường free-ship', r.raw);
+  // Phase 2 (drawer): mỗi item mang line_id = variant_id — định danh dòng để drawer
+  // POST /cart/update (cùng field variant_id+qty của form /cart no-JS).
+  it0 && it0.line_id === vid
+    ? ok('item có line_id (= variant_id) cho drawer /cart/update') : bad('thiếu/sai line_id', r.raw);
 
   // ── 3. Checkout: giá server-side, KHÔNG tin total client ───────────────────
   sect('3. Checkout');

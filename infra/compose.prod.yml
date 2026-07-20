@@ -277,6 +277,24 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
 
+  # Tài khoản khách storefront (0083): mount /account/* trên host shop (Caddy đã route @account →
+  # cả *.nentang.vn lẫn tên miền riêng). Vai app_customer least-priv. Build repo-root (COPY packages/auth).
+  account:
+    build: { context: .., dockerfile: apps/account/Dockerfile }
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgres://app_customer:${APP_CUSTOMER_PASSWORD:?}@postgres:5432/app
+      REDIS_URL: redis://redis:6379              # rate-limit login/đăng-ký khách (fail-open — Argon2 là sàn)
+      PORT: "3062"
+      CUST_SESSION_TTL_HOURS: ${CUST_SESSION_TTL_HOURS:-720}
+      MEDIA_PUBLIC_BASE: ${MEDIA_PUBLIC_BASE:?}   # ảnh SP trong lịch sử đơn (img-src CSP)
+    deploy: { resources: { limits: { memory: 160m } } }
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
   worker:
     build: { context: ../apps/worker }
     restart: unless-stopped
@@ -301,8 +319,10 @@ services:
       SUBSCRIPTION_GRACE_DAYS: ${SUBSCRIPTION_GRACE_DAYS:-7}
       # Self-serve signup (0091): pool app_signup GC nháp treo → giải phóng slug + gửi email verify.
       DATABASE_URL_SIGNUP: postgres://app_signup:${APP_SIGNUP_PASSWORD:?}@postgres:5432/app
+      # Điểm thưởng (0086): worker sweep tích (vesting) + thu-hồi (clawback/reversal). Vai app_loyalty.
+      DATABASE_URL_LOYALTY: postgres://app_loyalty:${APP_LOYALTY_PASSWORD:?}@postgres:5432/app
+      LOYALTY_SWEEP_MS: ${LOYALTY_SWEEP_MS:-300000}
       SIGNUP_SWEEP_MS: ${SIGNUP_SWEEP_MS:-300000}
-      PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
       # Thương hiệu + email liên hệ nền tảng trong email/Telegram NHẮC HẠN thuê bao.
       PLATFORM_BRAND: ${PLATFORM_BRAND:-Nền Tảng}
       PLATFORM_CONTACT_EMAIL: ${PLATFORM_CONTACT_EMAIL:-lienhe@nentang.vn}

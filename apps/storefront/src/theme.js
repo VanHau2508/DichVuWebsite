@@ -99,6 +99,8 @@ const I_SHIELD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const I_RETURN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.2-9.3L3 6"/></svg>';
 const I_BADGE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l2.4 1.8 3 .1.9 2.9 2.4 1.8-.9 2.9.9 2.9-2.4 1.8-.9 2.9-3 .1L12 22l-2.4-1.8-3-.1-.9-2.9L3.3 15.4l.9-2.9-.9-2.9 2.4-1.8.9-2.9 3-.1z"/><path d="M9 12l2 2 4-4"/></svg>';
 const I_WALLET = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h13v4"/><path d="M3 7v10a2 2 0 0 0 2 2h14a1 1 0 0 0 1-1v-3"/><path d="M21 11v4h-4a2 2 0 0 1 0-4z"/></svg>';
+const I_SEARCH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>';
+const I_USER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-6 8-6s8 2 8 6"/></svg>';
 
 // Giá GẠCH NGANG (compare-at, 0067 — CHỈ hiển thị, checkout luôn tính price_vnd):
 // chỉ render khi compare > giá bán; kèm badge -N%.
@@ -202,20 +204,45 @@ const SECTIONS = {
       : (typeof saved.topbar_text === 'string' && saved.topbar_text)
         ? saved.topbar_text
         : 'Giao hàng toàn quốc · Thanh toán COD hoặc chuyển khoản QR';
+    // Dropdown "Sản phẩm" (thuần CSS, :hover + :focus-within): shortcut cố định + danh mục THẬT.
+    // Shortcut trỏ về lưới trang chủ theo sort có sẵn (GRID_SORTS) — KHÔNG route mới, không 404.
+    // (Khuyến mãi = giá tăng dần tạm thời — Phase 2 có thể thêm trang /sale riêng.)
+    const catLinks = (Array.isArray(ctx.categories) ? ctx.categories : [])
+      .map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('');
+    const productMenu = `<div class="hnav-drop">
+        <a class="hnav-trig" href="/#san-pham" aria-haspopup="true">Sản phẩm<span class="caret" aria-hidden="true">▾</span></a>
+        <div class="hnav-menu" role="menu">
+          <a href="/">Nổi bật</a><a href="/?sort=new">Hàng mới</a><a href="/?sort=price_asc">Khuyến mãi</a>
+          ${catLinks ? `<span class="hnav-sep" aria-hidden="true"></span>${catLinks}` : ''}
+        </div>
+      </div>`;
+    // "Giới thiệu": trỏ trang CMS giới thiệu nếu shop có (khớp slug about-like → trang menu đầu);
+    // không có trang nào → ẩn mục (tránh liên kết chết). Footer vẫn liệt kê đủ trang CMS.
+    const aboutPage = (ctx.menu ?? []).find((p) => /gioi-?thieu|about|ve-chung-toi/i.test(p.slug)) ?? (ctx.menu ?? [])[0] ?? null;
+    const aboutLink = aboutPage ? `<a href="/pages/${esc(aboutPage.slug)}">Giới thiệu</a>` : '';
     return `<div class="topbar">${esc(topbarText)}</div><header class="hdr"><div class="wrap">
-    <a href="/" class="brand">${ctx.shop.logo_url ? `<img src="${esc(ctx.shop.logo_url)}" alt="${esc(ctx.shop.name)}" class="brand-logo">` : esc(ctx.shop.name)}</a>
-    <form class="hsearch" method="GET" action="/search" role="search">
-      <input name="q" value="${esc(ctx.query ?? '')}" placeholder="Tìm sản phẩm…" aria-label="Tìm sản phẩm">
-    </form>
-    <input type="checkbox" id="navtoggle" class="navtoggle" aria-label="Mở/đóng menu">
+    <input type="checkbox" id="navtoggle" class="navtoggle vh" aria-label="Mở/đóng menu">
     <label for="navtoggle" class="navburger" aria-hidden="true">☰</label>
+    <a href="/" class="brand">${ctx.shop.logo_url ? `<img src="${esc(ctx.shop.logo_url)}" alt="${esc(ctx.shop.name)}" class="brand-logo">` : esc(ctx.shop.name)}</a>
     <nav class="hnav">
-      ${ctx.categories.slice(0, 4).map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}
-      ${ctx.hasBlog ? '<a href="/blog">Blog</a>' : ''}
+      <a href="/">Trang chủ</a>
+      ${productMenu}
+      ${aboutLink}
+      ${ctx.hasBlog ? '<a href="/blog">Tin tức</a>' : ''}
       <a href="/checkout/lookup">Tra cứu đơn</a>
-      <a href="/account">Tài khoản</a>
-      <a href="/cart" class="cart"><span class="i">${I_CART}</span>Giỏ hàng</a>
     </nav>
+    <div class="hicons">
+      <div class="hsearch-wrap">
+        <input type="checkbox" id="searchtoggle" class="searchtoggle vh" aria-label="Mở/đóng tìm kiếm">
+        <label for="searchtoggle" class="hicon" title="Tìm kiếm"><span class="i">${I_SEARCH}</span><span class="vh">Tìm kiếm</span></label>
+        <form class="hsearch" method="GET" action="/search" role="search">
+          <input name="q" value="${esc(ctx.query ?? '')}" placeholder="Tìm sản phẩm…" aria-label="Tìm sản phẩm">
+          <button class="hsearch-go" type="submit" aria-label="Tìm">${I_SEARCH}</button>
+        </form>
+      </div>
+      <a href="/account" class="hicon" title="Tài khoản"><span class="i">${I_USER}</span><span class="vh">Tài khoản</span></a>
+      <a href="/cart" class="hicon cart" title="Giỏ hàng"><span class="i">${I_CART}</span><span class="vh">Giỏ hàng</span><span class="cart-badge" id="cart-badge" aria-live="polite" hidden></span></a>
+    </div>
   </div></header>`;
   },
 
@@ -386,26 +413,59 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
    (mặc định #141414 gần như không đổi). Cùng lý do áp cho gradient hero bên dưới. */
 .topbar{background:color-mix(in srgb,var(--color-primary) 86%,#0a0a0a);color:#fff;text-align:center;font-size:.8rem;font-weight:500;letter-spacing:.02em;padding:8px 16px}
 .hdr{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--color-bg) 86%,transparent);backdrop-filter:saturate(1.5) blur(12px);-webkit-backdrop-filter:saturate(1.5) blur(12px);border-bottom:1px solid color-mix(in srgb,var(--color-border) 70%,transparent)}
-.hdr .wrap{display:flex;align-items:center;justify-content:space-between;min-height:68px;gap:16px}
+.hdr .wrap{display:flex;align-items:center;min-height:68px;gap:18px}
 /* Brand editorial: chữ HOA giãn cách (khí chất MAISON); logo ảnh giữ nguyên kích thước. */
 .brand{font-family:var(--font-heading);font-weight:800;font-size:1.06rem;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(52vw,320px);display:inline-flex;align-items:center}
 .brand-logo{max-width:min(52vw,180px)}
 .brand-logo{max-height:40px;max-width:180px;width:auto;display:block}
-.hnav{display:flex;align-items:center;gap:22px;font-size:.86rem;flex-wrap:wrap}
-.hnav a{color:var(--color-muted);font-weight:600;letter-spacing:.02em;transition:color .15s}.hnav a:hover{color:var(--color-primary)}
-.hnav .cart{display:inline-flex;align-items:center;gap:6px;color:var(--color-text);font-weight:600}.hnav .cart:hover{color:var(--color-primary)}
+.hnav{display:flex;align-items:center;gap:22px;font-size:.86rem;flex-wrap:wrap;margin-right:auto}
+.hnav>a,.hnav-trig{color:var(--color-muted);font-weight:600;letter-spacing:.02em;transition:color .15s}
+.hnav>a:hover,.hnav-trig:hover{color:var(--color-primary)}
+/* Dropdown "Sản phẩm" thuần CSS (:hover + :focus-within — không JS, hợp CSP). */
+.hnav-drop{position:relative}
+.hnav-trig{display:inline-flex;align-items:center;gap:4px;cursor:pointer;padding:6px 0}
+.caret{font-size:.66em;transition:transform .18s}
+.hnav-drop:hover .caret,.hnav-drop:focus-within .caret{transform:rotate(180deg)}
+.hnav-menu{position:absolute;top:100%;left:0;min-width:210px;display:none;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--r-lg);box-shadow:var(--sh-lg);padding:8px;z-index:30}
+.hnav-drop:hover .hnav-menu,.hnav-drop:focus-within .hnav-menu{display:flex}
+.hnav-menu a{padding:9px 12px;border-radius:var(--r-sm);color:var(--color-text);font-weight:500;white-space:nowrap;transition:background .15s,color .15s}
+.hnav-menu a:hover{background:var(--color-hero-bg);color:var(--color-primary)}
+.hnav-sep{height:1px;background:var(--color-border);margin:6px 6px}
+/* Nhóm icon phải: tìm kiếm (reveal form) · tài khoản · giỏ (kèm badge). */
+.hicons{display:flex;align-items:center;gap:4px}
+.hicon{position:relative;display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:var(--pill);color:var(--color-text);cursor:pointer;transition:background .15s,color .15s}
+.hicon:hover{background:var(--color-hero-bg);color:var(--color-primary)}
+.hicon .i svg{width:21px;height:21px}
+.cart-badge{position:absolute;top:3px;right:3px;min-width:18px;height:18px;padding:0 5px;border-radius:var(--pill);background:var(--color-primary);color:#fff;font-size:.66rem;font-weight:800;line-height:18px;text-align:center;font-variant-numeric:tabular-nums;box-shadow:0 0 0 2px var(--color-bg)}
+.cart-badge[hidden]{display:none}
+/* Tìm kiếm reveal (checkbox + :checked ~ .hsearch — no-JS, như hamburger). */
+.hsearch-wrap{position:relative}
+.hsearch{position:absolute;top:calc(100% + 10px);right:0;display:none;align-items:center;gap:4px;background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--pill);padding:4px 4px 4px 8px;box-shadow:var(--sh-lg);z-index:30}
+.searchtoggle:checked~.hsearch{display:flex}
+.searchtoggle:focus-visible+.hicon{outline:2.5px solid var(--color-primary);outline-offset:2px}
+.hsearch input{border:0;background:transparent;padding:9px 6px;font-size:.9rem;font-family:inherit;color:var(--color-text);width:210px;outline:none}
+.hsearch-go{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;flex:0 0 auto;border:0;border-radius:var(--pill);background:var(--color-primary);color:#fff;cursor:pointer}
+.hsearch-go svg{width:18px;height:18px}
 /* Hamburger no-JS (checkbox + :checked ~ .hnav) — mobile gom menu vào nút ☰; desktop ẩn nút, nav luôn hiện. */
-.navtoggle{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
 .navburger{display:none;cursor:pointer;font-size:1.7rem;line-height:1;color:var(--color-text);padding:2px 8px;user-select:none}
 .navtoggle:focus-visible+.navburger{outline:2.5px solid var(--color-primary);outline-offset:2px;border-radius:8px}
-/* Ngưỡng hamburger = 860px (khớp hero 1 cột ở 820px + tránh dồn nav 7 mục ở iPad dọc 768px).
-   Menu mở: nền ĐẶC (không dựa nền blur của header) để chữ luôn đọc được; mỗi mục cao ≥44px. */
+/* Ngưỡng hamburger = 860px (khớp hero 1 cột ở 820px + tránh dồn nav ở iPad dọc 768px).
+   Menu mở: nền ĐẶC (không dựa nền blur của header) để chữ luôn đọc được; mỗi mục cao ≥44px.
+   Icon giỏ/tài khoản/tìm kiếm LUÔN hiện (ngoài burger); dropdown "Sản phẩm" bung tĩnh (touch không hover). */
 @media(max-width:860px){
-  .hdr .wrap{flex-wrap:wrap;row-gap:10px}
-  .navburger{display:inline-flex}
-  .hnav{display:none;flex-basis:100%;flex-direction:column;align-items:stretch;gap:0;padding:4px 0 8px;background:var(--color-bg);border-top:1px solid var(--color-border)}
-  .hnav a{padding:12px 2px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 60%,transparent)}
+  .hdr .wrap{flex-wrap:wrap;row-gap:10px;gap:10px}
+  .navburger{display:inline-flex;order:0}
+  .brand{order:1;margin-right:auto}
+  .hicons{order:2}
+  .hnav{order:3;display:none;flex-basis:100%;flex-direction:column;align-items:stretch;gap:0;padding:4px 0 8px;margin:0;background:var(--color-bg);border-top:1px solid var(--color-border)}
+  .hnav>a,.hnav-trig{padding:12px 2px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 60%,transparent)}
   .navtoggle:checked~.hnav{display:flex}
+  .hnav-drop{position:static}
+  .caret{display:none}
+  .hnav-menu{position:static;display:flex;box-shadow:none;border:0;border-radius:0;padding:2px 0 8px 14px;min-width:0;background:transparent}
+  .hnav-menu a{padding:9px 2px}
+  .hnav-sep{display:none}
+  .hsearch{right:auto;left:0}
 }
 /* ── HERO CAROUSEL (thuần CSS, không JS — hợp CSP default-src 'none') ─────────────
    Dải tối editorial trên nền gradient màu thương hiệu, chữ TRẮNG cố định.
@@ -486,9 +546,6 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .coll-tile:hover::after{transform:scale(1.3)}
 .coll-name{position:relative;font-family:var(--font-heading);font-weight:700;font-size:1.02rem;color:var(--color-text);line-height:1.3}
 .coll-go{position:relative;font-size:.8rem;font-weight:700;color:var(--color-accent)}
-.hsearch{flex:1 1 180px;max-width:280px;margin:0 8px}
-.hsearch input{width:100%;padding:10px 15px;border:1px solid var(--color-border);border-radius:var(--pill);font-size:.9rem;font-family:inherit;background:var(--color-surface);color:var(--color-text);transition:border-color .15s,box-shadow .15s}
-.hsearch input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 22%,transparent)}
 .searchbar{display:flex;gap:10px;margin:0 0 24px;max-width:520px}
 .searchbar input{flex:1;padding:12px 16px;border:1px solid var(--color-border);border-radius:var(--pill);font-size:1rem;font-family:inherit;background:var(--color-bg);color:var(--color-text);transition:border-color .15s,box-shadow .15s}
 .searchbar input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 22%,transparent)}
@@ -661,11 +718,26 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
 .rv-stars input:checked ~ label,.rv-stars label:hover,.rv-stars label:hover ~ label{color:#f59e0b}
 @media(max-width:720px){.pd-grid{grid-template-columns:1fr;gap:24px}.hnav{gap:14px;font-size:.85rem}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.pd-info h1{font-size:1.5rem}.pd-actions .btn{flex:1}}`;
 
-function page(title, tokens, bodyHtml, head = '') {
+// Lớp JS DUY NHẤT của storefront (Phase 1): badge số lượng giỏ. 1 khối <script nonce> — không
+// framework, không phụ thuộc ngoài (hợp CSP script-src 'nonce'). XSS-SAFE: KHÔNG nội suy dữ liệu
+// server/user vào thân script (chỉ nonce ở thuộc tính); số đếm đặt qua textContent (KHÔNG innerHTML).
+// fetch same-origin /cart/summary (checkout service qua Caddy) gửi kèm cookie __Host-cart. Lỗi/tắt
+// JS → badge vắng lặng lẽ, 🛒 vẫn dẫn tới /cart. count 0 → giữ ẩn.
+function badgeScript(nonce) {
+  return `<script nonce="${esc(nonce)}">(function(){
+  var b=document.getElementById('cart-badge'); if(!b||!window.fetch) return;
+  fetch('/cart/summary',{credentials:'same-origin',headers:{'accept':'application/json'}})
+    .then(function(r){return r.ok?r.json():null;})
+    .then(function(d){ if(!d||!d.count) return; b.textContent=(d.count>99?'99+':String(d.count)); b.hidden=false; })
+    .catch(function(){});
+})();</script>`;
+}
+
+function page(title, tokens, bodyHtml, head = '', nonce = '') {
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>${head}<style>${tokensToCss(tokens)}\n${STYLE}</style></head>
-<body>${bodyHtml}</body></html>`;
+<body>${bodyHtml}${nonce ? badgeScript(nonce) : ''}</body></html>`;
 }
 
 // Chèn dải "cam kết" (sau hero) và "bộ sưu tập" (trước lưới sản phẩm) nếu layout đã lưu
@@ -703,7 +775,7 @@ export function renderHome(ctx, { canonical = null, prevUrl = null, nextUrl = nu
     description: `${ctx.shop.name} — cửa hàng trực tuyến. Giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.`,
     canonical, prevUrl, nextUrl, ogTitle: ctx.shop.name, siteName: ctx.shop.name, ogImage: shopOgImage(ctx),
   });
-  return page(ctx.shop.name, ctx.theme?.tokens, body, head);
+  return page(ctx.shop.name, ctx.theme?.tokens, body, head, ctx.nonce);
 }
 
 // Mô tả có ĐỊNH DẠNG (no-JS, CSP-sạch): tách đoạn theo dòng trống; dòng bắt đầu "- "/"• "
@@ -871,7 +943,7 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
   const ogSrc = gallery.length ? absUrl(gallery[0].url) : '';
   const ogImg = ogSrc ? `<meta property="og:image" content="${esc(ogSrc)}"><meta name="twitter:image" content="${esc(ogSrc)}">` : '';
   const head = metaHead({ description: desc, canonical, ogTitle: p.title, ogType: 'product', siteName: ctx.shop.name }) + ogImg;
-  return page(`${p.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
+  return page(`${p.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head, ctx.nonce);
 }
 
 /** Trang kết quả tìm kiếm. Trang KQ tìm không nên index (robots noindex,follow). */
@@ -895,7 +967,7 @@ export function renderSearch(ctx, { canonical = null } = {}) {
     description: q ? `Kết quả tìm kiếm cho "${q}" tại ${ctx.shop.name}` : `Tìm sản phẩm tại ${ctx.shop.name}`,
     canonical, ogTitle: q ? `Tìm "${q}"` : 'Tìm kiếm', siteName: ctx.shop.name, robots: 'noindex, follow',
   });
-  return page(`${q ? `Tìm "${q}"` : 'Tìm kiếm'} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
+  return page(`${q ? `Tìm "${q}"` : 'Tìm kiếm'} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head, ctx.nonce);
 }
 
 /** Blog: danh sách bài published (kèm ảnh bìa nếu có + phân trang ?page=). */
@@ -924,7 +996,7 @@ export function renderBlogList(ctx, posts, { canonical = null, prevUrl = null, n
       ${pagerHtml}
     </main>${SECTIONS.footer({}, ctx)}`;
   const head = metaHead({ description: `Bài viết & tin tức từ ${ctx.shop.name}`, canonical, prevUrl, nextUrl, ogTitle: `Blog — ${ctx.shop.name}`, siteName: ctx.shop.name, ogImage: shopOgImage(ctx) });
-  return page(`Blog — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
+  return page(`Blog — ${ctx.shop.name}`, ctx.theme?.tokens, body, head, ctx.nonce);
 }
 
 /** Blog: một bài. body TEXT → tách đoạn theo dòng trống, esc + <br> cho xuống dòng đơn.
@@ -953,7 +1025,7 @@ export function renderBlogPost(ctx, post, { canonical = null } = {}) {
   const abs = (u) => (u ? (/^https?:\/\//i.test(u) ? u : `${ctx.origin || ''}${u}`) : null);
   const ogImage = abs(post.cover) ?? shopOgImage(ctx);
   const head = metaHead({ description: desc, canonical, ogTitle: post.title, ogType: 'article', siteName: ctx.shop.name, ogImage });
-  return page(`${post.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head);
+  return page(`${post.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head, ctx.nonce);
 }
 
 // Banner preview: tĩnh, không nội suy dữ liệu shop → an toàn. Nổi bật để không ai
@@ -1025,7 +1097,7 @@ export function renderPage(ctx, doc, { preview = false, canonical = null } = {})
     siteName: ctx.shop.name,
     robots: preview ? 'noindex, nofollow' : null,
   });
-  return page(title, ctx.theme?.tokens, body, head);
+  return page(title, ctx.theme?.tokens, body, head, ctx.nonce);
 }
 
 export function renderMaintenance(shopName) {

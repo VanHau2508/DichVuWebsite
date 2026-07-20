@@ -495,6 +495,41 @@ async function getCart(req, res, _body, ctx) {  // HTML (trình duyệt) hoặc 
   return send(res, 200, summary);
 }
 
+// GET /cart/summary — JSON GỌN cho badge giỏ trên storefront (same-origin fetch). CHỈ đọc
+// giỏ xác định bởi cookie __Host-cart (KHÔNG nhận cart-id query → không IDOR). Không cookie /
+// giỏ trống → {count:0, items:[]}. send() đã đặt no-store + application/json và KHÔNG đặt
+// Access-Control-Allow-Origin (same-origin thuần: __Host-cart chỉ gửi kèm request cùng origin).
+async function getCartSummary(req, res, _body, ctx) {
+  // Rate-limit riêng (fail-open): endpoint này bị poll mỗi lần tải trang storefront. Bucket
+  // RIÊNG (không đụng budget ghi rl:co:ip) → poll nhiều không chặn được luồng tạo đơn. Redis
+  // lỗi/chưa sẵn sàng (degraded) → cho qua, tuyệt đối không làm sập badge/checkout.
+  if (redis) {
+    const rl = await hit(redis, `rl:co:summary:ip:${clientIp(req)}`, { limit: CO_RL, windowSec: 60 });
+    if (!rl.allowed && !rl.degraded) return send(res, 429, { error: 'quá nhanh' }, { 'retry-after': String(rl.retryAfterSec || 60) });
+  }
+  const token = parseCookies(req)[CART_COOKIE];
+  const empty = { count: 0, items: [], subtotal_vnd: 0, free_ship_threshold_vnd: null, free_ship_remaining_vnd: null };
+  if (!token) return send(res, 200, empty);
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const cart = await findCart(c, token); // hash(token) + status='active' + chưa hết hạn; RLS cô lập tenant
+    if (!cart) return empty;
+    const s = await summarize(c, cart.id);
+    const threshold = (await shopShipping(c)).threshold; // ngưỡng free-ship của shop (null = không có)
+    const count = s.items.reduce((n, it) => n + it.qty, 0);
+    return {
+      count,
+      items: s.items.map((it) => ({
+        title: it.product_title, image_url: it.image ?? null, qty: it.qty,
+        unit_price_vnd: it.unit_price_vnd, variant_label: it.variant_title ?? null,
+      })),
+      subtotal_vnd: s.subtotal_vnd,
+      free_ship_threshold_vnd: threshold,
+      free_ship_remaining_vnd: threshold != null ? Math.max(0, threshold - s.subtotal_vnd) : null,
+    };
+  });
+  return send(res, 200, out);
+}
+
 async function setItemQty(req, res, body, ctx) {  // API JSON
   const variantId = body.variant_id, qty = body.qty;
   if (typeof variantId !== 'string' || !UUID_RE.test(variantId)) return send(res, 400, { error: 'variant_id không hợp lệ' });
@@ -1129,6 +1164,7 @@ async function getSuccessPage(req, res, _body, ctx, query) {
 // form: đọc body dạng x-www-form-urlencoded (thay vì JSON) cho trang không-JS.
 const ROUTES = [
   { m: 'GET', p: '/cart', fn: getCart },
+  { m: 'GET', p: '/cart/summary', fn: getCartSummary },
   { m: 'POST', p: '/cart/items', fn: addItem },
   { m: 'PATCH', p: '/cart/items', fn: setItemQty },
   { m: 'POST', p: '/cart/add', fn: addItemForm, form: true },

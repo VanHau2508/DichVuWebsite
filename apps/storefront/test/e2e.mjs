@@ -114,10 +114,19 @@ async function main() {
   !r.body.includes('evilrule')
     ? ok('token ĐỘC bị sanitize (không breakout CSS)') : bad('token độc breakout', 'body chứa evilrule');
 
-  // CSP: lớp phòng thủ XSS thứ hai. Phải chặn script; frame-ancestors none.
+  // CSP: lớp phòng thủ XSS thứ hai. Trang có badge giỏ → script-src CHỈ nonce (KHÔNG unsafe-inline,
+  // KHÔNG script ngoài); default-src vẫn 'none'; frame-ancestors 'none'. Nonce có mặt trong CẢ
+  // header lẫn thân HTML (<script nonce>).
   const csp = r.headers['content-security-policy'] ?? '';
-  csp.includes("default-src 'none'") && !csp.includes("script-src 'unsafe-inline'") && csp.includes("frame-ancestors 'none'")
-    ? ok('có CSP nghiêm ngặt (default-src none, không script, chống clickjacking)') : bad('CSP thiếu/lỏng', csp);
+  const scriptSrc = (csp.match(/script-src ([^;]*)/) || [])[1] || '';
+  csp.includes("default-src 'none'")
+    && /'nonce-[A-Za-z0-9+/=]+'/.test(scriptSrc) && !scriptSrc.includes("'unsafe-inline'")
+    && csp.includes("frame-ancestors 'none'")
+    ? ok('CSP: script-src CHỈ nonce (không unsafe-inline), default-src none, chống clickjacking') : bad('CSP thiếu/lỏng', csp);
+  // Nonce trong CSP phải KHỚP thuộc tính <script nonce> trong thân (script badge giỏ chạy được).
+  const nonceInCsp = (scriptSrc.match(/'nonce-([A-Za-z0-9+/=]+)'/) || [])[1];
+  nonceInCsp && r.body.includes(`<script nonce="${nonceInCsp}">`) && r.body.includes("fetch('/cart/summary'")
+    ? ok('badge giỏ: <script nonce> khớp CSP + fetch /cart/summary') : bad('nonce/script badge không khớp', scriptSrc);
   r.headers['x-frame-options'] === 'DENY' ? ok('X-Frame-Options: DENY') : bad('thiếu X-Frame-Options');
 
   // ── 2. Chi tiết sản phẩm ───────────────────────────────────────────────────
@@ -263,8 +272,8 @@ async function main() {
   r.body.includes(`<meta property="og:image" content="https://${A.host}/media-public/${FAKE_MEDIA}">`) ? ok('og:image ƯU TIÊN ảnh bìa bài (URL tuyệt đối)') : bad('og:image không ưu tiên cover');
   r.body.includes('<figure') && !r.body.includes('<script>xau') && r.body.includes('Ảnh minh hoạ') ? ok('[anh:key|alt] trong bài → <figure>, alt escape') : bad('[anh:] không render/không escape');
   const cspB = r.headers['content-security-policy'] ?? '';
-  cspB.includes("default-src 'none'") && cspB.includes("img-src 'self' data:") && !cspB.includes('script-src')
-    ? ok('CSP giữ nguyên — không origin mới, vẫn không script') : bad('CSP đổi', cspB);
+  cspB.includes("default-src 'none'") && cspB.includes("img-src 'self' data:") && /script-src 'nonce-[A-Za-z0-9+/=]+'/.test(cspB)
+    ? ok('CSP: giữ default-src none + img-src; script-src CHỈ nonce (badge giỏ, không origin mới)') : bad('CSP đổi', cspB);
 
   // ── Flash sale (0082): giá sale + gạch giá gốc + badge + khung giờ, đè compare_at ──
   sect('Flash sale hiển thị storefront');

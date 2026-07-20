@@ -49,6 +49,12 @@ const CSP = [
   "form-action 'self'",
   "frame-ancestors 'none'",
 ].join('; ');
+// Trang mang lớp JS badge giỏ (header): thêm script-src 'nonce-X' (CHỈ script nội tuyến ĐÚNG
+// nonce — KHÔNG 'unsafe-inline', KHÔNG script ngoài) + connect-src 'self' (để fetch('/cart/summary')
+// không bị default-src 'none' chặn). MIRROR apps/checkout http.js (GPS). Mọi thứ khác vẫn default-src
+// 'none'. nonce vắng → CSP khoá cứng như cũ (trang 404/bảo trì không có script). script-src ĐÈ
+// default-src cho <script> → chỉ script ký đúng nonce chạy; XSS chèn <script> không đoán được nonce.
+const cspWithNonce = (nonce) => (nonce ? `${CSP}; script-src 'nonce-${nonce}'; connect-src 'self'` : CSP);
 
 const log = makeLog('storefront');
 
@@ -208,11 +214,14 @@ const LANDING_CFG = {
   brand: process.env.PLATFORM_BRAND ?? 'Nền Tảng',
 };
 
-function sendHtml(res, status, html, { shopSlug, cache, preview } = {}) {
+function sendHtml(res, status, html, { shopSlug, cache, preview, nonce } = {}) {
   const headers = {
     'content-type': 'text/html; charset=utf-8',
     'x-content-type-options': 'nosniff',
-    'content-security-policy': CSP,
+    // nonce đi kèm trong CẢ header CSP lẫn thân HTML (thuộc tính <script nonce>). Trang cache
+    // được (home/product/...) → CDN lưu header+body CÙNG một response nên nonce luôn khớp; script
+    // là TĨNH (không nội suy dữ liệu) nên nonce dùng lại trong cửa sổ cache 60s vẫn an toàn.
+    'content-security-policy': cspWithNonce(nonce),
     'x-frame-options': 'DENY',
     'referrer-policy': 'strict-origin-when-cross-origin',
   };
@@ -570,7 +579,10 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     // origin tuyệt đối của shop (từ host request) → dựng URL tuyệt đối cho og:image,
     // vì bộ quét mạng xã hội KHÔNG hiểu ảnh đường-dẫn-tương-đối (/media-public/...).
     const origin = host ? `https://${host}` : '';
-    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '', hasBlog: data.hasBlog, origin };
+    // Nonce CSP mỗi-request (ngẫu nhiên mật mã) cho lớp JS badge giỏ ở header. Dùng chung: header
+    // render <script nonce=…> + sendHtml phát script-src 'nonce-…' (khớp nhau qua ctx.nonce).
+    const nonce = crypto.randomBytes(16).toString('base64');
+    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '', hasBlog: data.hasBlog, origin, nonce };
     // Canonical PHÂN TRANG (#28): trang N canonical về CHÍNH NÓ (?page=N — không gộp
     // hết về trang 1 làm Google bỏ index trang sau); sort/lọc KHÔNG vào canonical
     // (cùng nội dung, khác thứ tự). Kèm <link rel=prev/next> khi có trang kề.
@@ -590,14 +602,14 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     }
     if (data.page) {
       // Preview → banner cảnh báo + no-store/noindex; published → cache CDN như thường.
-      if (data.preview) return sendHtml(res, 200, renderPage(ctx, data.page, { preview: true, canonical }), { shopSlug: data.shop.slug, preview: true });
-      return sendHtml(res, 200, renderPage(ctx, data.page, { canonical }), { shopSlug: data.shop.slug, cache: true });
+      if (data.preview) return sendHtml(res, 200, renderPage(ctx, data.page, { preview: true, canonical }), { shopSlug: data.shop.slug, preview: true, nonce });
+      return sendHtml(res, 200, renderPage(ctx, data.page, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
     }
-    if (data.product) return sendHtml(res, 200, renderProduct(ctx, data.product, { canonical }), { shopSlug: data.shop.slug, cache: true });
-    if (data.blog === 'list') return sendHtml(res, 200, renderBlogList(ctx, data.posts ?? [], { canonical, prevUrl, nextUrl, blogPage: data.blogPage ?? null }), { shopSlug: data.shop.slug, cache: true });
-    if (data.blog === 'post') return sendHtml(res, 200, renderBlogPost(ctx, data.post, { canonical }), { shopSlug: data.shop.slug, cache: true });
-    if (data.search) return sendHtml(res, 200, renderSearch(ctx, { canonical }), { shopSlug: data.shop.slug });
-    return sendHtml(res, 200, renderHome(ctx, { canonical, prevUrl, nextUrl }), { shopSlug: data.shop.slug, cache: true });
+    if (data.product) return sendHtml(res, 200, renderProduct(ctx, data.product, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
+    if (data.blog === 'list') return sendHtml(res, 200, renderBlogList(ctx, data.posts ?? [], { canonical, prevUrl, nextUrl, blogPage: data.blogPage ?? null }), { shopSlug: data.shop.slug, cache: true, nonce });
+    if (data.blog === 'post') return sendHtml(res, 200, renderBlogPost(ctx, data.post, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
+    if (data.search) return sendHtml(res, 200, renderSearch(ctx, { canonical }), { shopSlug: data.shop.slug, nonce });
+    return sendHtml(res, 200, renderHome(ctx, { canonical, prevUrl, nextUrl }), { shopSlug: data.shop.slug, cache: true, nonce });
   } catch (err) {
     log('error', 'render_error', { path: url.pathname, message: err.message, stack: err.stack });
     if (!res.headersSent) sendHtml(res, 500, renderNotFound());

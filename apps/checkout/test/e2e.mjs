@@ -125,6 +125,22 @@ async function main() {
   r = await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 10 }, cartToken: cart });
   r.status === 422 ? ok('thêm vượt tồn (2+10 > 5) → 422') : bad('cho vượt tồn', r.raw);
 
+  // ── 2b. GET /cart/summary (badge giỏ storefront) ───────────────────────────
+  sect('2b. /cart/summary (badge giỏ)');
+  // Không cookie giỏ → count 0, items rỗng, KHÔNG lỗi (badge ẩn lặng lẽ).
+  r = await co(A.host, 'GET', '/cart/summary');
+  r.status === 200 && r.json?.count === 0 && Array.isArray(r.json.items) && r.json.items.length === 0
+    ? ok('không cookie giỏ → {count:0, items:[]} (không lỗi)') : bad('summary rỗng sai', r.raw);
+  r.headers['cache-control'] === 'no-store' && !r.headers['access-control-allow-origin']
+    ? ok('no-store + KHÔNG Access-Control-Allow-Origin (same-origin thuần)') : bad('header summary sai', JSON.stringify(r.headers));
+  // Có cookie giỏ (2 món, subtotal 500k) → count=2, subtotal đúng, phần tử có title/qty/unit_price.
+  r = await co(A.host, 'GET', '/cart/summary', { cartToken: cart });
+  const it0 = r.json?.items?.[0];
+  r.status === 200 && r.json.count === 2 && r.json.subtotal_vnd === 500000 && it0 && it0.qty === 2 && it0.unit_price_vnd === 250000 && typeof it0.title === 'string'
+    ? ok('có giỏ → count=2, subtotal 500k, item {title,qty,unit_price}') : bad('summary giỏ sai', r.raw);
+  'free_ship_threshold_vnd' in (r.json ?? {}) && 'free_ship_remaining_vnd' in (r.json ?? {})
+    ? ok('có trường free_ship_threshold_vnd + free_ship_remaining_vnd') : bad('thiếu trường free-ship', r.raw);
+
   // ── 3. Checkout: giá server-side, KHÔNG tin total client ───────────────────
   sect('3. Checkout');
   const key1 = `idem-${uniq()}-${uniq()}`;

@@ -17,7 +17,7 @@ nên không thể đổi mật khẩu bằng cách sửa migration; và secret k
 **Cách làm (giữ migration bất biến):**
 - Migration vẫn tạo role với `devpassword` — coi là **mật khẩu bootstrap mặc định**, chỉ để
   dev chạy được. KHÔNG dùng ở prod.
-- [`scripts/provision-db-roles.sh`](../scripts/provision-db-roles.sh) đặt lại mật khẩu 9 role
+- [`scripts/provision-db-roles.sh`](../scripts/provision-db-roles.sh) đặt lại mật khẩu 15 role
   từ **biến môi trường** (`APP_RW_PASSWORD`...) bằng `ALTER ROLE`. Prod chạy MỘT LẦN sau
   `migrate` với secret thật → `devpassword` không còn dùng được. **Rotate** = chạy lại với
   mật khẩu mới, không đụng migration. Idempotent; role thiếu env thì bỏ qua (rotate từng phần).
@@ -42,7 +42,7 @@ superuser; app **không bao giờ** kết nối bằng `app_owner` — mỗi ser
 dependency khác nhau ở hai thời điểm.
 
 **Cách làm:**
-- **9 `package-lock.json`** (8 app + `packages/db`), sinh bằng `node:22-alpine` để khớp image.
+- **12 `package-lock.json`** (11 app + `packages/db`), sinh bằng `node:22-alpine` để khớp image.
   Lock ghi cả biến thể nền (argon2/sharp linuxmusl) → `npm ci` chọn đúng trong alpine.
 - Dockerfile: `COPY package.json package-lock.json ./` + `RUN npm ci ...` (thay `npm install`).
   `npm ci` cài **đúng** cây trong lock, xoá `node_modules` trước → xác định + nhanh hơn.

@@ -59,6 +59,7 @@ $C exec -T \
   -e APP_RW_PASSWORD -e APP_TLS_PASSWORD -e APP_AUTH_PASSWORD -e APP_PLATFORM_PASSWORD \
   -e APP_STORE_PASSWORD -e APP_CHECKOUT_PASSWORD -e APP_PAYMENT_PASSWORD \
   -e APP_WORKER_PASSWORD -e APP_EXPIRY_PASSWORD -e APP_DOMAINVERIFY_PASSWORD -e APP_BILLING_PASSWORD \
+  -e APP_CUSTOMER_PASSWORD -e APP_LOYALTY_PASSWORD -e APP_SIGNUP_PASSWORD \
   postgres bash < scripts/provision-db-roles.sh
 
 step "5. Up toàn bộ service + chờ healthy"
@@ -66,7 +67,7 @@ $C up -d --wait --wait-timeout 180
 
 step "6. Kiểm tra sức khoẻ"
 bad=""
-for s in postgres redis minio tls-authorize auth platform seller checkout payment worker storefront caddy; do
+for s in postgres redis minio tls-authorize auth platform seller checkout payment worker storefront account signup caddy; do
   h="$($C ps "$s" --format '{{.Health}}' 2>/dev/null)"
   [ "$h" = "healthy" ] || bad="$bad $s=$h"
 done
@@ -84,13 +85,14 @@ for pair in app_rw:APP_RW_PASSWORD app_auth:APP_AUTH_PASSWORD app_store:APP_STOR
             app_checkout:APP_CHECKOUT_PASSWORD app_payment:APP_PAYMENT_PASSWORD \
             app_worker:APP_WORKER_PASSWORD app_expiry:APP_EXPIRY_PASSWORD \
             app_domainverify:APP_DOMAINVERIFY_PASSWORD app_billing:APP_BILLING_PASSWORD \
-            app_platform:APP_PLATFORM_PASSWORD app_tls:APP_TLS_PASSWORD; do
+            app_platform:APP_PLATFORM_PASSWORD app_tls:APP_TLS_PASSWORD \
+            app_customer:APP_CUSTOMER_PASSWORD app_loyalty:APP_LOYALTY_PASSWORD app_signup:APP_SIGNUP_PASSWORD; do
   role="${pair%%:*}"; var="${pair#*:}"; export RPW="${!var}"
   $C exec -T -e RPW postgres sh -c 'PGPASSWORD="$RPW" psql -U '"$role"' -h 127.0.0.1 -d app -tAc "select 1"' >/dev/null 2>&1 \
     || { unset RPW; die "role $role KHÔNG đăng nhập được bằng mật khẩu .env — provision chưa đúng / service sẽ hỏng"; }
 done
 unset RPW
-echo "  11 role đăng nhập OK (mật khẩu .env khớp thực tế)"
+echo "  14 role đăng nhập OK (mật khẩu .env khớp thực tế)"
 
 printf '\n%s✔ DEPLOY OK%s — commit %s, mọi service healthy, Caddy đã nạp cấu hình.\n' "$GRN" "$RST" "$PREV"
 echo "  Nhắc: backup định kỳ (scripts/backup.sh) + kiểm tra chứng chỉ Caddy đã cấp."

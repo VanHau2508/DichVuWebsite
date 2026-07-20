@@ -1850,12 +1850,21 @@ async function themeSave(req, res, me, cookie, shopId) {
       return s;
     };
     const setOrDel = (props, key, val) => { if (val) props[key] = val; else delete props[key]; };
+    // Thanh thông báo: props trên section header (header luôn đứng đầu — afterName chỉ
+    // dùng khi thiếu, khi đó chèn cuối cũng vô hại vì storefront render theo tên section).
+    const head = findOrInsert('header', 'header');
+    setOrDel(head.props, 'topbar_text', String(f.topbar_text ?? '').trim().slice(0, 120));
     const hero = findOrInsert('hero', 'header');
     setOrDel(hero.props, 'eyebrow', String(f.hero_eyebrow ?? '').trim().slice(0, 60));
     setOrDel(hero.props, 'title', String(f.hero_title ?? '').trim().slice(0, 120));
     setOrDel(hero.props, 'subtitle', String(f.hero_subtitle ?? '').trim().slice(0, 300));
     const grid = findOrInsert('product_grid', 'hero');
     setOrDel(grid.props, 'title', String(f.grid_title ?? '').trim().slice(0, 80));
+    // Câu chuyện thương hiệu: cả 3 ô trống → storefront ẨN section (không chữ mẫu).
+    const story = findOrInsert('story', 'product_grid');
+    setOrDel(story.props, 'title', String(f.story_title ?? '').trim().slice(0, 80));
+    setOrDel(story.props, 'body', String(f.story_body ?? '').trim().slice(0, 400));
+    setOrDel(story.props, 'cta_text', String(f.story_cta ?? '').trim().slice(0, 40));
     // 4 cam kết (#40): mỗi ô (tiêu đề, mô tả) trống = giữ mặc định Ô ĐÓ; cả 4 trống =
     // bỏ items (storefront dùng nguyên bộ mặc định). Icon cố định theo ô.
     let anyFeat = false;

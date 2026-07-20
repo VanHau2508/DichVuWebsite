@@ -259,12 +259,14 @@ export function layout(title, ctx, body) {
 
 // Trang "Giao diện": chủ shop (theme.write) chọn màu thương hiệu → lưu vào theme tokens.
 // Không JS: dùng <input type="color"> gốc của trình duyệt. Storefront sanitize khi render.
+// Mặc định ĐỒNG BỘ với DEFAULT_TOKENS ở apps/storefront/src/theme.js (bộ "MAISON"
+// editorial): đổi bên kia thì đổi cả đây — def chỉ là swatch prefill, không ép giá trị.
 export const THEME_COLORS = [
-  { key: 'color.primary', label: 'Màu chủ đạo', hint: 'Nút, giá', def: '#2463eb' },
-  { key: 'color.accent', label: 'Màu nhấn', hint: 'Link, điểm nhấn nhỏ', def: '#007bff' },
-  { key: 'color.hero-bg', label: 'Nền dải hero', hint: 'Dải lớn đầu trang chủ', def: '#eef4ff' },
-  { key: 'color.text', label: 'Màu chữ', hint: 'Tiêu đề, nội dung', def: '#111827' },
-  { key: 'color.surface', label: 'Nền phụ', hint: 'Ô ảnh, chân trang', def: '#f9fafb' },
+  { key: 'color.primary', label: 'Màu chủ đạo', hint: 'Nút, dải banner đầu trang, thương hiệu', def: '#141414' },
+  { key: 'color.accent', label: 'Màu nhấn', hint: 'Nhãn nhỏ, điểm nhấn', def: '#b06a57' },
+  { key: 'color.hero-bg', label: 'Màu nền phụ đậm', hint: 'Tile bộ sưu tập, badge còn hàng', def: '#efede8' },
+  { key: 'color.text', label: 'Màu chữ', hint: 'Tiêu đề, nội dung', def: '#141414' },
+  { key: 'color.surface', label: 'Nền phụ', hint: 'Ô ảnh, chân trang', def: '#f5f4f1' },
 ];
 export const THEME_FONTS = [
   { v: '', label: 'Mặc định (hiện đại)' },
@@ -274,8 +276,9 @@ export const THEME_FONTS = [
   { v: 'Tahoma, sans-serif', label: 'Tahoma' },
 ];
 export const THEME_RADII = [
+  { v: '4px', label: 'Sắc — editorial (mặc định)' },
   { v: '8px', label: 'Nhỏ — vuông vắn' },
-  { v: '12px', label: 'Vừa — mặc định' },
+  { v: '12px', label: 'Vừa — mềm mại' },
   { v: '18px', label: 'Lớn — bo tròn' },
 ];
 function themeVal(tokens, key, def) {
@@ -296,8 +299,10 @@ export function renderTheme(ctx, theme, notice) {
   const featureDefaults = THEME_FEATURE_DEFAULTS;
   const featsProps = sectionProps(theme?.layout, 'features');
   const feats = Array.isArray(featsProps.items) ? featsProps.items : [];
+  const topbar = sectionProps(theme?.layout, 'header');
+  const story = sectionProps(theme?.layout, 'story');
   const curFont = themeVal(tokens, 'font.body', '');
-  const curRadius = themeVal(tokens, 'radius', '12px');
+  const curRadius = themeVal(tokens, 'radius', '4px');
   const colorRow = (f) => {
     const raw = themeVal(tokens, f.key, f.def);
     const hex = /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : f.def;
@@ -319,11 +324,22 @@ export function renderTheme(ctx, theme, notice) {
           <div><label>Bo góc</label><select name="radius">${opt(THEME_RADII, curRadius)}</select></div>
         </div>
       </div>
+      <div class="card"><h2 style="margin-top:0">Thanh thông báo (trên cùng mọi trang)</h2>
+        <label>Nội dung</label><input name="topbar_text" maxlength="120" value="${esc(topbar.topbar_text ?? '')}" placeholder="Giao hàng toàn quốc · Thanh toán COD hoặc chuyển khoản QR">
+        <p class="muted" style="font-size:.85rem;margin-bottom:0">Để trống = dùng câu mặc định. Chỉ hứa điều shop làm được (phí ship, đổi trả…).</p>
+      </div>
       <div class="card"><h2 style="margin-top:0">Nội dung trang chủ (dải hero)</h2>
+        <p class="muted" style="font-size:.85rem;margin-top:0">Banner đầu trang tự chuyển tối đa 3 cảnh: cảnh 1 là nội dung dưới đây, cảnh 2-3 lấy tự động từ sản phẩm có ảnh của shop.</p>
         <label>Dòng nhãn nhỏ</label><input name="hero_eyebrow" maxlength="60" value="${esc(hero.eyebrow ?? '')}" placeholder="Cửa hàng chính thức">
         <label>Tiêu đề lớn</label><input name="hero_title" maxlength="120" value="${esc(hero.title ?? '')}" placeholder="(để trống = tên cửa hàng)">
         <label>Mô tả</label><textarea name="hero_subtitle" maxlength="300" rows="2" placeholder="(để trống = câu mặc định)">${esc(hero.subtitle ?? '')}</textarea>
         <label>Tiêu đề khu sản phẩm</label><input name="grid_title" maxlength="80" value="${esc(grid.title ?? '')}" placeholder="Sản phẩm nổi bật">
+      </div>
+      <div class="card"><h2 style="margin-top:0">Câu chuyện thương hiệu (tuỳ chọn)</h2>
+        <p class="muted" style="font-size:.85rem;margin-top:0">Băng giới thiệu gần cuối trang chủ. <strong>Để trống cả hai ô = ẩn hoàn toàn.</strong></p>
+        <label>Tiêu đề</label><input name="story_title" maxlength="80" value="${esc(story.title ?? '')}" placeholder="Ví dụ: May thủ công từ vải tự nhiên">
+        <label>Đoạn giới thiệu</label><textarea name="story_body" maxlength="400" rows="3" placeholder="Kể ngắn gọn shop của bạn khác biệt ở đâu…">${esc(story.body ?? '')}</textarea>
+        <label>Chữ trên nút (tuỳ chọn)</label><input name="story_cta" maxlength="40" value="${esc(story.cta_text ?? '')}" placeholder="Ví dụ: Xem sản phẩm">
       </div>
       <div class="card"><h2 style="margin-top:0">4 cam kết với khách (dải dưới hero)</h2>
         <p class="muted" style="font-size:.85rem;margin-top:0">Để trống = dùng câu mặc định (hiện mờ trong ô). <strong>Sửa cho đúng chính sách THẬT của shop</strong> — ví dụ đừng hứa “Đổi trả trong 7 ngày” nếu shop không áp dụng.</p>

@@ -20,21 +20,21 @@ export function esc(s) {
     .replace(QUOT, '&quot;').replace(APOS, '&#39;');
 }
 
-// Bảng màu MẶC ĐỊNH (phong cách Haravan — xanh dương). Mỗi shop tự override được các
-// token này (sanitizeTokens chỉ nhận hex hợp lệ) → website cá nhân đổi màu thương hiệu.
+// Bảng màu MẶC ĐỊNH (phong cách "MAISON" — editorial đen-trắng, cao cấp). Mỗi shop tự
+// override được các token này (sanitizeTokens chỉ nhận hex hợp lệ) → đổi màu thương hiệu.
 export const DEFAULT_TOKENS = {
-  'color.primary': '#2463eb',      // xanh dương: CTA, thương hiệu, giá
-  'color.primary-dark': '#1e4bcc', // hover nút chính
-  'color.accent': '#007bff',       // xanh sáng: link, nhấn nhỏ
+  'color.primary': '#141414',      // đen mực: CTA, thương hiệu, dải hero
+  'color.primary-dark': '#000000', // hover nút chính + đáy gradient hero
+  'color.accent': '#b06a57',       // đất nung: eyebrow, nhấn nhỏ
   'color.bg': '#ffffff',
-  'color.surface': '#f9fafb',      // xám nhạt: ô ảnh trống, nền phụ
-  'color.hero-bg': '#eef4ff',      // xanh dương RẤT nhạt: hero + dải nổi bật
-  'color.text': '#111827',
-  'color.muted': '#6b7280',
-  'color.border': '#eceef1',
+  'color.surface': '#f5f4f1',      // trắng ngà ấm: ô ảnh trống, nền phụ
+  'color.hero-bg': '#efede8',      // wash ấm nhạt: dải nhấn, tile bộ sưu tập, badge còn hàng
+  'color.text': '#141414',
+  'color.muted': '#6e6a63',
+  'color.border': '#e8e6e1',
   'font.heading': '"Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
   'font.body': '"Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
-  radius: '12px',
+  radius: '4px',
   spacing: '16px',
 };
 
@@ -120,8 +120,8 @@ function productCards(products) {
   return products.map((p) => {
     const out = Number(p.available) <= 0;
     return `<a class="card${out ? ' is-out' : ''}" href="/p/${esc(p.slug)}">
-          <div class="thumb">${out ? '<span class="soldout-tag">Hết hàng</span>' : ''}${p.image ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy">` : `<span class="ph">${I_IMG}</span>`}</div>
-          <div class="body"><div class="name">${esc(p.title)}</div><div class="price">${priceLine(p.price_vnd, p.sale_price_vnd, p.sale_off_pct, p.compare_at_vnd)}</div><span class="cta">Xem chi tiết →</span></div>
+          <div class="thumb">${out ? '<span class="soldout-tag">Hết hàng</span>' : ''}${p.image ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy">` : `<span class="ph">${I_IMG}</span>`}<span class="card-go">Xem chi tiết</span></div>
+          <div class="body"><div class="name">${esc(p.title)}</div><div class="price">${priceLine(p.price_vnd, p.sale_price_vnd, p.sale_off_pct, p.compare_at_vnd)}</div></div>
         </a>`;
   }).join('');
 }
@@ -191,7 +191,18 @@ const DEFAULT_FEATURES = [
 
 // ── section renderers (nhận dữ liệu ĐÃ đọc, escape khi render) ────────────────
 const SECTIONS = {
-  header: (props, ctx) => `<header class="hdr"><div class="wrap">
+  // Thanh thông báo (props.topbar_text, sửa ở trang Giao diện; trống → câu mặc định an toàn
+  // cho mọi shop) + header dính. Trang con (SP/blog/CMS) gọi header với props RỖNG →
+  // tự tra props đã lưu trong ctx.theme.layout để topbar hiện NHẤT QUÁN trên mọi trang.
+  header: (props, ctx) => {
+    const saved = (Array.isArray(ctx.theme?.layout)
+      ? ctx.theme.layout.find((s) => s && s.section === 'header')?.props : null) ?? {};
+    const topbarText = (typeof props.topbar_text === 'string' && props.topbar_text)
+      ? props.topbar_text
+      : (typeof saved.topbar_text === 'string' && saved.topbar_text)
+        ? saved.topbar_text
+        : 'Giao hàng toàn quốc · Thanh toán COD hoặc chuyển khoản QR';
+    return `<div class="topbar">${esc(topbarText)}</div><header class="hdr"><div class="wrap">
     <a href="/" class="brand">${ctx.shop.logo_url ? `<img src="${esc(ctx.shop.logo_url)}" alt="${esc(ctx.shop.name)}" class="brand-logo">` : esc(ctx.shop.name)}</a>
     <form class="hsearch" method="GET" action="/search" role="search">
       <input name="q" value="${esc(ctx.query ?? '')}" placeholder="Tìm sản phẩm…" aria-label="Tìm sản phẩm">
@@ -205,29 +216,52 @@ const SECTIONS = {
       <a href="/account">Tài khoản</a>
       <a href="/cart" class="cart"><span class="i">${I_CART}</span>Giỏ hàng</a>
     </nav>
-  </div></header>`,
+  </div></header>`;
+  },
 
+  // HERO CAROUSEL thuần CSS (không JS — CSP default-src 'none' giữ nguyên):
+  //   Cảnh 1: thông điệp shop (props eyebrow/title/subtitle) + SP có ảnh đầu tiên làm visual.
+  //   Cảnh 2-3: hai SP có ảnh kế tiếp (tiêu đề + giá + CTA vào trang SP) — banner "sống"
+  //   từ chính dữ liệu shop, không cần shop tải banner riêng. 1 cảnh → tĩnh, không chấm.
+  //   Cảnh 2-3 dùng <p class="hero-h"> (không thêm h1 — mỗi trang chỉ 1 h1 cho SEO).
   hero: (props, ctx) => {
-    // Cột phải: sản phẩm đầu tiên CÓ ẢNH làm visual (giờ ảnh hiển thị được qua same-origin).
-    // Không có ảnh nào → panel trang trí (icon) → hero vẫn cân đối, không vỡ layout.
-    const feat = (Array.isArray(ctx.products) ? ctx.products : []).find((p) => p.image);
-    const visual = feat
-      ? `<a class="hero-media" href="/p/${esc(feat.slug)}">
-          <img src="${esc(feat.image)}" alt="${esc(feat.title)}">
-          <span class="hero-card"><span class="hc-name">${esc(feat.title)}</span><span class="hc-price">${feat.sale_price_vnd != null ? `${money(feat.sale_price_vnd)} <span class="off">-${esc(feat.sale_off_pct)}%</span>` : money(feat.price_vnd)}</span></span>
+    const withImg = (Array.isArray(ctx.products) ? ctx.products : []).filter((p) => p.image).slice(0, 3);
+    const visual = (p) => (p
+      ? `<a class="hero-media" href="/p/${esc(p.slug)}">
+          <img src="${esc(p.image)}" alt="${esc(p.title)}"${p === withImg[0] ? '' : ' loading="lazy"'}>
+          <span class="hero-card"><span class="hc-name">${esc(p.title)}</span><span class="hc-price">${p.sale_price_vnd != null ? `${money(p.sale_price_vnd)} <span class="off">-${esc(p.sale_off_pct)}%</span>` : money(p.price_vnd)}</span></span>
         </a>`
-      : `<div class="hero-media deco" aria-hidden="true">${I_SHIELD}</div>`;
+      : `<div class="hero-media deco" aria-hidden="true">${I_SHIELD}</div>`);
     const ghost = (Array.isArray(ctx.categories) && ctx.categories.length)
-      ? '<a class="btn btn-ghost" href="#bo-suu-tap">Bộ sưu tập</a>' : '';
-    return `<section class="hero"><div class="hero-grid">
+      ? '<a class="btn btn-hero-ghost" href="#bo-suu-tap">Bộ sưu tập</a>' : '';
+    const slides = [`<div class="hslide"><div class="hero-grid">
       <div class="hero-copy">
         <p class="eyebrow">${esc(props.eyebrow || 'Cửa hàng chính thức')}</p>
         <h1>${esc(props.title || ctx.shop.name)}</h1>
-        <p>${esc(props.subtitle || 'Mua sắm dễ dàng — giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.')}</p>
-        <div class="hero-cta"><a class="btn btn-primary" href="#san-pham">Xem sản phẩm</a>${ghost}</div>
+        <p class="hero-sub">${esc(props.subtitle || 'Mua sắm dễ dàng — giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.')}</p>
+        <div class="hero-cta"><a class="btn btn-hero" href="#san-pham">Xem sản phẩm</a>${ghost}</div>
       </div>
-      ${visual}
-    </div></section>`;
+      ${visual(withImg[0])}
+    </div></div>`];
+    const SLIDE_LABEL = [['Nổi bật', 'Xem ngay'], ['Hàng mới', 'Khám phá']];
+    withImg.slice(1).forEach((p, i) => {
+      const [eb, cta] = SLIDE_LABEL[i];
+      const priceHtml = p.sale_price_vnd != null
+        ? `${money(p.sale_price_vnd)} <s class="cmp">${money(p.price_vnd)}</s> <span class="off">-${esc(p.sale_off_pct)}%</span>`
+        : money(p.price_vnd);
+      slides.push(`<div class="hslide"><div class="hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow">${eb}</p>
+        <p class="hero-h">${esc(p.title)}</p>
+        <p class="hero-sub">${priceHtml}</p>
+        <div class="hero-cta"><a class="btn btn-hero" href="/p/${esc(p.slug)}">${cta}</a></div>
+      </div>
+      ${visual(p)}
+    </div></div>`);
+    });
+    const n = slides.length;
+    const dots = n > 1 ? `<div class="hero-dots" aria-hidden="true">${'<span class="dot"></span>'.repeat(n)}</div>` : '';
+    return `<section class="hero hero-n${n}"><div class="hero-track">${slides.join('')}</div>${dots}</section>`;
   },
 
   features: (props, ctx) => {
@@ -265,20 +299,47 @@ const SECTIONS = {
     </div></section>`;
   },
 
+  // Băng câu chuyện thương hiệu — CHỈ hiện khi shop điền (trang Giao diện). Không nhét
+  // chữ mẫu vào shop người ta: title/body trống → section rỗng, layout không đổi.
+  story: (props, ctx) => {
+    const title = typeof props.title === 'string' ? props.title.trim() : '';
+    const body = typeof props.body === 'string' ? props.body.trim() : '';
+    if (!title && !body) return '';
+    const cta = (typeof props.cta_text === 'string' && props.cta_text.trim())
+      ? `<a class="btn btn-solid" href="#san-pham">${esc(props.cta_text.trim())}</a>` : '';
+    return `<section class="story"><div class="wrap">
+      <div><p class="eyebrow">${esc(props.eyebrow || 'Câu chuyện của chúng tôi')}</p>
+        <h2>${esc(title || ctx.shop.name)}</h2></div>
+      <div>${body ? `<p>${esc(body)}</p>` : ''}${cta}</div>
+    </div></section>`;
+  },
+
+  // Footer 4 cột: thương hiệu+liên hệ / Cửa hàng (danh mục+blog) / Hỗ trợ / Chính sách
+  // (trang CMS trong menu — giữ nguyên đường /pages/:slug cho test + SEO).
   footer: (props, ctx) => {
-    const menu = ctx.menu ?? [];
-    const links = (ctx.hasBlog ? '<a href="/blog">Blog</a>' : '') + menu.map((pg) => `<a href="/pages/${esc(pg.slug)}">${esc(pg.title)}</a>`).join('');
-    const nav = links ? `<nav class="ftr-nav">${links}</nav>` : '';
     const s = ctx.shop;
+    const cats = (Array.isArray(ctx.categories) ? ctx.categories : []).slice(0, 4)
+      .map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('');
+    const shopCol = (cats || ctx.hasBlog)
+      ? `<div class="ftr-col"><h4>Cửa hàng</h4><a href="/">Trang chủ</a>${cats}${ctx.hasBlog ? '<a href="/blog">Blog</a>' : ''}</div>` : '';
+    const helpCol = `<div class="ftr-col"><h4>Hỗ trợ</h4><a href="/checkout/lookup">Tra cứu đơn</a><a href="/account">Tài khoản</a><a href="/cart">Giỏ hàng</a></div>`;
+    const menu = (ctx.menu ?? []).map((pg) => `<a href="/pages/${esc(pg.slug)}">${esc(pg.title)}</a>`).join('');
+    const menuCol = menu ? `<div class="ftr-col"><h4>Chính sách</h4>${menu}</div>` : '';
     const bits = [
       s.business_address ? esc(s.business_address) : '',
       s.contact_phone ? `ĐT: ${esc(s.contact_phone)}` : '',
       s.contact_email ? `Email: ${esc(s.contact_email)}` : '',
     ].filter(Boolean);
-    const contact = bits.length ? `<div class="ftr-contact">${bits.join(' · ')}</div>` : '';
     return `<footer class="ftr"><div class="wrap">
-      <div>${nav}${contact}<div class="copy">© ${esc(ctx.shop.name)}</div></div>
-      <div class="badges"><span>${I_TRUCK}Giao toàn quốc</span><span>${I_SHIELD}COD · QR</span></div>
+      <div class="ftr-grid">
+        <div class="ftr-about">
+          <div class="ftr-brand">${esc(ctx.shop.name)}</div>
+          ${bits.length ? `<div class="ftr-contact">${bits.join('<br>')}</div>` : ''}
+          <div class="badges"><span>${I_TRUCK}Giao toàn quốc</span><span>${I_SHIELD}COD · QR</span></div>
+        </div>
+        ${shopCol}${helpCol}${menuCol}
+      </div>
+      <div class="copy">© ${esc(ctx.shop.name)}</div>
     </div></footer>`;
   },
 };
@@ -304,7 +365,7 @@ const DEFAULT_LAYOUT = [
 ];
 
 const STYLE = `${FONTFACE}
-:root{--r-sm:10px;--r:14px;--r-lg:20px;--r-xl:26px;--pill:999px;--sh-sm:0 1px 2px rgba(13,21,38,.05),0 2px 6px -2px rgba(13,21,38,.08);--sh:0 10px 26px -14px rgba(13,21,38,.20),0 2px 6px -3px rgba(13,21,38,.08);--sh-lg:0 30px 60px -28px rgba(13,21,38,.32)}
+:root{--r-sm:max(2px,calc(var(--radius)*.75));--r:var(--radius);--r-lg:calc(var(--radius)*1.8);--r-xl:calc(var(--radius)*2.6);--pill:999px;--sh-sm:0 1px 2px rgba(18,16,12,.05),0 2px 6px -2px rgba(18,16,12,.08);--sh:0 10px 26px -14px rgba(18,16,12,.20),0 2px 6px -3px rgba(18,16,12,.08);--sh-lg:0 30px 60px -28px rgba(18,16,12,.34)}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
 body{margin:0;font-family:var(--font-body);color:var(--color-text);background:var(--color-bg);line-height:1.6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 a{color:inherit;text-decoration:none}img{max-width:100%;display:block}
@@ -313,13 +374,20 @@ h1,h2,h3{font-family:var(--font-heading);font-weight:800;letter-spacing:-.02em;l
 .i{display:inline-flex}.i svg,.cart svg{width:18px;height:18px}
 .muted{color:var(--color-muted)}
 a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.th:focus-visible,.chip:focus-visible{outline:2.5px solid var(--color-primary);outline-offset:2px;border-radius:10px}
-@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}html{scroll-behavior:auto}}
-.hdr{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--color-bg) 82%,transparent);backdrop-filter:saturate(1.6) blur(12px);-webkit-backdrop-filter:saturate(1.6) blur(12px);border-bottom:1px solid color-mix(in srgb,var(--color-border) 65%,transparent)}
-.hdr .wrap{display:flex;align-items:center;justify-content:space-between;min-height:66px;gap:16px}
-.brand{font-family:var(--font-heading);font-weight:800;font-size:1.24rem;letter-spacing:-.02em;color:var(--color-text);white-space:nowrap;display:inline-flex;align-items:center}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}html{scroll-behavior:auto}
+  /* Carousel hero đứng yên ở cảnh 1 (slide gốc opacity:0 chờ animation — phải bật lại thủ công). */
+  .hero .hslide{opacity:0;visibility:hidden}
+  .hero .hslide:first-child{opacity:1;visibility:visible}
+  .hero-dots{display:none}}
+/* Thanh thông báo (không sticky — cuộn qua là ẩn, nhường chỗ header). */
+.topbar{background:var(--color-primary);color:#fff;text-align:center;font-size:.8rem;font-weight:500;letter-spacing:.02em;padding:8px 16px}
+.hdr{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--color-bg) 86%,transparent);backdrop-filter:saturate(1.5) blur(12px);-webkit-backdrop-filter:saturate(1.5) blur(12px);border-bottom:1px solid color-mix(in srgb,var(--color-border) 70%,transparent)}
+.hdr .wrap{display:flex;align-items:center;justify-content:space-between;min-height:68px;gap:16px}
+/* Brand editorial: chữ HOA giãn cách (khí chất MAISON); logo ảnh giữ nguyên kích thước. */
+.brand{font-family:var(--font-heading);font-weight:800;font-size:1.06rem;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text);white-space:nowrap;display:inline-flex;align-items:center}
 .brand-logo{max-height:40px;max-width:180px;width:auto;display:block}
-.hnav{display:flex;align-items:center;gap:24px;font-size:.92rem;flex-wrap:wrap}
-.hnav a{color:var(--color-muted);font-weight:500;transition:color .15s}.hnav a:hover{color:var(--color-primary)}
+.hnav{display:flex;align-items:center;gap:22px;font-size:.86rem;flex-wrap:wrap}
+.hnav a{color:var(--color-muted);font-weight:600;letter-spacing:.02em;transition:color .15s}.hnav a:hover{color:var(--color-primary)}
 .hnav .cart{display:inline-flex;align-items:center;gap:6px;color:var(--color-text);font-weight:600}.hnav .cart:hover{color:var(--color-primary)}
 /* Hamburger no-JS (checkbox + :checked ~ .hnav) — mobile gom menu vào nút ☰; desktop ẩn nút, nav luôn hiện. */
 .navtoggle{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
@@ -331,32 +399,58 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
   .hnav{display:none;flex-basis:100%;flex-direction:column;align-items:flex-start;gap:14px;padding:6px 0 4px}
   .navtoggle:checked~.hnav{display:flex}
 }
-.hero{background:var(--color-hero-bg);position:relative;overflow:hidden}
-.hero::before,.hero::after{content:"";position:absolute;border-radius:50%;filter:blur(70px);z-index:0;pointer-events:none}
-.hero::before{width:360px;height:360px;top:-130px;left:-90px;background:color-mix(in srgb,var(--color-primary) 24%,transparent)}
-.hero::after{width:320px;height:320px;bottom:-150px;right:-70px;background:color-mix(in srgb,var(--color-accent) 20%,transparent)}
-.hero-grid{position:relative;z-index:1;max-width:1120px;margin:0 auto;padding:64px 20px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
-.hero-copy .eyebrow{display:inline-flex;align-items:center;gap:7px;color:var(--color-primary);font-weight:700;font-size:.76rem;letter-spacing:.09em;text-transform:uppercase;margin:0 0 16px;padding:6px 14px;border-radius:var(--pill);background:color-mix(in srgb,var(--color-primary) 12%,transparent);border:1px solid color-mix(in srgb,var(--color-primary) 22%,transparent)}
-.hero-copy h1{margin:0 0 16px;font-size:clamp(2.1rem,3.6vw,3.2rem);font-weight:800;letter-spacing:-.025em;line-height:1.1;color:var(--color-text)}
-@supports ((-webkit-background-clip:text) or (background-clip:text)){.hero-copy h1{background-image:linear-gradient(120deg,var(--color-primary),var(--color-accent));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}}
-.hero-copy p{margin:0;color:color-mix(in srgb,var(--color-text) 72%,var(--color-bg));font-size:1.1rem;line-height:1.65;max-width:46ch}
+/* ── HERO CAROUSEL (thuần CSS, không JS — hợp CSP default-src 'none') ─────────────
+   Dải tối editorial trên nền gradient màu thương hiệu, chữ TRẮNG cố định.
+   Cơ chế: các .hslide xếp chồng (grid-area 1/1), mỗi slide chạy cùng @keyframes fade
+   với animation-delay lệch nhau 6s → đúng 1 slide hiện tại mỗi thời điểm.
+   Số cảnh quyết định lớp .hero-n1/-n2/-n3 (chu kỳ 12s/18s); 1 cảnh = tĩnh, không chấm. */
+.hero{position:relative;overflow:hidden;background:linear-gradient(165deg,color-mix(in srgb,var(--color-primary) 94%,#fff),var(--color-primary-dark));color:#fff}
+.hero::after{content:"";position:absolute;top:-32%;right:-14%;width:58%;aspect-ratio:1;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.10),transparent 64%);pointer-events:none}
+.hero-track{position:relative;z-index:1;display:grid}
+.hslide{grid-area:1/1;opacity:0;visibility:hidden}
+.hero-n1 .hslide{opacity:1;visibility:visible}
+.hero-n2 .hslide{animation:hcycle2 12s infinite}
+.hero-n3 .hslide{animation:hcycle3 18s infinite}
+.hero-n2 .hslide:nth-child(2),.hero-n3 .hslide:nth-child(2){animation-delay:6s}
+.hero-n3 .hslide:nth-child(3){animation-delay:12s}
+@keyframes hcycle2{0%{opacity:0;visibility:hidden;transform:translateY(10px)}3%{opacity:1;visibility:visible;transform:none}47%{opacity:1;visibility:visible;transform:none}50%,100%{opacity:0;visibility:hidden}}
+@keyframes hcycle3{0%{opacity:0;visibility:hidden;transform:translateY(10px)}2.5%{opacity:1;visibility:visible;transform:none}30.8%{opacity:1;visibility:visible;transform:none}33.4%,100%{opacity:0;visibility:hidden}}
+.hero-grid{max-width:1120px;margin:0 auto;padding:56px 20px 60px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
+.hero .eyebrow{display:inline-flex;align-items:center;gap:7px;color:#fff;font-weight:700;font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;margin:0 0 16px;padding:6px 14px;border-radius:var(--pill);background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2)}
+.hero h1,.hero .hero-h{margin:0 0 16px;font-size:clamp(2rem,3.8vw,3.1rem);font-weight:800;letter-spacing:-.025em;line-height:1.08;color:#fff;text-wrap:balance}
+.hero-sub{margin:0;color:rgba(255,255,255,.78);font-size:1.08rem;line-height:1.65;max-width:46ch}
+.hero-sub .cmp{color:rgba(255,255,255,.55)}
 .hero-cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}
-.hero-media{position:relative;display:block;border-radius:var(--r-xl);overflow:hidden;aspect-ratio:4/3;border:1px solid color-mix(in srgb,var(--color-border) 80%,transparent);box-shadow:var(--sh-lg);transition:transform .35s cubic-bezier(.2,.7,.2,1),box-shadow .35s}
-.hero-media:hover{transform:translateY(-3px);box-shadow:0 42px 70px -30px rgba(13,21,38,.42)}
+/* Nút TRONG hero (nền tối): đặc trắng + viền kính — tách khỏi .btn-primary của trang sáng. */
+.btn-hero{background:#fff;color:var(--color-primary);box-shadow:0 14px 30px -14px rgba(0,0,0,.55)}
+.btn-hero:hover{transform:translateY(-2px);box-shadow:0 20px 38px -16px rgba(0,0,0,.6)}
+.btn-hero-ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.38)}
+.btn-hero-ghost:hover{border-color:#fff;background:rgba(255,255,255,.1)}
+.hero-media{position:relative;display:block;border-radius:var(--r-xl);overflow:hidden;aspect-ratio:4/3;border:1px solid rgba(255,255,255,.14);box-shadow:var(--sh-lg);transition:transform .35s cubic-bezier(.2,.7,.2,1),box-shadow .35s}
+.hero-media:hover{transform:translateY(-3px)}
 .hero-media img{width:100%;height:100%;object-fit:cover;transition:transform .5s cubic-bezier(.2,.7,.2,1)}
 .hero-media:hover img{transform:scale(1.05)}
-.hero-card{position:absolute;left:14px;right:14px;bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:rgba(255,255,255,.94);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border-radius:var(--r);padding:12px 16px;box-shadow:0 14px 30px -16px rgba(13,21,38,.5)}
-.hc-name{font-weight:600;font-size:.92rem;color:#111827;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.hc-price{font-weight:800;color:color-mix(in srgb,var(--color-primary) 68%,#111827);white-space:nowrap;font-variant-numeric:tabular-nums}
-.hero-media.deco{display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--color-primary) 10%,var(--color-bg));color:var(--color-primary);box-shadow:none}
-.hero-media.deco svg{width:88px;height:88px;opacity:.85}
-@media(max-width:820px){.hero-grid{grid-template-columns:1fr;gap:26px;padding:40px 20px;text-align:center}.hero-copy p{max-width:none}.hero-cta{justify-content:center}.hero-media{max-width:440px;width:100%;margin:0 auto}}
+.hero-card{position:absolute;left:14px;right:14px;bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:rgba(255,255,255,.95);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border-radius:var(--r);padding:12px 16px;box-shadow:0 14px 30px -16px rgba(0,0,0,.5)}
+.hc-name{font-weight:600;font-size:.92rem;color:#141414;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.hc-price{font-weight:800;color:#141414;white-space:nowrap;font-variant-numeric:tabular-nums}
+.hero-media.deco{display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.07);color:rgba(255,255,255,.85);box-shadow:none}
+.hero-media.deco svg{width:88px;height:88px;opacity:.9}
+/* Chấm chỉ báo: cùng chu kỳ + delay với slide → chấm "đang chiếu" giãn thành vạch trắng. */
+.hero-dots{position:relative;z-index:1;display:flex;justify-content:center;gap:8px;padding:0 0 20px}
+.hero-dots .dot{width:8px;height:8px;border-radius:var(--pill);background:rgba(255,255,255,.35)}
+.hero-n2 .dot{animation:hdot2 12s infinite}
+.hero-n3 .dot{animation:hdot3 18s infinite}
+.hero-n2 .dot:nth-child(2),.hero-n3 .dot:nth-child(2){animation-delay:6s}
+.hero-n3 .dot:nth-child(3){animation-delay:12s}
+@keyframes hdot2{0%,50%,100%{background:rgba(255,255,255,.35);width:8px}3%,47%{background:#fff;width:22px}}
+@keyframes hdot3{0%,33.4%,100%{background:rgba(255,255,255,.35);width:8px}2.5%,30.8%{background:#fff;width:22px}}
+@media(max-width:820px){.hero-grid{grid-template-columns:1fr;gap:26px;padding:38px 20px 42px;text-align:center}.hero-sub{max-width:none}.hero-cta{justify-content:center}.hero-media{max-width:440px;width:100%;margin:0 auto}}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-family:var(--font-body);font-size:1rem;font-weight:600;min-height:48px;padding:12px 26px;border-radius:var(--pill);border:1px solid transparent;cursor:pointer;transition:transform .12s cubic-bezier(.2,.7,.2,1),background-position .35s,box-shadow .2s,border-color .15s,color .15s,background .15s;line-height:1}
 .btn:active{transform:translateY(1px)}.btn svg{width:18px;height:18px}
 .btn-primary{background:linear-gradient(135deg,var(--color-primary),color-mix(in srgb,var(--color-primary) 55%,var(--color-accent)));background-size:150% 150%;color:#fff;box-shadow:0 10px 26px -12px color-mix(in srgb,var(--color-primary) 66%,transparent)}
 .btn-primary:hover{background-position:100% 0;transform:translateY(-1px);box-shadow:0 16px 32px -14px color-mix(in srgb,var(--color-primary) 72%,transparent)}
 .btn-ghost{background:var(--color-bg);color:var(--color-text);border-color:color-mix(in srgb,var(--color-primary) 30%,var(--color-border))}.btn-ghost:hover{border-color:var(--color-primary);color:var(--color-primary);background:color-mix(in srgb,var(--color-primary) 6%,var(--color-bg))}
-.section{padding:56px 0}.section-h{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin:0 0 24px}.section-h h2{margin:0;font-size:1.5rem;font-weight:800;letter-spacing:-.02em}
+.section{padding:clamp(48px,6vw,72px) 0}.section-h{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin:0 0 26px}.section-h h2{margin:0;font-size:clamp(1.4rem,2.4vw,1.85rem);font-weight:800;letter-spacing:-.02em}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 24px}
 .chip{border:1px solid var(--color-border);border-radius:var(--pill);padding:8px 16px;font-size:.86rem;font-weight:500;color:var(--color-muted);background:var(--color-bg);transition:border-color .15s,color .15s,background .15s,box-shadow .15s}
 .chip:hover{border-color:var(--color-primary);color:var(--color-primary);background:color-mix(in srgb,var(--color-primary) 8%,var(--color-bg));box-shadow:0 6px 16px -8px color-mix(in srgb,var(--color-primary) 45%,transparent)}
@@ -366,15 +460,17 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .features .wrap{padding:36px 20px}
 .feat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:26px}
 .feat-item{display:flex;align-items:flex-start;gap:14px}
-.feat-ic{flex:0 0 auto;width:48px;height:48px;border-radius:var(--r);background:linear-gradient(135deg,color-mix(in srgb,var(--color-primary) 16%,var(--color-bg)),color-mix(in srgb,var(--color-accent) 12%,var(--color-bg)));color:var(--color-primary);display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-primary) 14%,transparent)}
+.feat-ic{flex:0 0 auto;width:46px;height:46px;border-radius:var(--pill);background:var(--color-bg);color:var(--color-primary);display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px var(--color-border)}
 .feat-ic svg{width:23px;height:23px}
 .feat-t{font-weight:700;font-size:.98rem;color:var(--color-text);margin-bottom:3px}
 .feat-d{font-size:.85rem;color:var(--color-muted);line-height:1.5}
 .coll-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:16px}
-.coll-tile{position:relative;display:flex;flex-direction:column;justify-content:flex-end;gap:4px;min-height:112px;padding:18px 20px;border-radius:var(--r-lg);background:linear-gradient(135deg,var(--color-hero-bg),color-mix(in srgb,var(--color-hero-bg) 55%,var(--color-bg)));border:1px solid var(--color-border);overflow:hidden;transition:transform .2s cubic-bezier(.2,.7,.2,1),box-shadow .2s,border-color .2s}
-.coll-tile:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--color-primary) 42%,var(--color-border));box-shadow:var(--sh)}
-.coll-name{font-family:var(--font-heading);font-weight:700;font-size:1.02rem;color:var(--color-text);line-height:1.3}
-.coll-go{font-size:.8rem;font-weight:700;color:var(--color-primary)}
+.coll-tile{position:relative;display:flex;flex-direction:column;justify-content:flex-end;gap:4px;min-height:128px;padding:18px 20px;border-radius:var(--r-lg);background:linear-gradient(150deg,var(--color-hero-bg),color-mix(in srgb,var(--color-hero-bg) 45%,var(--color-bg)));border:1px solid var(--color-border);overflow:hidden;transition:transform .25s cubic-bezier(.2,.7,.2,1),box-shadow .25s,border-color .25s}
+.coll-tile::after{content:"";position:absolute;top:-26px;right:-26px;width:104px;height:104px;border-radius:50%;background:color-mix(in srgb,var(--color-primary) 8%,transparent);transition:transform .35s}
+.coll-tile:hover{transform:translateY(-4px);border-color:color-mix(in srgb,var(--color-primary) 42%,var(--color-border));box-shadow:var(--sh)}
+.coll-tile:hover::after{transform:scale(1.3)}
+.coll-name{position:relative;font-family:var(--font-heading);font-weight:700;font-size:1.02rem;color:var(--color-text);line-height:1.3}
+.coll-go{position:relative;font-size:.8rem;font-weight:700;color:var(--color-accent)}
 .hsearch{flex:1 1 180px;max-width:280px;margin:0 8px}
 .hsearch input{width:100%;padding:10px 15px;border:1px solid var(--color-border);border-radius:var(--pill);font-size:.9rem;font-family:inherit;background:var(--color-surface);color:var(--color-text);transition:border-color .15s,box-shadow .15s}
 .hsearch input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 22%,transparent)}
@@ -422,16 +518,20 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
 .blog-more{color:var(--color-primary);font-weight:700;font-size:.92rem}
 .blog-post{max-width:720px}.blog-post h1{margin:10px 0 2px;font-size:2rem;font-weight:800;letter-spacing:-.02em}
 .blog-post p{line-height:1.85;color:var(--color-text);margin:0 0 18px}
-.card{display:flex;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--sh-sm);transition:transform .25s cubic-bezier(.2,.7,.2,1),box-shadow .25s,border-color .25s}
-.card:hover{transform:translateY(-4px);border-color:color-mix(in srgb,var(--color-primary) 34%,var(--color-border));box-shadow:var(--sh)}
+/* Thẻ SP hover "cao cấp": nâng 6px + ảnh phóng 1.06 + thanh "Xem chi tiết" trượt lên từ
+   đáy ảnh. Máy cảm ứng (hover:none) ẩn thanh — cả thẻ vốn là link, không cần lớp phủ. */
+.card{display:flex;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--sh-sm);transition:transform .3s cubic-bezier(.2,.7,.2,1),box-shadow .3s,border-color .3s}
+.card:hover{transform:translateY(-6px);border-color:color-mix(in srgb,var(--color-primary) 30%,var(--color-border));box-shadow:var(--sh-lg)}
 .card .thumb{position:relative;aspect-ratio:1;background:var(--color-surface);overflow:hidden}
-.card .thumb img{width:100%;height:100%;object-fit:cover;transition:transform .35s cubic-bezier(.2,.7,.2,1)}
-.card:hover .thumb img{transform:scale(1.04)}
-.card .thumb .ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#c4c8cf}.card .thumb .ph svg{width:34px;height:34px}
+.card .thumb img{width:100%;height:100%;object-fit:cover;transition:transform .5s cubic-bezier(.2,.7,.2,1)}
+.card:hover .thumb img{transform:scale(1.06)}
+.card .thumb .ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#c9c5bd}.card .thumb .ph svg{width:34px;height:34px}
+.card-go{position:absolute;left:0;right:0;bottom:0;z-index:1;background:color-mix(in srgb,var(--color-primary) 92%,#000);color:#fff;font-size:.84rem;font-weight:600;letter-spacing:.03em;text-align:center;padding:11px 8px;transform:translateY(100%);transition:transform .3s cubic-bezier(.2,.7,.2,1)}
+.card:hover .card-go{transform:none}
+@media(hover:none){.card-go{display:none}}
 .card .body{padding:14px 16px 16px;display:flex;flex-direction:column;gap:6px;flex:1}
 .card .name{font-size:.92rem;color:var(--color-text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.6em}
-.card .price{font-weight:800;color:var(--color-text);font-size:1.1rem;letter-spacing:-.01em;font-variant-numeric:tabular-nums;margin-top:auto}
-.card .cta{font-size:.82rem;color:var(--color-primary);font-weight:700}
+.card .price{font-weight:800;color:var(--color-text);font-size:1.08rem;letter-spacing:-.01em;font-variant-numeric:tabular-nums;margin-top:auto}
 .pd{padding:28px 20px 52px}
 .crumb{font-size:.85rem;color:var(--color-muted);margin:0 0 20px}.crumb a:hover{color:var(--color-primary)}
 .pd-grid{display:grid;grid-template-columns:1fr 1fr;gap:44px;align-items:start}
@@ -462,11 +562,27 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
 .content blockquote{margin:1.4em 0;padding:.6em 0 .6em 1.2em;border-left:3px solid var(--color-primary);color:var(--color-muted);font-style:italic}
 .content blockquote cite{display:block;margin-top:.5em;font-size:.88em;font-style:normal}
 .content hr{border:0;border-top:1px solid var(--color-border);margin:2em 0}
+/* ── Băng câu chuyện thương hiệu (chỉ hiện khi shop điền nội dung ở trang Giao diện) ── */
+.story{background:var(--color-surface);border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border)}
+.story .wrap{display:grid;grid-template-columns:.9fr 1.1fr;gap:48px;align-items:start;padding:clamp(44px,6vw,72px) 20px}
+.story .eyebrow{display:inline-block;color:var(--color-accent);font-weight:700;font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;margin:0 0 12px}
+.story h2{margin:0;font-size:clamp(1.6rem,3vw,2.3rem);font-weight:800;letter-spacing:-.02em;line-height:1.15}
+.story p{margin:0 0 22px;color:var(--color-muted);font-size:1.05rem;line-height:1.8;max-width:52ch}
+.btn-solid{background:var(--color-primary);color:#fff}
+.btn-solid:hover{background:var(--color-primary-dark);transform:translateY(-2px)}
+@media(max-width:820px){.story .wrap{grid-template-columns:1fr;gap:18px}}
+/* ── Footer 4 cột ── */
 .ftr{border-top:1px solid var(--color-border);background:var(--color-surface);margin-top:36px}
-.ftr .wrap{padding:36px 20px;display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between;color:var(--color-muted);font-size:.88rem}
-.ftr-nav{display:flex;flex-wrap:wrap;gap:20px;margin:0 0 6px}.ftr-nav a{font-weight:500;transition:color .15s}.ftr-nav a:hover{color:var(--color-primary)}
-.ftr-contact{font-size:.85rem;color:var(--color-muted);margin:0 0 6px;line-height:1.6}
-.ftr .badges{display:flex;gap:20px;flex-wrap:wrap}.ftr .badges span{display:inline-flex;align-items:center;gap:6px}.ftr .badges svg{width:16px;height:16px;color:var(--color-primary)}
+.ftr .wrap{padding:clamp(38px,5vw,56px) 20px 26px;color:var(--color-muted);font-size:.88rem}
+.ftr-grid{display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr;gap:32px}
+.ftr-brand{font-family:var(--font-heading);font-weight:800;font-size:1rem;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text);margin:0 0 12px}
+.ftr-col h4{margin:0 0 12px;font-size:.76rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--color-text)}
+.ftr-col a{display:block;padding:4px 0;color:var(--color-muted);font-weight:500;transition:color .15s}.ftr-col a:hover{color:var(--color-primary)}
+.ftr-contact{font-size:.85rem;color:var(--color-muted);margin:0 0 14px;line-height:1.7}
+.ftr .badges{display:flex;gap:18px;flex-wrap:wrap}.ftr .badges span{display:inline-flex;align-items:center;gap:6px}.ftr .badges svg{width:16px;height:16px;color:var(--color-primary)}
+.ftr .copy{margin-top:30px;padding-top:18px;border-top:1px solid var(--color-border);font-size:.84rem}
+@media(max-width:900px){.ftr-grid{grid-template-columns:1fr 1fr}.ftr-about{grid-column:1/-1}}
+@media(max-width:480px){.ftr-grid{grid-template-columns:1fr}}
 .center-msg{max-width:520px;margin:80px auto;text-align:center;padding:0 20px}.center-msg h1{font-size:1.8rem;margin:0 0 10px;font-weight:800;letter-spacing:-.02em}.center-msg p{color:var(--color-muted)}
 .preview-banner{position:sticky;top:0;z-index:30;background:#b45309;color:#fff;padding:10px 20px;font-weight:600;text-align:center;font-size:.9rem}
 /* ── Trang sản phẩm nâng cấp: gallery no-JS (radio+:checked), chip biến thể, specs, lightbox ── */
@@ -551,6 +667,12 @@ function withHomeSections(layout) {
     // (không nhét collections xuống sau footer).
     const gi = out.findIndex((s) => s && s.section === 'product_grid');
     if (gi >= 0) out.splice(gi, 0, { section: 'collections', props: {} });
+  }
+  if (!has('story')) {
+    // Băng câu chuyện: trước footer (cuối trang nếu không có footer). Chưa cấu hình
+    // → render rỗng, vô hại; có mặt sẵn để trang Giao diện ghi props vào.
+    const fi = out.findIndex((s) => s && s.section === 'footer');
+    out.splice(fi >= 0 ? fi : out.length, 0, { section: 'story', props: {} });
   }
   return out;
 }

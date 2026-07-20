@@ -196,6 +196,8 @@ const SECTIONS = {
     <form class="hsearch" method="GET" action="/search" role="search">
       <input name="q" value="${esc(ctx.query ?? '')}" placeholder="Tìm sản phẩm…" aria-label="Tìm sản phẩm">
     </form>
+    <input type="checkbox" id="navtoggle" class="navtoggle" aria-label="Mở/đóng menu">
+    <label for="navtoggle" class="navburger" aria-hidden="true">☰</label>
     <nav class="hnav">
       ${ctx.categories.slice(0, 4).map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}
       ${ctx.hasBlog ? '<a href="/blog">Blog</a>' : ''}
@@ -319,6 +321,16 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .hnav{display:flex;align-items:center;gap:24px;font-size:.92rem;flex-wrap:wrap}
 .hnav a{color:var(--color-muted);font-weight:500;transition:color .15s}.hnav a:hover{color:var(--color-primary)}
 .hnav .cart{display:inline-flex;align-items:center;gap:6px;color:var(--color-text);font-weight:600}.hnav .cart:hover{color:var(--color-primary)}
+/* Hamburger no-JS (checkbox + :checked ~ .hnav) — mobile gom menu vào nút ☰; desktop ẩn nút, nav luôn hiện. */
+.navtoggle{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
+.navburger{display:none;cursor:pointer;font-size:1.7rem;line-height:1;color:var(--color-text);padding:2px 8px;user-select:none}
+.navtoggle:focus-visible+.navburger{outline:2.5px solid var(--color-primary);outline-offset:2px;border-radius:8px}
+@media(max-width:720px){
+  .hdr .wrap{flex-wrap:wrap;row-gap:10px}
+  .navburger{display:inline-flex}
+  .hnav{display:none;flex-basis:100%;flex-direction:column;align-items:flex-start;gap:14px;padding:6px 0 4px}
+  .navtoggle:checked~.hnav{display:flex}
+}
 .hero{background:var(--color-hero-bg);position:relative;overflow:hidden}
 .hero::before,.hero::after{content:"";position:absolute;border-radius:50%;filter:blur(70px);z-index:0;pointer-events:none}
 .hero::before{width:360px;height:360px;top:-130px;left:-90px;background:color-mix(in srgb,var(--color-primary) 24%,transparent)}

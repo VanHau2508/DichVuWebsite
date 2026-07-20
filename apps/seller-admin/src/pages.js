@@ -131,7 +131,11 @@ a.metric:hover{transform:translateY(-3px);box-shadow:var(--sh);border-color:colo
 .empty-state{text-align:center;padding:48px 24px;color:var(--mut)}
 .empty-state .ic{width:56px;height:56px;margin:0 auto 14px;border-radius:16px;background:var(--wash);color:var(--pri);display:grid;place-items:center}
 a:focus-visible,.btn:focus-visible,.shop-card:focus-visible,.metric:focus-visible,summary:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid var(--pri);outline-offset:2px;border-radius:8px}
-@media(max-width:760px){.shell{flex-direction:column}.side{width:100%;flex:none;height:auto;position:static}.side-nav{flex-direction:row;flex-wrap:wrap}.side-nav a.on::before{display:none}.content{padding:18px 16px}.tbar{padding:12px 16px}.center .card{padding:26px 22px}}
+.admtoggle{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
+.admburger{display:none;cursor:pointer;font-size:1.5rem;line-height:1;margin-right:10px;user-select:none;color:var(--ink)}
+.admtoggle:focus-visible+.side .side-brand{outline:2.5px solid var(--pri);outline-offset:2px}
+/* Mobile: gom sidebar (25 mục) vào nút ☰ trên topbar (no-JS checkbox). tbar lên trên, side hiện khi ☰. */
+@media(max-width:760px){.shell{flex-direction:column}.main{order:0}.side{order:1;width:100%;flex:none;height:auto;position:static;display:none}.admtoggle:checked~.side{display:flex}.admburger{display:inline-flex}.side-nav{flex-direction:column}.side-nav a.on::before{display:none}.content{padding:18px 16px}.tbar{padding:12px 16px}.center .card{padding:26px 22px}}
 @media(prefers-color-scheme:dark){.card[style*="#ecfdf5"],.card[style*="#eff6ff"],.card[style*="#fffbeb"],.card[style*="#fef3c7"],.card[style*="#fef2f2"]{color:#0d1526}.card[style*="#ecfdf5"] .muted,.card[style*="#eff6ff"] .muted,.card[style*="#fffbeb"] .muted,.card[style*="#fef3c7"] .muted,.card[style*="#fef2f2"] .muted,.card[style*="#ecfdf5"] th,.card[style*="#eff6ff"] th,.card[style*="#fffbeb"] th,.card[style*="#fef3c7"] th,.card[style*="#fef2f2"] th{color:#3f4d66}.card[style*="#ecfdf5"] a,.card[style*="#eff6ff"] a,.card[style*="#fffbeb"] a,.card[style*="#fef3c7"] a,.card[style*="#fef2f2"] a{color:#1b48c0}.card[style*="#ecfdf5"] code,.card[style*="#eff6ff"] code,.card[style*="#fffbeb"] code,.card[style*="#fef3c7"] code,.card[style*="#fef2f2"] code{background:rgba(13,21,38,.08);color:#12306b}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}html{scroll-behavior:auto}}`;
 
@@ -232,6 +236,7 @@ export function layout(title, ctx, body) {
   const logout = `<form method="POST" action="/logout"><button type="submit">Đăng xuất</button></form>`;
   if (ctx.shopId) {
     return `${head}<div class="shell">
+      <input type="checkbox" id="admtoggle" class="admtoggle" aria-label="Mở/đóng menu">
       <aside class="side">
         <a class="side-brand" href="/">${IC_HOME}Quản trị</a>
         ${ctx.shopName ? `<div class="side-shop">${esc(ctx.shopName)}</div>` : ''}
@@ -239,7 +244,7 @@ export function layout(title, ctx, body) {
         <div class="side-user"><span class="email">${esc(ctx.user.email)}</span>${logout}</div>
       </aside>
       <div class="main">
-        <header class="tbar"><span class="brand">${esc(ctx.shopName || 'Quản trị')}</span>
+        <header class="tbar"><label for="admtoggle" class="admburger" aria-hidden="true">☰</label><span class="brand">${esc(ctx.shopName || 'Quản trị')}</span>
           <span class="acc"><a href="/account">Tài khoản</a></span></header>
         <div class="content">${body}</div>
       </div>

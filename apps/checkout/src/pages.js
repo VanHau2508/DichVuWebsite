@@ -219,7 +219,13 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
   const ch = opts.challenge;
   const provinceOpts = (sel) => PROVINCES.map((p) => `<option value="${esc(p)}"${sel === p ? ' selected' : ''}>${esc(p)}</option>`).join('');
   const honeypot = `<input class="hp" type="text" name="company" tabindex="-1" autocomplete="off" aria-hidden="true">`;
-  const emailField = `<label>Email (tuỳ chọn — nhận xác nhận đơn)</label><input name="email" type="email" autocomplete="email" value="${v(pf.email)}">`;
+  // Email NỔI BẬT (nudge, vẫn không bắt buộc): khách COD hay bỏ trống → không nhận thông báo nào.
+  // Ô nổi bật + nêu rõ lợi ích để khách chịu điền → tự động nhận email xác nhận + đổi-trạng-thái + mã tra cứu.
+  const emailField = `<div style="margin:12px 0;padding:11px 13px;border:1px dashed #2563eb;border-radius:10px;background:#f5f8ff">
+      <label style="font-weight:600;margin:0">📧 Email nhận thông báo đơn <span style="color:#6b7280;font-weight:400">(nên nhập)</span></label>
+      <input name="email" type="email" autocomplete="email" value="${v(pf.email)}" placeholder="ban@email.com" style="margin-top:5px">
+      <div style="color:#6b7280;font-size:.82rem;margin-top:4px">Nhận email xác nhận đơn, cập nhật khi giao hàng, và mã tra cứu đơn.</div>
+    </div>`;
   // Nút định vị GPS (0089) — CHỈ khi shop ship theo km + có geocoder (opts.gps). type=button → không submit.
   const gpsBtn = opts.gps ? `<button type="button" id="use-gps" class="btn alt" style="width:auto;padding:10px 16px;margin-bottom:6px">📍 Dùng vị trí hiện tại</button>
       <div id="gps-hint" class="muted" style="font-size:.85rem;margin-bottom:8px"></div>` : '';

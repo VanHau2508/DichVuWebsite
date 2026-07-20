@@ -147,6 +147,41 @@ export async function readMultipartFiles(req, maxBytes = 40 * 1024 * 1024) {
   return out;
 }
 
+// Bóc CẢ field text LẪN file (kèm tên field) từ multipart/form-data — cho form vừa upload
+// ảnh vừa nhập chữ (banner Phase 5). Trả { fields: {name→string}, files: [{field,filename,bytes}] }.
+// Cùng cơ chế boundary như readMultipartFiles; part không có filename → field text (utf8).
+export async function readMultipartAll(req, maxBytes = 40 * 1024 * 1024) {
+  const ct = req.headers['content-type'] || '';
+  const m = /multipart\/form-data;\s*boundary=(?:"([^"]+)"|([^;]+))/i.exec(ct);
+  if (!m) return { fields: {}, files: [] };
+  const token = (m[1] || m[2]).trim();
+  const dash = Buffer.from('--' + token);
+  const delim = Buffer.from('\r\n--' + token);
+  const body = await readRawBody(req, maxBytes);
+  const fields = {}, files = [];
+  let pos = body.indexOf(dash);
+  if (pos === -1) return { fields, files };
+  pos += dash.length;
+  while (pos < body.length) {
+    if (body[pos] === 0x2d && body[pos + 1] === 0x2d) break;
+    if (body[pos] === 0x0d && body[pos + 1] === 0x0a) pos += 2;
+    const hEnd = body.indexOf('\r\n\r\n', pos, 'latin1');
+    if (hEnd === -1) break;
+    const headers = body.slice(pos, hEnd).toString('latin1');
+    const cStart = hEnd + 4;
+    const next = body.indexOf(delim, cStart);
+    if (next === -1) break;
+    const bytes = body.slice(cStart, next);
+    const nameM = /name="([^"]*)"/i.exec(headers);
+    const fnM = /filename="([^"]*)"/i.exec(headers);
+    const name = nameM ? nameM[1] : '';
+    if (fnM) { if (fnM[1] && bytes.length) files.push({ field: name, filename: fnM[1], bytes }); }
+    else if (name) fields[name] = bytes.toString('utf8');
+    pos = next + delim.length;
+  }
+  return { fields, files };
+}
+
 // CSRF: POST đổi trạng thái phải có Origin thuộc allowlist (Origin của chính admin).
 export function sameOrigin(req, allowed) {
   if (req.method === 'GET' || req.method === 'HEAD') return true;

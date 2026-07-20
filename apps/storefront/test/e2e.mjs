@@ -366,6 +366,47 @@ async function main() {
   qv = await sf(A.host, `/p/${draftSlug}/quickview`);
   qv.status === 404 ? ok('quickview SP DRAFT → 404 (không lộ dữ liệu chưa bán)') : bad('quickview lộ draft', String(qv.status));
 
+  // ── Banner trang chủ tuỳ chỉnh (Phase 5): carousel ảnh tải riêng + fallback ──
+  sect('Banner trang chủ (ảnh tự tải) + fallback hero tự động');
+  // Upload 1 ảnh banner thật (seller re-encode WebP) → lấy key banner-.
+  const PNG_1x1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const upB = await fetch(`${SELLER}/shops/${A.shopId}/banner-image`, { method: 'POST', headers: { 'content-type': 'image/png', origin: OS, cookie: `__Host-session=${A.cookie}` }, body: PNG_1x1 });
+  const upBJson = await upB.json().catch(() => null);
+  const bnKey = upBJson?.key;
+  bnKey ? ok(`upload ảnh banner → key ${bnKey.slice(0, 18)}…`) : bad('upload banner fail', JSON.stringify(upBJson));
+  // Cấu hình slides vào hero.props.slides.
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/theme`, { cookie: A.cookie, origin: OS, body: { tokens: {}, layout: [
+    { section: 'header', props: {} },
+    { section: 'hero', props: { title: 'HERO-TU-DONG-CU', subtitle: 'phu-tu-dong', slides: [
+      { image_key: bnKey, headline: 'Banner Khuyến Mãi Lớn', sub: 'Giảm tới 50%', button_label: 'Xem ngay', button_link: '/c/sale' },
+    ] } },
+    { section: 'product_grid', props: { title: 'Sản phẩm' } },
+    { section: 'footer', props: {} },
+  ] } });
+  r = await sf(A.host, '/');
+  r.body.includes('class="hero hero-banner') && r.body.includes(`/media-public/${bnKey}`)
+    ? ok('storefront render carousel BANNER (hero-banner + ảnh tải riêng)') : bad('không render banner tuỳ chỉnh', r.body.match(/class="hero[^"]*"/)?.[0]);
+  r.body.includes('Banner Khuyến Mãi Lớn') && r.body.includes('Giảm tới 50%') && r.body.includes('>Xem ngay<') && r.body.includes('href="/c/sale"')
+    ? ok('overlay: headline + sub + nút (link nội bộ)') : bad('overlay banner thiếu field');
+  !r.body.includes('phu-tu-dong')
+    ? ok('có banner → KHÔNG render hero tự động (subtitle cũ biến mất)') : bad('hero tự động vẫn render cùng banner');
+  // Link javascript: phải bị chặn ở render (đề phòng) — nút về '#'.
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/theme`, { cookie: A.cookie, origin: OS, body: { tokens: {}, layout: [
+    { section: 'hero', props: { slides: [{ image_key: bnKey, headline: 'X', button_label: 'Bấm', button_link: '/an/toan' }] } },
+    { section: 'product_grid', props: {} },
+  ] } });
+  r = await sf(A.host, '/');
+  r.body.includes('href="/an/toan"') ? ok('button_link nội bộ giữ nguyên khi render') : bad('link nội bộ render sai');
+  // Bỏ slides → fallback hero tự động (chữ + ảnh sản phẩm) trở lại.
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/theme`, { cookie: A.cookie, origin: OS, body: { tokens: {}, layout: [
+    { section: 'hero', props: { title: 'HERO-QUAY-LAI' } },
+    { section: 'product_grid', props: {} },
+  ] } });
+  r = await sf(A.host, '/');
+  // Lưu ý: chuỗi "hero-banner" cũng nằm trong CSS nội tuyến → phải khớp CLASS trong markup.
+  !r.body.includes('class="hero hero-banner') && r.body.includes('hero-track')
+    ? ok('bỏ banner → fallback hero tự động (không còn hero-banner)') : bad('fallback hero tự động lỗi', r.body.match(/<section class="hero[^"]*"/)?.[0]);
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

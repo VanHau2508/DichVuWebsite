@@ -10,7 +10,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { parseCookies, readForm, readFormAll, readMultipartFile, readMultipartFiles, sendHtml, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
+import { parseCookies, readForm, readFormAll, readMultipartFile, readMultipartFiles, readMultipartAll, sendHtml, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
 import { authApi, sellerApi, platformApi, sellerUpload, sellerDownload, loadSession } from './api.js';
 import * as V from './pages.js';
 import { runReq, makeLog, health } from './obs.js';
@@ -1883,6 +1883,52 @@ async function themeSave(req, res, me, cookie, shopId) {
   return redirect(res, `/shops/${shopId}/theme?ok=${r.status === 200 ? 1 : 0}`);
 }
 
+// Banner trang chủ (Phase 5): form multipart RIÊNG (ảnh + chữ). Với mỗi hàng slide:
+// upload file mới (nếu chọn) qua sellerUpload → key banner-; nếu không chọn thì GIỮ key cũ
+// (hidden existing_key_i); tick "xoá" → bỏ slide. Ráp mảng slides rồi MERGE vào hero.props
+// của theme HIỆN TẠI (giữ nguyên màu/chữ hero/section khác) và PUT. Seller validate key +
+// chuẩn hoá chữ/link lần cuối (chống chéo shop). No-JS: form multipart thường.
+const BANNER_ROWS = 4; // số hàng slide hiển thị (≤ trần 5 của seller)
+async function bannerSave(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  let parsed;
+  try { parsed = await readMultipartAll(req); }
+  catch (e) { return themePage(res, me, cookie, shopId, '0'); } // 413 ảnh quá lớn → về trang, báo lỗi lưu
+  const { fields, files } = parsed;
+  const fileByField = new Map(files.map((f) => [f.field, f]));
+  const slides = [];
+  for (let i = 0; i < BANNER_ROWS && slides.length < 5; i++) {
+    if (fields[`remove_${i}`]) continue; // tick xoá → bỏ hẳn slide này
+    let key = String(fields[`existing_key_${i}`] ?? '').trim();
+    const file = fileByField.get(`banner_file_${i}`);
+    if (file && file.bytes?.length) {
+      const up = await sellerUpload(`/shops/${shopId}/banner-image`, { cookie, bytes: file.bytes });
+      if (up.status === 200 && up.json?.key) key = up.json.key; // ảnh mới thay ảnh cũ
+    }
+    if (!key) continue; // không ảnh → không phải banner
+    slides.push({
+      image_key: key,
+      headline: String(fields[`headline_${i}`] ?? '').trim().slice(0, 120),
+      sub: String(fields[`sub_${i}`] ?? '').trim().slice(0, 200),
+      button_label: String(fields[`button_label_${i}`] ?? '').trim().slice(0, 40),
+      button_link: String(fields[`button_link_${i}`] ?? '').trim().slice(0, 300),
+    });
+  }
+  // Merge vào hero.props.slides của layout ĐANG LƯU (không đụng section/props khác).
+  const cur = await sellerApi('GET', `/shops/${shopId}/theme`, { cookie });
+  const curTheme = cur.status === 200 && cur.json ? cur.json : {};
+  const tokens = curTheme.tokens && typeof curTheme.tokens === 'object' && !Array.isArray(curTheme.tokens) ? curTheme.tokens : {};
+  let layout = Array.isArray(curTheme.layout) && curTheme.layout.length
+    ? curTheme.layout.map((s) => (s && typeof s === 'object' ? { ...s, props: s.props && typeof s.props === 'object' ? { ...s.props } : {} } : s))
+    : [{ section: 'header', props: {} }, { section: 'hero', props: {} }, { section: 'product_grid', props: {} }, { section: 'footer', props: {} }];
+  let hero = layout.find((x) => x && x.section === 'hero');
+  if (!hero) { hero = { section: 'hero', props: {} }; const hi = layout.findIndex((x) => x && x.section === 'header'); layout.splice(hi >= 0 ? hi + 1 : 0, 0, hero); }
+  if (!hero.props || typeof hero.props !== 'object') hero.props = {};
+  if (slides.length) hero.props.slides = slides; else delete hero.props.slides;
+  const r = await sellerApi('PUT', `/shops/${shopId}/theme`, { cookie, body: { tokens, layout } });
+  return redirect(res, `/shops/${shopId}/theme?ok=${r.status === 200 ? 1 : 0}`);
+}
+
 // ── Thanh toán (payment.write = owner; PUT payment-config đòi step-up) ────────
 async function paymentPage(res, me, cookie, shopId, notice, err, tokenInfo = null) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -2419,6 +2465,7 @@ async function handle(req, res, url, p) {
     // Giao diện (theme.write = owner/admin).
     if ((m = new RegExp(`^/shops/${UUID}/theme$`).exec(p)) && req.method === 'GET') return themePage(res, me, cookie, m[1], url.searchParams.get('ok'));
     if ((m = new RegExp(`^/shops/${UUID}/theme$`).exec(p)) && req.method === 'POST') return themeSave(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/theme/banner$`).exec(p)) && req.method === 'POST') return bannerSave(req, res, me, cookie, m[1]);
 
     return sendHtml(res, 404, V.renderError({ user: me }, 'Không tìm thấy trang.'));
 }

@@ -87,6 +87,17 @@ const fmtDate = (d) => { try { return d ? new Intl.DateTimeFormat('vi-VN', { day
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 const U36 = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const MEDIA_KEY_RE = new RegExp(`^${U36}/(?:logo-)?${U36}\\.webp$`);
+// Banner trang chủ (Phase 5): key riêng có tiền tố banner- (uploadBanner ở seller sinh ra).
+// Phòng thủ tầng render: seller đã validate lúc lưu, đây re-check định dạng (key lạ → bỏ slide).
+const BANNER_KEY_RE = new RegExp(`^${U36}/banner-${U36}\\.webp$`);
+// button_link banner: chỉ nội bộ ('/...') hoặc http(s) tuyệt đối; còn lại → '#' (an toàn CSP).
+const normLink = (l) => {
+  const s = String(l ?? '');
+  if (s.startsWith('//')) return '#';
+  if (s.startsWith('/')) return s;
+  if (/^https?:\/\//i.test(s)) return s;
+  return '#';
+};
 const mediaFigure = (key, alt, caption) => (typeof key === 'string' && MEDIA_KEY_RE.test(key)
   ? `<figure class="ct-img"><img src="${esc(`${MEDIA_PUBLIC_BASE}/${key}`)}" alt="${esc(alt ?? '')}" loading="lazy">${caption ? `<figcaption>${esc(caption)}</figcaption>` : ''}</figure>`
   : '');
@@ -210,6 +221,30 @@ const DEFAULT_FEATURES = [
   { icon: 'wallet', title: 'Thanh toán an toàn', desc: 'COD khi nhận hàng hoặc chuyển khoản QR tiện lợi.' },
 ];
 
+// Carousel BANNER tuỳ chỉnh (Phase 5): tái dùng khung .hero/.hero-track/.hslide/.hero-dots
+// + animation thuần CSS + chấm như hero tự động. Mỗi slide: ảnh phủ kín (.hbanner-img) +
+// overlay tối nhẹ để chữ trắng đọc được + copy (tiêu đề/mô tả/nút). Chỉ slide ĐẦU dùng <h1>
+// (SEO: 1 h1/trang), còn lại <p class="hero-h">. esc mọi field người bán; normLink lọc nút.
+function heroBanner(slides) {
+  const hs = slides.map((s, i) => {
+    const first = i === 0;
+    const src = esc(`${MEDIA_PUBLIC_BASE}/${s.image_key}`);
+    const head = s.headline
+      ? (first ? `<h1 class="hero-h1">${esc(s.headline)}</h1>` : `<p class="hero-h">${esc(s.headline)}</p>`)
+      : '';
+    const sub = s.sub ? `<p class="hero-sub">${esc(s.sub)}</p>` : '';
+    const cta = (s.button_label && s.button_link)
+      ? `<div class="hero-cta"><a class="btn btn-hero" href="${esc(normLink(s.button_link))}">${esc(s.button_label)}</a></div>` : '';
+    return `<div class="hslide hbanner">
+      <img class="hbanner-img" src="${src}" alt="${esc(s.headline || '')}"${first ? '' : ' loading="lazy"'}>
+      <div class="hbanner-overlay"><div class="hbanner-copy">${head}${sub}${cta}</div></div>
+    </div>`;
+  });
+  const n = hs.length;
+  const dots = n > 1 ? `<div class="hero-dots" aria-hidden="true">${'<span class="dot"></span>'.repeat(n)}</div>` : '';
+  return `<section class="hero hero-banner hero-n${n}"><div class="hero-track">${hs.join('')}</div>${dots}</section>`;
+}
+
 // ── section renderers (nhận dữ liệu ĐÃ đọc, escape khi render) ────────────────
 const SECTIONS = {
   // Thanh thông báo (props.topbar_text, sửa ở trang Giao diện; trống → câu mặc định an toàn
@@ -271,6 +306,13 @@ const SECTIONS = {
   //   từ chính dữ liệu shop, không cần shop tải banner riêng. 1 cảnh → tĩnh, không chấm.
   //   Cảnh 2-3 dùng <p class="hero-h"> (không thêm h1 — mỗi trang chỉ 1 h1 cho SEO).
   hero: (props, ctx) => {
+    // Phase 5 — BANNER TUỲ CHỈNH: shop cấu hình slides (ảnh tự tải) → dùng làm carousel.
+    // Mỗi slide = ảnh phủ kín + overlay (headline/sub/nút). Không cấu hình / key sai hết →
+    // rơi về hero TỰ ĐỘNG (cảnh chữ + ảnh sản phẩm) bên dưới, KHÔNG đổi.
+    const banner = (Array.isArray(props.slides) ? props.slides : [])
+      .filter((s) => s && typeof s.image_key === 'string' && BANNER_KEY_RE.test(s.image_key))
+      .slice(0, 5);
+    if (banner.length) return heroBanner(banner);
     const withImg = (Array.isArray(ctx.products) ? ctx.products : []).filter((p) => p.image).slice(0, 3);
     const visual = (p) => (p
       ? `<a class="hero-media" href="/p/${esc(p.slug)}">
@@ -536,6 +578,17 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .hc-price{font-weight:800;color:#141414;white-space:nowrap;font-variant-numeric:tabular-nums}
 .hero-media.deco{display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.07);color:rgba(255,255,255,.85);box-shadow:none}
 .hero-media.deco svg{width:88px;height:88px;opacity:.9}
+/* ── BANNER TUỲ CHỈNH (Phase 5) — ảnh phủ kín + overlay chữ, tái dùng carousel trên ──
+   Ảnh nền absolute phủ .hslide; overlay gradient tối để chữ trắng đọc rõ trên mọi ảnh.
+   Chiều cao do .hbanner-overlay quyết định (các slide chồng grid → cao nhất chi phối). */
+.hero-banner::after{display:none}
+.hero-banner .hero-track{display:grid}
+.hbanner{position:relative;overflow:hidden}
+.hbanner-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0}
+.hbanner-overlay{position:relative;z-index:1;min-height:clamp(300px,40vw,500px);display:flex;align-items:center;background:linear-gradient(90deg,rgba(10,8,6,.62),rgba(10,8,6,.28) 55%,rgba(10,8,6,.08))}
+.hbanner-copy{max-width:1120px;width:100%;margin:0 auto;padding:48px 20px}
+.hero .hero-h1{margin:0 0 16px;font-size:clamp(2rem,3.8vw,3.1rem);font-weight:800;letter-spacing:-.025em;line-height:1.08;color:#fff;text-wrap:balance;overflow-wrap:anywhere;max-width:18ch}
+@media(max-width:820px){.hbanner-overlay{background:linear-gradient(0deg,rgba(10,8,6,.66),rgba(10,8,6,.3));text-align:center}.hbanner-copy{padding:40px 20px}.hbanner-copy .hero-sub{max-width:none;margin-inline:auto}.hbanner-copy .hero-cta{justify-content:center}}
 /* Chấm chỉ báo: cùng chu kỳ + delay với slide → chấm "đang chiếu" giãn thành vạch trắng. */
 .hero-dots{position:relative;z-index:1;display:flex;justify-content:center;gap:8px;padding:0 0 20px}
 .hero-dots .dot{width:8px;height:8px;border-radius:var(--pill);background:rgba(255,255,255,.35)}

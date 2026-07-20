@@ -177,6 +177,28 @@ async function deleteLogo(res, ctx) {
   return send(res, 200, { ok: true });
 }
 
+// Ảnh BANNER trang chủ (Phase 5): media CẤP-SHOP y HỆT logo về bảo mật (sniff magic byte,
+// KHÔNG tin Content-Type, re-encode WebP strip payload, CHỈ WebP lên bucket PUBLIC, trần
+// MAX_UPLOAD ở dispatcher). Khác logo: KHÔNG ghi shops row — key chỉ sống trong theme
+// layout JSON (hero.props.slides), nên trả { key, url } để seller-admin lắp vào slide.
+// Không giữ bản gốc (banner chỉ trưng bày). Tiền tố key banner- để phân biệt logo-/ảnh SP.
+// Perm 'theme.write' (owner/admin) — khai ở route. Cùng shop namespace nên RLS cô lập.
+async function uploadBanner(res, ctx, body) {
+  const buf = body;
+  if (!Buffer.isBuffer(buf) || buf.length === 0) return send(res, 400, { error: 'thiếu dữ liệu ảnh' });
+  if (!sniffImage(buf)) return send(res, 400, { error: 'không phải ảnh hợp lệ (JPEG/PNG/WebP/GIF)' });
+  const publicKey = `${ctx.shopId}/banner-${crypto.randomUUID()}.webp`;
+  try {
+    // Banner phủ rộng → cho phép tới 2000×1200; vẫn re-encode WebP (strip payload nhúng).
+    const { data } = await sharp(buf).rotate()
+      .resize({ width: 2000, height: 1200, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 82 }).toBuffer({ resolveWithObject: true });
+    await minio.putObject(BUCKET_PUBLIC, publicKey, data, data.length, { 'Content-Type': 'image/webp' });
+  } catch { return send(res, 422, { error: 'xử lý ảnh thất bại' }); }
+  await withTenant(ctx.shopId, (c) => audit(c, 'shop.banner_uploaded', { actorId: ctx.user.id, ip: ctx.ip, metadata: {} })).catch(() => {});
+  return send(res, 200, { key: publicKey, url: mediaPublicUrl(publicKey) });
+}
+
 async function listMedia(res, ctx, _body, params) {
   const productId = params[1];
   const rows = await withTenant(ctx.shopId, async (c) => {
@@ -262,4 +284,6 @@ export const MEDIA_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/media/${UUID}/variant$`), perm: 'catalog.write', fn: (res, ctx, b, p) => assignVariant(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/logo$`), perm: 'shop.write', raw: true, fn: (res, ctx, b) => uploadLogo(res, ctx, b) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/logo$`), perm: 'shop.write', fn: (res, ctx) => deleteLogo(res, ctx) },
+  // Banner trang chủ (Phase 5): upload ảnh riêng cho carousel hero. theme.write (owner/admin).
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/banner-image$`), perm: 'theme.write', raw: true, fn: (res, ctx, b) => uploadBanner(res, ctx, b) },
 ];

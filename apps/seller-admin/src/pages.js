@@ -312,6 +312,36 @@ export function renderTheme(ctx, theme, notice) {
       <code style="margin-left:auto">${esc(hex)}</code></div>`;
   };
   const opt = (list, cur) => list.map((o) => `<option value="${esc(o.v)}"${o.v === cur ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+  // Banner trang chủ (Phase 5): prefill từ hero.props.slides đã lưu. Mỗi hàng = 1 slide.
+  const bannerSlides = Array.isArray(hero.slides) ? hero.slides : [];
+  const BANNER_ROWS = 4;
+  const bannerRows = Array.from({ length: BANNER_ROWS }, (_, i) => {
+    const sl = bannerSlides[i] ?? {};
+    const key = typeof sl.image_key === 'string' ? sl.image_key : '';
+    return `<div class="card" style="border-color:#e5e7eb">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <strong style="font-size:.95rem">Banner ${i + 1}</strong>
+        ${key ? `<label class="muted" style="font-size:.85rem;display:inline-flex;align-items:center;gap:6px"><input type="checkbox" name="remove_${i}" value="1"> Xoá banner này</label>` : ''}
+      </div>
+      ${key ? `<input type="hidden" name="existing_key_${i}" value="${esc(key)}">
+        <div style="margin:8px 0"><img src="/media-public/${esc(key)}" alt="Banner ${i + 1}" style="max-height:110px;max-width:100%;border:1px solid #eceef1;border-radius:8px;background:#fff"></div>` : ''}
+      <label>Ảnh banner ${key ? '(chọn ảnh mới để thay)' : ''}</label>
+      <input type="file" name="banner_file_${i}" accept="image/*">
+      <label>Tiêu đề</label><input name="headline_${i}" maxlength="120" value="${esc(sl.headline ?? '')}" placeholder="Ví dụ: Bộ sưu tập Thu Đông">
+      <label>Mô tả ngắn</label><input name="sub_${i}" maxlength="200" value="${esc(sl.sub ?? '')}" placeholder="Ưu đãi tới 30% cho đơn đầu tiên">
+      <div class="grid2">
+        <div><label>Chữ trên nút</label><input name="button_label_${i}" maxlength="40" value="${esc(sl.button_label ?? '')}" placeholder="Mua ngay"></div>
+        <div><label>Liên kết nút</label><input name="button_link_${i}" maxlength="300" value="${esc(sl.button_link ?? '')}" placeholder="/ hoặc https://…"></div>
+      </div>
+    </div>`;
+  }).join('');
+  const bannerForm = `<form method="POST" action="/shops/${esc(ctx.shopId)}/theme/banner" enctype="multipart/form-data" style="margin-top:16px">
+    <div class="card"><h2 style="margin-top:0">Banner trang chủ (ảnh tự tải)</h2>
+      <p class="muted" style="font-size:.85rem;margin:0">Tải tối đa ${BANNER_ROWS} ảnh banner riêng cho dải đầu trang. <strong>Có ít nhất 1 banner → thay carousel tự động</strong> (ảnh phủ kín + chữ + nút). Bỏ trống tất cả = dùng hero tự động (chữ + ảnh sản phẩm). Ảnh được nén WebP, tối đa 10MB mỗi ảnh.</p>
+    </div>
+    ${bannerRows}
+    <div class="card actions"><button class="btn" type="submit">Lưu banner</button></div>
+  </form>`;
   return layout('Giao diện', ctx, `<h1>Giao diện cửa hàng</h1>
     ${notice ? `<div class="card" style="border-color:#93c5fd;background:#eff6ff;color:#1e40af">${esc(notice)}</div>` : ''}
     <form method="POST" action="/shops/${esc(ctx.shopId)}/theme">
@@ -354,7 +384,8 @@ export function renderTheme(ctx, theme, notice) {
       <div class="card actions"><button class="btn" type="submit">Lưu giao diện</button>
         <button class="btn alt" type="submit" name="reset" value="1">Khôi phục mặc định</button>
         <a class="btn alt" href="/shops/${esc(ctx.shopId)}/overview">← Quay lại</a></div>
-    </form>`);
+    </form>
+    ${bannerForm}`);
 }
 
 // Cài đặt / Hồ sơ cửa hàng (shop.write = owner/admin). Tên + liên hệ + địa chỉ.
@@ -2255,6 +2286,7 @@ const ACTION_LABEL = {
   'media.uploaded': 'Tải ảnh lên', 'media.deleted': 'Xoá ảnh', 'media.reordered': 'Sắp xếp ảnh',
   'media.variant_assigned': 'Gán ảnh cho biến thể',
   'shop.logo_updated': 'Đổi logo shop', 'shop.logo_removed': 'Gỡ logo shop', 'shop.profile_updated': 'Sửa hồ sơ shop',
+  'shop.banner_uploaded': 'Tải ảnh banner trang chủ',
   'theme.updated': 'Đổi giao diện',
   'member.invited': 'Mời nhân sự', 'member.role_changed': 'Đổi vai trò nhân sự', 'member.removed': 'Gỡ nhân sự',
   'domain.added': 'Thêm tên miền', 'domain.primary_changed': 'Đổi tên miền chính', 'domain.revoked': 'Gỡ tên miền',

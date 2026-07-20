@@ -109,15 +109,44 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--pri);box
 .empty{text-align:center;padding:48px 24px;color:var(--mut)}
 a:focus-visible,.btn:focus-visible,button:focus-visible,summary:focus-visible{outline:3px solid var(--pri);outline-offset:2px;border-radius:8px}
 .pay input:focus-visible{outline:3px solid var(--pri);outline-offset:2px}
+/* Checkout 2 cột: FORM bên trái (.co-main) · TÓM TẮT ĐƠN bên phải (.co-summary, sticky desktop).
+   Tóm tắt đứng TRƯỚC form trong DOM → mobile hiện tóm tắt trên đầu; desktop dùng grid-column đẩy về cột 2.
+   Thuần CSS: không JS → no-JS vẫn 2 cột + form submit bình thường. */
+.wrap.co-wide{max-width:1000px}
+.co-grid{display:grid;grid-template-columns:1.5fr 1fr;gap:22px;align-items:start;margin-top:14px}
+.co-main{grid-column:1;grid-row:1;min-width:0}
+.co-main>form{margin:0}.co-main>form .card:first-child{margin-top:0}
+.co-summary{grid-column:2;grid-row:1;min-width:0;position:sticky;top:74px}
+.co-sumbox{background:var(--card);border:1px solid var(--bd);border-radius:var(--r-lg);box-shadow:var(--sh-sm);overflow:hidden}
+.co-sumbox>summary{list-style:none;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:16px 20px;font-weight:700;letter-spacing:-.01em;cursor:pointer}
+.co-sumbox>summary::-webkit-details-marker{display:none}
+.co-sumbox>summary strong{font-size:1.1rem;font-variant-numeric:tabular-nums}
+.co-sumbody{padding:2px 20px 18px}
+.co-line{display:flex;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid color-mix(in srgb,var(--bd) 65%,transparent)}
+.co-line .cthumb{width:52px;height:52px}
+.co-lmeta{flex:1 1 auto;min-width:0}
+.co-lname{font-weight:600;font-size:.92rem;line-height:1.35}
+.co-lvar{font-size:.82rem;margin-top:1px}
+.co-lqty{font-size:.82rem;margin-top:1px}
+.co-lprice{font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.co-sumbody .tot:first-of-type{padding-top:12px}
+@media(min-width:861px){.co-sumbox>summary{pointer-events:none}}
+@media(max-width:860px){
+  .wrap.co-wide{max-width:640px}
+  .co-grid{grid-template-columns:1fr;gap:14px;margin-top:12px}
+  .co-main,.co-summary{grid-column:1}
+  .co-summary{position:static}
+}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}html{scroll-behavior:auto}}`;
 
-function page(title, shopName, bodyHtml, extraHead = '') {
+// bodyClass: lớp phụ cho <main> (vd 'co-wide' để nới rộng khung cho layout 2 cột checkout).
+function page(title, shopName, bodyHtml, extraHead = '', bodyClass = '') {
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
 <title>${esc(title)}</title>${extraHead}<style>${STYLE}</style></head><body>
 <header class="hdr"><div class="wrap"><a class="brand" href="/">${esc(shopName || 'Cửa hàng')}</a>
 <nav class="hnav"><a href="/checkout/lookup">Tra cứu đơn</a><a href="/cart" class="cart">${I_CART}Giỏ hàng</a></nav></div></header>
-<main class="wrap">${bodyHtml}</main></body></html>`;
+<main class="wrap${bodyClass ? ' ' + bodyClass : ''}">${bodyHtml}</main></body></html>`;
 }
 
 // Mọi thao tác đổi giỏ là POST form (sameOrigin chỉ chặn được POST/PATCH, KHÔNG chặn
@@ -268,33 +297,54 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
       ${honeypot}</div>`;
   }
 
+  // Tóm tắt đơn (chỉ HIỂN THỊ) — mỗi dòng: ảnh thu nhỏ + tên + biến thể + × sl + thành tiền. Ảnh null → ô placeholder.
+  const summaryItems = s.items.map((it) => `<div class="co-line">
+        ${it.image ? `<img class="cthumb" src="${esc(it.image)}" alt="" loading="lazy" width="52" height="52">` : '<div class="cthumb ph"></div>'}
+        <div class="co-lmeta">
+          <div class="co-lname">${esc(it.product_title)}</div>
+          ${it.variant_title ? `<div class="muted co-lvar">${esc(it.variant_title)}</div>` : ''}
+          <div class="muted co-lqty">× ${esc(it.qty)}</div>
+        </div>
+        <div class="co-lprice">${money(it.line_total_vnd)}</div>
+      </div>`).join('');
+
   return page('Thanh toán', shopName, `<h1>Thanh toán</h1>
     ${opts.error ? `<div class="card" style="border-color:#fca5a5;background:#fef2f2;color:#b91c1c"><strong>${esc(opts.error)}</strong></div>` : ''}
-    <div class="card"><h2>Đơn hàng</h2>
-      ${s.items.map((it) => `<div class="tot"><span class="muted">${esc(it.product_title)} × ${it.qty}</span><span>${money(it.line_total_vnd)}</span></div>`).join('')}
-      ${totalsBlock(s)}</div>
-    <form method="POST" action="/checkout/place">
-      <input type="hidden" name="idempotency_key" value="${esc(idemToken)}">
-      <input type="hidden" name="ct" value="${esc(opts.formTs ?? '')}">
-      <input type="hidden" name="ship_seen" value="${s.ship_out_of_range ? '' : Number(s.shipping_vnd)}">
-      <input type="hidden" name="subtotal_seen" value="${Number(s.subtotal_vnd)}">
-      ${opts.bn ? '<input type="hidden" name="bn" value="1">' : ''}
-      <input type="hidden" name="lat" id="f-lat" value="${v(pf.lat)}">
-      <input type="hidden" name="lng" id="f-lng" value="${v(pf.lng)}">
-      ${recipient}
-      <div class="card pay"><h2>Thanh toán</h2>
-        <label><input type="radio" name="payment_method" value="cod"${pm === 'cod' ? ' checked' : ''}> Thanh toán khi nhận hàng (COD)</label>
-        ${qrOn ? `<label><input type="radio" name="payment_method" value="qr"${pm === 'qr' ? ' checked' : ''}> Chuyển khoản QR (VietQR)</label>` : ''}
+    <div class="co-grid">
+      <aside class="co-summary">
+        <details open class="co-sumbox">
+          <summary><span>Đơn hàng</span><strong>${s.ship_out_of_range ? '—' : money(s.total_vnd)}</strong></summary>
+          <div class="co-sumbody">
+            ${summaryItems}
+            ${totalsBlock(s)}
+          </div>
+        </details>
+      </aside>
+      <div class="co-main">
+        <form method="POST" action="/checkout/place">
+          <input type="hidden" name="idempotency_key" value="${esc(idemToken)}">
+          <input type="hidden" name="ct" value="${esc(opts.formTs ?? '')}">
+          <input type="hidden" name="ship_seen" value="${s.ship_out_of_range ? '' : Number(s.shipping_vnd)}">
+          <input type="hidden" name="subtotal_seen" value="${Number(s.subtotal_vnd)}">
+          ${opts.bn ? '<input type="hidden" name="bn" value="1">' : ''}
+          <input type="hidden" name="lat" id="f-lat" value="${v(pf.lat)}">
+          <input type="hidden" name="lng" id="f-lng" value="${v(pf.lng)}">
+          ${recipient}
+          <div class="card pay"><h2>Thanh toán</h2>
+            <label><input type="radio" name="payment_method" value="cod"${pm === 'cod' ? ' checked' : ''}> Thanh toán khi nhận hàng (COD)</label>
+            ${qrOn ? `<label><input type="radio" name="payment_method" value="qr"${pm === 'qr' ? ' checked' : ''}> Chuyển khoản QR (VietQR)</label>` : ''}
+          </div>
+          ${ch ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb"><h2>Xác minh</h2>
+            <p class="muted">Để chống đặt hàng tự động, vui lòng trả lời: <strong>${esc(ch.a)} + ${esc(ch.b)} = ?</strong></p>
+            <input type="hidden" name="challenge_sig" value="${esc(ch.sig)}">
+            <input name="challenge_answer" required inputmode="numeric" maxlength="4" style="max-width:120px" placeholder="Kết quả">
+          </div>` : ''}
+          <div class="checkout-submit"><button class="btn" type="submit">Đặt hàng · ${money(s.total_vnd)}</button></div>
+        </form>
+        <a class="btn alt" href="${opts.bn ? '/' : '/cart'}" style="margin-top:8px">${opts.bn ? 'Tiếp tục mua sắm' : 'Quay lại giỏ'}</a>
       </div>
-      ${ch ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb"><h2>Xác minh</h2>
-        <p class="muted">Để chống đặt hàng tự động, vui lòng trả lời: <strong>${esc(ch.a)} + ${esc(ch.b)} = ?</strong></p>
-        <input type="hidden" name="challenge_sig" value="${esc(ch.sig)}">
-        <input name="challenge_answer" required inputmode="numeric" maxlength="4" style="max-width:120px" placeholder="Kết quả">
-      </div>` : ''}
-      <div class="checkout-submit"><button class="btn" type="submit">Đặt hàng · ${money(s.total_vnd)}</button></div>
-    </form>
-    <a class="btn alt" href="${opts.bn ? '/' : '/cart'}" style="margin-top:8px">${opts.bn ? 'Tiếp tục mua sắm' : 'Quay lại giỏ'}</a>
-    ${opts.gps ? gpsScript(opts.nonce) : ''}`);
+    </div>
+    ${opts.gps ? gpsScript(opts.nonce) : ''}`, '', 'co-wide');
 }
 
 // Lớp JS GPS first-party (1 khối <script nonce>, không framework/không phụ thuộc ngoài). XSS-SAFE:

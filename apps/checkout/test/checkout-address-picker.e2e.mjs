@@ -112,6 +112,18 @@ async function main() {
     ? ok('picker: 2 địa chỉ đã lưu + "Giao tới địa chỉ khác"') : bad('không hiện picker', fm.body.slice(0, 200));
   fm.body.includes('Mặc định') ? ok('địa chỉ mặc định có nhãn "Mặc định"') : bad('thiếu nhãn mặc định');
 
+  sect('1b. Layout 2 cột: khung .co-grid + tóm tắt đơn có ảnh/placeholder mỗi dòng + đủ hidden fields');
+  fm.body.includes('class="co-grid"') && fm.body.includes('class="co-summary"') && fm.body.includes('class="co-main"')
+    ? ok('khung 2 cột .co-grid / .co-main / .co-summary') : bad('thiếu khung 2 cột', fm.body.slice(0, 200));
+  // Mỗi dòng tóm tắt có ảnh (<img class="cthumb") HOẶC placeholder (cthumb ph) — SP seed không ảnh → placeholder.
+  (fm.body.includes('class="cthumb"') || fm.body.includes('class="cthumb ph"')) && fm.body.includes('class="co-line"')
+    ? ok('tóm tắt đơn: mỗi dòng có ảnh thu nhỏ hoặc placeholder') : bad('tóm tắt thiếu ảnh/placeholder', fm.body.slice(0, 200));
+  // Hidden fields đường tiền/idempotency/anti-bot vẫn còn nguyên trong form.
+  ['idempotency_key', 'ct', 'ship_seen', 'subtotal_seen', 'lat', 'lng'].every((n) => fm.body.includes(`name="${n}"`))
+    ? ok('đủ hidden fields (idempotency_key/ct/ship_seen/subtotal_seen/lat/lng)') : bad('thiếu hidden field', fm.body.slice(0, 300));
+  fm.body.includes('action="/checkout/place"') && fm.body.includes('name="company"')
+    ? ok('POST target /checkout/place + honeypot company còn nguyên') : bad('thiếu POST target hoặc honeypot');
+
   sect('2. Chọn địa chỉ đã lưu → đơn dùng ĐÚNG tên/SĐT/địa chỉ đó (không gõ tay)');
   await sleep(2600);
   let r = await hreq(A.host, 'POST', '/checkout/place', { form: { idempotency_key: fm.idem, ct: fm.ct, address_choice: addr2, payment_method: 'cod' }, cartTok: fm.cart, custTok: cust.custTok });

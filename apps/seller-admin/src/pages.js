@@ -4,6 +4,7 @@
  */
 import { esc } from './http.js';
 import { PROVINCES } from './provinces.js';
+import { presetChoices } from '../presets.js';
 
 const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + '₫';
 const dt = (s) => { try { return new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(s)); } catch { return esc(s); } };
@@ -390,6 +391,19 @@ export function renderTheme(ctx, theme, notice, linkTargets = {}) {
   </form>`;
   return layout('Giao diện', ctx, `<h1>Giao diện cửa hàng</h1>
     ${notice ? `<div class="card" style="border-color:#93c5fd;background:#eff6ff;color:#1e40af">${esc(notice)}</div>` : ''}
+    <form method="GET" action="/shops/${esc(ctx.shopId)}/theme/preset">
+      <div class="card" style="border-color:#c7d2fe;background:#f5f7ff">
+        <h2 style="margin-top:0">Đổi giao diện theo ngành</h2>
+        <p class="muted" style="font-size:.85rem;margin-top:0">Chọn một mẫu ngành để đổi <strong>màu sắc + bố cục + chữ mẫu</strong> trang chủ chỉ với một cú bấm. <strong>Ảnh banner và sản phẩm đã tải sẽ được giữ nguyên.</strong> Bạn sẽ xem trước trước khi áp.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin:6px 0 12px">
+          ${presetChoices().map((p) => `<label style="display:flex;gap:10px;align-items:flex-start;border:1px solid #dbe1f0;border-radius:10px;padding:11px 13px;cursor:pointer;background:#fff">
+            <input type="radio" name="preset" value="${esc(p.slug)}" required style="width:auto;margin-top:3px">
+            <span><span style="font-weight:600;display:block">${esc(p.name)}</span><span class="muted" style="font-size:.8rem">${esc(p.description)}</span></span>
+          </label>`).join('')}
+        </div>
+        <button class="btn" type="submit">Xem trước &amp; áp mẫu →</button>
+      </div>
+    </form>
     <form method="POST" action="/shops/${esc(ctx.shopId)}/theme">
       <div class="card"><h2 style="margin-top:0">Màu sắc thương hiệu</h2>
         <p class="muted" style="font-size:.85rem;margin-top:0"><strong>Màu chủ đạo</strong> dùng làm nền banner + thanh thông báo (chữ trắng) → nên chọn <strong>màu đậm/tối</strong> để chữ rõ. Màu quá sáng sẽ khó đọc.</p>
@@ -433,6 +447,45 @@ export function renderTheme(ctx, theme, notice, linkTargets = {}) {
         <a class="btn alt" href="/shops/${esc(ctx.shopId)}/overview">← Quay lại</a></div>
     </form>
     ${bannerForm}`);
+}
+
+// Màn XÁC NHẬN áp preset ngành (no-JS): tên mẫu + bảng màu xem trước + thứ tự section +
+// cảnh báo GIỮ ảnh. 2 nút: Áp mẫu (POST /theme/preset) / Huỷ (về Giao diện). Nhãn nói rõ
+// "giữ banner" để chủ shop KHÔNG mất ảnh ngoài ý muốn (khác hẳn nút "Khôi phục mặc định").
+export function renderPresetConfirm(ctx, slug, preset) {
+  const t = preset.tokens ?? {};
+  const swatch = (key, label) => {
+    const v = String(t[key] ?? '');
+    return /^#[0-9a-fA-F]{6}$/.test(v)
+      ? `<div style="text-align:center"><div style="width:100%;height:40px;border-radius:8px;border:1px solid #e5e7eb;background:${esc(v)}"></div><div class="muted" style="font-size:.75rem;margin-top:4px">${esc(label)}</div></div>`
+      : '';
+  };
+  const SECT_VI = { hero: 'Dải hero', features: '4 cam kết', collections: 'Bộ sưu tập', product_grid: 'Lưới sản phẩm', blog: 'Bài viết', story: 'Câu chuyện' };
+  const sections = (Array.isArray(preset.layout) ? preset.layout : [])
+    .map((s) => s.section).filter((s) => s !== 'header' && s !== 'footer');
+  return layout('Xem trước mẫu', ctx, `
+    <a class="muted" href="/shops/${esc(ctx.shopId)}/theme">← Giao diện</a>
+    <h1>Áp mẫu “${esc(preset.name)}”</h1>
+    <div class="card">
+      <p class="muted" style="margin-top:0">${esc(preset.description)}</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(70px,1fr));gap:12px;margin:14px 0">
+        ${swatch('color.primary', 'Chủ đạo')}${swatch('color.accent', 'Nhấn')}${swatch('color.bg', 'Nền')}${swatch('color.surface', 'Nền phụ')}${swatch('color.hero-bg', 'Dải hero')}${swatch('color.text', 'Chữ')}
+      </div>
+      <div class="muted" style="font-size:.88rem">Bố cục trang chủ: ${sections.map((s) => esc(SECT_VI[s] ?? s)).join(' · ')}</div>
+    </div>
+    <div class="card" style="border-color:#fcd34d;background:#fffbeb">
+      <p style="margin:0"><strong>Khi áp mẫu này:</strong></p>
+      <ul style="margin:8px 0 0;padding-left:20px;font-size:.92rem;line-height:1.6">
+        <li>Đổi <strong>toàn bộ màu sắc, bố cục và chữ mẫu</strong> trang chủ theo mẫu ${esc(preset.name)}.</li>
+        <li><strong>Giữ nguyên</strong> ảnh banner đã tải, logo cửa hàng, và toàn bộ sản phẩm.</li>
+        <li>Bạn vẫn chỉnh tay lại mọi thứ trong trang Giao diện sau khi áp.</li>
+      </ul>
+    </div>
+    <form method="POST" action="/shops/${esc(ctx.shopId)}/theme/preset" class="card actions">
+      <input type="hidden" name="preset" value="${esc(slug)}">
+      <button class="btn" type="submit">Áp mẫu — giữ banner của tôi</button>
+      <a class="btn alt" href="/shops/${esc(ctx.shopId)}/theme">Huỷ</a>
+    </form>`);
 }
 
 // Cài đặt / Hồ sơ cửa hàng (shop.write = owner/admin). Tên + liên hệ + địa chỉ.

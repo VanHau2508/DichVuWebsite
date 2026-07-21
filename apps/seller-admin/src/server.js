@@ -13,6 +13,7 @@ import crypto from 'node:crypto';
 import { parseCookies, readForm, readFormAll, readMultipartFile, readMultipartFiles, readMultipartAll, sendHtml, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
 import { authApi, sellerApi, platformApi, sellerUpload, sellerDownload, loadSession } from './api.js';
 import * as V from './pages.js';
+import { getPreset } from '../presets.js';
 import { runReq, makeLog, health } from './obs.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
@@ -1864,7 +1865,7 @@ async function domainStepUp(req, res, me, cookie, shopId) {
 // `return handler(...)` trần sẽ THOÁT try/catch (rejection nằm ngoài scope) → treo
 // request / unhandledRejection. Bọc `await handle(...)` để catch bắt được mọi lỗi.
 // ── Giao diện (theme.write = owner/admin; storefront sanitize khi render) ─────
-async function themePage(res, me, cookie, shopId, ok) {
+async function themePage(res, me, cookie, shopId, ok, applied) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'theme');
   // Kèm danh mục + trang CMS thật → ô liên kết (nav/banner) thành SELECT đích có sẵn
@@ -1879,7 +1880,50 @@ async function themePage(res, me, cookie, shopId, ok) {
     categories: catR.status === 200 ? (catR.json?.categories ?? []) : [],
     pages: pgR.status === 200 ? (pgR.json?.pages ?? []) : [],
   };
-  return sendHtml(res, 200, V.renderTheme(ctx, theme, ok === '1' ? 'Đã lưu — mở trang bán hàng để xem thay đổi.' : null, linkTargets));
+  const ap = applied ? getPreset(applied) : null;
+  const notice = ap
+    ? `Đã áp mẫu “${ap.name}” — màu sắc, bố cục và chữ mẫu đã đổi; banner, logo và sản phẩm giữ nguyên. Mở trang bán hàng để xem.`
+    : (ok === '1' ? 'Đã lưu — mở trang bán hàng để xem thay đổi.' : null);
+  return sendHtml(res, 200, V.renderTheme(ctx, theme, notice, linkTargets));
+}
+
+// Áp PRESET ngành (hệ preset): đổi màu + bố cục + chữ mẫu nhưng GIỮ ảnh banner đã upload.
+// GET /theme/preset?preset=<slug> = màn XÁC NHẬN (không side-effect); POST = áp thật.
+async function presetConfirmPage(res, me, cookie, shopId, slug) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const preset = getPreset(String(slug ?? ''));
+  if (!preset) return redirect(res, `/shops/${shopId}/theme`);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'theme');
+  return sendHtml(res, 200, V.renderPresetConfirm(ctx, String(slug), preset));
+}
+async function applyPreset(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const slug = String(f.preset ?? '');
+  const preset = getPreset(slug);
+  if (!preset) return redirect(res, `/shops/${shopId}/theme?ok=0`);
+  // GIỮ ẢNH: trong layout, CHỈ props.slides mang media do shop upload (banner). Logo ở bảng
+  // shops (không đụng). Gom slides từ theme HIỆN TẠI theo section-key rồi chép sang layout
+  // preset → áp mẫu KHÔNG nuốt banner. Seller validateBannerInLayout kiểm key thuộc shop lần cuối.
+  const cur = await sellerApi('GET', `/shops/${shopId}/theme`, { cookie });
+  const curLayout = cur.status === 200 && Array.isArray(cur.json?.layout) ? cur.json.layout : [];
+  const savedSlides = new Map();
+  for (const s of curLayout) {
+    if (s && typeof s === 'object' && Array.isArray(s.props?.slides) && s.props.slides.length && !savedSlides.has(s.section)) {
+      savedSlides.set(s.section, s.props.slides);
+    }
+  }
+  const layout = preset.layout.map((s) => ({ section: s.section, props: { ...(s.props ?? {}) } }));
+  for (const s of layout) if (savedSlides.has(s.section)) s.props.slides = savedSlides.get(s.section);
+  // Phòng thủ: preset thiếu hero mà shop có banner → chèn hero ngay sau header (không mất ảnh).
+  if (savedSlides.has('hero') && !layout.some((s) => s.section === 'hero')) {
+    const hi = layout.findIndex((s) => s.section === 'header');
+    layout.splice(hi >= 0 ? hi + 1 : 0, 0, { section: 'hero', props: { slides: savedSlides.get('hero') } });
+  }
+  const tokens = { ...preset.tokens };
+  delete tokens['font.body']; delete tokens['font.heading']; // CSP chặn font ngoài — giữ Be Vietnam Pro
+  const r = await sellerApi('PUT', `/shops/${shopId}/theme`, { cookie, body: { tokens, layout } });
+  return redirect(res, r.status === 200 ? `/shops/${shopId}/theme?applied=${slug}` : `/shops/${shopId}/theme?ok=0`);
 }
 async function themeSave(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -2557,8 +2601,10 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/logo/remove$`).exec(p)) && req.method === 'POST') return logoRemove(res, me, cookie, m[1]);
 
     // Giao diện (theme.write = owner/admin).
-    if ((m = new RegExp(`^/shops/${UUID}/theme$`).exec(p)) && req.method === 'GET') return themePage(res, me, cookie, m[1], url.searchParams.get('ok'));
+    if ((m = new RegExp(`^/shops/${UUID}/theme$`).exec(p)) && req.method === 'GET') return themePage(res, me, cookie, m[1], url.searchParams.get('ok'), url.searchParams.get('applied'));
     if ((m = new RegExp(`^/shops/${UUID}/theme$`).exec(p)) && req.method === 'POST') return themeSave(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/theme/preset$`).exec(p)) && req.method === 'GET') return presetConfirmPage(res, me, cookie, m[1], url.searchParams.get('preset'));
+    if ((m = new RegExp(`^/shops/${UUID}/theme/preset$`).exec(p)) && req.method === 'POST') return applyPreset(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/theme/banner$`).exec(p)) && req.method === 'POST') return bannerSave(req, res, me, cookie, m[1]);
 
     return sendHtml(res, 404, V.renderError({ user: me }, 'Không tìm thấy trang.'));

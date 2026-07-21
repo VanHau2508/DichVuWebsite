@@ -144,16 +144,16 @@ function productCards(products) {
     const quickAdd = !p.has_options && p.default_variant_id && !out;
     const img2 = p.image2 ? `<img class="card-img2" src="${esc(p.image2)}" alt="" loading="lazy" aria-hidden="true">` : '';
     const media = `<a class="card-media" href="${href}" aria-label="${esc(p.title)}">${out ? '<span class="soldout-tag">Hết hàng</span>' : ''}${p.image ? `<img class="card-img1" src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy">` : `<span class="ph">${I_IMG}</span>`}${img2}</a>`;
-    const addBtn = quickAdd
-      ? `<form class="card-add-form" method="POST" action="/cart/add"><input type="hidden" name="variant_id" value="${esc(p.default_variant_id)}"><input type="hidden" name="qty" value="1"><button class="card-add" type="submit">${I_CART}<span>Thêm vào giỏ</span></button></form>`
-      : `<a class="card-add" href="${href}">${I_CART}<span>Thêm vào giỏ</span></a>`;
-    const actions = out ? '' : `<div class="card-actions">
-            <a class="card-qv" href="${href}" aria-label="Xem nhanh ${esc(p.title)}">${I_EYE}</a>
-            ${addBtn}
-          </div>`;
+    // Kiểu MẪU: "Xem nhanh" NỔI GIỮA ảnh khi hover; "Thêm vào giỏ" xuống THÂN thẻ, LUÔN hiện.
+    const qv = out ? '' : `<div class="card-qvwrap"><a class="card-qv" href="${href}" aria-label="Xem nhanh ${esc(p.title)}">Xem nhanh</a></div>`;
+    const addBtn = out
+      ? `<span class="card-add card-add-out">Hết hàng</span>`
+      : quickAdd
+        ? `<form class="card-add-form" method="POST" action="/cart/add"><input type="hidden" name="variant_id" value="${esc(p.default_variant_id)}"><input type="hidden" name="qty" value="1"><button class="card-add" type="submit">${I_CART}<span>Thêm vào giỏ</span></button></form>`
+        : `<a class="card-add" href="${href}">${I_CART}<span>Thêm vào giỏ</span></a>`;
     return `<div class="card${out ? ' is-out' : ''}">
-          <div class="card-thumb">${media}${actions}</div>
-          <div class="card-body"><a class="name" href="${href}">${esc(p.title)}</a><div class="price">${priceLine(p.price_vnd, p.sale_price_vnd, p.sale_off_pct, p.compare_at_vnd)}</div></div>
+          <div class="card-thumb">${media}${qv}</div>
+          <div class="card-body"><a class="name" href="${href}">${esc(p.title)}</a><div class="price">${priceLine(p.price_vnd, p.sale_price_vnd, p.sale_off_pct, p.compare_at_vnd)}</div>${addBtn}</div>
         </div>`;
   }).join('');
 }
@@ -688,14 +688,62 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .chip:hover{border-color:var(--color-primary);color:var(--color-primary);background:color-mix(in srgb,var(--color-primary) 8%,var(--color-bg));box-shadow:0 6px 16px -8px color-mix(in srgb,var(--color-primary) 45%,transparent)}
 /* Chip ĐANG CHỌN (bộ lọc danh mục /products) — đồng bộ ngôn ngữ với .sort-link.on. */
 .chip.on{border-color:var(--color-primary);background:var(--color-hero-bg);color:color-mix(in srgb,var(--color-primary) 82%,#000);font-weight:700}
-/* Trang /products: chip + thanh sort/lọc CĂN GIỮA (bớt thô, đúng nhịp MAISON). */
-.chips-center{justify-content:center}
-.products-h{justify-content:center;text-align:center}
-.products-h .section-h-l{width:100%}
-.products-title{margin:0 0 4px;font-size:clamp(1.5rem,2.8vw,2.1rem);font-weight:800;letter-spacing:-.02em}
-.products-h .muted{margin:0;font-size:.9rem}
-.products-toolbar{display:flex;flex-direction:column;align-items:center;gap:4px;margin:0 0 24px}
-.products-toolbar .sortbar,.products-toolbar .filterbar{justify-content:center;margin:0 0 10px}
+/* Tiêu đề trang /products (redesign: bố cục 2 cột — sidebar TRÁI + lưới PHẢI, xem .pf-* dưới). */
+.products-title{margin:0;font-size:clamp(1.5rem,2.8vw,2.1rem);font-weight:800;letter-spacing:-.02em}
+/* ── /products: bố cục 2 cột kiểu cửa hàng cao cấp — sidebar bộ lọc TRÁI + lưới SP PHẢI ──
+   Tất cả no-JS: sidebar = <details open> (desktop luôn mở, ẩn summary; mobile gập được) chứa
+   các FORM GET + link. Mỗi form/link mang theo tham số còn lại (cat/q/sort/lọc) → không rơi. */
+.pf-title-row{margin:0 0 22px}
+.pf-title-row .products-title{margin:0}
+.pf-layout{display:grid;grid-template-columns:272px minmax(0,1fr);gap:32px;align-items:start}
+.pf-side{border:1px solid var(--color-border);border-radius:var(--r-lg);background:var(--color-bg);box-shadow:var(--sh-sm);overflow:hidden;position:sticky;top:88px}
+.pf-toggle{display:none;align-items:center;gap:10px;padding:16px 20px;font-family:var(--font-heading);font-weight:800;font-size:1.02rem;letter-spacing:-.01em;color:var(--color-text);cursor:pointer;list-style:none}
+.pf-toggle::-webkit-details-marker{display:none}
+.pf-toggle svg{width:19px;height:19px;color:var(--color-primary)}
+.pf-toggle .pf-caret{margin-left:auto;transition:transform .2s;color:var(--color-muted)}
+.pf-side[open] .pf-toggle .pf-caret{transform:rotate(180deg)}
+.pf-body{display:flex;flex-direction:column;gap:22px;padding:20px}
+.pf-group{display:flex;flex-direction:column;gap:10px}
+.pf-h{margin:0;font-size:.74rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--color-muted)}
+/* Ô tìm trong sidebar */
+.pf-search{display:flex;gap:6px;align-items:center;border:1px solid var(--color-border);border-radius:var(--pill);padding:4px 4px 4px 14px;background:var(--color-bg);transition:border-color .15s,box-shadow .15s}
+.pf-search:focus-within{border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 20%,transparent)}
+.pf-search input{flex:1;min-width:0;border:0;background:none;font-family:inherit;font-size:.92rem;color:var(--color-text);padding:8px 0}
+.pf-search input:focus{outline:none}
+.pf-search button{flex:0 0 auto;width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:var(--pill);background:var(--color-primary);color:#fff;cursor:pointer}
+.pf-search button svg{width:17px;height:17px}
+/* Danh mục = danh sách lọc dọc, mục đang chọn tô đậm */
+.pf-cats{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.pf-cat{display:block;padding:9px 12px;border-radius:var(--r);font-size:.92rem;color:var(--color-muted);transition:background .15s,color .15s}
+.pf-cat:hover{background:var(--color-hero-bg);color:var(--color-primary)}
+.pf-cat.on{background:var(--color-hero-bg);color:color-mix(in srgb,var(--color-primary) 82%,#000);font-weight:700}
+/* Còn hàng + khoảng giá */
+.pf-filter{display:flex;flex-direction:column;gap:22px;margin:0}
+.pf-chk{display:inline-flex;align-items:center;gap:8px;color:var(--color-text);font-size:.92rem;cursor:pointer}
+.pf-chk input{accent-color:var(--color-primary);width:17px;height:17px}
+.pf-price{display:flex;align-items:center;gap:8px}
+.pf-num{width:100%;min-width:0;padding:9px 12px;border:1px solid var(--color-border);border-radius:var(--r);font-size:.88rem;font-family:inherit;background:var(--color-bg);color:var(--color-text)}
+.pf-num:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 20%,transparent)}
+.pf-dash{color:var(--color-muted);flex:0 0 auto}
+.pf-apply{margin-top:12px;padding:10px 18px;border:1px solid color-mix(in srgb,var(--color-primary) 55%,var(--color-border));border-radius:var(--pill);background:var(--color-bg);color:var(--color-primary);font-weight:700;font-size:.9rem;font-family:inherit;cursor:pointer;transition:background .15s,border-color .15s}
+.pf-apply:hover{background:color-mix(in srgb,var(--color-primary) 8%,var(--color-bg));border-color:var(--color-primary)}
+/* Cột phải: hàng đầu (đếm SP + sắp xếp) rồi lưới 3 cột */
+.pf-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:0 0 20px;padding-bottom:16px;border-bottom:1px solid var(--color-border)}
+.pf-count{margin:0;color:var(--color-muted);font-size:.92rem;font-weight:600}
+.pf-count{font-variant-numeric:tabular-nums}
+.pf-head .sortbar{margin:0}
+/* Chỉ định .pf-main .pf-grid (specificity > .grid) → luôn thắng rule .grid mobile dùng chung. */
+.pf-main .pf-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+/* Tablet hẹp: lưới cột phải về 2 cột (sidebar vẫn còn) */
+@media(max-width:1100px){.pf-layout{grid-template-columns:232px minmax(0,1fr);gap:24px}.pf-main .pf-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* <=860: sidebar GẬP thành <details> nằm TRÊN lưới (summary "Bộ lọc"), lưới full-width 2 cột */
+@media(max-width:860px){
+  .pf-layout{grid-template-columns:1fr;gap:20px}
+  .pf-side{position:static;margin:0 0 4px}
+  .pf-toggle{display:flex}
+  .pf-side:not([open]) .pf-body{display:none}
+  .pf-main .pf-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 /* Nút "Xem thêm" TO, căn giữa dưới lưới nổi bật trang chủ → /products. */
 .grid-more{display:flex;justify-content:center;margin:34px 0 4px}
 .btn-more{min-height:54px;padding:14px 46px;font-size:1.05rem;font-weight:700;letter-spacing:.01em}
@@ -715,11 +763,15 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .hblog-body p{margin:0;color:var(--color-muted);font-size:.88rem;line-height:1.6;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .hblog-more{margin-top:auto;padding-top:8px;color:var(--color-primary);font-weight:700;font-size:.88rem}
 .hblog-more:hover{text-decoration:underline}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:22px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:24px}
+/* Lưới SP nổi bật + trang danh mục (#san-pham): 3 cột thoáng như mẫu → 2 (tablet) → 1 (mobile). */
+#san-pham .grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:28px}
+@media(max-width:960px){#san-pham .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}}
+@media(max-width:560px){#san-pham .grid{grid-template-columns:1fr}}
 .empty{color:var(--color-muted);padding:28px 0;text-align:center}
 .features{background:var(--color-surface);border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border)}
 .features .wrap{padding:36px 20px}
-.feat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:26px}
+.feat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:26px}
 .feat-item{display:flex;align-items:flex-start;gap:14px}
 .feat-ic{flex:0 0 auto;width:46px;height:46px;border-radius:var(--pill);background:var(--color-bg);color:var(--color-primary);display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px var(--color-border)}
 .feat-ic svg{width:23px;height:23px}
@@ -785,29 +837,34 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
    lớp phủ LUÔN hiện (không có trạng thái hover). Chuyển động do rule reduced-motion toàn cục tắt. */
 .card{position:relative;display:flex;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--sh-sm);transition:transform .3s cubic-bezier(.2,.7,.2,1),box-shadow .3s,border-color .3s}
 .card:hover{transform:translateY(-6px);border-color:color-mix(in srgb,var(--color-primary) 30%,var(--color-border));box-shadow:var(--sh-lg)}
-.card-thumb{position:relative;aspect-ratio:1;background:var(--color-surface);overflow:hidden}
+/* Khung SP kiểu mẫu: nền sáng sạch + ảnh hiện TRỌN (contain) có ĐỆM → sản phẩm "nổi" trong khung. */
+.card-thumb{position:relative;aspect-ratio:1/1;background:var(--color-surface);overflow:hidden}
 .card-media{position:absolute;inset:0;display:block}
-.card-media img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:transform .6s cubic-bezier(.2,.7,.2,1),opacity .45s ease}
+.card-media img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;transition:transform .5s cubic-bezier(.2,.7,.2,1),opacity .45s ease}
 .card-img2{opacity:0}
 .card:hover .card-img2{opacity:1}
 .card:hover .card-media img{transform:scale(1.05)}
 .card-media .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#c9c5bd}.card-media .ph svg{width:34px;height:34px}
-/* Lớp phủ hành-động — ANH EM của <a.card-media> (không lồng trong link → HTML hợp lệ). */
-.card-actions{position:absolute;left:0;right:0;bottom:0;z-index:2;display:flex;align-items:center;gap:8px;padding:10px;opacity:0;transform:translateY(10px);transition:opacity .3s cubic-bezier(.2,.7,.2,1),transform .3s cubic-bezier(.2,.7,.2,1);background:linear-gradient(to top,color-mix(in srgb,var(--color-primary) 20%,transparent),transparent)}
-.card:hover .card-actions{opacity:1;transform:none}
-.card-qv{flex:0 0 auto;width:42px;height:42px;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--pill);background:var(--color-bg);color:var(--color-text);box-shadow:var(--sh-sm);transition:background .15s,color .15s}
-.card-qv:hover{background:var(--color-primary);color:#fff}
-.card-qv svg{width:19px;height:19px}
-.card-add-form{flex:1;display:flex;margin:0}
-.card-add{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:42px;padding:0 14px;border:0;border-radius:var(--pill);background:var(--color-primary);color:#fff;font-family:inherit;font-size:.85rem;font-weight:700;letter-spacing:.01em;cursor:pointer;box-shadow:var(--sh-sm);transition:background .15s,transform .12s}
-.card-add:hover{background:var(--color-primary-dark)}
+/* "Xem nhanh" NỔI GIỮA ảnh khi hover (kiểu mẫu shop cao cấp) — ANH EM của <a.card-media>. */
+.card-qvwrap{position:absolute;inset:0;z-index:2;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .3s cubic-bezier(.2,.7,.2,1);pointer-events:none}
+.card:hover .card-qvwrap{opacity:1}
+.card-qv{pointer-events:auto;display:inline-flex;align-items:center;justify-content:center;padding:11px 26px;border-radius:var(--pill);background:var(--color-bg);color:var(--color-text);font-weight:700;font-size:.86rem;letter-spacing:.01em;box-shadow:var(--sh);transition:background .15s,color .15s,transform .12s;text-decoration:none}
+.card-qv:hover{background:var(--color-primary);color:#fff;transform:translateY(-1px)}
+/* "Thêm vào giỏ" trong THÂN thẻ — LUÔN hiện, rộng hết thẻ, canh ĐÁY để đều hàng (như mẫu). */
+.card-body>.card-add-form,.card-body>.card-add{margin-top:auto}
+.card-add-form{display:flex;width:100%;margin:0}
+.card-add{flex:1;width:100%;display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:44px;padding:0 14px;border:0;border-radius:var(--pill);background:var(--color-primary);color:#fff;font-family:inherit;font-size:.88rem;font-weight:700;letter-spacing:.01em;cursor:pointer;box-shadow:var(--sh-sm);transition:background .15s,transform .12s;text-decoration:none}
+.card-add:hover{background:var(--color-primary-dark);transform:translateY(-1px)}
 .card-add:active{transform:translateY(1px)}
 .card-add svg{width:17px;height:17px}
-@media(hover:none){.card-actions{opacity:1;transform:none}}
-.card-body{padding:14px 16px 16px;display:flex;flex-direction:column;gap:6px;flex:1}
-.card .name{font-size:.92rem;color:var(--color-text);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.6em;transition:color .15s}
+.card-add-out{background:var(--color-surface);color:var(--color-muted);cursor:not-allowed;box-shadow:none;pointer-events:none}
+@media(hover:none){.card-qvwrap{display:none}}
+/* Thân thẻ "cao cấp" (tham chiếu shop giày): nhiều khoảng trắng, tên dùng font tiêu đề,
+   giá nổi bật màu nhấn. */
+.card-body{padding:16px 18px 20px;display:flex;flex-direction:column;gap:7px;flex:1}
+.card .name{font-family:var(--font-heading);font-weight:600;font-size:.98rem;color:var(--color-text);line-height:1.38;letter-spacing:-.01em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.72em;transition:color .15s}
 .card .name:hover{color:var(--color-primary)}
-.card .price{font-weight:800;color:var(--color-text);font-size:1.08rem;letter-spacing:-.01em;font-variant-numeric:tabular-nums;margin-top:auto}
+.card .price{font-weight:800;color:var(--color-primary);font-size:1.12rem;letter-spacing:-.01em;font-variant-numeric:tabular-nums;margin-top:auto}
 .pd{padding:28px 20px 52px}
 .crumb{font-size:.85rem;color:var(--color-muted);margin:0 0 20px}.crumb a:hover{color:var(--color-primary)}
 .pd-grid{display:grid;grid-template-columns:1fr 1fr;gap:44px;align-items:start}
@@ -1356,17 +1413,18 @@ function withHomeSections(layout) {
     out.splice(hi >= 0 ? hi + 1 : 1, 0, { section: 'features', props: {} });
   }
   if (!has('collections')) {
-    // Chèn NGAY TRƯỚC lưới sản phẩm; nếu layout không có product_grid thì bỏ qua
-    // (không nhét collections xuống sau footer).
+    // Chèn NGAY SAU lưới sản phẩm (giữa "Sản phẩm nổi bật" và "Bài viết mới nhất").
+    // Không có product_grid → bỏ qua (không nhét collections xuống sau footer).
     const gi = out.findIndex((s) => s && s.section === 'product_grid');
-    if (gi >= 0) out.splice(gi, 0, { section: 'collections', props: {} });
+    if (gi >= 0) out.splice(gi + 1, 0, { section: 'collections', props: {} });
   }
   if (!has('blog')) {
-    // "Bài viết mới nhất": NGAY SAU lưới sản phẩm (layout cũ lưu trước khi có section này
-    // vẫn tự hiện — mirror cách chèn features/collections). Không có product_grid → trước
-    // footer. Shop chưa có bài published → renderer trả rỗng, vô hại.
+    // "Bài viết mới nhất": SAU khối bộ sưu tập (hoặc ngay sau lưới SP nếu không có
+    // collections). Không có product_grid → trước footer. Chưa có bài → renderer rỗng, vô hại.
+    const ci = out.findIndex((s) => s && s.section === 'collections');
     const gi = out.findIndex((s) => s && s.section === 'product_grid');
-    if (gi >= 0) out.splice(gi + 1, 0, { section: 'blog', props: {} });
+    const at = ci >= 0 ? ci + 1 : (gi >= 0 ? gi + 1 : -1);
+    if (at >= 0) out.splice(at, 0, { section: 'blog', props: {} });
     else {
       const fi = out.findIndex((s) => s && s.section === 'footer');
       out.splice(fi >= 0 ? fi : out.length, 0, { section: 'blog', props: {} });
@@ -1395,39 +1453,79 @@ export function renderHome(ctx, { canonical = null, prevUrl = null, nextUrl = nu
   return page(ctx.shop.name, ctx.theme?.tokens, body, head, ctx.nonce);
 }
 
-/** Trang TẤT CẢ sản phẩm (/products): lưới đầy đủ — chip danh mục là NÚT LỌC tại chỗ
- *  (?cat=<slug>, chủ shop yêu cầu "lọc, không nhảy trang"), thanh sort/lọc căn giữa kiểu
- *  MAISON, pager giữ nguyên. Chip/sort/pager đều mang theo bộ lọc đang áp. */
+/** Trang TẤT CẢ sản phẩm (/products): bố cục 2 cột kiểu cửa hàng cao cấp — SIDEBAR bộ lọc
+ *  bên TRÁI (ô tìm + danh sách danh mục lọc tại chỗ ?cat= + còn-hàng + khoảng giá) và LƯỚI SP
+ *  bên PHẢI (hàng đầu: đếm SP + sắp xếp, rồi lưới 3 cột). Tất cả no-JS: mỗi form/link mang theo
+ *  tham số còn lại (cat/q/sort/lọc) → submit không làm rơi bộ lọc đang áp. Pager giữ nguyên. */
 export function renderProducts(ctx, { canonical = null, prevUrl = null, nextUrl = null, catSlug = null } = {}) {
   const pi = ctx.pageInfo;
-  // Link chip: đổi danh mục = về trang 1 nhưng GIỮ sort + bộ lọc còn-hàng/giá.
-  const chipHref = (cs) => {
+  const query = ctx.query ?? '';
+  const f = pi?.filters ?? {};
+  const sortCur = pi?.sort && pi.sort !== 'new' ? pi.sort : '';
+  // Link danh mục (bộ lọc dọc): đổi danh mục = về trang 1 nhưng GIỮ q + sort + lọc còn-hàng/giá.
+  const catHref = (cs) => {
     const parts = [];
     if (cs) parts.push(`cat=${encodeURIComponent(cs)}`);
-    if (pi?.sort && pi.sort !== 'new') parts.push(`sort=${pi.sort}`);
+    if (query) parts.push(`q=${encodeURIComponent(query)}`);
+    if (sortCur) parts.push(`sort=${sortCur}`);
     parts.push(...filterParts(pi));
     return `/products${parts.length ? `?${parts.join('&')}` : ''}`;
   };
-  const chip = (cs, label) => {
+  const catLink = (cs, label) => {
     const on = (cs ?? null) === (catSlug ?? null);
-    return `<a class="chip${on ? ' on' : ''}" href="${esc(chipHref(cs))}"${on ? ' aria-current="true"' : ''}>${esc(label)}</a>`;
+    return `<li><a class="pf-cat${on ? ' on' : ''}" href="${esc(catHref(cs))}"${on ? ' aria-current="true"' : ''}>${esc(label)}</a></li>`;
   };
-  const chips = ctx.categories.length
-    ? `<div class="chips chips-center">${chip(null, 'Tất cả')}${ctx.categories.map((c) => chip(c.slug, c.name)).join('')}</div>`
-    : '';
-  // Form lọc phải GIỮ ?cat khi submit (GET về /products) — nhét hidden qua filterBar.
-  const catHidden = catSlug ? `<input type="hidden" name="cat" value="${esc(catSlug)}">` : '';
-  const cards = ctx.products.length ? productCards(ctx.products) : '<p class="empty">Chưa có sản phẩm nào trong mục này.</p>';
+  const catList = `<ul class="pf-cats">${catLink(null, 'Tất cả')}${ctx.categories.map((c) => catLink(c.slug, c.name)).join('')}</ul>`;
+  // Ẩn giữ ngữ cảnh cho từng form (no-JS): ô tìm giữ cat+sort+lọc; form lọc giữ cat+q+sort.
+  const hInputs = (pairs) => pairs.filter(([, v]) => v != null && v !== '' && v !== false)
+    .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v === true ? '1' : v)}">`).join('');
+  const searchHidden = hInputs([['cat', catSlug], ['sort', sortCur], ['instock', f.instock], ['pmin', f.pmin], ['pmax', f.pmax]]);
+  const filterHidden = hInputs([['cat', catSlug], ['q', query], ['sort', sortCur]]);
+  // Sidebar bộ lọc — <details open>: desktop luôn mở (CSS ẩn summary), mobile gập được (no-JS).
+  const sidebar = `<details class="pf-side" open>
+        <summary class="pf-toggle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="7" x2="20" y2="7"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="10" y1="17" x2="14" y2="17"/></svg><span>Bộ lọc</span><span class="pf-caret" aria-hidden="true">▾</span></summary>
+        <div class="pf-body">
+          <form class="pf-search" method="GET" action="/products" role="search">${searchHidden}
+            <input name="q" value="${esc(query)}" placeholder="Tìm sản phẩm…" aria-label="Tìm sản phẩm">
+            <button type="submit" aria-label="Tìm">${I_SEARCH}</button>
+          </form>
+          <div class="pf-group">
+            <h3 class="pf-h">Danh mục</h3>
+            ${catList}
+          </div>
+          <form class="pf-filter" method="GET" action="/products">${filterHidden}
+            <div class="pf-group">
+              <h3 class="pf-h">Tình trạng</h3>
+              <label class="pf-chk"><input type="checkbox" name="instock" value="1"${f.instock ? ' checked' : ''}> Còn hàng</label>
+            </div>
+            <div class="pf-group">
+              <h3 class="pf-h">Khoảng giá</h3>
+              <div class="pf-price">
+                <input class="pf-num" name="pmin" inputmode="numeric" value="${f.pmin != null ? f.pmin : ''}" placeholder="Từ (đ)" aria-label="Giá từ (đồng)">
+                <span class="pf-dash">–</span>
+                <input class="pf-num" name="pmax" inputmode="numeric" value="${f.pmax != null ? f.pmax : ''}" placeholder="Đến (đ)" aria-label="Giá đến (đồng)">
+              </div>
+              <button class="pf-apply" type="submit">Áp dụng</button>
+            </div>
+          </form>
+        </div>
+      </details>`;
+  const cards = ctx.products.length ? productCards(ctx.products) : '<p class="empty">Chưa có sản phẩm nào phù hợp.</p>';
+  const count = pi ? Number(pi.total) : ctx.products.length;
   const body = `${SECTIONS.header({}, ctx)}
     <main class="wrap section" id="san-pham">
-      <div class="section-h products-h"><div class="section-h-l"><h1 class="products-title">Tất cả sản phẩm</h1>${pi ? `<p class="muted">${esc(String(pi.total))} sản phẩm</p>` : ''}</div></div>
-      ${chips}
-      <div class="products-toolbar">
-        ${ctx.products.length || filterParts(pi).length ? sortBar(pi) : ''}
-        ${filterBar(pi, '', catHidden)}
+      <div class="pf-title-row"><h1 class="products-title">Tất cả sản phẩm</h1></div>
+      <div class="pf-layout">
+        ${sidebar}
+        <div class="pf-main">
+          <div class="pf-head">
+            <p class="pf-count">${esc(String(count))} sản phẩm</p>
+            ${ctx.products.length || filterParts(pi).length ? sortBar(pi) : ''}
+          </div>
+          <div class="grid pf-grid">${cards}</div>
+          ${pager(pi)}
+        </div>
       </div>
-      <div class="grid">${cards}</div>
-      ${pager(pi)}
     </main>${SECTIONS.footer({}, ctx)}`;
   const head = metaHead({
     description: `Tất cả sản phẩm của ${ctx.shop.name} — giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.`,

@@ -187,7 +187,7 @@ function normalizeHost(raw) {
 
 const CACHE_PUBLIC = 'public, s-maxage=60, stale-while-revalidate=300';
 const PAGE_SIZE = 24; // sản phẩm mỗi trang (lưới /products / danh mục / tìm kiếm)
-const HOME_FEATURED = 8; // trang chủ CHỈ 8 SP nổi bật (2 hàng × 4) — xem đủ ở /products
+const HOME_FEATURED = 6; // trang chủ CHỈ 6 SP nổi bật (2 hàng × 3, khung vuông như mẫu) — xem đủ ở /products
 
 // Sắp xếp lưới (?sort=): WHITELIST → ORDER BY tĩnh (không nội suy input). Giá sort trên
 // p.price_vnd — đúng cột giá thẻ sản phẩm đang hiển thị. Giá trị lạ rơi về 'new'.
@@ -597,20 +597,41 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       if (url.pathname === '/products') {
         const rawCat = url.searchParams.get('cat') ?? '';
         const catSlug = /^[a-z0-9-]{1,80}$/.test(rawCat) ? rawCat : null;
+        // Ô tìm trong sidebar bộ lọc (redesign): ?q= dùng CÙNG cơ chế token /search (không dấu +
+        // đảo từ, escape %_\), kết hợp cat + lọc còn-hàng/giá. Trần độ dài 80 như /search.
+        const q = (url.searchParams.get('q') ?? '').trim().slice(0, 80);
         const args = [];
-        let whereJoin = '';
+        let join = '';
+        const conds = [];
         if (catSlug) {
           const cat = (await c.query(`SELECT id FROM categories WHERE slug = $1`, [catSlug])).rows[0];
           if (!cat) return { ...base, notFound: true };
           args.push(cat.id);
-          whereJoin = `JOIN product_categories pc ON pc.product_id = p.id WHERE pc.category_id = $1${filterSql(args)}`;
+          join = `JOIN product_categories pc ON pc.product_id = p.id`;
+          conds.push(`pc.category_id = $${args.length}`);
+        }
+        if (q) {
+          const toks = q.split(/\s+/).filter(Boolean).slice(0, 8);
+          for (const t of toks) {
+            args.push('%' + t.replace(/[%_\\]/g, '\\$&') + '%');
+            conds.push(`(vn_unaccent(p.title) LIKE vn_unaccent($${args.length}) OR EXISTS (
+              SELECT 1 FROM variants v WHERE v.product_id = p.id AND v.sku ILIKE $${args.length} AND ${VARIANT_NOT_ORPHAN_SQL}))`);
+          }
+        }
+        let whereJoin = join;
+        if (conds.length) {
+          whereJoin += ` WHERE ${conds.join(' AND ')}${filterSql(args)}`; // filterSql prefix ' AND '
         } else {
           const f = filterSql(args); // ' AND ...' → cắt tiền tố để đứng sau WHERE
-          whereJoin = f ? `WHERE ${f.slice(' AND '.length)}` : '';
+          whereJoin += f ? ` WHERE ${f.slice(' AND '.length)}` : '';
         }
         const { products, total } = await productGrid(whereJoin, args, offset);
-        const basePath = catSlug ? `/products?cat=${catSlug}` : '/products';
-        return { ...base, products, productsPage: true, catSlug,
+        // basePath giữ cat + q để pager/sort/lọc không làm rơi ngữ cảnh khi phân trang.
+        const bp = [];
+        if (catSlug) bp.push(`cat=${encodeURIComponent(catSlug)}`);
+        if (q) bp.push(`q=${encodeURIComponent(q)}`);
+        const basePath = bp.length ? `/products?${bp.join('&')}` : '/products';
+        return { ...base, products, productsPage: true, catSlug, query: q,
           pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath, sort: sortKey, filters, filterable: true } };
       }
 

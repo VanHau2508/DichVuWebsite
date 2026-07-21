@@ -338,8 +338,8 @@ async function main() {
   r = await sf(A.host, '/');
   r.body.includes('class="card-media"') && r.body.includes('class="card-img2"') && r.body.includes(`/media-public/${k2}`)
     ? ok('thẻ có ảnh THỨ HAI (card-img2) để hover đổi ảnh') : bad('thiếu ảnh2 hover', r.body.match(/SP Hover Phase3[\s\S]{0,300}/)?.[0]);
-  r.body.includes('class="card-actions"') && r.body.includes('class="card-qv"') && r.body.includes('Xem nhanh')
-    ? ok('thẻ có lớp phủ hành-động + 👁 quick-view (aria-label)') : bad('thiếu overlay/👁');
+  r.body.includes('class="card-qvwrap"') && r.body.includes('class="card-qv"') && r.body.includes('>Xem nhanh<')
+    ? ok('thẻ có nút "Xem nhanh" nổi giữa ảnh (hover) + card-add trong thân') : bad('thiếu Xem nhanh');
   r.body.includes('class="card-add-form"') && r.body.includes('action="/cart/add"') && r.body.includes(`value="${p3v}"`)
     ? ok('SP phẳng: thẻ có <form> POST /cart/add (variant_id mặc định + qty=1)') : bad('thiếu form thêm-nhanh SP phẳng');
   // SP nhiều biến thể (axSlug ở mục 6) → "Thêm vào giỏ" là LINK về PDP (no-JS an toàn).
@@ -380,7 +380,7 @@ async function main() {
   for (let i = 0; i < 6; i++) await mkProduct(A.shopId, A.cookie, { title: `SP Đầy ${i}`, slug: `day-${i}-${uniq()}`, price_vnd: 100000 + i * 1000, status: 'active', variants: [{ sku: `DAY${i}-${uniq()}`, price_vnd: 100000 + i * 1000 }] });
   r = await sf(A.host, '/'); // 11 SP active nhưng trang chủ CHỈ 8
   const homeCards = (r.body.match(/<div class="card(?: is-out)?">/g) || []).length;
-  homeCards === 8 ? ok('trang chủ đúng 8 thẻ SP (2 hàng × 4, không ôm cả catalog)') : bad(`trang chủ ${homeCards} thẻ (mong 8)`);
+  homeCards === 6 ? ok('trang chủ đúng 6 thẻ SP (2 hàng × 3, không ôm cả catalog)') : bad(`trang chủ ${homeCards} thẻ (mong 6)`);
   !r.body.includes('class="chips"') && !r.body.includes('class="sortbar"') && !r.body.includes('class="pager"')
     ? ok('trang chủ KHÔNG còn chips/sortbar/pager (chuyển sang /products)') : bad('trang chủ vẫn còn chips/sort/pager');
   r.body.includes('class="grid-more"') && /class="btn btn-primary btn-more" href="\/products"/.test(r.body)
@@ -390,19 +390,35 @@ async function main() {
     ? ok('trang chủ có section blog: 3 thẻ bài viết mới nhất') : bad('section blog trang chủ thiếu/sai số thẻ', String((r.body.match(/class="hblog-card"/g) || []).length));
   r.body.includes('Tháng') && r.body.includes('class="hblog-more"')
     ? ok('thẻ blog: ngày "dd Tháng MM, yyyy" + link Xem thêm → /blog/:slug') : bad('thẻ blog thiếu ngày/Xem thêm');
-  // /products: lưới đầy đủ + chip danh mục LỌC TẠI CHỖ + sort + đủ 11 SP (≤24 → 1 trang).
+  // /products (redesign 2 cột): SIDEBAR bộ lọc TRÁI (ô tìm + danh sách danh mục ?cat= + còn-hàng
+  // + khoảng giá) + LƯỚI SP PHẢI (đếm SP + sort). Tất cả no-JS. Đủ 11 SP (≤24 → 1 trang).
   r = await sf(A.host, '/products');
   r.status === 200 && r.body.includes('Tất cả sản phẩm') ? ok('/products 200, tiêu đề "Tất cả sản phẩm"') : bad('/products lỗi', String(r.status));
   const prodCards = (r.body.match(/<div class="card(?: is-out)?">/g) || []).length;
   prodCards === 11 ? ok(`/products hiện đủ 11 SP active`) : bad(`/products ${prodCards} thẻ (mong 11)`);
-  r.body.includes('class="chips chips-center"') && r.body.includes(`href="/products?cat=`) && r.body.includes('Danh Mục Kiểm')
-    ? ok('/products có chip danh mục dạng NÚT LỌC (?cat=, không nhảy trang)') : bad('thiếu chips lọc trên /products');
-  r.body.includes('class="sortbar"') && r.body.includes('Sắp xếp:') && r.body.includes('class="products-toolbar"')
-    ? ok('/products có thanh sắp xếp (căn giữa trong toolbar)') : bad('thiếu sortbar /products');
+  // Sidebar bộ lọc: container + danh sách danh mục dạng NÚT LỌC (?cat=) + có danh mục kiểm.
+  r.body.includes('class="pf-side"') && r.body.includes('class="pf-layout"') && r.body.includes('class="pf-cats"')
+    && r.body.includes(`href="/products?cat=`) && r.body.includes('Danh Mục Kiểm')
+    ? ok('/products có SIDEBAR bộ lọc + danh mục lọc tại chỗ (?cat=, không nhảy trang)') : bad('thiếu sidebar/danh mục lọc trên /products');
+  // Ô tìm trong sidebar (GET /products, name=q) + form lọc còn-hàng/giá (no-JS).
+  r.body.includes('class="pf-search"') && r.body.includes('name="q"') && r.body.includes('name="instock"')
+    && r.body.includes('name="pmin"') && r.body.includes('Áp dụng')
+    ? ok('/products sidebar: ô tìm + còn-hàng + khoảng giá (form GET no-JS)') : bad('thiếu ô tìm/lọc trong sidebar');
+  // Cột phải: hàng đầu đếm "N sản phẩm" + thanh sắp xếp còn hoạt động.
+  r.body.includes('class="pf-head"') && r.body.includes('class="pf-count"') && r.body.includes('11 sản phẩm')
+    && r.body.includes('class="sortbar"') && r.body.includes('Sắp xếp:')
+    ? ok('/products cột phải: đếm "11 sản phẩm" + thanh sắp xếp') : bad('thiếu đếm SP/sort trên cột phải');
+  // Thẻ SP vẫn giữ nút thêm-giỏ (form POST /cart/add) + xem-nhanh (👁) cho lớp JS nonce.
+  r.body.includes('class="card-add-form"') && r.body.includes('action="/cart/add"') && r.body.includes('class="card-qv"')
+    ? ok('/products: thẻ giữ form thêm-giỏ + nút xem-nhanh (lớp JS không gãy)') : bad('thẻ mất form thêm-giỏ/xem-nhanh');
   r = await sf(A.host, `/products?cat=${catKiemSlug}`);
   r.status === 200 && r.body.includes('Thảm trải sàn cao cấp') && !r.body.includes('SP Đầy 0')
     ? ok('?cat= lọc đúng: chỉ SP thuộc danh mục') : bad('lọc ?cat sai');
-  r.body.includes('aria-current="true"') ? ok('chip danh mục đang chọn được đánh dấu (aria-current)') : bad('chip chọn không đánh dấu');
+  r.body.includes('aria-current="true"') ? ok('danh mục đang chọn được đánh dấu (aria-current)') : bad('mục danh mục chọn không đánh dấu');
+  // Ô tìm sidebar: ?q= dùng cơ chế token /search — "trai tham" ra "Thảm trải sàn cao cấp".
+  r = await sf(A.host, `/products?q=${encodeURIComponent('trai tham')}`);
+  r.status === 200 && r.body.includes('Thảm trải sàn cao cấp') && !r.body.includes('SP Đầy 0')
+    ? ok('/products?q= tìm không dấu + đảo từ (trai tham → Thảm trải sàn)') : bad('/products?q= tìm sai');
   r = await sf(A.host, '/products?sort=price_asc');
   r.status === 200 ? ok('/products?sort=price_asc 200 (đích mới của "Khuyến mãi")') : bad('sort trên /products lỗi', String(r.status));
   r = await sf(A.host, '/sitemap.xml');

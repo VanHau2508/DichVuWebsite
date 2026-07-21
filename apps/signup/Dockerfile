@@ -7,8 +7,9 @@ WORKDIR /app
 COPY apps/signup/package.json apps/signup/package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
-COPY packages/auth/src ./packages/auth/src
-COPY apps/signup/src   ./apps/signup/src
+COPY packages/auth/src    ./packages/auth/src
+COPY packages/presets/src ./packages/presets/src
+COPY apps/signup/src      ./apps/signup/src
 
 USER node
 ENV NODE_ENV=production PORT=3064

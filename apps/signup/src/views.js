@@ -15,9 +15,9 @@ function layout(title, body) {
   h1 { font-size:1.6rem; margin:0 0 4px; } .lede { color:var(--muted); margin:0 0 24px; }
   .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:22px; }
   label { display:block; font-weight:600; font-size:.92rem; margin:14px 0 5px; }
-  input[type=text],input[type=email],input[type=password] { width:100%; padding:11px 12px;
-    border:1px solid var(--line); border-radius:9px; font-size:1rem; }
-  input:focus { outline:2px solid var(--brand); border-color:var(--brand); }
+  input[type=text],input[type=email],input[type=password],select { width:100%; padding:11px 12px;
+    border:1px solid var(--line); border-radius:9px; font-size:1rem; background:#fff; }
+  input:focus,select:focus { outline:2px solid var(--brand); border-color:var(--brand); }
   .slug-row { display:flex; align-items:center; gap:0; }
   .slug-row input { border-radius:9px 0 0 9px; }
   .slug-suffix { padding:11px 12px; border:1px solid var(--line); border-left:0; border-radius:0 9px 9px 0;
@@ -67,6 +67,16 @@ export function renderSignupForm(plans, { error, f = {}, ct = '', domain = 'nent
 
         <label for="password">Mật khẩu</label>
         <input id="password" name="password" type="password" required autocomplete="new-password" placeholder="ít nhất 10 ký tự">
+
+        <label for="industry">Ngành hàng</label>
+        <select id="industry" name="industry">
+          <option value="">— Chọn ngành để có sẵn giao diện (tuỳ chọn) —</option>
+          <option value="fashion"${f.industry === 'fashion' ? ' selected' : ''}>Thời trang</option>
+          <option value="food"${f.industry === 'food' ? ' selected' : ''}>Thực phẩm / Đồ uống</option>
+          <option value="furniture"${f.industry === 'furniture' ? ' selected' : ''}>Nội thất</option>
+          <option value="cosmetics"${f.industry === 'cosmetics' ? ' selected' : ''}>Mỹ phẩm</option>
+        </select>
+        <p class="muted" style="margin:5px 0 0">Shop sẽ có sẵn màu sắc & bố cục hợp ngành — đổi lại bất cứ lúc nào trong phần Giao diện.</p>
 
         <label>Chọn gói</label>
         <div class="plans">${planHtml}</div>

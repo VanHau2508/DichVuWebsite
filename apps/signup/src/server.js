@@ -23,6 +23,7 @@ import { passwordError } from '../../../packages/auth/src/password-policy.js';
 import { send, sendHtml, readForm, sameOrigin, clientIp } from './http.js';
 import * as V from './views.js';
 import { isSlugDenied, isDisposableEmail } from './denylist.js';
+import { getPreset } from '../../../packages/presets/src/index.js';
 
 const PORT = Number(process.env.PORT ?? 3064);
 const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN ?? 'nentang.vn';
@@ -91,9 +92,13 @@ async function doSignup(req, res) {
   const slug = String(f.slug ?? '').trim().toLowerCase();
   const name = String(f.name ?? '').trim().slice(0, 200);
   const planCode = String(f.plan_code ?? '').trim();
+  // Ngành hàng ENUM-SAFE: hợp lệ KHI VÀ CHỈ KHI có preset (nguồn chân lý = packages/presets).
+  // Giá trị lạ / rỗng / 'other' → null → KHÔNG seed theme → storefront về DEFAULT_LAYOUT (không lỗi).
+  const indRaw = String(f.industry ?? '').trim().toLowerCase();
+  const industry = getPreset(indRaw) ? indRaw : null;
   const iph = ipHash(clientIp(req));
   const plans = await loadPlans();
-  const keep = { name, slug, email, plan_code: planCode };
+  const keep = { name, slug, email, plan_code: planCode, industry };
   const reForm = (msg, status = 400) => sendHtml(res, status, V.renderSignupForm(plans, { error: msg, f: keep, ct: issueFormTs(), domain: PLATFORM_DOMAIN }));
 
   // Lỗi CLIENT-DERIVABLE (surface — về CHÍNH input người dùng, không rò gì riêng tư).
@@ -126,9 +131,9 @@ async function doSignup(req, res) {
       await c.query(`SELECT pg_advisory_xact_lock(hashtextextended('signup-slug:'||$1, 0))`, [slug]);
       if (!(await slugFree(c, slug))) throw Object.assign(new Error('slug taken'), { code: 'SLUG_TAKEN' });
       await c.query(
-        `INSERT INTO shop_signups (email, password_hash, slug, name, plan_code, token_hash, ip_hash, expires_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7, now() + ($8 || ' minutes')::interval)`,
-        [email, hash, slug, name, planCode, sha256(token), iph, String(DRAFT_TTL_MIN)]);
+        `INSERT INTO shop_signups (email, password_hash, slug, name, plan_code, industry, token_hash, ip_hash, expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now() + ($9 || ' minutes')::interval)`,
+        [email, hash, slug, name, planCode, industry, sha256(token), iph, String(DRAFT_TTL_MIN)]);
       await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES (NULL, 'signup.verify', $1)`,
         [{ to: email, name, slug, link: verifyLink(token) }]);
       log('info', 'signup_draft', {}); // KHÔNG log email/slug (PII/enum)
@@ -177,7 +182,7 @@ async function doVerify(req, res) {
       const d = (await c.query(
         `UPDATE shop_signups SET status='provisioned'
           WHERE token_hash=$1 AND status='pending' AND expires_at>now()
-          RETURNING id, email, password_hash, slug, name, plan_code, locale, currency, timezone`,
+          RETURNING id, email, password_hash, slug, name, plan_code, locale, currency, timezone, industry`,
         [sha256(token)])).rows[0];
       if (!d) return { kind: 'invalid' };
       // Reserve slug (CÙNG key draft) + tái kiểm (slug có thể bị admin lấy giữa chừng, hiếm).
@@ -197,16 +202,25 @@ async function doVerify(req, res) {
       }
       // Provision shop (mirror platform createShop:145-169; invariant current_period_end cưỡng chế CHECK 0091).
       const shopId = (await c.query(
-        `INSERT INTO shops (slug, name, status, locale, currency, timezone, created_via)
-         VALUES ($1,$2,'onboarding',$3,$4,$5,'self_serve') RETURNING id`,
-        [d.slug, d.name, d.locale, d.currency, d.timezone])).rows[0].id;
+        `INSERT INTO shops (slug, name, status, locale, currency, timezone, created_via, industry)
+         VALUES ($1,$2,'onboarding',$3,$4,$5,'self_serve',$6) RETURNING id`,
+        [d.slug, d.name, d.locale, d.currency, d.timezone, d.industry])).rows[0].id;
       await c.query(`INSERT INTO domains (shop_id, hostname, verification_token, verified_at, is_primary) VALUES ($1,$2,$3,now(),true)`,
         [shopId, `${d.slug}.${PLATFORM_DOMAIN}`, generateToken()]);
       await c.query(`INSERT INTO subscriptions (shop_id, plan_code, status, current_period_end) VALUES ($1,$2,'trial', now() + ($3 || ' days')::interval)`,
         [shopId, d.plan_code, String(TRIAL_DAYS)]);
       await c.query(`INSERT INTO memberships (shop_id, user_id, role) VALUES ($1,$2,'owner')`, [shopId, userId]);
       await c.query(`INSERT INTO audit_logs (shop_id, actor_type, actor_id, action, metadata) VALUES ($1,'system',NULL,'shop.created',$2)`,
-        [shopId, { slug: d.slug, plan_code: d.plan_code, created_via: 'self_serve' }]);
+        [shopId, { slug: d.slug, plan_code: d.plan_code, created_via: 'self_serve', industry: d.industry }]);
+      // Seed THEME theo ngành (0094): shop MỚI chưa có row themes → INSERT TRẦN (KHÔNG ON CONFLICT —
+      // app_signup chỉ có INSERT, ON CONFLICT cần SELECT → permission denied, đã kiểm RLS). industry
+      // đã enum-safe (chỉ nhận slug có preset). layout là MẢNG → BẮT BUỘC JSON.stringify (node-pg ép
+      // mảng thành array-literal, không phải jsonb). Không chọn ngành → không seed → DEFAULT_LAYOUT.
+      const preset = getPreset(d.industry);
+      if (preset) {
+        await c.query(`INSERT INTO themes (shop_id, tokens, layout) VALUES ($1,$2,$3)`,
+          [shopId, JSON.stringify(preset.tokens), JSON.stringify(preset.layout)]);
+      }
       await c.query(`UPDATE shop_signups SET provisioned_shop_id=$1 WHERE id=$2`, [shopId, d.id]);
       return { kind: 'ok', name: d.name, slug: d.slug };
     });

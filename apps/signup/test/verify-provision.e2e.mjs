@@ -9,6 +9,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import pg from 'pg';
+import { getPreset } from '../../../packages/presets/src/index.js';
 
 const SU = new URL(process.env.SIGNUP_URL ?? 'http://signup:3064');
 const FORM_SECRET = process.env.SIGNUP_FORM_SECRET ?? 'dev-signup-form-secret';
@@ -104,6 +105,34 @@ async function main() {
   const dcsrf = await draft();
   r = await req('POST', '/signup/verify', { form: { token: dcsrf.token, ct: ct() }, origin: null });
   r.status === 403 && !(await shopBySlug(dcsrf.slug)) ? ok('POST verify không Origin → 403, KHÔNG provision') : bad('CSRF verify không chặn', r.status);
+
+  sect('7. Seed THEME theo ngành (0094): chọn ngành → 1 row themes = preset; không chọn → không seed; enum-safe');
+  // 7a. industry hợp lệ → shops.industry set + themes seed ĐÚNG preset (tokens+layout)
+  const d7 = await draft({ industry: 'cosmetics' });
+  await req('POST', '/signup/verify', { form: { token: d7.token, ct: ct() } });
+  const s7 = await shopBySlug(d7.slug);
+  const th7 = s7 ? (await owner.query(`SELECT tokens, layout FROM themes WHERE shop_id=$1`, [s7.id])).rows[0] : null;
+  const ind7 = s7 ? (await owner.query(`SELECT industry FROM shops WHERE id=$1`, [s7.id])).rows[0]?.industry : null;
+  const wantP = getPreset('cosmetics');
+  const tokOk = th7 && th7.tokens?.['color.primary'] === wantP.tokens['color.primary'] && th7.tokens.radius === wantP.tokens.radius;
+  const layOk = th7 && Array.isArray(th7.layout) && th7.layout.length === wantP.layout.length && th7.layout[0].section === 'header' && th7.layout.at(-1).section === 'footer';
+  ind7 === 'cosmetics' && tokOk && layOk ? ok('industry=cosmetics → shops.industry set + themes seed ĐÚNG preset (tokens+layout)') : bad('seed theme sai', `ind=${ind7} tok=${tokOk} lay=${layOk}`);
+
+  // 7b. không chọn ngành → industry NULL + KHÔNG seed themes (storefront về DEFAULT_LAYOUT)
+  const d7b = await draft({ industry: '' });
+  await req('POST', '/signup/verify', { form: { token: d7b.token, ct: ct() } });
+  const s7b = await shopBySlug(d7b.slug);
+  const nTh = s7b ? Number((await owner.query(`SELECT count(*)::int n FROM themes WHERE shop_id=$1`, [s7b.id])).rows[0].n) : -1;
+  const ind7b = s7b ? (await owner.query(`SELECT industry FROM shops WHERE id=$1`, [s7b.id])).rows[0]?.industry : 'x';
+  s7b && nTh === 0 && ind7b === null ? ok('không chọn ngành → industry NULL + KHÔNG seed themes') : bad('seed nhầm khi trống', `n=${nTh} ind=${ind7b}`);
+
+  // 7c. enum-safe: industry RÁC → provision vẫn nguyên tử (shop tạo đủ), KHÔNG seed, KHÔNG lỗi (không vi phạm CHECK)
+  const d7c = await draft({ industry: '<script>alert(1)</script>' });
+  const r7c = await req('POST', '/signup/verify', { form: { token: d7c.token, ct: ct() } });
+  const s7c = await shopBySlug(d7c.slug);
+  const nTh7c = s7c ? Number((await owner.query(`SELECT count(*)::int n FROM themes WHERE shop_id=$1`, [s7c.id])).rows[0].n) : -1;
+  const ind7c = s7c ? (await owner.query(`SELECT industry FROM shops WHERE id=$1`, [s7c.id])).rows[0]?.industry : 'x';
+  r7c.status === 200 && /sẵn sàng/.test(r7c.body) && s7c && nTh7c === 0 && ind7c === null ? ok('industry rác → enum-safe NULL, provision nguyên tử, KHÔNG seed') : bad('enum-safe seed lỗi', `status=${r7c.status} shop=${!!s7c} n=${nTh7c} ind=${ind7c}`);
 
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();

@@ -1,0 +1,13 @@
+{
+  "name": "@nentang/presets",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Thư viện preset giao diện theo ngành (tokens + layout) — nguồn dùng chung cho seller-admin (áp preset) và signup (seed theme).",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

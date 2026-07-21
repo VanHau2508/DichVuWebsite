@@ -387,6 +387,8 @@ services:
     volumes:
       # Xem chú thích checkout: mount bộ đếm rate-limit dùng chung (image không có packages/).
       - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
+      # Thư viện preset dùng chung (image không có packages/) — import '../presets.js'.
+      - ../packages/presets/src/index.js:/app/presets.js:ro
     deploy: { resources: { limits: { memory: 256m } } }
     depends_on:
       postgres: { condition: service_healthy }
@@ -410,6 +412,9 @@ services:
       # Ảnh SP phục vụ từ CDN → origin thêm vào CSP img-src; PHẢI khớp img-src ở Caddyfile.
       MEDIA_PUBLIC_BASE: ${MEDIA_PUBLIC_BASE:?}
       PORT: "3001"
+    volumes:
+      # Thư viện preset dùng chung (image không có packages/) — import '../presets.js'.
+      - ../packages/presets/src/index.js:/app/presets.js:ro
     deploy: { resources: { limits: { memory: 160m } } }
     depends_on:
       auth: { condition: service_healthy }

@@ -322,6 +322,8 @@ services:
       - ../apps/signup/src:/app/apps/signup/src:ro
       - ../apps/signup/test:/app/apps/signup/test:ro
       - ../packages/auth/src:/app/packages/auth/src:ro
+      # Preset ngành: seed theme lúc provision — import '../../../packages/presets/src/index.js'.
+      - ../packages/presets/src:/app/packages/presets/src:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -449,6 +451,8 @@ services:
       - ../apps/storefront/src:/app/src:ro
       # Bộ đếm rate-limit DÙNG CHUNG (không copy) — xem chú thích ở service checkout.
       - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
+      # Thư viện preset dùng chung (preview áp mẫu) — import '../presets.js'.
+      - ../packages/presets/src/index.js:/app/presets.js:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -478,6 +482,8 @@ services:
     volumes:
       # Mount PHẢI khớp CMD (node src/server.js → /app/src) cho mutation testing.
       - ../apps/seller-admin/src:/app/src:ro
+      # Thư viện preset dùng chung (nút "Đổi giao diện theo ngành") — import '../presets.js'.
+      - ../packages/presets/src/index.js:/app/presets.js:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -528,6 +534,9 @@ services:
       - ../packages/db/migrations:/work/migrations:ro
       # Cho e2e: totp để tính mã MFA, và chính các file e2e.
       - ../packages/auth/src:/work/packages/auth/src:ro
+      # Preset ngành + storefront theme.js (test round-trip sanitizeTokens THẬT).
+      - ../packages/presets:/work/packages/presets:ro
+      - ../apps/storefront/src:/work/apps/storefront/src:ro
       - ../apps/platform/test:/work/apps/platform/test:ro
       - ../apps/seller/test:/work/apps/seller/test:ro
       - ../apps/seller-admin/test:/work/apps/seller-admin/test:ro

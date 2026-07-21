@@ -83,6 +83,12 @@ shop.localtest {
 	handle @checkout {
 		reverse_proxy checkout:3060
 	}
+	# Tài khoản khách (0083): /account* → service account (KHỚP Caddyfile prod —
+	# thiếu route này thì icon 👤 rơi vào storefront → 404, bug đã gặp thật ở dev).
+	@account path /account /account/*
+	handle @account {
+		reverse_proxy account:3062
+	}
 	handle /media-public/* {
 		reverse_proxy minio:9000
 	}
@@ -123,6 +129,10 @@ nentang.vn, www.nentang.vn {
 	handle @checkout {
 		reverse_proxy checkout:3060
 	}
+	@account path /account /account/*
+	handle @account {
+		reverse_proxy account:3062
+	}
 	handle /media-public/* {
 		reverse_proxy minio:9000
 	}
@@ -149,6 +159,10 @@ https:// {
 	@checkout path /cart /cart/* /checkout /checkout/*
 	handle @checkout {
 		reverse_proxy checkout:3060
+	}
+	@account path /account /account/*
+	handle @account {
+		reverse_proxy account:3062
 	}
 	handle /media-public/* {
 		reverse_proxy minio:9000

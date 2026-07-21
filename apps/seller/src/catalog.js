@@ -79,6 +79,26 @@ async function planMaxProducts(c) {
 }
 const catalogCount = async (c) => (await c.query(`SELECT count(*)::int n FROM products WHERE deleted_at IS NULL`)).rows[0].n;
 
+// Đồng bộ giá "TỪ" của sản phẩm = min(giá biến thể) — thẻ lưới/sort/lọc storefront đọc
+// products.price_vnd (0093). Gọi trong CÙNG transaction ở MỌI điểm ghi làm đổi giá hoặc
+// tập biến thể (tạo SP, thêm/sửa/xoá biến thể, sinh ma trận) — sót một điểm là giá thẻ
+// lệch lại. Checkout KHÔNG đụng (luôn tính trên variants.price_vnd).
+// LOẠI biến thể MỒ CÔI (thiếu ánh xạ trục — storefront đã ẩn, không bán được): tính cả
+// chúng thì giá cũ của tổ hợp bỏ đi kéo giá "từ" sai + pool-reuse (basePrice đọc từ
+// products.price_vnd) lây giá khuyến mãi cũ sang tổ hợp mới.
+const syncProductPrice = async (c, productId) => {
+  await c.query(
+    `UPDATE products p SET price_vnd = sub.min_price
+       FROM (SELECT min(v.price_vnd) AS min_price FROM variants v
+              WHERE v.product_id = $1
+                AND NOT EXISTS (SELECT 1 FROM product_options po WHERE po.product_id = v.product_id
+                  AND NOT EXISTS (SELECT 1 FROM variant_option_values vov
+                                   WHERE vov.variant_id = v.id AND vov.option_id = po.id))) sub
+      WHERE p.id = $1 AND sub.min_price IS NOT NULL AND p.price_vnd IS DISTINCT FROM sub.min_price`,
+    [productId],
+  );
+};
+
 // ── products ─────────────────────────────────────────────────────────────────
 
 async function createProduct(res, ctx, body) {
@@ -134,6 +154,9 @@ async function createProduct(res, ctx, body) {
           [productId, catId],
         );
       }
+
+      // Giá "từ" của SP = min giá biến thể (0093) — payload có thể gửi price_vnd lệch min.
+      await syncProductPrice(c, productId);
 
       await audit(c, 'product.created', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, slug } });
       return { productId };
@@ -324,6 +347,7 @@ async function addVariant(res, ctx, body, params) {
          VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6, $7) RETURNING id`,
         [productId, body.title != null ? String(body.title) : null, body.sku.trim(), body.price_vnd, pos.rows[0].p, body.weight_gram ?? null, body.compare_at_vnd ?? null],
       );
+      await syncProductPrice(c, productId); // biến thể mới có thể rẻ hơn → hạ giá "từ" (0093)
       await audit(c, 'variant.added', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, variantId: v.rows[0].id } });
       return { code: 201, id: v.rows[0].id };
     });
@@ -394,6 +418,8 @@ async function updateVariant(res, ctx, body, params) {
           [variantId, body.cost_vnd, ctx.user.id],
         );
       }
+      // Đổi giá biến thể → đồng bộ lại giá "từ" của SP (0093, chính là bug 99đ trên thẻ).
+      if (want.price_vnd !== undefined) await syncProductPrice(c, productId);
       await audit(c, 'variant.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: withChanged({ productId, variantId }, diffChanged(cur.rows[0], want)) });
       return { code: 200 };
     });
@@ -420,6 +446,7 @@ async function deleteVariant(res, ctx, _body, params) {
       }
       const r = await c.query(`DELETE FROM variants WHERE id = $1 AND product_id = $2`, [variantId, productId]);
       if (r.rowCount === 0) return { code: 404 };
+      await syncProductPrice(c, productId); // xoá biến thể rẻ nhất → giá "từ" phải nhích lên (0093)
       await audit(c, 'variant.deleted', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, variantId } });
       return { code: 200 };
     });
@@ -565,6 +592,8 @@ async function saveProductOptions(res, ctx, body, params) {
           [variantId, optRows[i].id, optRows[i].valueIds.get(values[i])]);
       }
     }
+    // Ma trận đổi tập biến thể (tạo mới/reset giá pool-reuse) → đồng bộ giá "từ" (0093).
+    await syncProductPrice(c, productId);
     await audit(c, 'product.options_saved', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, combos: combos.length, created, reused } });
     return { code: 200, combos: combos.length, created, reused };
   });

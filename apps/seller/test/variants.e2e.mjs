@@ -164,6 +164,22 @@ async function main() {
   r = await S(Bs.shopId, Bs.cookie).patch(`/products/${pid}/variants/${anyV.id}`, { price_vnd: 1000 });
   r.status === 404 ? ok('shop B PATCH giá biến thể shop A → 404 (cô lập)') : bad('rò sửa giá chéo shop', r.raw);
 
+  sect('3c. Đồng bộ giá "từ" (0093): products.price_vnd = min(giá biến thể KHÔNG mồ côi)');
+  // Bug thật: thẻ storefront đọc products.price_vnd nhưng PATCH biến thể trước đây không
+  // ghi ngược → thẻ hiện 99đ trong khi biến thể 1.850.000đ. Nay sync trong CÙNG transaction.
+  // Chọn biến thể CHẮC CHẮN đang map ('Vàng / M' — tổ hợp vừa sinh); biến thể mồ côi
+  // (480k từ mục 2b, storefront ẩn) KHÔNG được tính vào giá "từ".
+  Number((await a.get(`/products/${pid}`)).json.price_vnd) === 500000
+    ? ok('giá "từ" = 500k — mồ côi 480k KHÔNG kéo xuống, 777k không đẩy lên') : bad(`giá "từ" sai: ${(await a.get(`/products/${pid}`)).json.price_vnd}`);
+  const vVang = (await a.get(`/products/${pid}`)).json.variants.find((v) => v.title === 'Vàng / M');
+  r = await a.patch(`/products/${pid}/variants/${vVang.id}`, { price_vnd: 111000 });
+  const pSync = (await a.get(`/products/${pid}`)).json;
+  r.status === 200 && Number(pSync.price_vnd) === 111000
+    ? ok('PATCH biến thể xuống 111k → products.price_vnd đồng bộ = 111.000') : bad(`giá SP không đồng bộ: ${pSync.price_vnd}`);
+  r = await a.patch(`/products/${pid}/variants/${vVang.id}`, { price_vnd: 500000 });
+  Number((await a.get(`/products/${pid}`)).json.price_vnd) === 500000
+    ? ok('nâng lại 500k → giá "từ" quay về min đang bán (500.000)') : bad('không đồng bộ khi nâng giá lại');
+
   sect('3b. Giá vốn (0081): PATCH nhập/sửa/xoá + cô lập');
   const anyV2 = (await a.get(`/products/${pid}`)).json.variants[0];
   r = await a.patch(`/products/${pid}/variants/${anyV2.id}`, { cost_vnd: 350000 });

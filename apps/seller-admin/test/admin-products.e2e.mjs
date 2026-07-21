@@ -198,6 +198,65 @@ async function main() {
   r.status === 303 && Number(vAxAfter.price_vnd) === 175000
     ? ok('ô sửa giá biến thể → 303 + DB đổi 175.000') : bad('sửa giá biến thể lỗi', `${r.status} ${vAxAfter?.price_vnd}`);
 
+  // ── 8b. Lưu HÀNG LOẠT biến thể (0093): MỘT form, MỘT nút → PATCH mọi biến thể cùng lúc ──
+  sect('8b. Lưu hàng loạt biến thể');
+  const vlist = (await sget(A.shopId, A.cookie, `/products/${axPid}`)).json.variants;
+  const want = vlist.map((v, i) => ({ id: v.id, price: 100000 + i * 11000, compare: 200000 + i * 1000, cost: 50000 + i * 1000, weight: 500 + i * 10 }));
+  const bulkForm = {};
+  for (const w of want) { bulkForm[`price_${w.id}`] = String(w.price); bulkForm[`compare_${w.id}`] = String(w.compare); bulkForm[`cost_${w.id}`] = String(w.cost); bulkForm[`weight_${w.id}`] = String(w.weight); }
+  r = await adm('POST', P(`/${axPid}/variants/bulk`), { cookie: A.cookie, origin: OADM, form: bulkForm });
+  const okRedir = r.status === 303 && (r.location ?? '').includes('?saved=4');
+  const afterBulk = (await sget(A.shopId, A.cookie, `/products/${axPid}`)).json.variants;
+  const allMatch = want.every((w) => { const v = afterBulk.find((x) => x.id === w.id); return v && Number(v.price_vnd) === w.price && Number(v.compare_at_vnd) === w.compare && Number(v.cost_vnd) === w.cost && Number(v.weight_gram) === w.weight; });
+  okRedir && allMatch ? ok('lưu hàng loạt 4 biến thể → 303 ?saved=4 + DB đổi hết (giá/gạch/vốn/cân)') : bad('bulk save lỗi', `${r.status} loc=${r.location} match=${allMatch}`);
+
+  // Trang render 1 form gộp id="bulkvars" + nút "Lưu tất cả biến thể", KHÔNG có <script> (CSP no-JS).
+  r = await adm('GET', P(`/${axPid}`), { cookie: A.cookie });
+  r.body.includes(`/products/${axPid}/variants/bulk"`) && r.body.includes('Lưu tất cả biến thể') && r.body.includes('id="bulkvars"') && !r.body.includes('<script')
+    ? ok('chi tiết: 1 form gộp "Lưu tất cả biến thể", không <script>') : bad('bulk form markup sai', `bulk=${r.body.includes('/variants/bulk')} btn=${r.body.includes('Lưu tất cả')} script=${r.body.includes('<script')}`);
+
+  // Lỗi từng dòng KHÔNG bị nuốt: 1 biến thể cân rác (→ seller 400), trang báo lỗi (không 303), dòng khác vẫn lưu.
+  const badForm = {};
+  for (const w of want) badForm[`price_${w.id}`] = String(w.price);
+  badForm[`weight_${want[0].id}`] = 'xxx';
+  r = await adm('POST', P(`/${axPid}/variants/bulk`), { cookie: A.cookie, origin: OADM, form: badForm });
+  r.status !== 303 && /Lỗi|lỗi/.test(r.body) && r.body.includes('Đã lưu')
+    ? ok('bulk: 1 dòng lỗi → báo lỗi rõ, không nuốt (không 303)') : bad('bulk error surfacing sai', `${r.status}`);
+
+  // ── 8c. Cập nhật tồn HÀNG LOẠT: MỘT form bulkstock, CHỈ áp dòng ĐÃ điền, mỗi dòng = 1 lần adjust ──
+  sect('8c. Cập nhật tồn hàng loạt');
+  const vs = (await sget(A.shopId, A.cookie, `/products/${axPid}`)).json.variants;
+  const onHand = async (vid) => (await sget(A.shopId, A.cookie, `/variants/${vid}/inventory`)).json?.on_hand ?? 0;
+  const before = {}; for (const v of vs) before[v.id] = await onHand(v.id);
+  // Điền delta cho 2 biến thể đầu (+7, +3), để TRỐNG 2 biến thể sau + 1 lý do chung.
+  const stockForm = { reason: 'nhập lô hàng loạt' };
+  stockForm[`delta_${vs[0].id}`] = '7';
+  stockForm[`delta_${vs[1].id}`] = '3';
+  r = await adm('POST', P(`/${axPid}/inventory/bulk`), { cookie: A.cookie, origin: OADM, form: stockForm });
+  const stRedir = r.status === 303 && (r.location ?? '').includes('?stocked=2');
+  const after = {}; for (const v of vs) after[v.id] = await onHand(v.id);
+  const deltaOk = after[vs[0].id] === before[vs[0].id] + 7 && after[vs[1].id] === before[vs[1].id] + 3
+    && after[vs[2].id] === before[vs[2].id] && after[vs[3].id] === before[vs[3].id];
+  stRedir && deltaOk ? ok('bulk tồn: điền 2 dòng → 303 ?stocked=2, CHỈ 2 dòng đổi (+7/+3), 2 dòng trống giữ nguyên')
+    : bad('bulk stock lỗi', `${r.status} loc=${r.location} d0=${after[vs[0].id] - before[vs[0].id]} d1=${after[vs[1].id] - before[vs[1].id]} d2=${after[vs[2].id] - before[vs[2].id]} d3=${after[vs[3].id] - before[vs[3].id]}`);
+
+  // Trang render form id="bulkstock" + ô delta_<id> thuộc form đó + nút "Cập nhật tồn", KHÔNG <script>.
+  r = await adm('GET', P(`/${axPid}`), { cookie: A.cookie });
+  r.body.includes('id="bulkstock"') && r.body.includes(`/products/${axPid}/inventory/bulk"`) && r.body.includes(`name="delta_${vs[0].id}"`) && r.body.includes('Cập nhật tồn') && !r.body.includes('<script')
+    ? ok('chi tiết: form gộp "Cập nhật tồn" (bulkstock), ô delta_<id>, không <script>')
+    : bad('bulk stock markup sai', `form=${r.body.includes('id="bulkstock"')} act=${r.body.includes('/inventory/bulk')} cell=${r.body.includes(`name="delta_${vs[0].id}"`)} btn=${r.body.includes('Cập nhật tồn')}`);
+
+  // Hết nút trùng: nút "Lưu tất cả biến thể" (đóng </button>) xuất hiện ĐÚNG 1 lần (bỏ nút đầu bảng).
+  const nBtn = (r.body.match(/>Lưu tất cả biến thể<\/button>/g) ?? []).length;
+  nBtn === 1 ? ok('chỉ 1 nút "Lưu tất cả biến thể" (hết trùng)') : bad('nút lưu biến thể bị trùng', `đếm=${nBtn}`);
+
+  // Lỗi từng dòng KHÔNG bị nuốt: 1 delta âm vượt tồn → seller 400, trang báo lỗi (không 303).
+  const badStock = { reason: 'thử vượt' };
+  badStock[`delta_${vs[0].id}`] = '-99999';
+  r = await adm('POST', P(`/${axPid}/inventory/bulk`), { cookie: A.cookie, origin: OADM, form: badStock });
+  r.status !== 303 && /Lỗi|lỗi|tồn/.test(r.body) && r.body.includes('Đã chỉnh tồn')
+    ? ok('bulk tồn: 1 dòng vượt tồn → báo lỗi rõ, không nuốt (không 303)') : bad('bulk stock error surfacing sai', `${r.status}`);
+
   r = await adm('POST', P(`/${axPid}/specs`), { cookie: A.cookie, origin: OADM, form: { specs: 'Chất liệu: Cotton\nXuất xứ: Việt Nam\n(dòng rác không có dấu hai chấm)' } });
   const afterSpecs = (await sget(A.shopId, A.cookie, `/products/${axPid}`)).json;
   r.status === 303 && afterSpecs.specs?.length === 2 && afterSpecs.specs[0].name === 'Chất liệu'

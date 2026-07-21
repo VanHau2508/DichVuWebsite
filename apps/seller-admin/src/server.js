@@ -937,7 +937,7 @@ async function productCategoriesSave(req, res, me, cookie, shopId, pid) {
   return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không lưu được danh mục.');
 }
 
-async function productDetail(res, me, cookie, shopId, pid, err, form) {
+async function productDetail(res, me, cookie, shopId, pid, err, form, notice) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const r = await sellerApi('GET', `/shops/${shopId}/products/${pid}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'products');
@@ -956,7 +956,7 @@ async function productDetail(res, me, cookie, shopId, pid, err, form) {
   const loadCats = sellerApi('GET', `/shops/${shopId}/categories`, { cookie })
     .then((cr) => (cr.status === 200 ? (cr.json?.categories ?? []) : [])).catch(() => []);
   const [, media, cats] = await Promise.all([loadLevels, loadMedia, loadCats]);
-  return sendHtml(res, err ? 409 : 200, V.renderProductDetail(ctx, shopId, r.json, levels, err, form, media, cats));
+  return sendHtml(res, err ? 409 : 200, V.renderProductDetail(ctx, shopId, r.json, levels, err, form, media, cats, notice));
 }
 
 async function productUpdate(req, res, me, cookie, shopId, pid) {
@@ -1013,6 +1013,39 @@ async function variantPrice(req, res, me, cookie, shopId, pid, vid) {
   return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không sửa được giá biến thể.');
 }
 
+// Lưu HÀNG LOẠT (0093): MỘT form gồm giá/giá gạch/giá vốn/cân của MỌI biến thể → lặp từng
+// biến thể gọi ĐÚNG PATCH per-variant y như variantPrice (giữ NGUYÊN money semantics + validate
+// của seller). Body key theo id: price_/compare_/cost_/weight_<vid>. KHÔNG nuốt lỗi: gom lỗi từng
+// dòng để báo lại. Danh sách vid suy ra từ chính các key price_<uuid> (mỗi dòng luôn gửi 1 ô giá).
+async function variantBulkPrice(req, res, me, cookie, shopId, pid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const idRe = new RegExp(`^price_${UUID}$`);
+  const vids = Object.keys(f).map((k) => { const mm = idRe.exec(k); return mm ? mm[1] : null; }).filter(Boolean);
+  let saved = 0; const errs = [];
+  for (const vid of vids) {
+    // Parse Y HỆT variantPrice: '' = xoá (NULL → mặc định shop); rác → -1 để seller trả 400 tiếng Việt.
+    const wraw = String(f[`weight_${vid}`] ?? '').trim();
+    const craw = String(f[`compare_${vid}`] ?? '').trim();
+    const coraw = String(f[`cost_${vid}`] ?? '').trim();
+    const body = {
+      price_vnd: parseVnd(f[`price_${vid}`]),
+      weight_gram: wraw === '' ? null : (Number.isFinite(Number(wraw)) ? Math.round(Number(wraw)) : -1),
+      compare_at_vnd: craw === '' ? null : (Number.isFinite(Number(craw)) ? Math.round(Number(craw)) : -1),
+      cost_vnd: coraw === '' ? null : (Number.isFinite(Number(coraw)) ? Math.round(Number(coraw)) : -1),
+    };
+    const r = await sellerApi('PATCH', `/shops/${shopId}/products/${pid}/variants/${vid}`, { cookie, body });
+    if (r.status === 200) saved++;
+    else errs.push(r.json?.error ?? `biến thể ${vid.slice(0, 8)} lỗi`);
+  }
+  if (errs.length) {
+    // Có lỗi → hiện lại trang kèm số đã lưu + lỗi (không âm thầm bỏ qua dòng lỗi).
+    const msg = `Đã lưu ${saved}/${vids.length} biến thể. Lỗi: ${errs.slice(0, 5).join('; ')}${errs.length > 5 ? '…' : ''}`;
+    return productDetail(res, me, cookie, shopId, pid, msg);
+  }
+  return redirect(res, `/shops/${shopId}/products/${pid}?saved=${saved}`);
+}
+
 async function variantDelete(res, me, cookie, shopId, pid, vid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const r = await sellerApi('DELETE', `/shops/${shopId}/products/${pid}/variants/${vid}`, { cookie });
@@ -1028,6 +1061,33 @@ async function inventoryAdjust(req, res, me, cookie, shopId, pid, vid) {
   const r = await sellerApi('POST', `/shops/${shopId}/variants/${vid}/inventory/adjust`, { cookie, body });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/products/${pid}`);
   return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không cập nhật được tồn.');
+}
+
+// Điều chỉnh tồn HÀNG LOẠT (nút "Cập nhật tồn"): mọi ô +/− của bảng biến thể nằm chung form
+// bulkstock, key delta_<vid>. Chỉ áp cho dòng ĐÃ điền số khác 0; mỗi dòng gọi ĐÚNG cùng endpoint
+// /inventory/adjust như nút lẻ cũ → sổ kho / oversell / RLS y hệt N lần bấm lẻ. Gom lỗi để báo lại.
+async function inventoryBulkAdjust(req, res, me, cookie, shopId, pid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const reason = String(f.reason ?? '').trim() || null;
+  const idRe = new RegExp(`^delta_${UUID}$`);
+  const vids = Object.keys(f).map((k) => { const mm = idRe.exec(k); return mm ? mm[1] : null; }).filter(Boolean);
+  let done = 0, filled = 0; const errs = [];
+  for (const vid of vids) {
+    const raw = String(f[`delta_${vid}`] ?? '').replace(/[^\d-]/g, '');
+    if (raw === '' || raw === '-') continue;              // dòng bỏ trống → không đụng tới
+    const delta = parseInt(raw, 10);
+    if (!Number.isFinite(delta) || delta === 0) continue; // 0/rác → bỏ (không tạo chuyển động thừa)
+    filled++;
+    const r = await sellerApi('POST', `/shops/${shopId}/variants/${vid}/inventory/adjust`, { cookie, body: { delta, reason } });
+    if (r.status === 200) done++;
+    else errs.push(r.json?.error ?? `biến thể ${vid.slice(0, 8)} lỗi`);
+  }
+  if (errs.length) {
+    const msg = `Đã chỉnh tồn ${done}/${filled} biến thể. Lỗi: ${errs.slice(0, 5).join('; ')}${errs.length > 5 ? '…' : ''}`;
+    return productDetail(res, me, cookie, shopId, pid, msg);
+  }
+  return redirect(res, `/shops/${shopId}/products/${pid}?stocked=${done}`);
 }
 
 async function mediaUpload(req, res, me, cookie, shopId, pid) {
@@ -2357,13 +2417,21 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/promotions/${UUID}/delete$`).exec(p)) && req.method === 'POST') return promotionDelete(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/promotions/${UUID}/products$`).exec(p)) && req.method === 'POST') return promotionAddProduct(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/promotions/${UUID}/products/${UUID}/remove$`).exec(p)) && req.method === 'POST') return promotionRemoveProduct(req, res, me, cookie, m[1], m[2], m[3]);
-    if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'GET') return productDetail(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'GET') {
+      const sv = parseInt(url.searchParams.get('saved') ?? '', 10);
+      const st = parseInt(url.searchParams.get('stocked') ?? '', 10);
+      const notice = (Number.isFinite(sv) && sv > 0) ? `Đã lưu ${sv} biến thể.`
+        : (Number.isFinite(st) && st > 0) ? `Đã cập nhật tồn ${st} biến thể.` : null;
+      return productDetail(res, me, cookie, m[1], m[2], undefined, undefined, notice);
+    }
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'POST') return productUpdate(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/(publish|archive)$`).exec(p)) && req.method === 'POST') return productStatus(res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/delete$`).exec(p)) && req.method === 'POST') return productDelete(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/options$`).exec(p)) && req.method === 'POST') return optionsSave(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/specs$`).exec(p)) && req.method === 'POST') return specsSave(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants$`).exec(p)) && req.method === 'POST') return variantAdd(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants/bulk$`).exec(p)) && req.method === 'POST') return variantBulkPrice(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/inventory/bulk$`).exec(p)) && req.method === 'POST') return inventoryBulkAdjust(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants/${UUID}/price$`).exec(p)) && req.method === 'POST') return variantPrice(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants/${UUID}/delete$`).exec(p)) && req.method === 'POST') return variantDelete(res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/variants/${UUID}/inventory$`).exec(p)) && req.method === 'POST') return inventoryAdjust(req, res, me, cookie, m[1], m[2], m[3]);

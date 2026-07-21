@@ -1807,9 +1807,19 @@ async function domainStepUp(req, res, me, cookie, shopId) {
 async function themePage(res, me, cookie, shopId, ok) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'theme');
-  const r = await sellerApi('GET', `/shops/${shopId}/theme`, { cookie });
+  // Kèm danh mục + trang CMS thật → ô liên kết (nav/banner) thành SELECT đích có sẵn
+  // (chủ shop không phải đoán URL); lỗi phụ → danh sách rỗng, form vẫn dùng được.
+  const [r, catR, pgR] = await Promise.all([
+    sellerApi('GET', `/shops/${shopId}/theme`, { cookie }),
+    sellerApi('GET', `/shops/${shopId}/categories`, { cookie }).catch(() => ({ status: 0 })),
+    sellerApi('GET', `/shops/${shopId}/pages`, { cookie }).catch(() => ({ status: 0 })),
+  ]);
   const theme = r.status === 200 ? r.json : { tokens: {} };
-  return sendHtml(res, 200, V.renderTheme(ctx, theme, ok === '1' ? 'Đã lưu — mở trang bán hàng để xem thay đổi.' : null));
+  const linkTargets = {
+    categories: catR.status === 200 ? (catR.json?.categories ?? []) : [],
+    pages: pgR.status === 200 ? (pgR.json?.pages ?? []) : [],
+  };
+  return sendHtml(res, 200, V.renderTheme(ctx, theme, ok === '1' ? 'Đã lưu — mở trang bán hàng để xem thay đổi.' : null, linkTargets));
 }
 async function themeSave(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -1865,7 +1875,9 @@ async function themeSave(req, res, me, cookie, shopId) {
     const navLinks = [];
     for (let i = 0; i < 6; i++) {
       const label = String(f[`nav_label_${i}`] ?? '').trim().slice(0, 40);
-      const url = String(f[`nav_url_${i}`] ?? '').trim().slice(0, 300);
+      // Đích = ô "URL tự nhập" GHI ĐÈ khi có chữ, không thì lấy SELECT đích có sẵn
+      // (no-JS: cả hai control luôn hiện; seller vẫn safeLink lần cuối — phòng thủ giữ nguyên).
+      const url = (String(f[`nav_url_${i}`] ?? '').trim() || String(f[`nav_dest_${i}`] ?? '').trim()).slice(0, 300);
       if (label && url) navLinks.push({ label, url }); // bỏ hàng thiếu nhãn hoặc URL
     }
     if (navLinks.length) head.props.nav_links = navLinks; else delete head.props.nav_links;
@@ -1924,7 +1936,8 @@ async function bannerSave(req, res, me, cookie, shopId) {
       headline: String(fields[`headline_${i}`] ?? '').trim().slice(0, 120),
       sub: String(fields[`sub_${i}`] ?? '').trim().slice(0, 200),
       button_label: String(fields[`button_label_${i}`] ?? '').trim().slice(0, 40),
-      button_link: String(fields[`button_link_${i}`] ?? '').trim().slice(0, 300),
+      // Ô "URL tự nhập" ghi đè SELECT đích có sẵn (giống nav_links; seller safeLink lần cuối).
+      button_link: (String(fields[`button_link_${i}`] ?? '').trim() || String(fields[`button_dest_${i}`] ?? '').trim()).slice(0, 300),
     });
   }
   // Merge vào hero.props.slides của layout ĐANG LƯU (không đụng section/props khác).

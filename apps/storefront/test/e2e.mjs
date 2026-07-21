@@ -242,12 +242,18 @@ async function main() {
     ? ok('?pmax=400000 giữ SP giá 350k + link mang theo bộ lọc') : bad('pmax lọc sai / link rơi lọc');
   r = await sf(A.host, `/search?q=${encodeURIComponent('trai tham')}&pmin=abc`);
   r.body.includes('Thảm trải sàn cao cấp') ? ok('pmin không hợp lệ bị BỎ QUA (không 500/không lọc bậy)') : bad('pmin rác phá kết quả');
-  // Canonical phân trang (#28): trang 2 canonical về CHÍNH NÓ, kèm rel=prev.
+  // Canonical phân trang (#28): lưới đầy đủ giờ ở /products; link cũ /?page=/?sort= 301 sang.
   r = await sf(A.host, '/?page=2');
-  r.body.includes(`<link rel="canonical" href="https://${A.host}/?page=2">`) ? ok('canonical /?page=2 chứa page=2 (không gộp về trang 1)') : bad('canonical trang 2 sai', r.body.match(/rel="canonical"[^>]*/)?.[0]);
-  r.body.includes(`<link rel="prev" href="https://${A.host}/">`) ? ok('trang 2 có rel=prev về trang 1 (URL sạch)') : bad('thiếu rel=prev');
+  r.status === 301 && r.headers.location === '/products?page=2'
+    ? ok('/?page=2 → 301 /products?page=2 (link cũ không gãy)') : bad('redirect ?page trang chủ sai', `${r.status} ${r.headers.location}`);
+  r = await sf(A.host, '/?sort=price_asc');
+  r.status === 301 && r.headers.location === '/products?sort=price_asc'
+    ? ok('/?sort= → 301 /products?sort= (dropdown/bookmark cũ không gãy)') : bad('redirect ?sort trang chủ sai', `${r.status} ${r.headers.location}`);
+  r = await sf(A.host, '/products?page=2');
+  r.body.includes(`<link rel="canonical" href="https://${A.host}/products?page=2">`) ? ok('canonical /products?page=2 chứa page=2 (không gộp về trang 1)') : bad('canonical trang 2 sai', r.body.match(/rel="canonical"[^>]*/)?.[0]);
+  r.body.includes(`<link rel="prev" href="https://${A.host}/products">`) ? ok('trang 2 có rel=prev về /products (URL sạch)') : bad('thiếu rel=prev');
   r = await sf(A.host, '/');
-  r.body.includes(`<link rel="canonical" href="https://${A.host}/">`) && !r.body.includes('?page=1') ? ok('trang 1 canonical URL sạch (không ?page=1)') : bad('canonical trang 1 sai');
+  r.body.includes(`<link rel="canonical" href="https://${A.host}/">`) && !r.body.includes('?page=1') ? ok('trang chủ canonical URL sạch (không ?page=1)') : bad('canonical trang chủ sai');
 
   // ── 9. Block ẢNH trong trang nội dung (escape + CSP-sạch) ───────────────────
   sect('9. Block ảnh CMS (escape)');
@@ -342,8 +348,8 @@ async function main() {
   const mediaBlocks = r.body.split('<a class="card-media"').slice(1).map((s) => s.slice(0, s.indexOf('</a>')));
   mediaBlocks.length && !mediaBlocks.some((b) => /<form|<button/.test(b))
     ? ok('HTML hợp lệ: không lồng <form>/<button> trong <a class="card-media">') : bad('interactive lồng trong <a> media');
-  // "Xem tất cả →" trên đầu-mục lưới SP → route có sẵn (không 404).
-  r.body.includes('Xem tất cả →') && r.body.includes('href="/?sort=new"') ? ok('lưới SP có link "Xem tất cả →" (/?sort=new, route có sẵn)') : bad('thiếu Xem tất cả');
+  // "Xem tất cả →" trên đầu-mục lưới SP → /products (lưới đầy đủ).
+  r.body.includes('Xem tất cả →') && r.body.includes('href="/products"') ? ok('lưới SP có link "Xem tất cả →" (/products)') : bad('thiếu Xem tất cả');
   // Shell quick-view + script DOM-only.
   r.body.includes('id="qv-modal"') && r.body.includes('role="dialog"') && r.body.includes('id="qv-backdrop"')
     ? ok('shell quick-view: #qv-modal role=dialog + #qv-backdrop (ẩn; JS dựng thân)') : bad('thiếu shell quick-view');
@@ -365,6 +371,42 @@ async function main() {
     ? ok('quickview: content-type JSON + cache CDN (catalog public)') : bad('quickview header sai', String(qv.headers['cache-control']));
   qv = await sf(A.host, `/p/${draftSlug}/quickview`);
   qv.status === 404 ? ok('quickview SP DRAFT → 404 (không lộ dữ liệu chưa bán)') : bad('quickview lộ draft', String(qv.status));
+
+  // ── Trang chủ NỔI BẬT (tối đa 8 SP, không chips/sort/pager) + /products lưới đầy đủ ──
+  sect('Trang chủ nổi bật (8 SP + Xem thêm) + /products (chips lọc + sort + pager)');
+  const catKiemSlug = `kiem-${uniq()}`;
+  const catMk = await rq(SELLER, 'POST', `/shops/${A.shopId}/categories`, { body: { slug: catKiemSlug, name: 'Danh Mục Kiểm' }, cookie: A.cookie, origin: OS });
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/products/${rugPid}/categories`, { body: { category_ids: [catMk.json.id] }, cookie: A.cookie, origin: OS });
+  for (let i = 0; i < 6; i++) await mkProduct(A.shopId, A.cookie, { title: `SP Đầy ${i}`, slug: `day-${i}-${uniq()}`, price_vnd: 100000 + i * 1000, status: 'active', variants: [{ sku: `DAY${i}-${uniq()}`, price_vnd: 100000 + i * 1000 }] });
+  r = await sf(A.host, '/'); // 11 SP active nhưng trang chủ CHỈ 8
+  const homeCards = (r.body.match(/<div class="card(?: is-out)?">/g) || []).length;
+  homeCards === 8 ? ok('trang chủ đúng 8 thẻ SP (2 hàng × 4, không ôm cả catalog)') : bad(`trang chủ ${homeCards} thẻ (mong 8)`);
+  !r.body.includes('class="chips"') && !r.body.includes('class="sortbar"') && !r.body.includes('class="pager"')
+    ? ok('trang chủ KHÔNG còn chips/sortbar/pager (chuyển sang /products)') : bad('trang chủ vẫn còn chips/sort/pager');
+  r.body.includes('class="grid-more"') && /class="btn btn-primary btn-more" href="\/products"/.test(r.body)
+    ? ok('nút "Xem thêm" to, căn giữa → /products') : bad('thiếu nút Xem thêm');
+  // Section "Bài viết mới nhất" (3 bài published gần nhất, kiểu Haravan) — layout cũ vẫn tự có.
+  r.body.includes('Bài viết mới nhất') && (r.body.match(/class="hblog-card"/g) || []).length === 3
+    ? ok('trang chủ có section blog: 3 thẻ bài viết mới nhất') : bad('section blog trang chủ thiếu/sai số thẻ', String((r.body.match(/class="hblog-card"/g) || []).length));
+  r.body.includes('Tháng') && r.body.includes('class="hblog-more"')
+    ? ok('thẻ blog: ngày "dd Tháng MM, yyyy" + link Xem thêm → /blog/:slug') : bad('thẻ blog thiếu ngày/Xem thêm');
+  // /products: lưới đầy đủ + chip danh mục LỌC TẠI CHỖ + sort + đủ 11 SP (≤24 → 1 trang).
+  r = await sf(A.host, '/products');
+  r.status === 200 && r.body.includes('Tất cả sản phẩm') ? ok('/products 200, tiêu đề "Tất cả sản phẩm"') : bad('/products lỗi', String(r.status));
+  const prodCards = (r.body.match(/<div class="card(?: is-out)?">/g) || []).length;
+  prodCards === 11 ? ok(`/products hiện đủ 11 SP active`) : bad(`/products ${prodCards} thẻ (mong 11)`);
+  r.body.includes('class="chips chips-center"') && r.body.includes(`href="/products?cat=`) && r.body.includes('Danh Mục Kiểm')
+    ? ok('/products có chip danh mục dạng NÚT LỌC (?cat=, không nhảy trang)') : bad('thiếu chips lọc trên /products');
+  r.body.includes('class="sortbar"') && r.body.includes('Sắp xếp:') && r.body.includes('class="products-toolbar"')
+    ? ok('/products có thanh sắp xếp (căn giữa trong toolbar)') : bad('thiếu sortbar /products');
+  r = await sf(A.host, `/products?cat=${catKiemSlug}`);
+  r.status === 200 && r.body.includes('Thảm trải sàn cao cấp') && !r.body.includes('SP Đầy 0')
+    ? ok('?cat= lọc đúng: chỉ SP thuộc danh mục') : bad('lọc ?cat sai');
+  r.body.includes('aria-current="true"') ? ok('chip danh mục đang chọn được đánh dấu (aria-current)') : bad('chip chọn không đánh dấu');
+  r = await sf(A.host, '/products?sort=price_asc');
+  r.status === 200 ? ok('/products?sort=price_asc 200 (đích mới của "Khuyến mãi")') : bad('sort trên /products lỗi', String(r.status));
+  r = await sf(A.host, '/sitemap.xml');
+  r.body.includes(`<loc>https://${A.host}/products</loc>`) ? ok('sitemap có /products') : bad('sitemap thiếu /products');
 
   // ── Banner trang chủ tuỳ chỉnh (Phase 5): carousel ảnh tải riêng + fallback ──
   sect('Banner trang chủ (ảnh tự tải) + fallback hero tự động');
@@ -407,8 +449,19 @@ async function main() {
   !r.body.includes('class="hero hero-banner') && r.body.includes('hero-track')
     ? ok('bỏ banner → fallback hero tự động (không còn hero-banner)') : bad('fallback hero tự động lỗi', r.body.match(/<section class="hero[^"]*"/)?.[0]);
 
+  // ── Nâng cấp banner: fallback CSS nhanh hơn + khung tỷ lệ cố định + JS carousel ──
+  r.body.includes('hcycle2 10s') && r.body.includes('hcycle3 15s') && r.body.includes('animation-delay:5s')
+    ? ok('CSS fallback tăng tốc: hcycle2 10s / hcycle3 15s / delay 5s') : bad('keyframes fallback chưa đổi tốc độ');
+  r.body.includes('aspect-ratio:21/8') && r.body.includes('aspect-ratio:4/3') && r.body.includes('object-position:center')
+    ? ok('banner khung tỷ lệ CỐ ĐỊNH 21/8 (mobile 4/3) + object-fit cover — upload là khớp') : bad('thiếu aspect-ratio/cover banner');
+  const heroScript = (r.body.match(/<script nonce="[^"]*">([\s\S]*?)<\/script>/) || [])[1] || '';
+  heroScript.includes('js-run') && heroScript.includes('hero-arrow') && heroScript.includes('5000') && heroScript.includes('mouseenter')
+    ? ok('script carousel: .js-run + mũi tên/chấm JS dựng + 5s + dừng khi rê') : bad('script carousel thiếu');
+  !heroScript.includes('.innerHTML') && (r.body.match(/<script/g) || []).length === 1
+    ? ok('carousel nằm TRONG một khối <script> duy nhất, không innerHTML') : bad('script carousel vi phạm quy ước');
+
   // ── Phase 5b: menu header tự chỉnh (toggle shortcut + nav_links) qua HTTP ─────
-  // Shortcut khớp CHUỖI ĐẦY ĐỦ (href+text) vì "/?sort=new" cũng nằm ở link "Xem tất cả".
+  // Shortcut khớp CHUỖI ĐẦY ĐỦ (href+text) để không đụng chuỗi khác trong trang.
   await rq(SELLER, 'PUT', `/shops/${A.shopId}/theme`, { cookie: A.cookie, origin: OS, body: { tokens: {}, layout: [
     { section: 'header', props: { menu_show_new: false, nav_links: [
       { label: 'NAVLINK-AN-TOAN', url: '/pages/gioi-thieu' },
@@ -418,7 +471,7 @@ async function main() {
     { section: 'product_grid', props: {} },
   ] } });
   r = await sf(A.host, '/');
-  !r.body.includes('<a href="/?sort=new">Hàng mới</a>')
+  !r.body.includes('<a href="/products?sort=new">Hàng mới</a>')
     ? ok('menu_show_new=false → shortcut "Hàng mới" ẩn') : bad('toggle shortcut không ẩn');
   r.body.includes('href="/pages/gioi-thieu">NAVLINK-AN-TOAN</a>')
     ? ok('nav_links tuỳ chỉnh render (nhãn + href nội bộ)') : bad('nav_links không render');
@@ -432,8 +485,8 @@ async function main() {
     { section: 'product_grid', props: {} },
   ] } });
   r = await sf(A.host, '/');
-  r.body.includes('<a href="/?sort=new">Hàng mới</a>')
-    ? ok('bỏ cấu hình header → 3 shortcut hiện đủ (mặc định)') : bad('shortcut mặc định không hiện');
+  r.body.includes('<a href="/products?sort=new">Hàng mới</a>') && r.body.includes('<a href="/products?sort=price_asc">Khuyến mãi</a>')
+    ? ok('bỏ cấu hình header → 3 shortcut hiện đủ, trỏ /products?sort= (đích mới)') : bad('shortcut mặc định không hiện/không trỏ /products');
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

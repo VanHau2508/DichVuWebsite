@@ -196,11 +196,12 @@ function sortBar(pi) {
 }
 // Form lọc no-JS (#27, GET — CSP-sạch): còn hàng + khoảng giá. Chỉ hiện ở danh mục /
 // tìm kiếm (pageInfo.filterable). Giữ q/sort qua input hidden; submit = về trang 1.
-function filterBar(pi, query) {
+function filterBar(pi, query, extraHidden = '') {
   if (!pi?.filterable) return '';
   const f = pi.filters ?? {};
-  const path = pi.basePath.split('?')[0]; // /c/:slug hoặc /search (q giữ bằng hidden)
-  const hidden = (query ? `<input type="hidden" name="q" value="${esc(query)}">` : '')
+  const path = pi.basePath.split('?')[0]; // /products, /c/:slug hoặc /search (q giữ bằng hidden)
+  const hidden = extraHidden
+    + (query ? `<input type="hidden" name="q" value="${esc(query)}">` : '')
     + (pi.sort && pi.sort !== 'new' ? `<input type="hidden" name="sort" value="${esc(pi.sort)}">` : '');
   return `<form class="filterbar" method="GET" action="${esc(path)}">${hidden}
     <label class="fb-chk"><input type="checkbox" name="instock" value="1"${f.instock ? ' checked' : ''}> Còn hàng</label>
@@ -269,8 +270,8 @@ const SECTIONS = {
     const hp = { ...saved, ...(props && typeof props === 'object' ? props : {}) };
     const shortcuts = [
       hp.menu_show_featured !== false ? '<a href="/">Nổi bật</a>' : '',
-      hp.menu_show_new !== false ? '<a href="/?sort=new">Hàng mới</a>' : '',
-      hp.menu_show_sale !== false ? '<a href="/?sort=price_asc">Khuyến mãi</a>' : '',
+      hp.menu_show_new !== false ? '<a href="/products?sort=new">Hàng mới</a>' : '',
+      hp.menu_show_sale !== false ? '<a href="/products?sort=price_asc">Khuyến mãi</a>' : '',
     ].join('');
     // Liên kết tuỳ chỉnh: seller đã sanitize (kẹp nhãn, safeLink url, ≤6) — đây re-lọc khi render
     // (esc nhãn + normLink url) chống XSS/CSP nếu dữ liệu cũ lọt.
@@ -392,21 +393,61 @@ const SECTIONS = {
   },
 
   product_grid: (props, ctx) => {
-    const chips = ctx.categories.length
-      ? `<div class="chips"><a class="chip" href="/">Tất cả</a>${ctx.categories.map((c) => `<a class="chip" href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}</div>`
-      : '';
     const cards = ctx.products.length ? productCards(ctx.products) : '<p class="empty">Cửa hàng chưa có sản phẩm nào.</p>';
-    // "Xem tất cả →": trỏ tới lưới toàn shop (mới nhất) — route có sẵn, KHÔNG 404. Kèm chips + lọc.
+    // TRANG CHỦ (không pageInfo): chế độ "NỔI BẬT" — server chỉ đưa 8 SP, KHÔNG chips/sort/
+    // lọc/pager; nút "Xem thêm" to, căn giữa → /products (lưới đầy đủ). Chủ shop: khu nổi
+    // bật không được ôm cả 100 SP.
+    if (!ctx.pageInfo) {
+      return `<section class="section" id="san-pham"><div class="wrap">
+      <div class="section-h">
+        <div class="section-h-l"><h2>${esc(props.title || 'Sản phẩm nổi bật')}</h2></div>
+        <a class="section-all" href="/products">Xem tất cả →</a>
+      </div>
+      <div class="grid">${cards}</div>
+      ${ctx.products.length ? `<div class="grid-more"><a class="btn btn-primary btn-more" href="/products">Xem thêm<span class="btn-more-arrow" aria-hidden="true">→</span></a></div>` : ''}
+    </div></section>`;
+    }
+    // TRANG DANH SÁCH (có pageInfo — /c/:slug qua renderHome): giữ nguyên lưới đầy đủ như cũ.
+    const chips = ctx.categories.length
+      ? `<div class="chips"><a class="chip" href="/products">Tất cả</a>${ctx.categories.map((c) => `<a class="chip" href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}</div>`
+      : '';
     return `<section class="section" id="san-pham"><div class="wrap">
       <div class="section-h">
         <div class="section-h-l"><h2>${esc(props.title || 'Sản phẩm')}</h2></div>
-        <a class="section-all" href="/?sort=new">Xem tất cả →</a>
+        <a class="section-all" href="/products">Xem tất cả →</a>
       </div>
       ${chips}
       ${filterBar(ctx.pageInfo, ctx.query)}
       ${ctx.products.length ? sortBar(ctx.pageInfo) : ''}
       <div class="grid">${cards}</div>
       ${pager(ctx.pageInfo)}
+    </div></section>`;
+  },
+
+  // "Bài viết mới nhất" (trang chủ, kiểu Haravan): 3 bài published gần nhất, thẻ ngang có
+  // ảnh bìa (placeholder khi thiếu) + trích đoạn (~120 ký tự, server cắt) + ngày + Xem thêm.
+  // KHÔNG có bài → section tự ẩn (không khung rỗng). SSR thuần, esc mọi field người bán.
+  blog: (props, ctx) => {
+    const posts = Array.isArray(ctx.blogPosts) ? ctx.blogPosts : [];
+    if (!posts.length) return '';
+    const fmtVN = (d) => {
+      try { const dt = new Date(d); const p2 = (n) => String(n).padStart(2, '0'); return `${p2(dt.getDate())} Tháng ${p2(dt.getMonth() + 1)}, ${dt.getFullYear()}`; } catch { return ''; }
+    };
+    const cards = posts.map((p) => `<article class="hblog-card">
+        <a class="hblog-thumb" href="/blog/${esc(p.slug)}" aria-label="${esc(p.title)}">${p.cover ? `<img src="${esc(p.cover)}" alt="${esc(p.title)}" loading="lazy">` : `<span class="ph">${I_IMG}</span>`}</a>
+        <div class="hblog-body">
+          <h3><a href="/blog/${esc(p.slug)}">${esc(p.title)}</a></h3>
+          <div class="hblog-date">${esc(fmtVN(p.published_at))}</div>
+          ${p.excerpt ? `<p>${esc(p.excerpt)}…</p>` : ''}
+          <a class="hblog-more" href="/blog/${esc(p.slug)}">Xem thêm →</a>
+        </div>
+      </article>`).join('');
+    return `<section class="section hblog" id="bai-viet"><div class="wrap">
+      <div class="section-h">
+        <div class="section-h-l"><h2>${esc(props.title || 'Bài viết mới nhất')}</h2></div>
+        <a class="section-all" href="/blog">Xem tất cả →</a>
+      </div>
+      <div class="hblog-grid">${cards}</div>
     </div></section>`;
   },
 
@@ -472,6 +513,7 @@ const DEFAULT_LAYOUT = [
   { section: 'header', props: {} },
   { section: 'hero', props: { title: '', subtitle: '' } },
   { section: 'product_grid', props: { title: 'Sản phẩm nổi bật' } },
+  { section: 'blog', props: {} },
   { section: 'footer', props: {} },
 ];
 
@@ -565,10 +607,23 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .hero:hover .hslide,.hero:focus-within .hslide,.hero:hover .dot,.hero:focus-within .dot{animation-play-state:paused}
 .hslide{grid-area:1/1;opacity:0;visibility:hidden}
 .hero-n1 .hslide{opacity:1;visibility:visible}
-.hero-n2 .hslide{animation:hcycle2 12s infinite}
-.hero-n3 .hslide{animation:hcycle3 18s infinite}
-.hero-n2 .hslide:nth-child(2),.hero-n3 .hslide:nth-child(2){animation-delay:6s}
-.hero-n3 .hslide:nth-child(3){animation-delay:12s}
+.hero-n2 .hslide{animation:hcycle2 10s infinite}
+.hero-n3 .hslide{animation:hcycle3 15s infinite}
+.hero-n2 .hslide:nth-child(2),.hero-n3 .hslide:nth-child(2){animation-delay:5s}
+.hero-n3 .hslide:nth-child(3){animation-delay:10s}
+/* Có JS (.js-run — script nonce gắn khi >1 cảnh): TẮT keyframes CSS, lớp .on điều khiển
+   cảnh hiện tại (mũi tên/chấm bấm + tự chạy 5s + dừng khi rê/focus). Specificity
+   .hero.js-run thắng .hero-nN. Không JS → keyframes fallback ở trên vẫn tự chạy. */
+.hero.js-run .hslide{animation:none;opacity:0;visibility:hidden;transition:opacity .5s ease}
+.hero.js-run .hslide.on{opacity:1;visibility:visible}
+.hero.js-run .hero-dots .dot{animation:none;cursor:pointer;border:0;padding:0;transition:background .2s,width .2s}
+.hero.js-run .hero-dots .dot.on{background:#fff;width:22px}
+/* Mũi tên ‹ › do JS dựng (createElement) — vòng tròn MAISON, chỉ hiện khi .js-run. */
+.hero-arrow{position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:44px;height:44px;display:none;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.42);border-radius:var(--pill);background:rgba(10,8,6,.32);color:#fff;font-size:1.6rem;line-height:1;cursor:pointer;backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);transition:background .15s,border-color .15s}
+.hero-arrow:hover{background:rgba(10,8,6,.55);border-color:#fff}
+.hero.js-run .hero-arrow{display:inline-flex}
+.hero-arrow.prev{left:14px}.hero-arrow.next{right:14px}
+@media(max-width:720px){.hero-arrow{width:36px;height:36px;font-size:1.3rem}.hero-arrow.prev{left:8px}.hero-arrow.next{right:8px}}
 @keyframes hcycle2{0%{opacity:0;visibility:hidden;transform:translateY(10px)}3%{opacity:1;visibility:visible;transform:none}47%{opacity:1;visibility:visible;transform:none}50%,100%{opacity:0;visibility:hidden}}
 @keyframes hcycle3{0%{opacity:0;visibility:hidden;transform:translateY(10px)}2.5%{opacity:1;visibility:visible;transform:none}30.8%{opacity:1;visibility:visible;transform:none}33.4%,100%{opacity:0;visibility:hidden}}
 .hero-grid{max-width:1120px;margin:0 auto;padding:56px 20px 60px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
@@ -599,19 +654,22 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
    Chiều cao do .hbanner-overlay quyết định (các slide chồng grid → cao nhất chi phối). */
 .hero-banner::after{display:none}
 .hero-banner .hero-track{display:grid}
-.hbanner{position:relative;overflow:hidden}
-.hbanner-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0}
-.hbanner-overlay{position:relative;z-index:1;min-height:clamp(300px,40vw,500px);display:flex;align-items:center;background:linear-gradient(90deg,rgba(10,8,6,.62),rgba(10,8,6,.28) 55%,rgba(10,8,6,.08))}
+/* Khung banner TỶ LỆ CỐ ĐỊNH (chủ shop: "chỉ cần upload là khớp"): desktop 21/8 (to hơn
+   trước, kẹp 400–560px), mobile 4/3; ảnh object-fit cover tự phủ kín mọi kích thước gốc. */
+.hbanner{position:relative;overflow:hidden;width:100%;aspect-ratio:21/8;min-height:400px;max-height:560px}
+.hbanner-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;z-index:0}
+.hbanner-overlay{position:relative;z-index:1;height:100%;display:flex;align-items:center;background:linear-gradient(90deg,rgba(10,8,6,.62),rgba(10,8,6,.28) 55%,rgba(10,8,6,.08))}
+@media(max-width:720px){.hbanner{aspect-ratio:4/3;min-height:0;max-height:none}}
 .hbanner-copy{max-width:1120px;width:100%;margin:0 auto;padding:48px 20px}
 .hero .hero-h1{margin:0 0 16px;font-size:clamp(2rem,3.8vw,3.1rem);font-weight:800;letter-spacing:-.025em;line-height:1.08;color:#fff;text-wrap:balance;overflow-wrap:anywhere;max-width:18ch}
 @media(max-width:820px){.hbanner-overlay{background:linear-gradient(0deg,rgba(10,8,6,.66),rgba(10,8,6,.3));text-align:center}.hbanner-copy{padding:40px 20px}.hbanner-copy .hero-sub{max-width:none;margin-inline:auto}.hbanner-copy .hero-cta{justify-content:center}}
 /* Chấm chỉ báo: cùng chu kỳ + delay với slide → chấm "đang chiếu" giãn thành vạch trắng. */
 .hero-dots{position:relative;z-index:1;display:flex;justify-content:center;gap:8px;padding:0 0 20px}
 .hero-dots .dot{width:8px;height:8px;border-radius:var(--pill);background:rgba(255,255,255,.35)}
-.hero-n2 .dot{animation:hdot2 12s infinite}
-.hero-n3 .dot{animation:hdot3 18s infinite}
-.hero-n2 .dot:nth-child(2),.hero-n3 .dot:nth-child(2){animation-delay:6s}
-.hero-n3 .dot:nth-child(3){animation-delay:12s}
+.hero-n2 .dot{animation:hdot2 10s infinite}
+.hero-n3 .dot{animation:hdot3 15s infinite}
+.hero-n2 .dot:nth-child(2),.hero-n3 .dot:nth-child(2){animation-delay:5s}
+.hero-n3 .dot:nth-child(3){animation-delay:10s}
 @keyframes hdot2{0%,50%,100%{background:rgba(255,255,255,.35);width:8px}3%,47%{background:#fff;width:22px}}
 @keyframes hdot3{0%,33.4%,100%{background:rgba(255,255,255,.35);width:8px}2.5%,30.8%{background:#fff;width:22px}}
 @media(max-width:820px){.hero-grid{grid-template-columns:1fr;gap:26px;padding:38px 20px 42px;text-align:center}.hero-sub{max-width:none}.hero-cta{justify-content:center}.hero-media{max-width:440px;width:100%;margin:0 auto}}
@@ -628,6 +686,35 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 24px}
 .chip{border:1px solid var(--color-border);border-radius:var(--pill);padding:8px 16px;font-size:.86rem;font-weight:500;color:var(--color-muted);background:var(--color-bg);transition:border-color .15s,color .15s,background .15s,box-shadow .15s}
 .chip:hover{border-color:var(--color-primary);color:var(--color-primary);background:color-mix(in srgb,var(--color-primary) 8%,var(--color-bg));box-shadow:0 6px 16px -8px color-mix(in srgb,var(--color-primary) 45%,transparent)}
+/* Chip ĐANG CHỌN (bộ lọc danh mục /products) — đồng bộ ngôn ngữ với .sort-link.on. */
+.chip.on{border-color:var(--color-primary);background:var(--color-hero-bg);color:color-mix(in srgb,var(--color-primary) 82%,#000);font-weight:700}
+/* Trang /products: chip + thanh sort/lọc CĂN GIỮA (bớt thô, đúng nhịp MAISON). */
+.chips-center{justify-content:center}
+.products-h{justify-content:center;text-align:center}
+.products-h .section-h-l{width:100%}
+.products-title{margin:0 0 4px;font-size:clamp(1.5rem,2.8vw,2.1rem);font-weight:800;letter-spacing:-.02em}
+.products-h .muted{margin:0;font-size:.9rem}
+.products-toolbar{display:flex;flex-direction:column;align-items:center;gap:4px;margin:0 0 24px}
+.products-toolbar .sortbar,.products-toolbar .filterbar{justify-content:center;margin:0 0 10px}
+/* Nút "Xem thêm" TO, căn giữa dưới lưới nổi bật trang chủ → /products. */
+.grid-more{display:flex;justify-content:center;margin:34px 0 4px}
+.btn-more{min-height:54px;padding:14px 46px;font-size:1.05rem;font-weight:700;letter-spacing:.01em}
+.btn-more-arrow{margin-left:10px;transition:transform .2s}
+.btn-more:hover .btn-more-arrow{transform:translateX(4px)}
+/* ── "Bài viết mới nhất" trang chủ (kiểu Haravan): 3 thẻ dọc ảnh bìa + trích đoạn ── */
+.hblog-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:22px}
+.hblog-card{display:flex;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--sh-sm);transition:transform .25s cubic-bezier(.2,.7,.2,1),box-shadow .25s,border-color .25s}
+.hblog-card:hover{transform:translateY(-4px);border-color:color-mix(in srgb,var(--color-primary) 30%,var(--color-border));box-shadow:var(--sh)}
+.hblog-thumb{display:block;aspect-ratio:16/9;background:var(--color-surface);position:relative}
+.hblog-thumb img{width:100%;height:100%;object-fit:cover}
+.hblog-thumb .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#c9c5bd}.hblog-thumb .ph svg{width:34px;height:34px}
+.hblog-body{display:flex;flex-direction:column;gap:6px;padding:16px 18px 18px;flex:1}
+.hblog-body h3{margin:0;font-size:1.02rem;font-weight:700;letter-spacing:-.01em;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.hblog-body h3 a{color:var(--color-text)}.hblog-body h3 a:hover{color:var(--color-primary)}
+.hblog-date{color:var(--color-muted);font-size:.8rem}
+.hblog-body p{margin:0;color:var(--color-muted);font-size:.88rem;line-height:1.6;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.hblog-more{margin-top:auto;padding-top:8px;color:var(--color-primary);font-weight:700;font-size:.88rem}
+.hblog-more:hover{text-decoration:underline}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:22px}
 .empty{color:var(--color-muted);padding:28px 0;text-align:center}
 .features{background:var(--color-surface);border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border)}
@@ -962,6 +1049,49 @@ function cartScript(nonce) {
   function getSummary(){ return fetch('/cart/summary',{credentials:'same-origin',headers:{'accept':'application/json'}}).then(function(r){ return r.ok?r.json():null; }); }
   getSummary().then(function(d){ if(d) setBadge(d.count||0); }).catch(function(){});
 
+  // ── Carousel hero (Phase 6): >1 cảnh + có JS → JS cầm lái: mũi tên ‹ › + chấm BẤM được
+  // + tự chuyển 5s + DỪNG khi rê chuột/focus (WCAG 2.2.2), rời ra chạy tiếp. Nút do JS dựng
+  // (createElement/textContent — không innerHTML) nên markup no-JS sạch; không JS →
+  // keyframes CSS fallback (10s/15s) tự chạy như cũ. .js-run tắt keyframes, .on cầm cảnh.
+  var hero=document.querySelector('.hero');
+  var hslides=hero?hero.querySelectorAll('.hslide'):[];
+  if(hero&&hslides.length>1){
+    hero.classList.add('js-run');
+    var hIdx=0,hTimer=null,hDots=[];
+    var hDotsWrap=hero.querySelector('.hero-dots');
+    function hShow(n){
+      hIdx=(n+hslides.length)%hslides.length;
+      for(var i=0;i<hslides.length;i++){ if(i===hIdx) hslides[i].classList.add('on'); else hslides[i].classList.remove('on'); }
+      for(var j=0;j<hDots.length;j++){ if(j===hIdx) hDots[j].classList.add('on'); else hDots[j].classList.remove('on'); }
+    }
+    var hReduce=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    function hStop(){ if(hTimer){ clearInterval(hTimer); hTimer=null; } }
+    function hStart(){ hStop(); if(hReduce) return; hTimer=setInterval(function(){ hShow(hIdx+1); },5000); } // reduced-motion: không tự chạy, mũi tên vẫn dùng được
+    if(hDotsWrap){ // thay chấm <span> tĩnh bằng <button> bấm được (bàn phím tới được)
+      while(hDotsWrap.firstChild) hDotsWrap.removeChild(hDotsWrap.firstChild);
+      hDotsWrap.removeAttribute('aria-hidden');
+      for(var d=0;d<hslides.length;d++)(function(d){
+        var b=document.createElement('button'); b.type='button'; b.className='dot';
+        b.setAttribute('aria-label','Chuyển tới cảnh '+(d+1));
+        b.addEventListener('click',function(){ hShow(d); hStart(); });
+        hDotsWrap.appendChild(b); hDots.push(b);
+      })(d);
+    }
+    function hArrow(cls,txt,label,step){
+      var b=document.createElement('button'); b.type='button'; b.className='hero-arrow '+cls;
+      b.textContent=txt; b.setAttribute('aria-label',label);
+      b.addEventListener('click',function(){ hShow(hIdx+step); hStart(); });
+      hero.appendChild(b);
+    }
+    hArrow('prev','\\u2039','Cảnh trước',-1);
+    hArrow('next','\\u203a','Cảnh sau',1);
+    hero.addEventListener('mouseenter',hStop);
+    hero.addEventListener('mouseleave',hStart);
+    hero.addEventListener('focusin',hStop);
+    hero.addEventListener('focusout',hStart);
+    hShow(0); hStart();
+  }
+
   var drawer=document.getElementById('cart-drawer'), backdrop=document.getElementById('cart-backdrop');
   if(!drawer||!backdrop) return; // trang không có shell (404/bảo trì) → chỉ badge
   var itemsBox=document.getElementById('cd-items'), subEl=document.getElementById('cd-subtotal'),
@@ -1231,6 +1361,17 @@ function withHomeSections(layout) {
     const gi = out.findIndex((s) => s && s.section === 'product_grid');
     if (gi >= 0) out.splice(gi, 0, { section: 'collections', props: {} });
   }
+  if (!has('blog')) {
+    // "Bài viết mới nhất": NGAY SAU lưới sản phẩm (layout cũ lưu trước khi có section này
+    // vẫn tự hiện — mirror cách chèn features/collections). Không có product_grid → trước
+    // footer. Shop chưa có bài published → renderer trả rỗng, vô hại.
+    const gi = out.findIndex((s) => s && s.section === 'product_grid');
+    if (gi >= 0) out.splice(gi + 1, 0, { section: 'blog', props: {} });
+    else {
+      const fi = out.findIndex((s) => s && s.section === 'footer');
+      out.splice(fi >= 0 ? fi : out.length, 0, { section: 'blog', props: {} });
+    }
+  }
   if (!has('story')) {
     // Băng câu chuyện: trước footer (cuối trang nếu không có footer). Chưa cấu hình
     // → render rỗng, vô hại; có mặt sẵn để trang Giao diện ghi props vào.
@@ -1252,6 +1393,47 @@ export function renderHome(ctx, { canonical = null, prevUrl = null, nextUrl = nu
     canonical, prevUrl, nextUrl, ogTitle: ctx.shop.name, siteName: ctx.shop.name, ogImage: shopOgImage(ctx),
   });
   return page(ctx.shop.name, ctx.theme?.tokens, body, head, ctx.nonce);
+}
+
+/** Trang TẤT CẢ sản phẩm (/products): lưới đầy đủ — chip danh mục là NÚT LỌC tại chỗ
+ *  (?cat=<slug>, chủ shop yêu cầu "lọc, không nhảy trang"), thanh sort/lọc căn giữa kiểu
+ *  MAISON, pager giữ nguyên. Chip/sort/pager đều mang theo bộ lọc đang áp. */
+export function renderProducts(ctx, { canonical = null, prevUrl = null, nextUrl = null, catSlug = null } = {}) {
+  const pi = ctx.pageInfo;
+  // Link chip: đổi danh mục = về trang 1 nhưng GIỮ sort + bộ lọc còn-hàng/giá.
+  const chipHref = (cs) => {
+    const parts = [];
+    if (cs) parts.push(`cat=${encodeURIComponent(cs)}`);
+    if (pi?.sort && pi.sort !== 'new') parts.push(`sort=${pi.sort}`);
+    parts.push(...filterParts(pi));
+    return `/products${parts.length ? `?${parts.join('&')}` : ''}`;
+  };
+  const chip = (cs, label) => {
+    const on = (cs ?? null) === (catSlug ?? null);
+    return `<a class="chip${on ? ' on' : ''}" href="${esc(chipHref(cs))}"${on ? ' aria-current="true"' : ''}>${esc(label)}</a>`;
+  };
+  const chips = ctx.categories.length
+    ? `<div class="chips chips-center">${chip(null, 'Tất cả')}${ctx.categories.map((c) => chip(c.slug, c.name)).join('')}</div>`
+    : '';
+  // Form lọc phải GIỮ ?cat khi submit (GET về /products) — nhét hidden qua filterBar.
+  const catHidden = catSlug ? `<input type="hidden" name="cat" value="${esc(catSlug)}">` : '';
+  const cards = ctx.products.length ? productCards(ctx.products) : '<p class="empty">Chưa có sản phẩm nào trong mục này.</p>';
+  const body = `${SECTIONS.header({}, ctx)}
+    <main class="wrap section" id="san-pham">
+      <div class="section-h products-h"><div class="section-h-l"><h1 class="products-title">Tất cả sản phẩm</h1>${pi ? `<p class="muted">${esc(String(pi.total))} sản phẩm</p>` : ''}</div></div>
+      ${chips}
+      <div class="products-toolbar">
+        ${ctx.products.length || filterParts(pi).length ? sortBar(pi) : ''}
+        ${filterBar(pi, '', catHidden)}
+      </div>
+      <div class="grid">${cards}</div>
+      ${pager(pi)}
+    </main>${SECTIONS.footer({}, ctx)}`;
+  const head = metaHead({
+    description: `Tất cả sản phẩm của ${ctx.shop.name} — giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.`,
+    canonical, prevUrl, nextUrl, ogTitle: `Tất cả sản phẩm — ${ctx.shop.name}`, siteName: ctx.shop.name, ogImage: shopOgImage(ctx),
+  });
+  return page(`Tất cả sản phẩm — ${ctx.shop.name}`, ctx.theme?.tokens, body, head, ctx.nonce);
 }
 
 // Mô tả có ĐỊNH DẠNG (no-JS, CSP-sạch): tách đoạn theo dòng trống; dòng bắt đầu "- "/"• "

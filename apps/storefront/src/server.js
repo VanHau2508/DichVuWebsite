@@ -17,7 +17,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import pg from 'pg';
-import { renderHome, renderProduct, renderPage, renderSearch, renderBlogList, renderBlogPost, renderMaintenance, renderNotFound } from './theme.js';
+import { renderHome, renderProducts, renderProduct, renderPage, renderSearch, renderBlogList, renderBlogPost, renderMaintenance, renderNotFound } from './theme.js';
 import { renderLanding } from './landing.js';
 import { renderAbout, renderSupport, renderTerms, renderBlogList as renderCoBlogList, renderBlogPost as renderCoBlogPost, findPost, companyPaths } from './company.js';
 import { runReq, makeLog, health } from './obs.js';
@@ -186,7 +186,8 @@ function normalizeHost(raw) {
 }
 
 const CACHE_PUBLIC = 'public, s-maxage=60, stale-while-revalidate=300';
-const PAGE_SIZE = 24; // sản phẩm mỗi trang (lưới trang chủ / danh mục / tìm kiếm)
+const PAGE_SIZE = 24; // sản phẩm mỗi trang (lưới /products / danh mục / tìm kiếm)
+const HOME_FEATURED = 8; // trang chủ CHỈ 8 SP nổi bật (2 hàng × 4) — xem đủ ở /products
 
 // Sắp xếp lưới (?sort=): WHITELIST → ORDER BY tĩnh (không nội suy input). Giá sort trên
 // p.price_vnd — đúng cột giá thẻ sản phẩm đang hiển thị. Giá trị lạ rơi về 'new'.
@@ -357,6 +358,13 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     }
     const shopId = resolved.shopId;
 
+    // Trang chủ giờ CHỈ là "nổi bật" (8 SP) — lưới đầy đủ chuyển sang /products. Link cũ
+    // /?sort=&page= (bookmark/SEO/dropdown cũ) 301 sang /products GIỮ query → không gãy.
+    if (url.pathname === '/' && (url.searchParams.has('sort') || url.searchParams.has('page'))) {
+      res.writeHead(301, { location: `/products${url.search}`, 'cache-control': 'no-store' });
+      return res.end();
+    }
+
     // robots.txt — cho phép index, chặn giỏ/checkout, trỏ sitemap của shop.
     if (url.pathname === '/robots.txt') {
       const body = `User-agent: *\nAllow: /\nDisallow: /cart\nDisallow: /checkout\nSitemap: https://${host}/sitemap.xml\n`;
@@ -377,7 +385,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       if (!sm) return sendHtml(res, 404, renderNotFound());
       const escXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const loc = (path) => `  <url><loc>${escXml(`https://${host}${path}`)}</loc></url>`;
-      const urls = [loc('/'), ...sm.cats.map((c) => loc(`/c/${c.slug}`)), ...sm.prods.map((p) => loc(`/p/${p.slug}`)), ...sm.pages.map((p) => loc(`/pages/${p.slug}`)),
+      const urls = [loc('/'), loc('/products'), ...sm.cats.map((c) => loc(`/c/${c.slug}`)), ...sm.prods.map((p) => loc(`/p/${p.slug}`)), ...sm.pages.map((p) => loc(`/pages/${p.slug}`)),
         ...(sm.blog.length ? [loc('/blog'), ...sm.blog.map((b) => loc(`/blog/${b.slug}`))] : [])];
       const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
       res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': CACHE_PUBLIC });
@@ -433,7 +441,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
                     WHERE v.product_id = p.id AND v.price_vnd = p.price_vnd
                       AND v.compare_at_vnd > v.price_vnd AND ${VARIANT_NOT_ORPHAN_SQL}
                     ORDER BY v.position LIMIT 1) AS compare_at_vnd`;
-      const productGrid = async (whereJoin = '', args = [], offset = 0) => {
+      const productGrid = async (whereJoin = '', args = [], offset = 0, limit = PAGE_SIZE) => {
         const total = Number((await c.query(`SELECT count(*)::int n FROM products p ${whereJoin}`, args)).rows[0].n);
         // Flash sale (0082): promo_effective trên p.price_vnd (giá thẻ = giá 'từ' rẻ nhất).
         // pe = LATERAL nguồn giá DUY NHẤT → thẻ hiện giá sale + gạch giá gốc, KHÔNG drift.
@@ -453,7 +461,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
                     WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS available
              FROM products p
              LEFT JOIN LATERAL promo_effective(p.id, p.price_vnd, now()) pe ON true
-             ${whereJoin} ORDER BY ${GRID_SORTS[sortKey]} LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
+             ${whereJoin} ORDER BY ${GRID_SORTS[sortKey]} LIMIT ${limit} OFFSET ${offset}`,
           args,
         )).rows.map((p) => ({ ...p, image: imgUrl(p.image_key), image2: imgUrl(p.image2_key), available: Number(p.available),
           // has_options = có trục HOẶC >1 biến thể → khách phải chọn. default_variant_id chỉ đặt khi
@@ -561,6 +569,29 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         return { ...base, product: p };
       }
 
+      // Trang TẤT CẢ sản phẩm: /products — lưới đầy đủ (kế thừa hành vi lưới trang chủ cũ:
+      // sort + lọc + pager) + chip danh mục LỌC TẠI CHỖ qua ?cat=<slug> (chủ shop yêu cầu
+      // "lọc, không nhảy trang"). Trang chủ giờ chỉ còn 8 SP nổi bật.
+      if (url.pathname === '/products') {
+        const rawCat = url.searchParams.get('cat') ?? '';
+        const catSlug = /^[a-z0-9-]{1,80}$/.test(rawCat) ? rawCat : null;
+        const args = [];
+        let whereJoin = '';
+        if (catSlug) {
+          const cat = (await c.query(`SELECT id FROM categories WHERE slug = $1`, [catSlug])).rows[0];
+          if (!cat) return { ...base, notFound: true };
+          args.push(cat.id);
+          whereJoin = `JOIN product_categories pc ON pc.product_id = p.id WHERE pc.category_id = $1${filterSql(args)}`;
+        } else {
+          const f = filterSql(args); // ' AND ...' → cắt tiền tố để đứng sau WHERE
+          whereJoin = f ? `WHERE ${f.slice(' AND '.length)}` : '';
+        }
+        const { products, total } = await productGrid(whereJoin, args, offset);
+        const basePath = catSlug ? `/products?cat=${catSlug}` : '/products';
+        return { ...base, products, productsPage: true, catSlug,
+          pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath, sort: sortKey, filters, filterable: true } };
+      }
+
       // Trang danh mục: /c/:slug
       const cm = /^\/c\/([a-z0-9-]+)$/.exec(url.pathname);
       if (cm) {
@@ -645,8 +676,20 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
 
       // Trang chủ: CHỈ path '/'. Path lạ → 404 (không render home cho mọi thứ).
       if (url.pathname !== '/') return { ...base, notFound: true };
-      const { products, total } = await productGrid('', [], offset);
-      return { ...base, products, home: true, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: '/', sort: sortKey } };
+      // Lưới NỔI BẬT chỉ 8 SP (2 hàng × 4), KHÔNG pageInfo → theme render chế độ "nổi bật"
+      // (không chips/sort/pager, nút "Xem thêm" → /products). Fetch đúng 8, không lấy 24 thừa.
+      const { products } = await productGrid('', [], 0, HOME_FEATURED);
+      // Section "Bài viết mới nhất": 3 bài published gần nhất (mirror query /blog — RLS
+      // store_blog lọc published). Không có bài → theme tự ẩn section.
+      const blogPosts = (await c.query(
+        `SELECT slug, title, excerpt, body, cover_image_key, published_at FROM blog_posts
+          WHERE status = 'published' ORDER BY published_at DESC LIMIT 3`,
+      )).rows.map((p) => ({
+        slug: p.slug, title: p.title, cover: imgUrl(p.cover_image_key), published_at: p.published_at,
+        // Trích đoạn cắt ~120 ký tự server-side (ưu tiên excerpt người bán nhập, không thì body).
+        excerpt: String(p.excerpt || p.body || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+      }));
+      return { ...base, products, home: true, blogPosts };
     });
 
     if (data.notFound) return sendHtml(res, 404, renderNotFound(), { shopSlug: data.shop?.slug });
@@ -660,7 +703,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     // Nonce CSP mỗi-request (ngẫu nhiên mật mã) cho lớp JS badge giỏ ở header. Dùng chung: header
     // render <script nonce=…> + sendHtml phát script-src 'nonce-…' (khớp nhau qua ctx.nonce).
     const nonce = crypto.randomBytes(16).toString('base64');
-    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '', hasBlog: data.hasBlog, origin, nonce };
+    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '', hasBlog: data.hasBlog, blogPosts: data.blogPosts ?? [], origin, nonce };
     // Canonical PHÂN TRANG (#28): trang N canonical về CHÍNH NÓ (?page=N — không gộp
     // hết về trang 1 làm Google bỏ index trang sau); sort/lọc KHÔNG vào canonical
     // (cùng nội dung, khác thứ tự). Kèm <link rel=prev/next> khi có trang kề.
@@ -673,6 +716,19 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       canonical = pagedPath(cur);
       if (cur > 1) prevUrl = pagedPath(cur - 1);
       if (cur < last) nextUrl = pagedPath(cur + 1);
+    } else if (host && data.productsPage && data.pageInfo) {
+      // /products: canonical giữ ?cat (nội dung khác nhau theo danh mục) + ?page; sort/lọc không vào.
+      const cur = Math.floor(data.pageInfo.offset / data.pageInfo.pageSize) + 1;
+      const last = Math.max(1, Math.ceil(data.pageInfo.total / data.pageInfo.pageSize));
+      const pp = (n) => {
+        const parts = [];
+        if (data.catSlug) parts.push(`cat=${data.catSlug}`);
+        if (n > 1) parts.push(`page=${n}`);
+        return `https://${host}/products${parts.length ? `?${parts.join('&')}` : ''}`;
+      };
+      canonical = pp(cur);
+      if (cur > 1) prevUrl = pp(cur - 1);
+      if (cur < last) nextUrl = pp(cur + 1);
     } else if (host && data.blog === 'list' && data.blogPage) {
       canonical = pagedPath(data.blogPage.page);
       if (data.blogPage.page > 1) prevUrl = pagedPath(data.blogPage.page - 1);
@@ -683,6 +739,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       if (data.preview) return sendHtml(res, 200, renderPage(ctx, data.page, { preview: true, canonical }), { shopSlug: data.shop.slug, preview: true, nonce });
       return sendHtml(res, 200, renderPage(ctx, data.page, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
     }
+    if (data.productsPage) return sendHtml(res, 200, renderProducts(ctx, { canonical, prevUrl, nextUrl, catSlug: data.catSlug }), { shopSlug: data.shop.slug, cache: true, nonce });
     if (data.product) return sendHtml(res, 200, renderProduct(ctx, data.product, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
     if (data.blog === 'list') return sendHtml(res, 200, renderBlogList(ctx, data.posts ?? [], { canonical, prevUrl, nextUrl, blogPage: data.blogPage ?? null }), { shopSlug: data.shop.slug, cache: true, nonce });
     if (data.blog === 'post') return sendHtml(res, 200, renderBlogPost(ctx, data.post, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });

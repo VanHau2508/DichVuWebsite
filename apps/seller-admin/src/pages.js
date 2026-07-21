@@ -290,8 +290,29 @@ function themeVal(tokens, key, def) {
   return def;
 }
 const sectionProps = (layout, name) => (Array.isArray(layout) ? layout.find((s) => s && s.section === name)?.props : null) ?? {};
-export function renderTheme(ctx, theme, notice) {
+export function renderTheme(ctx, theme, notice, linkTargets = {}) {
   const tokens = theme?.tokens ?? {};
+  // ── Bộ chọn liên kết (chủ shop không phải đoán URL): SELECT đích THẬT (trang cố định +
+  // danh mục + trang CMS) + ô "URL tự nhập" ghi đè khi có chữ. No-JS: cả hai luôn hiện;
+  // server ưu tiên ô tự nhập; seller vẫn safeLink lần cuối (phòng thủ giữ nguyên).
+  const ltCats = Array.isArray(linkTargets.categories) ? linkTargets.categories : [];
+  const ltPages = Array.isArray(linkTargets.pages) ? linkTargets.pages : [];
+  const linkOptions = [
+    ['/', 'Trang chủ'],
+    ['/products', 'Tất cả sản phẩm'],
+    ...ltCats.map((c) => [`/c/${c.slug}`, `Danh mục: ${c.name}`]),
+    ...ltPages.map((p) => [`/pages/${p.slug}`, `Trang: ${p.title}`]),
+    ['/blog', 'Blog'],
+    ['/checkout/lookup', 'Tra cứu đơn'],
+  ];
+  const linkPicker = (destName, urlName, saved) => {
+    const cur = String(saved ?? '');
+    const known = linkOptions.some(([v]) => v === cur);
+    const opts = `<option value="">— Chọn đích có sẵn —</option>`
+      + linkOptions.map(([v, label]) => `<option value="${esc(v)}"${known && v === cur ? ' selected' : ''}>${esc(label)}</option>`).join('');
+    return `<select name="${esc(destName)}">${opts}</select>
+      <input name="${esc(urlName)}" maxlength="300" value="${esc(known ? '' : cur)}" placeholder="Hoặc URL tự nhập (ghi đè lựa chọn trên)" style="margin-top:6px">`;
+  };
   const hero = sectionProps(theme?.layout, 'hero');
   const grid = sectionProps(theme?.layout, 'product_grid');
   // 4 cam kết (#40): prefill từ features.props.items đã lưu; chưa lưu → ô trống,
@@ -331,7 +352,7 @@ export function renderTheme(ctx, theme, notice) {
       <label>Mô tả ngắn</label><input name="sub_${i}" maxlength="200" value="${esc(sl.sub ?? '')}" placeholder="Ưu đãi tới 30% cho đơn đầu tiên">
       <div class="grid2">
         <div><label>Chữ trên nút</label><input name="button_label_${i}" maxlength="40" value="${esc(sl.button_label ?? '')}" placeholder="Mua ngay"></div>
-        <div><label>Liên kết nút</label><input name="button_link_${i}" maxlength="300" value="${esc(sl.button_link ?? '')}" placeholder="/ hoặc https://…"></div>
+        <div><label>Liên kết nút</label>${linkPicker(`button_dest_${i}`, `button_link_${i}`, sl.button_link)}</div>
       </div>
     </div>`;
   }).join('');
@@ -346,7 +367,7 @@ export function renderTheme(ctx, theme, notice) {
     const l = navLinks[i] ?? {};
     return `<div class="grid2" style="padding:5px 0">
       <div><input name="nav_label_${i}" maxlength="40" value="${esc(l.label ?? '')}" placeholder="Tên mục (vd: Về chúng tôi)"></div>
-      <div><input name="nav_url_${i}" maxlength="300" value="${esc(l.url ?? '')}" placeholder="/pages/gioi-thieu hoặc https://…"></div>
+      <div>${linkPicker(`nav_dest_${i}`, `nav_url_${i}`, l.url)}</div>
     </div>`;
   }).join('');
   const navMenuCard = `<div class="card"><h2 style="margin-top:0">Menu điều hướng (dropdown “Sản phẩm”)</h2>

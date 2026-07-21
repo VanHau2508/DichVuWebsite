@@ -39,6 +39,22 @@ export const I = {
   baby: ic('<circle cx="12" cy="9" r="4"/><path d="M9 8h.01M15 8h.01M10 11a3 3 0 0 0 4 0"/><path d="M5 21a7 7 0 0 1 14 0"/>'),
   food: ic('<path d="M4 11h16a8 8 0 0 1-16 0z"/><path d="M6 11c0-3 2-4 2-6M12 11c0-3 2-4 2-6M18 11c0-3 0-3 0-5"/><path d="M3 20h18"/>'),
   gift: ic('<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M5 12v9h14v-9"/><path d="M12 8v13"/><path d="M12 8S10.5 3 8.5 3 6 6 8 8m4 0s1.5-5 3.5-5S18 6 16 8"/>'),
+  // ── icon nghiệp vụ (landing v2) ──
+  truck: ic('<path d="M1 6h12v10H1z"/><path d="M13 9h4l3 3v4h-7"/><circle cx="5.5" cy="17.5" r="1.7"/><circle cx="16.5" cy="17.5" r="1.7"/>'),
+  box: ic('<path d="M12 2l8 4.5v11L12 22l-8-4.5v-11z"/><path d="M12 22V11"/><path d="M4 6.5l8 4.5 8-4.5"/>'),
+  users: ic('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 5a3.5 3.5 0 0 1 0 7"/><path d="M17.5 14a6.5 6.5 0 0 1 4 6"/>'),
+  star: ic('<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>'),
+  percent: ic('<path d="M19 5L5 19"/><circle cx="7" cy="7" r="2.5"/><circle cx="17" cy="17" r="2.5"/>'),
+  qr: ic('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3z"/><path d="M21 14v4"/><path d="M14 21h4"/><path d="M19 19h2v2h-2z"/>'),
+  bell: ic('<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 19a2.2 2.2 0 0 0 4 0"/>'),
+  palette: ic('<path d="M12 3a9 9 0 1 0 0 18c1.4 0 2-.8 2-1.8 0-.9-.6-1.4-.6-2.2 0-1 .8-1.8 2-1.8H17a4 4 0 0 0 4-4c0-4.5-4-8.2-9-8.2z"/><circle cx="7.5" cy="11.5" r="1"/><circle cx="10.5" cy="7.5" r="1"/><circle cx="14.8" cy="8" r="1"/>'),
+  coffee: ic('<path d="M4 9h12v6a5 5 0 0 1-5 5h-2a5 5 0 0 1-5-5z"/><path d="M16 10h2a3 3 0 0 1 0 6h-2"/><path d="M7 2c0 1.2-1 1.6-1 3M11 2c0 1.2-1 1.6-1 3"/>'),
+  dumbbell: ic('<path d="M7 8v8M17 8v8"/><rect x="3.2" y="10" width="2.4" height="4" rx=".6"/><rect x="18.4" y="10" width="2.4" height="4" rx=".6"/><path d="M7 12h10"/>'),
+  paw: ic('<circle cx="7" cy="8.5" r="1.7"/><circle cx="12" cy="6.5" r="1.7"/><circle cx="17" cy="8.5" r="1.7"/><path d="M12 11c-3 0-6 2.6-6 5.2 0 1.6 1.2 2.8 2.8 2.8 1.2 0 2-.6 3.2-.6s2 .6 3.2.6c1.6 0 2.8-1.2 2.8-2.8C18 13.6 15 11 12 11z"/>'),
+  gem: ic('<path d="M6 3h12l4 6-10 12L2 9z"/><path d="M2 9h20"/><path d="M12 21L8 9M12 21l4-12"/>'),
+  // ── icon landing v3 ──
+  user: ic('<circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>'),
+  pin: ic('<path d="M12 21s-7-6-7-11a7 7 0 0 1 14 0c0 5-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/>'),
 };
 
 // Phông Be Vietnam Pro (giấy phép OFL) TỰ-HOST: @font-face trỏ /fonts/*.woff2 — storefront
@@ -57,8 +73,12 @@ export const FONTFACE = `@font-face{font-family:'Be Vietnam Pro';font-style:norm
 // ── CSS nền dùng chung (biến màu, nút, nav, footer, section, FAQ, typography bài viết) ──
 export const BASE_CSS = `${FONTFACE}
 *{box-sizing:border-box}
-:root{--bg:#ffffff;--surf:#f5f8fd;--card:#ffffff;--ink:#0d1526;--soft:#3f4d66;--mut:#59647a;--bd:#e6ebf3;--pri:#2463eb;--prid:#1b48c0;--pri2:#7c3aed;--brand:#2463eb;--brand2:#7c3aed;--brandd:#1b48c0;--wash:#eef4ff;--good:#0e9f6e}
-@media(prefers-color-scheme:dark){:root{--bg:#0a0e1a;--surf:#131b2e;--card:#1b2440;--ink:#eef1f9;--soft:#c2cadd;--mut:#8a94ab;--bd:#28324c;--pri:#5b8cff;--prid:#7ba0ff;--pri2:#a78bfa;--wash:#161f38;--good:#34d399}}
+/* PALETTE ẤM VIỆT (Haravan/Sapo): đỏ gạch/coral làm ĐIỂM NHẤN DUY NHẤT, nền kem ấm,
+   mực nâu sâu, xám ấm phụ; 1 dải kem-đào cho section xen kẽ; xanh tin-cậy chỉ dùng cho
+   điểm "tiền/an toàn". TUYỆT ĐỐI không tím/xanh-tím. --pri2 = coral-cam ấm, chỉ còn dùng
+   cho DUY NHẤT một gradient nhẹ trên nút CTA chính. */
+:root{--bg:#F5F9FD;--surf:#E7F1FB;--card:#ffffff;--ink:#13202E;--soft:#3A4959;--mut:#667789;--bd:#DAE6F1;--pri:#0E6DBE;--prid:#0A5495;--pri2:#1E93D6;--brand:#0E6DBE;--brand2:#1E93D6;--brandd:#0A5495;--wash:#E7F1FB;--good:#16A34A}
+@media(prefers-color-scheme:dark){:root{--bg:#0E1621;--surf:#15212D;--card:#16222E;--ink:#EAF2FA;--soft:#C4D3E0;--mut:#8B9CAD;--bd:#26343F;--pri:#3BA6EC;--prid:#64BCF2;--pri2:#52B6EE;--brand:#3BA6EC;--brand2:#52B6EE;--brandd:#64BCF2;--wash:#15212D;--good:#34D399}}
 html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
 body{margin:0;font-family:'Be Vietnam Pro',system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--bg);line-height:1.6;-webkit-font-smoothing:antialiased}
 a{text-decoration:none;color:inherit}svg{display:block}
@@ -68,16 +88,23 @@ a{text-decoration:none;color:inherit}svg{display:block}
 .btn-primary{background:var(--brand);color:#fff;box-shadow:0 8px 20px -8px var(--brand)}.btn-primary:hover{background:var(--brandd)}
 .btn-ghost{background:var(--card);color:var(--ink);border-color:color-mix(in srgb,var(--pri) 32%,var(--bd))}.btn-ghost:hover{border-color:var(--pri);color:var(--pri)}
 .btn-block{width:100%}
-.nav{position:sticky;top:0;z-index:40;background:var(--bg);background:color-mix(in srgb,var(--bg) 82%,transparent);-webkit-backdrop-filter:saturate(1.4) blur(12px);backdrop-filter:saturate(1.4) blur(12px);border-bottom:1px solid var(--bd)}
+.btn-lg{padding:15px 30px;font-size:1.06rem;border-radius:14px}
+.btn-sm{padding:10px 18px;font-size:.92rem}
+.btn-cta{background:linear-gradient(135deg,var(--brand),var(--pri2));background-size:170% 170%;color:#fff;box-shadow:0 10px 24px -10px color-mix(in srgb,var(--pri) 75%,transparent);transition:transform .1s,background-position .3s,box-shadow .2s}
+.btn-cta:hover{background-position:100% 0;box-shadow:0 14px 30px -10px color-mix(in srgb,var(--pri) 80%,transparent)}
+.btn-cta .btn-arrow{transition:transform .18s}.btn-cta:hover .btn-arrow{transform:translateX(3px)}
+.nav{position:sticky;top:0;z-index:40;background:var(--bg);border-bottom:1px solid var(--bd)}
 .nav .wrap{display:flex;align-items:center;justify-content:space-between;height:66px;gap:20px}
 .logo{display:inline-flex;align-items:center;gap:9px;font-weight:800;font-size:1.28rem;letter-spacing:-.02em}
-.logo .mk{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--brand),var(--brand2));color:#fff;display:grid;place-items:center}.logo .mk svg{width:18px;height:18px}
+.logo .mk{width:30px;height:30px;border-radius:9px;background:var(--pri);color:#fff;display:grid;place-items:center}.logo .mk svg{width:18px;height:18px}
 .logo b{color:var(--pri)}
 .nav-links{display:flex;gap:26px;font-size:.95rem;font-weight:500;color:var(--soft)}
 .nav-links a:hover,.nav-links a.on{color:var(--pri)}
-.nav-act{display:flex;align-items:center;gap:14px}
+.nav-act{display:flex;align-items:center;gap:16px}
+.nav-login{display:inline-flex;align-items:center;gap:7px;font-weight:600;font-size:.95rem;color:var(--soft)}
+.nav-login svg{width:17px;height:17px}.nav-login:hover{color:var(--pri)}
 @media(max-width:900px){.nav-links{display:none}}
-@media(max-width:520px){.nav .wrap{gap:10px}.btn{padding:11px 16px}}
+@media(max-width:520px){.nav .wrap{gap:10px}.btn{padding:11px 16px}.nav-login span{display:none}}
 .sec{padding:76px 0}
 .sec-head{text-align:center;max-width:680px;margin:0 auto 46px}
 .sec-head .kick{font-size:.82rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--pri);margin:0 0 10px}
@@ -85,17 +112,10 @@ a{text-decoration:none;color:inherit}svg{display:block}
 .sec-head p{color:var(--mut);font-size:1.06rem;margin:0}
 .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:.8rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--prid);background:color-mix(in srgb,var(--pri) 16%,var(--bg));padding:7px 15px;border-radius:999px;margin:0 0 20px}
 .eyebrow svg{width:15px;height:15px}
-.page-hero{position:relative;overflow:hidden;isolation:isolate;text-align:center;padding:72px 0 12px;background:var(--bg)}
-.page-hero::before{content:"";position:absolute;inset:0;z-index:-3;background:radial-gradient(52% 46% at 12% -14%,color-mix(in srgb,var(--pri) 20%,transparent),transparent 70%),radial-gradient(48% 42% at 108% -4%,color-mix(in srgb,var(--pri2) 18%,transparent),transparent 68%),radial-gradient(60% 62% at 50% -20%,color-mix(in srgb,var(--pri) 12%,transparent),transparent 72%)}
-.page-hero::after{content:"";position:absolute;inset:0;z-index:-3;opacity:.5;background-image:radial-gradient(color-mix(in srgb,var(--ink) 8%,transparent) 1px,transparent 1.4px);background-size:24px 24px;-webkit-mask-image:radial-gradient(70% 60% at 50% 18%,#000,transparent 82%);mask-image:radial-gradient(70% 60% at 50% 18%,#000,transparent 82%)}
+.page-hero{position:relative;overflow:hidden;isolation:isolate;text-align:center;padding:72px 0 12px;background:var(--surf);border-bottom:1px solid var(--bd)}
 .page-hero .wrap{position:relative;z-index:1}
-.page-hero .orb{position:absolute;z-index:-2;border-radius:50%;filter:blur(46px);opacity:.5;pointer-events:none}
-.page-hero .orb.o1{width:300px;height:300px;background:radial-gradient(circle,color-mix(in srgb,var(--pri) 55%,transparent),transparent 70%);top:-96px;left:-64px}
-.page-hero .orb.o2{width:260px;height:260px;background:radial-gradient(circle,color-mix(in srgb,var(--pri2) 50%,transparent),transparent 70%);top:-56px;right:-50px}
-.page-hero .orb.o3{width:200px;height:200px;background:radial-gradient(circle,color-mix(in srgb,var(--good) 34%,transparent),transparent 70%);bottom:-70px;left:42%}
 .page-hero h1{font-size:clamp(2rem,4.2vw,3.1rem);font-weight:800;letter-spacing:-.025em;line-height:1.12;margin:0 0 14px;text-wrap:balance}
 .page-hero h1 .g{color:var(--pri)}
-@supports((-webkit-background-clip:text) or (background-clip:text)){.page-hero h1 .g{background:linear-gradient(100deg,var(--pri),var(--pri2) 55%,var(--pri));-webkit-background-clip:text;background-clip:text;color:transparent}}
 .page-hero .sub{color:var(--mut);font-size:1.12rem;max-width:620px;margin:0 auto;text-wrap:balance}
 .content{max-width:760px;margin:0 auto}
 .content h2{font-size:1.5rem;font-weight:800;letter-spacing:-.01em;margin:1.9em 0 .5em}
@@ -115,22 +135,22 @@ a{text-decoration:none;color:inherit}svg{display:block}
 .faq details[open] summary::after{content:"−"}
 .faq .ans{padding:0 22px 20px;color:var(--mut);line-height:1.75}
 .cta-final{padding:20px 0 84px}
-.cta-box{background:linear-gradient(135deg,var(--brand),var(--brand2));border-radius:26px;padding:60px 40px;text-align:center;color:#fff;position:relative;overflow:hidden}
-.cta-box::before{content:"";position:absolute;inset:0;background:radial-gradient(60% 120% at 100% 0,rgba(255,255,255,.18),transparent 55%);pointer-events:none}
+.cta-box{background:var(--pri);border-radius:24px;padding:60px 40px;text-align:center;color:#fff;position:relative;overflow:hidden}
 .cta-box h2{font-size:clamp(1.8rem,4vw,2.7rem);font-weight:800;margin:0 0 14px;letter-spacing:-.02em;position:relative}
 .cta-box p{font-size:1.12rem;opacity:.94;margin:0 0 28px;position:relative}
 .cta-box .btn{position:relative}
-.cta-box .btn-primary{background:#fff;color:var(--pri);box-shadow:0 12px 30px -10px rgba(0,0,0,.35)}.cta-box .btn-primary:hover{background:#f1f5ff}
+.cta-box .btn-primary{background:#fff;color:var(--pri);box-shadow:0 12px 30px -10px rgba(0,0,0,.28)}.cta-box .btn-primary:hover{background:#E7F1FB}
 .cta-contact{margin-top:18px;font-size:.95rem;opacity:.9;position:relative}
-footer{background:var(--surf);border-top:1px solid var(--bd);padding:56px 0 30px}
-.ft-grid{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:32px;margin-bottom:40px}
-.ft-about{max-width:300px}.ft-about .logo{margin-bottom:14px}.ft-about p{color:var(--mut);font-size:.92rem;margin:0}
+footer{background:var(--surf);border-top:1px solid var(--bd);padding:60px 0 30px}
+.ft-grid{display:grid;grid-template-columns:1.9fr 1fr 1fr 1.1fr .9fr;gap:34px;margin-bottom:42px}
+.ft-about{max-width:320px}.ft-about .logo{margin-bottom:14px}.ft-about p{color:var(--mut);font-size:.92rem;margin:0 0 18px}
 .ft-col h3{font-size:.82rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 14px;font-weight:700}
 .ft-col a,.ft-col span{display:flex;align-items:center;gap:8px;color:var(--soft);font-size:.94rem;margin-bottom:10px}.ft-col a:hover{color:var(--pri)}
 .ft-col svg{width:16px;height:16px;flex:none}
-.ft-bottom{border-top:1px solid var(--bd);padding-top:24px;text-align:center;color:var(--mut);font-size:.88rem}
+.ft-bottom{border-top:1px solid var(--bd);padding-top:24px;display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;color:var(--mut);font-size:.88rem}
+.ft-bottom a{color:var(--soft)}.ft-bottom a:hover{color:var(--pri)}
 @media(max-width:960px){.ft-grid{grid-template-columns:1fr 1fr}}
-@media(max-width:680px){.sec{padding:56px 0}.ft-grid{grid-template-columns:1fr}}
+@media(max-width:680px){.sec{padding:56px 0}.ft-grid{grid-template-columns:1fr;gap:26px}.ft-bottom{justify-content:center;text-align:center}}
 a:focus-visible,.btn:focus-visible,summary:focus-visible,.ind:focus-visible,details:focus-visible{outline:3px solid var(--pri);outline-offset:2px;border-radius:8px}
 .skip{position:absolute;left:12px;top:-70px;z-index:60;background:var(--brand);color:#fff;padding:11px 18px;border-radius:10px;font-weight:600;transition:top .16s}
 .skip:focus{top:12px}
@@ -140,12 +160,7 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,.ind:focus-visible,deta
 @media(prefers-reduced-motion:no-preference){@supports(animation-timeline:view()){
 .reveal{opacity:0;transform:translateY(42px);animation:reveal-in both;animation-timeline:view();animation-range:entry 4% cover 32%}
 @keyframes reveal-in{to{opacity:1;transform:none}}
-}
-.page-hero .orb{animation:po-drift 18s ease-in-out infinite}
-.page-hero .orb.o2{animation-duration:22s;animation-direction:reverse}
-.page-hero .orb.o3{animation-duration:26s}
-@keyframes po-drift{0%,100%{transform:translate(0,0)}33%{transform:translate(22px,-18px)}66%{transform:translate(-16px,14px)}}
-}
+}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important;animation:none!important}}`;
 
 // Liên kết điều hướng — TUYỆT ĐỐI (/#...) để dùng chung mọi trang; ở "/" trình duyệt chỉ
@@ -157,6 +172,9 @@ const NAV_ITEMS = [
   { href: '/ho-tro', label: 'Hỗ trợ', key: 'support' },
   { href: '/blog', label: 'Blog', key: 'blog' },
 ];
+// URL đăng nhập quản trị (host cố định) + đăng ký tự phục vụ (Caddy: /signup* → service signup).
+export const ADMIN_LOGIN_URL = 'https://admin.nentang.vn';
+export const SIGNUP_URL = '/signup';
 
 export function siteNav(brand, contactEmail, active = '') {
   const links = NAV_ITEMS.map((n) => `<a href="${n.href}"${n.key === active ? ' class="on"' : ''}>${esc(n.label)}</a>`).join('');
@@ -164,8 +182,8 @@ export function siteNav(brand, contactEmail, active = '') {
     <a class="logo" href="/"><span class="mk">${I.store}</span>${esc(brand)}<b>.</b></a>
     <div class="nav-links">${links}</div>
     <div class="nav-act">
-      <a class="ghostlink" href="${mailtoHref(contactEmail, 'Tư vấn dịch vụ website')}" style="font-weight:600;color:var(--soft)">Liên hệ</a>
-      <a class="btn btn-primary" href="/#bang-gia">Xem bảng giá</a>
+      <a class="nav-login" href="${ADMIN_LOGIN_URL}">${I.user}<span>Đăng nhập</span></a>
+      <a class="btn btn-cta" href="${SIGNUP_URL}">Bắt đầu miễn phí</a>
     </div>
   </div></nav>`;
 }
@@ -175,13 +193,15 @@ export function siteFooter(brand, contactEmail, contactPhone) {
     <div class="ft-grid">
       <div class="ft-about">
         <a class="logo" href="/"><span class="mk">${I.store}</span>${esc(brand)}<b>.</b></a>
-        <p>Dịch vụ website bán hàng trọn gói cho người Việt. Chúng tôi lo kỹ thuật, bạn chỉ việc bán.</p>
+        <p>Nền tảng bán hàng online cho người Việt. Chúng tôi lo kỹ thuật, tiền khách trả vào thẳng tài khoản bạn.</p>
+        <a class="btn btn-cta btn-sm" href="${SIGNUP_URL}">Dùng thử miễn phí 14 ngày</a>
       </div>
-      <div class="ft-col"><h3>Sản phẩm</h3><a href="/#tinh-nang">Tính năng</a><a href="/#nganh-hang">Ngành hàng</a><a href="/#bang-gia">Bảng giá</a></div>
-      <div class="ft-col"><h3>Công ty</h3><a href="/gioi-thieu">Giới thiệu</a><a href="/blog">Blog</a><a href="/dieu-khoan">Điều khoản</a></div>
+      <div class="ft-col"><h3>Giải pháp</h3><a href="/#tinh-nang">Tính năng</a><a href="/#nganh-hang">Ngành hàng</a><a href="/#bang-gia">Bảng giá</a><a href="${SIGNUP_URL}">Đăng ký dùng thử</a></div>
+      <div class="ft-col"><h3>Về chúng tôi</h3><a href="/gioi-thieu">Giới thiệu</a><a href="/blog">Blog</a><a href="${ADMIN_LOGIN_URL}">Đăng nhập quản trị</a></div>
       <div class="ft-col"><h3>Hỗ trợ</h3><a href="/ho-tro">Trung tâm hỗ trợ</a><a href="${mailtoHref(contactEmail, 'Cần hỗ trợ')}">${I.mail}${esc(contactEmail)}</a>${contactPhone ? `<span>${I.phone}${esc(contactPhone)}</span>` : ''}</div>
+      <div class="ft-col"><h3>Pháp lý</h3><a href="/dieu-khoan">Điều khoản dịch vụ</a></div>
     </div>
-    <div class="ft-bottom">© ${esc(brand)} · Dịch vụ website bán hàng trọn gói cho người Việt.</div>
+    <div class="ft-bottom"><span>© ${esc(brand)} · Nền tảng bán hàng online cho người Việt.</span><span><a href="/dieu-khoan">Điều khoản</a> · <a href="/ho-tro">Hỗ trợ</a></span></div>
   </div></footer>`;
 }
 

@@ -293,12 +293,34 @@ const FONTS = (() => {
   return m;
 })();
 
+// /assets/* SAME-ORIGIN (CSP img-src 'self' cho phép) — ẢNH THẬT cho trang giới thiệu nền
+// tảng. Chủ nền tảng thả file ảnh vào apps/storefront/src/assets/ (vd hero.webp) rồi khởi
+// động lại storefront. Whitelist đuôi ảnh + Map key = tên file CÓ SẴN → không lo path
+// traversal. KHÔNG có file → landing tự dùng mock CSS (không vỡ).
+const ASSET_TYPES = { '.webp': 'image/webp', '.avif': 'image/avif', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.svg': 'image/svg+xml' };
+const ASSETS = (() => {
+  const dir = new URL('./assets/', import.meta.url);
+  const m = new Map();
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      const ext = f.slice(f.lastIndexOf('.')).toLowerCase();
+      if (ASSET_TYPES[ext]) m.set(f, { buf: fs.readFileSync(new URL(f, dir)), type: ASSET_TYPES[ext] });
+    }
+  } catch {}
+  return m;
+})();
+
 const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
   if (await health(url.pathname, res, { db: () => db.query('SELECT 1') })) return;
   if (url.pathname.startsWith('/fonts/')) {
     const buf = FONTS.get(url.pathname.slice(7));
     if (buf) { res.writeHead(200, { 'content-type': 'font/woff2', 'cache-control': 'public, max-age=31536000, immutable' }); return res.end(buf); }
+    res.writeHead(404); return res.end();
+  }
+  if (url.pathname.startsWith('/assets/')) {
+    const a = ASSETS.get(url.pathname.slice(8));
+    if (a) { res.writeHead(200, { 'content-type': a.type, 'cache-control': 'public, max-age=86400' }); return res.end(a.buf); }
     res.writeHead(404); return res.end();
   }
   // /favicon.ico: browser tự hỏi mỗi phiên — trả 204 NGAY TẠI ĐÂY (trước resolve shop)
@@ -337,7 +359,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': CACHE_PUBLIC });
         return res.end(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`);
       }
-      if (url.pathname === '/') return sendHtml(res, 200, renderLanding(LANDING_CFG), { cache: true });
+      if (url.pathname === '/') return sendHtml(res, 200, renderLanding({ ...LANDING_CFG, assets: ASSETS }), { cache: true });
       if (url.pathname === '/gioi-thieu') return sendHtml(res, 200, renderAbout(LANDING_CFG), { cache: true });
       if (url.pathname === '/ho-tro') return sendHtml(res, 200, renderSupport(LANDING_CFG), { cache: true });
       if (url.pathname === '/dieu-khoan') return sendHtml(res, 200, renderTerms(LANDING_CFG), { cache: true });

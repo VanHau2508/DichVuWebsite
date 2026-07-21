@@ -113,6 +113,22 @@ async function getShop(res, ctx) {
   return send(res, 200, row);
 }
 
+// Mở bán (onboarding → active): cột mốc "hoàn tất thiết lập". Shop onboarding VỐN đã bán được
+// (storefront/checkout không chặn) — đây là mốc chủ shop tự đánh dấu + để nền tảng đếm shop active,
+// và vá chuyện self-serve shop kẹt 'onboarding' mãi. Idempotent: chỉ lật khi ĐANG onboarding
+// (không đụng suspended/terminated); gọi lại lúc đã active → trả status hiện tại, không đổi.
+// app_rw UPDATE table-level trên shops (0029/0031) + policy tenant_isolation → tự-shop mới lật được.
+async function activateShop(res, ctx) {
+  const row = await withTenant(ctx.shopId, async (c) => {
+    const upd = await c.query(`UPDATE shops SET status='active' WHERE id=$1 AND status='onboarding' RETURNING status`, [ctx.shopId]);
+    if (upd.rows[0]) return upd.rows[0];
+    const cur = await c.query(`SELECT status FROM shops WHERE id=$1`, [ctx.shopId]);
+    return cur.rows[0];
+  });
+  if (!row) return send(res, 404, { error: 'không tìm thấy' });
+  return send(res, 200, { status: row.status });
+}
+
 // Sửa hồ sơ cửa hàng (shop.write = owner/admin). Tên + liên hệ + địa chỉ hiển thị storefront.
 async function updateShopProfile(res, ctx, body) {
   const name = String(body.name ?? '').trim();
@@ -318,6 +334,7 @@ const ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}$`), perm: null, fn: (res, ctx) => getShop(res, ctx) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}$`), perm: 'shop.write', fn: (res, ctx, b) => updateShopProfile(res, ctx, b) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/require-mfa$`), perm: 'shop.write', fn: (res, ctx, b) => setRequireMfa(res, ctx, b) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/activate$`), perm: 'shop.write', fn: (res, ctx) => activateShop(res, ctx) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/members$`), perm: 'members.read', fn: (res, ctx) => listMembers(res, ctx) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/members/invite$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b) => inviteMember(res, ctx, b) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/members/${UUID}/role$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b, p) => changeRole(res, ctx, p[1], b) },

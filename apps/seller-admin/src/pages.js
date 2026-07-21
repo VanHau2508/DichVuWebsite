@@ -891,7 +891,7 @@ function revenueChart(series) {
       ${bars}${labels}</svg>`;
 }
 
-export function renderOverview(ctx, shopId, s) {
+export function renderOverview(ctx, shopId, s, setup = null, notice = null) {
   const base = `/shops/${esc(shopId)}`;
   const st = s?.status ?? {};
   const rev = s?.revenue ?? {};
@@ -918,8 +918,42 @@ export function renderOverview(ctx, shopId, s) {
       <td class="num right">${esc(t.qty)}</td>
       <td class="num right"><strong>${money(t.revenue)}</strong><div class="mbar"><i style="width:${Math.round((Number(t.revenue) || 0) / maxTop * 100)}%"></i></div></td></tr>`).join('');
   const chart = revenueChart(s?.series);
+  // Checklist onboarding — server chỉ truyền `setup` khi shop đang 'onboarding'. Mỗi mục tự phát
+  // hiện đã-xong từ dữ liệu THẬT; mục cần quyền chủ shop mà người xem không có → "Cần chủ shop".
+  let setupCard = '';
+  if (setup) {
+    const items = [
+      { key: 'payment', icon: '💳', label: 'Gắn ngân hàng nhận tiền', hint: 'Bật QR + tài khoản để nhận chuyển khoản. Chưa có thì khách chỉ trả khi nhận (COD).', href: '/payment', cta: 'Cấu hình', manage: true },
+      { key: 'products', icon: '📦', label: 'Thêm sản phẩm đầu tiên', hint: 'Có sản phẩm khách mới mua được — thêm ảnh, giá, tồn kho.', href: '/products/new', cta: 'Thêm', manage: false },
+      { key: 'branding', icon: '🎨', label: 'Logo & giao diện', hint: 'Tải logo cửa hàng. Giao diện đã có sẵn nếu bạn chọn ngành lúc đăng ký.', href: '/settings', cta: 'Cài đặt', manage: true },
+      { key: 'shipping', icon: '🚚', label: 'Phí vận chuyển', hint: 'Đặt phí ship theo vùng hoặc theo km. Chưa đặt thì dùng phí mặc định nền tảng.', href: '/settings', cta: 'Cấu hình', manage: true },
+    ];
+    const done = items.filter((it) => setup[it.key]).length;
+    const pct = Math.round((done / items.length) * 100);
+    const rows = items.map((it) => {
+      const ok = !!setup[it.key];
+      const action = ok ? '<span class="muted" style="font-size:.82rem">Đã xong</span>'
+        : (it.manage && !setup.canManage) ? '<span class="muted" style="font-size:.82rem">Cần chủ shop</span>'
+        : `<a class="btn alt sm" href="${base}${it.href}">${esc(it.cta)}</a>`;
+      return `<div style="display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid #e5e7eb">
+        <span style="flex:0 0 auto;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:.9rem;background:${ok ? 'var(--good)' : '#e2e8f0'};color:${ok ? '#fff' : '#94a3b8'}">${ok ? '✓' : '○'}</span>
+        <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:.95rem">${it.icon} ${esc(it.label)}</div><div class="muted" style="font-size:.82rem">${esc(it.hint)}</div></div>
+        ${action}</div>`;
+    }).join('');
+    const goLive = setup.canManage ? `<div style="border-top:1px solid #e5e7eb;margin-top:8px;padding-top:14px">
+      ${!setup.payment ? '<p class="muted" style="font-size:.83rem;margin:0 0 8px">⚠ Chưa gắn ngân hàng — mở bán vẫn được nhưng khách chỉ thanh toán khi nhận hàng (COD).</p>' : ''}
+      <form method="POST" action="${base}/activate" style="margin:0"><button class="btn" type="submit">🎉 Mở bán chính thức</button>
+      <span class="muted" style="font-size:.82rem;margin-left:10px">Đánh dấu cửa hàng đã sẵn sàng (ẩn checklist này).</span></form></div>` : '';
+    setupCard = `<div class="card" style="border-color:#c7d2fe;background:#f5f7ff">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap"><h2 style="margin:0">🚀 Hoàn tất thiết lập cửa hàng</h2><span class="muted" style="font-size:.9rem">${done}/${items.length} xong</span></div>
+      <div style="height:8px;border-radius:999px;background:#e0e7ff;overflow:hidden;margin:10px 0 4px"><i style="display:block;height:100%;width:${pct}%;background:var(--pri)"></i></div>
+      <p class="muted" style="font-size:.85rem;margin:0 0 6px">Cửa hàng đã có thể nhận đơn. Hoàn tất các mục dưới để bán trơn tru — quan trọng nhất là <strong>nhận tiền</strong>.</p>
+      ${rows}${goLive}</div>`;
+  }
   return layout('Tổng quan', ctx, `
     <h1>Tổng quan</h1>
+    ${notice ? `<div class="card" style="border-color:#a7f3d0;background:#ecfdf5;color:#065f46">${esc(notice)}</div>` : ''}
+    ${setupCard}
     <div class="dash-hero">
       <p class="eyebrow">Doanh thu 7 ngày gần nhất</p>
       <div class="hero-num">${money(d7)}</div>

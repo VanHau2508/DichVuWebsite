@@ -225,12 +225,40 @@ async function platformStepUp(req, res, me, cookie, shopId) {
   return platformStatus(res, me, cookie, shopId, action === 'restore' ? 'restore' : 'suspend');
 }
 
-async function overviewPage(res, me, cookie, shopId) {
+async function overviewPage(res, me, cookie, shopId, live) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'overview');
   const r = await sellerApi('GET', `/shops/${shopId}/stats`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được số liệu tổng quan.'));
-  return sendHtml(res, 200, V.renderOverview(ctx, shopId, r.json));
+  // Checklist onboarding — CHỈ dựng khi shop đang 'onboarding' (tránh gọi thừa cho shop đã active).
+  // Gom tín hiệu THẬT song song; lỗi phụ (perm/timeout) → coi như chưa xong, không chặn trang.
+  const shopR = await sellerApi('GET', `/shops/${shopId}`, { cookie }).catch(() => ({ status: 0 }));
+  const shop = shopR.status === 200 ? shopR.json : null;
+  let setup = null;
+  if (shop && shop.status === 'onboarding') {
+    const [payR, prodR] = await Promise.all([
+      sellerApi('GET', `/shops/${shopId}/payment-config`, { cookie }).catch(() => ({ status: 0 })),
+      sellerApi('GET', `/shops/${shopId}/products?limit=1`, { cookie }).catch(() => ({ status: 0 })),
+    ]);
+    const pay = payR.status === 200 && payR.json ? payR.json : {};
+    setup = {
+      payment: !!(pay.qr_enabled && pay.bank_bin && pay.account_number),
+      products: prodR.status === 200 && Number(prodR.json?.catalog_count ?? 0) > 0,
+      branding: !!shop.logo_url,                                    // logo_key → logo_url (seller build)
+      shipping: shop.ship_fee_vnd != null || shop.ship_mode === 'distance',
+      canManage: ctx.role === 'owner' || ctx.role === 'admin',     // shop.write (mở bán / cấu hình)
+    };
+  }
+  const notice = live === '1' ? '🎉 Cửa hàng đã mở bán chính thức! Chúc bạn nhiều đơn hàng.' : null;
+  return sendHtml(res, 200, V.renderOverview(ctx, shopId, r.json, setup, notice));
+}
+
+// Mở bán (BFF): onboarding → active qua seller, rồi về overview kèm chúc mừng. RBAC ở đây;
+// sameOrigin ở cổng POST chung; seller cưỡng chế perm shop.write + chỉ lật khi đang onboarding.
+async function activateShop(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/activate`, { cookie });
+  return redirect(res, `/shops/${shopId}/overview?live=${r.status === 200 ? 1 : 0}`);
 }
 
 async function ordersList(res, me, cookie, shopId, q) {
@@ -2408,7 +2436,8 @@ async function handle(req, res, url, p) {
         return sendHtml(res, 403, V.renderMfaRequiredByShop({ user: me }));
       }
     }
-    if ((m = new RegExp(`^/shops/${UUID}/overview$`).exec(p)) && req.method === 'GET') return overviewPage(res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/overview$`).exec(p)) && req.method === 'GET') return overviewPage(res, me, cookie, m[1], url.searchParams.get('live'));
+    if ((m = new RegExp(`^/shops/${UUID}/activate$`).exec(p)) && req.method === 'POST') return activateShop(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders$`).exec(p)) && req.method === 'GET') return ordersList(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'GET') return orderNewPage(res, me, cookie, m[1], null, null, url.searchParams.get('q') ?? '');
     if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'POST') return orderNewSubmit(req, res, me, cookie, m[1]);

@@ -316,6 +316,10 @@ services:
       REDIS_URL: redis://redis:6379
       PORT: "3064"
       PLATFORM_DOMAIN: nentang.vn
+      # Dev: Caddy map 8443, admin ở host riêng → link email/trang kèm cổng+host đúng để bấm được.
+      # Prod bỏ 2 biến này → tự suy https://nentang.vn + https://admin.nentang.vn (mặc định đúng).
+      SIGNUP_PUBLIC_ORIGIN: https://nentang.vn:8443
+      ADMIN_PUBLIC_ORIGIN: https://admin.localtest:8443
       IP_PEPPER: dev-ip-pepper
       SIGNUP_FORM_SECRET: dev-signup-form-secret
     volumes:

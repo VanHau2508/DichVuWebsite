@@ -27,6 +27,10 @@ import { getPreset } from '../../../packages/presets/src/index.js';
 
 const PORT = Number(process.env.PORT ?? 3064);
 const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN ?? 'nentang.vn';
+// Origin CÔNG KHAI cho link trong email/trang (mặc định suy từ PLATFORM_DOMAIN = prod đúng).
+// Dev override để link kèm cổng/host thật (Caddy dev map 8443, admin ở host riêng) → bấm là vào.
+const PUBLIC_ORIGIN = process.env.SIGNUP_PUBLIC_ORIGIN ?? `https://${PLATFORM_DOMAIN}`;        // site đăng ký (verify link)
+const ADMIN_LOGIN_URL = process.env.ADMIN_PUBLIC_ORIGIN ?? `https://admin.${PLATFORM_DOMAIN}`; // origin admin (đăng nhập)
 const TRIAL_DAYS = Math.max(0, Number(process.env.TRIAL_DAYS ?? 14) || 0); // đồng bộ platform/0056
 const DRAFT_TTL_MIN = Number(process.env.SIGNUP_DRAFT_TTL_MIN ?? 30);
 const SIGNUP_IP_CAP = Number(process.env.SIGNUP_IP_CAP ?? 5);       // trần nháp/IP/giờ (sàn DB)
@@ -76,12 +80,12 @@ async function slugFree(c, slug) {
     [slug, host]);
   return rows[0].free;
 }
-const verifyLink = (token) => `https://${PLATFORM_DOMAIN}/signup/verify?token=${token}`;
+const verifyLink = (token) => `${PUBLIC_ORIGIN}/signup/verify?token=${token}`;
 
 // ── handlers ───────────────────────────────────────────────────────────────
 async function pageSignup(req, res) {
   const plans = await loadPlans();
-  return sendHtml(res, 200, V.renderSignupForm(plans, { ct: issueFormTs(), domain: PLATFORM_DOMAIN }));
+  return sendHtml(res, 200, V.renderSignupForm(plans, { ct: issueFormTs(), domain: PLATFORM_DOMAIN, adminUrl: ADMIN_LOGIN_URL }));
 }
 
 async function doSignup(req, res) {
@@ -99,7 +103,7 @@ async function doSignup(req, res) {
   const iph = ipHash(clientIp(req));
   const plans = await loadPlans();
   const keep = { name, slug, email, plan_code: planCode, industry };
-  const reForm = (msg, status = 400) => sendHtml(res, status, V.renderSignupForm(plans, { error: msg, f: keep, ct: issueFormTs(), domain: PLATFORM_DOMAIN }));
+  const reForm = (msg, status = 400) => sendHtml(res, status, V.renderSignupForm(plans, { error: msg, f: keep, ct: issueFormTs(), domain: PLATFORM_DOMAIN, adminUrl: ADMIN_LOGIN_URL }));
 
   // Lỗi CLIENT-DERIVABLE (surface — về CHÍNH input người dùng, không rò gì riêng tư).
   if (!SLUG_RE.test(slug)) return reForm('Địa chỉ cửa hàng chỉ gồm chữ thường, số, gạch ngang (2–40 ký tự).');
@@ -225,13 +229,13 @@ async function doVerify(req, res) {
       return { kind: 'ok', name: d.name, slug: d.slug };
     });
   } catch (e) {
-    if (e && e.code === 'LOGIN_REQUIRED') return sendHtml(res, 200, V.renderVerifyLoginRequired(PLATFORM_DOMAIN));
+    if (e && e.code === 'LOGIN_REQUIRED') return sendHtml(res, 200, V.renderVerifyLoginRequired(PLATFORM_DOMAIN, ADMIN_LOGIN_URL));
     if (e && (e.code === 'SLUG_TAKEN' || e.code === '23505')) return sendHtml(res, 409, V.renderVerifySlugTaken(PLATFORM_DOMAIN));
     throw e;
   }
   if (out.kind === 'invalid') return sendHtml(res, 200, V.renderVerifyInvalid(PLATFORM_DOMAIN));
   log('info', 'shop_provisioned', {}); // KHÔNG log slug/email (PII). KHÔNG auto-login (parity).
-  return sendHtml(res, 200, V.renderVerifyDone(out.name, out.slug, PLATFORM_DOMAIN));
+  return sendHtml(res, 200, V.renderVerifyDone(out.name, out.slug, PLATFORM_DOMAIN, ADMIN_LOGIN_URL));
 }
 
 // ── router ───────────────────────────────────────────────────────────────────

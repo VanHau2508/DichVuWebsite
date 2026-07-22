@@ -39,7 +39,8 @@ function layout(title, body) {
 }
 
 // Trang đăng ký. plans: [{code,name,price_vnd_month}]. f: dữ liệu đã nhập (giữ khi lỗi). ct: form-ts HMAC.
-export function renderSignupForm(plans, { error, f = {}, ct = '', domain = 'nentang.vn' } = {}) {
+export function renderSignupForm(plans, { error, f = {}, ct = '', domain = 'nentang.vn', adminUrl } = {}) {
+  const admin = adminUrl || `https://admin.${domain}`;
   const chosen = f.plan_code || plans[0]?.code;
   const planHtml = plans.map((p) => `<label class="plan">
       <input type="radio" name="plan_code" value="${esc(p.code)}"${p.code === chosen ? ' checked' : ''} required>
@@ -86,7 +87,7 @@ export function renderSignupForm(plans, { error, f = {}, ct = '', domain = 'nent
         <button class="btn" type="submit">Tạo cửa hàng</button>
       </form>
     </div>
-    <p class="foot muted">Đã có tài khoản? <a href="https://admin.${esc(domain)}/">Đăng nhập</a></p>`);
+    <p class="foot muted">Đã có tài khoản? <a href="${esc(admin)}/">Đăng nhập</a></p>`);
 }
 
 // Trang trung tính SAU khi nộp — GIỐNG HỆT dù email mới / đã tồn tại / bị nuốt (enum-safe).
@@ -123,14 +124,15 @@ export function renderVerifyConfirm(name, slug, token, ct, domain = 'nentang.vn'
 }
 
 // Provision xong — KHÔNG auto-login (parity): mời đăng nhập ở admin.
-export function renderVerifyDone(name, slug, domain = 'nentang.vn') {
+export function renderVerifyDone(name, slug, domain = 'nentang.vn', adminUrl) {
+  const admin = adminUrl || `https://admin.${domain}`;
   return layout('Cửa hàng đã sẵn sàng', `
     <div class="card ok-hero">
       <div class="big">🎉</div>
       <h1>Cửa hàng đã sẵn sàng!</h1>
       <p class="lede"><strong>${esc(name)}</strong> đã được tạo tại
         <a href="https://${esc(slug)}.${esc(domain)}">${esc(slug)}.${esc(domain)}</a>.</p>
-      <a class="btn" href="https://admin.${esc(domain)}/">Đăng nhập để bắt đầu bán hàng</a>
+      <a class="btn" href="${esc(admin)}/">Đăng nhập để bắt đầu bán hàng</a>
       <p class="muted" style="margin-top:14px">Dùng email + mật khẩu vừa đăng ký.</p>
     </div>`);
 }
@@ -146,13 +148,14 @@ export function renderVerifyInvalid(domain = 'nentang.vn') {
 }
 
 // Email đã có TÀI KHOẢN đã xác minh — self-serve KHÔNG bind mù (nhánh c acceptInvitation).
-export function renderVerifyLoginRequired(domain = 'nentang.vn') {
+export function renderVerifyLoginRequired(domain = 'nentang.vn', adminUrl) {
+  const admin = adminUrl || `https://admin.${domain}`;
   return layout('Đăng nhập để tiếp tục', `
     <div class="card">
       <h1>Email này đã có tài khoản</h1>
       <p class="lede">Email bạn dùng đã có tài khoản trên nền tảng. Vì lý do an toàn, hãy
         <strong>đăng nhập</strong> rồi tạo cửa hàng từ tài khoản của bạn.</p>
-      <a class="btn" href="https://admin.${esc(domain)}/">Đăng nhập</a>
+      <a class="btn" href="${esc(admin)}/">Đăng nhập</a>
     </div>`);
 }
 

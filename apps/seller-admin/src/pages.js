@@ -326,6 +326,17 @@ export function renderTheme(ctx, theme, notice, linkTargets = {}) {
   const feats = Array.isArray(featsProps.items) ? featsProps.items : [];
   const topbar = sectionProps(theme?.layout, 'header');
   const story = sectionProps(theme?.layout, 'story');
+  const promo = sectionProps(theme?.layout, 'promo_banners');
+  // Form banner khuyến mãi CHỈ hiện khi bố cục có section promo_banners (preset mỹ phẩm) — tránh
+  // bày form thừa cho ngành khác. Chủ shop tải 3 ảnh → dải 3 ô trên trang chủ.
+  const hasPromoSection = hero.variant === 'split'
+    || (Array.isArray(theme?.layout) && theme.layout.some((s) => s && s.section === 'promo_banners'));
+  const heroSide = sectionProps(theme?.layout, 'hero_side');
+  // Form banner PHỤ hero hiện khi hero ở chế độ SPLIT (preset mỹ phẩm) — KHÔNG phụ thuộc section
+  // hero_side đã tồn tại chưa (shop áp preset TRƯỚC lúc có section vẫn thấy form; heroSideSave tự tạo
+  // section lúc lưu). Vẫn nhận nếu section đã có sẵn (áp preset mới).
+  const hasHeroSide = hero.variant === 'split'
+    || (Array.isArray(theme?.layout) && theme.layout.some((s) => s && s.section === 'hero_side'));
   const curFont = themeVal(tokens, 'font.body', '');
   const curRadius = themeVal(tokens, 'radius', '4px');
   const colorRow = (f) => {
@@ -384,11 +395,66 @@ export function renderTheme(ctx, theme, notice, linkTargets = {}) {
   </div>`;
   const bannerForm = `<form method="POST" action="/shops/${esc(ctx.shopId)}/theme/banner" enctype="multipart/form-data" style="margin-top:16px">
     <div class="card"><h2 style="margin-top:0">Banner trang chủ (ảnh tự tải)</h2>
-      <p class="muted" style="font-size:.85rem;margin:0">Tải tối đa ${BANNER_ROWS} ảnh banner riêng cho dải đầu trang. <strong>Có ít nhất 1 banner → thay carousel tự động</strong> (ảnh phủ kín + chữ + nút). Bỏ trống tất cả = dùng hero tự động (chữ + ảnh sản phẩm). Ảnh được nén WebP, tối đa 10MB mỗi ảnh.</p>
+      <p class="muted" style="font-size:.85rem;margin:0">Tải tối đa ${BANNER_ROWS} ảnh banner riêng cho dải đầu trang. <strong>Có ít nhất 1 banner → thay carousel tự động</strong> (ảnh phủ kín + chữ + nút). Bỏ trống tất cả = dùng hero tự động (chữ + ảnh sản phẩm). <strong>Ảnh NGANG tỉ lệ ~2:1</strong> (vd 1600×760px) hiển thị đẹp nhất; tỉ lệ khác vẫn hiện ĐỦ (hệ thống tự lấp nền mờ, không cắt). Ảnh nén WebP, tối đa 10MB mỗi ảnh.</p>
     </div>
     ${bannerRows}
     <div class="card actions"><button class="btn" type="submit">Lưu banner</button></div>
   </form>`;
+  // Banner PHỤ hero (2 ô bên phải hero split) — cùng đường ống upload, nạp vào section hero_side.
+  const sideSlides = Array.isArray(heroSide.slides) ? heroSide.slides : [];
+  const sideRows = Array.from({ length: 2 }, (_, i) => {
+    const sl = sideSlides[i] ?? {};
+    const key = typeof sl.image_key === 'string' ? sl.image_key : '';
+    return `<div class="card" style="border-color:#e5e7eb">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <strong style="font-size:.95rem">Banner phụ ${i + 1} ${i === 0 ? '(trên)' : '(dưới)'}</strong>
+        ${key ? `<label class="muted" style="font-size:.85rem;display:inline-flex;align-items:center;gap:6px"><input type="checkbox" name="side_remove_${i}" value="1"> Xoá</label>` : ''}
+      </div>
+      ${key ? `<input type="hidden" name="side_existing_${i}" value="${esc(key)}">
+        <div style="margin:8px 0"><img src="/media-public/${esc(key)}" alt="Banner phụ ${i + 1}" style="max-height:100px;max-width:100%;border:1px solid #eceef1;border-radius:8px;background:#fff"></div>` : ''}
+      <label>Ảnh ${key ? '(chọn ảnh mới để thay)' : ''}</label>
+      <input type="file" name="side_file_${i}" accept="image/*">
+      <div class="grid2">
+        <div><label>Chú thích (tuỳ chọn)</label><input name="side_headline_${i}" maxlength="120" value="${esc(sl.headline ?? '')}" placeholder="Ví dụ: Son thỏi Love Holiday"></div>
+        <div><label>Liên kết khi bấm</label>${linkPicker(`side_dest_${i}`, `side_link_${i}`, sl.button_link)}</div>
+      </div>
+    </div>`;
+  }).join('');
+  const heroSideForm = hasHeroSide ? `<form method="POST" action="/shops/${esc(ctx.shopId)}/theme/hero-side" enctype="multipart/form-data" style="margin-top:16px">
+    <div class="card"><h2 style="margin-top:0">Banner phụ hero (2 ô bên phải)</h2>
+      <p class="muted" style="font-size:.85rem;margin:0">Bố cục hero kiểu M.O.I = 1 banner LỚN (chạy vòng, cấu hình ở "Banner trang chủ" phía trên) + 2 banner PHỤ nhỏ bên phải. Tải 2 ảnh phụ ở đây. Bỏ trống = hero về dạng banner lớn full-width. <strong>Ảnh ~2:1</strong> (vd 720×340px) đẹp nhất; tỉ lệ khác vẫn hiện đủ (tự lấp nền mờ). Ảnh nén WebP, tối đa 10MB.</p>
+    </div>
+    ${sideRows}
+    <div class="card actions"><button class="btn" type="submit">Lưu banner phụ</button></div>
+  </form>` : '';
+  // Banner khuyến mãi (dải 3 ô kiểu M.O.I) — cùng đường ống upload, nạp vào section promo_banners.
+  const promoSlides = Array.isArray(promo.slides) ? promo.slides : [];
+  const PROMO_ROWS = 3;
+  const promoRows = Array.from({ length: PROMO_ROWS }, (_, i) => {
+    const sl = promoSlides[i] ?? {};
+    const key = typeof sl.image_key === 'string' ? sl.image_key : '';
+    return `<div class="card" style="border-color:#e5e7eb">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <strong style="font-size:.95rem">Ô khuyến mãi ${i + 1}</strong>
+        ${key ? `<label class="muted" style="font-size:.85rem;display:inline-flex;align-items:center;gap:6px"><input type="checkbox" name="promo_remove_${i}" value="1"> Xoá</label>` : ''}
+      </div>
+      ${key ? `<input type="hidden" name="promo_existing_${i}" value="${esc(key)}">
+        <div style="margin:8px 0"><img src="/media-public/${esc(key)}" alt="Ô khuyến mãi ${i + 1}" style="max-height:110px;max-width:100%;border:1px solid #eceef1;border-radius:8px;background:#fff"></div>` : ''}
+      <label>Ảnh ${key ? '(chọn ảnh mới để thay)' : ''}</label>
+      <input type="file" name="promo_file_${i}" accept="image/*">
+      <div class="grid2">
+        <div><label>Chú thích (tuỳ chọn)</label><input name="promo_headline_${i}" maxlength="120" value="${esc(sl.headline ?? '')}" placeholder="Ví dụ: Chuốt mi Perfect Shape"></div>
+        <div><label>Liên kết khi bấm</label>${linkPicker(`promo_dest_${i}`, `promo_link_${i}`, sl.button_link)}</div>
+      </div>
+    </div>`;
+  }).join('');
+  const promoForm = hasPromoSection ? `<form method="POST" action="/shops/${esc(ctx.shopId)}/theme/promos" enctype="multipart/form-data" style="margin-top:16px">
+    <div class="card"><h2 style="margin-top:0">Banner khuyến mãi (dải 3 ô)</h2>
+      <p class="muted" style="font-size:.85rem;margin:0">Tải tối đa 3 ảnh khuyến mãi → hiện thành dải 3 ô ngang bằng trên trang chủ (kiểu M.O.I, đặt ngay dưới Flash sale). Bỏ trống tất cả = ẩn dải. <strong>Ảnh ~16:9</strong> (vd 800×450px) đẹp nhất. Ảnh nén WebP, tối đa 10MB mỗi ảnh.</p>
+    </div>
+    ${promoRows}
+    <div class="card actions"><button class="btn" type="submit">Lưu banner khuyến mãi</button></div>
+  </form>` : '';
   return layout('Giao diện', ctx, `<h1>Giao diện cửa hàng</h1>
     ${notice ? `<div class="card" style="border-color:#93c5fd;background:#eff6ff;color:#1e40af">${esc(notice)}</div>` : ''}
     <form method="GET" action="/shops/${esc(ctx.shopId)}/theme/preset">
@@ -446,7 +512,9 @@ export function renderTheme(ctx, theme, notice, linkTargets = {}) {
         <button class="btn alt" type="submit" name="reset" value="1">Khôi phục mặc định</button>
         <a class="btn alt" href="/shops/${esc(ctx.shopId)}/overview">← Quay lại</a></div>
     </form>
-    ${bannerForm}`);
+    ${bannerForm}
+    ${heroSideForm}
+    ${promoForm}`);
 }
 
 // Màn XÁC NHẬN áp preset ngành (no-JS): tên mẫu + bảng màu xem trước + thứ tự section +

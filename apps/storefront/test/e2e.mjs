@@ -378,9 +378,9 @@ async function main() {
   const catMk = await rq(SELLER, 'POST', `/shops/${A.shopId}/categories`, { body: { slug: catKiemSlug, name: 'Danh Mục Kiểm' }, cookie: A.cookie, origin: OS });
   await rq(SELLER, 'PUT', `/shops/${A.shopId}/products/${rugPid}/categories`, { body: { category_ids: [catMk.json.id] }, cookie: A.cookie, origin: OS });
   for (let i = 0; i < 6; i++) await mkProduct(A.shopId, A.cookie, { title: `SP Đầy ${i}`, slug: `day-${i}-${uniq()}`, price_vnd: 100000 + i * 1000, status: 'active', variants: [{ sku: `DAY${i}-${uniq()}`, price_vnd: 100000 + i * 1000 }] });
-  r = await sf(A.host, '/'); // 11 SP active nhưng trang chủ CHỈ 8
+  r = await sf(A.host, '/'); // shop A layout rỗng → DEFAULT_LAYOUT (product_grid 3 cột, limit:9 chẵn hàng)
   const homeCards = (r.body.match(/<div class="card(?: is-out)?">/g) || []).length;
-  homeCards === 6 ? ok('trang chủ đúng 6 thẻ SP (2 hàng × 3, không ôm cả catalog)') : bad(`trang chủ ${homeCards} thẻ (mong 6)`);
+  homeCards === 9 ? ok('trang chủ đúng 9 thẻ SP nổi bật (3×3, không ôm cả catalog)') : bad(`trang chủ ${homeCards} thẻ (mong 9)`);
   !r.body.includes('class="chips"') && !r.body.includes('class="sortbar"') && !r.body.includes('class="pager"')
     ? ok('trang chủ KHÔNG còn chips/sortbar/pager (chuyển sang /products)') : bad('trang chủ vẫn còn chips/sort/pager');
   r.body.includes('class="grid-more"') && /class="btn btn-primary btn-more" href="\/products"/.test(r.body)
@@ -550,6 +550,72 @@ async function main() {
   r = await sf(A.host, '/');
   r.body.includes('<a href="/products?sort=new">Hàng mới</a>') && r.body.includes('<a href="/products?sort=price_asc">Khuyến mãi</a>')
     ? ok('bỏ cấu hình header → 3 shortcut hiện đủ, trỏ /products?sort= (đích mới)') : bad('shortcut mặc định không hiện/không trỏ /products');
+
+  // ── FLASH SALE SECTION (preset mỹ phẩm/M.O.I): đồng hồ đếm ngược + hàng SP đang sale, TỰ ẨN khi hết promo ──
+  sect('Flash sale SECTION (mỹ phẩm): countdown data-ends + hàng SP sale + tự ẩn');
+  // Đặt layout có flash_sale qua owner pool (cuối test → không ảnh hưởng assertion trước).
+  await owner.query(
+    `INSERT INTO themes (shop_id, tokens, layout, version) VALUES ($1,'{}'::jsonb,$2::jsonb,1)
+       ON CONFLICT (shop_id) DO UPDATE SET layout = EXCLUDED.layout, version = themes.version + 1`,
+    [A.shopId, JSON.stringify([
+      { section: 'header', props: {} }, { section: 'hero', props: { slides: [] } },
+      { section: 'flash_sale', props: { title: 'Flash sale' } }, { section: 'footer', props: {} },
+    ])]);
+  const { rows: [fsPromo] } = await owner.query(
+    `INSERT INTO promotions (shop_id,title,kind,value,scope,starts_at,ends_at,active)
+     VALUES ($1,'FS Section','percent',30,'all', now()-interval '1 hour', now()+interval '5 hour', true) RETURNING id`, [A.shopId]);
+  r = await sf(A.host, '/');
+  const fsEnds = Number((r.body.match(/class="fs-timer" data-ends="(\d+)"/) || [])[1]);
+  r.body.includes('class="section flashsale"') && r.body.includes('class="fs-timer"') && Number.isFinite(fsEnds) && fsEnds > Date.now()
+    ? ok('flash_sale hiện: section + đồng hồ data-ends (epoch tương lai)') : bad('flash_sale thiếu/đồng hồ sai', String(fsEnds));
+  r.body.includes('class="fs-d"') && r.body.includes('class="fs-s"') && r.body.includes('class="fs-row"') && r.body.includes('-30%')
+    ? ok('flash_sale: ô đếm ngược Ngày…Giây + hàng thẻ SP đang giảm (-30%)') : bad('flash_sale thiếu ô đếm/hàng SP sale');
+  await owner.query(`DELETE FROM promotions WHERE id=$1`, [fsPromo.id]); // hết promo
+  r = await sf(A.host, '/');
+  !r.body.includes('class="section flashsale"')
+    ? ok('hết promo → flash_sale TỰ ẨN (layout vẫn có section nhưng không dữ liệu)') : bad('flash_sale vẫn hiện khi hết promo');
+
+  // ── BỐ CỤC M.O.I (preset mỹ phẩm): nav HỒNG band + hero SPLIT + promo_banners tự-ẩn + lưới 5×2 ──
+  sect('Bố cục M.O.I: header band + hero split + promo_banners + lưới 10');
+  const bkey = () => `${A.shopId}/banner-${A.shopId}.webp`; // đúng BANNER_KEY_RE (uuid/banner-uuid.webp)
+  const SIDE2 = [{ image_key: bkey(), headline: 'Son thỏi' }, { image_key: bkey(), headline: 'Đối tác' }];
+  const setLayout = (promoSlides, sideSlides) => owner.query(
+    `INSERT INTO themes (shop_id, tokens, layout, version) VALUES ($1,'{}'::jsonb,$2::jsonb,1)
+       ON CONFLICT (shop_id) DO UPDATE SET layout = EXCLUDED.layout, version = themes.version + 1`,
+    [A.shopId, JSON.stringify([
+      { section: 'header', props: { nav_style: 'band' } },
+      { section: 'hero', props: { variant: 'split', slides: [ // ô lớn = CAROUSEL (2 slide)
+        { image_key: bkey(), headline: 'Chốt deal tháng 7' }, { image_key: bkey(), headline: 'Deal tháng 8' },
+      ] } },
+      { section: 'hero_side', props: { slides: sideSlides } }, // 2 banner phụ phải
+      { section: 'promo_banners', props: { slides: promoSlides } },
+      { section: 'product_grid', props: { title: 'Bán chạy', columns: 5 } },
+      { section: 'footer', props: {} },
+    ])]);
+  await setLayout([], SIDE2); // promo rỗng · có 2 banner phụ → hero split đầy đủ
+  r = await sf(A.host, '/');
+  r.body.includes('class="hdr hdr-band"') && r.body.includes('class="hnav-band"')
+    ? ok('header dải nav HỒNG (band): .hdr-band + .hnav-band') : bad('thiếu dải nav band');
+  const heroSeg = (r.body.match(/class="hero hero-split[^"]*"[\s\S]*?<\/section>/) || [''])[0];
+  r.body.includes('class="hero-split-grid"') && heroSeg.includes('class="hs-main"') && heroSeg.includes('class="hslide') && (heroSeg.match(/class="hs-cell"/g) || []).length === 2 && (r.body.match(/<h1/g) || []).length === 1
+    ? ok('hero SPLIT: ô lớn CAROUSEL (.hslide) + 2 ô phụ (.hs-cell) · đúng 1 <h1>') : bad('hero split sai');
+  !r.body.includes('class="promo-grid"') ? ok('promo_banners RỖNG → tự ẩn (không .promo-grid)') : bad('promo rỗng vẫn hiện');
+  (r.body.match(/<div class="card(?: is-out)?">/g) || []).length === 10 && r.body.includes('grid-c5')
+    ? ok('lưới bán chạy .grid-c5 đủ 10 thẻ (5×2)') : bad(`lưới 5×2 sai (${(r.body.match(/<div class="card(?: is-out)?">/g) || []).length} thẻ)`);
+  await setLayout([], []); // KHÔNG banner phụ → hero về carousel full-width (fallback, không vỡ)
+  r = await sf(A.host, '/');
+  r.body.includes('class="hero hero-banner') && !r.body.includes('class="hero-split-grid"')
+    ? ok('hero split KHÔNG có banner phụ → carousel full-width (fallback)') : bad('fallback hero split sai');
+  await setLayout([{ image_key: bkey(), headline: 'Ưu đãi 1', button_link: '/products' }, { image_key: bkey(), headline: 'Ưu đãi 2' }, { image_key: bkey() }], SIDE2);
+  r = await sf(A.host, '/');
+  r.body.includes('class="promo-grid"') && (r.body.match(/class="promo-cell"/g) || []).length === 3
+    ? ok('promo_banners CÓ 3 ảnh → dải 3 ô (.promo-cell ×3)') : bad('promo 3 ô sai');
+  // Hồi quy: header KHÔNG band (preset khác) → không có .hdr-band.
+  await owner.query(`INSERT INTO themes (shop_id, tokens, layout, version) VALUES ($1,'{}'::jsonb,$2::jsonb,1) ON CONFLICT (shop_id) DO UPDATE SET layout = EXCLUDED.layout, version = themes.version + 1`,
+    [A.shopId, JSON.stringify([{ section: 'header', props: {} }, { section: 'product_grid', props: {} }])]);
+  r = await sf(A.host, '/');
+  // (kiểm CLASS phần tử, không phải chuỗi 'hdr-band' trong CSS): band = <header class="hdr hdr-band">.
+  !r.body.includes('class="hdr hdr-band"') && r.body.includes('class="hdr"') ? ok('header KHÔNG band (ngành khác) → header 1 thanh cũ, không hồi quy') : bad('header thường lại thành band');
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

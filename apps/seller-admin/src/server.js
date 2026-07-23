@@ -2047,19 +2047,29 @@ async function themeSave(req, res, me, cookie, shopId) {
 // (hidden existing_key_i); tick "xoá" → bỏ slide. Ráp mảng slides rồi MERGE vào hero.props
 // của theme HIỆN TẠI (giữ nguyên màu/chữ hero/section khác) và PUT. Seller validate key +
 // chuẩn hoá chữ/link lần cuối (chống chéo shop). No-JS: form multipart thường.
-const BANNER_ROWS = 4; // số hàng slide hiển thị (≤ trần 5 của seller)
-async function bannerSave(req, res, me, cookie, shopId) {
+const BANNER_ROWS = 4; // số hàng slide hero hiển thị (≤ trần 5 của seller)
+const PROMO_ROWS = 3;  // 3 banner khuyến mãi (preset M.O.I)
+// Tên field theo tiền tố → hero & promo dùng CÙNG form-schema nhưng KHÁC route/prefix (không đè nhau).
+const heroFkey = (i) => ({ file: `banner_file_${i}`, existing: `existing_key_${i}`, remove: `remove_${i}`, headline: `headline_${i}`, sub: `sub_${i}`, label: `button_label_${i}`, link: `button_link_${i}`, dest: `button_dest_${i}` });
+const promoFkey = (i) => ({ file: `promo_file_${i}`, existing: `promo_existing_${i}`, remove: `promo_remove_${i}`, headline: `promo_headline_${i}`, sub: `promo_sub_${i}`, label: `promo_label_${i}`, link: `promo_link_${i}`, dest: `promo_dest_${i}` });
+const sideFkey = (i) => ({ file: `side_file_${i}`, existing: `side_existing_${i}`, remove: `side_remove_${i}`, headline: `side_headline_${i}`, sub: `side_sub_${i}`, label: `side_label_${i}`, link: `side_link_${i}`, dest: `side_dest_${i}` });
+const HEROSIDE_ROWS = 2; // 2 banner phụ bên phải hero split (M.O.I)
+// Chung cho MỌI dải banner (hero / promo_banners): upload từng ảnh → seller /banner-image (sinh key
+// thuộc shop), ráp slides, MERGE vào <section>.props.slides của layout ĐANG LƯU rồi PUT /theme.
+// Seller validateBannerInLayout validate MỌI section có props.slides → không cần sửa lớp bảo mật.
+async function saveSectionBanners(req, res, me, cookie, shopId, { section, rows, fkey }) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   let parsed;
   try { parsed = await readMultipartAll(req); }
-  catch (e) { return themePage(res, me, cookie, shopId, '0'); } // 413 ảnh quá lớn → về trang, báo lỗi lưu
+  catch (e) { return redirect(res, `/shops/${shopId}/theme?ok=0`); } // 413 ảnh quá lớn → báo lỗi lưu
   const { fields, files } = parsed;
   const fileByField = new Map(files.map((f) => [f.field, f]));
   const slides = [];
-  for (let i = 0; i < BANNER_ROWS && slides.length < 5; i++) {
-    if (fields[`remove_${i}`]) continue; // tick xoá → bỏ hẳn slide này
-    let key = String(fields[`existing_key_${i}`] ?? '').trim();
-    const file = fileByField.get(`banner_file_${i}`);
+  for (let i = 0; i < rows && slides.length < 5; i++) {
+    const F = fkey(i);
+    if (fields[F.remove]) continue; // tick xoá → bỏ hẳn slide này
+    let key = String(fields[F.existing] ?? '').trim();
+    const file = fileByField.get(F.file);
     if (file && file.bytes?.length) {
       const up = await sellerUpload(`/shops/${shopId}/banner-image`, { cookie, bytes: file.bytes });
       if (up.status === 200 && up.json?.key) key = up.json.key; // ảnh mới thay ảnh cũ
@@ -2067,26 +2077,40 @@ async function bannerSave(req, res, me, cookie, shopId) {
     if (!key) continue; // không ảnh → không phải banner
     slides.push({
       image_key: key,
-      headline: String(fields[`headline_${i}`] ?? '').trim().slice(0, 120),
-      sub: String(fields[`sub_${i}`] ?? '').trim().slice(0, 200),
-      button_label: String(fields[`button_label_${i}`] ?? '').trim().slice(0, 40),
+      headline: String(fields[F.headline] ?? '').trim().slice(0, 120),
+      sub: String(fields[F.sub] ?? '').trim().slice(0, 200),
+      button_label: String(fields[F.label] ?? '').trim().slice(0, 40),
       // Ô "URL tự nhập" ghi đè SELECT đích có sẵn (giống nav_links; seller safeLink lần cuối).
-      button_link: (String(fields[`button_link_${i}`] ?? '').trim() || String(fields[`button_dest_${i}`] ?? '').trim()).slice(0, 300),
+      button_link: (String(fields[F.link] ?? '').trim() || String(fields[F.dest] ?? '').trim()).slice(0, 300),
     });
   }
-  // Merge vào hero.props.slides của layout ĐANG LƯU (không đụng section/props khác).
+  // Merge vào <section>.props.slides của layout ĐANG LƯU (không đụng section/props khác).
   const cur = await sellerApi('GET', `/shops/${shopId}/theme`, { cookie });
   const curTheme = cur.status === 200 && cur.json ? cur.json : {};
   const tokens = curTheme.tokens && typeof curTheme.tokens === 'object' && !Array.isArray(curTheme.tokens) ? curTheme.tokens : {};
   let layout = Array.isArray(curTheme.layout) && curTheme.layout.length
     ? curTheme.layout.map((s) => (s && typeof s === 'object' ? { ...s, props: s.props && typeof s.props === 'object' ? { ...s.props } : {} } : s))
     : [{ section: 'header', props: {} }, { section: 'hero', props: {} }, { section: 'product_grid', props: {} }, { section: 'footer', props: {} }];
-  let hero = layout.find((x) => x && x.section === 'hero');
-  if (!hero) { hero = { section: 'hero', props: {} }; const hi = layout.findIndex((x) => x && x.section === 'header'); layout.splice(hi >= 0 ? hi + 1 : 0, 0, hero); }
-  if (!hero.props || typeof hero.props !== 'object') hero.props = {};
-  if (slides.length) hero.props.slides = slides; else delete hero.props.slides;
+  let sec = layout.find((x) => x && x.section === section);
+  if (!sec) { // chèn hero sau header; các section khác (promo) sau hero — đúng vị trí bố cục.
+    sec = { section, props: {} };
+    const anchor = section === 'hero' ? 'header' : 'hero';
+    const ai = layout.findIndex((x) => x && x.section === anchor);
+    layout.splice(ai >= 0 ? ai + 1 : layout.length, 0, sec);
+  }
+  if (!sec.props || typeof sec.props !== 'object') sec.props = {};
+  if (slides.length) sec.props.slides = slides; else delete sec.props.slides;
   const r = await sellerApi('PUT', `/shops/${shopId}/theme`, { cookie, body: { tokens, layout } });
   return redirect(res, `/shops/${shopId}/theme?ok=${r.status === 200 ? 1 : 0}`);
+}
+async function bannerSave(req, res, me, cookie, shopId) {
+  return saveSectionBanners(req, res, me, cookie, shopId, { section: 'hero', rows: BANNER_ROWS, fkey: heroFkey });
+}
+async function promoSave(req, res, me, cookie, shopId) {
+  return saveSectionBanners(req, res, me, cookie, shopId, { section: 'promo_banners', rows: PROMO_ROWS, fkey: promoFkey });
+}
+async function heroSideSave(req, res, me, cookie, shopId) {
+  return saveSectionBanners(req, res, me, cookie, shopId, { section: 'hero_side', rows: HEROSIDE_ROWS, fkey: sideFkey });
 }
 
 // ── Thanh toán (payment.write = owner; PUT payment-config đòi step-up) ────────
@@ -2637,6 +2661,8 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/theme/preset$`).exec(p)) && req.method === 'GET') return presetConfirmPage(res, me, cookie, m[1], url.searchParams.get('preset'));
     if ((m = new RegExp(`^/shops/${UUID}/theme/preset$`).exec(p)) && req.method === 'POST') return applyPreset(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/theme/banner$`).exec(p)) && req.method === 'POST') return bannerSave(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/theme/promos$`).exec(p)) && req.method === 'POST') return promoSave(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/theme/hero-side$`).exec(p)) && req.method === 'POST') return heroSideSave(req, res, me, cookie, m[1]);
 
     return sendHtml(res, 404, V.renderError({ user: me }, 'Không tìm thấy trang.'));
 }

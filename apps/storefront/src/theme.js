@@ -226,7 +226,12 @@ const DEFAULT_FEATURES = [
 // + animation thuần CSS + chấm như hero tự động. Mỗi slide: ảnh phủ kín (.hbanner-img) +
 // overlay tối nhẹ để chữ trắng đọc được + copy (tiêu đề/mô tả/nút). Chỉ slide ĐẦU dùng <h1>
 // (SEO: 1 h1/trang), còn lại <p class="hero-h">. esc mọi field người bán; normLink lọc nút.
-function heroBanner(slides) {
+// GUTS carousel (track .hslide + chấm) — dùng cho hero full-width VÀ ô LỚN của hero split.
+// JS carousel (cartScript) tự lái mọi .hslide trong .hero: quay vòng + mũi tên + chấm.
+// blurFill=true (dùng cho hero SPLIT khung tỉ lệ cố định): hiện TRỌN ảnh (object-fit:contain, KHÔNG
+// cắt) + 1 lớp ảnh nền MỜ phủ kín lấp khoảng trống → banner tỉ lệ nào cũng vừa, không viền trống xấu,
+// không "mất một nửa". blurFill=false (hero full-width): cover phủ kín như cũ (banner tự thiết kế vừa khung).
+function heroBannerInner(slides, blurFill = false) {
   const hs = slides.map((s, i) => {
     const first = i === 0;
     const src = esc(`${MEDIA_PUBLIC_BASE}/${s.image_key}`);
@@ -236,14 +241,38 @@ function heroBanner(slides) {
     const sub = s.sub ? `<p class="hero-sub">${esc(s.sub)}</p>` : '';
     const cta = (s.button_label && s.button_link)
       ? `<div class="hero-cta"><a class="btn btn-hero" href="${esc(normLink(s.button_link))}">${esc(s.button_label)}</a></div>` : '';
-    return `<div class="hslide hbanner">
-      <img class="hbanner-img" src="${src}" alt="${esc(s.headline || '')}"${first ? '' : ' loading="lazy"'}>
+    const bg = blurFill ? `<img class="hbanner-bg" src="${src}" alt="" aria-hidden="true"${first ? '' : ' loading="lazy"'}>` : '';
+    return `<div class="hslide hbanner${blurFill ? ' hbanner-blur' : ''}">
+      ${bg}<img class="hbanner-img" src="${src}" alt="${esc(s.headline || '')}"${first ? '' : ' loading="lazy"'}>
       <div class="hbanner-overlay"><div class="hbanner-copy">${head}${sub}${cta}</div></div>
     </div>`;
-  });
-  const n = hs.length;
+  }).join('');
+  const n = slides.length;
   const dots = n > 1 ? `<div class="hero-dots" aria-hidden="true">${'<span class="dot"></span>'.repeat(n)}</div>` : '';
-  return `<section class="hero hero-banner hero-n${n}"><div class="hero-track">${hs.join('')}</div>${dots}</section>`;
+  return { inner: `<div class="hero-track">${hs}</div>${dots}`, n };
+}
+function heroBanner(slides) {
+  const { inner, n } = heroBannerInner(slides);
+  return `<section class="hero hero-banner hero-n${n}">${inner}</section>`;
+}
+
+// Hero SPLIT (preset mỹ phẩm/M.O.I): ô LỚN trái = CAROUSEL (banner chính chạy vòng, mũi tên/chấm
+// do JS lái — dùng lại heroBannerInner + .hslide) + cột PHẢI 2 banner NHỎ TĨNH (từ section hero_side).
+// mainSlides = hero.props.slides; sideSlides ≤2. Ô lớn giữ <h1> (slide đầu); ô nhỏ chỉ ảnh + caption.
+function heroSplit(mainSlides, sideSlides) {
+  const { inner, n } = heroBannerInner(mainSlides, true); // ô lớn: blur-fill (không cắt banner)
+  const side = sideSlides.slice(0, 2).map((s) => {
+    const src = esc(`${MEDIA_PUBLIC_BASE}/${s.image_key}`);
+    const cap = s.headline ? `<span class="hs-cap">${esc(s.headline)}</span>` : '';
+    // ô phụ cũng blur-fill: nền mờ phủ kín + ảnh contain phía trên → banner phụ tỉ lệ nào cũng vừa.
+    const cellInner = `<img class="hs-bg" src="${src}" alt="" aria-hidden="true" loading="lazy"><img class="hs-img" src="${src}" alt="${esc(s.headline || '')}" loading="lazy">${cap}`;
+    const href = s.button_link ? normLink(s.button_link) : '';
+    return href ? `<a class="hs-cell" href="${esc(href)}">${cellInner}</a>` : `<div class="hs-cell">${cellInner}</div>`;
+  }).join('');
+  return `<section class="hero hero-split hero-n${n}"><div class="wrap"><div class="hero-split-grid">
+    <div class="hs-main">${inner}</div>
+    <div class="hs-side">${side}</div>
+  </div></div></section>`;
 }
 
 // ── section renderers (nhận dữ liệu ĐÃ đọc, escape khi render) ────────────────
@@ -301,18 +330,20 @@ const SECTIONS = {
     // không có trang nào → ẩn mục (tránh liên kết chết). Footer vẫn liệt kê đủ trang CMS.
     const aboutPage = (ctx.menu ?? []).find((p) => /gioi-?thieu|about|ve-chung-toi/i.test(p.slug)) ?? (ctx.menu ?? [])[0] ?? null;
     const aboutLink = aboutPage ? `<a href="/pages/${esc(aboutPage.slug)}">Giới thiệu</a>` : '';
-    return `<div class="topbar">${esc(topbarText)}</div><header class="hdr"><div class="wrap">
-    <input type="checkbox" id="navtoggle" class="navtoggle vh" aria-label="Mở/đóng menu">
-    <label for="navtoggle" class="navburger" aria-hidden="true">☰</label>
-    <a href="/" class="brand">${ctx.shop.logo_url ? `<img src="${esc(ctx.shop.logo_url)}" alt="${esc(ctx.shop.name)}" class="brand-logo">` : esc(ctx.shop.name)}</a>
-    <nav class="hnav">
+    // Dải nav HỒNG kiểu M.O.I (preset mỹ phẩm): header.props.nav_style==='band'. So sánh cờ (KHÔNG
+    // nội suy → CSP-safe); tái dùng --color-primary (không token mới). Preset khác → header 1 thanh cũ.
+    const band = hp.nav_style === 'band';
+    const toggle = `<input type="checkbox" id="navtoggle" class="navtoggle vh" aria-label="Mở/đóng menu">`;
+    const burger = `<label for="navtoggle" class="navburger" aria-hidden="true">☰</label>`;
+    const brandHtml = `<a href="/" class="brand">${ctx.shop.logo_url ? `<img src="${esc(ctx.shop.logo_url)}" alt="${esc(ctx.shop.name)}" class="brand-logo">` : esc(ctx.shop.name)}</a>`;
+    const navHtml = `<nav class="hnav">
       <a href="/">Trang chủ</a>
       ${productMenu}
       ${aboutLink}
       ${ctx.hasBlog ? '<a href="/blog">Tin tức</a>' : ''}
       <a href="/checkout/lookup">Tra cứu đơn</a>
-    </nav>
-    <div class="hicons">
+    </nav>`;
+    const iconsHtml = `<div class="hicons">
       <div class="hsearch-wrap">
         <input type="checkbox" id="searchtoggle" class="searchtoggle vh" aria-label="Mở/đóng tìm kiếm">
         <label for="searchtoggle" class="hicon" title="Tìm kiếm"><span class="i">${I_SEARCH}</span><span class="vh">Tìm kiếm</span></label>
@@ -323,7 +354,23 @@ const SECTIONS = {
       </div>
       <a href="/account" class="hicon" title="Tài khoản"><span class="i">${I_USER}</span><span class="vh">Tài khoản</span></a>
       <a href="/cart" class="hicon cart" title="Giỏ hàng"><span class="i">${I_CART}</span><span class="vh">Giỏ hàng</span><span class="cart-badge" id="cart-badge" aria-live="polite" hidden></span></a>
-    </div>
+    </div>`;
+    const topbar = `<div class="topbar">${esc(topbarText)}</div>`;
+    if (band) {
+      // 2 tầng: hàng tiện ích (brand + tìm + tài khoản + giỏ) TRÊN nền trắng, dải NAV NỀN HỒNG
+      // full-bleed DƯỚI. navtoggle đặt ở CẤP header (không trong .wrap) để mobile
+      // #navtoggle:checked ~ .hnav-band bung được (sibling selector tới đúng dải nav).
+      return `${topbar}<header class="hdr hdr-band">${toggle}
+    <div class="wrap hdr-top">${burger}${brandHtml}${iconsHtml}</div>
+    <div class="hnav-band"><div class="wrap">${navHtml}</div></div>
+  </header>`;
+    }
+    return `${topbar}<header class="hdr"><div class="wrap">
+    ${toggle}
+    ${burger}
+    ${brandHtml}
+    ${navHtml}
+    ${iconsHtml}
   </div></header>`;
   },
 
@@ -336,10 +383,18 @@ const SECTIONS = {
     // Phase 5 — BANNER TUỲ CHỈNH: shop cấu hình slides (ảnh tự tải) → dùng làm carousel.
     // Mỗi slide = ảnh phủ kín + overlay (headline/sub/nút). Không cấu hình / key sai hết →
     // rơi về hero TỰ ĐỘNG (cảnh chữ + ảnh sản phẩm) bên dưới, KHÔNG đổi.
-    const banner = (Array.isArray(props.slides) ? props.slides : [])
-      .filter((s) => s && typeof s.image_key === 'string' && BANNER_KEY_RE.test(s.image_key))
-      .slice(0, 5);
-    if (banner.length) return heroBanner(banner);
+    const validSlides = (arr) => (Array.isArray(arr) ? arr : [])
+      .filter((s) => s && typeof s.image_key === 'string' && BANNER_KEY_RE.test(s.image_key));
+    const banner = validSlides(props.slides).slice(0, 5);
+    // Hero SPLIT (preset M.O.I): ô lớn = CAROUSEL (hero.props.slides, chạy vòng) + cột phải 2 banner
+    // phụ (section hero_side.props.slides). Có main + side → split; chỉ main → carousel full-width;
+    // không main → rơi xuống hero AUTO (shop mới vẫn đẹp).
+    if (props.variant === 'split') {
+      const sideSlides = validSlides((Array.isArray(ctx.theme?.layout)
+        ? ctx.theme.layout.find((s) => s && s.section === 'hero_side')?.props?.slides : null)).slice(0, 2);
+      if (banner.length && sideSlides.length) return heroSplit(banner, sideSlides);
+      if (banner.length) return heroBanner(banner);
+    } else if (banner.length) return heroBanner(banner);
     const withImg = (Array.isArray(ctx.products) ? ctx.products : []).filter((p) => p.image).slice(0, 3);
     const visual = (p) => (p
       ? `<a class="hero-media" href="/p/${esc(p.slug)}">
@@ -480,6 +535,52 @@ const SECTIONS = {
     }).join('');
   },
 
+  // FLASH SALE (preset mỹ phẩm/M.O.I): dải ưu đãi có ĐỒNG HỒ ĐẾM NGƯỢC + hàng thẻ SP đang giảm.
+  // server nạp ctx.flashSale = {endsMs, products} (chỉ khi có promo ĐANG chạy). Đồng hồ: server render
+  // ẢNH CHỤP d/h/m/s (no-JS thấy ngay, hơi trễ do cache); JS đọc data-ends (epoch ms) tick mỗi giây.
+  // Tự-ẩn nếu không có promo/không SP. Thẻ tái dùng productCards → giá sale + gạch giá gốc y hệt lưới.
+  // 3 BANNER KHUYẾN MÃI ngang bằng (preset M.O.I): ảnh chủ shop upload (props.slides, cùng đường ống
+  // banner hero — validate image_key ở seller). TỰ-ẨN khi chưa có ảnh (demo shop mới vẫn sạch).
+  // Mỗi ô = link (button_link qua normLink) + caption (headline). CSP/đường tiền không đụng.
+  promo_banners: (props, ctx) => {
+    const items = (Array.isArray(props.slides) ? props.slides : [])
+      .filter((s) => s && typeof s.image_key === 'string' && BANNER_KEY_RE.test(s.image_key)).slice(0, 3);
+    if (!items.length) return '';
+    const cell = (s) => {
+      const src = esc(`${MEDIA_PUBLIC_BASE}/${s.image_key}`);
+      const cap = s.headline ? `<span class="promo-cap">${esc(s.headline)}</span>` : '';
+      const inner = `<img src="${src}" alt="${esc(s.headline || '')}" loading="lazy">${cap}`;
+      const href = s.button_link ? normLink(s.button_link) : '';
+      return href ? `<a class="promo-cell" href="${esc(href)}">${inner}</a>` : `<div class="promo-cell">${inner}</div>`;
+    };
+    return `<section class="section promo-banners"><div class="wrap">
+      ${props.title ? `<div class="section-h"><div class="section-h-l"><h2>${esc(props.title)}</h2></div></div>` : ''}
+      <div class="promo-grid">${items.map(cell).join('')}</div>
+    </div></section>`;
+  },
+
+  flash_sale: (props, ctx) => {
+    const fs = ctx.flashSale;
+    if (!fs || !Array.isArray(fs.products) || !fs.products.length || !(fs.endsMs > 0)) return '';
+    let rem = Math.max(0, Math.floor((fs.endsMs - Date.now()) / 1000));
+    const d = Math.floor(rem / 86400); rem -= d * 86400;
+    const h = Math.floor(rem / 3600); rem -= h * 3600;
+    const m = Math.floor(rem / 60); const s = rem - m * 60;
+    const p2 = (n) => (n < 10 ? `0${n}` : String(n));
+    const box = (cls, v, lb) => `<span class="fs-box"><b class="${cls}">${esc(v)}</b><i>${lb}</i></span>`;
+    return `<section class="section flashsale"><div class="wrap">
+      <div class="fs-head">
+        <h2 class="fs-title">${esc(props.title || 'Flash sale')}</h2>
+        <div class="fs-timer" data-ends="${esc(String(Math.round(fs.endsMs)))}" aria-label="Thời gian còn lại">
+          <span class="fs-lb">Kết thúc trong</span>
+          ${box('fs-d', String(d), 'Ngày')}${box('fs-h', p2(h), 'Giờ')}${box('fs-m', p2(m), 'Phút')}${box('fs-s', p2(s), 'Giây')}
+        </div>
+        <a class="fs-all" href="/products?sort=price_asc">Xem thêm →</a>
+      </div>
+      <div class="fs-row">${productCards(fs.products)}</div>
+    </div></section>`;
+  },
+
   product_grid: (props, ctx) => {
     const cards = ctx.products.length ? productCards(ctx.products) : '<p class="empty">Cửa hàng chưa có sản phẩm nào.</p>';
     // TRANG CHỦ (không pageInfo): chế độ "NỔI BẬT" — server chỉ đưa 8 SP, KHÔNG chips/sort/
@@ -605,7 +706,8 @@ const BLOCK_RENDER = {
 const DEFAULT_LAYOUT = [
   { section: 'header', props: {} },
   { section: 'hero', props: { title: '', subtitle: '' } },
-  { section: 'product_grid', props: { title: 'Sản phẩm nổi bật' } },
+  // limit:9 = 3 hàng × 3 cột chẵn (HOME_FEATURED nạp 10; lưới mặc định 3 cột → kẹp 9 tránh lẻ hàng).
+  { section: 'product_grid', props: { title: 'Sản phẩm nổi bật', limit: 9 } },
   { section: 'blog', props: {} },
   { section: 'footer', props: {} },
 ];
@@ -618,7 +720,7 @@ const STYLE = `${FONTFACE}
 body{margin:0;font-family:var(--font-body);color:var(--color-text);background:var(--color-bg);line-height:1.6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 a{color:inherit;text-decoration:none}img{max-width:100%;display:block}
 h1,h2,h3{font-family:var(--font-heading);font-weight:800;letter-spacing:-.02em;line-height:1.18;color:var(--color-text);text-wrap:balance}
-.wrap{max-width:1120px;margin:0 auto;padding:0 20px}
+.wrap{max-width:1320px;margin:0 auto;padding:0 24px}
 .i{display:inline-flex}.i svg,.cart svg{width:18px;height:18px}
 .muted{color:var(--color-muted)}
 a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.th:focus-visible,.chip:focus-visible{outline:2.5px solid var(--color-primary);outline-offset:2px;border-radius:10px}
@@ -640,6 +742,18 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .hnav{display:flex;align-items:center;gap:22px;font-size:.86rem;flex-wrap:wrap;margin-right:auto}
 .hnav>a,.hnav-trig{color:var(--color-muted);font-weight:600;letter-spacing:.02em;transition:color .15s}
 .hnav>a:hover,.hnav-trig:hover{color:var(--color-primary)}
+/* ── Dải NAV HỒNG kiểu M.O.I (header nav_style='band', preset mỹ phẩm) — hàng tiện ích trắng
+   TRÊN + dải nav nền --color-primary full-bleed DƯỚI; panel dropdown giữ nền trắng. Không token
+   mới, không overflow trên .hnav (tránh cắt panel mega). Preset khác giữ header 1 thanh cũ. */
+.hdr-band{background:var(--color-bg);backdrop-filter:none;-webkit-backdrop-filter:none}
+.hdr-band .hdr-top{min-height:64px}
+.hdr-band .hdr-top .brand{margin-right:auto}
+.hdr-band .hnav-band{background:var(--color-primary)}
+.hdr-band .hnav-band .wrap{display:flex;min-height:46px;align-items:center}
+.hdr-band .hnav{margin:0;justify-content:center;gap:20px}
+.hdr-band .hnav>a,.hdr-band .hnav-trig{color:#fff}
+.hdr-band .hnav>a:hover,.hdr-band .hnav-trig:hover{color:rgba(255,255,255,.82)}
+.hdr-band .hnav .caret{color:#fff}
 /* Dropdown "Sản phẩm" thuần CSS (:hover + :focus-within — không JS, hợp CSP). */
 .hnav-drop{position:relative}
 .hnav-trig{display:inline-flex;align-items:center;gap:4px;cursor:pointer;padding:6px 0}
@@ -686,7 +800,7 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .hsearch-go svg{width:18px;height:18px}
 /* Hamburger no-JS (checkbox + :checked ~ .hnav) — mobile gom menu vào nút ☰; desktop ẩn nút, nav luôn hiện. */
 .navburger{display:none;cursor:pointer;font-size:1.7rem;line-height:1;color:var(--color-text);padding:2px 8px;user-select:none}
-.navtoggle:focus-visible+.navburger{outline:2.5px solid var(--color-primary);outline-offset:2px;border-radius:8px}
+.navtoggle:focus-visible+.navburger,.hdr-band .navtoggle:focus-visible~.hdr-top .navburger{outline:2.5px solid var(--color-primary);outline-offset:2px;border-radius:8px}
 /* Ngưỡng hamburger = 860px (khớp hero 1 cột ở 820px + tránh dồn nav ở iPad dọc 768px).
    Menu mở: nền ĐẶC (không dựa nền blur của header) để chữ luôn đọc được; mỗi mục cao ≥44px.
    Icon giỏ/tài khoản/tìm kiếm LUÔN hiện (ngoài burger); dropdown "Sản phẩm" bung tĩnh (touch không hover). */
@@ -712,6 +826,13 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
   .hnav-mega .mega-subs a.mega-sub-all{display:none}
   .hnav-mega .mega-caret{display:none}
   .hsearch{right:auto;left:0}
+  /* Dải nav HỒNG (band) mobile: dải ẩn, burger bung .hnav-band (navtoggle là sibling); nav dọc chữ trắng; panel danh mục thành thẻ trắng cho dễ đọc. */
+  .hdr-band .hnav-band{display:none}
+  .navtoggle:checked~.hnav-band{display:block}
+  .hdr-band .hnav-band .wrap{display:block;padding:0}
+  .hdr-band .hnav{display:flex;background:var(--color-primary);border-top:0;padding:2px 0 8px;margin:0}
+  .hdr-band .hnav>a,.hdr-band .hnav-trig{color:#fff;border-bottom-color:rgba(255,255,255,.22);padding:12px 16px}
+  .hdr-band .hnav-menu{background:var(--color-bg);border-radius:8px;margin:2px 12px 6px;padding:6px}
 }
 /* ── HERO CAROUSEL (thuần CSS, không JS — hợp CSP default-src 'none') ─────────────
    Dải tối editorial trên nền gradient màu thương hiệu, chữ TRẮNG cố định.
@@ -746,7 +867,7 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 @media(max-width:720px){.hero-arrow{width:36px;height:36px;font-size:1.3rem}.hero-arrow.prev{left:8px}.hero-arrow.next{right:8px}}
 @keyframes hcycle2{0%{opacity:0;visibility:hidden;transform:translateY(10px)}3%{opacity:1;visibility:visible;transform:none}47%{opacity:1;visibility:visible;transform:none}50%,100%{opacity:0;visibility:hidden}}
 @keyframes hcycle3{0%{opacity:0;visibility:hidden;transform:translateY(10px)}2.5%{opacity:1;visibility:visible;transform:none}30.8%{opacity:1;visibility:visible;transform:none}33.4%,100%{opacity:0;visibility:hidden}}
-.hero-grid{max-width:1120px;margin:0 auto;padding:56px 20px 60px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
+.hero-grid{max-width:1320px;margin:0 auto;padding:56px 24px 60px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
 .hero .eyebrow{display:inline-flex;align-items:center;gap:7px;color:#fff;font-weight:700;font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;margin:0 0 16px;padding:6px 14px;border-radius:var(--pill);background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2)}
 .hero h1,.hero .hero-h{margin:0 0 16px;font-size:clamp(2rem,3.8vw,3.1rem);font-weight:800;letter-spacing:-.025em;line-height:1.08;color:#fff;text-wrap:balance;overflow-wrap:anywhere}
 /* Tên SP ở cảnh 2-3 (người bán nhập, dài tới 200 ký tự) — kẹp 2 dòng để carousel không
@@ -780,9 +901,32 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .hbanner-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;z-index:0}
 .hbanner-overlay{position:relative;z-index:1;height:100%;display:flex;align-items:center;background:linear-gradient(90deg,rgba(10,8,6,.62),rgba(10,8,6,.28) 55%,rgba(10,8,6,.08))}
 @media(max-width:720px){.hbanner{aspect-ratio:4/3;min-height:0;max-height:none}}
-.hbanner-copy{max-width:1120px;width:100%;margin:0 auto;padding:48px 20px}
+.hbanner-copy{max-width:1320px;width:100%;margin:0 auto;padding:48px 24px}
 .hero .hero-h1{margin:0 0 16px;font-size:clamp(2rem,3.8vw,3.1rem);font-weight:800;letter-spacing:-.025em;line-height:1.08;color:#fff;text-wrap:balance;overflow-wrap:anywhere;max-width:18ch}
 @media(max-width:820px){.hbanner-overlay{background:linear-gradient(0deg,rgba(10,8,6,.66),rgba(10,8,6,.3));text-align:center}.hbanner-copy{padding:40px 20px}.hbanner-copy .hero-sub{max-width:none;margin-inline:auto}.hbanner-copy .hero-cta{justify-content:center}}
+/* ── Hero SPLIT (preset M.O.I): ô LỚN trái (2fr) = CAROUSEL + cột phải (1fr) 2 ô TĨNH chia đều.
+   DÙNG CHIỀU CAO CỐ ĐỊNH (clamp) cho grid → cột chia ĐÚNG 2:1; KHÔNG aspect-ratio trên grid-item
+   (aspect-ratio + align-stretch gây phình ô lớn, che cột phụ). clamp thấp hơn = banner NGẮN hơn. */
+.hero-split{background:var(--color-hero-bg);color:inherit}
+.hero-split::after{display:none}
+.hero-split .wrap{padding-top:18px;padding-bottom:22px}
+.hero-split-grid{display:grid;grid-template-columns:2fr 1fr;gap:16px;height:clamp(250px,24vw,380px)}
+.hero-split .hs-main{position:relative;overflow:hidden;border-radius:var(--r-lg);height:100%;min-width:0}
+.hero-split .hs-main .hero-track{display:grid;height:100%}
+.hero-split .hs-main .hslide{grid-area:1/1;height:100%;aspect-ratio:auto;min-height:0;max-height:none}
+/* Tự-scale banner: nền MỜ phủ kín (cover) + ảnh TRỌN (contain) phía trên → banner tỉ lệ nào cũng vừa, không cắt. */
+.hbanner-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;filter:blur(22px) brightness(.9);transform:scale(1.14);z-index:0}
+.hbanner-blur .hbanner-img{object-fit:contain}
+.hero-split .hs-main .hbanner-copy{max-width:none;padding:24px 28px}
+.hero-split .hs-main .hero-h1{font-size:clamp(1.2rem,2.2vw,1.9rem);margin-bottom:10px;max-width:15ch}
+.hero-split .hs-main .hero-dots{position:absolute;left:0;right:0;bottom:8px;padding:0;z-index:3}
+.hs-side{display:grid;grid-template-rows:1fr 1fr;gap:16px;height:100%;min-width:0}
+.hs-cell{position:relative;display:block;overflow:hidden;border-radius:var(--r-lg);background:var(--color-surface);min-height:0}
+.hs-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;filter:blur(18px) brightness(.9);transform:scale(1.14);z-index:0}
+.hs-img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;object-position:center;display:block;z-index:1;transition:transform .4s}
+.hs-cell:hover .hs-img{transform:scale(1.04)}
+.hs-cap{position:absolute;left:0;right:0;bottom:0;z-index:2;padding:10px 14px;background:linear-gradient(0deg,rgba(0,0,0,.5),transparent);color:#fff;font-weight:700;font-size:.9rem}
+@media(max-width:820px){.hero-split-grid{grid-template-columns:1fr;height:auto}.hero-split .hs-main{aspect-ratio:16/9;height:auto}.hs-side{grid-template-rows:none;grid-template-columns:1fr 1fr;height:auto}.hs-side .hs-cell{aspect-ratio:16/10}}
 /* Chấm chỉ báo: cùng chu kỳ + delay với slide → chấm "đang chiếu" giãn thành vạch trắng. */
 .hero-dots{position:relative;z-index:1;display:flex;justify-content:center;gap:8px;padding:0 0 20px}
 .hero-dots .dot{width:8px;height:8px;border-radius:var(--pill);background:rgba(255,255,255,.35)}
@@ -958,6 +1102,27 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 @keyframes catrow-scroll{to{transform:translateX(-50%)}}
 @media(prefers-reduced-motion:reduce){.catrow-track{animation:none;overflow-x:auto;max-width:100%;padding-bottom:10px}}
 @media(max-width:560px){.catrow-scroll{grid-auto-columns:minmax(150px,72%)}.catbar-item{width:82px}.catrow-track > .card{width:160px}}
+/* FLASH SALE (preset mỹ phẩm): dải nền hồng nhạt + tiêu đề hồng + đồng hồ ô hồng + hàng thẻ cuộn ngang. */
+.flashsale{background:var(--color-hero-bg)}
+.fs-head{display:flex;align-items:center;gap:12px 14px;flex-wrap:wrap;margin-bottom:18px}
+.fs-title{margin:0;font-size:clamp(1.3rem,2.5vw,1.75rem);font-weight:800;letter-spacing:.03em;text-transform:uppercase;color:var(--color-primary)}
+.fs-timer{display:flex;align-items:center;gap:6px}
+.fs-lb{font-size:.82rem;color:var(--color-muted);margin-right:2px}
+.fs-box{display:inline-flex;flex-direction:column;align-items:center;min-width:46px;padding:4px 7px;background:var(--color-primary);color:#fff;border-radius:8px;line-height:1.12}
+.fs-box b{font-size:1.05rem;font-weight:800;font-variant-numeric:tabular-nums}
+.fs-box i{font-size:.6rem;font-style:normal;text-transform:uppercase;letter-spacing:.05em;opacity:.92}
+.fs-all{margin-left:auto;color:var(--color-primary);font-weight:700;font-size:.9rem;white-space:nowrap;transition:color .15s}
+.fs-all:hover{color:var(--color-primary-dark)}
+.fs-row{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(184px,212px);gap:16px;overflow-x:auto;overflow-y:hidden;padding-bottom:10px;-webkit-overflow-scrolling:touch;scroll-snap-type:x proximity}
+.fs-row > .card{scroll-snap-align:start}
+@media(max-width:560px){.fs-row{grid-auto-columns:minmax(150px,72%)}.fs-box{min-width:40px;padding:4px 5px}.fs-all{margin-left:0}}
+/* 3 BANNER KHUYẾN MÃI ngang bằng (preset M.O.I) — ảnh shop upload, tự-ẩn khi rỗng. */
+.promo-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.promo-cell{position:relative;display:block;overflow:hidden;border-radius:var(--r-lg);aspect-ratio:16/9;background:var(--color-surface)}
+.promo-cell img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .4s}
+.promo-cell:hover img{transform:scale(1.04)}
+.promo-cap{position:absolute;left:0;right:0;bottom:0;padding:10px 14px;background:linear-gradient(0deg,rgba(0,0,0,.5),transparent);color:#fff;font-weight:700;font-size:.9rem}
+@media(max-width:640px){.promo-grid{grid-template-columns:1fr}}
 .empty{color:var(--color-muted);padding:28px 0;text-align:center}
 .features{background:var(--color-surface);border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border)}
 .features .wrap{padding:36px 20px}
@@ -1305,6 +1470,8 @@ function cartScript(nonce) {
   if(hero&&hslides.length>1){
     hero.classList.add('js-run');
     var hIdx=0,hTimer=null,hDots=[];
+    // Hero split: mũi tên gắn vào ô LỚN (.hs-main) để nằm đúng trong khung carousel chính, không phủ cột phụ.
+    var hArrowHost=hero.querySelector('.hs-main')||hero;
     var hDotsWrap=hero.querySelector('.hero-dots');
     function hShow(n){
       hIdx=(n+hslides.length)%hslides.length;
@@ -1328,7 +1495,7 @@ function cartScript(nonce) {
       var b=document.createElement('button'); b.type='button'; b.className='hero-arrow '+cls;
       b.textContent=txt; b.setAttribute('aria-label',label);
       b.addEventListener('click',function(){ hShow(hIdx+step); hStart(); });
-      hero.appendChild(b);
+      hArrowHost.appendChild(b);
     }
     hArrow('prev','\\u2039','Cảnh trước',-1);
     hArrow('next','\\u203a','Cảnh sau',1);
@@ -1337,6 +1504,23 @@ function cartScript(nonce) {
     hero.addEventListener('focusin',hStop);
     hero.addEventListener('focusout',hStart);
     hShow(0); hStart();
+  }
+
+  // ── Đồng hồ đếm ngược FLASH SALE (preset mỹ phẩm): đọc data-ends (epoch ms) TỪ DOM — KHÔNG nội
+  // suy dữ liệu vào thân script (XSS-safe) — tick mỗi giây, hết giờ về 0 rồi dừng. No-JS: hiện ảnh
+  // chụp d/h/m/s server render. Chạy TRƯỚC return drawer để trang chủ (có nonce) luôn có đồng hồ.
+  var fsT=document.querySelector('.fs-timer[data-ends]');
+  if(fsT){
+    var fsEnds=parseInt(fsT.getAttribute('data-ends'),10)||0;
+    var fsD=fsT.querySelector('.fs-d'),fsH=fsT.querySelector('.fs-h'),fsM=fsT.querySelector('.fs-m'),fsS=fsT.querySelector('.fs-s'),fsIv=null;
+    function fsPad(n){ return (n<10?'0':'')+n; }
+    function fsTick(){
+      var r=Math.floor((fsEnds-Date.now())/1000); if(r<0) r=0;
+      var d=Math.floor(r/86400); r-=d*86400; var h=Math.floor(r/3600); r-=h*3600; var m=Math.floor(r/60); var s=r-m*60;
+      if(fsD) fsD.textContent=String(d); if(fsH) fsH.textContent=fsPad(h); if(fsM) fsM.textContent=fsPad(m); if(fsS) fsS.textContent=fsPad(s);
+      if(fsEnds-Date.now()<=0&&fsIv){ clearInterval(fsIv); fsIv=null; }
+    }
+    fsTick(); fsIv=setInterval(fsTick,1000);
   }
 
   var drawer=document.getElementById('cart-drawer'), backdrop=document.getElementById('cart-backdrop');

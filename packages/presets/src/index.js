@@ -12,8 +12,9 @@
  *   - tokens CHỈ chứa 11 khoá: 9 màu (color.*) + radius + spacing. Màu khớp /^#hex 3-8/,
  *     radius/spacing khớp /^\d{1,4}(px|rem|em|%)$/  (theme.js:41-43).
  *   - TUYỆT ĐỐI KHÔNG font.* — nền tảng chỉ tự-host 'Be Vietnam Pro', CSP chặn font ngoài.
- *   - layout dùng ĐÚNG 8 section registry: header, hero, features, collections,
- *     product_grid, blog, story, footer (theme.js:250). header đầu, footer cuối, hero gần đầu.
+ *   - layout dùng section trong registry (theme.js:250): header, hero, features, collections,
+ *     product_grid, product_spotlight, category_bar, category_rows, flash_sale, blog, story,
+ *     footer. header đầu, footer cuối, hero gần đầu.
  *   - hero.props.slides = [] RỖNG: banner do CHỦ SHOP tự upload (áp preset giữ nguyên ảnh cũ).
  *   - nav_links ≤ 6, url nội bộ '/...'. Ở đây trỏ /products* (luôn resolve, không 404);
  *     chủ shop tự trỏ lại danh mục thật /c/<slug> sau. sort lạ tự về 'new' nên không gãy.
@@ -55,7 +56,7 @@ export const PRESETS = {
         subtitle: 'Thiết kế chọn lọc, chất liệu cao cấp và những đường cắt tôn dáng — dành cho người mặc muốn nói lên cá tính mà không cần phô trương.',
         slides: [],
       } },
-      { section: 'product_grid', props: { title: 'Hàng mới về', columns: 4 } },
+      { section: 'product_grid', props: { title: 'Hàng mới về', columns: 4, limit: 8 } },
       { section: 'collections', props: { title: 'Khám phá bộ sưu tập' } },
       { section: 'story', props: {
         title: 'Thời trang là ngôn ngữ của sự tự tin',
@@ -107,7 +108,7 @@ export const PRESETS = {
         slides: [],
       } },
       { section: 'category_bar', props: {} },
-      { section: 'product_grid', props: { title: 'Ưu đãi hôm nay', columns: 4 } },
+      { section: 'product_grid', props: { title: 'Ưu đãi hôm nay', columns: 4, limit: 8 } },
       { section: 'category_rows', props: {} },
       { section: 'features', props: { items: [
         { title: 'Tươi mỗi ngày', desc: 'Nhập hàng từ sáng sớm, chọn lọc kỹ, không để tồn quá 24 giờ.' },
@@ -153,7 +154,7 @@ export const PRESETS = {
         slides: [],
       } },
       { section: 'collections', props: { title: 'Không gian theo phòng', variant: 'cards' } },
-      { section: 'product_grid', props: { title: 'Sản phẩm nổi bật', columns: 3 } },
+      { section: 'product_grid', props: { title: 'Sản phẩm nổi bật', columns: 3, limit: 9 } },
       { section: 'story', props: {
         title: 'Chuyện của xưởng mộc',
         body: 'Chúng tôi bắt đầu từ một xưởng nhỏ với niềm tin rằng đồ nội thất tốt phải bền theo thời gian. Mỗi sản phẩm là sự kết hợp giữa gỗ tự nhiên tuyển chọn và bàn tay người thợ — mộc mạc mà tinh tế, đồng hành cùng gia đình bạn qua nhiều thế hệ.',
@@ -170,56 +171,54 @@ export const PRESETS = {
     ],
   },
 
-  // ── Mỹ phẩm — pastel rose-mauve + nude, sạch mềm cao cấp, bo mềm ──
+  // ── Mỹ phẩm — hồng M.O.I: hồng thương hiệu ấm + hồng nóng ưu đãi, nền trắng/kem ấm, FLASH SALE ──
   cosmetics: {
     name: 'Mỹ phẩm',
-    description: 'Pastel rose-mauve + nude, sạch mềm cao cấp, bo góc mềm, nhấn thành phần lành tính & an tâm.',
+    description: 'Beauty kiểu M.O.I: hồng thương hiệu tươi + hồng nóng ưu đãi trên nền trắng/kem ấm, FLASH SALE đếm ngược, lưới bán chạy 5 cột — nữ tính, hiện đại, hướng khuyến mãi.',
     tokens: {
-      'color.primary': '#99425a',
-      'color.primary-dark': '#7d3149',
-      'color.accent': '#c58f6a',
-      'color.bg': '#fffdfb',
-      'color.surface': '#fbf0ee',
-      'color.hero-bg': '#f8e5e4',
-      'color.text': '#2b1b21',
-      'color.muted': '#8a6f76',
-      'color.border': '#f0dcd9',
-      radius: '14px',
-      spacing: '18px',
+      'color.primary': '#f36b7d',
+      'color.primary-dark': '#e5697d',
+      'color.accent': '#f84969',
+      'color.bg': '#ffffff',
+      'color.surface': '#fdf6f3',
+      'color.hero-bg': '#fdeef1',
+      'color.text': '#1f1a1c',
+      'color.muted': '#777777',
+      'color.border': '#f2dfe3',
+      radius: '12px',
+      spacing: '16px',
     },
     layout: [
       { section: 'header', props: {
         topbar_text: 'Miễn phí giao hàng cho đơn từ 500K · Tư vấn loại da miễn phí với chuyên viên',
+        nav_style: 'band',
         menu_show_featured: true, menu_show_new: true, menu_show_sale: true,
         nav_links: [
-          { label: 'Chăm sóc da', url: '/products' },
           { label: 'Trang điểm', url: '/products' },
-          { label: 'Bộ quà tặng', url: '/products' },
+          { label: 'Chăm sóc da', url: '/products' },
+          { label: 'Nước hoa', url: '/products' },
         ],
       } },
       { section: 'hero', props: {
-        eyebrow: 'Chuẩn da liễu · Thành phần lành tính',
-        title: 'Vẻ đẹp tự nhiên bắt đầu từ làn da khỏe',
-        subtitle: 'Mỹ phẩm chính hãng, bảng thành phần minh bạch — nâng niu làn da bạn mỗi ngày, dịu nhẹ và an toàn.',
+        variant: 'split',
+        eyebrow: 'Chính hãng · Thành phần lành tính',
+        title: 'Tháng này chốt deal — nuông chiều phái đẹp',
+        subtitle: 'Mỹ phẩm chính hãng, bảng thành phần minh bạch — ưu đãi mỗi ngày, nâng niu làn da bạn dịu nhẹ và an toàn.',
         slides: [],
       } },
+      // Section DỮ-LIỆU (không tự render): giữ 2 banner PHỤ bên phải hero split. Storefront hero
+      // split đọc slides ở đây; chủ shop upload qua form "Banner phụ hero" trong Giao diện.
+      { section: 'hero_side', props: { slides: [] } },
+      { section: 'flash_sale', props: { title: 'Flash sale' } },
+      { section: 'promo_banners', props: { title: 'Ưu đãi nổi bật', slides: [] } },
+      { section: 'product_grid', props: { title: 'Sản phẩm bán chạy', columns: 5 } },
+      { section: 'collections', props: { title: 'Danh mục làm đẹp' } },
       { section: 'features', props: { items: [
         { title: '100% chính hãng', desc: 'Cam kết hàng thật, đầy đủ tem phụ và nguồn gốc rõ ràng.' },
         { title: 'Thành phần lành tính', desc: 'Bảng thành phần minh bạch, không cồn khô, không paraben.' },
         { title: 'Tư vấn theo loại da', desc: 'Chuyên viên gợi ý sản phẩm hợp da khô, da dầu hay da nhạy cảm.' },
         { title: 'Đổi trả trong 7 ngày', desc: 'Hoàn tiền dễ dàng nếu sản phẩm chưa mở niêm phong.' },
       ] } },
-      { section: 'product_spotlight', props: {
-        eyebrow: 'Ngôi sao sản phẩm',
-        blurb: 'Sản phẩm được yêu thích nhất — công thức dịu nhẹ, bảng thành phần minh bạch, phù hợp làn da người Việt và được chuyên viên khuyên dùng.',
-      } },
-      { section: 'product_grid', props: { title: 'Bán chạy được yêu thích', columns: 3 } },
-      { section: 'collections', props: { title: 'Danh mục làm đẹp' } },
-      { section: 'story', props: {
-        title: 'Nâng niu làn da người Việt',
-        body: 'Chúng tôi tuyển chọn từng sản phẩm với tiêu chí an toàn và hiệu quả thật — ưu tiên công thức dịu nhẹ, phù hợp khí hậu và làn da người Việt. Mỗi sản phẩm đều được cân nhắc kỹ để chăm sóc da bền vững, thay vì chạy theo lời hứa hào nhoáng.',
-        cta_text: 'Tìm hiểu thương hiệu',
-      } },
       { section: 'blog', props: {} },
       { section: 'footer', props: {} },
     ],

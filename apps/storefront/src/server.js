@@ -217,7 +217,7 @@ function normalizeHost(raw) {
 
 const CACHE_PUBLIC = 'public, s-maxage=60, stale-while-revalidate=300';
 const PAGE_SIZE = 24; // sản phẩm mỗi trang (lưới /products / danh mục / tìm kiếm)
-const HOME_FEATURED = 6; // trang chủ CHỈ 6 SP nổi bật (2 hàng × 3, khung vuông như mẫu) — xem đủ ở /products
+const HOME_FEATURED = 10; // trang chủ nạp 10 SP nổi bật (đủ cho 5 cột × 2 hàng kiểu M.O.I); preset ít cột hơn tự đặt props.limit bội-số-cột để không lẻ hàng — xem đủ ở /products
 
 // Sắp xếp lưới (?sort=): WHITELIST → ORDER BY tĩnh (không nội suy input). Giá sort trên
 // p.price_vnd — đúng cột giá thẻ sản phẩm đang hiển thị. Giá trị lạ rơi về 'new'.
@@ -763,8 +763,8 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
 
       // Trang chủ: CHỈ path '/'. Path lạ → 404 (không render home cho mọi thứ).
       if (url.pathname !== '/') return { ...base, notFound: true };
-      // Lưới NỔI BẬT chỉ 8 SP (2 hàng × 4), KHÔNG pageInfo → theme render chế độ "nổi bật"
-      // (không chips/sort/pager, nút "Xem thêm" → /products). Fetch đúng 8, không lấy 24 thừa.
+      // Lưới NỔI BẬT (HOME_FEATURED SP), KHÔNG pageInfo → theme render chế độ "nổi bật"
+      // (không chips/sort/pager, nút "Xem thêm" → /products). Fetch đúng HOME_FEATURED, không lấy 24 thừa.
       const { products } = await productGrid('', [], 0, HOME_FEATURED);
       // Section "Bài viết mới nhất": 3 bài published gần nhất (mirror query /blog — RLS
       // store_blog lọc published). Không có bài → theme tự ẩn section.
@@ -789,7 +789,24 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
           if (cp.length) categoryRows.push({ slug: cat.slug, name: cat.name, products: cp });
         }
       }
-      return { ...base, products, home: true, blogPosts, categoryRows };
+      // FLASH SALE (preset mỹ phẩm/M.O.I): CHỈ khi layout dùng 'flash_sale'. endsMs = mốc kết thúc
+      // SỚM NHẤT của promo ĐANG chạy (đồng hồ đếm ngược); products = SP đang được giảm (có promo active
+      // phủ tới) top 10. Không promo → flashSale = null → section tự ẩn. productGrid lọc bằng EXISTS
+      // trên promotions (KHÔNG tham chiếu LATERAL pe → chạy được cả ở count lẫn rows).
+      let flashSale = null;
+      if (Array.isArray(theme?.layout) && theme.layout.some((s) => s && s.section === 'flash_sale')) {
+        const endRow = await c.query(`SELECT extract(epoch FROM min(ends_at)) * 1000 AS ends_ms
+                                        FROM promotions WHERE active AND starts_at <= now() AND now() < ends_at`);
+        const endsMs = endRow.rows[0].ends_ms != null ? Math.round(Number(endRow.rows[0].ends_ms)) : null;
+        if (endsMs) {
+          const { products: sp } = await productGrid(
+            `WHERE EXISTS (SELECT 1 FROM promotions pr WHERE pr.active AND pr.starts_at <= now() AND now() < pr.ends_at
+                             AND (pr.scope = 'all' OR EXISTS (SELECT 1 FROM promotion_products pp
+                                   WHERE pp.promotion_id = pr.id AND pp.product_id = p.id)))`, [], 0, 10);
+          if (sp.length) flashSale = { endsMs, products: sp };
+        }
+      }
+      return { ...base, products, home: true, blogPosts, categoryRows, flashSale };
     });
 
     if (data.notFound) return sendHtml(res, 404, renderNotFound(), { shopSlug: data.shop?.slug });
@@ -803,7 +820,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     // Nonce CSP mỗi-request (ngẫu nhiên mật mã) cho lớp JS badge giỏ ở header. Dùng chung: header
     // render <script nonce=…> + sendHtml phát script-src 'nonce-…' (khớp nhau qua ctx.nonce).
     const nonce = crypto.randomBytes(16).toString('base64');
-    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '', hasBlog: data.hasBlog, blogPosts: data.blogPosts ?? [], categoryRows: data.categoryRows ?? [], activeCatName: data.activeCatName ?? null, origin, nonce };
+    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '', hasBlog: data.hasBlog, blogPosts: data.blogPosts ?? [], categoryRows: data.categoryRows ?? [], flashSale: data.flashSale ?? null, activeCatName: data.activeCatName ?? null, origin, nonce };
     // Canonical PHÂN TRANG (#28): trang N canonical về CHÍNH NÓ (?page=N — không gộp
     // hết về trang 1 làm Google bỏ index trang sau); sort/lọc KHÔNG vào canonical
     // (cùng nội dung, khác thứ tự). Kèm <link rel=prev/next> khi có trang kề.

@@ -12,8 +12,8 @@ import assert from 'node:assert/strict';
 import { PRESETS, getPreset, listPresets, presetChoices } from '../src/index.js';
 import { sanitizeTokens } from '../../../apps/storefront/src/theme.js';
 
-// 8 section registry (theme.js:250) — render bỏ qua key lạ, nên preset PHẢI nằm trong tập này.
-const VALID_SECTIONS = new Set(['header', 'hero', 'features', 'collections', 'product_grid', 'product_spotlight', 'category_bar', 'category_rows', 'blog', 'story', 'footer']);
+// section registry (theme.js:250) — render bỏ qua key lạ, nên preset PHẢI nằm trong tập này.
+const VALID_SECTIONS = new Set(['header', 'hero', 'hero_side', 'features', 'collections', 'product_grid', 'product_spotlight', 'category_bar', 'category_rows', 'flash_sale', 'promo_banners', 'blog', 'story', 'footer']);
 // 11 khoá token hợp lệ (9 màu + radius + spacing). KHÔNG font.*.
 const TOKEN_KEYS = ['color.primary', 'color.primary-dark', 'color.accent', 'color.bg', 'color.surface', 'color.hero-bg', 'color.text', 'color.muted', 'color.border', 'radius', 'spacing'];
 const SLUGS = ['fashion', 'food', 'furniture', 'cosmetics'];
@@ -41,7 +41,7 @@ for (const slug of SLUGS) {
     assert.ok(!('font.body' in p.tokens) && !('font.heading' in p.tokens), 'preset không được set font.*');
   });
 
-  test(`[${slug}] layout hợp lệ (11 section · header đầu · footer cuối · hero gần đầu)`, () => {
+  test(`[${slug}] layout hợp lệ (section registry · header đầu · footer cuối · hero gần đầu)`, () => {
     assert.ok(Array.isArray(p.layout) && p.layout.length >= 4, 'layout phải là mảng đủ dài');
     for (const s of p.layout) {
       assert.ok(s && typeof s === 'object' && typeof s.props === 'object', 'mỗi mục layout cần {section,props}');

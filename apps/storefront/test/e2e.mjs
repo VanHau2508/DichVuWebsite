@@ -415,6 +415,53 @@ async function main() {
   r.status === 200 && r.body.includes('Thảm trải sàn cao cấp') && !r.body.includes('SP Đầy 0')
     ? ok('?cat= lọc đúng: chỉ SP thuộc danh mục') : bad('lọc ?cat sai');
   r.body.includes('aria-current="true"') ? ok('danh mục đang chọn được đánh dấu (aria-current)') : bad('mục danh mục chọn không đánh dấu');
+
+  // ── Danh mục 2 CẤP (0095): cha gộp con · con lọc hẹp · mega-menu · breadcrumb · /c/ 301 · ép 2 cấp ──
+  sect('Danh mục 2 cấp (cha↔con): gộp/lọc + mega-menu + /c/ 301 + ép 2 cấp');
+  const parentSlug = `thit-${uniq()}`, heoSlug = `heo-${uniq()}`, boSlug = `bo-${uniq()}`;
+  const parentCat = await rq(SELLER, 'POST', `/shops/${A.shopId}/categories`, { body: { slug: parentSlug, name: 'Thịt' }, cookie: A.cookie, origin: OS });
+  const heoCat = await rq(SELLER, 'POST', `/shops/${A.shopId}/categories`, { body: { slug: heoSlug, name: 'Thịt heo', parent_id: parentCat.json.id }, cookie: A.cookie, origin: OS });
+  const boCat = await rq(SELLER, 'POST', `/shops/${A.shopId}/categories`, { body: { slug: boSlug, name: 'Thịt bò', parent_id: parentCat.json.id }, cookie: A.cookie, origin: OS });
+  (parentCat.status === 201 && heoCat.status === 201 && boCat.status === 201)
+    ? ok('tạo cha "Thịt" + 2 con "Thịt heo"/"Thịt bò"') : bad('tạo cây danh mục lỗi', `${parentCat.status}/${heoCat.status}/${boCat.status}`);
+  // SP gán vào CON (không gán trực tiếp cha) → kiểm cha GỘP con.
+  const heoPid = (await mkProduct(A.shopId, A.cookie, { title: 'Ba chỉ heo', slug: `bachi-${uniq()}`, price_vnd: 120000, status: 'active', variants: [{ sku: `HEO-${uniq()}`, price_vnd: 120000 }] })).json.id;
+  const boPid = (await mkProduct(A.shopId, A.cookie, { title: 'Bắp bò Mỹ', slug: `bapbo-${uniq()}`, price_vnd: 260000, status: 'active', variants: [{ sku: `BO-${uniq()}`, price_vnd: 260000 }] })).json.id;
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/products/${heoPid}/categories`, { body: { category_ids: [heoCat.json.id] }, cookie: A.cookie, origin: OS });
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/products/${boPid}/categories`, { body: { category_ids: [boCat.json.id] }, cookie: A.cookie, origin: OS });
+
+  // ÉP 2 CẤP: tạo con-của-con → 400; hạ cấp cha đang có con → 400.
+  const threeLvl = await rq(SELLER, 'POST', `/shops/${A.shopId}/categories`, { body: { slug: `suon-${uniq()}`, name: 'Sườn heo', parent_id: heoCat.json.id }, cookie: A.cookie, origin: OS });
+  threeLvl.status === 400 ? ok('ÉP 2 CẤP: tạo con-của-con bị chặn (400)') : bad('cây 3 cấp lọt', String(threeLvl.status));
+  const demote = await rq(SELLER, 'PATCH', `/shops/${A.shopId}/categories/${parentCat.json.id}`, { body: { parent_id: catMk.json.id }, cookie: A.cookie, origin: OS });
+  demote.status === 400 ? ok('ÉP 2 CẤP: danh mục CÓ CON không thể tự làm con (400)') : bad('hạ cấp cha có con lọt', String(demote.status));
+
+  // Mega-menu: cha "Thịt" (mega-h) + con "Thịt heo"/"Thịt bò" (mega-subs), tất cả trỏ /products?cat=.
+  r = await sf(A.host, '/');
+  r.body.includes('hnav-mega') && new RegExp(`class="mega-h" href="/products\\?cat=${parentSlug}">Thịt<`).test(r.body)
+    && r.body.includes(`href="/products?cat=${heoSlug}">Thịt heo<`) && r.body.includes(`href="/products?cat=${boSlug}">Thịt bò<`)
+    ? ok('mega-menu: cha "Thịt" + con "Thịt heo"/"Thịt bò" (trỏ /products?cat=)') : bad('mega-menu thiếu cây danh mục');
+
+  // Cha GỘP con: /products?cat=Thịt → CÓ CẢ "Ba chỉ heo" lẫn "Bắp bò Mỹ".
+  r = await sf(A.host, `/products?cat=${parentSlug}`);
+  r.status === 200 && r.body.includes('Ba chỉ heo') && r.body.includes('Bắp bò Mỹ')
+    ? ok('cha GỘP con: /products?cat=Thịt hiện SP của cả 2 con') : bad('cha không gộp con');
+  r.body.includes('<h1 class="products-title">Thịt</h1>') && r.body.includes('class="pf-crumb"')
+    && r.body.includes('class="pf-subcats"') && r.body.includes('>Thịt heo</a>') && r.body.includes('>Thịt bò</a>')
+    ? ok('trang cha: H1="Thịt" + breadcrumb + sidebar xổ danh mục con') : bad('trang cha thiếu H1/breadcrumb/cây con');
+
+  // Con LỌC HẸP: /products?cat=Thịt-heo → CHỈ "Ba chỉ heo", KHÔNG "Bắp bò Mỹ".
+  r = await sf(A.host, `/products?cat=${heoSlug}`);
+  r.status === 200 && r.body.includes('Ba chỉ heo') && !r.body.includes('Bắp bò Mỹ')
+    ? ok('con LỌC HẸP: /products?cat=Thịt-heo chỉ hiện SP của con đó') : bad('con không lọc hẹp');
+  r.body.includes('<h1 class="products-title">Thịt heo</h1>') && /class="pf-crumb"[\s\S]*?>Thịt<\/a>[\s\S]*?>Thịt heo</.test(r.body)
+    ? ok('trang con: H1="Thịt heo" + breadcrumb "Sản phẩm / Thịt / Thịt heo"') : bad('trang con thiếu H1/breadcrumb cha');
+
+  // /c/:slug → 301 sang /products?cat= (bố cục danh mục THỐNG NHẤT).
+  r = await sf(A.host, `/c/${parentSlug}`);
+  (r.status === 301 && (r.headers.location || '').includes(`/products?cat=${parentSlug}`))
+    ? ok('/c/:slug 301 → /products?cat= (thống nhất bố cục)') : bad('/c/ không redirect', `${r.status} ${r.headers.location}`);
+
   // Ô tìm sidebar: ?q= dùng cơ chế token /search — "trai tham" ra "Thảm trải sàn cao cấp".
   r = await sf(A.host, `/products?q=${encodeURIComponent('trai tham')}`);
   r.status === 200 && r.body.includes('Thảm trải sàn cao cấp') && !r.body.includes('SP Đầy 0')

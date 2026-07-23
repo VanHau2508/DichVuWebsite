@@ -262,8 +262,17 @@ const SECTIONS = {
     // Dropdown "Sản phẩm" (thuần CSS, :hover + :focus-within): shortcut cố định + danh mục THẬT.
     // Shortcut trỏ về lưới trang chủ theo sort có sẵn (GRID_SORTS) — KHÔNG route mới, không 404.
     // (Khuyến mãi = giá tăng dần tạm thời — Phase 2 có thể thêm trang /sale riêng.)
-    const catLinks = (Array.isArray(ctx.categories) ? ctx.categories : [])
-      .map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('');
+    // MENU danh mục SỔ DỌC + FLYOUT PHẢI (0095): danh sách 1 cột. Danh mục CÓ CON → rê chuột,
+    // con hiện PANEL RIÊNG bên PHẢI (không đẩy mục khác xuống — chịu được nhiều con). Con nằm
+    // TRONG .mega-col + cầu ::before nối khe → di sang panel con vẫn mở; lia đi tự ẩn. Panel con
+    // có header "Tất cả <danh mục>" (xem gộp cả nhánh). Mọi link trỏ /products?cat=<slug>.
+    const catCols = (Array.isArray(ctx.categories) ? ctx.categories : []).map((c) => {
+      const kids = Array.isArray(c.children) && c.children.length;
+      return `<div class="mega-col${kids ? ' has-sub' : ''}">
+        <a class="mega-h" href="/products?cat=${esc(c.slug)}">${esc(c.name)}${kids ? '<span class="mega-caret" aria-hidden="true">›</span>' : ''}</a>
+        ${kids ? `<div class="mega-subs"><a class="mega-sub-all" href="/products?cat=${esc(c.slug)}">Tất cả ${esc(c.name)}</a>${c.children.map((ch) => `<a href="/products?cat=${esc(ch.slug)}">${esc(ch.name)}</a>`).join('')}</div>` : ''}
+      </div>`;
+    }).join('');
     // Menu "Sản phẩm" tuỳ chỉnh (Phase 5b): shop bật/tắt 3 shortcut cố định + thêm liên kết
     // riêng. Đọc từ header props (nơi topbar_text được lưu) — merge saved+props để trang con
     // (props rỗng) vẫn NHẤT QUÁN. KHÔNG cấu hình / field thiếu = coi như TRUE → giữ hành vi cũ.
@@ -278,13 +287,14 @@ const SECTIONS = {
     const navLinksHtml = (Array.isArray(hp.nav_links) ? hp.nav_links : [])
       .filter((l) => l && typeof l === 'object' && l.label && l.url)
       .map((l) => `<a href="${esc(normLink(l.url))}">${esc(l.label)}</a>`).join('');
-    // Ghép các nhóm (shortcut / danh mục / liên kết tuỳ chỉnh) — gạch ngăn giữa nhóm KHÔNG rỗng.
-    const menuInner = [shortcuts, catLinks, navLinksHtml].filter(Boolean)
-      .join('<span class="hnav-sep" aria-hidden="true"></span>');
+    // Hàng lối-tắt (Nổi bật/Hàng mới/Khuyến mãi + liên kết riêng) nằm trên cùng, mảnh; danh mục
+    // là phần chính bên dưới. Trig CLICK đi thẳng /products (touch/mobile không hover được).
+    const quickRow = [shortcuts, navLinksHtml].filter(Boolean).join('');
     const productMenu = `<div class="hnav-drop">
-        <a class="hnav-trig" href="/#san-pham" aria-haspopup="true">Sản phẩm<span class="caret" aria-hidden="true">▾</span></a>
-        <div class="hnav-menu" role="menu">
-          ${menuInner}
+        <a class="hnav-trig" href="/products" aria-haspopup="true">Sản phẩm<span class="caret" aria-hidden="true">▾</span></a>
+        <div class="hnav-menu hnav-mega" role="menu">
+          ${quickRow ? `<div class="mega-quick">${quickRow}</div>` : ''}
+          ${catCols ? `<div class="mega-cols">${catCols}</div>` : ''}
         </div>
       </div>`;
     // "Giới thiệu": trỏ trang CMS giới thiệu nếu shop có (khớp slug about-like → trang menu đầu);
@@ -384,12 +394,90 @@ const SECTIONS = {
   collections: (props, ctx) => {
     const cats = Array.isArray(ctx.categories) ? ctx.categories.slice(0, 6) : [];
     if (!cats.length) return '';
+    // GĐ2 preset — biến thể bố cục: 'cards' = tile TO hơn, ít cột (nội thất "mua theo phòng").
+    // Giá trị khác/thiếu → giữ 'tiles' như cũ. Chỉ thêm class, path/esc/self-hide y nguyên.
+    const isCards = props.variant === 'cards';
     return `<section class="section collections" id="bo-suu-tap"><div class="wrap">
       <div class="section-h">
         <div class="section-h-l"><p class="section-eyebrow">${esc(props.eyebrow || 'Danh mục nổi bật')}</p><h2>${esc(props.title || 'Mua theo bộ sưu tập')}</h2></div>
       </div>
-      <div class="coll-grid">${cats.map((c) => `<a class="coll-tile" href="/c/${esc(c.slug)}"><span class="coll-name">${esc(c.name)}</span><span class="coll-go">Xem ngay →</span></a>`).join('')}</div>
+      <div class="coll-grid${isCards ? ' coll-cards' : ''}">${cats.map((c) => `<a class="coll-tile" href="/products?cat=${esc(c.slug)}"><span class="coll-name">${esc(c.name)}</span><span class="coll-go">Xem ngay →</span></a>`).join('')}</div>
     </div></section>`;
+  },
+
+  // GĐ2 preset — làm nổi bật MỘT sản phẩm, bố cục chia đôi (ảnh lớn · tên/giá/mô-tả/CTA) trên nền
+  // sáng. Nguồn ctx.products (cùng shape thẻ lưới); chọn theo props.index (mặc định 0). Tự-ẩn khi
+  // rỗng. Mua-nhanh = <form POST /cart/add> y hệt productCards (SP phẳng còn hàng). esc mọi text.
+  product_spotlight: (props, ctx) => {
+    const list = Array.isArray(ctx.products) ? ctx.products : [];
+    if (!list.length) return '';
+    const idx = Number.isInteger(props.index) && props.index >= 0 && props.index < list.length ? props.index : 0;
+    const p = list[idx];
+    if (!p || !p.slug) return '';
+    const href = `/p/${esc(p.slug)}`;
+    const out = Number(p.available) <= 0;
+    const quickAdd = !p.has_options && p.default_variant_id && !out;
+    const eyebrow = (typeof props.eyebrow === 'string' && props.eyebrow.trim()) ? props.eyebrow.trim() : 'Sản phẩm nổi bật';
+    const blurbRaw = (typeof props.blurb === 'string' && props.blurb.trim())
+      ? props.blurb.trim()
+      : (typeof p.short_desc === 'string' && p.short_desc.trim()) ? p.short_desc.trim()
+      : (typeof p.desc === 'string' && p.desc.trim() ? p.desc.trim() : '');
+    const media = p.image
+      ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy">`
+      : `<span class="ph">${I_IMG}</span>`;
+    const buyBtn = out
+      ? `<span class="btn btn-primary spot-buy spot-buy-out" aria-disabled="true">Hết hàng</span>`
+      : quickAdd
+        ? `<form class="spot-buyform" method="POST" action="/cart/add"><input type="hidden" name="variant_id" value="${esc(p.default_variant_id)}"><input type="hidden" name="qty" value="1"><button class="btn btn-primary spot-buy" type="submit">${I_CART}<span>Mua ngay</span></button></form>`
+        : `<a class="btn btn-primary spot-buy" href="${href}">${I_CART}<span>Mua ngay</span></a>`;
+    return `<section class="section spotlight${props.reverse ? ' spotlight-rev' : ''}" id="san-pham-noi-bat"><div class="wrap"><div class="spot-grid">
+      <a class="spot-media" href="${href}" aria-label="${esc(p.title)}">${out ? '<span class="soldout-tag">Hết hàng</span>' : ''}${media}</a>
+      <div class="spot-copy">
+        <p class="section-eyebrow spot-eyebrow">${esc(eyebrow)}</p>
+        <h2 class="spot-name"><a href="${href}">${esc(p.title)}</a></h2>
+        <div class="spot-price">${priceLine(p.price_vnd, p.sale_price_vnd, p.sale_off_pct, p.compare_at_vnd)}</div>
+        ${blurbRaw ? `<p class="spot-blurb">${esc(blurbRaw)}</p>` : ''}
+        <div class="spot-cta">${buyBtn}<a class="btn btn-ghost spot-detail" href="${href}">Xem chi tiết</a></div>
+      </div>
+    </div></div></section>`;
+  },
+
+  // Bố cục tạp hoá/MM — thanh danh mục nhanh: chip cuộn ngang, mỗi chip = 1 danh mục shop.
+  // Tự-ẩn nếu chưa có danh mục. Icon lưới chung (danh mục không mang ảnh riêng). No-JS.
+  category_bar: (props, ctx) => {
+    const cats = Array.isArray(ctx.categories) ? ctx.categories.slice(0, 12) : [];
+    if (!cats.length) return '';
+    const ic = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>';
+    return `<section class="section catbar"><div class="wrap">
+      ${props.title ? `<div class="section-h"><div class="section-h-l"><h2>${esc(props.title)}</h2></div></div>` : ''}
+      <div class="catbar-row">${cats.map((c) => `<a class="catbar-item" href="/products?cat=${esc(c.slug)}"><span class="catbar-ic">${c.image ? `<img src="${esc(c.image)}" alt="${esc(c.name)}" loading="lazy">` : ic}</span><span class="catbar-name">${esc(c.name)}</span></a>`).join('')}</div>
+    </div></section>`;
+  },
+
+  // Bố cục tạp hoá/MM — nhiều HÀNG sản phẩm theo danh mục (server nạp ctx.categoryRows: mỗi phần
+  // tử {slug, name, products}). Mỗi hàng = tiêu đề danh mục + hàng thẻ SP CUỘN NGANG (no-JS) +
+  // "Xem tất cả" → /c/:slug. Tái dùng productCards (đường tiền/thêm-giỏ y hệt lưới). Tự-ẩn nếu rỗng.
+  category_rows: (props, ctx) => {
+    const rows = Array.isArray(ctx.categoryRows) ? ctx.categoryRows : [];
+    if (!rows.length) return '';
+    return rows.map((r) => {
+      const prods = Array.isArray(r.products) ? r.products : [];
+      const cards = productCards(prods);
+      // TỰ LƯỚT (marquee CSS thuần) khi ĐỦ nhiều SP (≥5): nhân đôi thẻ + track chạy translateX(-50%)
+      // → vòng lặp mượt vô hạn, KHÔNG JS. Dừng khi rê chuột (CSS :hover) + tắt nếu prefers-reduced-motion.
+      // Tốc độ chậm theo số SP. Ít SP → cuộn tay thường (overflow-x). Đường tiền/thêm-giỏ y hệt lưới.
+      const auto = prods.length >= 5;
+      const body = auto
+        ? `<div class="catrow-marq"><div class="catrow-track" style="animation-duration:${Math.max(26, prods.length * 5)}s">${cards}${cards}</div></div>`
+        : `<div class="catrow-scroll">${cards}</div>`;
+      return `<section class="section catrow"><div class="wrap">
+      <div class="section-h">
+        <div class="section-h-l"><h2>${esc(r.name)}</h2></div>
+        <a class="section-all" href="/c/${esc(r.slug)}">Xem tất cả →</a>
+      </div>
+      ${body}
+    </div></section>`;
+    }).join('');
   },
 
   product_grid: (props, ctx) => {
@@ -398,18 +486,23 @@ const SECTIONS = {
     // lọc/pager; nút "Xem thêm" to, căn giữa → /products (lưới đầy đủ). Chủ shop: khu nổi
     // bật không được ôm cả 100 SP.
     if (!ctx.pageInfo) {
+      // GĐ2 preset — số CỘT lưới nổi bật: prop columns ∈ {2,3,4,5}, MẶC ĐỊNH 3 (giữ y cũ nếu thiếu/lạ).
+      // Áp bằng class .grid-c{n} (không JS, hợp CSP). prop limit>0 → kẹp số SP hiện (server đã đưa ≤8).
+      const nCols = [2, 3, 4, 5].includes(Number(props.columns)) ? Number(props.columns) : 3;
+      const lim = Number.isFinite(Number(props.limit)) && Number(props.limit) > 0 ? Math.floor(Number(props.limit)) : null;
+      const featCards = ctx.products.length ? productCards(lim ? ctx.products.slice(0, lim) : ctx.products) : cards;
       return `<section class="section" id="san-pham"><div class="wrap">
       <div class="section-h">
         <div class="section-h-l"><h2>${esc(props.title || 'Sản phẩm nổi bật')}</h2></div>
         <a class="section-all" href="/products">Xem tất cả →</a>
       </div>
-      <div class="grid">${cards}</div>
+      <div class="grid grid-c${nCols}">${featCards}</div>
       ${ctx.products.length ? `<div class="grid-more"><a class="btn btn-primary btn-more" href="/products">Xem thêm<span class="btn-more-arrow" aria-hidden="true">→</span></a></div>` : ''}
     </div></section>`;
     }
     // TRANG DANH SÁCH (có pageInfo — /c/:slug qua renderHome): giữ nguyên lưới đầy đủ như cũ.
     const chips = ctx.categories.length
-      ? `<div class="chips"><a class="chip" href="/products">Tất cả</a>${ctx.categories.map((c) => `<a class="chip" href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('')}</div>`
+      ? `<div class="chips"><a class="chip" href="/products">Tất cả</a>${ctx.categories.map((c) => `<a class="chip" href="/products?cat=${esc(c.slug)}">${esc(c.name)}</a>`).join('')}</div>`
       : '';
     return `<section class="section" id="san-pham"><div class="wrap">
       <div class="section-h">
@@ -471,7 +564,7 @@ const SECTIONS = {
   footer: (props, ctx) => {
     const s = ctx.shop;
     const cats = (Array.isArray(ctx.categories) ? ctx.categories : []).slice(0, 4)
-      .map((c) => `<a href="/c/${esc(c.slug)}">${esc(c.name)}</a>`).join('');
+      .map((c) => `<a href="/products?cat=${esc(c.slug)}">${esc(c.name)}</a>`).join('');
     const shopCol = (cats || ctx.hasBlog)
       ? `<div class="ftr-col"><h4>Cửa hàng</h4><a href="/">Trang chủ</a>${cats}${ctx.hasBlog ? '<a href="/blog">Blog</a>' : ''}</div>` : '';
     const helpCol = `<div class="ftr-col"><h4>Hỗ trợ</h4><a href="/checkout/lookup">Tra cứu đơn</a><a href="/account">Tài khoản</a><a href="/cart">Giỏ hàng</a></div>`;
@@ -557,6 +650,25 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .hnav-menu a{padding:9px 12px;border-radius:var(--r-sm);color:var(--color-text);font-weight:500;white-space:nowrap;transition:background .15s,color .15s}
 .hnav-menu a:hover{background:var(--color-hero-bg);color:var(--color-primary)}
 .hnav-sep{height:1px;background:var(--color-border);margin:6px 6px}
+/* Menu danh mục SỔ DỌC + FLYOUT PHẢI (0095): danh sách 1 cột; danh mục CÓ CON → rê chuột,
+   con hiện PANEL RIÊNG bên PHẢI (KHÔNG đẩy mục khác xuống — chịu được nhiều con). Con nằm
+   TRONG .mega-col + cầu ::before nối khe → di sang panel con vẫn giữ :hover; lia đi tự ẩn. */
+.hnav-mega{min-width:222px;max-width:262px;padding:8px}
+.hnav-mega .mega-quick{display:flex;flex-direction:column;padding-bottom:6px;margin-bottom:6px;border-bottom:1px solid var(--color-border)}
+.hnav-mega .mega-quick a{font-weight:600;font-size:.85rem;color:var(--color-muted)}
+.hnav-mega .mega-cols{display:flex;flex-direction:column}
+.hnav-mega .mega-col{display:flex;flex-direction:column;position:relative}
+.hnav-mega .mega-h{display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:600;color:var(--color-text);font-size:.9rem;white-space:normal}
+.hnav-mega .mega-h:hover,.hnav-mega .mega-col.has-sub:hover>.mega-h{color:var(--color-primary);background:var(--color-hero-bg)}
+.hnav-mega .mega-caret{font-size:1.15em;line-height:1;color:var(--color-muted);flex:0 0 auto;transition:transform .18s,color .18s}
+.hnav-mega .mega-col.has-sub:hover>.mega-h .mega-caret{color:var(--color-primary);transform:translateX(2px)}
+/* Panel con nổi bên phải; cầu ::before 14px bịt khe giữa hàng cha ↔ panel (chống rớt hover). */
+.hnav-mega .mega-subs{position:absolute;left:100%;top:-9px;min-width:198px;display:none;flex-direction:column;background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--r-lg);box-shadow:var(--sh-lg);padding:8px;z-index:31;max-height:76vh;overflow-y:auto}
+.hnav-mega .mega-subs::before{content:"";position:absolute;left:-14px;top:0;width:14px;height:100%}
+.hnav-mega .mega-col.has-sub:hover>.mega-subs{display:flex}
+.hnav-mega .mega-subs a{padding:8px 12px;font-size:.85rem;color:var(--color-muted);font-weight:500;white-space:nowrap;border-radius:var(--r-sm)}
+.hnav-mega .mega-subs a:hover{color:var(--color-primary);background:var(--color-hero-bg)}
+.hnav-mega .mega-subs a.mega-sub-all{font-weight:700;color:var(--color-text);border-radius:0;border-bottom:1px solid var(--color-border);margin-bottom:4px;padding-bottom:9px}
 /* Nhóm icon phải: tìm kiếm (reveal form) · tài khoản · giỏ (kèm badge). */
 .hicons{display:flex;align-items:center;gap:4px}
 .hicon{position:relative;display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:var(--pill);color:var(--color-text);cursor:pointer;transition:background .15s,color .15s}
@@ -591,6 +703,14 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
   .hnav-menu{position:static;display:flex;box-shadow:none;border:0;border-radius:0;padding:2px 0 8px 14px;min-width:0;background:transparent}
   .hnav-menu a{padding:9px 2px}
   .hnav-sep{display:none}
+  /* Menu mobile (chạm, không hover): flyout → hiện hết con INLINE thụt lề, bỏ mũi + header. */
+  .hnav-mega{padding:2px 0 8px 14px}
+  .hnav-mega .mega-quick{border-bottom:0;padding-bottom:4px;margin-bottom:4px}
+  .hnav-mega .mega-col{position:static}
+  .hnav-mega .mega-subs{position:static;display:flex;border:0;box-shadow:none;border-radius:0;padding:2px 0 2px 12px;min-width:0;max-height:none;overflow:visible}
+  .hnav-mega .mega-subs::before{display:none}
+  .hnav-mega .mega-subs a.mega-sub-all{display:none}
+  .hnav-mega .mega-caret{display:none}
   .hsearch{right:auto;left:0}
 }
 /* ── HERO CAROUSEL (thuần CSS, không JS — hợp CSP default-src 'none') ─────────────
@@ -717,6 +837,19 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .pf-cat{display:block;padding:9px 12px;border-radius:var(--r);font-size:.92rem;color:var(--color-muted);transition:background .15s,color .15s}
 .pf-cat:hover{background:var(--color-hero-bg);color:var(--color-primary)}
 .pf-cat.on{background:var(--color-hero-bg);color:color-mix(in srgb,var(--color-primary) 82%,#000);font-weight:700}
+/* Danh mục 2 cấp (0095): cha có con hiện mũi ▾; nhánh đang xem xổ danh mục con thụt lề. */
+.pf-cat.anc{color:color-mix(in srgb,var(--color-primary) 82%,#000);font-weight:700}
+.pf-cat.has-kids{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.pf-cat-caret{font-size:.7em;color:var(--color-muted);transition:transform .2s;flex:0 0 auto}
+.pf-cat.on .pf-cat-caret,.pf-cat.anc .pf-cat-caret{transform:rotate(180deg);color:var(--color-primary)}
+.pf-subcats{list-style:none;margin:2px 0 4px;padding:0 0 0 12px;display:flex;flex-direction:column;gap:2px;border-left:2px solid var(--color-border)}
+.pf-subcats .pf-cat{font-size:.88rem;padding:7px 12px}
+/* Breadcrumb trên đầu trang danh mục: Sản phẩm / Cha / Con */
+.pf-crumb{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:.82rem;color:var(--color-muted);margin:0 0 10px}
+.pf-crumb a{color:var(--color-muted);transition:color .15s}
+.pf-crumb a:hover{color:var(--color-primary)}
+.pf-crumb .sep{opacity:.5}
+.pf-crumb [aria-current="page"]{color:var(--color-text);font-weight:700}
 /* Còn hàng + khoảng giá */
 .pf-filter{display:flex;flex-direction:column;gap:22px;margin:0}
 .pf-chk{display:inline-flex;align-items:center;gap:8px;color:var(--color-text);font-size:.92rem;cursor:pointer}
@@ -768,6 +901,63 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 #san-pham .grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:28px}
 @media(max-width:960px){#san-pham .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}}
 @media(max-width:560px){#san-pham .grid{grid-template-columns:1fr}}
+/* ═══ GĐ2 preset — bố cục khác theo ngành: số cột lưới · collections cards · product_spotlight ═══ */
+/* Cột lưới SP nổi bật (product_grid prop columns 2..5). #san-pham .grid.grid-cN (id+2 class) THẮNG
+   rule cứng #san-pham .grid ở trên; media query PHẢI lặp selector (không cộng specificity). */
+#san-pham .grid.grid-c2{grid-template-columns:repeat(2,minmax(0,1fr));gap:28px}
+#san-pham .grid.grid-c3{grid-template-columns:repeat(3,minmax(0,1fr));gap:28px}
+#san-pham .grid.grid-c4{grid-template-columns:repeat(4,minmax(0,1fr));gap:22px}
+#san-pham .grid.grid-c5{grid-template-columns:repeat(5,minmax(0,1fr));gap:18px}
+@media(max-width:960px){#san-pham .grid.grid-c2,#san-pham .grid.grid-c3,#san-pham .grid.grid-c4,#san-pham .grid.grid-c5{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}}
+@media(max-width:560px){#san-pham .grid.grid-c2,#san-pham .grid.grid-c3,#san-pham .grid.grid-c4,#san-pham .grid.grid-c5{grid-template-columns:1fr}}
+/* collections 'cards' (tile TO hơn, ít cột) — nền/hiệu ứng .coll-tile giữ nguyên, tự về 1 cột mobile */
+.coll-grid.coll-cards{grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:22px}
+.coll-grid.coll-cards .coll-tile{min-height:250px;padding:30px 32px;border-radius:var(--r-xl)}
+.coll-grid.coll-cards .coll-tile::after{width:150px;height:150px;top:-38px;right:-38px}
+.coll-grid.coll-cards .coll-name{font-size:1.4rem}
+.coll-grid.coll-cards .coll-go{font-size:.9rem}
+/* product_spotlight — 1 SP nổi bật, bố cục chia đôi trên nền sáng. Class spot-* MỚI, token màu theo preset. */
+.spotlight{background:var(--color-surface);border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border)}
+.spot-grid{display:grid;grid-template-columns:1fr 1fr;gap:clamp(28px,5vw,60px);align-items:center}
+.spotlight-rev .spot-media{order:2}
+.spot-media{position:relative;display:block;aspect-ratio:1/1;border-radius:var(--r-xl);overflow:hidden;background:var(--color-bg);border:1px solid var(--color-border);box-shadow:var(--sh);transition:transform .35s cubic-bezier(.2,.7,.2,1),box-shadow .35s}
+.spot-media:hover{transform:translateY(-4px);box-shadow:var(--sh-lg)}
+.spot-media img{width:100%;height:100%;object-fit:cover;object-position:center;transition:transform .5s cubic-bezier(.2,.7,.2,1)}
+.spot-media:hover img{transform:scale(1.05)}
+.spot-media .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#c9c5bd}
+.spot-media .ph svg{width:64px;height:64px}
+.spot-media .soldout-tag{position:absolute;top:12px;left:12px;z-index:1;background:rgba(17,24,39,.82);color:#fff;font-size:.8rem;font-weight:600;padding:5px 12px;border-radius:var(--pill)}
+.spot-copy{display:flex;flex-direction:column;align-items:flex-start;gap:14px;min-width:0}
+.spot-eyebrow{margin:0}
+.spot-name{margin:0;font-size:clamp(1.6rem,3vw,2.4rem);font-weight:800;letter-spacing:-.02em;line-height:1.16;overflow-wrap:anywhere}
+.spot-name a{color:var(--color-text);transition:color .15s}
+.spot-name a:hover{color:var(--color-primary)}
+.spot-price{font-size:clamp(1.5rem,2.4vw,2rem);font-weight:800;color:var(--color-primary);letter-spacing:-.01em;line-height:1.2;font-variant-numeric:tabular-nums}
+.spot-blurb{margin:0;color:var(--color-muted);font-size:1.02rem;line-height:1.7;max-width:52ch;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.spot-cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px}
+.spot-buyform{display:inline-flex;margin:0}
+.spot-buy-out{background:var(--color-surface);color:var(--color-muted);box-shadow:none;cursor:not-allowed;pointer-events:none;border-color:var(--color-border)}
+@media(max-width:820px){.spot-grid{grid-template-columns:1fr;gap:28px}.spotlight-rev .spot-media{order:0}.spot-media{max-width:460px;width:100%;margin:0 auto}.spot-copy{align-items:center;text-align:center}.spot-blurb{max-width:none}.spot-cta{justify-content:center}}
+/* ═══ Bố cục tạp hoá/MM: thanh danh mục nhanh (category_bar) + hàng SP theo danh mục cuộn ngang (category_rows) ═══ */
+.catbar-row{display:flex;gap:14px;overflow-x:auto;overflow-y:hidden;padding:6px 2px 14px;-webkit-overflow-scrolling:touch;scroll-snap-type:x proximity}
+.catbar-item{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:10px;width:100px;padding:4px;color:var(--color-text);text-align:center;transition:transform .12s;scroll-snap-align:start}
+.catbar-item:hover{text-decoration:none;transform:translateY(-3px)}
+.catbar-item:hover .catbar-ic{border-color:var(--color-primary);box-shadow:var(--sh)}
+.catbar-ic{width:74px;height:74px;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--color-hero-bg);color:var(--color-primary);border:1px solid var(--color-border);flex:0 0 auto;transition:border-color .15s,box-shadow .15s}
+.catbar-ic img{width:100%;height:100%;object-fit:cover;display:block}
+.catbar-ic svg{width:30px;height:30px}
+.catbar-name{font-size:.82rem;font-weight:600;line-height:1.32;color:var(--color-text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.catrow-scroll{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(172px,200px);gap:16px;overflow-x:auto;overflow-y:hidden;padding-bottom:10px;-webkit-overflow-scrolling:touch;scroll-snap-type:x proximity}
+.catrow-scroll > .card{scroll-snap-align:start}
+/* Hàng SP TỰ LƯỚT vô hạn (marquee CSS thuần): track = thẻ NHÂN ĐÔI, chạy tới -50% = đúng 1 bộ →
+   lặp mượt. Mỗi thẻ margin-right cố định (KHÔNG gap) để -50% khớp tuyệt đối. Dừng khi rê chuột. */
+.catrow-marq{overflow:hidden;position:relative;padding-bottom:6px}
+.catrow-track{display:flex;width:max-content;animation-name:catrow-scroll;animation-timing-function:linear;animation-iteration-count:infinite;will-change:transform}
+.catrow-track > .card{flex:0 0 auto;width:190px;margin-right:16px}
+.catrow-marq:hover .catrow-track{animation-play-state:paused}
+@keyframes catrow-scroll{to{transform:translateX(-50%)}}
+@media(prefers-reduced-motion:reduce){.catrow-track{animation:none;overflow-x:auto;max-width:100%;padding-bottom:10px}}
+@media(max-width:560px){.catrow-scroll{grid-auto-columns:minmax(150px,72%)}.catbar-item{width:82px}.catrow-track > .card{width:160px}}
 .empty{color:var(--color-muted);padding:28px 0;text-align:center}
 .features{background:var(--color-surface);border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border)}
 .features .wrap{padding:36px 20px}
@@ -1412,7 +1602,8 @@ function withHomeSections(layout) {
     const hi = out.findIndex((s) => s && s.section === 'hero');
     out.splice(hi >= 0 ? hi + 1 : 1, 0, { section: 'features', props: {} });
   }
-  if (!has('collections')) {
+  // category_rows (bố cục MM) đã bao trùm "duyệt theo danh mục" → KHÔNG chèn collections nữa (tránh trùng).
+  if (!has('collections') && !has('category_rows')) {
     // Chèn NGAY SAU lưới sản phẩm (giữa "Sản phẩm nổi bật" và "Bài viết mới nhất").
     // Không có product_grid → bỏ qua (không nhét collections xuống sau footer).
     const gi = out.findIndex((s) => s && s.section === 'product_grid');
@@ -1475,7 +1666,26 @@ export function renderProducts(ctx, { canonical = null, prevUrl = null, nextUrl 
     const on = (cs ?? null) === (catSlug ?? null);
     return `<li><a class="pf-cat${on ? ' on' : ''}" href="${esc(catHref(cs))}"${on ? ' aria-current="true"' : ''}>${esc(label)}</a></li>`;
   };
-  const catList = `<ul class="pf-cats">${catLink(null, 'Tất cả')}${ctx.categories.map((c) => catLink(c.slug, c.name)).join('')}</ul>`;
+  // Cây danh mục 2 cấp (0095): tìm nhánh đang xem (mở đúng danh mục cha) + dữ liệu breadcrumb.
+  let bcParent = null, bcSelf = null;
+  for (const c of (Array.isArray(ctx.categories) ? ctx.categories : [])) {
+    if (c.slug === catSlug) { bcSelf = c; break; }
+    const ch = (Array.isArray(c.children) ? c.children : []).find((k) => k.slug === catSlug);
+    if (ch) { bcParent = c; bcSelf = ch; break; }
+  }
+  const activeParentSlug = bcParent ? bcParent.slug : (bcSelf ? bcSelf.slug : null);
+  // Danh mục cấp-1: link cha; nếu ĐANG xem nhánh này (cha hoặc 1 con active) → xổ danh mục con.
+  const catItem = (c) => {
+    const kids = Array.isArray(c.children) ? c.children : [];
+    const on = c.slug === catSlug;
+    const branchOpen = activeParentSlug === c.slug && kids.length;
+    const cls = `pf-cat${on ? ' on' : (branchOpen ? ' anc' : '')}${kids.length ? ' has-kids' : ''}`;
+    const kidsUl = branchOpen ? `<ul class="pf-subcats">${kids.map((ch) => catLink(ch.slug, ch.name)).join('')}</ul>` : '';
+    return `<li><a class="${cls}" href="${esc(catHref(c.slug))}"${on ? ' aria-current="true"' : ''}>${esc(c.name)}${kids.length ? '<span class="pf-cat-caret" aria-hidden="true">▾</span>' : ''}</a>${kidsUl}</li>`;
+  };
+  const catList = `<ul class="pf-cats">${catLink(null, 'Tất cả')}${(Array.isArray(ctx.categories) ? ctx.categories : []).map(catItem).join('')}</ul>`;
+  const pageTitle = ctx.activeCatName || 'Tất cả sản phẩm';
+  const crumb = (catSlug && bcSelf) ? `<nav class="pf-crumb" aria-label="Đường dẫn"><a href="/products">Sản phẩm</a>${bcParent ? ` <span class="sep" aria-hidden="true">/</span> <a href="${esc(catHref(bcParent.slug))}">${esc(bcParent.name)}</a>` : ''} <span class="sep" aria-hidden="true">/</span> <span aria-current="page">${esc(bcSelf.name)}</span></nav>` : '';
   // Ẩn giữ ngữ cảnh cho từng form (no-JS): ô tìm giữ cat+sort+lọc; form lọc giữ cat+q+sort.
   const hInputs = (pairs) => pairs.filter(([, v]) => v != null && v !== '' && v !== false)
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v === true ? '1' : v)}">`).join('');
@@ -1514,7 +1724,7 @@ export function renderProducts(ctx, { canonical = null, prevUrl = null, nextUrl 
   const count = pi ? Number(pi.total) : ctx.products.length;
   const body = `${SECTIONS.header({}, ctx)}
     <main class="wrap section" id="san-pham">
-      <div class="pf-title-row"><h1 class="products-title">Tất cả sản phẩm</h1></div>
+      <div class="pf-title-row">${crumb}<h1 class="products-title">${esc(pageTitle)}</h1></div>
       <div class="pf-layout">
         ${sidebar}
         <div class="pf-main">
@@ -1528,10 +1738,10 @@ export function renderProducts(ctx, { canonical = null, prevUrl = null, nextUrl 
       </div>
     </main>${SECTIONS.footer({}, ctx)}`;
   const head = metaHead({
-    description: `Tất cả sản phẩm của ${ctx.shop.name} — giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.`,
-    canonical, prevUrl, nextUrl, ogTitle: `Tất cả sản phẩm — ${ctx.shop.name}`, siteName: ctx.shop.name, ogImage: shopOgImage(ctx),
+    description: `${pageTitle} — ${ctx.shop.name}. Giao hàng toàn quốc, thanh toán COD hoặc chuyển khoản QR.`,
+    canonical, prevUrl, nextUrl, ogTitle: `${pageTitle} — ${ctx.shop.name}`, siteName: ctx.shop.name, ogImage: shopOgImage(ctx),
   });
-  return page(`Tất cả sản phẩm — ${ctx.shop.name}`, ctx.theme?.tokens, body, head, ctx.nonce);
+  return page(`${pageTitle} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head, ctx.nonce);
 }
 
 // Mô tả có ĐỊNH DẠNG (no-JS, CSP-sạch): tách đoạn theo dòng trống; dòng bắt đầu "- "/"• "

@@ -37,6 +37,11 @@ const validCost = (x) => x === null || (isInt(x) && x >= 0 && x <= MAX_PRICE);
 const validTitle = (x) => typeof x === 'string' && x.trim().length >= 1 && x.length <= 200;
 const validSku = (x) => typeof x === 'string' && x.trim().length >= 1 && x.length <= 64;
 const validSlug = (x) => typeof x === 'string' && SLUG_RE.test(x);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// parent_id (danh mục 2 cấp, 0095): '' / null / undefined → null (cấp trên cùng); chuỗi
+// UUID hợp lệ → giữ; giá trị lạ → false (handler trả 400). Ràng buộc "cha phải cấp-1" +
+// "danh mục có con không được làm con" kiểm TRONG transaction (cần đọc DB).
+const normParentId = (x) => (x == null || x === '') ? null : (typeof x === 'string' && UUID_RE.test(x) ? x : false);
 
 // Escape ký tự wildcard để q được so khớp NGUYÊN VĂN trong ILIKE.
 const likeEscape = (s) => s.replace(/[%_\\]/g, '\\$&');
@@ -634,7 +639,7 @@ async function setProductSpecs(res, ctx, body, params) {
 async function listCategories(res, ctx) {
   const rows = await withTenant(ctx.shopId, async (c) => {
     const r = await c.query(
-      `SELECT id, slug, name, position FROM categories WHERE deleted_at IS NULL ORDER BY position, name`,
+      `SELECT id, slug, name, position, parent_id FROM categories WHERE deleted_at IS NULL ORDER BY position, name`,
     );
     return r.rows;
   });
@@ -645,18 +650,27 @@ async function createCategory(res, ctx, body) {
   const slug = String(body.slug ?? '').toLowerCase().trim();
   const name = String(body.name ?? '').trim();
   const position = isInt(body.position) ? body.position : 0;
+  const parentId = normParentId(body.parent_id);
+  if (parentId === false) return send(res, 400, { error: 'danh mục cha không hợp lệ' });
   if (!validSlug(slug)) return send(res, 400, { error: 'slug không hợp lệ' });
   if (name.length < 1 || name.length > 200) return send(res, 400, { error: 'tên danh mục không hợp lệ' });
   try {
-    const id = await withTenant(ctx.shopId, async (c) => {
+    const out = await withTenant(ctx.shopId, async (c) => {
+      // Cha (nếu có) phải tồn tại + là CẤP-1 (parent_id IS NULL) → giữ cây tối đa 2 tầng.
+      if (parentId) {
+        const pr = await c.query(`SELECT parent_id FROM categories WHERE id = $1 AND deleted_at IS NULL`, [parentId]);
+        if (!pr.rows.length) return { code: 400, error: 'danh mục cha không tồn tại' };
+        if (pr.rows[0].parent_id != null) return { code: 400, error: 'chỉ hỗ trợ 2 cấp: danh mục cha phải ở cấp trên cùng' };
+      }
       const r = await c.query(
-        `INSERT INTO categories (shop_id, slug, name, position) VALUES (current_shop_id(), $1, $2, $3) RETURNING id`,
-        [slug, name, position],
+        `INSERT INTO categories (shop_id, slug, name, position, parent_id) VALUES (current_shop_id(), $1, $2, $3, $4) RETURNING id`,
+        [slug, name, position, parentId],
       );
-      await audit(c, 'category.created', { actorId: ctx.user.id, ip: ctx.ip, metadata: { slug } });
-      return r.rows[0].id;
+      await audit(c, 'category.created', { actorId: ctx.user.id, ip: ctx.ip, metadata: { slug, parentId } });
+      return { code: 201, id: r.rows[0].id };
     });
-    return send(res, 201, { id, slug, name });
+    if (out.code === 400) return send(res, 400, { error: out.error });
+    return send(res, 201, { id: out.id, slug, name });
   } catch (err) {
     if (err.code === '23505') return send(res, 409, { error: 'slug danh mục đã tồn tại' });
     throw err;
@@ -668,14 +682,32 @@ async function updateCategory(res, ctx, body, params) {
   const sets = [], args = [];
   if (body.name !== undefined) { const n = String(body.name).trim(); if (n.length < 1 || n.length > 200) return send(res, 400, { error: 'tên danh mục không hợp lệ' }); args.push(n); sets.push(`name = $${args.length}`); }
   if (body.position !== undefined && isInt(body.position)) { args.push(body.position); sets.push(`position = $${args.length}`); }
-  if (!sets.length) return send(res, 400, { error: 'không có gì để cập nhật' });
-  args.push(catId);
+  // parent_id: chỉ đụng khi field có mặt (kể cả '' để GỠ cha về cấp-1).
+  let parentId, hasParent = false;
+  if (body.parent_id !== undefined) {
+    parentId = normParentId(body.parent_id);
+    if (parentId === false) return send(res, 400, { error: 'danh mục cha không hợp lệ' });
+    hasParent = true;
+  }
+  if (!sets.length && !hasParent) return send(res, 400, { error: 'không có gì để cập nhật' });
   const out = await withTenant(ctx.shopId, async (c) => {
+    if (hasParent && parentId) {
+      if (parentId === catId) return { code: 400, error: 'danh mục không thể là cha của chính nó' };
+      const pr = await c.query(`SELECT parent_id FROM categories WHERE id = $1 AND deleted_at IS NULL`, [parentId]);
+      if (!pr.rows.length) return { code: 400, error: 'danh mục cha không tồn tại' };
+      if (pr.rows[0].parent_id != null) return { code: 400, error: 'chỉ hỗ trợ 2 cấp: danh mục cha phải ở cấp trên cùng' };
+      // Danh mục ĐANG có con thì không thể tự làm con (sẽ thành 3 cấp).
+      const kids = await c.query(`SELECT 1 FROM categories WHERE parent_id = $1 AND deleted_at IS NULL LIMIT 1`, [catId]);
+      if (kids.rows.length) return { code: 400, error: 'danh mục này đang có danh mục con — không thể đặt làm cấp con' };
+    }
+    if (hasParent) { args.push(parentId); sets.push(`parent_id = $${args.length}`); }
+    args.push(catId);
     const r = await c.query(`UPDATE categories SET ${sets.join(', ')} WHERE id = $${args.length} AND deleted_at IS NULL`, args);
     if (r.rowCount === 0) return { code: 404 };
     await audit(c, 'category.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: { catId } });
     return { code: 200 };
   });
+  if (out.code === 400) return send(res, 400, { error: out.error });
   if (out.code === 404) return send(res, 404, { error: 'không tìm thấy danh mục' });
   return send(res, 200, { ok: true });
 }
@@ -686,6 +718,9 @@ async function deleteCategory(res, ctx, _body, params) {
     const r = await c.query(`UPDATE categories SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, [catId]);
     if (r.rowCount === 0) return { code: 404 };
     await c.query(`DELETE FROM product_categories WHERE category_id = $1`, [catId]); // gỡ gán (giữ sản phẩm)
+    // Xoá là SOFT-delete (giữ hàng) → FK ON DELETE SET NULL KHÔNG bắn. Tự nhấc danh mục con
+    // lên cấp-1 để không còn trỏ vào cha đã ẩn (tránh con "mồ côi" treo parent_id chết).
+    await c.query(`UPDATE categories SET parent_id = NULL WHERE parent_id = $1`, [catId]);
     await audit(c, 'category.deleted', { actorId: ctx.user.id, ip: ctx.ip, metadata: { catId } });
     return { code: 200 };
   });

@@ -180,6 +180,36 @@ async function withStore(shopId, fn) {
 
 const imgUrl = (key) => (key ? `${MEDIA_PUBLIC_BASE}/${key}` : null);
 
+// Dựng cây danh mục 2 cấp (0095) từ danh sách phẳng. Trả MẢNG cấp-1, mỗi phần tử kèm
+// .children[] (con sắp theo thứ tự đầu vào). Con có parent_id TREO (cha đã ẩn/không thấy)
+// → coi như cấp-1 để không mất danh mục. Cây tối đa 2 tầng (ép ở seller), nên không đệ quy.
+function buildCatTree(rows, toImg) {
+  const norm = (r) => ({ id: r.id, slug: r.slug, name: r.name, image: toImg(r.image_key), children: [] });
+  const byId = new Map(rows.map((r) => [r.id, norm(r)]));
+  const roots = [];
+  for (const r of rows) {
+    const node = byId.get(r.id);
+    const parent = r.parent_id ? byId.get(r.parent_id) : null;
+    if (parent && parent.id !== node.id) parent.children.push(node);
+    else roots.push(node); // cấp-1 hoặc con mồ côi (cha đã ẩn)
+  }
+  return roots;
+}
+
+// Duyệt cây tìm danh mục theo slug + trả tập id để lọc sản phẩm:
+//   - slug là CHA → ids = [cha, ...tất cả con]  (lọc gộp)
+//   - slug là CON hoặc lá → ids = [chính nó]     (lọc hẹp)
+// Trả null nếu không thấy. parent = node cha khi slug là con (để sidebar mở đúng nhánh).
+function resolveCatSlug(tree, slug) {
+  for (const root of tree) {
+    if (root.slug === slug) return { cat: root, parent: null, ids: [root.id, ...root.children.map((ch) => ch.id)] };
+    for (const ch of root.children) {
+      if (ch.slug === slug) return { cat: ch, parent: root, ids: [ch.id] };
+    }
+  }
+  return null;
+}
+
 function normalizeHost(raw) {
   if (typeof raw !== 'string') return null;
   return raw.split(':')[0].trim().toLowerCase(); // bỏ port
@@ -386,6 +416,15 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       res.writeHead(301, { location: `/products${url.search}`, 'cache-control': 'no-store' });
       return res.end();
     }
+    // THỐNG NHẤT danh mục (0095): /c/:slug (bố cục cũ kiểu trang-chủ) 301 sang /products?cat=
+    // (bố cục sidebar duy nhất). Giữ query cũ (sort/page/lọc). Bookmark/SEO cũ không gãy.
+    const cRedir = /^\/c\/([a-z0-9-]{1,80})$/.exec(url.pathname);
+    if (cRedir) {
+      const sp = new URLSearchParams(url.search);
+      sp.set('cat', cRedir[1]);
+      res.writeHead(301, { location: `/products?${sp.toString()}`, 'cache-control': 'no-store' });
+      return res.end();
+    }
 
     // robots.txt — cho phép index, chặn giỏ/checkout, trỏ sitemap của shop.
     if (url.pathname === '/robots.txt') {
@@ -407,7 +446,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       if (!sm) return sendHtml(res, 404, renderNotFound());
       const escXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const loc = (path) => `  <url><loc>${escXml(`https://${host}${path}`)}</loc></url>`;
-      const urls = [loc('/'), loc('/products'), ...sm.cats.map((c) => loc(`/c/${c.slug}`)), ...sm.prods.map((p) => loc(`/p/${p.slug}`)), ...sm.pages.map((p) => loc(`/pages/${p.slug}`)),
+      const urls = [loc('/'), loc('/products'), ...sm.cats.map((c) => loc(`/products?cat=${c.slug}`)), ...sm.prods.map((p) => loc(`/p/${p.slug}`)), ...sm.pages.map((p) => loc(`/pages/${p.slug}`)),
         ...(sm.blog.length ? [loc('/blog'), ...sm.blog.map((b) => loc(`/blog/${b.slug}`))] : [])];
       const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
       res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': CACHE_PUBLIC });
@@ -422,7 +461,20 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       if (shop.status === 'suspended') return { shop, suspended: true };
 
       const theme = (await c.query(`SELECT tokens, layout FROM themes WHERE shop_id = current_shop_id()`)).rows[0] ?? null;
-      const categories = (await c.query(`SELECT slug, name FROM categories ORDER BY position, name LIMIT 20`)).rows;
+      // Ảnh tiêu biểu mỗi danh mục = ảnh SP mới nhất trong danh mục — CHỈ khi layout dùng
+      // category_bar (thanh danh mục ảnh tròn kiểu MM). Shop khác KHÔNG tốn subquery này.
+      // Ảnh gộp cả con (0095): danh mục CHA thường không gán SP trực tiếp (SP nằm ở con) →
+      // lấy ảnh SP mới nhất của chính nó HOẶC bất kỳ danh mục con nào.
+      const catImg = (Array.isArray(theme?.layout) && theme.layout.some((s) => s && s.section === 'category_bar'))
+        ? `, (SELECT m.public_key FROM product_categories pc JOIN products p ON p.id = pc.product_id
+              JOIN media m ON m.product_id = p.id
+             WHERE pc.category_id IN (SELECT ch.id FROM categories ch WHERE ch.deleted_at IS NULL AND (ch.id = c.id OR ch.parent_id = c.id))
+               AND p.status = 'active' AND p.deleted_at IS NULL
+             ORDER BY p.created_at DESC, m.position LIMIT 1) AS image_key` : '';
+      // Nạp cả cây (2 cấp, 0095): parent_id để dựng cha→con ở dropdown/sidebar. Danh mục con
+      // của cha đã ẩn (soft-delete) sẽ có parent_id treo → coi như cấp-1 (xử lý ở buildCatTree).
+      const catRows = (await c.query(`SELECT c.id, c.slug, c.name, c.parent_id${catImg} FROM categories c ORDER BY c.position, c.name LIMIT 100`)).rows;
+      const categories = buildCatTree(catRows, imgUrl); // mảng cấp-1, mỗi phần tử có .children[]
       // Menu chân trang: chỉ trang ĐÃ published, có menu_position. Tiêu đề lấy từ
       // bản published (page_revisions), không phải draft → khớp nội dung hiển thị.
       const menu = (await c.query(
@@ -601,14 +653,16 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         // đảo từ, escape %_\), kết hợp cat + lọc còn-hàng/giá. Trần độ dài 80 như /search.
         const q = (url.searchParams.get('q') ?? '').trim().slice(0, 80);
         const args = [];
-        let join = '';
         const conds = [];
+        let activeCatName = null;
         if (catSlug) {
-          const cat = (await c.query(`SELECT id FROM categories WHERE slug = $1`, [catSlug])).rows[0];
-          if (!cat) return { ...base, notFound: true };
-          args.push(cat.id);
-          join = `JOIN product_categories pc ON pc.product_id = p.id`;
-          conds.push(`pc.category_id = $${args.length}`);
+          // Danh mục 2 cấp (0095): cha → gộp mọi con; con/lá → chỉ chính nó. EXISTS + ANY để
+          // KHÔNG nhân đôi hàng khi SP thuộc nhiều con của cùng cha (JOIN sẽ nhân đôi).
+          const hit = resolveCatSlug(categories, catSlug);
+          if (!hit) return { ...base, notFound: true };
+          activeCatName = hit.cat.name;
+          args.push(hit.ids);
+          conds.push(`EXISTS (SELECT 1 FROM product_categories pc WHERE pc.product_id = p.id AND pc.category_id = ANY($${args.length}))`);
         }
         if (q) {
           const toks = q.split(/\s+/).filter(Boolean).slice(0, 8);
@@ -618,12 +672,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
               SELECT 1 FROM variants v WHERE v.product_id = p.id AND v.sku ILIKE $${args.length} AND ${VARIANT_NOT_ORPHAN_SQL}))`);
           }
         }
-        let whereJoin = join;
+        let whereJoin = '';
         if (conds.length) {
-          whereJoin += ` WHERE ${conds.join(' AND ')}${filterSql(args)}`; // filterSql prefix ' AND '
+          whereJoin = ` WHERE ${conds.join(' AND ')}${filterSql(args)}`; // filterSql prefix ' AND '
         } else {
           const f = filterSql(args); // ' AND ...' → cắt tiền tố để đứng sau WHERE
-          whereJoin += f ? ` WHERE ${f.slice(' AND '.length)}` : '';
+          whereJoin = f ? ` WHERE ${f.slice(' AND '.length)}` : '';
         }
         const { products, total } = await productGrid(whereJoin, args, offset);
         // basePath giữ cat + q để pager/sort/lọc không làm rơi ngữ cảnh khi phân trang.
@@ -631,21 +685,11 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         if (catSlug) bp.push(`cat=${encodeURIComponent(catSlug)}`);
         if (q) bp.push(`q=${encodeURIComponent(q)}`);
         const basePath = bp.length ? `/products?${bp.join('&')}` : '/products';
-        return { ...base, products, productsPage: true, catSlug, query: q,
+        return { ...base, products, productsPage: true, catSlug, query: q, activeCatName,
           pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath, sort: sortKey, filters, filterable: true } };
       }
 
-      // Trang danh mục: /c/:slug
-      const cm = /^\/c\/([a-z0-9-]+)$/.exec(url.pathname);
-      if (cm) {
-        const cat = (await c.query(`SELECT id, name FROM categories WHERE slug = $1`, [cm[1]])).rows[0];
-        if (!cat) return { ...base, notFound: true };
-        const args = [cat.id];
-        const { products, total } = await productGrid(
-          `JOIN product_categories pc ON pc.product_id = p.id WHERE pc.category_id = $1${filterSql(args)}`, args, offset,
-        );
-        return { ...base, products, home: true, heroTitle: cat.name, pageInfo: { total, offset, pageSize: PAGE_SIZE, basePath: `/c/${cm[1]}`, sort: sortKey, filters, filterable: true } };
-      }
+      // (Trang /c/:slug đã 301 sang /products?cat= ở trên — bố cục danh mục thống nhất.)
 
       // Tìm kiếm: /search?q=... (LIKE theo tên; RLS store_products lọc active).
       if (url.pathname === '/search') {
@@ -732,7 +776,20 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         // Trích đoạn cắt ~120 ký tự server-side (ưu tiên excerpt người bán nhập, không thì body).
         excerpt: String(p.excerpt || p.body || '').replace(/\s+/g, ' ').trim().slice(0, 120),
       }));
-      return { ...base, products, home: true, blogPosts };
+      // Bố cục tạp hoá/MM (preset): nếu theme dùng section 'category_rows', nạp SP theo TỪNG
+      // danh mục hàng đầu (mỗi danh mục = 1 hàng ngang). CHỈ khi layout khai báo → shop khác
+      // KHÔNG tốn query. Tái dùng productGrid (cùng thẻ + đường tiền + RLS active). Trang chủ vẫn cache.
+      let categoryRows = [];
+      if (Array.isArray(theme?.layout) && theme.layout.some((s) => s && s.section === 'category_rows') && categories.length) {
+        // Mỗi hàng = 1 danh mục CẤP-1, GỘP sản phẩm của nó + mọi con (0095). EXISTS+ANY dedup.
+        for (const cat of categories.slice(0, 6)) {
+          const ids = [cat.id, ...cat.children.map((ch) => ch.id)];
+          const { products: cp } = await productGrid(
+            `WHERE EXISTS (SELECT 1 FROM product_categories pc WHERE pc.product_id = p.id AND pc.category_id = ANY($1))`, [ids], 0, 8);
+          if (cp.length) categoryRows.push({ slug: cat.slug, name: cat.name, products: cp });
+        }
+      }
+      return { ...base, products, home: true, blogPosts, categoryRows };
     });
 
     if (data.notFound) return sendHtml(res, 404, renderNotFound(), { shopSlug: data.shop?.slug });
@@ -746,7 +803,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     // Nonce CSP mỗi-request (ngẫu nhiên mật mã) cho lớp JS badge giỏ ở header. Dùng chung: header
     // render <script nonce=…> + sendHtml phát script-src 'nonce-…' (khớp nhau qua ctx.nonce).
     const nonce = crypto.randomBytes(16).toString('base64');
-    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '', hasBlog: data.hasBlog, blogPosts: data.blogPosts ?? [], origin, nonce };
+    const ctx = { shop: data.shop, theme: data.theme, categories: data.categories, products: data.products ?? [], menu: data.menu ?? [], pageInfo: data.pageInfo ?? null, query: data.query ?? '', hasBlog: data.hasBlog, blogPosts: data.blogPosts ?? [], categoryRows: data.categoryRows ?? [], activeCatName: data.activeCatName ?? null, origin, nonce };
     // Canonical PHÂN TRANG (#28): trang N canonical về CHÍNH NÓ (?page=N — không gộp
     // hết về trang 1 làm Google bỏ index trang sau); sort/lọc KHÔNG vào canonical
     // (cùng nội dung, khác thứ tự). Kèm <link rel=prev/next> khi có trang kề.

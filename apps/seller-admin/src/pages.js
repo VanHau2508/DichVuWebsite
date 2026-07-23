@@ -304,7 +304,7 @@ export function renderTheme(ctx, theme, notice, linkTargets = {}) {
   const linkOptions = [
     ['/', 'Trang chủ'],
     ['/products', 'Tất cả sản phẩm'],
-    ...ltCats.map((c) => [`/c/${c.slug}`, `Danh mục: ${c.name}`]),
+    ...ltCats.map((c) => [`/products?cat=${c.slug}`, `Danh mục: ${c.name}`]),
     ...ltPages.map((p) => [`/pages/${p.slug}`, `Trang: ${p.title}`]),
     ['/blog', 'Blog'],
     ['/checkout/lookup', 'Tra cứu đơn'],
@@ -1734,30 +1734,52 @@ export function renderProducts(ctx, shopId, data, filter) {
 export function renderCategories(ctx, shopId, data, notice, err) {
   const base = `/shops/${esc(shopId)}`;
   const cats = data?.categories ?? [];
-  const rows = cats.map((c) => `<tr>
-    <td><form method="POST" action="${base}/categories/${esc(c.id)}" style="display:flex;gap:8px;align-items:center;margin:0">
-      <input name="name" value="${esc(c.name)}" maxlength="200" required aria-label="Tên danh mục" style="flex:1;min-width:140px">
-      <input name="position" type="number" value="${esc(c.position)}" min="0" style="width:66px" aria-label="Thứ tự" title="Thứ tự hiển thị">
-      <button class="btn alt sm" type="submit">Lưu</button>
-    </form></td>
-    <td class="muted"><code>${esc(c.slug)}</code></td>
-    <td style="text-align:right"><form method="POST" action="${base}/categories/${esc(c.id)}/delete" style="display:inline;margin:0"><button class="btn warn sm" type="submit">Xoá</button></form></td>
-  </tr>`).join('');
+  // Cây 2 cấp (0095): cấp-1 = parent_id rỗng (hoặc con mồ côi khi cha đã xoá). byId để lọc mồ côi.
+  const byId = new Map(cats.map((c) => [c.id, c]));
+  const isRoot = (c) => !c.parent_id || !byId.has(c.parent_id);
+  const roots = cats.filter(isRoot);
+  const childrenOf = (pid) => cats.filter((c) => c.parent_id === pid && byId.has(c.parent_id));
+  const hasKids = (c) => cats.some((x) => x.parent_id === c.id);
+  // <option> danh mục cha = các danh mục CẤP-1 (trừ chính nó, chống tự làm cha). '' = cấp trên cùng.
+  const parentOpts = (selId, exclId) => `<option value="">— Cấp trên cùng —</option>` +
+    roots.filter((r) => r.id !== exclId).map((r) => `<option value="${esc(r.id)}"${r.id === selId ? ' selected' : ''}>${esc(r.name)}</option>`).join('');
+  const row = (c, child) => {
+    // Danh mục ĐANG có con phải ở cấp-1 → không cho chọn cha (ẩn select, hiện nhãn "danh mục cha").
+    const parentCell = hasKids(c)
+      ? `<span class="muted" style="font-size:.78rem;align-self:center;white-space:nowrap">danh mục cha</span>`
+      : `<select name="parent_id" aria-label="Danh mục cha" style="min-width:132px">${parentOpts(c.parent_id, c.id)}</select>`;
+    return `<tr>
+      <td><form method="POST" action="${base}/categories/${esc(c.id)}" style="display:flex;gap:8px;align-items:center;margin:0;flex-wrap:wrap">
+        ${child ? '<span class="muted" aria-hidden="true">↳</span>' : ''}
+        <input name="name" value="${esc(c.name)}" maxlength="200" required aria-label="Tên danh mục" style="flex:1;min-width:130px${child ? '' : ';font-weight:700'}">
+        <input name="position" type="number" value="${esc(c.position)}" min="0" style="width:60px" aria-label="Thứ tự" title="Thứ tự hiển thị">
+        ${parentCell}
+        <button class="btn alt sm" type="submit">Lưu</button>
+      </form></td>
+      <td class="muted"><code>${esc(c.slug)}</code></td>
+      <td style="text-align:right"><form method="POST" action="${base}/categories/${esc(c.id)}/delete" style="display:inline;margin:0"><button class="btn warn sm" type="submit">Xoá</button></form></td>
+    </tr>`;
+  };
+  const rows = roots.map((r) => row(r, false) + childrenOf(r.id).map((ch) => row(ch, true)).join('')).join('');
+  const createParentSel = `<option value="">— Cấp trên cùng —</option>` +
+    roots.map((r) => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join('');
   return layout('Danh mục', ctx, `
     <h1>Danh mục sản phẩm</h1>
+    <p class="muted">Danh mục <strong>2 cấp</strong>: tạo danh mục cha (vd <em>Thịt</em>) rồi thêm danh mục con (<em>Thịt heo</em>, <em>Thịt bò</em>) bằng cách chọn "Danh mục cha". Khách bấm danh mục cha thấy tất cả sản phẩm của các con; bấm con thì lọc riêng loại đó.</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
     <div class="card"><h2 style="margin-top:0">Thêm danh mục</h2>
       <form method="POST" action="${base}/categories" class="actions" style="align-items:end;flex-wrap:wrap">
-        <div><label>Tên</label><input name="name" required maxlength="200" placeholder="Ghế sofa"></div>
-        <div><label>Đường dẫn (slug)</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" placeholder="ghe-sofa"></div>
+        <div><label>Tên</label><input name="name" required maxlength="200" placeholder="Thịt heo"></div>
+        <div><label>Đường dẫn (slug)</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" placeholder="thit-heo"></div>
+        <div><label>Danh mục cha</label><select name="parent_id">${createParentSel}</select></div>
         <button class="btn" type="submit">Thêm danh mục</button>
       </form>
-      <p class="muted" style="font-size:.82rem;margin-bottom:0">Slug là đường dẫn trên storefront: <code>/c/&lt;slug&gt;</code>. Chỉ chữ thường, số, gạch ngang.</p>
+      <p class="muted" style="font-size:.82rem;margin-bottom:0">Slug là đường dẫn trên storefront: <code>/products?cat=&lt;slug&gt;</code>. Chỉ chữ thường, số, gạch ngang. Chỉ hỗ trợ 2 cấp (cha → con).</p>
     </div>
     <div class="card">${cats.length
-      ? `<table><thead><tr><th>Tên · thứ tự</th><th>Slug</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-         <p class="muted" style="margin-top:10px;font-size:.85rem">Gán sản phẩm vào danh mục ở <strong>trang chi tiết từng sản phẩm</strong> (mục "Danh mục").</p>`
+      ? `<table><thead><tr><th>Tên · thứ tự · danh mục cha</th><th>Slug</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+         <p class="muted" style="margin-top:10px;font-size:.85rem">Gán sản phẩm vào danh mục (nên gán vào danh mục <strong>con</strong>) ở <strong>trang chi tiết từng sản phẩm</strong> (mục "Danh mục").</p>`
       : '<p class="muted">Chưa có danh mục. Thêm ở trên để nhóm sản phẩm + hiện trên storefront.</p>'}</div>`);
 }
 
@@ -2003,6 +2025,13 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
   const base = `/shops/${esc(shopId)}/products/${esc(p.id)}`;
   const catIds = new Set(p.category_ids ?? []);
   const catList = cats ?? [];
+  // Sắp danh mục theo cây 2 cấp (0095): cha rồi con (thụt lề) để gán đúng danh mục con.
+  const catById = new Map(catList.map((c) => [c.id, c]));
+  const catTree = [];
+  for (const r of catList.filter((c) => !c.parent_id || !catById.has(c.parent_id))) {
+    catTree.push({ c: r, child: false });
+    for (const k of catList.filter((c) => c.parent_id === r.id && catById.has(c.parent_id))) catTree.push({ c: k, child: true });
+  }
   const f = form ?? {}; // khi lưu lỗi: ưu tiên giá trị vừa nhập để không nuốt sửa đổi
   const val = (k) => esc(f[k] ?? p[k] ?? '');
   const imgs = media ?? [];
@@ -2117,7 +2146,7 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
     <div class="card"><h2 style="margin-top:0">Danh mục</h2>
       ${catList.length
         ? `<form method="POST" action="${base}/categories">
-            <div style="display:flex;flex-wrap:wrap;gap:10px 20px">${catList.map((c) => `<label style="display:inline-flex;align-items:center;gap:7px;font-size:.92rem"><input type="checkbox" name="category_ids" value="${esc(c.id)}"${catIds.has(c.id) ? ' checked' : ''}> ${esc(c.name)}</label>`).join('')}</div>
+            <div style="display:flex;flex-direction:column;gap:8px">${catTree.map(({ c, child }) => `<label style="display:inline-flex;align-items:center;gap:7px;font-size:.92rem${child ? ';padding-left:20px' : ';font-weight:600'}"><input type="checkbox" name="category_ids" value="${esc(c.id)}"${catIds.has(c.id) ? ' checked' : ''}> ${child ? '<span class="muted" aria-hidden="true">↳</span> ' : ''}${esc(c.name)}</label>`).join('')}</div>
             <button class="btn alt sm" type="submit" style="margin-top:12px">Lưu danh mục</button>
           </form>`
         : `<p class="muted">Chưa có danh mục. Tạo ở trang <a href="/shops/${esc(shopId)}/categories">Danh mục</a> rồi quay lại gán.</p>`}

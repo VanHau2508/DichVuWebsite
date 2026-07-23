@@ -862,7 +862,7 @@ async function categoriesPage(res, me, cookie, shopId, notice, err) {
 async function categoryCreate(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
-  const r = await sellerApi('POST', `/shops/${shopId}/categories`, { cookie, body: { name: String(f.name ?? '').trim(), slug: String(f.slug ?? '').toLowerCase().trim() } });
+  const r = await sellerApi('POST', `/shops/${shopId}/categories`, { cookie, body: { name: String(f.name ?? '').trim(), slug: String(f.slug ?? '').toLowerCase().trim(), parent_id: String(f.parent_id ?? '').trim() } });
   return categoriesPage(res, me, cookie, shopId, r.status === 201 ? 'Đã thêm danh mục.' : null, r.status === 201 ? null : (r.json?.error ?? 'Không thêm được danh mục.'));
 }
 async function categoryUpdate(req, res, me, cookie, shopId, cid) {
@@ -870,6 +870,8 @@ async function categoryUpdate(req, res, me, cookie, shopId, cid) {
   const f = await readForm(req);
   const body = { name: String(f.name ?? '').trim() };
   const pos = parseInt(f.position ?? '', 10); if (Number.isInteger(pos)) body.position = pos;
+  // parent_id chỉ gửi khi form CÓ trường (chọn danh mục cha) — '' = đưa về cấp trên cùng.
+  if (f.parent_id !== undefined) body.parent_id = String(f.parent_id ?? '').trim();
   const r = await sellerApi('PATCH', `/shops/${shopId}/categories/${cid}`, { cookie, body });
   return categoriesPage(res, me, cookie, shopId, r.status === 200 ? 'Đã lưu danh mục.' : null, r.status === 200 ? null : (r.json?.error ?? 'Không lưu được danh mục.'));
 }

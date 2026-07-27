@@ -110,9 +110,19 @@ async function replyReview(res, ctx, body, params) {
 
 async function deleteReview(res, ctx, _b, params) {
   const rid = params[1];
+  // Xoá OBJECT TRƯỚC khi xoá dòng đánh giá. review_images CASCADE theo product_reviews, nên
+  // nếu xoá đánh giá trước thì dòng ảnh bay ngay và object trong MinIO thành MỒ CÔI VĨNH VIỄN
+  // — không còn bản ghi nào trỏ tới, worker cũng không thể tìm ra. Đọc key ở đây là cơ hội
+  // CUỐI CÙNG biết chúng nằm đâu.
+  const keys = await withTenant(ctx.shopId, async (c) => (await c.query(
+    `SELECT original_key, public_key FROM review_images WHERE review_id = $1`, [rid])).rows);
+  for (const k of keys) {
+    if (k.original_key) await minio.removeObject(BUCKET_PRIVATE, k.original_key).catch(() => {});
+    if (k.public_key) await minio.removeObject(BUCKET_PUBLIC, k.public_key).catch(() => {});
+  }
   const n = await withTenant(ctx.shopId, async (c) => {
     const r = await c.query(`DELETE FROM product_reviews WHERE id = $1`, [rid]);
-    if (r.rowCount === 1) await audit(c, 'review.deleted', { actorId: ctx.user.id, ip: ctx.ip, metadata: { reviewId: rid } });
+    if (r.rowCount === 1) await audit(c, 'review.deleted', { actorId: ctx.user.id, ip: ctx.ip, metadata: { reviewId: rid, images: keys.length } });
     return r.rowCount;
   });
   if (n !== 1) return send(res, 404, { error: 'không tìm thấy đánh giá' });

@@ -364,6 +364,49 @@ async function main() {
   page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
   !/class="rv-thumb"/.test(page) ? ok('ảnh biến mất khỏi trang SP sau khi từ chối') : bad('ảnh vẫn hiện sau từ chối');
 
+  // ── 13. DỌN RÁC ảnh (0102) ──────────────────────────────────────────────────
+  sect('13. Worker dọn object ảnh đã xoá mềm + không để mồ côi khi xoá đánh giá');
+  const WORKER = process.env.WORKER_URL ?? 'http://worker:3080';
+  // Ảnh của đánh giá vừa bị TỪ CHỐI ở mục 12 đang xoá-mềm → worker phải xoá hẳn dòng.
+  const beforeGc = Number((await owner.query(
+    `SELECT count(*)::int n FROM review_images WHERE review_id=$1`, [rvImg.id])).rows[0].n);
+  beforeGc === 2 ? ok('2 dòng ảnh xoá-mềm còn trong DB trước khi dọn') : bad('trạng thái trước dọn sai', String(beforeGc));
+  let gc = await (await fetch(`${WORKER}/internal/revimg-gc`, { method: 'POST' })).json();
+  Number(gc.removed) >= 2 ? ok(`worker dọn ${gc.removed} ảnh (xoá object + xoá dòng)`) : bad('worker không dọn', JSON.stringify(gc));
+  const afterGc = Number((await owner.query(
+    `SELECT count(*)::int n FROM review_images WHERE review_id=$1`, [rvImg.id])).rows[0].n);
+  afterGc === 0 ? ok('dòng ảnh đã biến mất khỏi DB') : bad('còn sót dòng', String(afterGc));
+  gc = await (await fetch(`${WORKER}/internal/revimg-gc`, { method: 'POST' })).json();
+  Number(gc.removed) === 0 ? ok('dọn lại lần 2 → 0 (không lặp vô ích)') : bad('dọn lặp', JSON.stringify(gc));
+
+  // RÒ RỈ đã vá: xoá HẲN đánh giá → CASCADE cuốn dòng ảnh, nên seller phải xoá OBJECT TRƯỚC.
+  // Nếu không, object thành mồ côi VĨNH VIỄN (không còn bản ghi nào trỏ tới).
+  await owner.query(`UPDATE product_reviews SET created_at = created_at - interval '2 days' WHERE shop_id = $1`, [A.shopId]);
+  r = await postMultipart(A.host, '/checkout/review',
+    { product_id: pid, rating: '4', author_name: 'Chị Xoá', content: 'Đánh giá này sẽ bị xoá hẳn để kiểm rò rỉ.' },
+    [{ field: 'images', name: 'c.png', type: 'image/png', bytes: PNG1 }]);
+  const rvDel = (await owner.query(`SELECT id FROM product_reviews WHERE shop_id=$1 AND author_name='Chị Xoá'`, [A.shopId])).rows[0];
+  // DUYỆT trước để ảnh có public_key — bucket public đọc được qua HTTP nên KIỂM CHỨNG ĐƯỢC
+  // object còn hay mất (bucket private đòi chữ ký S3, GET ẩn danh trả 403 dù có hay không).
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/reviews/${rvDel.id}/approve`, { cookie: A.cookie, origin: OS });
+  const pubKey = (await owner.query(`SELECT public_key FROM review_images WHERE review_id=$1`, [rvDel.id])).rows[0]?.public_key;
+  pubKey ? ok('dựng đánh giá đã duyệt có 1 ảnh công khai để kiểm xoá-hẳn') : bad('không tạo được ảnh công khai');
+  const objAlive = async (key) => {
+    const rs = await fetch(`http://minio:9000/media-public/${key}`);
+    return rs.status === 200;
+  };
+  (await objAlive(pubKey)) ? ok('object đang SỐNG trong kho public trước khi xoá') : bad('object không truy cập được từ đầu');
+
+  // Xoá HẲN đánh giá qua API seller.
+  r = await rq(SELLER, 'DELETE', `/shops/${A.shopId}/reviews/${rvDel.id}`, { cookie: A.cookie, origin: OS });
+  r.status === 200 ? ok('xoá hẳn đánh giá → 200') : bad('xoá đánh giá lỗi', String(r.status));
+  const rowsGone = Number((await owner.query(`SELECT count(*)::int n FROM review_images WHERE review_id=$1`, [rvDel.id])).rows[0].n);
+  rowsGone === 0 ? ok('CASCADE cuốn dòng ảnh (đúng như thiết kế DB)') : bad('dòng ảnh còn sót', String(rowsGone));
+  // Object PHẢI đã bị xoá TRƯỚC khi dòng bị cuốn — nếu còn, đó chính là MỒ CÔI vĩnh viễn
+  // (không còn bản ghi nào trỏ tới nên worker cũng không bao giờ tìm ra).
+  !(await objAlive(pubKey)) ? ok('object đã bị xoá TRƯỚC khi cuốn dòng → KHÔNG mồ côi trong kho')
+    : bad('RÒ RỈ: object mồ côi vĩnh viễn trong MinIO!');
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

@@ -764,6 +764,64 @@ async function sweepProductStats() {
   }
 }
 
+// ── sweep: DỌN RÁC ảnh đánh giá (0102) ───────────────────────────────────────
+// Ảnh người mua gửi kèm đánh giá (0101) nằm bucket RIÊNG TƯ tới khi shop duyệt. Hai loại
+// rác còn dấu vết trong DB mà worker phải dọn:
+//   · đã XOÁ MỀM  — shop từ chối đánh giá → deleted_at được đặt, object vẫn nằm trong kho.
+//   · treo QUÁ LÂU — đánh giá không bao giờ được duyệt ('pending') hoặc thăng-public hỏng
+//                    ('failed'). Không dọn thì kho phình theo lượng spam.
+//
+// Loại rác thứ BA — xoá HẲN một đánh giá — KHÔNG dọn được ở đây: review_images CASCADE
+// theo product_reviews nên dòng bay ngay, object thành mồ côi không truy được. Vì vậy
+// apps/seller xoá object TRƯỚC khi xoá dòng đánh giá (deleteReview). Ghi ở đây để ai đọc
+// sweep này không tưởng nó phủ hết mọi đường.
+//
+// Xoá OBJECT trước, XOÁ DÒNG sau: nếu đổ giữa chừng, vòng sau thử lại (removeObject với key
+// đã biến mất là no-op). Ngược lại — xoá dòng trước — sẽ bỏ quên object vĩnh viễn.
+const REVIMG_GC_MS = Number(process.env.REVIMG_GC_MS ?? 3600000);        // 1 giờ
+const REVIMG_STALE_DAYS = Number(process.env.REVIMG_STALE_DAYS ?? 60);   // đủ rộng cho shop duyệt chậm
+let minioClient = null;
+async function getMinio() {
+  if (minioClient) return minioClient;
+  const { Client } = await import('minio');
+  minioClient = new Client({
+    endPoint: process.env.MINIO_ENDPOINT ?? 'minio',
+    port: Number(process.env.MINIO_PORT ?? 9000),
+    useSSL: String(process.env.MINIO_USE_SSL ?? 'false') === 'true',
+    accessKey: process.env.MINIO_ACCESS_KEY ?? 'minioadmin',
+    secretKey: process.env.MINIO_SECRET_KEY ?? 'minioadmin',
+  });
+  return minioClient;
+}
+async function sweepReviewImages() {
+  if (!expiryDb) return { removed: 0 };
+  const BPRIV = process.env.MEDIA_BUCKET_PRIVATE ?? 'media-private';
+  const BPUB = process.env.MEDIA_BUCKET_PUBLIC ?? 'media-public';
+  let removed = 0;
+  try {
+    const mc = await getMinio();
+    // LIMIT: dọn từng mẻ, không ôm cả kho trong một vòng (sweep 1 giờ/lần sẽ đuổi kịp).
+    const rows = (await expiryDb.query(`
+      SELECT id, original_key, public_key FROM review_images
+       WHERE deleted_at IS NOT NULL
+          OR (status IN ('pending', 'failed') AND created_at < now() - ($1 || ' days')::interval)
+       ORDER BY created_at LIMIT 500`, [REVIMG_STALE_DAYS])).rows;
+    for (const r of rows) {
+      try {
+        if (r.original_key) await mc.removeObject(BPRIV, r.original_key).catch(() => {});
+        if (r.public_key) await mc.removeObject(BPUB, r.public_key).catch(() => {});
+        await expiryDb.query(`DELETE FROM review_images WHERE id = $1`, [r.id]);
+        removed++;
+      } catch (e) { log('error', 'revimg_gc_row_error', { id: r.id, message: e.message }); }
+    }
+  } catch (e) {
+    // Kỷ luật chống crash-loop: nuốt mọi lỗi, không bao giờ throw ra setInterval.
+    log('error', 'revimg_gc_error', { message: e.message });
+  }
+  if (removed) log('info', 'revimg_gc', { removed });
+  return { removed };
+}
+
 // ── sweep: GỘP LƯỢT XEM sản phẩm từ Redis vào DB (0098) ──────────────────────
 // Storefront (vai công khai CHỈ-ĐỌC) đếm vào hash Redis `pv:<ngày VN>:<shopId>`, field =
 // productId. Worker gộp vào product_view_daily rồi xoá khoá. Nhờ vậy đường nóng công khai
@@ -1325,6 +1383,7 @@ const expiryTimer = expiryDb ? setInterval(sweepExpired, EXPIRY_SWEEP_MS) : null
 const lowstockTimer = expiryDb ? setInterval(sweepLowStock, LOWSTOCK_SWEEP_MS) : null;
 const prodStatsTimer = expiryDb ? setInterval(sweepProductStats, PRODSTATS_SWEEP_MS) : null;
 const prodViewTimer = expiryDb ? setInterval(sweepProductViews, PRODVIEW_SWEEP_MS) : null;
+const revImgTimer = expiryDb ? setInterval(sweepReviewImages, REVIMG_GC_MS) : null;
 const outboxGcTimer = setInterval(sweepOutboxGc, OUTBOX_GC_MS);
 const alertTimer = setInterval(sweepMoneyAlerts, ALERT_SWEEP_MS);
 const tgLinkTimer = (TELEGRAM_ON && expiryDb) ? setInterval(sweepTelegramLink, TELEGRAM_LINK_SWEEP_MS) : null;
@@ -1411,6 +1470,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(r));
   }
+  // Dọn rác ảnh đánh giá ngay (nội bộ — cho e2e xác định, không phải đợi nhịp 1 giờ).
+  if (url.pathname === '/internal/revimg-gc' && req.method === 'POST') {
+    const r = await sweepReviewImages();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   // Kích hoạt dọn outbox ngay (nội bộ — cho cron + e2e xác định).
   if (url.pathname === '/internal/pii-sweep' && req.method === 'POST') {
     const r = await sweepPiiRetention();
@@ -1472,6 +1537,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (lowstockTimer) clearInterval(lowstockTimer);
     if (prodStatsTimer) clearInterval(prodStatsTimer);
     if (prodViewTimer) clearInterval(prodViewTimer);
+    if (revImgTimer) clearInterval(revImgTimer);
     if (piiTimer) clearInterval(piiTimer);
     if (staleTimer) clearInterval(staleTimer);
     if (loyaltyEarnTimer) clearInterval(loyaltyEarnTimer);

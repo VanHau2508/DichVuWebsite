@@ -8,6 +8,7 @@
   "scripts": { "start": "node src/index.js" },
   "dependencies": {
     "bullmq": "^5.34.0",
+    "minio": "^8.0.1",
     "nodemailer": "^9.0.3",
     "pg": "^8.13.1"
   }

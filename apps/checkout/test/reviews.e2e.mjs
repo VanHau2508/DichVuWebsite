@@ -282,6 +282,88 @@ async function main() {
   page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
   !page.includes('xin chào') ? ok('ẩn câu hỏi → biến mất khỏi trang SP') : bad('ẩn rồi vẫn hiện');
 
+  // ── 10. ẢNH TRONG ĐÁNH GIÁ (0101) ───────────────────────────────────────────
+  // Bất biến QUAN TRỌNG NHẤT: ảnh KHÔNG có URL công khai cho tới khi shop DUYỆT.
+  sect('10. Ảnh đánh giá: riêng tư cho tới khi duyệt');
+  // PNG 1×1 hợp lệ (magic byte thật) — sharp giải mã được.
+  const PNG1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  // Multipart thủ công (không dùng FormData để kiểm soát từng byte biên).
+  const mpBody = (bnd, fields, files) => {
+    const parts = [];
+    for (const [k, v] of Object.entries(fields)) {
+      parts.push(Buffer.from(`--${bnd}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+    }
+    for (const f of files) {
+      parts.push(Buffer.from(`--${bnd}\r\nContent-Disposition: form-data; name="${f.field}"; filename="${f.name}"\r\nContent-Type: ${f.type}\r\n\r\n`));
+      parts.push(f.bytes); parts.push(Buffer.from('\r\n'));
+    }
+    parts.push(Buffer.from(`--${bnd}--\r\n`));
+    return Buffer.concat(parts);
+  };
+  const postMultipart = (host, path, fields, files) => new Promise((resolve, reject) => {
+    const bnd = '----nentangtest' + uniq();
+    const data = mpBody(bnd, fields, files);
+    const req2 = http.request({ hostname: CO.hostname, port: CO.port, path, method: 'POST',
+      headers: { host, origin: `https://${host}`, 'content-type': `multipart/form-data; boundary=${bnd}`, 'content-length': data.length } },
+      (rs) => { let b = ''; rs.on('data', (d) => (b += d)); rs.on('end', () => resolve({ status: rs.statusCode, location: rs.headers.location, body: b })); });
+    req2.on('error', reject); req2.write(data); req2.end();
+  });
+
+  await owner.query(`UPDATE product_reviews SET created_at = created_at - interval '2 days' WHERE shop_id = $1`, [A.shopId]);
+  r = await postMultipart(A.host, '/checkout/review',
+    { product_id: pid, rating: '5', author_name: 'Chị Ảnh', content: 'Hàng đẹp, đúng mô tả, gửi kèm ảnh thật.' },
+    [{ field: 'images', name: 'a.png', type: 'image/png', bytes: PNG1 },
+     { field: 'images', name: 'b.png', type: 'image/png', bytes: PNG1 },
+     // Tệp KHÔNG PHẢI ảnh (giả content-type) → phải bị loại, KHÔNG chặn cả đánh giá.
+     { field: 'images', name: 'evil.png', type: 'image/png', bytes: Buffer.from('<?php system($_GET[0]); ?>') }]);
+  const rvImg = (await owner.query(`SELECT id, status FROM product_reviews WHERE shop_id=$1 AND author_name='Chị Ảnh'`, [A.shopId])).rows[0];
+  rvImg ? ok('gửi đánh giá KÈM ẢNH qua multipart → nhận được') : bad('không nhận được đánh giá có ảnh', `${r.status} ${r.location}`);
+  let imgRows = (await owner.query(`SELECT id, status, original_key, public_key FROM review_images WHERE review_id=$1 ORDER BY position`, [rvImg?.id ?? null])).rows;
+  imgRows.length === 2 ? ok('2 ảnh THẬT được nhận, tệp giả-ảnh (PHP) bị LOẠI') : bad('lọc tệp giả sai', `${imgRows.length} ảnh`);
+  imgRows.every((i) => i.status === 'pending' && !i.public_key)
+    ? ok('ảnh ở trạng thái CHỜ và KHÔNG có public_key (chưa công khai)') : bad('ảnh đã công khai khi chưa duyệt!', JSON.stringify(imgRows));
+
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  !/class="rv-imgs"/.test(page) ? ok('trang SP CHƯA hiện ảnh (đánh giá còn chờ duyệt)') : bad('ảnh chưa duyệt bị lộ trên trang SP');
+  // Storefront (vai công khai) tuyệt đối không đọc được ảnh chưa duyệt, kể cả query trực tiếp.
+  const storeSees = await (async () => {
+    const cli = new pg.Client({ connectionString: 'postgres://app_store:devpassword@postgres:5432/app' });
+    await cli.connect();
+    await cli.query(`SELECT set_config('app.shop_id', $1, false)`, [A.shopId]);
+    const n = (await cli.query(`SELECT count(*)::int n FROM review_images`)).rows[0].n;
+    await cli.end(); return n;
+  })();
+  storeSees === 0 ? ok('vai storefront KHÔNG đọc được dòng ảnh nào khi chưa duyệt (RLS)') : bad('RLS hở ảnh chưa duyệt', String(storeSees));
+
+  sect('11. Shop DUYỆT → ảnh mới được công khai');
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/reviews/${rvImg.id}/approve`, { cookie: A.cookie, origin: OS });
+  r.json?.images_published === 2 ? ok('duyệt → thăng ĐÚNG 2 ảnh lên công khai') : bad('thăng ảnh sai', JSON.stringify(r.json));
+  imgRows = (await owner.query(`SELECT status, public_key FROM review_images WHERE review_id=$1`, [rvImg.id])).rows;
+  imgRows.every((i) => i.status === 'ready' && i.public_key) ? ok('ảnh có public_key + status ready') : bad('ảnh chưa sẵn sàng', JSON.stringify(imgRows));
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  /class="rv-imgs"/.test(page) && (page.match(/class="rv-thumb"/g) ?? []).length === 2
+    ? ok('trang SP hiện ĐÚNG 2 ảnh của người mua') : bad('ảnh không hiện sau duyệt');
+  /class="rv-lb"/.test(page) ? ok('có lightbox phóng to (thuần CSS, không JS)') : bad('thiếu lightbox');
+
+  sect('12. Ảnh: kiểm duyệt được + từ chối thì biến mất');
+  r = await rq(SELLER, 'GET', `/shops/${A.shopId}/reviews?status=approved`, { cookie: A.cookie });
+  const withImgs = (r.json?.reviews ?? []).find((x) => (x.images ?? []).length === 2);
+  withImgs ? ok('API duyệt trả kèm danh sách ảnh (để admin hiện thumbnail)') : bad('API không trả ảnh');
+  // Shop XEM được ảnh chưa duyệt qua endpoint có xác thực (duyệt mù là thất bại cần tránh).
+  const anyImg = (await owner.query(`SELECT id FROM review_images WHERE review_id=$1 LIMIT 1`, [rvImg.id])).rows[0];
+  const imgResp = await fetch(`${SELLER}/shops/${A.shopId}/reviews/${rvImg.id}/images/${anyImg.id}`, { headers: { cookie: `__Host-session=${A.cookie}` } });
+  imgResp.status === 200 && /image\//.test(imgResp.headers.get('content-type') ?? '') ? ok('shop xem được ảnh qua endpoint có xác thực') : bad('shop không xem được ảnh', String(imgResp.status));
+  const imgCross = await fetch(`${SELLER}/shops/${Bs.shopId}/reviews/${rvImg.id}/images/${anyImg.id}`, { headers: { cookie: `__Host-session=${Bs.cookie}` } });
+  imgCross.status === 404 ? ok('shop B KHÔNG xem được ảnh của shop A → 404') : bad('rò ảnh chéo shop', String(imgCross.status));
+  const noAuth = await fetch(`${SELLER}/shops/${A.shopId}/reviews/${rvImg.id}/images/${anyImg.id}`);
+  noAuth.status === 401 || noAuth.status === 403 ? ok(`chưa đăng nhập xem ảnh → ${noAuth.status}`) : bad('ảnh xem được KHÔNG cần đăng nhập!', String(noAuth.status));
+
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/reviews/${rvImg.id}/reject`, { cookie: A.cookie, origin: OS });
+  const afterReject = (await owner.query(`SELECT count(*)::int n FROM review_images WHERE review_id=$1 AND deleted_at IS NULL`, [rvImg.id])).rows[0].n;
+  Number(afterReject) === 0 ? ok('từ chối đánh giá → ảnh bị đánh dấu xoá') : bad('ảnh còn sống sau khi từ chối', String(afterReject));
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  !/class="rv-thumb"/.test(page) ? ok('ảnh biến mất khỏi trang SP sau khi từ chối') : bad('ảnh vẫn hiện sau từ chối');
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

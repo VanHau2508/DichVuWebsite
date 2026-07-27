@@ -674,10 +674,15 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         // HỮU ÍCH NHẤT trước, rồi mới tới mới nhất (mẫu Shopee/TikTok Shop) — đánh giá dài,
         // có ích được nhiều người bấm sẽ nổi lên thay vì chìm theo thời gian.
         p.reviews = (await c.query(
-          `SELECT id, rating, author_name, content, verified, created_at,
-                  seller_reply, seller_replied_at, helpful_count
-             FROM product_reviews
-            WHERE product_id = $1 ORDER BY helpful_count DESC, created_at DESC LIMIT 10`, [p.id])).rows;
+          // Ảnh (0101): RLS store_review_images chỉ trả ảnh 'ready' của đánh giá 'approved'
+          // → ảnh chờ duyệt/bị từ chối KHÔNG THỂ lọt ra đây dù query có sai sót.
+          `SELECT r.id, r.rating, r.author_name, r.content, r.verified, r.created_at,
+                  r.seller_reply, r.seller_replied_at, r.helpful_count,
+                  (SELECT coalesce(json_agg(i.public_key ORDER BY i.position), '[]'::json)
+                     FROM review_images i WHERE i.review_id = r.id) AS image_keys
+             FROM product_reviews r
+            WHERE r.product_id = $1 ORDER BY r.helpful_count DESC, r.created_at DESC LIMIT 10`, [p.id]))
+          .rows.map((r) => ({ ...r, images: (r.image_keys ?? []).filter(Boolean).map(imgUrl) }));
         // Hỏi đáp (0100): RLS store_questions chỉ trả câu hỏi ĐÃ DUYỆT của SP đang hiện.
         // Chỉ lấy câu ĐÃ CÓ trả lời — câu hỏi bỏ ngỏ trên trang SP chỉ tổ làm khách lo.
         p.questions = (await c.query(

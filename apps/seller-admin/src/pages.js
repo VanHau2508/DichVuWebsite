@@ -3095,6 +3095,14 @@ export function renderReviews(ctx, shopId, data, activeStatus) {
             <span class="muted" style="font-size:.82rem">· ${dt(r.created_at)}</span></div>
           <div class="muted" style="font-size:.85rem;margin:4px 0">SP: ${esc(r.product_title)}</div>
           <p style="margin:6px 0 0;white-space:pre-line">${esc(r.content)}</p>
+          ${/* Ảnh người mua gửi (0101). Ảnh CHƯA DUYỆT nằm bucket riêng tư → xem qua endpoint
+               có xác thực, KHÔNG có URL công khai. Phải nhìn được thì mới duyệt có trách nhiệm. */''}
+          ${(r.images ?? []).length ? `<div class="actions" style="gap:8px;margin-top:8px">${(r.images ?? []).map((im) => `
+            <a href="${base}/${esc(r.id)}/images/${esc(im.id)}" target="_blank" rel="noopener" title="Mở ảnh cỡ lớn">
+              <img src="${base}/${esc(r.id)}/images/${esc(im.id)}" alt="Ảnh từ người mua" width="84" height="84"
+                   style="width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--bd)"></a>`).join('')}
+            <span class="muted" style="font-size:.8rem;align-self:center">${esc((r.images ?? []).length)} ảnh — ${r.images.some((i) => i.public_key) ? 'đã công khai' : '<strong>chưa công khai</strong>, chỉ hiện sau khi bạn duyệt'}</span>
+          </div>` : ''}
           ${r.helpful_count > 0 ? `<div class="muted" style="font-size:.8rem;margin-top:4px">👍 ${esc(r.helpful_count)} người thấy hữu ích</div>` : ''}
           ${/* TRẢ LỜI CÔNG KHAI (0099): hiện ngay dưới đánh giá trên trang sản phẩm. Với đánh
                giá thấp, một câu trả lời tử tế thuyết phục hơn mười đánh giá 5 sao. */''}

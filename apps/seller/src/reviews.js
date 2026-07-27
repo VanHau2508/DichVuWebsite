@@ -4,6 +4,7 @@
  */
 import { send } from './http.js';
 import { withTenant, audit } from './db.js';
+import { minio, BUCKET_PRIVATE, BUCKET_PUBLIC, mediaPublicUrl } from './media.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 
@@ -15,7 +16,12 @@ async function listReviews(res, ctx, _b, _p, query) {
       `SELECT r.id, r.product_id, r.rating, r.author_name, r.content, r.verified, r.status, r.created_at,
               r.seller_reply, r.seller_replied_at, r.helpful_count,
               p.title AS product_title, p.slug AS product_slug,
-              (SELECT count(*)::int FROM product_reviews WHERE status = 'pending') AS pending_count
+              (SELECT count(*)::int FROM product_reviews WHERE status = 'pending') AS pending_count,
+              -- Ảnh kèm (0101): trả id + public_key. Ảnh CHƯA duyệt không có public_key →
+              -- admin xem qua endpoint stream có xác thực, không qua URL công khai.
+              (SELECT coalesce(json_agg(json_build_object('id', i.id, 'public_key', i.public_key)
+                                        ORDER BY i.position), '[]'::json)
+                 FROM review_images i WHERE i.review_id = r.id AND i.deleted_at IS NULL) AS images
          FROM product_reviews r JOIN products p ON p.id = r.product_id
         WHERE r.status = $1 ORDER BY r.created_at DESC LIMIT ${limit}`, [status])).rows;
     return { reviews: rows, pending_count: rows[0]?.pending_count ?? Number((await c.query(`SELECT count(*)::int n FROM product_reviews WHERE status = 'pending'`)).rows[0].n) };
@@ -23,16 +29,60 @@ async function listReviews(res, ctx, _b, _p, query) {
   return send(res, 200, { ...data, status });
 }
 
+// XEM ảnh CHƯA DUYỆT khi kiểm duyệt (0101). Ảnh nằm bucket RIÊNG TƯ nên KHÔNG có URL công
+// khai — duyệt mà không nhìn được ảnh chính là thất bại cần tránh (shop sẽ bấm duyệt bừa).
+// Endpoint này chảy thẳng object private ra, có xác thực + perm content.write + RLS theo shop.
+async function streamReviewImage(res, ctx, _b, params) {
+  const rid = params[1], mid = params[2];
+  const row = await withTenant(ctx.shopId, async (c) => (await c.query(
+    `SELECT original_key FROM review_images WHERE id = $1 AND review_id = $2 AND deleted_at IS NULL`,
+    [mid, rid])).rows[0]);
+  if (!row) return send(res, 404, { error: 'không tìm thấy ảnh' });
+  try {
+    const stream = await minio.getObject(BUCKET_PRIVATE, row.original_key);
+    // no-store: ảnh chưa duyệt tuyệt đối không được nằm lại cache trung gian.
+    res.writeHead(200, { 'content-type': 'image/webp', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+    stream.pipe(res);
+    stream.on('error', () => res.destroy());
+  } catch { return send(res, 404, { error: 'không đọc được ảnh' }); }
+}
+
 function setStatus(newStatus, action) {
   return async (res, ctx, _b, params) => {
     const rid = params[1];
+    // DUYỆT = thời điểm DUY NHẤT ảnh được lên công khai. Sao private → public TRƯỚC khi lật
+    // trạng thái: nếu sao lỗi, đánh giá vẫn ở trạng thái cũ và người bán bấm lại được — an
+    // toàn hơn là đánh giá đã hiện mà ảnh vỡ.
+    let promoted = 0;
+    if (newStatus === 'approved') {
+      const imgs = await withTenant(ctx.shopId, async (c) => (await c.query(
+        `SELECT id, original_key FROM review_images
+          WHERE review_id = $1 AND status = 'pending' AND deleted_at IS NULL`, [rid])).rows);
+      for (const im of imgs) {
+        const publicKey = `review/${ctx.shopId}/${im.id}.webp`;
+        try {
+          // copyObject: đối tượng đã là WebP sạch (checkout re-encode lúc nhận) → chỉ chuyển kho.
+          await minio.copyObject(BUCKET_PUBLIC, publicKey, `/${BUCKET_PRIVATE}/${im.original_key}`);
+          await withTenant(ctx.shopId, (c) => c.query(
+            `UPDATE review_images SET status = 'ready', public_key = $2 WHERE id = $1`, [im.id, publicKey]));
+          promoted++;
+        } catch {
+          await withTenant(ctx.shopId, (c) => c.query(
+            `UPDATE review_images SET status = 'failed' WHERE id = $1`, [im.id])).catch(() => {});
+        }
+      }
+    }
     const n = await withTenant(ctx.shopId, async (c) => {
       const r = await c.query(`UPDATE product_reviews SET status = $2 WHERE id = $1`, [rid, newStatus]);
-      if (r.rowCount === 1) await audit(c, action, { actorId: ctx.user.id, ip: ctx.ip, metadata: { reviewId: rid } });
+      if (r.rowCount === 1) await audit(c, action, { actorId: ctx.user.id, ip: ctx.ip, metadata: { reviewId: rid, images: promoted } });
+      // TỪ CHỐI = ảnh phải biến mất. Xoá mềm ở đây; worker dọn object trong MinIO sau.
+      if (r.rowCount === 1 && newStatus === 'rejected') {
+        await c.query(`UPDATE review_images SET deleted_at = now() WHERE review_id = $1 AND deleted_at IS NULL`, [rid]);
+      }
       return r.rowCount;
     });
     if (n !== 1) return send(res, 404, { error: 'không tìm thấy đánh giá' });
-    return send(res, 200, { ok: true, status: newStatus });
+    return send(res, 200, { ok: true, status: newStatus, images_published: promoted });
   };
 }
 
@@ -73,6 +123,7 @@ export const REVIEW_ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/reviews$`), perm: 'content.write', fn: (res, ctx, b, p, q) => listReviews(res, ctx, b, p, q) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/reviews/${UUID}/approve$`), perm: 'content.write', fn: setStatus('approved', 'review.approved') },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/reviews/${UUID}/reject$`), perm: 'content.write', fn: setStatus('rejected', 'review.rejected') },
+  { m: 'GET', re: new RegExp(`^/shops/${UUID}/reviews/${UUID}/images/${UUID}$`), perm: 'content.write', fn: (res, ctx, b, p) => streamReviewImage(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/reviews/${UUID}/reply$`), perm: 'content.write', fn: (res, ctx, b, p) => replyReview(res, ctx, b, p) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/reviews/${UUID}$`), perm: 'content.write', fn: (res, ctx, b, p) => deleteReview(res, ctx, b, p) },
 ];

@@ -25,6 +25,7 @@ import { runReq, makeLog, health } from './obs.js';
 import { isProvince, regionOf } from './provinces.js';
 import { haversineKm, inVietnam } from './geo.js';
 import { reverseGeocode, normalizeProvince, GEOCODE_ON } from './geocode.js';
+import { readMultipartAll, ingestReviewImages, MAX_IMAGES } from './review-images.js';
 // Bộ đếm rate-limit DÙNG CHUNG với auth (atomic Lua, FAIL-OPEN khi Redis lỗi). File
 // gắn vào /app/ratelimit.js qua bind-mount trong compose.dev.yml (không copy, không sửa).
 import { hit } from '../ratelimit.js';
@@ -616,6 +617,13 @@ async function submitReviewForm(req, res, form, ctx) {
   const orderNum = parseInt(String(form.order_number ?? '').replace(/\D/g, ''), 10);
   const revPhone = canonPhone(String(form.phone ?? ''));
 
+  // Ảnh (0101): làm sạch + cất vào bucket RIÊNG TƯ TRƯỚC khi mở transaction — sharp + upload
+  // là I/O chậm, giữ transaction mở trong lúc đó sẽ ôm kết nối DB vô ích.
+  // Tệp hỏng/không phải ảnh bị bỏ qua LẶNG LẼ: đánh giá vẫn được gửi. Chặn cả đánh giá chỉ
+  // vì một tệp lỗi là phạt nhầm người mua thật — ảnh là phần thêm, không phải phần chính.
+  const files = (req.uploadedFiles ?? []).filter((f) => f.field === 'images' || f.field === 'images[]');
+  const imgs = files.length ? await ingestReviewImages(ctx.shopId, files).catch(() => []) : [];
+
   const out = await withTenant(ctx.shopId, async (c) => {
     if (ipHash) {
       const n = Number((await c.query(
@@ -633,11 +641,21 @@ async function submitReviewForm(req, res, form, ctx) {
           WHERE o.order_number = $1 AND o.customer_phone = $2 AND v.product_id = $3 AND o.status IN ('shipped','delivered') LIMIT 1`,
         [orderNum, revPhone, productId])).rows.length > 0;
     }
-    await c.query(
+    const rid = (await c.query(
       `INSERT INTO product_reviews (shop_id, product_id, order_number, rating, author_name, content, verified, ip_hash)
-       VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6, $7)`,
+       VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6, $7) RETURNING id`,
       [productId, Number.isInteger(orderNum) ? orderNum : null, rating, author, content, verified, ipHash],
-    );
+    )).rows[0].id;
+    // Ảnh đã được làm sạch + cất vào bucket RIÊNG TƯ TRƯỚC transaction này (I/O mạng không
+    // nên nằm trong transaction). Ở đây chỉ ghi bản ghi trỏ tới chúng, status='pending' —
+    // KHÔNG có public_key, nên chưa có URL công khai nào cho tới khi shop duyệt.
+    for (let i = 0; i < imgs.length; i++) {
+      const im = imgs[i];
+      await c.query(
+        `INSERT INTO review_images (id, shop_id, review_id, status, original_key, content_type, width, height, size_bytes, position)
+         VALUES ($1, current_shop_id(), $2, 'pending', $3, $4, $5, $6, $7, $8)`,
+        [im.id, rid, im.originalKey, im.contentType, im.width, im.height, im.size, i]);
+    }
     return { ok: true };
   });
   if (out.limited) return sendHtml(res, 429, renderError(await getShopName(ctx.shopId), 'Bạn gửi đánh giá quá nhanh. Vui lòng thử lại vào ngày mai.'));
@@ -1248,7 +1266,7 @@ const ROUTES = [
   { m: 'GET', p: '/checkout/lookup', fn: getLookupPage },
   { m: 'GET', p: '/checkout/success', fn: getSuccessPage },
   { m: 'GET', p: '/checkout/order', fn: orderLookup },
-  { m: 'POST', p: '/checkout/review', fn: submitReviewForm, form: true },
+  { m: 'POST', p: '/checkout/review', fn: submitReviewForm, form: true, multipart: true },
   { m: 'POST', p: '/checkout/review-helpful', fn: submitReviewHelpful, form: true },
   { m: 'POST', p: '/checkout/question', fn: submitQuestionForm, form: true },
 ];
@@ -1304,7 +1322,16 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const accepting = await withTenant(shopId, async (c) => (await c.query(`SELECT 1 FROM shops WHERE id = current_shop_id()`)).rowCount > 0);
     if (!accepting) return send(res, 503, { error: 'cửa hàng tạm ngưng nhận đơn' });
 
-    const body = req.method === 'GET' ? {} : (route.form ? await readForm(req) : await readJson(req));
+    // Route có cờ `multipart` (chỉ gửi-đánh-giá) chấp nhận CẢ HAI kiểu: multipart khi có ảnh,
+    // urlencoded khi không. Giữ tương thích ngược — form/HTML đã cache và mọi client cũ vẫn
+    // gửi urlencoded được. Trần body lớn CHỈ áp cho route này, không nới cho form khác.
+    let body;
+    if (req.method === 'GET') body = {};
+    else if (route.multipart && /^multipart\/form-data/i.test(req.headers['content-type'] ?? '')) {
+      const mp = await readMultipartAll(req);
+      req.uploadedFiles = mp.files;      // handler đọc qua req (chữ ký handler không đổi)
+      body = mp.fields;
+    } else body = route.form ? await readForm(req) : await readJson(req);
     // host: build link tra cứu đơn trong email (bỏ port nội bộ; Caddy route theo host shop).
     const ctx = { shopId, ip: clientIp(req), host: String(req.headers.host ?? '').split(':')[0].toLowerCase() };
     await route.fn(req, res, body, ctx, url.searchParams);

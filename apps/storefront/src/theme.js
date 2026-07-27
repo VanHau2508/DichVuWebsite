@@ -1411,6 +1411,17 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
 .pd-wish{margin:10px 0 0}
 .pd-wish button{border:1px solid var(--color-border);background:var(--color-bg);color:var(--color-muted);border-radius:var(--pill);padding:8px 18px;font-family:inherit;font-size:.88rem;font-weight:600;cursor:pointer;transition:border-color .15s,color .15s}
 .pd-wish button:hover{border-color:#e11d48;color:#e11d48}
+/* Ảnh trong đánh giá (0101): dải thumbnail + phóng to bằng :target (không JS). */
+.rv-imgs{display:flex;gap:8px;flex-wrap:wrap;margin-top:9px}
+.rv-thumb{display:block;width:76px;height:76px;border-radius:var(--r);overflow:hidden;border:1px solid var(--color-border);flex:0 0 auto}
+.rv-thumb img{width:100%;height:100%;object-fit:cover;transition:transform .2s}
+.rv-thumb:hover img{transform:scale(1.06)}
+.rv-lb{display:none}
+.rv-lb:target{display:flex;position:fixed;inset:0;z-index:200;align-items:center;justify-content:center;background:rgba(0,0,0,.86);padding:20px}
+.rv-lb img{max-width:100%;max-height:100%;object-fit:contain;border-radius:var(--r)}
+.rv-up{display:block;font-size:.85rem;font-weight:600;margin-top:2px}
+.rv-up input{display:block;margin-top:6px;font-size:.85rem}
+.rv-up .muted{font-weight:400}
 .rv-help{margin-top:8px}
 .rv-help button{border:1px solid var(--color-border);background:var(--color-bg);color:var(--color-muted);border-radius:var(--pill);padding:5px 13px;font-family:inherit;font-size:.8rem;font-weight:600;cursor:pointer;transition:border-color .15s,color .15s}
 .rv-help button:hover{border-color:var(--color-primary);color:var(--color-primary)}
@@ -2197,9 +2208,14 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
         <input type="hidden" name="slug" value="${esc(p.slug)}">
         <button type="submit" aria-label="Đánh dấu đánh giá này hữu ích">👍 Hữu ích${hc ? ` (${esc(hc)})` : ''}</button>
       </form>`;
+    // Ảnh thật của người mua (0101) — tín hiệu tin cậy mạnh nhất của phần đánh giá.
+    // Phóng to bằng :target thuần CSS, cùng cơ chế lightbox của gallery sản phẩm (không JS).
+    const imgs = (rv.images ?? []).length ? `<div class="rv-imgs">${rv.images.map((u, i) => `
+        <a class="rv-thumb" href="#rvimg-${esc(rv.id)}-${i}" aria-label="Phóng to ảnh đánh giá"><img src="${esc(u)}" alt="Ảnh từ người mua" loading="lazy"></a>
+        <a class="rv-lb" id="rvimg-${esc(rv.id)}-${i}" href="#danh-gia" aria-label="Đóng ảnh"><img src="${esc(u)}" alt="Ảnh từ người mua"></a>`).join('')}</div>` : '';
     return `<div class="rv">
       <div class="rv-head"><span class="st">${stars(rv.rating)}</span> <strong>${esc(rv.author_name)}</strong>${rv.verified ? ' <span class="rv-ok">✓ Đã mua hàng</span>' : ''}</div>
-      <p>${esc(rv.content)}</p>${reply}${helpful}</div>`;
+      <p>${esc(rv.content)}</p>${imgs}${reply}${helpful}</div>`;
   }).join('');
   const flagMsg = p.reviewFlag === 'sent'
     ? '<div class="rv-note ok">Cảm ơn bạn! Đánh giá sẽ hiển thị sau khi cửa hàng duyệt.</div>'
@@ -2209,7 +2225,7 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
       ${summaryBox}
       ${reviewItems || '<p class="muted">Chưa có đánh giá nào. Hãy là người đầu tiên!</p>'}
       <details class="rv-form"><summary>Viết đánh giá</summary>
-        <form method="POST" action="/checkout/review">
+        <form method="POST" action="/checkout/review" enctype="multipart/form-data">
           <input type="hidden" name="product_id" value="${esc(p.id)}">
           <input class="hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
           <div class="rv-stars" role="radiogroup" aria-label="Số sao">
@@ -2217,6 +2233,8 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
           </div>
           <input name="author_name" required maxlength="80" placeholder="Tên của bạn" aria-label="Tên">
           <textarea name="content" required minlength="10" maxlength="1000" rows="3" placeholder="Sản phẩm dùng thế nào? (ít nhất 10 ký tự)" aria-label="Nội dung"></textarea>
+          <label class="rv-up">Ảnh thực tế <span class="muted">(tối đa 3 ảnh, mỗi ảnh ≤ 5MB — ảnh chỉ hiện sau khi cửa hàng duyệt)</span>
+            <input type="file" name="images" accept="image/jpeg,image/png,image/webp,image/gif" multiple></label>
           <div class="rv-verify"><span class="muted">Đã mua hàng? Nhập để nhận dấu ✓:</span>
             <input name="order_number" inputmode="numeric" maxlength="15" placeholder="Số đơn">
             <input name="phone" inputmode="tel" maxlength="20" placeholder="SĐT đặt hàng"></div>

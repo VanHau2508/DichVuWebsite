@@ -261,6 +261,15 @@ services:
       # + GEOCODE_API_KEY thật (rsapi.goong.io). Có key → GEOCODE_ON=true → nút "Dùng vị trí" bật.
       GEOCODE_PROVIDER: stub
       GEOCODE_API_KEY: dev-geocode-key
+      # Ảnh trong đánh giá (0101): checkout nhận tệp từ NGƯỜI LẠ → cất vào bucket RIÊNG TƯ,
+      # chỉ khi shop duyệt đánh giá mới sao sang public (xem migration 0101).
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      MEDIA_BUCKET_PRIVATE: media-private
+      MEDIA_BUCKET_PUBLIC: media-public
+      # (MEDIA_PUBLIC_BASE đã khai ở trên cho thumbnail giỏ — dùng chung, không khai lại.)
     volumes:
       - ../apps/checkout/src:/app/src:ro
       # Bộ đếm rate-limit DÙNG CHUNG (không copy): gắn thẳng file gốc của auth vào image

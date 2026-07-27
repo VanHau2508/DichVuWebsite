@@ -544,6 +544,17 @@ async function reviewAction(res, me, cookie, shopId, rid, action) {
   return redirect(res, `/shops/${shopId}/reviews${r.status !== 200 ? '' : action === 'approve' ? '?status=pending' : '?status=pending'}`);
 }
 
+// Ảnh đánh giá CHƯA DUYỆT (0101): proxy từ seller (bucket riêng tư) để chủ shop NHÌN THẤY
+// trước khi bấm duyệt. Không có URL công khai nào cho ảnh này.
+async function reviewImage(res, me, cookie, shopId, rid, mid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerDownload(`/shops/${shopId}/reviews/${rid}/images/${mid}`, { cookie });
+  if (r.status !== 200) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('not found'); }
+  // no-store + nosniff: ảnh chưa kiểm duyệt không được nằm lại cache trung gian.
+  res.writeHead(200, { 'content-type': r.contentType ?? 'image/webp', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+  return res.end(r.bytes);
+}
+
 // ── Hỏi đáp sản phẩm (0100) ─────────────────────────────────────────────────
 async function questionsPage(res, me, cookie, shopId, status) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -2783,6 +2794,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/reviews$`).exec(p)) && req.method === 'GET') return reviewsPage(res, me, cookie, m[1], url.searchParams.get('status'));
     if ((m = new RegExp(`^/shops/${UUID}/reviews/${UUID}/(approve|reject|delete)$`).exec(p)) && req.method === 'POST') return reviewAction(res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/reviews/${UUID}/reply$`).exec(p)) && req.method === 'POST') return reviewReply(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/reviews/${UUID}/images/${UUID}$`).exec(p)) && req.method === 'GET') return reviewImage(res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/questions$`).exec(p)) && req.method === 'GET') return questionsPage(res, me, cookie, m[1], url.searchParams.get('status'));
     if ((m = new RegExp(`^/shops/${UUID}/questions/${UUID}/(answer|reject|delete)$`).exec(p)) && req.method === 'POST') return questionAction(req, res, me, cookie, m[1], m[2], m[3]);
 

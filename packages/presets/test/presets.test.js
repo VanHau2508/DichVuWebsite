@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PRESETS, getPreset, listPresets, presetChoices } from '../src/index.js';
-import { sanitizeTokens } from '../../../apps/storefront/src/theme.js';
+import { sanitizeTokens, tokensToCss } from '../../../apps/storefront/src/theme.js';
 
 // section registry (theme.js:250) — render bỏ qua key lạ, nên preset PHẢI nằm trong tập này.
 const VALID_SECTIONS = new Set(['header', 'hero', 'hero_side', 'features', 'collections', 'product_grid', 'product_spotlight', 'category_bar', 'category_rows', 'flash_sale', 'promo_banners', 'blog', 'story', 'footer']);
@@ -73,3 +73,32 @@ for (const slug of SLUGS) {
     }
   });
 }
+
+// Nội thất Sofa Ngọc Việt = SHOWROOM: GÓC VUÔNG + duyệt theo danh mục (thanh danh mục + khối SP/loại).
+test('[furniture] hình dạng showroom: radius 0 + category_bar + category_rows', () => {
+  const f = getPreset('furniture');
+  assert.equal(f.tokens.radius, '0px', 'nội thất phải GÓC VUÔNG (radius 0px) — chữ ký Sofa Ngọc Việt');
+  const secs = f.layout.map((s) => s.section);
+  assert.ok(secs.includes('category_bar'), 'phải có thanh danh mục (category_bar)');
+  assert.ok(secs.includes('category_rows'), 'phải có khối SP theo loại (category_rows)');
+  const grid = f.layout.find((s) => s.section === 'product_grid');
+  assert.ok(grid && grid.props.columns === 4, 'lưới "Mẫu mới về" 4 cột');
+});
+
+// Cơ chế GÓC VUÔNG: chỉ preset radius 0 mới đè --btn-radius/--cat-radius (nút+ô danh mục vuông).
+// Preset bo góc (mỹ phẩm/thực phẩm…) KHÔNG được có 2 biến này → nút giữ pill, ô danh mục giữ tròn.
+test('tokensToCss: radius 0 → nút+ô danh mục vuông; radius khác → giữ nguyên bo tròn', () => {
+  const sharp = tokensToCss({ radius: '0px', 'color.primary': '#446084' });
+  assert.match(sharp, /--btn-radius: 0/, 'radius 0 phải phát --btn-radius:0');
+  assert.match(sharp, /--cat-radius: 0/, 'radius 0 phải phát --cat-radius:0');
+  for (const soft of ['12px', '8px', '20px']) {
+    const css = tokensToCss({ radius: soft, 'color.primary': '#f36b7d' });
+    assert.ok(!css.includes('--btn-radius: 0'), `radius ${soft} KHÔNG được phát --btn-radius:0`);
+    assert.ok(!css.includes('--cat-radius: 0'), `radius ${soft} KHÔNG được phát --cat-radius:0`);
+  }
+  // đúng cả 4 preset thật: chỉ furniture (radius 0) là sharp
+  for (const slug of SLUGS) {
+    const css = tokensToCss(getPreset(slug).tokens);
+    assert.equal(css.includes('--btn-radius: 0'), slug === 'furniture', `${slug}: cờ sharp sai`);
+  }
+});

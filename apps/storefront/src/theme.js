@@ -74,7 +74,11 @@ function flatten(obj, prefix = '', acc = {}) {
 export function tokensToCss(tokens) {
   const t = sanitizeTokens(tokens);
   const vars = Object.entries(t).map(([k, v]) => `  --${k.replace(/\./g, '-')}: ${v};`).join('\n');
-  return `:root{\n${vars}\n}`;
+  // Preset GÓC VUÔNG (radius 0, vd nội thất Sofa Ngọc Việt): nút CTA vuông (--btn-radius:0 đè fallback
+  // --pill của .btn/.chip) VÀ ô danh mục vuông (--cat-radius:0 đè fallback 50% của .catbar-ic). Preset
+  // khác (mỹ phẩm/thực phẩm…) không đặt → nút giữ pill, ô danh mục giữ tròn. Icon header vẫn --pill.
+  const sharp = /^0(px|rem|em|%)?$/.test(String(t.radius ?? '')) ? '\n  --btn-radius: 0;\n  --cat-radius: 0;' : '';
+  return `:root{\n${vars}${sharp}\n}`;
 }
 
 const money = (vnd) => new Intl.NumberFormat('vi-VN').format(Number(vnd)) + '₫';
@@ -937,7 +941,7 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 @keyframes hdot2{0%,50%,100%{background:rgba(255,255,255,.35);width:8px}3%,47%{background:#fff;width:22px}}
 @keyframes hdot3{0%,33.4%,100%{background:rgba(255,255,255,.35);width:8px}2.5%,30.8%{background:#fff;width:22px}}
 @media(max-width:820px){.hero-grid{grid-template-columns:1fr;gap:26px;padding:38px 20px 42px;text-align:center}.hero-sub{max-width:none}.hero-cta{justify-content:center}.hero-media{max-width:440px;width:100%;margin:0 auto}}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-family:var(--font-body);font-size:1rem;font-weight:600;min-height:48px;padding:12px 26px;border-radius:var(--pill);border:1px solid transparent;cursor:pointer;transition:transform .12s cubic-bezier(.2,.7,.2,1),background-position .35s,box-shadow .2s,border-color .15s,color .15s,background .15s;line-height:1}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-family:var(--font-body);font-size:1rem;font-weight:600;min-height:48px;padding:12px 26px;border-radius:var(--btn-radius,var(--pill));border:1px solid transparent;cursor:pointer;transition:transform .12s cubic-bezier(.2,.7,.2,1),background-position .35s,box-shadow .2s,border-color .15s,color .15s,background .15s;line-height:1}
 .btn:active{transform:translateY(1px)}.btn svg{width:18px;height:18px}
 .btn-primary{background:linear-gradient(135deg,var(--color-primary),color-mix(in srgb,var(--color-primary) 55%,var(--color-accent)));background-size:150% 150%;color:#fff;box-shadow:0 10px 26px -12px color-mix(in srgb,var(--color-primary) 66%,transparent)}
 .btn-primary:hover{background-position:100% 0;transform:translateY(-1px);box-shadow:0 16px 32px -14px color-mix(in srgb,var(--color-primary) 72%,transparent)}
@@ -948,7 +952,7 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .section-all{flex:0 0 auto;align-self:center;font-size:.86rem;font-weight:700;color:var(--color-primary);white-space:nowrap;transition:color .15s,transform .15s}
 .section-all:hover{color:var(--color-primary-dark);transform:translateX(3px)}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 24px}
-.chip{border:1px solid var(--color-border);border-radius:var(--pill);padding:8px 16px;font-size:.86rem;font-weight:500;color:var(--color-muted);background:var(--color-bg);transition:border-color .15s,color .15s,background .15s,box-shadow .15s}
+.chip{border:1px solid var(--color-border);border-radius:var(--btn-radius,var(--pill));padding:8px 16px;font-size:.86rem;font-weight:500;color:var(--color-muted);background:var(--color-bg);transition:border-color .15s,color .15s,background .15s,box-shadow .15s}
 .chip:hover{border-color:var(--color-primary);color:var(--color-primary);background:color-mix(in srgb,var(--color-primary) 8%,var(--color-bg));box-shadow:0 6px 16px -8px color-mix(in srgb,var(--color-primary) 45%,transparent)}
 /* Chip ĐANG CHỌN (bộ lọc danh mục /products) — đồng bộ ngôn ngữ với .sort-link.on. */
 .chip.on{border-color:var(--color-primary);background:var(--color-hero-bg);color:color-mix(in srgb,var(--color-primary) 82%,#000);font-weight:700}
@@ -1087,7 +1091,7 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .catbar-item{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:10px;width:100px;padding:4px;color:var(--color-text);text-align:center;transition:transform .12s;scroll-snap-align:start}
 .catbar-item:hover{text-decoration:none;transform:translateY(-3px)}
 .catbar-item:hover .catbar-ic{border-color:var(--color-primary);box-shadow:var(--sh)}
-.catbar-ic{width:74px;height:74px;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--color-hero-bg);color:var(--color-primary);border:1px solid var(--color-border);flex:0 0 auto;transition:border-color .15s,box-shadow .15s}
+.catbar-ic{width:74px;height:74px;border-radius:var(--cat-radius,50%);overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--color-hero-bg);color:var(--color-primary);border:1px solid var(--color-border);flex:0 0 auto;transition:border-color .15s,box-shadow .15s}
 .catbar-ic img{width:100%;height:100%;object-fit:cover;display:block}
 .catbar-ic svg{width:30px;height:30px}
 .catbar-name{font-size:.82rem;font-weight:600;line-height:1.32;color:var(--color-text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}

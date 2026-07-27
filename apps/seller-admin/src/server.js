@@ -1018,7 +1018,13 @@ async function productDetail(res, me, cookie, shopId, pid, err, form, notice) {
 async function productUpdate(req, res, me, cookie, shopId, pid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
-  const body = { title: String(f.title ?? '').trim(), slug: String(f.slug ?? '').trim().toLowerCase(), price_vnd: parseVnd(f.price_vnd), description: String(f.description ?? '').trim() || null };
+  const body = {
+    title: String(f.title ?? '').trim(), slug: String(f.slug ?? '').trim().toLowerCase(),
+    price_vnd: parseVnd(f.price_vnd), description: String(f.description ?? '').trim() || null,
+    // SEO (0098): ô trống → null → storefront quay lại tự suy từ tên/mô tả.
+    seo_title: String(f.seo_title ?? '').trim() || null,
+    seo_description: String(f.seo_description ?? '').trim() || null,
+  };
   const r = await sellerApi('PATCH', `/shops/${shopId}/products/${pid}`, { cookie, body });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/products/${pid}`);
   // Giữ nguyên giá trị vừa nhập khi lưu lỗi (slug trùng…) — không revert về DB.

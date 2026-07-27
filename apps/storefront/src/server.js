@@ -136,6 +136,26 @@ function makeRedis(url, { commandTimeout = 1000 } = {}) {
     del: (key) => send(['DEL', key]),
   };
 }
+
+// ── Đếm LƯỢT XEM sản phẩm (0098) ─────────────────────────────────────────────
+// KHÔNG ghi thẳng DB: vai app_store của storefront là vai CÔNG KHAI, CHỈ ĐỌC — đó là bất
+// biến an ninh, không đánh đổi lấy một con số trưng bày. Đếm vào Redis, worker gộp vào
+// product_view_daily theo chu kỳ. Lợi kép: đường nóng công khai không có ghi DB nào.
+//
+// Một lệnh EVAL duy nhất (HINCRBY + EXPIRE nguyên tử, 1 vòng mạng). KHÔNG await ở chỗ gọi →
+// Redis chậm/chết cũng không làm chậm trang; mất số đếm thì thôi (fail-open, giống rate-limit).
+const PV_LUA = "redis.call('HINCRBY', KEYS[1], ARGV[1], 1) redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2])) return 1";
+const PV_TTL = 3 * 86400;  // lưới an toàn: worker chết vài ngày thì khoá tự tan, không rác Redis
+// Loại bot: đếm cả bot thì con số vô nghĩa với người bán (SP không ai xem vẫn "1.000 lượt").
+const BOT_UA_RE = /bot|crawl|spider|slurp|facebookexternalhit|embedly|preview|headless|phantom|curl|wget|python-requests|scrapy|go-http|java\/|okhttp/i;
+function countProductView(shopId, productId, req) {
+  if (!redis) return;
+  const ua = String(req?.headers?.['user-agent'] ?? '');
+  if (!ua || BOT_UA_RE.test(ua)) return;          // không UA cũng coi là máy, không đếm
+  // Ngày theo GIỜ VN (+07) — khớp mốc ngày của báo cáo/dashboard, không lệch 1 ngày.
+  const day = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+  redis.eval(PV_LUA, 1, `pv:${day}:${shopId}`, String(productId), String(PV_TTL)).catch(() => {});
+}
 // REDIS_URL vắng → không dựng client → gate tự bỏ qua (fail-open). Không bao giờ chặn khởi động.
 const redis = process.env.REDIS_URL ? makeRedis(process.env.REDIS_URL, { commandTimeout: 1000 }) : null;
 // Đọc chung 240/60s (~4 req/s bền — rộng cho người duyệt web, trang catalog rẻ). TÌM KIẾM
@@ -584,9 +604,11 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       const pm = /^\/p\/([a-z0-9-]+)$/.exec(url.pathname);
       if (pm) {
         const p = (await c.query(
-          `SELECT id, slug, title, description, price_vnd FROM products WHERE slug = $1`, [pm[1]],
+          `SELECT id, slug, title, description, price_vnd, seo_title, seo_description
+             FROM products WHERE slug = $1`, [pm[1]],
         )).rows[0];
         if (!p) return { ...base, notFound: true };
+        countProductView(shopId, p.id, req);   // fire-and-forget, không chặn trang
         // available = on_hand - reserved (KHỚP checkout: không có dòng inventory = 0 = hết hàng).
         // Lọc biến thể MỒ CÔI ngay tại query → selected/totalAvail/selector (theme.js)
         // đều kế thừa danh sách đã lọc, không cần sửa theme.

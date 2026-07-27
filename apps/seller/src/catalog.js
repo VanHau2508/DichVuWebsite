@@ -223,6 +223,11 @@ async function listProducts(res, ctx, _body, _params, query) {
       `SELECT p.id, p.slug, p.title, p.price_vnd, p.status, p.created_at,
               -- "Đã bán" đọc CỘT CACHE 0096 (worker tính lại mỗi 15 phút), KHÔNG aggregate.
               p.sold_count,
+              -- Lượt xem 30 ngày (0098). Bảng đã GỘP THEO NGÀY nên mỗi SP tối đa 30 dòng —
+              -- quét dải trên PK (shop_id, product_id, day), rẻ ở limit ≤ 100 SP/trang.
+              (SELECT coalesce(sum(pv.views), 0)::int FROM product_view_daily pv
+                WHERE pv.shop_id = p.shop_id AND pv.product_id = p.id
+                  AND pv.day > current_date - 30) AS views_30d,
               (SELECT count(*)::int FROM variants v WHERE v.product_id = p.id) AS variant_count,
               -- TỒN "còn bán được" = on_hand - reserved, LOẠI biến thể MỒ CÔI y hệt storefront
               -- (server.js:538) và checkout — nếu không, admin thấy còn hàng mà khách mua không được.
@@ -256,7 +261,7 @@ async function getProduct(res, ctx, _body, params) {
   const productId = params[1];
   const row = await withTenant(ctx.shopId, async (c) => {
     const p = await c.query(
-      `SELECT id, slug, title, description, price_vnd, status, created_at
+      `SELECT id, slug, title, description, price_vnd, status, created_at, seo_title, seo_description
          FROM products WHERE id = $1 AND deleted_at IS NULL`,
       [productId],
     );
@@ -304,6 +309,17 @@ async function updateProduct(res, ctx, body, params) {
     add('slug', slug);
   }
   if (body.description !== undefined) add('description', body.description != null ? String(body.description) : null);
+  // SEO riêng cho SP (0098). Bỏ TRỐNG = NULL → storefront tự suy từ tên/mô tả như cũ.
+  // Cắt đúng trần của CHECK ở DB thay vì trả 400: người bán dán mô tả dài là chuyện thường,
+  // đừng bắt họ tự đếm ký tự.
+  if (body.seo_title !== undefined) {
+    const v = body.seo_title == null ? '' : String(body.seo_title).trim();
+    add('seo_title', v ? v.slice(0, 200) : null);
+  }
+  if (body.seo_description !== undefined) {
+    const v = body.seo_description == null ? '' : String(body.seo_description).trim();
+    add('seo_description', v ? v.slice(0, 500) : null);
+  }
   if (body.price_vnd !== undefined) {
     if (!validPrice(body.price_vnd)) return send(res, 400, { error: 'giá không hợp lệ' });
     add('price_vnd', body.price_vnd);

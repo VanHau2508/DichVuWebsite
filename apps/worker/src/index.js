@@ -764,6 +764,71 @@ async function sweepProductStats() {
   }
 }
 
+// ── sweep: GỘP LƯỢT XEM sản phẩm từ Redis vào DB (0098) ──────────────────────
+// Storefront (vai công khai CHỈ-ĐỌC) đếm vào hash Redis `pv:<ngày VN>:<shopId>`, field =
+// productId. Worker gộp vào product_view_daily rồi xoá khoá. Nhờ vậy đường nóng công khai
+// không có ghi DB, và một sản phẩm hot chỉ tốn 1 UPSERT/chu kỳ thay vì 1 ghi/lượt xem.
+//
+// KHÔNG mất số khi đang gộp: RENAME khoá sang `pvf:…` TRƯỚC khi đọc — lượt xem phát sinh
+// trong lúc gộp rơi vào khoá `pv:…` MỚI tinh, chu kỳ sau nhặt. (HGETALL rồi DEL sẽ nuốt
+// mất phần chen giữa hai lệnh.) Khoá `pvf:` sót lại do worker chết giữa chừng được xử lý
+// TRƯỚC ở mỗi lần chạy nên không bao giờ mất dữ liệu.
+const PRODVIEW_SWEEP_MS = Number(process.env.PRODVIEW_SWEEP_MS ?? 300000); // 5 phút
+const PRODVIEW_KEEP_DAYS = Number(process.env.PRODVIEW_KEEP_DAYS ?? 180);
+async function flushViewKey(rc, flushKey) {
+  // pvf:<ngày>:<shopId>
+  const parts = flushKey.split(':');
+  const day = parts[1], shopId = parts[2];
+  // Khoá HỎNG (sai định dạng ngày/uuid) phải bị VỨT, không được ném lỗi: một khoá rác sẽ
+  // làm hỏng cả vòng gộp của mọi shop khác (uuid cast lỗi → throw → thoát vòng lặp).
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day ?? '') || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(shopId ?? '')) {
+    log('error', 'prodview_bad_key', { key: flushKey });
+    await rc.del(flushKey).catch(() => {});
+    return 0;
+  }
+  const h = await rc.hgetall(flushKey);
+  const ids = Object.keys(h ?? {});
+  if (!ids.length) { await rc.del(flushKey).catch(() => {}); return 0; }
+  const counts = ids.map((id) => Math.max(0, parseInt(h[id], 10) || 0));
+  // UPSERT CỘNG DỒN: chạy lại cùng lô cũng chỉ cộng đúng phần chưa cộng (khoá đã xoá).
+  // Bỏ qua productId không còn tồn tại → ON CONFLICT DO NOTHING không cứu được FK, nên
+  // lọc bằng chính SELECT từ products (join) thay vì tin dữ liệu Redis.
+  await expiryDb.query(`
+    INSERT INTO product_view_daily (shop_id, product_id, day, views)
+    SELECT p.shop_id, p.id, $2::date, v.n
+      FROM unnest($3::uuid[], $4::int[]) AS v(pid, n)
+      JOIN products p ON p.id = v.pid AND p.shop_id = $1
+    ON CONFLICT (shop_id, product_id, day) DO UPDATE SET views = product_view_daily.views + excluded.views`,
+    [shopId, day, ids, counts]);
+  await rc.del(flushKey).catch(() => {});
+  return ids.length;
+}
+async function sweepProductViews() {
+  if (!expiryDb) return { keys: 0 };
+  let rc;
+  try { rc = await queue.client; } catch { return { keys: 0 }; }
+  let keys = 0;
+  try {
+    // Một khoá lỗi KHÔNG được làm hỏng vòng gộp của các shop còn lại → bọc try từng khoá.
+    const one = async (k) => { try { await flushViewKey(rc, k); keys++; } catch (e) { log('error', 'prodview_key_error', { key: k, message: e.message }); } };
+    // 1) Dọn khoá gộp-dở-dang của lần chạy trước (worker chết giữa chừng).
+    for (const k of await rc.keys('pvf:*')) await one(k);
+    // 2) Khoá đếm hiện hành → đổi tên rồi gộp.
+    for (const k of await rc.keys('pv:*')) {
+      const dst = `pvf:${k.slice(3)}`;
+      try { await rc.rename(k, dst); } catch { continue; }  // khoá vừa hết hạn/biến mất
+      await one(dst);
+    }
+    // 3) Dọn số quá cũ — bảng này chỉ để xem xu hướng gần, không phải sổ sách.
+    await expiryDb.query(`DELETE FROM product_view_daily WHERE day < current_date - $1::int`, [PRODVIEW_KEEP_DAYS]);
+  } catch (e) {
+    // Kỷ luật chống crash-loop: nuốt mọi lỗi, không bao giờ throw ra setInterval.
+    log('error', 'prodview_sweep_error', { message: e.message });
+  }
+  if (keys) log('info', 'prodview_flushed', { keys });
+  return { keys };
+}
+
 // ── sweep: cảnh báo SẮP HẾT HÀNG (0050) — mỗi ngày 1 email/shop nếu có hàng tồn thấp ──
 // Ngưỡng per-shop (NULL → 5). Chỉ shop active + có contact_email. Nhóm theo shop → 1 email
 // tối đa 20 dòng. Idempotent theo NHỊP (timer 24h); gọi tay /internal/lowstock-sweep để test.
@@ -1259,6 +1324,7 @@ const timer = setInterval(poll, POLL_MS);
 const expiryTimer = expiryDb ? setInterval(sweepExpired, EXPIRY_SWEEP_MS) : null;
 const lowstockTimer = expiryDb ? setInterval(sweepLowStock, LOWSTOCK_SWEEP_MS) : null;
 const prodStatsTimer = expiryDb ? setInterval(sweepProductStats, PRODSTATS_SWEEP_MS) : null;
+const prodViewTimer = expiryDb ? setInterval(sweepProductViews, PRODVIEW_SWEEP_MS) : null;
 const outboxGcTimer = setInterval(sweepOutboxGc, OUTBOX_GC_MS);
 const alertTimer = setInterval(sweepMoneyAlerts, ALERT_SWEEP_MS);
 const tgLinkTimer = (TELEGRAM_ON && expiryDb) ? setInterval(sweepTelegramLink, TELEGRAM_LINK_SWEEP_MS) : null;
@@ -1339,6 +1405,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(r));
   }
+  // Gộp lượt xem từ Redis vào DB ngay (nội bộ — cho e2e xác định).
+  if (url.pathname === '/internal/prodview-sweep' && req.method === 'POST') {
+    const r = await sweepProductViews();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   // Kích hoạt dọn outbox ngay (nội bộ — cho cron + e2e xác định).
   if (url.pathname === '/internal/pii-sweep' && req.method === 'POST') {
     const r = await sweepPiiRetention();
@@ -1399,6 +1471,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (trackingTimer) clearInterval(trackingTimer);
     if (lowstockTimer) clearInterval(lowstockTimer);
     if (prodStatsTimer) clearInterval(prodStatsTimer);
+    if (prodViewTimer) clearInterval(prodViewTimer);
     if (piiTimer) clearInterval(piiTimer);
     if (staleTimer) clearInterval(staleTimer);
     if (loyaltyEarnTimer) clearInterval(loyaltyEarnTimer);

@@ -1903,6 +1903,7 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
     <td class="num right">${money(p.price_vnd)}</td>
     <td class="num right">${p.variant_count}</td>
     <td class="num right">${stockCell(p)}</td>
+    <td class="num right">${p.views_30d != null ? esc(p.views_30d) : '<span class="muted">—</span>'}</td>
     <td class="num right">${p.sold_count != null ? esc(p.sold_count) : '<span class="muted">—</span>'}</td>
     <td class="muted">${dt(p.created_at)}</td></tr>`).join('');
   // TAB trạng thái kèm SỐ ĐẾM (mẫu trang Đơn hàng). Đổi tab GIỮ ô tìm và RESET offset về 0
@@ -1943,12 +1944,12 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
       <div style="flex:1 1 200px"><label>Tìm theo tên</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="Ghế sofa…"></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
-    <div class="card">${products.length ? `${bulkBar}<div class="tblscroll"><table><thead><tr><th></th><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th class="right">Tồn</th><th class="right">Đã bán</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="card">${products.length ? `${bulkBar}<div class="tblscroll"><table><thead><tr><th></th><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th class="right">Tồn</th><th class="right" title="Lượt xem trang sản phẩm trong 30 ngày qua">Lượt xem</th><th class="right">Đã bán</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table></div>
       <div class="muted" style="margin-top:12px">${total} sản phẩm ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
       </div>
-      <p class="muted" style="font-size:.8rem;margin-bottom:0">“Tồn” là số còn bán được (đã trừ hàng đang giữ chỗ cho đơn chưa chốt). “Đã bán” tính từ đơn đã thanh toán, cập nhật lại mỗi 15 phút.</p>`
+      <p class="muted" style="font-size:.8rem;margin-bottom:0">“Tồn” là số còn bán được (đã trừ hàng đang giữ chỗ cho đơn chưa chốt). “Lượt xem” là số lần khách mở trang sản phẩm trong 30 ngày qua (đã loại bot). “Đã bán” tính từ đơn đã thanh toán. Cả hai cập nhật lại sau vài phút.</p>`
       // Rỗng vì LỌC ≠ rỗng vì CHƯA CÓ GÌ. Nói "Chưa có sản phẩm" ngay cạnh tab đếm 50 SP là
       // sai sự thật và làm chủ shop hoảng — phải mời họ bỏ lọc thay vì mời tạo mới.
       : (filter.status || filter.q || off > 0)
@@ -2342,6 +2343,15 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
           <div><label>Giá (VND)</label><input name="price_vnd" type="number" min="0" step="1000" required value="${val('price_vnd')}"></div>
         </div>
         <label>Mô tả</label><textarea name="description" maxlength="5000">${val('description')}</textarea>
+        <details style="margin-top:14px"${(f.seo_title || f.seo_description) ? ' open' : ''}>
+          <summary style="cursor:pointer;font-weight:600">Tối ưu Google (SEO) — không bắt buộc</summary>
+          <p class="muted" style="font-size:.83rem;margin:8px 0">Đây là dòng tiêu đề và đoạn mô tả hiện trên kết quả tìm kiếm Google và khi chia sẻ lên Facebook/Zalo.
+            Bỏ trống thì hệ thống tự lấy tên và mô tả sản phẩm.</p>
+          <label>Tiêu đề SEO <span class="muted" style="font-weight:400">(nên ≤ 60 ký tự để Google không cắt)</span></label>
+          <input name="seo_title" maxlength="200" placeholder="${esc(f.title ?? 'Tên sản phẩm')}" value="${val('seo_title')}">
+          <label>Mô tả SEO <span class="muted" style="font-weight:400">(nên 120–160 ký tự)</span></label>
+          <textarea name="seo_description" maxlength="500" rows="3" placeholder="Câu mô tả ngắn gọn, có từ khoá khách hay tìm.">${val('seo_description')}</textarea>
+        </details>
         <button class="btn" type="submit" style="margin-top:12px">Lưu thay đổi</button>
       </form>
     </div>

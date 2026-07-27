@@ -222,6 +222,76 @@ async function main() {
   /\.pd-actions\{position:sticky;bottom:0/.test(pdp) ? ok('trang SP có thanh mua dính đáy (mobile)') : bad('thiếu thanh mua dính đáy');
   /Mua ngay/.test(pdp) ? ok('nút "Mua ngay" còn nguyên (không hồi quy)') : bad('mất nút Mua ngay');
 
+  // ── 9. LƯỢT XEM sản phẩm (0098) ────────────────────────────────────────────
+  sect('9. Lượt xem sản phẩm: đếm qua Redis → worker gộp vào DB, LOẠI bot');
+  const sfUA = (host, path, ua) => new Promise((res, rej) => {
+    const rr = http.request({ hostname: STOREFRONT.hostname, port: STOREFRONT.port, path, method: 'GET', headers: { host, 'user-agent': ua } },
+      (x) => { let b = ''; x.on('data', (d) => (b += d)); x.on('end', () => res(b)); });
+    rr.on('error', rej); rr.end();
+  });
+  const P2 = await setupProduct(A, `Ghe sofa ${uniq()}`, 500000, 5);
+  for (let i = 0; i < 4; i++) await sfUA(A.host, `/p/${P2.slug}`, 'Mozilla/5.0 (Windows NT 10.0) Chrome/120');
+  for (let i = 0; i < 6; i++) await sfUA(A.host, `/p/${P2.slug}`, 'Googlebot/2.1 (+http://www.google.com/bot.html)');
+  await sfUA(A.host, `/p/${P2.slug}`, 'curl/8.4.0');
+  await sleep(300);
+  await fetch(`${WORKER}/internal/prodview-sweep`, { method: 'POST' });
+  let vrows = (await owner.query('SELECT day, views FROM product_view_daily WHERE product_id=$1', [P2.pid])).rows;
+  Number(vrows[0]?.views) === 4
+    ? ok('đếm ĐÚNG 4 lượt người thật, loại 6 bot + 1 curl') : bad('đếm lượt xem sai', JSON.stringify(vrows));
+
+  await fetch(`${WORKER}/internal/prodview-sweep`, { method: 'POST' });
+  vrows = (await owner.query('SELECT views FROM product_view_daily WHERE product_id=$1', [P2.pid])).rows;
+  Number(vrows[0]?.views) === 4 ? ok('gộp lại khi không có lượt mới → KHÔNG cộng đúp') : bad('cộng đúp khi gộp lại', JSON.stringify(vrows));
+
+  // Lượt xem là DỮ LIỆU RIÊNG của shop — shop khác không được thấy.
+  const Bv = await makeShopOwner(staff, `vw-${uniq()}`);
+  const cross = await rq(SELLER, 'GET', `/shops/${A.shopId}/products?limit=50`, { cookie: Bv.cookie });
+  cross.status === 403 || cross.status === 404 ? ok(`shop khác đọc SP shop A → ${cross.status}`) : bad('rò chéo shop', String(cross.status));
+
+  let ap = await adm('GET', `/shops/${A.shopId}/products`, { cookie: A.cookie });
+  /<th class="right"[^>]*>Lượt xem<\/th>/.test(ap.body) ? ok('trang Sản phẩm có cột "Lượt xem"') : bad('thiếu cột Lượt xem');
+  new RegExp(`${P2.pid}[\\s\\S]{0,1200}?<td class="num right">4</td>`).test(ap.body) || /<td class="num right">4<\/td>/.test(ap.body)
+    ? ok('cột Lượt xem hiện số 4') : bad('cột Lượt xem không hiện số', (ap.body.match(/<td class="num right">\d+<\/td>/g) ?? []).slice(0, 6).join(' '));
+
+  // ── 10. SEO riêng cho sản phẩm (0098) ──────────────────────────────────────
+  sect('10. SEO riêng cho sản phẩm: bỏ trống → suy như cũ; nhập → ĐÈ title/description');
+  let pdp2 = await sf(A.host, `/p/${P2.slug}`);
+  const title0 = (pdp2.match(/<title>([^<]*)<\/title>/) ?? [])[1] ?? '';
+  title0.includes('Ghe sofa') ? ok('chưa nhập SEO → title vẫn suy từ tên SP (không hồi quy)') : bad('title mặc định sai', title0);
+
+  r = await adm('POST', `/shops/${A.shopId}/products/${P2.pid}`, {
+    cookie: A.cookie, origin: OADM,
+    form: { title: 'Ghe sofa da', slug: P2.slug, price_vnd: '500000', description: 'mo ta',
+      seo_title: 'Sofa da that bao hanh 5 nam', seo_description: 'Sofa da bo nhap khau, giao lap mien phi noi thanh.' },
+  });
+  r.status === 303 ? ok('lưu SEO qua form seller-admin → 303') : bad('lưu SEO lỗi', `${r.status} ${r.body.slice(0, 140)}`);
+  pdp2 = await sf(A.host, `/p/${P2.slug}`);
+  const title1 = (pdp2.match(/<title>([^<]*)<\/title>/) ?? [])[1] ?? '';
+  const desc1 = (pdp2.match(/<meta name="description" content="([^"]*)"/) ?? [])[1] ?? '';
+  const ogt1 = (pdp2.match(/<meta property="og:title" content="([^"]*)"/) ?? [])[1] ?? '';
+  title1 === 'Sofa da that bao hanh 5 nam' ? ok('title dùng ĐÚNG tiêu đề SEO (không nối thêm tên shop)') : bad('title SEO sai', title1);
+  desc1.startsWith('Sofa da bo nhap khau') ? ok('meta description dùng mô tả SEO') : bad('description SEO sai', desc1);
+  ogt1 === 'Sofa da that bao hanh 5 nam' ? ok('og:title (thẻ chia sẻ FB/Zalo) dùng tiêu đề SEO') : bad('og:title sai', ogt1);
+
+  // Xoá trắng ô SEO → quay lại hành vi cũ (không kẹt vĩnh viễn ở giá trị đã nhập).
+  await adm('POST', `/shops/${A.shopId}/products/${P2.pid}`, {
+    cookie: A.cookie, origin: OADM,
+    form: { title: 'Ghe sofa da', slug: P2.slug, price_vnd: '500000', description: 'mo ta', seo_title: '', seo_description: '' },
+  });
+  pdp2 = await sf(A.host, `/p/${P2.slug}`);
+  const title2 = (pdp2.match(/<title>([^<]*)<\/title>/) ?? [])[1] ?? '';
+  title2.includes('Ghe sofa da') && !title2.includes('bao hanh') ? ok('xoá trắng ô SEO → quay lại suy từ tên SP') : bad('không xoá được SEO', title2);
+
+  // XSS: tiêu đề SEO là chuỗi người bán nhập → phải bị escape trong thuộc tính content=".
+  await adm('POST', `/shops/${A.shopId}/products/${P2.pid}`, {
+    cookie: A.cookie, origin: OADM,
+    form: { title: 'Ghe sofa da', slug: P2.slug, price_vnd: '500000', description: 'mo ta',
+      seo_title: '"><script>alert(1)</script>', seo_description: 'x" onload="alert(2)' },
+  });
+  pdp2 = await sf(A.host, `/p/${P2.slug}`);
+  !/<script>alert\(1\)/.test(pdp2) && !/onload="alert\(2\)/.test(pdp2)
+    ? ok('tiêu đề/mô tả SEO độc bị escape (không thoát thuộc tính)') : bad('XSS QUA Ô SEO!');
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail ? 1 : 0);

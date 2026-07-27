@@ -2182,12 +2182,19 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
       ${relatedHtml}
       ${Number(stats.n) > 0 ? `<div itemprop="aggregateRating" itemscope itemtype="https://schema.org/AggregateRating"><meta itemprop="ratingValue" content="${esc(String(stats.avg))}"><meta itemprop="reviewCount" content="${esc(String(stats.n))}"></div>` : ''}
     </main>${SECTIONS.footer({}, ctx)}`;
-  const desc = p.description ? String(p.description).replace(/\s+/g, ' ').trim().slice(0, 200) : `${p.title} — ${ctx.shop.name}`;
+  // SEO riêng cho SP (0098): shop tự viết tiêu đề/mô tả cho Google & thẻ chia sẻ Facebook/
+  // Zalo. Bỏ trống → giữ NGUYÊN cách suy cũ (tên + mô tả) nên shop không nhập gì vẫn như xưa.
+  const seoT = String(p.seo_title ?? '').trim();
+  const seoD = String(p.seo_description ?? '').trim();
+  const desc = seoD || (p.description ? String(p.description).replace(/\s+/g, ' ').trim().slice(0, 200) : `${p.title} — ${ctx.shop.name}`);
   const absUrl = (u) => (u ? (/^https?:\/\//i.test(u) ? u : `${ctx.origin || ''}${u}`) : '');
   const ogSrc = gallery.length ? absUrl(gallery[0].url) : '';
   const ogImg = ogSrc ? `<meta property="og:image" content="${esc(ogSrc)}"><meta name="twitter:image" content="${esc(ogSrc)}">` : '';
-  const head = metaHead({ description: desc, canonical, ogTitle: p.title, ogType: 'product', siteName: ctx.shop.name }) + ogImg;
-  return page(`${p.title} — ${ctx.shop.name}`, ctx.theme?.tokens, body, head, ctx.nonce);
+  // Tiêu đề SEO thay TOÀN BỘ dòng <title> (không nối thêm tên shop): shop đã tự soạn thì
+  // nối thêm sẽ vượt ~60 ký tự và bị Google cắt cụt đúng phần họ chăm chút.
+  const pageTitle = seoT || `${p.title} — ${ctx.shop.name}`;
+  const head = metaHead({ description: desc, canonical, ogTitle: pageTitle, ogType: 'product', siteName: ctx.shop.name }) + ogImg;
+  return page(pageTitle, ctx.theme?.tokens, body, head, ctx.nonce);
 }
 
 /** Trang kết quả tìm kiếm. Trang KQ tìm không nên index (robots noindex,follow). */

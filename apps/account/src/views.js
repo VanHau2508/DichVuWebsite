@@ -147,6 +147,37 @@ export function renderOrders(shopName, orders, { page = 1, hasMore = false, noti
       </form></div>`);
 }
 
+// ── Yêu thích (0100) ─────────────────────────────────────────────────────────
+// Lưới ảnh + giá, mỗi thẻ có nút bỏ thích (chính endpoint toggle). Rỗng thì mời đi xem
+// hàng thay vì để trang trắng.
+export function renderWishlist(shopName, items) {
+  const cards = items.map((p) => `<div class="wl-card">
+      <a class="wl-img" href="/p/${esc(p.slug)}">${p.image_url
+        ? `<img src="${esc(p.image_url)}" alt="${esc(p.title)}" loading="lazy">`
+        : '<span class="wl-ph">Chưa có ảnh</span>'}</a>
+      <a class="wl-name" href="/p/${esc(p.slug)}">${esc(p.title)}</a>
+      <div class="wl-price">${money(p.price_vnd)}</div>
+      <form method="POST" action="/account/wishlist/toggle">
+        <input type="hidden" name="product_id" value="${esc(p.id)}">
+        <button class="btn alt sm" type="submit">♥ Bỏ thích</button>
+      </form>
+    </div>`).join('');
+  return layout('Sản phẩm yêu thích', shopName, `
+    <div class="hd"><h1>Sản phẩm yêu thích</h1><a class="btn alt sm" href="/account">← Tài khoản</a></div>
+    ${items.length ? `<div class="wl-grid">${cards}</div>`
+      : `<div class="card"><p class="muted">Bạn chưa lưu sản phẩm nào. Bấm <strong>♡ Yêu thích</strong> ở trang sản phẩm để lưu lại xem sau.</p>
+         <a class="btn sm" href="/products">Xem sản phẩm</a></div>`}
+    <style>
+      .wl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px}
+      .wl-card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:7px}
+      .wl-img{display:block;aspect-ratio:1;background:#f3f4f6;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+      .wl-img img{width:100%;height:100%;object-fit:cover}
+      .wl-ph{font-size:.78rem;color:#9ca3af}
+      .wl-name{font-size:.9rem;font-weight:600;line-height:1.35;color:#111827;text-decoration:none;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+      .wl-price{font-weight:700;margin-top:auto}
+    </style>`);
+}
+
 // Vận đơn: tên hãng + link tra cứu công khai của hãng.
 const carrierName = (c) => ({ ghn: 'GHN', ghtk: 'GHTK' }[String(c ?? '').toLowerCase()] ?? (c || 'Hãng vận chuyển'));
 const carrierTrackUrl = (c, code) => {

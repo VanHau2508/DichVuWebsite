@@ -678,7 +678,14 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
                   seller_reply, seller_replied_at, helpful_count
              FROM product_reviews
             WHERE product_id = $1 ORDER BY helpful_count DESC, created_at DESC LIMIT 10`, [p.id])).rows;
+        // Hỏi đáp (0100): RLS store_questions chỉ trả câu hỏi ĐÃ DUYỆT của SP đang hiện.
+        // Chỉ lấy câu ĐÃ CÓ trả lời — câu hỏi bỏ ngỏ trên trang SP chỉ tổ làm khách lo.
+        p.questions = (await c.query(
+          `SELECT asker_name, question, answer, answered_at, created_at FROM product_questions
+            WHERE product_id = $1 AND answer IS NOT NULL ORDER BY created_at DESC LIMIT 10`, [p.id])).rows;
         p.reviewFlag = url.searchParams.get('review'); // 'sent' | 'invalid' (PRG từ checkout)
+        p.askFlag = url.searchParams.get('ask');       // 'sent' | 'invalid' (PRG từ checkout)
+        p.wishFlag = url.searchParams.get('wish');     // 'added' | 'removed' (PRG từ account)
         p.selectedId = url.searchParams.get('variant');
         return { ...base, product: p };
       }

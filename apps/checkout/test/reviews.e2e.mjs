@@ -230,6 +230,58 @@ async function main() {
   r = await hostReq(CO, A.host, 'POST', '/checkout/review-helpful', { form: { review_id: 'khong-phai-uuid', slug } });
   r.status === 302 || r.status === 303 ? ok('review_id rác → chuyển hướng về, không 500') : bad('id rác làm sập', String(r.status));
 
+  // ── 7. HỎI ĐÁP SẢN PHẨM (0100) ──────────────────────────────────────────────
+  sect('7. Hỏi đáp: khách hỏi → chờ; chỉ hiện khi shop ĐÃ TRẢ LỜI');
+  r = await hostReq(CO, A.host, 'POST', '/checkout/question',
+    { form: { product_id: pid, asker_name: 'Chị Lan', question: 'Kich thuoc dong goi la bao nhieu vay shop?' } });
+  let qrow = (await owner.query(`SELECT id, status, answer FROM product_questions WHERE shop_id=$1 ORDER BY created_at DESC LIMIT 1`, [A.shopId])).rows[0];
+  qrow && qrow.status === 'pending' ? ok('câu hỏi vào hàng đợi CHỜ (không hiện ngay)') : bad('gửi câu hỏi lỗi', JSON.stringify(qrow));
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  !page.includes('Kich thuoc dong goi') ? ok('câu hỏi chưa duyệt KHÔNG lộ trên trang SP') : bad('câu hỏi chưa duyệt bị lộ');
+  /id="hoi-dap"/.test(page) ? ok('trang SP có mục Hỏi đáp') : bad('thiếu mục hỏi đáp');
+  /action="\/checkout\/question"/.test(page) ? ok('có form đặt câu hỏi (no-JS)') : bad('thiếu form hỏi');
+
+  // Honeypot + câu hỏi quá ngắn.
+  await hostReq(CO, A.host, 'POST', '/checkout/question',
+    { form: { product_id: pid, asker_name: 'Bot', question: 'spam spam spam spam', website: 'http://spam.vn' } });
+  let nq = Number((await owner.query(`SELECT count(*)::int n FROM product_questions WHERE shop_id=$1`, [A.shopId])).rows[0].n);
+  nq === 1 ? ok('honeypot nuốt im lặng (không tạo câu hỏi)') : bad('honeypot không chặn', String(nq));
+  r = await hostReq(CO, A.host, 'POST', '/checkout/question', { form: { product_id: pid, asker_name: 'X', question: 'ngắn' } });
+  /ask=invalid/.test(r.location ?? '') ? ok('câu hỏi < 10 ký tự → báo không hợp lệ') : bad('không chặn câu hỏi ngắn', r.location);
+
+  sect('8. Shop trả lời → câu hỏi ĐĂNG LÊN trang SP');
+  r = await rq(SELLER, 'GET', `/shops/${A.shopId}/questions?status=pending`, { cookie: A.cookie });
+  r.json?.questions?.length === 1 && r.json.pending_count === 1 ? ok('seller thấy 1 câu chờ') : bad('list câu hỏi sai', JSON.stringify(r.json?.pending_count));
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/questions/${qrow.id}/answer`,
+    { cookie: A.cookie, origin: OS, body: { answer: 'Dạ có ạ, bảo hành 12 tháng chính hãng.' } });
+  r.status === 200 && r.json?.status === 'approved' ? ok('trả lời → tự ĐĂNG LUÔN (approved)') : bad('trả lời lỗi', `${r.status} ${r.raw}`);
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  page.includes('Kich thuoc dong goi') && page.includes('bảo hành 12 tháng')
+    ? ok('cả câu hỏi và câu trả lời hiện trên trang SP') : bad('hỏi đáp không hiện');
+  /class="qa-a"/.test(page) ? ok('câu trả lời có khối riêng (đọc như hội thoại)') : bad('thiếu khối trả lời');
+
+  sect('9. Hỏi đáp: bảo mật + cách ly');
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/questions/${qrow.id}/answer`, { cookie: A.cookie, origin: OS, body: { answer: '' } });
+  r.status === 400 ? ok('trả lời RỖNG → 400 (không đăng câu hỏi bỏ ngỏ)') : bad('cho phép trả lời rỗng', String(r.status));
+  r = await rq(SELLER, 'POST', `/shops/${Bs.shopId}/questions/${qrow.id}/answer`, { cookie: Bs.cookie, origin: OS, body: { answer: 'chen ngang' } });
+  r.status === 404 ? ok('shop B trả lời câu hỏi shop A → 404') : bad('rò chéo shop', String(r.status));
+  // XSS qua cả câu hỏi (khách) lẫn câu trả lời (shop).
+  await owner.query(`UPDATE product_questions SET created_at = created_at - interval '2 days' WHERE shop_id=$1`, [A.shopId]);
+  await hostReq(CO, A.host, 'POST', '/checkout/question',
+    { form: { product_id: pid, asker_name: '<script>alert(7)</script>', question: '<img src=x onerror=alert(8)> câu hỏi đủ dài' } });
+  const qx = (await owner.query(`SELECT id FROM product_questions WHERE shop_id=$1 AND asker_name LIKE '%script%'`, [A.shopId])).rows[0];
+  if (qx) {
+    await rq(SELLER, 'POST', `/shops/${A.shopId}/questions/${qx.id}/answer`,
+      { cookie: A.cookie, origin: OS, body: { answer: '<script>alert(6)</script> xin chào' } });
+  }
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  !page.includes('<script>alert(7)') && !page.includes('<img src=x') && !page.includes('<script>alert(6)')
+    ? ok('XSS trong CẢ câu hỏi lẫn câu trả lời bị escape') : bad('XSS QUA HỎI ĐÁP!');
+  // Ẩn câu hỏi → biến mất khỏi trang SP.
+  if (qx) await rq(SELLER, 'POST', `/shops/${A.shopId}/questions/${qx.id}/reject`, { cookie: A.cookie, origin: OS });
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  !page.includes('xin chào') ? ok('ẩn câu hỏi → biến mất khỏi trang SP') : bad('ẩn rồi vẫn hiện');
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

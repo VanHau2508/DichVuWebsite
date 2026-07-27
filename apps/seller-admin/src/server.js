@@ -544,6 +544,32 @@ async function reviewAction(res, me, cookie, shopId, rid, action) {
   return redirect(res, `/shops/${shopId}/reviews${r.status !== 200 ? '' : action === 'approve' ? '?status=pending' : '?status=pending'}`);
 }
 
+// ── Hỏi đáp sản phẩm (0100) ─────────────────────────────────────────────────
+async function questionsPage(res, me, cookie, shopId, status) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const st = ['pending', 'approved', 'rejected'].includes(status) ? status : 'pending';
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'questions');
+  const r = await sellerApi('GET', `/shops/${shopId}/questions?status=${st}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được hỏi đáp.'));
+  return sendHtml(res, 200, V.renderQuestions(ctx, shopId, r.json, st));
+}
+// Trả lời (mặc định ĐĂNG LUÔN) / từ chối / xoá. Quay lại ĐÚNG tab đang xem.
+async function questionAction(req, res, me, cookie, shopId, qid, action) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = action === 'answer' ? await readForm(req) : {};
+  const st = ['pending', 'approved', 'rejected'].includes(f.status) ? f.status : 'pending';
+  const r = action === 'delete'
+    ? await sellerApi('DELETE', `/shops/${shopId}/questions/${qid}`, { cookie })
+    : action === 'answer'
+      ? await sellerApi('POST', `/shops/${shopId}/questions/${qid}/answer`, { cookie, body: { answer: String(f.answer ?? '') } })
+      : await sellerApi('POST', `/shops/${shopId}/questions/${qid}/reject`, { cookie, body: {} });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'questions');
+    return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không thực hiện được.'));
+  }
+  return redirect(res, `/shops/${shopId}/questions?status=${st}`);
+}
+
 // SHOP TRẢ LỜI ĐÁNH GIÁ (0099). Ô rỗng = GỠ phản hồi. Quay lại ĐÚNG tab đang xem, nếu
 // không chủ shop trả lời một đánh giá đã duyệt lại bị ném về tab "chờ duyệt".
 async function reviewReply(req, res, me, cookie, shopId, rid) {
@@ -2757,6 +2783,8 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/reviews$`).exec(p)) && req.method === 'GET') return reviewsPage(res, me, cookie, m[1], url.searchParams.get('status'));
     if ((m = new RegExp(`^/shops/${UUID}/reviews/${UUID}/(approve|reject|delete)$`).exec(p)) && req.method === 'POST') return reviewAction(res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/reviews/${UUID}/reply$`).exec(p)) && req.method === 'POST') return reviewReply(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/questions$`).exec(p)) && req.method === 'GET') return questionsPage(res, me, cookie, m[1], url.searchParams.get('status'));
+    if ((m = new RegExp(`^/shops/${UUID}/questions/${UUID}/(answer|reject|delete)$`).exec(p)) && req.method === 'POST') return questionAction(req, res, me, cookie, m[1], m[2], m[3]);
 
     // Đối soát COD với hãng (orders.read xem; ghi phiếu = payment.write = owner ở seller).
     if ((m = new RegExp(`^/shops/${UUID}/cod$`).exec(p)) && req.method === 'GET') {

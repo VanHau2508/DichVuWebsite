@@ -1400,6 +1400,17 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
 .rv-reply{margin:10px 0 0 0;padding:10px 14px;border-left:3px solid var(--color-primary);background:var(--color-surface);border-radius:0 var(--r) var(--r) 0}
 .rv-reply strong{font-size:.83rem;color:var(--color-primary)}
 .rv-reply p{margin:3px 0 0;font-size:.9rem}
+/* Hỏi đáp (0100): hỏi và đáp lồng nhau, đáp thụt vào để đọc như hội thoại. */
+.qa{border-bottom:1px solid var(--color-border);padding:14px 0}
+.qa p{margin:4px 0 0;line-height:1.65;color:color-mix(in srgb,var(--color-text) 78%,var(--color-bg))}
+.qa-tag{display:inline-block;min-width:32px;text-align:center;font-size:.7rem;font-weight:800;border-radius:var(--pill);padding:2px 8px;background:var(--color-surface);color:var(--color-muted)}
+.qa-tag.a{background:var(--color-primary);color:#fff}
+.qa-a{margin:10px 0 0 18px;padding-left:12px;border-left:2px solid var(--color-border)}
+/* Nút Yêu thích trên trang SP. Trạng thái đầy/rỗng KHÔNG hiện được ở đây (storefront không
+   có phiên khách) → giữ trung tính, phản hồi đến sau khi account chuyển hướng về. */
+.pd-wish{margin:10px 0 0}
+.pd-wish button{border:1px solid var(--color-border);background:var(--color-bg);color:var(--color-muted);border-radius:var(--pill);padding:8px 18px;font-family:inherit;font-size:.88rem;font-weight:600;cursor:pointer;transition:border-color .15s,color .15s}
+.pd-wish button:hover{border-color:#e11d48;color:#e11d48}
 .rv-help{margin-top:8px}
 .rv-help button{border:1px solid var(--color-border);background:var(--color-bg);color:var(--color-muted);border-radius:var(--pill);padding:5px 13px;font-family:inherit;font-size:.8rem;font-weight:600;cursor:pointer;transition:border-color .15s,color .15s}
 .rv-help button:hover{border-color:var(--color-primary);color:var(--color-primary)}
@@ -2122,6 +2133,20 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
     : selAvail <= 5 ? `<div class="stock low">Chỉ còn ${selAvail}</div>`
     : '<div class="stock in">Còn hàng</div>';
 
+  // ── Nút Yêu thích (0100) ────────────────────────────────────────────────────
+  // POST sang apps/account — service DUY NHẤT biết khách là ai (storefront không có phiên
+  // khách và theo thiết kế KHÔNG có quyền nào trên bảng khách). Vì vậy trang này KHÔNG
+  // biết trái tim nên đầy hay rỗng: nút để trung tính, phản hồi đến sau khi account
+  // chuyển hướng về (?wish=). Chưa đăng nhập → account tự đẩy sang trang đăng nhập rồi quay lại.
+  const wishMsg = p.wishFlag === 'added'
+    ? '<div class="rv-note ok">Đã lưu vào Yêu thích. <a href="/account/wishlist">Xem danh sách</a></div>'
+    : p.wishFlag === 'removed' ? '<div class="rv-note">Đã bỏ khỏi Yêu thích.</div>' : '';
+  const wishBtn = `<form class="pd-wish" method="POST" action="/account/wishlist/toggle">
+      <input type="hidden" name="product_id" value="${esc(p.id)}">
+      <input type="hidden" name="slug" value="${esc(p.slug)}">
+      <button type="submit">♡ Yêu thích</button>
+    </form>`;
+
   // Form thêm giỏ + Mua ngay (POST /cart/add tới checkout, cùng origin qua Caddy → form-action 'self').
   // "Mua ngay" = submit kèm name=buynow → checkout redirect thẳng trang thanh toán.
   const canBuy = selected && selAvail > 0;
@@ -2131,8 +2156,8 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
             <input class="qty" type="number" name="qty" value="1" min="1" max="${Math.min(1000, selAvail)}" inputmode="numeric" aria-label="Số lượng">
             <button class="btn btn-alt" type="submit">${I_CART}Thêm vào giỏ</button>
             <button class="btn btn-primary" type="submit" name="buynow" value="1">Mua ngay</button>
-          </form>`
-    : `<div class="soldout-note">${soldOut ? 'Sản phẩm tạm hết hàng. Vui lòng quay lại sau.' : 'Phân loại đang chọn đã hết. Vui lòng chọn phân loại khác.'}</div>`);
+          </form>${wishBtn}${wishMsg}`
+    : `<div class="soldout-note">${soldOut ? 'Sản phẩm tạm hết hàng. Vui lòng quay lại sau.' : 'Phân loại đang chọn đã hết. Vui lòng chọn phân loại khác.'}</div>${wishBtn}${wishMsg}`);
 
   const skuHtml = selected?.sku ? `<div class="pd-sku">Mã: ${esc(selected.sku)}</div>` : '';
   const specs = Array.isArray(p.specs) ? p.specs : [];
@@ -2199,6 +2224,30 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
         </form>
       </details>
     </section>`;
+  // ── Hỏi đáp sản phẩm (0100) — chỉ hiện câu ĐÃ ĐƯỢC SHOP TRẢ LỜI ─────────────
+  const askMsg = p.askFlag === 'sent'
+    ? '<div class="rv-note ok">Đã gửi câu hỏi! Câu trả lời của cửa hàng sẽ hiện ở đây.</div>'
+    : p.askFlag === 'invalid' ? '<div class="rv-note err">Câu hỏi cần ít nhất 10 ký tự và có tên người hỏi.</div>' : '';
+  const qaItems = (p.questions ?? []).map((q) => `<div class="qa">
+      <div class="qa-q"><span class="qa-tag">Hỏi</span> <strong>${esc(q.asker_name)}</strong>
+        <p>${esc(q.question)}</p></div>
+      <div class="qa-a"><span class="qa-tag a">Đáp</span> <strong>${esc(ctx.shop.name)}</strong>
+        <p>${esc(q.answer)}</p></div>
+    </div>`).join('');
+  const qaHtml = `<section class="pd-block" id="hoi-dap"><h2>Hỏi đáp về sản phẩm${(p.questions ?? []).length ? ` (${esc((p.questions ?? []).length)})` : ''}</h2>
+      ${askMsg}
+      ${qaItems || '<p class="muted">Chưa có câu hỏi nào. Bạn cần biết thêm gì về sản phẩm?</p>'}
+      <details class="rv-form"><summary>Đặt câu hỏi cho cửa hàng</summary>
+        <form method="POST" action="/checkout/question">
+          <input type="hidden" name="product_id" value="${esc(p.id)}">
+          <input class="hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+          <input name="asker_name" required maxlength="80" placeholder="Tên của bạn" aria-label="Tên">
+          <textarea name="question" required minlength="10" maxlength="500" rows="3" placeholder="Ví dụ: Sản phẩm này có bảo hành không? (ít nhất 10 ký tự)" aria-label="Câu hỏi"></textarea>
+          <button class="btn btn-primary" type="submit">Gửi câu hỏi</button>
+        </form>
+      </details>
+    </section>`;
+
   const crumb = `<div class="crumb"><a href="/">Trang chủ</a>${p.category ? ` / <a href="/c/${esc(p.category.slug)}">${esc(p.category.name)}</a>` : ''} / <span>${esc(p.title)}</span></div>`;
 
   const availability = soldOut ? 'https://schema.org/OutOfStock' : 'https://schema.org/InStock';
@@ -2225,6 +2274,7 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
       </div>
       ${descHtml}
       ${specsHtml}
+      ${qaHtml}
       ${reviewsHtml}
       ${relatedHtml}
       ${Number(stats.n) > 0 ? `<div itemprop="aggregateRating" itemscope itemtype="https://schema.org/AggregateRating"><meta itemprop="ratingValue" content="${esc(String(stats.avg))}"><meta itemprop="reviewCount" content="${esc(String(stats.n))}"></div>` : ''}

@@ -221,6 +221,47 @@ async function main() {
   const guestCid = rg.json?.order_number ? (await owner.query(`SELECT customer_id FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, rg.json.order_number])).rows[0]?.customer_id : 'x';
   rg.status === 201 && guestCid === null ? ok('khách VÃNG LAI vẫn đặt được, customer_id NULL (tương thích ngược)') : bad('khách vãng lai lỗi', `${rg.status} ${guestCid}`);
 
+  // ── YÊU THÍCH (0100) ───────────────────────────────────────────────────────
+  sect('4b. Yêu thích: toggle, gắn TÀI KHOẢN, cách ly khách khác + shop khác');
+  const pSlug = (await owner.query('SELECT slug FROM products WHERE id=$1', [pId])).rows[0].slug;
+  // Chưa đăng nhập → đẩy sang trang đăng nhập, KHÔNG ghi gì.
+  r = await acc(host, 'POST', '/account/wishlist/toggle', { origin: O, form: { product_id: pId, slug: pSlug } });
+  let wn = N((await owner.query('SELECT count(*)::int n FROM wishlist_items WHERE product_id=$1', [pId])).rows[0].n);
+  r.status === 303 && /\/account\/login/.test(r.location ?? '') && wn === 0
+    ? ok('chưa đăng nhập → 303 login, KHÔNG ghi yêu thích') : bad('toggle khi chưa đăng nhập sai', `${r.status} ${r.location} n=${wn}`);
+  /next=/.test(r.location ?? '') ? ok('link đăng nhập mang ?next= để quay lại đúng trang SP') : bad('mất đường quay lại', r.location);
+
+  r = await acc(host, 'POST', '/account/wishlist/toggle', { origin: O, cookie: tok, form: { product_id: pId, slug: pSlug } });
+  wn = N((await owner.query('SELECT count(*)::int n FROM wishlist_items WHERE product_id=$1', [pId])).rows[0].n);
+  r.status === 303 && /wish=added/.test(r.location ?? '') && wn === 1 ? ok('đã đăng nhập → lưu yêu thích, quay về trang SP') : bad('thêm yêu thích lỗi', `${r.status} ${r.location} n=${wn}`);
+
+  r = await acc(host, 'POST', '/account/wishlist/toggle', { origin: O, cookie: tok, form: { product_id: pId, slug: pSlug } });
+  wn = N((await owner.query('SELECT count(*)::int n FROM wishlist_items WHERE product_id=$1', [pId])).rows[0].n);
+  /wish=removed/.test(r.location ?? '') && wn === 0 ? ok('bấm lại → BỎ thích (toggle), không tạo dòng thứ hai') : bad('toggle không bỏ được', `${r.location} n=${wn}`);
+
+  await acc(host, 'POST', '/account/wishlist/toggle', { origin: O, cookie: tok, form: { product_id: pId, slug: pSlug } });
+  r = await acc(host, 'GET', '/account/wishlist', { cookie: tok });
+  r.status === 200 && r.body.includes('Sản phẩm yêu thích') && new RegExp(`/p/${pSlug}`).test(r.body)
+    ? ok('trang Yêu thích liệt kê đúng SP đã lưu') : bad('trang yêu thích sai', `${r.status}`);
+  r = await acc(host, 'GET', '/account/wishlist');
+  r.status === 303 ? ok('chưa đăng nhập xem trang Yêu thích → 303 login') : bad('lộ trang yêu thích', String(r.status));
+
+  // Thiếu Origin → chặn CSRF, không ghi.
+  const before = N((await owner.query('SELECT count(*)::int n FROM wishlist_items WHERE product_id=$1', [pId])).rows[0].n);
+  r = await acc(host, 'POST', '/account/wishlist/toggle', { cookie: tok, form: { product_id: pId, slug: pSlug } });
+  const after = N((await owner.query('SELECT count(*)::int n FROM wishlist_items WHERE product_id=$1', [pId])).rows[0].n);
+  r.status === 403 && after === before ? ok('thiếu Origin → 403, không đổi yêu thích') : bad('CSRF không chặn', `${r.status} ${before}→${after}`);
+  // product_id rác không được rơi xuống Postgres thành 22P02 → 500.
+  r = await acc(host, 'POST', '/account/wishlist/toggle', { origin: O, cookie: tok, form: { product_id: '------------------------------------', slug: pSlug } });
+  r.status === 303 ? ok('product_id rác → chuyển hướng về, không 500') : bad('id rác làm sập', String(r.status));
+  // SP của shop KHÁC không thể lọt vào yêu thích ở shop này.
+  const pB = (await owner.query(`SELECT id FROM products WHERE shop_id=$1 LIMIT 1`, [B.shopId])).rows[0];
+  if (pB) {
+    await acc(host, 'POST', '/account/wishlist/toggle', { origin: O, cookie: tok, form: { product_id: pB.id, slug: pSlug } });
+    const cross = N((await owner.query('SELECT count(*)::int n FROM wishlist_items WHERE product_id=$1', [pB.id])).rows[0].n);
+    cross === 0 ? ok('SP shop khác KHÔNG lưu được vào yêu thích') : bad('rò chéo shop qua yêu thích');
+  }
+
   sect('5. Đăng xuất → phiên revoked');
   r = await acc(host, 'POST', '/account/logout', { origin: O, cookie: tok });
   r.status === 303 && /\/account\/login/.test(r.location ?? '') ? ok('đăng xuất → 303 login') : bad('logout lỗi', `${r.status} ${r.location}`);

@@ -644,6 +644,43 @@ async function submitReviewForm(req, res, form, ctx) {
   return back(slugRow.slug, 'sent');
 }
 
+// ── Hỏi đáp sản phẩm (public, no-JS form từ trang SP) — 0100 ─────────────────
+// Cùng mô hình với đánh giá: mặc định PENDING, shop trả lời + duyệt mới hiện. Không bắt
+// đăng nhập (khách đang cân nhắc mua thường chưa có tài khoản).
+// Chống spam y hệt đánh giá: honeypot + trần theo IP/ngày (HMAC ip_hash, không lưu IP thô).
+const QUESTIONS_PER_IP_DAY = Number(process.env.QUESTIONS_PER_IP_DAY) || 5;
+// Tên người hỏi KHÔNG được chứa xuống dòng (chèn dòng giả vào phần hỏi đáp) — cùng luật với
+// author_name của đánh giá. Tách thành hằng để tránh escape lồng nhau khi sửa file bằng script.
+const NEWLINE_RE = /[\r\n]/;
+async function submitQuestionForm(req, res, form, ctx) {
+  const productId = String(form.product_id ?? '');
+  if (!UUID_RE.test(productId)) return sendHtml(res, 400, renderError(await getShopName(ctx.shopId), 'Yêu cầu không hợp lệ.'));
+  const back = (slug, flag) => redirect(res, slug ? `/p/${encodeURIComponent(slug)}?ask=${flag}#hoi-dap` : '/');
+  const slugRow = await withTenant(ctx.shopId, async (c) =>
+    (await c.query(`SELECT slug FROM products WHERE id = $1 AND deleted_at IS NULL`, [productId])).rows[0]);
+  if (!slugRow) return sendHtml(res, 404, renderError(await getShopName(ctx.shopId), 'Không tìm thấy sản phẩm.'));
+  if (String(form.website ?? '') !== '') return back(slugRow.slug, 'sent');   // honeypot → nuốt im lặng
+  const asker = String(form.asker_name ?? '').trim().slice(0, 80);
+  const question = String(form.question ?? '').trim().slice(0, 500);
+  // Trùng ràng buộc CHECK ở DB — chặn ở app để trả thông báo tử tế thay vì 500.
+  if (asker.length < 1 || NEWLINE_RE.test(asker) || question.length < 10) return back(slugRow.slug, 'invalid');
+  const ipHash = ctx.ip ? hashIp(ctx.ip) : null;
+  const out = await withTenant(ctx.shopId, async (c) => {
+    if (ipHash) {
+      const n = Number((await c.query(
+        `SELECT count(*)::int n FROM product_questions WHERE shop_id = current_shop_id() AND ip_hash = $1 AND created_at > now() - interval '1 day'`,
+        [ipHash])).rows[0].n);
+      if (n >= QUESTIONS_PER_IP_DAY) return { limited: true };
+    }
+    await c.query(
+      `INSERT INTO product_questions (shop_id, product_id, asker_name, question, ip_hash)
+       VALUES (current_shop_id(), $1, $2, $3, $4)`, [productId, asker, question, ipHash]);
+    return { ok: true };
+  });
+  if (out.limited) return sendHtml(res, 429, renderError(await getShopName(ctx.shopId), 'Bạn gửi câu hỏi quá nhanh. Vui lòng thử lại vào ngày mai.'));
+  return back(slugRow.slug, 'sent');
+}
+
 // ── Bấm "Hữu ích" cho một đánh giá (public, no-JS form) ──────────────────────
 // Đẩy đánh giá hữu ích lên trên thay vì chỉ xếp theo thời gian. Chống bấm nhiều lần bằng
 // bảng phiếu review_votes: PK (review_id, voter_hash) → lần bấm thứ hai từ cùng IP đụng
@@ -1213,6 +1250,7 @@ const ROUTES = [
   { m: 'GET', p: '/checkout/order', fn: orderLookup },
   { m: 'POST', p: '/checkout/review', fn: submitReviewForm, form: true },
   { m: 'POST', p: '/checkout/review-helpful', fn: submitReviewHelpful, form: true },
+  { m: 'POST', p: '/checkout/question', fn: submitQuestionForm, form: true },
 ];
 
 // Phông Be Vietnam Pro (OFL) tự-host — /fonts/*.woff2 same-origin (CSP font-src 'self').

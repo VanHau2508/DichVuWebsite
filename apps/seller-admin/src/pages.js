@@ -236,6 +236,7 @@ function sideNav(ctx) {
           + it(`${base}/coupons`, 'Mã giảm giá', IC_TICKET, ctx.active === 'coupons', CATALOG_ROLES.has(ctx.role))
           + it(`${base}/loyalty`, 'Điểm thưởng', IC_GIFT, ctx.active === 'loyalty', LOYALTY_ROLES.has(ctx.role))
           + it(`${base}/reviews`, 'Đánh giá', IC_STAR, ctx.active === 'reviews', CONTENT_ROLES.has(ctx.role))
+          + it(`${base}/questions`, 'Hỏi đáp', IC_LOG, ctx.active === 'questions', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/pages`, 'Trang nội dung', IC_FILE, ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/blog`, 'Blog', IC_NEWS, ctx.active === 'blog', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/members`, 'Nhân sự', IC_USERS, ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role))
@@ -1904,6 +1905,7 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
     <td class="num right">${p.variant_count}</td>
     <td class="num right">${stockCell(p)}</td>
     <td class="num right">${p.views_30d != null ? esc(p.views_30d) : '<span class="muted">—</span>'}</td>
+    <td class="num right">${p.wish_count ? esc(p.wish_count) : '<span class="muted">0</span>'}</td>
     <td class="num right">${p.sold_count != null ? esc(p.sold_count) : '<span class="muted">—</span>'}</td>
     <td class="muted">${dt(p.created_at)}</td></tr>`).join('');
   // TAB trạng thái kèm SỐ ĐẾM (mẫu trang Đơn hàng). Đổi tab GIỮ ô tìm và RESET offset về 0
@@ -1944,7 +1946,7 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
       <div style="flex:1 1 200px"><label>Tìm theo tên</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="Ghế sofa…"></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
-    <div class="card">${products.length ? `${bulkBar}<div class="tblscroll"><table><thead><tr><th></th><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th class="right">Tồn</th><th class="right" title="Lượt xem trang sản phẩm trong 30 ngày qua">Lượt xem</th><th class="right">Đã bán</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="card">${products.length ? `${bulkBar}<div class="tblscroll"><table><thead><tr><th></th><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th class="right">Tồn</th><th class="right" title="Lượt xem trang sản phẩm trong 30 ngày qua">Lượt xem</th><th class="right" title="Số khách đã bấm Yêu thích">Thích</th><th class="right">Đã bán</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table></div>
       <div class="muted" style="margin-top:12px">${total} sản phẩm ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
@@ -2693,6 +2695,8 @@ const ACTION_LABEL = {
   'customer.note_set': 'Ghi chú khách hàng', 'customer.erased': 'Ẩn danh dữ liệu khách',
   'review.deleted': 'Xoá đánh giá', 'review.approved': 'Duyệt đánh giá', 'review.rejected': 'Từ chối đánh giá',
   'review.replied': 'Trả lời đánh giá', 'review.reply_removed': 'Gỡ trả lời đánh giá',
+  'question.answered': 'Trả lời câu hỏi', 'question.draft_answer': 'Lưu nháp câu trả lời',
+  'question.rejected': 'Ẩn câu hỏi', 'question.deleted': 'Xoá câu hỏi',
   'page.created': 'Tạo trang nội dung', 'page.updated': 'Sửa trang nội dung', 'page.published': 'Đăng trang',
   'page.rolled_back': 'Khôi phục bản trang cũ', 'page.deleted': 'Xoá trang', 'page.previewed': 'Xem thử trang',
   'page.block_added': 'Thêm khối nội dung', 'page.block_updated': 'Sửa khối nội dung',
@@ -3047,6 +3051,37 @@ export function renderCustomerEraseStepUp(ctx, shopId, phone, err) {
 }
 
 // ── Đánh giá sản phẩm (moderation: pending → duyệt/từ chối) ──────────────────
+// ── Hỏi đáp sản phẩm (0100) ─────────────────────────────────────────────────
+// Khác trang Đánh giá ở một điểm: câu hỏi KHÔNG có câu trả lời thì đăng lên trang sản phẩm
+// chỉ tổ hại (khách thấy câu hỏi bỏ ngỏ = shop không chăm). Nên chỉ có nút "Trả lời & đăng",
+// không có nút "Duyệt" trống.
+export function renderQuestions(ctx, shopId, data, activeStatus) {
+  const base = `/shops/${esc(shopId)}/questions`;
+  const qs = data?.questions ?? [];
+  const tab = (st, label) => `<a class="btn ${activeStatus === st ? '' : 'alt '}sm" href="${base}?status=${st}">${label}</a>`;
+  const rows = qs.map((q) => `<div class="card">
+      <div><strong>${esc(q.asker_name)}</strong> <span class="muted" style="font-size:.82rem">· ${dt(q.created_at)}</span></div>
+      <div class="muted" style="font-size:.85rem;margin:4px 0">SP: ${esc(q.product_title)}</div>
+      <p style="margin:6px 0 0;white-space:pre-line"><strong>Hỏi:</strong> ${esc(q.question)}</p>
+      <form method="POST" action="${base}/${esc(q.id)}/answer" style="margin-top:10px;max-width:620px">
+        <input type="hidden" name="status" value="${esc(activeStatus ?? 'pending')}">
+        <label style="font-size:.83rem;font-weight:600">${q.answer ? 'Câu trả lời (đang hiện công khai)' : 'Trả lời cho khách'}</label>
+        <textarea name="answer" maxlength="1000" rows="2" required placeholder="Trả lời ngắn gọn, đúng trọng tâm.">${esc(q.answer ?? '')}</textarea>
+        <div class="actions" style="margin-top:6px">
+          <button class="btn sm" type="submit">${q.answer ? 'Cập nhật câu trả lời' : 'Trả lời & đăng'}</button>
+        </div>
+      </form>
+      <div class="actions" style="margin-top:8px">
+        ${activeStatus !== 'rejected' ? `<form method="POST" action="${base}/${esc(q.id)}/reject"><button class="btn alt sm" type="submit">Ẩn (spam / không liên quan)</button></form>` : ''}
+        <form method="POST" action="${base}/${esc(q.id)}/delete"><button class="btn warn sm" type="submit">Xoá</button></form>
+      </div>
+    </div>`).join('');
+  return layout('Hỏi đáp', ctx, `<h1>Hỏi đáp sản phẩm</h1>
+    <p class="muted">Câu hỏi của khách chỉ hiện trên cửa hàng sau khi bạn <strong>trả lời</strong> — câu hỏi bỏ ngỏ trên trang sản phẩm làm khách e ngại. Đang chờ: <strong>${esc(String(data?.pending_count ?? 0))}</strong></p>
+    <div class="actions" style="margin-bottom:14px">${tab('pending', 'Chờ trả lời')}${tab('approved', 'Đã đăng')}${tab('rejected', 'Đã ẩn')}</div>
+    ${rows || '<div class="card"><p class="muted" style="margin:0">Không có câu hỏi nào ở mục này.</p></div>'}`);
+}
+
 export function renderReviews(ctx, shopId, data, activeStatus) {
   const base = `/shops/${esc(shopId)}/reviews`;
   const rvs = data?.reviews ?? [];

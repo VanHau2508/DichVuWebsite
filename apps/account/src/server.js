@@ -32,6 +32,11 @@ redis.on('error', () => {}); // fail-open rate-limit (Argon2 là sàn tự nhiê
 const log = (level, event, extra = {}) => console.log(JSON.stringify({ ts: new Date().toISOString(), level, service: 'account', event, ...extra }));
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+// UUID CHẶT (không phải /^[0-9a-f-]{36}$/ lỏng): chuỗi 36 gạch nối lọt regex lỏng rồi rơi
+// xuống Postgres thành 22P02 → 500. Yêu thích (0100) nhận product_id từ form công khai.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// Base URL ảnh public (giống storefront/seller) — thumbnail trong trang Yêu thích.
+const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 // Hash "mồi" để login LUÔN tốn ~1 Argon2 dù không có khách (chống enumeration qua timing).
 let DUMMY_HASH = '$argon2id$v=19$m=19456,t=2,p=1$ZmFrZXNhbHRmYWtlc2FsdA$3v8Iih6q6z0Yk3wKQ0Xw0aQ0aQ0aQ0aQ0aQ0aQ0aQ0';
 hashPassword('dummy-' + generateToken()).then((h) => { DUMMY_HASH = h; }).catch(() => {});
@@ -307,6 +312,54 @@ async function pageAddresses(req, res, ctx, q) {
   });
   return sendHtml(res, 200, V.renderAddresses(ctx.shopName, out.list, PROVINCES, { editing: out.editing }));
 }
+// ── YÊU THÍCH (0100) ─────────────────────────────────────────────────────────
+// Gắn với TÀI KHOẢN, không phải cookie: yêu thích mà mất khi đổi máy thì vô nghĩa.
+// TOGGLE: đã thích → bỏ thích. Một endpoint, không cần nút "bỏ thích" riêng.
+//
+// Chưa đăng nhập → nhớ SP rồi đẩy sang đăng nhập; đăng nhập xong quay lại đúng trang SP
+// (không thì khách mất dấu và phải tự tìm lại sản phẩm).
+async function wishlistToggle(req, res, ctx) {
+  if (!sameOrigin(req)) return send(res, 403, { error: 'origin' });
+  const f = await readForm(req);
+  const productId = String(f.product_id ?? '');
+  const slug = String(f.slug ?? '').slice(0, 80);
+  const backTo = /^[a-z0-9-]+$/.test(slug) ? `/p/${slug}` : '/account/wishlist';
+  if (!UUID_RE.test(productId)) return redirect(res, backTo);
+  if (!ctx.customer) return redirect(res, `/account/login?next=${encodeURIComponent(backTo)}`);
+  const added = await withCustomer(ctx.shopId, ctx.customer.id, async (c) => {
+    // Xoá trước; xoá được 0 dòng nghĩa là CHƯA thích → thêm vào. Hai lệnh trong CÙNG
+    // transaction của withCustomer nên không có khe hở đua giữa xoá và thêm.
+    const del = await c.query(
+      `DELETE FROM wishlist_items WHERE customer_id = current_customer_id() AND product_id = $1`, [productId]);
+    if (del.rowCount > 0) return false;
+    // SELECT từ products: SP không tồn tại/khác shop thì INSERT không sinh dòng nào (FK an
+    // toàn + không cần bắt lỗi 23503).
+    await c.query(
+      `INSERT INTO wishlist_items (shop_id, customer_id, product_id)
+       SELECT current_shop_id(), current_customer_id(), p.id FROM products p
+        WHERE p.id = $1 AND p.deleted_at IS NULL
+       ON CONFLICT DO NOTHING`, [productId]);
+    return true;
+  });
+  return redirect(res, `${backTo}?wish=${added ? 'added' : 'removed'}`);
+}
+
+async function pageWishlist(req, res, ctx) {
+  if (!ctx.customer) return redirect(res, '/account/login?next=%2Faccount%2Fwishlist');
+  const rows = await withCustomer(ctx.shopId, ctx.customer.id, async (c) => (await c.query(
+    // JOIN products: SP bị ẩn/xoá mềm thì KHÔNG hiện (khách bấm vào sẽ 404). Ảnh lấy như
+    // mọi nơi khác: media 'ready' đầu tiên theo position.
+    `SELECT p.id, p.slug, p.title, p.price_vnd, w.created_at,
+            (SELECT m.public_key FROM media m
+              WHERE m.product_id = p.id AND m.status = 'ready' AND m.deleted_at IS NULL
+              ORDER BY m.position, m.created_at LIMIT 1) AS image_key
+       FROM wishlist_items w JOIN products p ON p.id = w.product_id
+      WHERE w.customer_id = current_customer_id() AND p.deleted_at IS NULL AND p.status = 'active'
+      ORDER BY w.created_at DESC LIMIT 100`)).rows);
+  const items = rows.map((r) => ({ ...r, image_url: r.image_key ? `${MEDIA_PUBLIC_BASE}/${r.image_key}` : null }));
+  return sendHtml(res, 200, V.renderWishlist(ctx.shopName, items));
+}
+
 function parseAddr(f) {
   const a = {
     recipient_name: String(f.recipient_name ?? '').trim().slice(0, 120),
@@ -395,6 +448,8 @@ const ROUTES = [
   { m: 'GET', re: /^\/account\/points$/, fn: pagePoints },
   { m: 'GET', re: /^\/account\/orders\/(\d+)$/, fn: pageOrderDetail },
   { m: 'POST', re: /^\/account\/claim$/, fn: doClaim },
+  { m: 'GET', re: /^\/account\/wishlist$/, fn: pageWishlist },
+  { m: 'POST', re: /^\/account\/wishlist\/toggle$/, fn: wishlistToggle, auth: false },
   { m: 'GET', re: /^\/account\/addresses$/, fn: pageAddresses },
   { m: 'POST', re: /^\/account\/addresses\/add$/, fn: addressAdd },
   { m: 'POST', re: /^\/account\/addresses\/edit$/, fn: addressEdit },

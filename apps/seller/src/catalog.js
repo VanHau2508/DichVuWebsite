@@ -228,6 +228,10 @@ async function listProducts(res, ctx, _body, _params, query) {
               (SELECT coalesce(sum(pv.views), 0)::int FROM product_view_daily pv
                 WHERE pv.shop_id = p.shop_id AND pv.product_id = p.id
                   AND pv.day > current_date - 30) AS views_30d,
+              -- Số khách đã bấm Yêu thích (0100). Tín hiệu thật: nhiều người thích mà không
+              -- mua ⇒ giá cao? hết size? Quét dải trên PK (customer_id, product_id) — rẻ.
+              (SELECT count(*)::int FROM wishlist_items w
+                WHERE w.shop_id = p.shop_id AND w.product_id = p.id) AS wish_count,
               (SELECT count(*)::int FROM variants v WHERE v.product_id = p.id) AS variant_count,
               -- TỒN "còn bán được" = on_hand - reserved, LOẠI biến thể MỒ CÔI y hệt storefront
               -- (server.js:538) và checkout — nếu không, admin thấy còn hàng mà khách mua không được.

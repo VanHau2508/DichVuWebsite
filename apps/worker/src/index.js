@@ -677,10 +677,20 @@ async function carrierState(provider, token, ghnShopId, tracking) {
     return { state: st === 5 || st === 6 ? 'delivered' : st === -1 ? 'cancelled' : st === 9 || st === 20 || st === 21 ? 'returned' : 'shipping', raw: String(st) };
   } catch { return null; } finally { clearTimeout(t); }
 }
+// Lô 30 cũ quá NHỎ so với đích 100-1000 shop: 30 vận đơn/10 phút = 4.320 lượt hỏi/ngày, mà
+// một shop bận đã có hàng chục kiện đang đi. Xoay vòng chỉ đảm bảo AI CŨNG tới lượt, không
+// đảm bảo tới lượt KỊP — COD chốt 'paid' khi hãng báo delivered, chậm vòng là chậm tiền về sổ.
+const TRACKING_BATCH = Math.max(1, Number(process.env.TRACKING_BATCH ?? 200));
+// BỎ HỎI vận đơn ZOMBIE: 'in_transit' quá N ngày = hãng đã ngừng cập nhật (mã sai, đơn huỷ
+// bên hãng, API không còn giữ bản ghi). Không bỏ thì tập ứng viên chỉ PHÌNH, không bao giờ
+// co — xoay vòng vẫn đúng nhưng thời gian một vòng dài ra mãi. Shop KHÔNG bị bỏ rơi: digest
+// "đơn ứ" đã cảnh báo kiện gửi hãng >7 ngày chưa giao từ trước đó rất lâu (sweepStaleOrders),
+// và shop vẫn chốt giao TAY được.
+const TRACKING_GIVEUP_DAYS = Number(process.env.TRACKING_GIVEUP_DAYS ?? 30);
 async function sweepTracking() {
   if (!expiryDb || !TRACKING_ON) return { checked: 0, delivered: 0 };
   // Chống LỖI MỘT DÒNG bỏ đói cả hàng đợi (ORDER BY synced_at): mọi đường lỗi PHẢI bump
-  // synced_at để dòng hỏng xoay xuống cuối, không chiếm slot LIMIT 30 mãi mãi.
+  // synced_at để dòng hỏng xoay xuống cuối, không chiếm slot mãi mãi.
   const bump = (id) => expiryDb.query(`UPDATE shipments SET synced_at = now() WHERE id = $1`, [id]).catch(() => {});
   // Dọn CLAIM CHẾT: dòng 'created' quá 15' (crash giữa chừng / hãng từ chối mà DELETE bù
   // fail). tracking NULL = hãng CHƯA tạo → mở khoá (cancelled). tracking CÓ (finalize_failed)
@@ -708,8 +718,20 @@ async function sweepTracking() {
          JOIN shop_shipping_config cfg ON cfg.shop_id = s.shop_id AND cfg.enabled
          JOIN orders o ON o.id = s.order_id
         WHERE s.provider IS NOT NULL AND s.status = 'in_transit'
-        ORDER BY s.synced_at NULLS FIRST LIMIT 30`)).rows;
+          AND s.created_at > now() - ($2 || ' days')::interval
+        ORDER BY s.synced_at NULLS FIRST LIMIT $1`,
+      [TRACKING_BATCH, String(TRACKING_GIVEUP_DAYS)])).rows;
   } catch (e) { log('error', 'tracking_query_error', { message: e.message }); return { checked: 0, delivered: 0 }; }
+  // Bão hoà = có thể đang đói. Chỉ lúc đó mới bỏ tiền đếm số vận đơn ZOMBIE bị bỏ hỏi, để
+  // người vận hành thấy được vì sao (đếm mỗi nhịp thì tốn scan vô ích khi hệ thống rảnh).
+  if (rows.length === TRACKING_BATCH) {
+    const zomb = await expiryDb.query(
+      `SELECT count(*)::int n FROM shipments s
+         JOIN shop_shipping_config cfg ON cfg.shop_id = s.shop_id AND cfg.enabled
+        WHERE s.provider IS NOT NULL AND s.status = 'in_transit'
+          AND s.created_at <= now() - ($1 || ' days')::interval`, [String(TRACKING_GIVEUP_DAYS)]).catch(() => null);
+    log('warn', 'tracking_batch_saturated', { batch: TRACKING_BATCH, gave_up: zomb?.rows[0]?.n ?? null });
+  }
 
   let delivered = 0;
   for (const s of rows) {
@@ -770,6 +792,12 @@ async function sweepTracking() {
     } catch (e) {
       if (c) await c.query('ROLLBACK').catch(() => {});
       log('error', 'tracking_update_error', { message: e.message });
+      // PHẢI bump cả khi lỗi DB, y như nhánh hãng-lỗi ở trên: xoay vòng chỉ tiến khi
+      // synced_at đổi. Dòng lỗi BỀN (dữ liệu đơn hỏng, statement_timeout, khoá kẹt) mà không
+      // bump sẽ nằm mãi đầu `ORDER BY synced_at NULLS FIRST LIMIT 30`; đủ 30 dòng như vậy là
+      // sweep CHẾT HẲN — không vận đơn nào được hỏi trạng thái nữa, COD giao xong không bao
+      // giờ lật 'paid'. Đói quét ăn thẳng vào đường tiền (mirror 0103).
+      await bump(s.id);
     } finally { if (c) c.release(); }
   }
   return { checked: rows.length, delivered };
@@ -890,6 +918,22 @@ async function sweepReviewImages() {
 // TRƯỚC ở mỗi lần chạy nên không bao giờ mất dữ liệu.
 const PRODVIEW_SWEEP_MS = Number(process.env.PRODVIEW_SWEEP_MS ?? 300000); // 5 phút
 const PRODVIEW_KEEP_DAYS = Number(process.env.PRODVIEW_KEEP_DAYS ?? 180);
+// SCAN chứ KHÔNG dùng KEYS: Redis đơn luồng và ở đây nó CÒN GIỮ session đăng nhập, rate-limit
+// và hàng đợi BullMQ. `KEYS pv:*` duyệt TOÀN BỘ keyspace trong MỘT lệnh chặn — ở quy mô
+// 100-1000 shop (mỗi shop mỗi ngày một khoá, cộng session/rl:*/bull:*) là đóng băng Redis vài
+// trăm ms mỗi 5 phút, tức là khách đang chốt đơn bị treo theo. SCAN chia thành nhiều lệnh nhỏ.
+// Trả về mảng (khoá pv có hạn 2 ngày nên tập này nhỏ); SCAN có thể trả TRÙNG — vô hại vì
+// flushViewKey xoá khoá sau khi gộp, lần hai chỉ thấy hash rỗng.
+async function scanKeys(rc, pattern) {
+  const out = [];
+  let cursor = '0';
+  do {
+    const [next, batch] = await rc.scan(cursor, 'MATCH', pattern, 'COUNT', 500);
+    cursor = next;
+    if (batch.length) out.push(...batch);
+  } while (cursor !== '0');
+  return out;
+}
 async function flushViewKey(rc, flushKey) {
   // pvf:<ngày>:<shopId>
   const parts = flushKey.split(':');
@@ -927,9 +971,9 @@ async function sweepProductViews() {
     // Một khoá lỗi KHÔNG được làm hỏng vòng gộp của các shop còn lại → bọc try từng khoá.
     const one = async (k) => { try { await flushViewKey(rc, k); keys++; } catch (e) { log('error', 'prodview_key_error', { key: k, message: e.message }); } };
     // 1) Dọn khoá gộp-dở-dang của lần chạy trước (worker chết giữa chừng).
-    for (const k of await rc.keys('pvf:*')) await one(k);
+    for (const k of await scanKeys(rc, 'pvf:*')) await one(k);
     // 2) Khoá đếm hiện hành → đổi tên rồi gộp.
-    for (const k of await rc.keys('pv:*')) {
+    for (const k of await scanKeys(rc, 'pv:*')) {
       const dst = `pvf:${k.slice(3)}`;
       try { await rc.rename(k, dst); } catch { continue; }  // khoá vừa hết hạn/biến mất
       await one(dst);
@@ -1021,6 +1065,7 @@ async function sweepPiiRetention() {
   if (!expiryDb) return { anonymized: 0 };
   let total = 0;
   try {
+    let capped = true;
     for (let round = 0; round < 20; round++) {
       const r = await expiryDb.query(
         `UPDATE orders SET customer_name = '(đã ẩn danh)', customer_phone = NULL, customer_email = NULL,
@@ -1032,8 +1077,12 @@ async function sweepPiiRetention() {
                AND o.created_at < now() - (s.pii_retention_months || ' months')::interval
              ORDER BY o.created_at LIMIT 500 FOR UPDATE OF o SKIP LOCKED)`);
       total += r.rowCount;
-      if (r.rowCount < 500) break;
+      if (r.rowCount < 500) { capped = false; break; }
     }
+    // KHÔNG cắt trần im lặng: còn tồn thì phải nhìn thấy trong log (nhịp sau quét tiếp).
+    // Ẩn danh PII là nghĩa vụ pháp lý (91/2025) — "đã chạy nhưng chưa xong" phải phân biệt
+    // được với "đã xong", nếu không backlog lớn im lìm quá hạn mà không ai biết.
+    if (capped) log('warn', 'pii_sweep_capped', { rounds: 20, n: total });
     if (total) log('info', 'pii_sweep', { n: total }); // CHỈ đếm — không log PII
   } catch (e) { log('error', 'pii_sweep_error', { message: e.message }); }
   return { anonymized: total };

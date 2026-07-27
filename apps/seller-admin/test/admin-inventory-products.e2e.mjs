@@ -123,6 +123,13 @@ async function main() {
   r = await rq(SELLER, 'GET', `/shops/${A.shopId}/inventory/ledger?kind=reserve`, { cookie: A.cookie });
   r.status === 200 ? ok('kind lạ (reserve — chưa từng được ghi) → bỏ qua lọc, không 400/500') : bad('kind lạ làm nổ', String(r.status));
 
+  // variant_id RÁC không được rơi xuống Postgres thành 22P02 → 500 (regex lỏng 36 ký tự
+  // hex-hoặc-gạch từng cho chuỗi toàn gạch nối lọt qua).
+  r = await rq(SELLER, 'GET', `/shops/${A.shopId}/inventory/ledger?variant_id=------------------------------------`, { cookie: A.cookie });
+  r.status === 200 ? ok('variant_id rác (36 gạch nối) → 200, không 500') : bad('UUID lỏng làm sập sổ cái', String(r.status));
+  r = await rq(SELLER, 'GET', `/shops/${A.shopId}/inventory/ledger?variant_id=khong-phai-uuid`, { cookie: A.cookie });
+  r.status === 200 ? ok('variant_id rác (chuỗi thường) → 200') : bad('variant_id rác làm sập', String(r.status));
+
   r = await rq(SELLER, 'GET', `/shops/${A.shopId}/inventory/ledger?limit=1`, { cookie: A.cookie });
   r.json?.entries?.length === 1 && r.json?.has_more === true
     ? ok('phân trang: limit=1 → 1 dòng + has_more=true') : bad('has_more sai', JSON.stringify({ n: r.json?.entries?.length, hm: r.json?.has_more }));
@@ -220,10 +227,21 @@ async function main() {
   });
   r.status === 400 ? ok('trạng thái lạ ("deleted") → 400, không nhét vào UPDATE') : bad('allowlist trạng thái hổng', String(r.status));
 
-  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/products/bulk/status`, {
-    cookie: A.cookie, origin: OS, body: { product_ids: Array.from({ length: 101 }, () => P1.pid.replace(/.$/, 'a')), status: 'active' },
+  // XANH GIẢ đã từng mắc: gửi 101 BẢN SAO của CÙNG một id → Set dedupe còn 1 → nhánh trần
+  // 100 KHÔNG BAO GIỜ chạy, mà test vẫn xanh nhờ vế `changed === 0`. Phải là 101 id KHÁC NHAU.
+  const many = Array.from({ length: 101 }, (_, i) => {
+    const h = String(i).padStart(12, '0');
+    return `00000000-0000-4000-8000-${h}`;
   });
-  r.status === 400 || r.json?.changed === 0 ? ok('id trùng bị dedupe / trần 100 chặn') : bad('không chặn lô quá lớn', String(r.status));
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/products/bulk/status`, {
+    cookie: A.cookie, origin: OS, body: { product_ids: many, status: 'active' },
+  });
+  r.status === 400 && /100/.test(r.json?.error ?? '') ? ok('101 id KHÁC NHAU → 400 chặn bởi trần 100') : bad('trần 100 không chặn', `${r.status} ${JSON.stringify(r.json)}`);
+  // Ngược lại: 101 bản sao của cùng 1 id → dedupe còn 1 → KHÔNG chạm trần, xử lý bình thường.
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/products/bulk/status`, {
+    cookie: A.cookie, origin: OS, body: { product_ids: Array.from({ length: 101 }, () => P2.pid), status: 'active' },
+  });
+  r.status === 200 && Number(r.json?.changed ?? 0) <= 1 ? ok('101 bản sao cùng id → dedupe còn 1, không chạm trần') : bad('dedupe sai', `${r.status} ${JSON.stringify(r.json)}`);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

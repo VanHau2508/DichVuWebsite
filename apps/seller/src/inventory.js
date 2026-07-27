@@ -13,6 +13,7 @@ import { send } from './http.js';
 import { withTenant, audit } from './db.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const isInt = (x) => Number.isInteger(x);
 
 async function getLevel(res, ctx, _body, params) {
@@ -110,7 +111,10 @@ async function getShopLedger(res, ctx, _body, _params, query) {
   const where = ['l.shop_id = current_shop_id()'];
   const args = [];
   if (['receive', 'ship', 'adjust'].includes(kind)) { args.push(kind); where.push(`l.kind = $${args.length}`); }
-  if (typeof variantId === 'string' && /^[0-9a-f-]{36}$/.test(variantId)) {
+  // UUID CHẶT, không phải /^[0-9a-f-]{36}$/ (lỏng): chuỗi 36 gạch nối lọt regex lỏng rồi
+  // rơi xuống Postgres thành 22P02 (invalid input syntax for type uuid) → 500, tức là ai gõ
+  // tay ?variant_id=--- … là làm chết trang Sổ cái kho.
+  if (typeof variantId === 'string' && UUID_RE.test(variantId)) {
     args.push(variantId); where.push(`l.variant_id = $${args.length}`);
   }
   const whereSql = where.join(' AND ');

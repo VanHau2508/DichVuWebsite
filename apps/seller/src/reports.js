@@ -56,12 +56,23 @@ const PRESETS = {
 // tháng dài ngắn khác nhau). Còn lại → cùng số ngày, sát ngay trước `from`.
 // group giữ NGUYÊN của kỳ hiện tại: để parseRange ép lại có thể ra group khác → so lệch.
 function prevRange({ from, to, group, preset }) {
-  const wholeMonth = from.slice(8) === '01' && from.slice(0, 7) === to.slice(0, 7);
-  if (preset === 'mtd' || preset === 'last_month' || wholeMonth) {
+  // CHỈ vào nhánh THÁNG khi thật sự là kỳ tháng. BẪY: nếu chỉ đoán bằng "from là ngày 01 và
+  // cùng tháng với to" thì preset NGÀY bị cướp — ví dụ bấm "7 ngày" vào mùng 7 sẽ cho
+  // from=01, to=07 (cùng tháng) → hệ tưởng là kỳ tháng và đem so với 01–07 tháng trước,
+  // trong khi đúng phải là 7 ngày LIỀN TRƯỚC (22–28 tháng trước). Preset ngày nói rõ ý định
+  // rồi thì TIN preset, đừng suy diễn từ con số ngày.
+  const dayPreset = preset === 'today' || preset === '7d' || preset === '30d';
+  const curLast = lastDayOf(Number(from.slice(0, 4)), Number(from.slice(5, 7)));
+  // "Kỳ tháng" = phủ TRỌN một tháng dương lịch (mùng 1 → ngày cuối tháng). Chỉ "bắt đầu từ
+  // mùng 1 và cùng tháng" là CHƯA đủ: bấm "7 ngày" vào mùng 7 cho 01→07 cùng tháng, nếu coi
+  // đó là kỳ tháng thì đem so với 01–07 tháng trước, trong khi đúng phải là 7 ngày LIỀN
+  // TRƯỚC (22–28 tháng trước).
+  const wholeMonth = !preset && from.slice(8) === '01'
+    && from.slice(0, 7) === to.slice(0, 7) && Number(to.slice(8)) === curLast;
+  if (!dayPreset && (preset === 'mtd' || preset === 'last_month' || wholeMonth)) {
     const P = prevMonthOf(from);
     const L = lastDayOf(P.y, P.m);
     // Kỳ đang xem có TRỌN tháng không (đến hết ngày cuối của chính tháng đó)?
-    const curLast = lastDayOf(Number(from.slice(0, 4)), Number(from.slice(5, 7)));
     const isFullMonth = Number(to.slice(8)) === curLast;
     // TRỌN THÁNG → so với TRỌN tháng trước. Nếu chỉ clamp theo ngày như nhánh dưới thì
     // tháng NGẮN so với tháng DÀI sẽ cắt cụt kỳ trước (xem tháng 2 → chỉ so 01–28/01,

@@ -1177,6 +1177,18 @@ export function renderReports(ctx, shopId, d, f) {
     const v = Math.round(((cur - pv) / pv) * 100);
     return `<span class="delta ${v >= 0 ? 'up' : 'down'}">${v >= 0 ? '▲' : '▼'} ${esc(Math.abs(v))}%</span>`;
   };
+  // AOV có công thức RIÊNG (doanh thu thuần / số đơn) nên phải tự tính chênh lệch của CHÍNH
+  // nó. Trước đây ô này gắn nhầm %-biến-động của SỐ ĐƠN — đọc thành "giá trị TB/đơn tăng 12%"
+  // trong khi thực ra là số đơn tăng 12%, hai chuyện có thể ngược chiều nhau.
+  const aovDelta = () => {
+    if (!prevT) return '';
+    const co = Number(d.totals?.orders_paid ?? 0), po = Number(prevT.orders_paid ?? 0);
+    if (co <= 0 || po <= 0) return '';
+    const cur = Number(d.totals.net_revenue_vnd) / co, pv = Number(prevT.net_revenue_vnd) / po;
+    if (pv <= 0) return '';
+    const v = Math.round(((cur - pv) / pv) * 100);
+    return `<span class="delta ${v >= 0 ? 'up' : 'down'}">${v >= 0 ? '▲' : '▼'} ${esc(Math.abs(v))}%</span> so kỳ trước`;
+  };
   const pr = d.previous?.range;
   const cmpLine = pr
     ? `<p class="muted" style="font-size:.82rem;margin:8px 0 0">So với kỳ trước: <strong>${esc(pr.from)} → ${esc(pr.to)}</strong> · <a href="${base}?${qs({ from, to, sort, compare: 'off' })}">Tắt so sánh</a></p>`
@@ -1226,7 +1238,7 @@ export function renderReports(ctx, shopId, d, f) {
       <div class="metric"><div class="l">Lãi gộp${provisional}</div><div class="v"${neg(t.gross_profit_vnd)}>${money(t.gross_profit_vnd)}</div>
         <div class="l">${t.net_revenue_vnd > 0 ? `biên ${Math.round((t.gross_profit_vnd / t.net_revenue_vnd) * 100)}%` : ''} ${delta('gross_profit_vnd', { pct: false })}</div></div>
       <div class="metric"><div class="l">Lãi vận hành${provisional}</div><div class="v"${neg(t.operating_profit_vnd)}>${money(t.operating_profit_vnd)}</div><div class="l">gồm ship & phí hãng ${delta('operating_profit_vnd', { pct: false })}</div></div>
-      <div class="metric"><div class="l">Giá trị TB/đơn</div><div class="v">${money(t.orders_paid > 0 ? Math.round(t.net_revenue_vnd / t.orders_paid) : 0)}</div><div class="l">${delta('orders_paid', { money: false })} đơn</div></div>
+      <div class="metric"><div class="l">Giá trị TB/đơn</div><div class="v">${money(t.orders_paid > 0 ? Math.round(t.net_revenue_vnd / t.orders_paid) : 0)}</div><div class="l">${aovDelta()}</div></div>
     </div>
     <div class="card"><h2 style="margin-top:0">Doanh thu thuần & lãi gộp theo ${group === 'month' ? 'tháng' : 'ngày'}</h2>
       ${profitChart(d.series) || '<p class="muted">Chưa có dữ liệu trong kỳ.</p>'}</div>
@@ -1937,7 +1949,11 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
       </div>
       <p class="muted" style="font-size:.8rem;margin-bottom:0">“Tồn” là số còn bán được (đã trừ hàng đang giữ chỗ cho đơn chưa chốt). “Đã bán” tính từ đơn đã thanh toán, cập nhật lại mỗi 15 phút.</p>`
-      : '<p class="muted">Chưa có sản phẩm. Bấm “+ Thêm sản phẩm” để tạo.</p>'}</div>`);
+      // Rỗng vì LỌC ≠ rỗng vì CHƯA CÓ GÌ. Nói "Chưa có sản phẩm" ngay cạnh tab đếm 50 SP là
+      // sai sự thật và làm chủ shop hoảng — phải mời họ bỏ lọc thay vì mời tạo mới.
+      : (filter.status || filter.q || off > 0)
+        ? `<p class="muted">Không có sản phẩm nào khớp bộ lọc hiện tại. <a href="?status=&q=">Xoá bộ lọc</a></p>`
+        : '<p class="muted">Chưa có sản phẩm. Bấm “+ Thêm sản phẩm” để tạo.</p>'}</div>`);
 }
 
 // Quản lý danh mục: tạo/sửa/xoá + (gán sản phẩm ở trang chi tiết SP). Hiện storefront /c/:slug.

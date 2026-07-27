@@ -167,11 +167,24 @@ async function main() {
   q = r.json?.previous?.range;
   q && q.from === '2026-02-01' && q.to === '2026-02-28'
     ? ok('trọn tháng 3 so trọn tháng 2 (28 ngày, không đòi 31/02)') : bad('kỳ trước tháng sai', JSON.stringify(q));
-  // Dở dang (giữa tháng) → so cùng số ngày đầu tháng trước.
+  // Khoảng ngày TỰ CHỌN 01–15/03 (không nói "tháng này") = 15 ngày → so 15 ngày liền trước.
   r = await rq(SELLER, 'GET', `/shops/${A.shopId}/reports/sales?from=2026-03-01&to=2026-03-15`, { cookie: A.cookie });
   q = r.json?.previous?.range;
-  q && q.from === '2026-02-01' && q.to === '2026-02-15'
-    ? ok('tháng dở dang (01–15/3) so 01–15/2 (cùng số ngày)') : bad('kỳ dở dang sai', JSON.stringify(q));
+  q && q.from === '2026-02-14' && q.to === '2026-02-28'
+    ? ok('khoảng tự chọn 01–15/3 so 15 ngày liền trước (14–28/2)') : bad('khoảng tự chọn sai', JSON.stringify(q));
+  // Nhưng khi NÓI RÕ "Tháng này" (preset=mtd) thì so cùng số ngày ĐẦU tháng trước — đây mới
+  // là ngữ nghĩa "tháng này so tháng trước" mà chủ shop mong đợi.
+  r = await rq(SELLER, 'GET', `/shops/${A.shopId}/reports/sales?preset=mtd`, { cookie: A.cookie });
+  q = r.json?.previous?.range;
+  const curFrom = r.json?.range?.from ?? '';
+  q && q.from.endsWith('-01') && q.from.slice(0, 7) !== curFrom.slice(0, 7)
+    ? ok('preset "Tháng này" so từ mùng 1 tháng trước (ngữ nghĩa tháng, khác khoảng tự chọn)') : bad('preset mtd sai', JSON.stringify(q));
+  // BẪY: kỳ BẮT ĐẦU từ mùng 1 nhưng CHƯA hết tháng (nút "7 ngày" bấm vào mùng 7) KHÔNG được
+  // coi là kỳ tháng. Phải so 7 ngày LIỀN TRƯỚC (22–28/02), không phải 01–07/02.
+  r = await rq(SELLER, 'GET', `/shops/${A.shopId}/reports/sales?from=2026-03-01&to=2026-03-07`, { cookie: A.cookie });
+  q = r.json?.previous?.range;
+  q && q.from === '2026-02-22' && q.to === '2026-02-28'
+    ? ok('kỳ 01–07/03 so 7 ngày LIỀN TRƯỚC (không nhảy sang so tháng)') : bad('kỳ ngày bị cướp sang nhánh tháng', JSON.stringify(q));
   // Vượt biên năm: tháng 1 phải lùi về tháng 12 NĂM TRƯỚC.
   r = await rq(SELLER, 'GET', `/shops/${A.shopId}/reports/sales?from=2026-01-01&to=2026-01-31`, { cookie: A.cookie });
   q = r.json?.previous?.range;

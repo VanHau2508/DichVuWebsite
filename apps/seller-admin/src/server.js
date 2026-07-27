@@ -1817,7 +1817,8 @@ async function inventoryLedgerPage(res, me, cookie, shopId, q) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'purchasing');
   const kind = ['receive', 'ship', 'adjust'].includes(q.get('kind')) ? q.get('kind') : '';
-  const variantId = /^[0-9a-f-]{36}$/.test(q.get('variant_id') ?? '') ? q.get('variant_id') : '';
+  // UUID chặt (khớp seller): regex lỏng cho chuỗi 36 gạch nối lọt → 22P02 ở Postgres → 500.
+  const variantId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(q.get('variant_id') ?? '') ? q.get('variant_id') : '';
   const limit = 50, offset = Math.max(0, parseInt(q.get('offset') ?? '0', 10) || 0);
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (kind) qs.set('kind', kind);
@@ -2587,7 +2588,9 @@ async function handle(req, res, url, p) {
       const notice = url.searchParams.get('bulk_none') === '1'
         ? 'Chưa chọn sản phẩm nào — hãy tích ô ở cột đầu rồi bấm lại.'
         : (Number.isFinite(okN) && toLbl)
-          ? `Đã chuyển ${okN} sản phẩm sang “${toLbl}”.${skipN > 0 ? ` Bỏ qua ${skipN} (đã ở trạng thái này).` : ''}`
+          // KHÔNG khẳng định lý do: `skipped` gộp cả "đã ở trạng thái đó", "không tìm thấy"
+          // và "lỗi khi ghi" — nói chắc một lý do là nói sai với 2 trường hợp còn lại.
+          ? `Đã chuyển ${okN} sản phẩm sang “${toLbl}”.${skipN > 0 ? ` Bỏ qua ${skipN} sản phẩm (đã ở trạng thái này hoặc không đổi được).` : ''}`
           : null;
       return productsList(res, me, cookie, m[1], url.searchParams, notice);
     }

@@ -544,6 +544,20 @@ async function reviewAction(res, me, cookie, shopId, rid, action) {
   return redirect(res, `/shops/${shopId}/reviews${r.status !== 200 ? '' : action === 'approve' ? '?status=pending' : '?status=pending'}`);
 }
 
+// SHOP TRẢ LỜI ĐÁNH GIÁ (0099). Ô rỗng = GỠ phản hồi. Quay lại ĐÚNG tab đang xem, nếu
+// không chủ shop trả lời một đánh giá đã duyệt lại bị ném về tab "chờ duyệt".
+async function reviewReply(req, res, me, cookie, shopId, rid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const st = ['pending', 'approved', 'rejected'].includes(f.status) ? f.status : 'pending';
+  const r = await sellerApi('POST', `/shops/${shopId}/reviews/${rid}/reply`, { cookie, body: { reply: String(f.reply ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'reviews');
+    return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không lưu được phản hồi.'));
+  }
+  return redirect(res, `/shops/${shopId}/reviews?status=${st}`);
+}
+
 // ── Đối soát COD với hãng (orders.read xem; ghi phiếu = payment.write = CHỦ SHOP) ──
 // GET: nạp reconciliation (đơn chờ + per-hãng + lịch sử) → render. POST: gom order_ids đã tick
 // (no-JS multi-select) + số THỰC nhận → forward seller POST /cod/remittances. 200 → redirect
@@ -2742,6 +2756,7 @@ async function handle(req, res, url, p) {
     // Đánh giá sản phẩm (content.write = owner/admin ở seller).
     if ((m = new RegExp(`^/shops/${UUID}/reviews$`).exec(p)) && req.method === 'GET') return reviewsPage(res, me, cookie, m[1], url.searchParams.get('status'));
     if ((m = new RegExp(`^/shops/${UUID}/reviews/${UUID}/(approve|reject|delete)$`).exec(p)) && req.method === 'POST') return reviewAction(res, me, cookie, m[1], m[2], m[3]);
+    if ((m = new RegExp(`^/shops/${UUID}/reviews/${UUID}/reply$`).exec(p)) && req.method === 'POST') return reviewReply(req, res, me, cookie, m[1], m[2]);
 
     // Đối soát COD với hãng (orders.read xem; ghi phiếu = payment.write = owner ở seller).
     if ((m = new RegExp(`^/shops/${UUID}/cod$`).exec(p)) && req.method === 'GET') {

@@ -2691,7 +2691,8 @@ const ACTION_LABEL = {
   'product.unpublished': 'Chuyển sản phẩm về nháp',
   'coupon.created': 'Tạo mã giảm giá', 'coupon.updated': 'Sửa mã giảm giá', 'coupon.deleted': 'Xoá mã giảm giá',
   'customer.note_set': 'Ghi chú khách hàng', 'customer.erased': 'Ẩn danh dữ liệu khách',
-  'review.deleted': 'Xoá đánh giá',
+  'review.deleted': 'Xoá đánh giá', 'review.approved': 'Duyệt đánh giá', 'review.rejected': 'Từ chối đánh giá',
+  'review.replied': 'Trả lời đánh giá', 'review.reply_removed': 'Gỡ trả lời đánh giá',
   'page.created': 'Tạo trang nội dung', 'page.updated': 'Sửa trang nội dung', 'page.published': 'Đăng trang',
   'page.rolled_back': 'Khôi phục bản trang cũ', 'page.deleted': 'Xoá trang', 'page.previewed': 'Xem thử trang',
   'page.block_added': 'Thêm khối nội dung', 'page.block_updated': 'Sửa khối nội dung',
@@ -3059,6 +3060,18 @@ export function renderReviews(ctx, shopId, data, activeStatus) {
             <span class="muted" style="font-size:.82rem">· ${dt(r.created_at)}</span></div>
           <div class="muted" style="font-size:.85rem;margin:4px 0">SP: ${esc(r.product_title)}</div>
           <p style="margin:6px 0 0;white-space:pre-line">${esc(r.content)}</p>
+          ${r.helpful_count > 0 ? `<div class="muted" style="font-size:.8rem;margin-top:4px">👍 ${esc(r.helpful_count)} người thấy hữu ích</div>` : ''}
+          ${/* TRẢ LỜI CÔNG KHAI (0099): hiện ngay dưới đánh giá trên trang sản phẩm. Với đánh
+               giá thấp, một câu trả lời tử tế thuyết phục hơn mười đánh giá 5 sao. */''}
+          <form method="POST" action="${base}/${esc(r.id)}/reply" style="margin-top:10px;max-width:560px">
+            <input type="hidden" name="status" value="${esc(activeStatus ?? 'pending')}">
+            <label style="font-size:.83rem;font-weight:600">${r.seller_reply ? 'Phản hồi của bạn (đang hiện công khai)' : 'Trả lời công khai'}</label>
+            <textarea name="reply" maxlength="1000" rows="2" placeholder="Cảm ơn anh/chị đã phản hồi. Về vấn đề…">${esc(r.seller_reply ?? '')}</textarea>
+            <div class="actions" style="margin-top:6px">
+              <button class="btn alt sm" type="submit">${r.seller_reply ? 'Cập nhật phản hồi' : 'Gửi phản hồi'}</button>
+              ${r.seller_reply ? '<span class="muted" style="font-size:.8rem">Xoá trắng ô rồi lưu để gỡ phản hồi.</span>' : ''}
+            </div>
+          </form>
         </div>
         <div class="actions" style="align-items:flex-start">
           ${activeStatus !== 'approved' ? `<form method="POST" action="${base}/${esc(r.id)}/approve"><button class="btn sm" type="submit">Duyệt</button></form>` : ''}

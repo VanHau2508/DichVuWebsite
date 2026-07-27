@@ -644,6 +644,36 @@ async function submitReviewForm(req, res, form, ctx) {
   return back(slugRow.slug, 'sent');
 }
 
+// ── Bấm "Hữu ích" cho một đánh giá (public, no-JS form) ──────────────────────
+// Đẩy đánh giá hữu ích lên trên thay vì chỉ xếp theo thời gian. Chống bấm nhiều lần bằng
+// bảng phiếu review_votes: PK (review_id, voter_hash) → lần bấm thứ hai từ cùng IP đụng
+// UNIQUE và bị bỏ qua, KHÔNG báo lỗi (bấm lại là chuyện thường, không phải hành vi xấu).
+//
+// Chỉ cộng cho đánh giá ĐÃ DUYỆT: đánh giá đang chờ duyệt không hiện công khai, có phiếu
+// cho nó nghĩa là ai đó đang gọi thẳng endpoint.
+// KHÔNG dùng ON CONFLICT DO NOTHING rồi tin rowCount: phải cộng số đếm TRONG CÙNG
+// transaction với việc ghi phiếu, nếu không hai lần bấm song song sẽ cộng hai lần.
+async function submitReviewHelpful(req, res, form, ctx) {
+  const reviewId = String(form.review_id ?? '');
+  const slug = String(form.slug ?? '').slice(0, 80);
+  const back = () => redirect(res, /^[a-z0-9-]+$/.test(slug) ? `/p/${slug}#danh-gia` : '/');
+  if (!UUID_RE.test(reviewId)) return back();
+  const ipHash = ctx.ip ? hashIp(ctx.ip) : null;
+  if (!ipHash) return back();                      // không xác định được người bấm → bỏ qua
+  await withTenant(ctx.shopId, async (c) => {
+    const ins = await c.query(
+      `INSERT INTO review_votes (shop_id, review_id, voter_hash)
+       SELECT current_shop_id(), r.id, $2 FROM product_reviews r
+        WHERE r.id = $1 AND r.status = 'approved'
+       ON CONFLICT (review_id, voter_hash) DO NOTHING`, [reviewId, ipHash]);
+    // Chỉ cộng khi PHIẾU THẬT SỰ được ghi ở lần này (rowCount 0 = đã bấm rồi / không hợp lệ).
+    if (ins.rowCount === 1) {
+      await c.query(`UPDATE product_reviews SET helpful_count = helpful_count + 1 WHERE id = $1`, [reviewId]);
+    }
+  }).catch(() => {});                              // lỗi phiếu KHÔNG được làm hỏng trang SP
+  return back();
+}
+
 // ── checkout (crown jewel) ───────────────────────────────────────────────────
 // Validate + chuẩn hoá input đơn — DÙNG CHUNG cho API JSON và form trình duyệt.
 function parseOrderInput(raw) {
@@ -1182,6 +1212,7 @@ const ROUTES = [
   { m: 'GET', p: '/checkout/success', fn: getSuccessPage },
   { m: 'GET', p: '/checkout/order', fn: orderLookup },
   { m: 'POST', p: '/checkout/review', fn: submitReviewForm, form: true },
+  { m: 'POST', p: '/checkout/review-helpful', fn: submitReviewHelpful, form: true },
 ];
 
 // Phông Be Vietnam Pro (OFL) tự-host — /fonts/*.woff2 same-origin (CSP font-src 'self').

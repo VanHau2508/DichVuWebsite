@@ -168,6 +168,68 @@ async function main() {
   r = await rq(SELLER, 'POST', `/shops/${Bs.shopId}/reviews/${rvHoa.id}/reject`, { cookie: Bs.cookie, origin: OS });
   r.status === 404 ? ok('shop B duyệt đánh giá shop A → 404 (cô lập)') : bad('rò chéo shop', r.raw);
 
+  // ── 4. SHOP TRẢ LỜI đánh giá (0099) ─────────────────────────────────────────
+  sect('4. Shop trả lời đánh giá — hiện công khai dưới đánh giá');
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/reviews/${rvHoa.id}/reply`,
+    { cookie: A.cookie, origin: OS, body: { reply: 'Cảm ơn chị Hoa! Shop sẽ cố gắng giao nhanh hơn.' } });
+  r.status === 200 ? ok('shop gửi phản hồi → 200') : bad('gửi phản hồi lỗi', `${r.status} ${r.raw}`);
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  /class="rv-reply"/.test(page) && page.includes('Cảm ơn chị Hoa')
+    ? ok('phản hồi hiện trên trang SP, dưới đúng đánh giá') : bad('phản hồi không hiện');
+  page.includes('Phản hồi của') ? ok('có nhãn "Phản hồi của <tên shop>"') : bad('thiếu nhãn phản hồi');
+
+  // Gỡ phản hồi: gửi chuỗi rỗng.
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/reviews/${rvHoa.id}/reply`, { cookie: A.cookie, origin: OS, body: { reply: '' } });
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  !/class="rv-reply"/.test(page) ? ok('gửi chuỗi rỗng → GỠ phản hồi khỏi trang SP') : bad('không gỡ được phản hồi');
+  const clr = (await owner.query('SELECT seller_reply, seller_replied_at FROM product_reviews WHERE id=$1', [rvHoa.id])).rows[0];
+  clr.seller_reply === null && clr.seller_replied_at === null ? ok('gỡ xong xoá luôn mốc thời gian trả lời') : bad('còn sót dữ liệu trả lời', JSON.stringify(clr));
+
+  // XSS qua ô trả lời của shop.
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/reviews/${rvHoa.id}/reply`,
+    { cookie: A.cookie, origin: OS, body: { reply: '<script>alert(9)</script>' } });
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  !page.includes('<script>alert(9)') ? ok('XSS trong phản hồi của shop bị escape') : bad('XSS QUA Ô TRẢ LỜI!');
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/reviews/${rvHoa.id}/reply`,
+    { cookie: A.cookie, origin: OS, body: { reply: 'x'.repeat(1001) } });
+  r.status === 400 ? ok('phản hồi > 1000 ký tự → 400') : bad('không chặn phản hồi quá dài', String(r.status));
+  r = await rq(SELLER, 'POST', `/shops/${Bs.shopId}/reviews/${rvHoa.id}/reply`, { cookie: Bs.cookie, origin: OS, body: { reply: 'chen ngang' } });
+  r.status === 404 ? ok('shop B trả lời đánh giá shop A → 404') : bad('rò chéo shop khi trả lời', String(r.status));
+
+  // ── 5. BIỂU ĐỒ PHÂN BỔ SAO ─────────────────────────────────────────────────
+  sect('5. Biểu đồ phân bổ sao 5★…1★');
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  /class="rv-dist"/.test(page) ? ok('có biểu đồ phân bổ sao') : bad('thiếu biểu đồ phân bổ');
+  /class="rv-summary"/.test(page) && /class="rv-big"/.test(page) ? ok('có ô tổng quan điểm trung bình') : bad('thiếu ô tổng quan');
+  (page.match(/class="rv-row"/g) ?? []).length === 5 ? ok('đủ 5 hàng (5★ → 1★)') : bad('số hàng phân bổ sai', String((page.match(/class="rv-row"/g) ?? []).length));
+
+  // ── 6. NÚT "HỮU ÍCH" ───────────────────────────────────────────────────────
+  sect('6. Nút "Hữu ích": cộng 1 lần, bấm lại KHÔNG cộng thêm');
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  /action="\/checkout\/review-helpful"/.test(page) ? ok('có form "Hữu ích" (no-JS, POST sang checkout)') : bad('thiếu nút hữu ích');
+
+  r = await hostReq(CO, A.host, 'POST', '/checkout/review-helpful', { form: { review_id: rvHoa.id, slug } });
+  let hc = (await owner.query('SELECT helpful_count FROM product_reviews WHERE id=$1', [rvHoa.id])).rows[0].helpful_count;
+  Number(hc) === 1 ? ok('bấm lần 1 → helpful_count = 1') : bad('không cộng', String(hc));
+  await hostReq(CO, A.host, 'POST', '/checkout/review-helpful', { form: { review_id: rvHoa.id, slug } });
+  await hostReq(CO, A.host, 'POST', '/checkout/review-helpful', { form: { review_id: rvHoa.id, slug } });
+  hc = (await owner.query('SELECT helpful_count FROM product_reviews WHERE id=$1', [rvHoa.id])).rows[0].helpful_count;
+  Number(hc) === 1 ? ok('bấm thêm 2 lần cùng IP → VẪN 1 (bảng phiếu chặn)') : bad('cộng nhiều lần', String(hc));
+  const votes = (await owner.query('SELECT count(*)::int n FROM review_votes WHERE review_id=$1', [rvHoa.id])).rows[0].n;
+  Number(votes) === 1 ? ok('chỉ ghi ĐÚNG 1 phiếu') : bad('số phiếu sai', String(votes));
+  page = (await hostReq(STORE, A.host, 'GET', `/p/${slug}`, {})).body;
+  /Hữu ích \(1\)/.test(page) ? ok('trang SP hiện "Hữu ích (1)"') : bad('không hiện số hữu ích');
+
+  // Đánh giá CHƯA DUYỆT không được nhận phiếu (chỉ lộ ra nếu gọi thẳng endpoint).
+  const pend = (await owner.query(`SELECT id FROM product_reviews WHERE shop_id=$1 AND status='pending' LIMIT 1`, [A.shopId])).rows[0];
+  if (pend) {
+    await hostReq(CO, A.host, 'POST', '/checkout/review-helpful', { form: { review_id: pend.id, slug } });
+    const ph = (await owner.query('SELECT helpful_count FROM product_reviews WHERE id=$1', [pend.id])).rows[0].helpful_count;
+    Number(ph) === 0 ? ok('đánh giá CHƯA DUYỆT không nhận được phiếu') : bad('vote được cho review chưa duyệt', String(ph));
+  }
+  r = await hostReq(CO, A.host, 'POST', '/checkout/review-helpful', { form: { review_id: 'khong-phai-uuid', slug } });
+  r.status === 302 || r.status === 303 ? ok('review_id rác → chuyển hướng về, không 500') : bad('id rác làm sập', String(r.status));
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

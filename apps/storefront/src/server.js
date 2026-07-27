@@ -662,10 +662,22 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
           sale_price_vnd: r.sale_price_vnd != null ? Number(r.sale_price_vnd) : null, sale_off_pct: r.sale_off_pct != null ? Number(r.sale_off_pct) : null }));
         // Đánh giá: RLS store_reviews chỉ trả APPROVED của SP đang hiện.
         p.reviewStats = (await c.query(
-          `SELECT count(*)::int AS n, coalesce(round(avg(rating)::numeric, 1), 0) AS avg FROM product_reviews WHERE product_id = $1`, [p.id])).rows[0];
+          // Kèm PHÂN BỔ SAO (0099) để vẽ biểu đồ 5★…1★ — khách nhìn phát biết "4.5 sao" là
+          // đều tay hay là trộn nhiều 5 sao với vài 1 sao. Đếm trong CÙNG một lượt quét.
+          `SELECT count(*)::int AS n, coalesce(round(avg(rating)::numeric, 1), 0) AS avg,
+                  count(*) FILTER (WHERE rating = 5)::int AS r5,
+                  count(*) FILTER (WHERE rating = 4)::int AS r4,
+                  count(*) FILTER (WHERE rating = 3)::int AS r3,
+                  count(*) FILTER (WHERE rating = 2)::int AS r2,
+                  count(*) FILTER (WHERE rating = 1)::int AS r1
+             FROM product_reviews WHERE product_id = $1`, [p.id])).rows[0];
+        // HỮU ÍCH NHẤT trước, rồi mới tới mới nhất (mẫu Shopee/TikTok Shop) — đánh giá dài,
+        // có ích được nhiều người bấm sẽ nổi lên thay vì chìm theo thời gian.
         p.reviews = (await c.query(
-          `SELECT rating, author_name, content, verified, created_at FROM product_reviews
-            WHERE product_id = $1 ORDER BY created_at DESC LIMIT 10`, [p.id])).rows;
+          `SELECT id, rating, author_name, content, verified, created_at,
+                  seller_reply, seller_replied_at, helpful_count
+             FROM product_reviews
+            WHERE product_id = $1 ORDER BY helpful_count DESC, created_at DESC LIMIT 10`, [p.id])).rows;
         p.reviewFlag = url.searchParams.get('review'); // 'sent' | 'invalid' (PRG từ checkout)
         p.selectedId = url.searchParams.get('variant');
         return { ...base, product: p };

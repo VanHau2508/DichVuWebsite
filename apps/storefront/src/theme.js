@@ -1385,6 +1385,25 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
 .rv-head{display:flex;align-items:center;gap:8px;font-size:.92rem}
 .rv-ok{color:#15803d;font-size:.78rem;font-weight:600;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:var(--pill);padding:2px 8px}
 .rv p{margin:6px 0 0;color:color-mix(in srgb,var(--color-text) 75%,var(--color-bg));line-height:1.65}
+/* Tổng quan đánh giá kiểu sàn (0099): điểm to bên trái + biểu đồ phân bổ sao bên phải. */
+.rv-summary{display:flex;gap:26px;align-items:center;flex-wrap:wrap;padding:16px 18px;margin:0 0 8px;background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--r-lg)}
+.rv-big{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:104px}
+.rv-big strong{font-size:2.2rem;font-weight:800;line-height:1;letter-spacing:-.02em;color:var(--color-text)}
+.rv-big .st{font-size:1rem}.rv-big .muted{font-size:.78rem;color:var(--color-muted)}
+.rv-dist{flex:1;min-width:200px;display:flex;flex-direction:column;gap:5px}
+.rv-row{display:flex;align-items:center;gap:9px;font-size:.8rem;color:var(--color-muted)}
+.rv-lbl{width:26px;flex:0 0 auto;color:#f59e0b;font-weight:600}
+.rv-bar{flex:1;height:8px;border-radius:var(--pill);background:var(--color-border);overflow:hidden}
+.rv-bar i{display:block;height:100%;background:#f59e0b;border-radius:var(--pill)}
+.rv-cnt{width:32px;flex:0 0 auto;text-align:right;font-variant-numeric:tabular-nums}
+/* Phản hồi của shop — thụt vào + vạch màu để phân biệt rõ với lời khách. */
+.rv-reply{margin:10px 0 0 0;padding:10px 14px;border-left:3px solid var(--color-primary);background:var(--color-surface);border-radius:0 var(--r) var(--r) 0}
+.rv-reply strong{font-size:.83rem;color:var(--color-primary)}
+.rv-reply p{margin:3px 0 0;font-size:.9rem}
+.rv-help{margin-top:8px}
+.rv-help button{border:1px solid var(--color-border);background:var(--color-bg);color:var(--color-muted);border-radius:var(--pill);padding:5px 13px;font-family:inherit;font-size:.8rem;font-weight:600;cursor:pointer;transition:border-color .15s,color .15s}
+.rv-help button:hover{border-color:var(--color-primary);color:var(--color-primary)}
+@media(max-width:560px){.rv-summary{gap:16px;padding:14px}.rv-big{min-width:84px}.rv-big strong{font-size:1.8rem}}
 .rv-note{border-radius:var(--r);padding:12px 15px;margin:0 0 14px;font-size:.9rem;font-weight:500}
 .rv-note.ok{background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d}
 .rv-note.err{background:#fef2f2;border:1px solid #fecaca;color:#b91c1c}
@@ -2127,14 +2146,42 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
   const stars = (r) => '★'.repeat(Math.round(Number(r))) + '☆'.repeat(5 - Math.round(Number(r)));
   const ratingSummary = Number(stats.n) > 0
     ? `<a class="pd-rating" href="#danh-gia"><span class="st">${stars(stats.avg)}</span> ${esc(String(stats.avg))} (${esc(String(stats.n))} đánh giá)</a>` : '';
-  const reviewItems = (p.reviews ?? []).map((rv) => `<div class="rv">
+  // BIỂU ĐỒ PHÂN BỔ SAO (0099): "4.5 sao" không nói lên đều-tay hay trộn 5★ với 1★.
+  // Thanh tỉ lệ thuần CSS (width %) — không JS, không ảnh.
+  const total = Number(stats.n) || 0;
+  const breakdown = total > 0 ? `<div class="rv-dist">${[5, 4, 3, 2, 1].map((n) => {
+    const c = Number(stats[`r${n}`] ?? 0);
+    const pct = Math.round((c / total) * 100);
+    return `<div class="rv-row"><span class="rv-lbl">${n}★</span>
+      <span class="rv-bar"><i style="width:${pct}%"></i></span>
+      <span class="rv-cnt">${esc(c)}</span></div>`;
+  }).join('')}</div>` : '';
+  const summaryBox = total > 0 ? `<div class="rv-summary">
+      <div class="rv-big"><strong>${esc(String(stats.avg))}</strong><span class="st">${stars(stats.avg)}</span>
+        <span class="muted">${esc(String(total))} đánh giá</span></div>
+      ${breakdown}</div>` : '';
+  const reviewItems = (p.reviews ?? []).map((rv) => {
+    // TRẢ LỜI CỦA SHOP — nơi shop chứng minh dịch vụ, nhất là với đánh giá thấp.
+    const reply = rv.seller_reply ? `<div class="rv-reply"><strong>Phản hồi của ${esc(ctx.shop.name)}</strong>
+        <p>${esc(rv.seller_reply)}</p></div>` : '';
+    const hc = Number(rv.helpful_count) || 0;
+    // No-JS: form POST sang checkout (service duy nhất phía người mua có quyền ghi), PRG
+    // quay lại đúng neo #danh-gia. Bấm lại lần hai bị bảng phiếu chặn, không báo lỗi.
+    const helpful = `<form class="rv-help" method="POST" action="/checkout/review-helpful">
+        <input type="hidden" name="review_id" value="${esc(rv.id)}">
+        <input type="hidden" name="slug" value="${esc(p.slug)}">
+        <button type="submit" aria-label="Đánh dấu đánh giá này hữu ích">👍 Hữu ích${hc ? ` (${esc(hc)})` : ''}</button>
+      </form>`;
+    return `<div class="rv">
       <div class="rv-head"><span class="st">${stars(rv.rating)}</span> <strong>${esc(rv.author_name)}</strong>${rv.verified ? ' <span class="rv-ok">✓ Đã mua hàng</span>' : ''}</div>
-      <p>${esc(rv.content)}</p></div>`).join('');
+      <p>${esc(rv.content)}</p>${reply}${helpful}</div>`;
+  }).join('');
   const flagMsg = p.reviewFlag === 'sent'
     ? '<div class="rv-note ok">Cảm ơn bạn! Đánh giá sẽ hiển thị sau khi cửa hàng duyệt.</div>'
     : p.reviewFlag === 'invalid' ? '<div class="rv-note err">Đánh giá chưa hợp lệ — cần chọn số sao và viết ít nhất 10 ký tự.</div>' : '';
   const reviewsHtml = `<section class="pd-block" id="danh-gia"><h2>Đánh giá${Number(stats.n) ? ` (${esc(String(stats.n))})` : ''}</h2>
       ${flagMsg}
+      ${summaryBox}
       ${reviewItems || '<p class="muted">Chưa có đánh giá nào. Hãy là người đầu tiên!</p>'}
       <details class="rv-form"><summary>Viết đánh giá</summary>
         <form method="POST" action="/checkout/review">

@@ -364,7 +364,7 @@ async function main() {
   await owner.query(`UPDATE subscriptions SET status = 'trial', current_period_end = now() + interval '2 days' WHERE shop_id = $1`, [A.shopId]);
   const remRows = async () => (await owner.query(`SELECT id, payload FROM outbox WHERE shop_id = $1 AND topic = 'subscription.reminder' ORDER BY id`, [A.shopId])).rows;
   const remState = async () => (await owner.query(`SELECT status, reminded_milestone FROM subscriptions WHERE shop_id = $1`, [A.shopId])).rows[0];
-  const sweepSub = async () => (await fetch(`${WORKER}/internal/subscription-sweep`, { method: 'POST' })).json();
+  const sweepSub = async (qs = '') => (await fetch(`${WORKER}/internal/subscription-sweep${qs}`, { method: 'POST' })).json();
 
   // 1) Còn 2 ngày → mốc d3, email tới contact_email, claim ghi marker.
   let dsw = await sweepSub();
@@ -439,7 +439,22 @@ async function main() {
   const dunStats1 = await workerStats();
   dunStats1.failed === dunStats0.failed ? ok('outbox không-to xử lý sạch (không dead-letter)') : bad('reminder không-to vào dead-letter', JSON.stringify(dunStats1));
 
-  // 7) Tường quyền app_billing (0062 thu hẹp theo dòng như 0058): không giả mạo được
+  // 7) ĐÓI QUÉT: shop ĐÃ nhắc rồi KHÔNG được chiếm chỗ trong lô. Dựng shop "chắn" hạn gần
+  // hơn A và đã nhắc đúng mốc, rồi quét với lô = 1. Bản cũ (LIMIT 200, không lọc còn-việc)
+  // sẽ lấy đúng shop chắn, claim 0 dòng, A KHÔNG BAO GIỜ được nhắc — chính là kịch bản
+  // >200 shop trong cửa sổ 7 ngày: khách hết hạn mà chưa hề nhận nhắc nào.
+  const blockerR = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: `wk-chan-${uniq()}`, slug: `wk-chan-${uniq()}`, plan_code: 'platform' }, cookie: staff, origin: OO });
+  await owner.query(
+    `UPDATE subscriptions SET status = 'active', current_period_end = now() + interval '1 hour',
+       reminded_period_end = now() + interval '1 hour', reminded_milestone = 'd1' WHERE shop_id = $1`, [blockerR.json.id]);
+  await owner.query(`UPDATE subscriptions SET current_period_end = now() + interval '5 days' WHERE shop_id = $1`, [A.shopId]);
+  await sweepSub('?batch=1');
+  drows = await remRows();
+  drows.length === 6 && drows[5].payload.milestone === 'd7'
+    ? ok('shop ĐÃ nhắc không chiếm chỗ lô → shop phía sau VẪN được nhắc (chống đói quét)')
+    : bad('đói quét: shop sau lô đầu không được nhắc', JSON.stringify(drows.map((x) => x.payload.milestone)));
+
+  // 8) Tường quyền app_billing (0062 thu hẹp theo dòng như 0058): không giả mạo được
   // email đơn hàng, không đọc identity, không ghi reminder mồ côi shop.
   const billing = new pg.Pool({ connectionString: 'postgres://app_billing:devpassword@postgres:5432/app', max: 1 });
   const mustFail = async (q, args) => { try { await billing.query(q, args); return null; } catch (e) { return e.message; } };

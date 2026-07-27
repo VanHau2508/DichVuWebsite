@@ -453,7 +453,7 @@ async function sweepDomainVerify() {
 // shop (status='suspended' — tái dùng chốt storefront). Cross-shop qua app_billing (0033).
 // Idempotent (guard status trong WHERE). DB lỗi → chỉ bỏ nhịp (không unhandledRejection).
 // Sub past_due VẪN phục vụ storefront (ân hạn); chỉ khi cancelled mới treo.
-async function sweepSubscriptions() {
+async function sweepSubscriptions(reminderBatch) {
   if (!billingDb) return { past_due: 0, cancelled: 0, reminded: 0 };
   let c;
   try {
@@ -485,7 +485,7 @@ async function sweepSubscriptions() {
     // thông báo ân hạn trong cùng tick (không đợi giờ sau). LƯU Ý pool max:2 và client
     // transaction ở trên còn checkout tới finally → reminder chỉ được dùng ≤1 kết nối
     // đồng thời (vòng lặp per-sub TUẦN TỰ, không Promise.all — sẽ deadlock pool).
-    const reminded = await sweepSubscriptionReminders();
+    const reminded = await sweepSubscriptionReminders(reminderBatch);
     if (pd.rowCount || cancelled.length || reminded) log('info', 'subscriptions_swept', { past_due: pd.rowCount, cancelled: cancelled.length, reminded });
     return { past_due: pd.rowCount, cancelled: cancelled.length, reminded };
   } catch (e) {
@@ -504,31 +504,73 @@ async function sweepSubscriptions() {
 // worker chết bỏ lỡ mốc → chỉ gửi MỘT nhắc cao nhất (không burst 3 email); gia hạn đẩy
 // current_period_end tới → IS DISTINCT FROM tự RE-ARM, platform không cần reset gì.
 // Kỷ luật chống crash-loop như mọi sweep: nuốt mọi lỗi, không bao giờ throw ra setInterval.
-async function sweepSubscriptionReminders() {
+//
+// ĐÓI QUÉT (bug thật, vá 2026-07-27): bản đầu chỉ có `LIMIT 200` và KHÔNG lọc "còn việc",
+// nên mỗi nhịp lấy đúng 200 sub HẠN GẦN NHẤT — hầu hết ĐÃ nhắc rồi (claim trả 0 dòng) —
+// còn shop thứ 201 trở đi KHÔNG BAO GIỜ lọt vào cửa sổ. Với >200 shop trong cửa sổ 7 ngày
+// (đúng quy mô 100–1000 khách đang nhắm) khách hết hạn mà chưa hề nhận nhắc nào, chỉ nhận
+// email "ĐÃ QUÁ HẠN" — mất tiền gia hạn, im lặng, không log. Hai vá:
+//   (1) đưa điều kiện claim LÊN WHERE → chỉ lấy dòng THỰC SỰ còn việc (đã nhắc rồi thì
+//       không chiếm chỗ nữa), tính mốc NGAY TRONG SQL để lọc và claim dùng CÙNG một mốc;
+//   (2) rút cạn theo LÔ trong một nhịp, dừng khi hết việc / lô không tiến triển / chạm trần.
+const SUB_REMINDER_BATCH = 200;   // mỗi lô, giữ transaction ngắn + pool max:2 thở được
+const SUB_REMINDER_ROUNDS = 25;   // trần AN TOÀN 25×200 = 5.000 nhắc/nhịp, chạm thì LOG
+// Mốc tính trong SQL — phải khớp thang bậc JS cũ: days<=1 → d1, days<=3 → d3, còn lại d7.
+const MILESTONE_SQL = `CASE WHEN sub.status = 'past_due' THEN 'past_due'
+             WHEN sub.current_period_end <= now() + interval '1 day' THEN 'd1'
+             WHEN sub.current_period_end <= now() + interval '3 days' THEN 'd3'
+             ELSE 'd7' END`;
+const MILESTONE_RANK = (e) => `CASE ${e} WHEN 'd7' THEN 1 WHEN 'd3' THEN 2 WHEN 'd1' THEN 3 WHEN 'past_due' THEN 4 ELSE 0 END`;
+// NOT EXISTS = guard đa-sub (mirror lines suspend): đừng nhắc "sắp tạm ngưng" khi
+// concierge đã tạo sub MỚI còn hạn dài phục vụ shop (gia hạn kiểu thêm dòng).
+const SUB_REMINDER_SQL =
+  `SELECT sub.id, sub.shop_id, sub.status, sub.plan_code, sub.current_period_end,
+          sh.name AS shop_name, sh.contact_email, p.name AS plan_name,
+          ${MILESTONE_SQL} AS milestone
+     FROM subscriptions sub
+     JOIN shops sh ON sh.id = sub.shop_id
+     LEFT JOIN plans p ON p.code = sub.plan_code
+    WHERE sh.status IN ('onboarding','active') AND sub.current_period_end IS NOT NULL
+      AND ((sub.status IN ('trial','active') AND sub.current_period_end < now() + interval '7 days')
+           OR sub.status = 'past_due')
+      AND NOT EXISTS (SELECT 1 FROM subscriptions s2
+                       WHERE s2.shop_id = sub.shop_id AND s2.id <> sub.id
+                         AND s2.status IN ('trial','active') AND s2.current_period_end > now() + interval '7 days')
+      -- CÒN VIỆC: kỳ mới (re-arm sau gia hạn) HOẶC mốc cao bậc hơn mốc đã nhắc.
+      AND (sub.reminded_period_end IS DISTINCT FROM sub.current_period_end
+           OR ${MILESTONE_RANK(MILESTONE_SQL)} > ${MILESTONE_RANK('sub.reminded_milestone')})
+    ORDER BY sub.current_period_end LIMIT $1`;
+
+async function sweepSubscriptionReminders(batch = SUB_REMINDER_BATCH) {
   if (!billingDb) return 0;
-  let subs;
-  try {
-    // NOT EXISTS = guard đa-sub (mirror lines suspend): đừng nhắc "sắp tạm ngưng" khi
-    // concierge đã tạo sub MỚI còn hạn dài phục vụ shop (gia hạn kiểu thêm dòng).
-    subs = (await billingDb.query(
-      `SELECT sub.id, sub.shop_id, sub.status, sub.plan_code, sub.current_period_end,
-              sh.name AS shop_name, sh.contact_email, p.name AS plan_name
-         FROM subscriptions sub
-         JOIN shops sh ON sh.id = sub.shop_id
-         LEFT JOIN plans p ON p.code = sub.plan_code
-        WHERE sh.status IN ('onboarding','active') AND sub.current_period_end IS NOT NULL
-          AND ((sub.status IN ('trial','active') AND sub.current_period_end < now() + interval '7 days')
-               OR sub.status = 'past_due')
-          AND NOT EXISTS (SELECT 1 FROM subscriptions s2
-                           WHERE s2.shop_id = sub.shop_id AND s2.id <> sub.id
-                             AND s2.status IN ('trial','active') AND s2.current_period_end > now() + interval '7 days')
-        ORDER BY sub.current_period_end LIMIT 200`)).rows;
-  } catch (e) { log('error', 'subreminder_query_error', { message: e.message }); return 0; }
+  let sent = 0;
+  for (let round = 1; ; round++) {
+    let subs;
+    try {
+      subs = (await billingDb.query(SUB_REMINDER_SQL, [batch])).rows;
+    } catch (e) { log('error', 'subreminder_query_error', { message: e.message }); break; }
+    if (subs.length === 0) break;
+    const before = sent;
+    sent += await remindSubscriptionBatch(subs);
+    // Lô không claim được dòng nào = nhịp khác đang xử lý (hoặc kẹt): dừng, đừng quay vòng.
+    if (sent === before) break;
+    if (subs.length < batch) break;
+    if (round >= SUB_REMINDER_ROUNDS) {
+      // KHÔNG im lặng cắt: còn tồn thì phải nhìn thấy được trong log (nhịp sau quét tiếp).
+      log('warn', 'subreminder_batch_capped', { rounds: round, sent });
+      break;
+    }
+  }
+  if (sent) log('info', 'subscription_reminders', { n: sent });
+  return sent;
+}
+
+async function remindSubscriptionBatch(subs) {
   let sent = 0;
   for (const s of subs) {
     const msLeft = new Date(s.current_period_end).getTime() - Date.now();
     const days = msLeft / 86400000;
-    const milestone = s.status === 'past_due' ? 'past_due' : days <= 1 ? 'd1' : days <= 3 ? 'd3' : 'd7';
+    const milestone = s.milestone;
     const daysLeft = Math.max(0, Math.ceil(days));
     const graceDaysLeft = Math.max(0, Math.ceil((msLeft + SUBSCRIPTION_GRACE_DAYS * 86400000) / 86400000));
     let c;
@@ -561,7 +603,6 @@ async function sweepSubscriptionReminders() {
       log('error', 'subreminder_outbox_error', { message: e.message });
     } finally { if (c) c.release(); }
   }
-  if (sent) log('info', 'subscription_reminders', { n: sent });
   return sent;
 }
 
@@ -1256,47 +1297,64 @@ async function deliverTelegram(topic, payload, shopId, outboxId) {
 const STALE_PENDING_HOURS = Number(process.env.STALE_PENDING_HOURS ?? 24);
 const STALE_SHIPPED_DAYS = Number(process.env.STALE_SHIPPED_DAYS ?? 7);
 const STALE_SWEEP_MS = Number(process.env.STALE_SWEEP_MS ?? 300000); // 5 phút — nhịp như alert-sweep
-async function sweepStaleOrders() {
-  if (!expiryDb || !TELEGRAM_ON) return { shops: 0, pending: 0, shipped: 0 };
-  let pend, ship;
-  try {
-    pend = (await expiryDb.query(
-      `SELECT shop_id, order_number FROM orders
+// Trần đặt trên SHOP, không trên ĐƠN — cùng bài học "đói quét" của nhắc hạn thuê bao: bản
+// đầu lấy 500 ĐƠN ứ toàn nền tảng rồi mới gộp theo shop, nên 1000 shop mỗi shop vài đơn ứ
+// thì chỉ ~250 shop đầu (theo thứ tự uuid) nhận cảnh báo, phần còn lại KHÔNG BAO GIỜ nhận —
+// mỗi ngày, vĩnh viễn. Gộp trong SQL (một dòng/shop) + duyệt keyset theo shop_id: số đếm
+// cũng thành ĐÚNG (trước đây bị chính LIMIT cắt cụt → "12 đơn ứ" trong khi thực tế 600).
+const STALE_SHOP_BATCH = 200;
+const STALE_ROUNDS = 20; // 20 × 200 = 4.000 shop/nhịp; chạm trần thì LOG, nhịp sau quét tiếp
+const STALE_SQL =
+  `SELECT shop_id,
+          count(*) FILTER (WHERE kind = 'pending')::int AS n_pending,
+          (array_agg(order_number ORDER BY created_at) FILTER (WHERE kind = 'pending'))[1:5] AS few_pending,
+          count(*) FILTER (WHERE kind = 'shipped')::int AS n_shipped,
+          (array_agg(order_number ORDER BY created_at) FILTER (WHERE kind = 'shipped'))[1:5] AS few_shipped
+     FROM (
+       SELECT shop_id, order_number, created_at, 'pending'::text AS kind FROM orders
         WHERE status = 'pending' AND created_at < now() - ($1 || ' hours')::interval
-        ORDER BY shop_id, created_at LIMIT 500`, [String(STALE_PENDING_HOURS)])).rows;
-    ship = (await expiryDb.query(
-      `SELECT o.shop_id, o.order_number FROM orders o
+       UNION ALL
+       SELECT o.shop_id, o.order_number, o.created_at, 'shipped' FROM orders o
         WHERE o.status = 'shipped'
           AND coalesce((SELECT max(s.created_at) FROM shipments s WHERE s.order_id = o.id), o.created_at)
-              < now() - ($1 || ' days')::interval
-        ORDER BY o.shop_id, o.created_at LIMIT 500`, [String(STALE_SHIPPED_DAYS)])).rows;
-  } catch (e) { log('error', 'stale_query_error', { message: e.message }); return { shops: 0, pending: 0, shipped: 0 }; }
-  const byShop = new Map();
-  const add = (r, kind) => {
-    if (!byShop.has(r.shop_id)) byShop.set(r.shop_id, { pending: [], shipped: [] });
-    byShop.get(r.shop_id)[kind].push(Number(r.order_number));
-  };
-  for (const r of pend) add(r, 'pending');
-  for (const r of ship) add(r, 'shipped');
+              < now() - ($2 || ' days')::interval
+     ) t
+    WHERE shop_id > $3
+    GROUP BY shop_id ORDER BY shop_id LIMIT $4`;
+async function sweepStaleOrders() {
+  if (!expiryDb || !TELEGRAM_ON) return { shops: 0, pending: 0, shipped: 0 };
   const day = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' }); // YYYY-MM-DD giờ VN
-  let sent = 0;
-  for (const [shopId, g] of byShop) {
+  const firstFew = (a, n) => a.map((x) => `#${Number(x)}`).join(', ') + (n > a.length ? '…' : '');
+  let sent = 0, pending = 0, shipped = 0;
+  let after = '00000000-0000-0000-0000-000000000000';
+  for (let round = 1; ; round++) {
+    let rows;
     try {
-      const rc = await queue.client;
-      const key = `tgstale:${shopId}:${day}`;
-      if (await rc.get(key)) continue; // shop này đã nhận digest hôm nay
-      const row = (await expiryDb.query(`SELECT chat_id FROM shop_telegram WHERE shop_id = $1 AND enabled AND chat_id IS NOT NULL`, [shopId])).rows[0];
-      if (!row?.chat_id) continue; // chưa nối Telegram → thôi (không có kênh khác để digest)
-      const firstFew = (a) => a.slice(0, 5).map((n) => `#${n}`).join(', ') + (a.length > 5 ? '…' : '');
-      const parts = [];
-      if (g.pending.length) parts.push(`${g.pending.length} đơn chờ xử lý >${STALE_PENDING_HOURS}h (${firstFew(g.pending)})`);
-      if (g.shipped.length) parts.push(`${g.shipped.length} đơn gửi hãng >${STALE_SHIPPED_DAYS} ngày chưa giao (${firstFew(g.shipped)})`);
-      const okSent = await tgSend(row.chat_id, `⏳ Đơn ứ: ${parts.join(', ')}. Vào trang quản trị xử lý sớm để không mất khách.`);
-      if (okSent) { sent++; await rc.set(key, '1', 'EX', 26 * 3600); } // 26h > 1 ngày — key tự rơi
-    } catch (e) { log('error', 'stale_digest_error', { message: e.message }); }
+      rows = (await expiryDb.query(STALE_SQL,
+        [String(STALE_PENDING_HOURS), String(STALE_SHIPPED_DAYS), after, STALE_SHOP_BATCH])).rows;
+    } catch (e) { log('error', 'stale_query_error', { message: e.message }); break; }
+    if (rows.length === 0) break;
+    after = rows[rows.length - 1].shop_id; // keyset: nhịp sau bắt đầu SAU shop cuối lô này
+    for (const g of rows) {
+      pending += g.n_pending; shipped += g.n_shipped;
+      try {
+        const rc = await queue.client;
+        const key = `tgstale:${g.shop_id}:${day}`;
+        if (await rc.get(key)) continue; // shop này đã nhận digest hôm nay
+        const row = (await expiryDb.query(`SELECT chat_id FROM shop_telegram WHERE shop_id = $1 AND enabled AND chat_id IS NOT NULL`, [g.shop_id])).rows[0];
+        if (!row?.chat_id) continue; // chưa nối Telegram → thôi (không có kênh khác để digest)
+        const parts = [];
+        if (g.n_pending) parts.push(`${g.n_pending} đơn chờ xử lý >${STALE_PENDING_HOURS}h (${firstFew(g.few_pending ?? [], g.n_pending)})`);
+        if (g.n_shipped) parts.push(`${g.n_shipped} đơn gửi hãng >${STALE_SHIPPED_DAYS} ngày chưa giao (${firstFew(g.few_shipped ?? [], g.n_shipped)})`);
+        const okSent = await tgSend(row.chat_id, `⏳ Đơn ứ: ${parts.join(', ')}. Vào trang quản trị xử lý sớm để không mất khách.`);
+        if (okSent) { sent++; await rc.set(key, '1', 'EX', 26 * 3600); } // 26h > 1 ngày — key tự rơi
+      } catch (e) { log('error', 'stale_digest_error', { message: e.message }); }
+    }
+    if (rows.length < STALE_SHOP_BATCH) break;
+    if (round >= STALE_ROUNDS) { log('warn', 'stale_sweep_capped', { rounds: round, shops: sent }); break; }
   }
-  if (sent) log('info', 'stale_order_digests', { shops: sent, pending: pend.length, shipped: ship.length });
-  return { shops: sent, pending: pend.length, shipped: ship.length };
+  if (sent) log('info', 'stale_order_digests', { shops: sent, pending, shipped });
+  return { shops: sent, pending, shipped };
 }
 
 const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL ?? '';
@@ -1442,7 +1500,10 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   }
   // Kích hoạt quét vòng đời thuê bao ngay (nội bộ — cho cron + e2e xác định).
   if (url.pathname === '/internal/subscription-sweep' && req.method === 'POST') {
-    const r = await sweepSubscriptions();
+    // ?batch= chỉ để e2e ép lô NHỎ mà chứng minh được "đói quét" (shop ngoài lô đầu vẫn
+    // được nhắc) — không phải cấu hình vận hành; kẹp 1..SUB_REMINDER_BATCH.
+    const nb = parseInt(url.searchParams.get('batch') ?? '', 10);
+    const r = await sweepSubscriptions(Number.isInteger(nb) ? Math.min(Math.max(nb, 1), SUB_REMINDER_BATCH) : undefined);
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(r));
   }

@@ -10,6 +10,12 @@ const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https:/
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 5 });
 const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic='user.invited' AND payload->>'to'=$1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
 let pass = 0, fail = 0;
+// Ngày TƯƠNG ĐỐI theo lịch VN. Bộ test này từng cắm cứng '2026-07-20'→'2026-07-25' nên
+// ĐẾN 2026-07-25 là chết cả bộ (API đúng khi từ chối "kết thúc phải ở tương lai") — test
+// KHÔNG được có hạn sử dụng. +7h rồi lấy phần ngày = đúng ngày theo lịch VN.
+const vnDay = (offsetDays) => new Date(Date.now() + offsetDays * 86400000 + 7 * 3600000).toISOString().slice(0, 10);
+const S = `${vnDay(3)}T00:00`;  // bắt đầu: 3 ngày nữa
+const E = `${vnDay(8)}T00:00`;  // kết thúc: 8 ngày nữa
 const ok = (m) => { pass++; console.log('  PASS ' + m); };
 const bad = (m, d) => { fail++; console.log('  FAIL ' + m + (d ? ' :: ' + String(d).slice(0, 200) : '')); };
 const sect = (m) => console.log('\n# ' + m);
@@ -66,33 +72,35 @@ async function main() {
   };
 
   sect('1. Tạo promo percent + GIỜ VN map ĐÚNG UTC (must-fix)');
-  let r = await P('POST', '/promotions', { title: 'Sale hè', kind: 'percent', value: 25, scope: 'all', starts_at: '2026-07-20T00:00', ends_at: '2026-07-25T00:00' });
+  let r = await P('POST', '/promotions', { title: 'Sale hè', kind: 'percent', value: 25, scope: 'all', starts_at: S, ends_at: E });
   r.status === 201 ? ok('tạo promo percent 25% toàn shop → 201') : bad('tạo promo lỗi', r.raw);
   const pid = r.json.id;
   const row = (await owner.query(`SELECT starts_at, ends_at FROM promotions WHERE id=$1`, [pid])).rows[0];
-  // 2026-07-20 00:00 giờ VN (UTC+7) = 2026-07-19 17:00 UTC.
-  new Date(row.starts_at).toISOString() === '2026-07-19T17:00:00.000Z'
-    ? ok('starts_at 2026-07-20 00:00 VN → lưu 2026-07-19T17:00Z (KHÔNG lệch 7h)') : bad('giờ VN map sai', new Date(row.starts_at).toISOString());
+  // 00:00 giờ VN (UTC+7) = 17:00 UTC HÔM TRƯỚC. Kỳ vọng tính từ chính đầu vào nên
+  // khẳng định vẫn thật: server hiểu sai múi giờ (lưu 00:00Z) là ĐỎ ngay.
+  const wantUtc = new Date(`${S}:00+07:00`).toISOString();
+  new Date(row.starts_at).toISOString() === wantUtc
+    ? ok(`starts_at ${S} VN → lưu ${wantUtc} (KHÔNG lệch 7h)`) : bad('giờ VN map sai', new Date(row.starts_at).toISOString());
 
   sect('2. Validate: percent>100, ends≤starts, ends quá khứ, datetime rác, ngày ma');
-  r = await P('POST', '/promotions', { title: 'x', kind: 'percent', value: 150, scope: 'all', starts_at: '2026-07-20T00:00', ends_at: '2026-07-25T00:00' });
+  r = await P('POST', '/promotions', { title: 'x', kind: 'percent', value: 150, scope: 'all', starts_at: S, ends_at: E });
   r.status === 400 && /phần trăm/.test(r.json?.error ?? '') ? ok('percent 150 → 400') : bad('không chặn percent>100', r.raw);
-  r = await P('POST', '/promotions', { title: 'x', kind: 'percent', value: 10, scope: 'all', starts_at: '2026-07-25T00:00', ends_at: '2026-07-20T00:00' });
+  r = await P('POST', '/promotions', { title: 'x', kind: 'percent', value: 10, scope: 'all', starts_at: E, ends_at: S });
   r.status === 400 ? ok('ends ≤ starts → 400') : bad('không chặn ends<starts', r.raw);
   r = await P('POST', '/promotions', { title: 'x', kind: 'percent', value: 10, scope: 'all', starts_at: '2020-01-01T00:00', ends_at: '2020-01-02T00:00' });
   r.status === 400 && /tương lai/.test(r.json?.error ?? '') ? ok('ends quá khứ → 400') : bad('không chặn ends quá khứ', r.raw);
-  r = await P('POST', '/promotions', { title: 'x', kind: 'percent', value: 10, scope: 'all', starts_at: 'rác', ends_at: '2026-07-25T00:00' });
+  r = await P('POST', '/promotions', { title: 'x', kind: 'percent', value: 10, scope: 'all', starts_at: 'rác', ends_at: E });
   r.status === 400 ? ok('datetime rác → 400') : bad('không chặn datetime rác', r.raw);
-  r = await P('POST', '/promotions', { title: 'x', kind: 'percent', value: 10, scope: 'all', starts_at: '2026-02-31T00:00', ends_at: '2026-07-25T00:00' });
-  r.status === 400 ? ok('2026-02-31 (ngày không tồn tại) → 400') : bad('không chặn ngày ma', r.raw);
+  r = await P('POST', '/promotions', { title: 'x', kind: 'percent', value: 10, scope: 'all', starts_at: '2099-02-31T00:00', ends_at: E });
+  r.status === 400 ? ok('2099-02-31 (ngày không tồn tại) → 400') : bad('không chặn ngày ma', r.raw);
 
   sect('3. Fixed + cảnh báo fixed ≥ giá SP rẻ nhất (không chặn)');
   await mkProd('SP rẻ', 30000);
-  r = await P('POST', '/promotions', { title: 'Giảm sốc', kind: 'fixed', value: 50000, scope: 'all', starts_at: '2026-07-20T00:00', ends_at: '2026-07-25T00:00' });
+  r = await P('POST', '/promotions', { title: 'Giảm sốc', kind: 'fixed', value: 50000, scope: 'all', starts_at: S, ends_at: E });
   r.status === 201 && r.json.warning && /0đ|rẻ nhất/.test(r.json.warning) ? ok('fixed 50k ≥ giá rẻ nhất 30k → 201 kèm cảnh báo') : bad('thiếu cảnh báo fixed', r.raw);
 
   sect('4. scope=products: thêm/gỡ SP + FK cross-shop chặn');
-  r = await P('POST', '/promotions', { title: 'SP chọn', kind: 'percent', value: 15, scope: 'products', starts_at: '2026-07-20T00:00', ends_at: '2026-07-25T00:00' });
+  r = await P('POST', '/promotions', { title: 'SP chọn', kind: 'percent', value: 15, scope: 'products', starts_at: S, ends_at: E });
   const pidP = r.json.id;
   const prodA = await mkProd('SP A', 100000);
   r = await P('POST', `/promotions/${pidP}/products`, { product_id: prodA });
@@ -127,12 +135,12 @@ async function main() {
   // Đã có: pid (đã tắt) + fixed + pidP(đã xoá). Đếm active hiện tại rồi tạo tới trần.
   const nowActive = N((await owner.query(`SELECT count(*)::int n FROM promotions WHERE shop_id=$1 AND active`, [shopId])).rows[0].n);
   for (let i = nowActive; i < 50; i++) await owner.query(`INSERT INTO promotions (shop_id,title,kind,value,scope,starts_at,ends_at) VALUES ($1,'bulk','percent',5,'all', now(), now()+interval '1 day')`, [shopId]);
-  r = await P('POST', '/promotions', { title: 'thứ 51', kind: 'percent', value: 5, scope: 'all', starts_at: '2026-07-20T00:00', ends_at: '2026-07-25T00:00' });
+  r = await P('POST', '/promotions', { title: 'thứ 51', kind: 'percent', value: 5, scope: 'all', starts_at: S, ends_at: E });
   r.status === 409 && /trần 50/.test(r.json?.error ?? '') ? ok('promo thứ 51 active → 409 (cap 50)') : bad('không chặn cap', r.raw);
 
   sect('7. RBAC: catalog_manager tạo được; order_manager 403; cô lập chéo shop');
   const cm = await inviteRole('catalog_manager');
-  r = await rq(SELLER, 'POST', `/shops/${shopId}/promotions`, { body: { title: 'cm', kind: 'percent', value: 10, scope: 'all', starts_at: '2026-07-20T00:00', ends_at: '2026-07-25T00:00' }, cookie: cm, origin: OS });
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/promotions`, { body: { title: 'cm', kind: 'percent', value: 10, scope: 'all', starts_at: S, ends_at: E }, cookie: cm, origin: OS });
   (r.status === 201 || r.status === 409) ? ok(`catalog_manager tạo promo → ${r.status} (có quyền catalog.write)`) : bad('catalog_manager bị chặn sai', r.raw);
   const om = await inviteRole('order_manager');
   r = await rq(SELLER, 'GET', `/shops/${shopId}/promotions`, { cookie: om });

@@ -56,7 +56,9 @@ jobs:
   e2e:
     name: E2E (docker stack)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 45' là trần của thời danh-sách-tay 30 bộ. Glob chạy 80 bộ (mỗi bộ còn flushall
+    # Redis trước khi chạy) nên phải nới, không thì CI chết vì hết giờ chứ không vì lỗi.
+    timeout-minutes: 120
     env:
       C: "docker compose -f infra/compose.dev.yml"
     steps:
@@ -101,36 +103,26 @@ jobs:
           # schema-invariants). Chốt ≥3 TRƯỚC khi chạy: mất-ròng 1 suite (vd storefront-isolation
           # — KHÔNG verify-*.sh nào phủ) sẽ đỏ, không chạy phần còn lại rồi báo xanh giả.
           run dbtest "cô lập tenant + bất biến schema"  sh -c 'n=$(ls test/*.test.js 2>/dev/null | wc -l); [ "$n" -ge 3 ] || { echo "chỉ $n db test (<3) — nghi mất file"; exit 1; }; node --test test/*.test.js'
-          run auth   "auth (MFA / step-up)"             node apps/auth/test/e2e.mjs
-          run dbtest "chống chiếm shop (P0-4)"          node apps/platform/test/invitation-takeover.e2e.mjs
-          run dbtest "onboarding shop"                  node apps/platform/test/e2e.mjs
-          run dbtest "seller RBAC + step-up"            node apps/seller/test/e2e.mjs
-          run dbtest "catalog"                          node apps/seller/test/catalog.e2e.mjs
-          run dbtest "tồn kho"                          node apps/seller/test/inventory.e2e.mjs
-          run dbtest "media (re-encode)"                node apps/seller/test/media.e2e.mjs
-          run dbtest "trang nội dung (Ngày 11)"         node apps/seller/test/content.e2e.mjs
-          run dbtest "preview bản nháp (Ngày 11)"       node apps/seller/test/preview.e2e.mjs
-          run dbtest "SEO meta (Ngày 11)"               node apps/seller/test/seo.e2e.mjs
-          run dbtest "kéo–thả section (Ngày 11)"        node apps/seller/test/blocks.e2e.mjs
-          run dbtest "storefront (CSP / maintenance)"   node apps/storefront/test/e2e.mjs
-          run dbtest "giỏ hàng + checkout"              node apps/checkout/test/e2e.mjs
-          run dbtest "buyer checkout UI (form flow)"    node apps/checkout/test/buyer-flow.e2e.mjs
-          run dbtest "admin web (login/MFA/quản đơn)"   node apps/seller-admin/test/admin-flow.e2e.mjs
-          run dbtest "admin web (sản phẩm/tồn kho)"     node apps/seller-admin/test/admin-products.e2e.mjs
-          run dbtest "admin web (upload ảnh sản phẩm)"  node apps/seller-admin/test/admin-media.e2e.mjs
-          run dbtest "tín hiệu sàn + việc cần làm"      node apps/seller-admin/test/admin-marketplace.e2e.mjs
-          run dbtest "sổ cái kho + tab/cột/bulk SP"     node apps/seller-admin/test/admin-inventory-products.e2e.mjs
-          run dbtest "xuất CSV đơn + báo cáo so kỳ"     node apps/seller-admin/test/admin-export-reports.e2e.mjs
-          run dbtest "đánh giá + hỏi đáp kiểu sàn"        node apps/checkout/test/reviews.e2e.mjs
-          run dbtest "tài khoản khách + yêu thích"       node apps/account/test/account.e2e.mjs
-          run dbtest "admin web (trang nội dung)"       node apps/seller-admin/test/admin-content.e2e.mjs
-          run dbtest "admin web (tài khoản/nhân sự)"    node apps/seller-admin/test/admin-account.e2e.mjs
-          run dbtest "xuất dữ liệu (seller)"            node apps/seller/test/export.e2e.mjs
-          run dbtest "xuất dữ liệu (BFF)"               node apps/seller-admin/test/admin-export.e2e.mjs
-          run dbtest "custom domain (seller)"           node apps/seller/test/domains.e2e.mjs
-          run dbtest "custom domain (BFF)"              node apps/seller-admin/test/admin-domains.e2e.mjs
-          run dbtest "thanh toán QR + webhook"          node apps/payment/test/e2e.mjs
-          run dbtest "vận chuyển + email"               node apps/worker/test/e2e.mjs
+          # ── E2E lấy bằng GLOB, KHÔNG liệt kê tay ────────────────────────────────
+          # Vì sao đổi: danh sách tay chỉ chạy 30/80 bộ có trên đĩa. 50 bộ ngoài danh
+          # sách (sửa đơn, RMA, đối soát COD, tách vận đơn, điểm thưởng, khuyến mãi,
+          # đua giỏ, QR guard, signup, GPS ship…) KHÔNG BAO GIỜ chạy — shipping.e2e
+          # hỏng 9 ca nhiều ngày mà CI vẫn xanh. Ai thêm file *.e2e.mjs cũng phải nhớ
+          # sửa file này là điều KHÔNG bao giờ xảy ra ⇒ để glob tự lấy.
+          shopt -s nullglob
+          suites=(apps/*/test/*.e2e.mjs apps/*/test/e2e.mjs)
+          # "rỗng = xanh giả" (cùng kỷ luật bước unit test): mất-ròng dù 1 file cũng ĐỎ.
+          # Xoá bộ test có chủ đích thì hạ số này trong CÙNG commit — buộc phải cố ý.
+          MIN_E2E=80
+          [ "${#suites[@]}" -ge "$MIN_E2E" ] || { echo "chỉ ${#suites[@]} bộ e2e (<$MIN_E2E) — nghi mất file"; exit 1; }
+          echo "chạy ${#suites[@]} bộ e2e"
+          for f in "${suites[@]}"; do
+            # auth e2e chạy TRONG container auth (cần env/secret riêng của nó);
+            # mọi bộ khác chạy trong dbtest và gọi service qua HTTP nội mạng.
+            cont=dbtest
+            case "$f" in apps/auth/test/e2e.mjs) cont=auth ;; esac
+            run "$cont" "$f" node "$f"
+          done
           [ "$fail" = 0 ] && echo "=== TẤT CẢ E2E XANH ===" || echo "=== CÓ SUITE ĐỎ ==="
           exit $fail
 

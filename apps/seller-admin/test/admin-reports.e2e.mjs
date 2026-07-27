@@ -123,8 +123,12 @@ async function main() {
   });
   r.status === 303 ? ok('POST price+cost_vnd → 303') : bad('lưu cost qua BFF lỗi', `${r.status} ${r.body.slice(0, 150)}`);
   r = await adm('GET', `/shops/${A.shopId}/products/${pid}`, { cookie: cookieA });
-  r.body.includes('name="cost_vnd"') && /value="60000"/.test(r.body) && r.body.includes('biên ~40%')
-    ? ok('trang SP: ô Giá vốn=60.000 + "biên ~40%"') : bad('thiếu ô cost/biên', r.body.match(/biên[^<]*/)?.[0] ?? '');
+  // Ô giá vốn nằm trong BẢNG biến thể sửa-hàng-loạt (form bulkvars) nên tên trường là
+  // cost_<variantId>, KHÔNG phải cost_vnd — cost_vnd chỉ là tên trường của endpoint POST
+  // /variants/:id/price ở trên. Khẳng định đúng cái đang hiển thị: giá vốn ghi vào ĐỌC
+  // LẠI ĐƯỢC trên trang (nếu không, chủ shop mở form thấy trống rồi lưu đè = mất giá vốn).
+  r.body.includes(`name="cost_${vid}"`) && /value="60000"/.test(r.body) && r.body.includes('biên ~40%')
+    ? ok('trang SP: ô Giá vốn=60.000 + "biên ~40%"') : bad('thiếu ô cost/biên', r.body.match(/name="cost_[^"]*"[^>]*/)?.[0] ?? 'không thấy ô cost');
 
   sect('2. Đặt 2 đơn paid (1 SP có cost, 1 không) → trang Báo cáo');
   const place = async (v, qty, phone) => {

@@ -227,26 +227,46 @@ sect "6. Chống flood tra cứu database"
 # bỏ qua token bucket nên luôn 200 dù bucket đã cạn.
 ask shopa.test >/dev/null
 
-# Phải bắn SONG SONG THẬT. global fetch (undici) gộp kết nối keep-alive nên trên runner
-# CHẬM, 120 request bị rải ra ≤20/s = đúng tốc độ nạp lại → bucket KHÔNG BAO GIỜ cạn.
-# ĐÓ là nguồn flaky: xanh máy nhanh, đỏ máy chậm (cùng commit). Dùng http thô +
-# agent:false = mỗi request một socket riêng, tất cả tới CÙNG LÚC → tryTake (đồng bộ)
-# rút sạch 40 token trước khi kịp nạp lại → ~160/200 request CHẮC CHẮN bị bóp, không
-# phụ thuộc tốc độ máy.
-$COMPOSE exec -T tls-authorize node -e '
-  const http = require("http");
-  const reqs = [];
-  for (let i = 0; i < 200; i++) {
-    reqs.push(new Promise((resolve) => {
-      const r = http.get(
-        { host: "127.0.0.1", port: 3010, agent: false,
-          path: "/internal/tls/authorize?domain=flood" + i + ".test" },
-        (res) => { res.resume(); res.on("end", resolve); });
-      r.on("error", resolve);
-    }));
+# Phải bắn SONG SONG THẬT. Hai lần trước đã sai:
+#   (1) global fetch (undici) gộp keep-alive → 120 request rải ra ≤20/s = đúng tốc độ nạp
+#       lại → bucket không bao giờ cạn;
+#   (2) http.get + agent:false vẫn để việc NỐI socket xen kẽ việc GỬI, nên trên runner
+#       chậm 200 request trải dài ra và bucket kịp nạp — xanh máy nhanh, đỏ máy chậm
+#       (chính là kiểu đỏ CI #92 trong khi máy dev 158 dòng rate_limited).
+# Cách chắc chắn: NỐI XONG HẾT rồi mới GHI request lên tất cả socket trong một vòng lặp
+# đồng bộ. Phần chậm (bắt tay TCP) xảy ra TRƯỚC, nên tốc độ máy không còn ảnh hưởng.
+# 400 request với bucket 40 + nạp 20/s: kể cả server xử lý mất 10 giây vẫn còn ~160 bị bóp.
+flood_out=$($COMPOSE exec -T tls-authorize node -e '
+  const net = require("net");
+  const N = 400;
+  const socks = []; let connected = 0, closed = 0, fired = false;
+  const finish = () => { if (!fired) { fired = true; console.log("done " + closed + "/" + N); process.exit(0); } };
+  setTimeout(finish, 20000);                       // chặn treo vô hạn
+  const armed = () => {
+    // Ghi ĐỒNG LOẠT: vòng lặp đồng bộ, không await gì ở giữa.
+    for (let i = 0; i < socks.length; i++) {
+      try {
+        socks[i].write("GET /internal/tls/authorize?domain=flood" + i + ".test HTTP/1.1\r\n" +
+                       "Host: x\r\nConnection: close\r\n\r\n");
+      } catch { closed++; }
+    }
+  };
+  for (let i = 0; i < N; i++) {
+    const s = net.connect({ host: "127.0.0.1", port: 3010 });
+    s.setNoDelay(true);
+    s.on("data", () => {});
+    s.on("close", () => { if (++closed >= N) finish(); });
+    s.on("error", () => { if (++connected === N) armed(); });
+    s.on("connect", () => { if (++connected === N) armed(); });
+    socks.push(s);
   }
-  Promise.all(reqs).then(() => console.log("done"));
-' >/dev/null 2>&1
+' 2>&1)
+# KHÔNG nuốt output nữa: trước đây `>/dev/null 2>&1` giấu cả lỗi exec, nên khi lệnh flood
+# chết hẳn thì báo cáo vẫn ghi "không có rate_limited" và người đọc đi mò nhầm token bucket.
+case "$flood_out" in
+  *done*) : ;;
+  *) bad "không bắn được flood (lệnh exec lỗi)" "$(printf '%s' "$flood_out" | head -3)" ;;
+esac
 
 # `docker logs` có độ trễ flush; grep một-phát dễ hụt dòng vừa in (nguồn flaky thứ hai).
 # Chờ tối đa 10s (20×0.5s), qua NGAY khi thấy dòng rate_limited đầu tiên.
@@ -258,8 +278,8 @@ for _ in $(seq 20); do
   sleep 0.5
 done
 [ "$found" -eq 1 ] \
-  && ok "flood 200 hostname lạ → token bucket chặn trước khi chạm database" \
-  || bad "flood 200 hostname lạ → KHÔNG có log rate_limited; mọi request đều query Postgres"
+  && ok "flood 400 hostname lạ → token bucket chặn trước khi chạm database" \
+  || bad "flood 400 hostname lạ → KHÔNG có log rate_limited; mọi request đều query Postgres"
 
 # Khách thật ĐÃ trong cache: cache hit bỏ qua token bucket → không bị vạ lây dù bucket cạn.
 got="$(ask shopa.test)"

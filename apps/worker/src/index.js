@@ -410,7 +410,8 @@ async function sweepExpired() {
 // (chậm/ngoại vi — không giữ khoá); khớp thì UPDATE verified_at CÓ GUARD (idempotent, an
 // toàn khi hai lần quét trùng). Bỏ domain quá 24h chưa xong (challenge chết). DB/DNS lỗi →
 // chỉ bỏ nhịp (try/catch), không unhandledRejection → không crash-loop.
-async function sweepDomainVerify() {
+const DOMAINVERIFY_BATCH = 100;
+async function sweepDomainVerify(batch = DOMAINVERIFY_BATCH) {
   if (!domainDb) return 0;
   // DỌN challenge chết: xoá dòng CHƯA verify quá hạn → giải phóng hostname (UNIQUE toàn cục) để
   // người sở hữu THẬT đăng ký lại được; chống một shop "chiếm" domain người khác bằng dòng
@@ -422,13 +423,28 @@ async function sweepDomainVerify() {
     if (del.rowCount) log('info', 'domains_giveup_deleted', { n: del.rowCount });
   } catch (e) { log('error', 'domainverify_gc_error', { message: e.message }); }
 
+  // XOAY VÒNG (0103) thay vì luôn lấy 100 dòng MỚI NHẤT: dòng chưa verify KHÔNG rời tập kết
+  // quả (khách quên đặt TXT thì nằm đó tới 7 ngày), nên `ORDER BY created_at DESC LIMIT 100`
+  // khiến domain thứ 101 không bao giờ được tra. Ở đây KHÔNG rút cạn theo lô như nhắc-hạn:
+  // mỗi dòng là một truy vấn DNS RA NGOÀI, trần 100/nhịp là đúng — chỉ cần công bằng.
+  // NULLS FIRST: domain vừa thêm luôn được ưu tiên → vẫn verify gần như tức thì.
   let rows;
   try {
     rows = (await domainDb.query(
       `SELECT id, hostname, verification_token FROM domains
-        WHERE verified_at IS NULL AND created_at > now() - ($1 || ' hours')::interval
-        ORDER BY created_at DESC LIMIT 100`, [String(DOMAINVERIFY_GIVEUP_HOURS)])).rows;
+        WHERE verified_at IS NULL AND created_at > now() - ($2 || ' hours')::interval
+        ORDER BY last_checked_at NULLS FIRST, created_at DESC LIMIT $1`,
+      [batch, String(DOMAINVERIFY_GIVEUP_HOURS)])).rows;
   } catch (e) { log('error', 'domainverify_query_error', { message: e.message }); return 0; }
+  // Đóng dấu TRƯỚC khi tra DNS, một câu cho cả lô: tra DNS treo/worker chết giữa chừng thì
+  // lô này vẫn xoay xuống cuối hàng đợi ở nhịp sau. Bỏ lỡ một vòng chỉ là chậm một nhịp;
+  // đóng dấu SAU mà lô luôn chết giữa chừng thì lại đói quét y như cũ.
+  if (rows.length) {
+    try {
+      await domainDb.query(`UPDATE domains SET last_checked_at = now() WHERE id = ANY($1::uuid[])`,
+        [rows.map((d) => d.id)]);
+    } catch (e) { log('error', 'domainverify_stamp_error', { message: e.message }); }
+  }
 
   let verified = 0;
   for (const d of rows) {
@@ -1494,7 +1510,9 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   }
   // Kích hoạt quét xác minh domain ngay (nội bộ — cho cron + e2e xác định).
   if (url.pathname === '/internal/verify-sweep' && req.method === 'POST') {
-    const n = await sweepDomainVerify();
+    // ?batch= chỉ để e2e ép lô NHỎ mà chứng minh được xoay vòng (mirror subscription-sweep).
+    const nb = parseInt(url.searchParams.get('batch') ?? '', 10);
+    const n = await sweepDomainVerify(Number.isInteger(nb) ? Math.min(Math.max(nb, 1), DOMAINVERIFY_BATCH) : undefined);
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ verified: n }));
   }

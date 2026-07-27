@@ -49,7 +49,7 @@ const stepUp = (cookie, password) => rq(AUTH, 'POST', '/auth/step-up', { body: {
 // tls-authorize: Caddy hỏi trước khi cấp cert. 200 = cấp, 403 = từ chối.
 const tlsAuthorize = async (host) => (await fetch(`${TLS}/internal/tls/authorize?domain=${encodeURIComponent(host)}`)).status;
 const setTxt = (name, txt) => fetch(`${DNS_STUB}/set`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, txt }) });
-const verifySweep = async () => (await (await fetch(`${WORKER}/internal/verify-sweep`, { method: 'POST' })).json());
+const verifySweep = async (batch) => (await (await fetch(`${WORKER}/internal/verify-sweep${batch ? `?batch=${batch}` : ''}`, { method: 'POST' })).json());
 
 async function makeStaff() {
   const email = `staff-${uniq()}@nentang.vn`, password = 'staff strong passphrase';
@@ -182,6 +182,27 @@ async function main() {
   r.status === 400 ? ok('chiếm subdomain nền tảng → 400') : bad('cho chiếm tên miền nền tảng', r.raw);
   r = await rq(SELLER, 'POST', `/shops/${A.shopId}/domains`, { body: { hostname: h1 }, cookie: A.cookie, origin: OS });
   r.status === 409 ? ok('thêm hostname trùng → 409') : bad('cho thêm trùng', r.raw);
+
+  // ── 7b. XOAY VÒNG verify-sweep (0103 — chống đói quét) ─────────────────────
+  // Domain chưa verify KHÔNG rời tập kết quả (khách quên đặt TXT thì nằm đó tới 7 ngày).
+  // Bản cũ `ORDER BY created_at DESC LIMIT 100` ⇒ >100 domain chờ thì đúng 100 dòng MỚI NHẤT
+  // bị tra lại mỗi phút, dòng thứ 101 không bao giờ được tra. Ép lô = 1 để dựng lại đúng cảnh:
+  // hXoay (có TXT đúng) thêm TRƯỚC, hChan (không TXT) thêm SAU nên luôn "mới nhất".
+  sect('7b. Xoay vòng verify-sweep');
+  await stepUp(A.cookie, A.password);
+  const hXoay = `xoay-${uniq()}.example.com`, hChan = `chan-${uniq()}.example.com`;
+  const rXoay = await addDomain(A, hXoay);
+  await setTxt(rXoay.json.domain.challenge.name, rXoay.json.domain.challenge.value);
+  await addDomain(A, hChan); // KHÔNG đặt TXT → không bao giờ verify được
+  const verifiedOf = async (h) => (await owner.query('SELECT verified_at FROM domains WHERE hostname=$1', [h])).rows[0]?.verified_at ?? null;
+  await verifySweep(1); // lô 1 → lấy hChan (mới nhất, chưa tra lần nào)
+  (await verifiedOf(hXoay)) === null
+    ? ok('lô 1: sweep lấy domain mới nhất (hChan) → hXoay chưa tới lượt')
+    : bad('sweep lô 1 đã verify hXoay — ca dựng sai, không chứng minh được gì');
+  await verifySweep(1); // hChan đã đóng dấu → tới lượt hXoay
+  (await verifiedOf(hXoay)) !== null
+    ? ok('lô 1 lần 2: hChan xoay xuống cuối → hXoay ĐƯỢC tra và verify (bản cũ kẹt hChan mãi)')
+    : bad('đói quét: domain sau lô đầu không bao giờ được tra', hXoay);
 
   // ── 8. Non-owner + cô lập tenant ───────────────────────────────────────────
   sect('8. Non-owner + cô lập tenant');

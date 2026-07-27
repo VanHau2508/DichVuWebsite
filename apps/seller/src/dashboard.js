@@ -99,7 +99,20 @@ async function stats(res, ctx) {
         JOIN inventory_levels il ON il.variant_id = v.id
        WHERE (il.on_hand - il.reserved) <= coalesce((SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5)
        ORDER BY available ASC LIMIT 10`)).rows;
-    return { k, rf, top, low, series };
+    // "VIỆC CẦN LÀM" (hộp hành động kiểu TikTok Shop): 2 tín hiệu còn thiếu so với payload cũ.
+    //   - đánh giá CHỜ DUYỆT: khách đã viết nhưng chưa hiện lên storefront → mất social proof.
+    //   - TỔNG số biến thể sắp hết: `low` ở trên bị LIMIT 10 (bảng hiển thị), không dùng để
+    //     đếm được; muốn hiện đúng "23 mục sắp hết" phải đếm riêng không giới hạn.
+    const todo = (await c.query(`
+      SELECT
+        (SELECT count(*)::int FROM product_reviews WHERE status = 'pending') AS reviews_pending,
+        (SELECT count(*)::int
+           FROM variants v
+           JOIN products p ON p.id = v.product_id AND p.status = 'active' AND p.deleted_at IS NULL
+           JOIN inventory_levels il ON il.variant_id = v.id
+          WHERE (il.on_hand - il.reserved) <= coalesce((SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5)
+        ) AS low_stock_count`)).rows[0];
+    return { k, rf, top, low, series, todo };
   });
   const n = (x) => Number(x ?? 0);
   return send(res, 200, {
@@ -119,6 +132,15 @@ async function stats(res, ctx) {
       image_url: t.image_key ? `${MEDIA_PUBLIC_BASE}/${t.image_key}` : null,
     })),
     low_stock: out.low.map((l) => ({ title: l.title, sku: l.sku, variant_title: l.variant_title, available: n(l.available) })),
+    // Hộp "Việc cần làm" trên Tổng quan: mỗi số là 1 việc chủ shop phải xử lý HÔM NAY,
+    // kèm link tới đúng trang lọc sẵn (mẫu màn hình chính của TikTok Shop / Shopee).
+    todo: {
+      to_confirm: n(out.k.n_pending),      // đơn mới, chờ xác nhận
+      to_ship: n(out.k.n_confirmed),       // đã xác nhận, chờ giao cho hãng vận chuyển
+      unpaid: n(out.k.n_unpaid),           // chưa thu được tiền
+      reviews_pending: n(out.todo.reviews_pending),
+      low_stock: n(out.todo.low_stock_count),
+    },
   });
 }
 

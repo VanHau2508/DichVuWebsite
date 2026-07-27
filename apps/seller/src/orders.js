@@ -50,9 +50,14 @@ async function listOrders(res, ctx, _b, _p, query) {
   const limit = Math.min(Math.max(parseInt(query.get('limit') ?? '20', 10) || 20, 1), 100);
   const offset = Math.max(parseInt(query.get('offset') ?? '0', 10) || 0, 0);
   const status = query.get('status');
+  // HAI bộ điều kiện, dựng ĐỘC LẬP (không cắt-ghép/đánh-số-lại tham số — cách đó sai ngay khi
+  // một tham số được dùng ở 2 chỗ, như $lk trong mệnh đề tìm kiếm):
+  //   base*  = tìm kiếm + khoảng ngày  → dùng cho SỐ ĐẾM của TAB trạng thái.
+  //   where/args = base* + mệnh đề status → dùng cho danh sách đang xem.
+  // Tab phải đếm "trong kết quả tìm hiện tại, mỗi trạng thái có bao nhiêu đơn"; nếu đếm kèm
+  // cả filter status thì mọi tab về 0 trừ tab đang chọn.
   const where = [];
   const args = [];
-  if (['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded', 'returned'].includes(status)) { args.push(status); where.push(`status = $${args.length}`); }
   // Tìm: mã đơn (nếu q toàn số) hoặc tên/điện thoại khách (ILIKE, escape wildcard).
   const q = (query.get('q') ?? '').trim().slice(0, 100);
   if (q) {
@@ -73,9 +78,27 @@ async function listOrders(res, ctx, _b, _p, query) {
   const to = (query.get('to') ?? '').trim();
   if (DATE_RE.test(from)) { args.push(from); where.push(`created_at >= $${args.length}::date`); }
   if (DATE_RE.test(to)) { args.push(to); where.push(`created_at < ($${args.length}::date + 1)`); }
+  // Chốt bản "không kể trạng thái" TRƯỚC khi thêm mệnh đề status → khỏi phải đánh số lại.
+  const countArgs = [...args];
+  const whereNoStatusSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  // Giờ mới thêm status (luôn là tham số CUỐI) cho truy vấn danh sách.
+  if (['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded', 'returned'].includes(status)) {
+    args.push(status); where.push(`status = $${args.length}`);
+  }
   const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const data = await withTenant(ctx.shopId, async (c) => {
     const total = (await c.query(`SELECT count(*)::int n FROM orders ${whereSql}`, args)).rows[0].n;
+    // Số đếm theo trạng thái cho TAB (kiểu TikTok Shop/Shopee) — 1 lần quét, FILTER theo status.
+    const cnt = (await c.query(`
+      SELECT count(*)::int AS all_n,
+             count(*) FILTER (WHERE status = 'pending')   AS pending,
+             count(*) FILTER (WHERE status = 'confirmed') AS confirmed,
+             count(*) FILTER (WHERE status = 'shipped')   AS shipped,
+             count(*) FILTER (WHERE status = 'delivered') AS delivered,
+             count(*) FILTER (WHERE status = 'cancelled') AS cancelled,
+             count(*) FILTER (WHERE status = 'refunded')  AS refunded,
+             count(*) FILTER (WHERE status = 'returned')  AS returned
+        FROM orders ${whereNoStatusSql}`, countArgs)).rows[0];
     const rows = (await c.query(
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.total_vnd, o.customer_name, o.created_at,
               (SELECT count(DISTINCT o2.customer_phone)::int FROM orders o2
@@ -83,7 +106,11 @@ async function listOrders(res, ctx, _b, _p, query) {
                    AND o2.client_ip_hash IS NOT NULL AND o2.status = 'pending') AS same_ip_phones
          FROM orders o ${whereSql} ORDER BY o.order_number DESC LIMIT ${limit} OFFSET ${offset}`, args,
     )).rows;
-    return { total, orders: rows };
+    const n = (x) => Number(x ?? 0);
+    return { total, orders: rows, counts: {
+      '': n(cnt.all_n), pending: n(cnt.pending), confirmed: n(cnt.confirmed), shipped: n(cnt.shipped),
+      delivered: n(cnt.delivered), cancelled: n(cnt.cancelled), refunded: n(cnt.refunded), returned: n(cnt.returned),
+    } };
   });
   return send(res, 200, { ...data, limit, offset });
 }

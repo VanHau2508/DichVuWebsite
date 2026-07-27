@@ -116,6 +116,9 @@ const I_BADGE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const I_WALLET = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h13v4"/><path d="M3 7v10a2 2 0 0 0 2 2h14a1 1 0 0 0 1-1v-3"/><path d="M21 11v4h-4a2 2 0 0 1 0-4z"/></svg>';
 const I_SEARCH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>';
 const I_USER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-6 8-6s8 2 8 6"/></svg>';
+// Icon cho thanh tab đáy mobile (nhà + lưới danh mục).
+const I_HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/><path d="M9.5 20v-6h5v6"/></svg>';
+const I_GRID = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>';
 // 👁 xem-nhanh (Phase 3): con mắt — mở modal quick-view (không JS → link về trang SP).
 const I_EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
 
@@ -133,6 +136,39 @@ const salePriceHtml = (base, sale, off) =>
 // Giá hiển thị của một mục (thẻ/related): sale nếu có, không thì giá gốc + compare_at.
 const priceLine = (base, sale, off, cmp) =>
   (sale != null ? salePriceHtml(base, sale, off) : `${money(base)}${compareHtml(base, cmp)}`);
+
+// ── Tín hiệu SÀN TMĐT trên thẻ (0096): sao + "Đã bán N" ─────────────────────
+// Shopee/TikTok Shop luôn kèm 2 tín hiệu này dưới giá — đó là thứ tạo NIỀM TIN mua hàng.
+// Đọc từ cột cache products.sold_count/rating_avg/rating_count (worker sweep giữ tươi).
+//
+// Rút gọn kiểu Việt: 1.200 → "1,2k" · 15.000 → "15k" · 1.500.000 → "1,5tr". Sàn nào cũng
+// rút gọn vì cột thẻ rất hẹp; số thô 4-7 chữ số sẽ vỡ dòng.
+function soldShort(n) {
+  const v = Number(n) || 0;
+  if (v >= 1000000) return `${String((v / 1000000).toFixed(1)).replace('.0', '').replace('.', ',')}tr`;
+  if (v >= 1000) return `${String((v / 1000).toFixed(1)).replace('.0', '').replace('.', ',')}k`;
+  return String(v);
+}
+// Sao ĐẶC/RỖNG theo điểm làm tròn 0.5 — vẽ bằng ký tự (không ảnh, không font ngoài → CSP-safe).
+// aria-label đọc thành câu đầy đủ cho screen-reader; phần ★ ẩn khỏi trợ năng (aria-hidden).
+function starsHtml(avg) {
+  const v = Math.max(0, Math.min(5, Number(avg) || 0));
+  const full = Math.floor(v + 0.25); // ≥ x.75 làm tròn lên; x.25–x.74 → nửa sao
+  const half = (v - full) >= 0.25 && full < 5;
+  return `<span class="stars" aria-hidden="true">${'★'.repeat(full)}${half ? '<span class="star-h">★</span>' : ''}${'☆'.repeat(Math.max(0, 5 - full - (half ? 1 : 0)))}</span>`;
+}
+// Dòng meta dưới giá. TỰ ẨN từng phần: SP chưa có đánh giá thì KHÔNG hiện "0★" (hiện 0 sao
+// trông như hàng bị chê); SP chưa bán được cái nào thì không hiện "Đã bán 0".
+function cardMeta(p) {
+  const n = Number(p.rating_count) || 0;
+  const sold = Number(p.sold_count) || 0;
+  if (!n && !sold) return '';
+  const rate = n
+    ? `<span class="c-rate" aria-label="${esc(Number(p.rating_avg).toFixed(1))} trên 5 sao, ${n} đánh giá">${starsHtml(p.rating_avg)}<span class="c-rnum">${esc(Number(p.rating_avg).toFixed(1))}</span> <span class="c-rn">(${soldShort(n)})</span></span>`
+    : '';
+  const sd = sold ? `<span class="c-sold">Đã bán ${soldShort(sold)}</span>` : '';
+  return `<div class="card-meta">${rate}${sd}</div>`;
+}
 
 // Thẻ sản phẩm dùng chung (lưới trang chủ / danh mục / tìm kiếm). Escape mọi field người bán.
 // Phase 3 — HTML HỢP LỆ (KHÔNG nhét phần tử tương tác vào trong <a>):
@@ -157,7 +193,7 @@ function productCards(products) {
         : `<a class="card-add" href="${href}">${I_CART}<span>Thêm vào giỏ</span></a>`;
     return `<div class="card${out ? ' is-out' : ''}">
           <div class="card-thumb">${media}${qv}</div>
-          <div class="card-body"><a class="name" href="${href}">${esc(p.title)}</a><div class="price">${priceLine(p.price_vnd, p.sale_price_vnd, p.sale_off_pct, p.compare_at_vnd)}</div>${addBtn}</div>
+          <div class="card-body"><a class="name" href="${href}">${esc(p.title)}</a><div class="price">${priceLine(p.price_vnd, p.sale_price_vnd, p.sale_off_pct, p.compare_at_vnd)}</div>${cardMeta(p)}${addBtn}</div>
         </div>`;
   }).join('');
 }
@@ -189,7 +225,7 @@ function pager(pi) {
 function sortBar(pi) {
   if (!pi) return '';
   const cur = pi.sort ?? 'new';
-  const opts = [['new', 'Mới nhất'], ['price_asc', 'Giá tăng dần'], ['price_desc', 'Giá giảm dần']];
+  const opts = [['new', 'Mới nhất'], ['best', 'Bán chạy'], ['price_asc', 'Giá tăng dần'], ['price_desc', 'Giá giảm dần']];
   const links = opts.map(([k, label]) => {
     if (k === cur) return `<span class="sort-link on" aria-current="true">${label}</span>`;
     const parts = (k === 'new' ? [] : [`sort=${k}`]).concat(filterParts(pi));
@@ -1224,6 +1260,17 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
 .card .name{font-family:var(--font-heading);font-weight:600;font-size:.98rem;color:var(--color-text);line-height:1.38;letter-spacing:-.01em;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.72em;transition:color .15s}
 .card .name:hover{color:var(--color-primary)}
 .card .price{font-weight:800;color:var(--color-primary);font-size:1.12rem;letter-spacing:-.01em;font-variant-numeric:tabular-nums;margin-top:auto}
+/* Tín hiệu sàn TMĐT (0096): sao + "Đã bán N" dưới giá, kiểu Shopee/TikTok Shop.
+   Một dòng, chữ nhỏ, màu phụ — KHÔNG được tranh chú ý với giá. Tự xuống dòng khi thẻ hẹp. */
+.card-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:.76rem;color:var(--color-muted);line-height:1.3;min-height:1.2em}
+.c-rate{display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
+.stars{color:#f5a623;letter-spacing:-.5px;font-size:.82rem}
+/* Nửa sao: ★ bị cắt một nửa bằng gradient — không cần ký tự/ảnh riêng. */
+.star-h{background:linear-gradient(90deg,#f5a623 50%,var(--color-border) 50%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.c-rnum{font-weight:700;color:var(--color-text)}
+.c-rn{color:var(--color-muted)}
+.c-sold{white-space:nowrap}
+@media(max-width:560px){.card-meta{font-size:.72rem}}
 .pd{padding:28px 20px 52px}
 .crumb{font-size:.85rem;color:var(--color-muted);margin:0 0 20px}.crumb a:hover{color:var(--color-primary)}
 .pd-grid{display:grid;grid-template-columns:1fr 1fr;gap:44px;align-items:start}
@@ -1300,6 +1347,24 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
 .opt .chip.sel{border-color:var(--color-primary);background:var(--color-hero-bg);color:color-mix(in srgb,var(--color-primary) 82%,#000);font-weight:700;box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 16%,transparent)}
 .opt .chip.out{color:var(--color-muted);text-decoration:line-through}
 .opt .chip.disabled{color:#c4c8cf;background:var(--color-surface);border-style:dashed;cursor:not-allowed;text-decoration:line-through}
+/* ── Thanh tab ĐÁY mobile (kiểu sàn TMĐT) ────────────────────────────────────
+   Desktop KHÔNG hiện (header đã đủ). Mobile: cố định đáy, 4 tab đều nhau, nền mờ. */
+.tabbar{display:none}
+@media(max-width:720px){
+  .tabbar{display:grid;grid-template-columns:repeat(4,1fr);position:fixed;left:0;right:0;bottom:0;z-index:60;
+    background:color-mix(in srgb,var(--color-bg) 92%,transparent);backdrop-filter:saturate(1.4) blur(10px);
+    border-top:1px solid var(--color-border);padding-bottom:env(safe-area-inset-bottom);box-shadow:0 -2px 14px rgba(0,0,0,.06)}
+  .tabbar a{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:8px 4px 7px;
+    font-size:.66rem;font-weight:600;color:var(--color-muted);text-decoration:none;line-height:1.1;min-height:54px}
+  .tabbar a:active{background:var(--color-surface)}
+  .tabbar .i{position:relative;display:block}
+  .tabbar svg{width:22px;height:22px;display:block}
+  /* Nội dung phải chừa chỗ cho thanh cố định, không thì footer bị che. */
+  body{padding-bottom:calc(56px + env(safe-area-inset-bottom))}
+  /* Trang SP: ẩn tab bar, nhường chỗ cho thanh MUA dính đáy (y như Shopee). */
+  body:has(.pd-actions) .tabbar{display:none}
+  body:has(.pd-actions){padding-bottom:0}
+}
 .pd-actions{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:6px 0 22px}
 .pd-actions .qty{padding:12px 14px;border:1px solid #d6d6d6;border-radius:var(--r);font-size:1rem;font-family:inherit;background:var(--color-bg);color:var(--color-text);width:84px;text-align:center}
 .pd-actions .qty:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 22%,transparent)}
@@ -1336,7 +1401,18 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
 .rv-stars input{position:absolute;width:1px;height:1px;opacity:0}
 .rv-stars label{font-size:1.7rem;color:#d1d5db;cursor:pointer;line-height:1}
 .rv-stars input:checked ~ label,.rv-stars label:hover,.rv-stars label:hover ~ label{color:#f59e0b}
-@media(max-width:720px){.pd-grid{grid-template-columns:1fr;gap:24px}.hnav{gap:14px;font-size:.85rem}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.pd-info h1{font-size:1.5rem}.pd-actions .btn{flex:1}}
+@media(max-width:720px){.pd-grid{grid-template-columns:1fr;gap:24px}.hnav{gap:14px;font-size:.85rem}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}.pd-info h1{font-size:1.5rem}.pd-actions .btn{flex:1}
+  /* Thanh MUA dính đáy trên trang SP (kiểu Shopee): [SL] [Thêm giỏ] [Mua ngay] luôn trong
+     tầm ngón cái, khách không phải cuộn ngược lên. Vẫn là CHÍNH form cũ (POST /cart/add) →
+     no-JS chạy y nguyên, không nhân đôi form (tránh lệch số lượng/biến thể đã chọn). */
+  .pd-actions{position:sticky;bottom:0;z-index:55;margin:6px -20px 0;padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+    background:color-mix(in srgb,var(--color-bg) 94%,transparent);backdrop-filter:saturate(1.4) blur(10px);
+    border-top:1px solid var(--color-border);box-shadow:0 -2px 14px rgba(0,0,0,.07);flex-wrap:nowrap;gap:8px}
+  .pd-actions .qty{width:64px;padding:12px 6px;flex:0 0 auto}
+  .pd-actions .btn{min-width:0;padding:12px 10px;font-size:.92rem;white-space:nowrap}
+  /* Chừa chỗ để nội dung cuối trang không bị thanh dính che. */
+  .pd{padding-bottom:16px}
+}
 /* ── Drawer giỏ hàng (Phase 2, chỉ hoạt động khi có JS — shell TĨNH, JS đổ dữ liệu) ──
    z-index 70/71: trên header (20), menu/search (30), lightbox (50). [hidden] phải thắng
    display:flex → khai display:none tường minh. prefers-reduced-motion: rule toàn cục
@@ -1458,8 +1534,10 @@ function cartScript(nonce) {
   return `<script nonce="${esc(nonce)}">(function(){
   'use strict';
   if(!window.fetch) return;
-  var badge=document.getElementById('cart-badge');
-  function setBadge(n){ if(!badge) return; if(n>0){ badge.textContent=(n>99?'99+':String(n)); badge.hidden=false; } else { badge.textContent=''; badge.hidden=true; } }
+  // Có 2 chỗ hiện số giỏ: icon giỏ ở header + tab "Giỏ hàng" ở thanh đáy mobile → cập nhật CẢ HAI.
+  var badges=document.querySelectorAll('.cart-badge');
+  function setBadge(n){ for(var i=0;i<badges.length;i++){ var b=badges[i];
+    if(n>0){ b.textContent=(n>99?'99+':String(n)); b.hidden=false; } else { b.textContent=''; b.hidden=true; } } }
   // Định dạng VNĐ thuần JS (không Intl để chắc chắn ổn định): 1234567 → "1.234.567₫".
   function vnd(n){ n=Math.round(Number(n)||0); return String(n).replace(/\\B(?=(\\d{3})+(?!\\d))/g,'.')+'\\u20ab'; }
   function getSummary(){ return fetch('/cart/summary',{credentials:'same-origin',headers:{'accept':'application/json'}}).then(function(r){ return r.ok?r.json():null; }); }
@@ -1774,11 +1852,23 @@ function cartScript(nonce) {
 })();</script>`;
 }
 
+// ── Thanh điều hướng ĐÁY trên mobile (kiểu Shopee/TikTok Shop) ───────────────
+// Điện thoại chiếm phần lớn lưu lượng TMĐT Việt. Sàn nào cũng có 4 tab cố định ở đáy để
+// khách nhảy giữa Duyệt ↔ Giỏ ↔ Đơn của tôi trong 1 chạm, thay vì cuộn ngược lên header.
+// Thuần CSS (không JS), chỉ hiện ≤720px, tôn trọng safe-area (tai thỏ iPhone).
+// Trang SP tự ẩn thanh này (xem CSS body:has(.pd-actions)) để nhường chỗ cho thanh MUA.
+const MOBILE_TABBAR = `<nav class="tabbar" aria-label="Điều hướng nhanh">
+  <a href="/"><span class="i">${I_HOME}</span><span>Trang chủ</span></a>
+  <a href="/products"><span class="i">${I_GRID}</span><span>Danh mục</span></a>
+  <a href="/cart"><span class="i">${I_CART}<span class="cart-badge" aria-live="polite" hidden></span></span><span>Giỏ hàng</span></a>
+  <a href="/account"><span class="i">${I_USER}</span><span>Tài khoản</span></a>
+</nav>`;
+
 function page(title, tokens, bodyHtml, head = '', nonce = '') {
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>${head}<style>${tokensToCss(tokens)}\n${STYLE}</style></head>
-<body>${bodyHtml}${nonce ? DRAWER_SHELL + QUICKVIEW_SHELL + cartScript(nonce) : ''}</body></html>`;
+<body>${bodyHtml}${MOBILE_TABBAR}${nonce ? DRAWER_SHELL + QUICKVIEW_SHELL + cartScript(nonce) : ''}</body></html>`;
 }
 
 // Chèn dải "cam kết" (sau hero) và "bộ sưu tập" (trước lưới sản phẩm) nếu layout đã lưu

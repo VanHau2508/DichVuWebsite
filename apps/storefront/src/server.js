@@ -223,6 +223,9 @@ const HOME_FEATURED = 10; // trang chủ nạp 10 SP nổi bật (đủ cho 5 c�
 // p.price_vnd — đúng cột giá thẻ sản phẩm đang hiển thị. Giá trị lạ rơi về 'new'.
 const GRID_SORTS = {
   new: 'p.created_at DESC',
+  // "Bán chạy" (0096) — sort mặc-định-thực-tế của mọi sàn TMĐT. Đọc cột cache sold_count
+  // (index products_sold_idx), KHÔNG aggregate live. Tie-break created_at cho ổn định phân trang.
+  best: 'p.sold_count DESC, p.created_at DESC',
   price_asc: 'p.price_vnd ASC, p.created_at DESC',
   price_desc: 'p.price_vnd DESC, p.created_at DESC',
 };
@@ -521,6 +524,8 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         // pe = LATERAL nguồn giá DUY NHẤT → thẻ hiện giá sale + gạch giá gốc, KHÔNG drift.
         const rows = (await c.query(
           `SELECT p.id, p.slug, p.title, p.price_vnd,
+                  -- Tín hiệu sàn TMĐT (0096): đọc CỘT CACHE, không aggregate (query này đã 6 subquery/hàng).
+                  p.sold_count, p.rating_avg, p.rating_count,
                   pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct,
                   (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
                   -- Phase 3 thẻ hover: ảnh THỨ HAI (đổi khi rê chuột). NULL nếu SP chỉ 1 ảnh.
@@ -623,7 +628,8 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
             WHERE pc.product_id = $1 ORDER BY c.position LIMIT 1`, [p.id])).rows[0] ?? null;
         // Sản phẩm liên quan: cùng danh mục, đang bán, khác chính nó (RLS store_products lọc active).
         p.related = (await c.query(
-          `SELECT DISTINCT p2.id, p2.slug, p2.title, p2.price_vnd, pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct,
+          `SELECT DISTINCT p2.id, p2.slug, p2.title, p2.price_vnd, p2.sold_count, p2.rating_avg, p2.rating_count,
+                  pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct,
                   (SELECT m.public_key FROM media m WHERE m.product_id = p2.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
                   (SELECT coalesce(sum(il.on_hand - il.reserved), 0) FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
                     WHERE v.product_id = p2.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS available

@@ -718,6 +718,52 @@ async function sweepTracking() {
   return { checked: rows.length, delivered };
 }
 
+// ── sweep: TÍN HIỆU SÀN TMĐT (0096) — tính lại products.sold_count/rating_avg/rating_count ──
+// "Đã bán N" + sao trên thẻ sản phẩm (kiểu Shopee/TikTok Shop) đọc từ cột CACHE, không tính
+// live (lưới đã 6 subquery/hàng — cộng thêm aggregate sẽ chết ở quy mô 100-1000 shop).
+// Sweep này giữ cache tươi. NHẤT QUÁN CUỐI CÙNG là đủ: badge trưng bày, KHÔNG phải đường tiền
+// (không dính tồn kho/thanh toán) nên lệch tối đa 1 chu kỳ không gây thiệt hại.
+//
+// Ghi bằng MỘT câu UPDATE…FROM cho cả nền tảng (không lặp theo shop): sold/rating tính trong
+// CTE rồi so bằng IS DISTINCT FROM → chỉ ghi hàng thực sự đổi, tránh bơm WAL vô ích.
+const PRODSTATS_SWEEP_MS = Number(process.env.PRODSTATS_SWEEP_MS ?? 900000); // 15 phút
+async function sweepProductStats() {
+  if (!expiryDb) return { updated: 0 };
+  try {
+    // Đã bán = SL từ đơn ĐÃ TRẢ và KHÔNG huỷ/trả (ngữ nghĩa ever-paid như reports.js).
+    // Sao = chỉ đánh giá ĐÃ DUYỆT — đúng thứ storefront hiển thị.
+    const r = await expiryDb.query(`
+      WITH sold AS (
+        SELECT v.product_id, sum(ol.qty)::int AS qty
+          FROM order_lines ol
+          JOIN variants v ON v.id = ol.variant_id
+          JOIN orders o   ON o.id = ol.order_id
+         WHERE o.paid_at IS NOT NULL AND o.status NOT IN ('cancelled', 'returned')
+         GROUP BY v.product_id
+      ), rated AS (
+        SELECT r.product_id, round(avg(r.rating)::numeric, 2) AS avg_r, count(*)::int AS n
+          FROM product_reviews r WHERE r.status = 'approved' GROUP BY r.product_id
+      )
+      UPDATE products p
+         SET sold_count  = coalesce(sold.qty, 0),
+             rating_avg  = rated.avg_r,
+             rating_count = coalesce(rated.n, 0)
+        FROM (SELECT id FROM products) ids
+        LEFT JOIN sold  ON sold.product_id  = ids.id
+        LEFT JOIN rated ON rated.product_id = ids.id
+       WHERE p.id = ids.id
+         AND (p.sold_count   IS DISTINCT FROM coalesce(sold.qty, 0)
+           OR p.rating_avg   IS DISTINCT FROM rated.avg_r
+           OR p.rating_count IS DISTINCT FROM coalesce(rated.n, 0))`);
+    if (r.rowCount) log('info', 'prodstats_synced', { updated: r.rowCount });
+    return { updated: r.rowCount };
+  } catch (e) {
+    // Kỷ luật chống crash-loop như mọi sweep: nuốt lỗi, không bao giờ throw ra setInterval.
+    log('error', 'prodstats_sweep_error', { message: e.message });
+    return { updated: 0 };
+  }
+}
+
 // ── sweep: cảnh báo SẮP HẾT HÀNG (0050) — mỗi ngày 1 email/shop nếu có hàng tồn thấp ──
 // Ngưỡng per-shop (NULL → 5). Chỉ shop active + có contact_email. Nhóm theo shop → 1 email
 // tối đa 20 dòng. Idempotent theo NHỊP (timer 24h); gọi tay /internal/lowstock-sweep để test.
@@ -1212,6 +1258,7 @@ async function sweepMoneyAlerts() {
 const timer = setInterval(poll, POLL_MS);
 const expiryTimer = expiryDb ? setInterval(sweepExpired, EXPIRY_SWEEP_MS) : null;
 const lowstockTimer = expiryDb ? setInterval(sweepLowStock, LOWSTOCK_SWEEP_MS) : null;
+const prodStatsTimer = expiryDb ? setInterval(sweepProductStats, PRODSTATS_SWEEP_MS) : null;
 const outboxGcTimer = setInterval(sweepOutboxGc, OUTBOX_GC_MS);
 const alertTimer = setInterval(sweepMoneyAlerts, ALERT_SWEEP_MS);
 const tgLinkTimer = (TELEGRAM_ON && expiryDb) ? setInterval(sweepTelegramLink, TELEGRAM_LINK_SWEEP_MS) : null;
@@ -1286,6 +1333,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(r));
   }
+  // Tính lại "đã bán"/sao ngay (nội bộ — cho e2e xác định, không phải đợi nhịp 15 phút).
+  if (url.pathname === '/internal/prodstats-sweep' && req.method === 'POST') {
+    const r = await sweepProductStats();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   // Kích hoạt dọn outbox ngay (nội bộ — cho cron + e2e xác định).
   if (url.pathname === '/internal/pii-sweep' && req.method === 'POST') {
     const r = await sweepPiiRetention();
@@ -1345,6 +1398,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (billingTimer) clearInterval(billingTimer);
     if (trackingTimer) clearInterval(trackingTimer);
     if (lowstockTimer) clearInterval(lowstockTimer);
+    if (prodStatsTimer) clearInterval(prodStatsTimer);
     if (piiTimer) clearInterval(piiTimer);
     if (staleTimer) clearInterval(staleTimer);
     if (loyaltyEarnTimer) clearInterval(loyaltyEarnTimer);

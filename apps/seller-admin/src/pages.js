@@ -117,6 +117,23 @@ input[type=file]{width:auto;padding:9px 12px;background:var(--surf);border:1.5px
 .metric{background:var(--card);border:1px solid var(--bd);border-radius:var(--r-lg);padding:18px 20px;box-shadow:var(--sh-sm);transition:transform .2s,box-shadow .2s,border-color .2s}
 a.metric:hover{transform:translateY(-3px);box-shadow:var(--sh);border-color:color-mix(in srgb,var(--pri) 30%,var(--bd))}
 .metric .l{font-size:.8rem;color:var(--mut);margin-bottom:4px}.metric .v{font-size:1.7rem;font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.1}
+/* "Việc cần làm" — lưới ô hành động đầu trang Tổng quan (mẫu TikTok Shop/Shopee).
+   Ô CÓ việc: nền màu cảnh báo + số to đậm. Ô SẠCH: xám nhạt, không hút mắt. */
+.todo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px;margin-top:14px}
+.todo-cell{display:block;padding:14px 16px;border:1px solid var(--bd);border-radius:var(--r-lg);background:var(--card);text-decoration:none;color:inherit;transition:transform .18s,box-shadow .18s,border-color .18s}
+.todo-cell:hover{transform:translateY(-2px);box-shadow:var(--sh);text-decoration:none}
+.todo-n{font-size:1.75rem;font-weight:800;line-height:1.05;letter-spacing:-.02em;font-variant-numeric:tabular-nums;color:var(--mut)}
+.todo-cell.on .todo-n{font-size:1.9rem}
+.todo-l{font-size:.8rem;color:var(--mut);margin-top:3px;line-height:1.3}
+.todo-cell.on .todo-l{color:var(--soft);font-weight:600}
+/* Tab trạng thái (Đơn hàng/Sản phẩm) — thay <select> bằng tab kèm số đếm, kiểu sàn TMĐT.
+   Cuộn ngang trên mobile thay vì vỡ hàng. */
+.stabs{display:flex;gap:4px;overflow-x:auto;border-bottom:1px solid var(--bd);margin:0 0 14px;padding-bottom:0;-webkit-overflow-scrolling:touch}
+.stab{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border:0;border-bottom:2px solid transparent;background:none;color:var(--mut);font-size:.9rem;font-weight:600;text-decoration:none;white-space:nowrap;transition:color .15s,border-color .15s}
+.stab:hover{color:var(--pri);text-decoration:none}
+.stab.on{color:var(--pri);border-bottom-color:var(--pri)}
+.stab .cnt{display:inline-block;min-width:19px;padding:0 6px;border-radius:999px;background:var(--bd2,#e5e7eb);color:var(--soft);font-size:.72rem;font-weight:800;line-height:19px;text-align:center;font-variant-numeric:tabular-nums}
+.stab.on .cnt{background:var(--pri);color:#fff}
 .dash-hero{position:relative;overflow:hidden;background:linear-gradient(120deg,color-mix(in srgb,var(--brand) 7%,var(--card)),var(--card) 60%);border:1px solid var(--bd);border-radius:var(--r-lg);padding:26px 28px;margin:0 0 20px;box-shadow:var(--sh-sm)}
 .dash-hero::after{content:"";position:absolute;top:-40%;right:-8%;width:300px;height:300px;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--brand2) 12%,transparent),transparent 70%);pointer-events:none}
 .dash-hero .eyebrow{position:relative;font-size:.74rem;text-transform:uppercase;letter-spacing:.09em;color:var(--pri);font-weight:800;margin:0 0 4px}
@@ -1018,10 +1035,40 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null) {
       <p class="muted" style="font-size:.85rem;margin:0 0 6px">Cửa hàng đã có thể nhận đơn. Hoàn tất các mục dưới để bán trơn tru — quan trọng nhất là <strong>nhận tiền</strong>.</p>
       ${rows}${goLive}</div>`;
   }
+  // ── "VIỆC CẦN LÀM" — hộp hành động đầu trang (mẫu màn hình chính TikTok Shop/Shopee) ──
+  // Chủ shop mở trang quản lý là để biết HÔM NAY phải làm gì, không phải để ngắm doanh thu.
+  // Mỗi ô = 1 việc tồn đọng + link tới đúng trang ĐÃ LỌC SẴN. Ô có việc (n>0) mới nổi màu;
+  // hết việc thì xám và không dẫn đi đâu gấp. Sạch việc → hiện lời chúc thay vì lưới trống.
+  const td = s?.todo ?? {};
+  const TODO = [
+    { n: Number(td.to_confirm ?? 0), label: 'Đơn chờ xác nhận', href: `${base}/orders?status=pending`, tone: '#b45309', bg: '#fffbeb', bd: '#fcd34d', icon: '🕐' },
+    { n: Number(td.to_ship ?? 0), label: 'Đơn chờ gửi hàng', href: `${base}/orders?status=confirmed`, tone: '#1d4ed8', bg: '#eff6ff', bd: '#bfdbfe', icon: '📦' },
+    { n: Number(td.unpaid ?? 0), label: 'Đơn chưa thu tiền', href: `${base}/orders`, tone: '#b91c1c', bg: '#fef2f2', bd: '#fecaca', icon: '💰' },
+    { n: Number(td.reviews_pending ?? 0), label: 'Đánh giá chờ duyệt', href: `${base}/reviews`, tone: '#7c3aed', bg: '#f5f3ff', bd: '#ddd6fe', icon: '⭐' },
+    { n: Number(td.low_stock ?? 0), label: 'Sắp hết hàng', href: `${base}/products`, tone: '#c2410c', bg: '#fff7ed', bd: '#fed7aa', icon: '⚠' },
+  ];
+  const openWork = TODO.reduce((a, x) => a + x.n, 0);
+  const todoCells = TODO.map((x) => {
+    const on = x.n > 0;
+    return `<a class="todo-cell${on ? ' on' : ''}" href="${x.href}"
+      style="${on ? `background:${x.bg};border-color:${x.bd}` : ''}"
+      aria-label="${esc(x.label)}: ${x.n}">
+      <div class="todo-n" style="${on ? `color:${x.tone}` : ''}">${esc(x.n)}</div>
+      <div class="todo-l">${x.icon} ${esc(x.label)}</div></a>`;
+  }).join('');
+  const todoCard = `<div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <h2 style="margin:0">Việc cần làm</h2>
+      ${openWork === 0 ? '<span class="muted" style="font-size:.88rem">✓ Không còn việc tồn đọng</span>'
+        : `<span class="muted" style="font-size:.88rem">${esc(openWork)} việc đang chờ bạn</span>`}
+    </div>
+    <div class="todo-grid">${todoCells}</div></div>`;
+
   return layout('Tổng quan', ctx, `
     <h1>Tổng quan</h1>
     ${notice ? `<div class="card" style="border-color:#a7f3d0;background:#ecfdf5;color:#065f46">${esc(notice)}</div>` : ''}
     ${setupCard}
+    ${todoCard}
     <div class="dash-hero">
       <p class="eyebrow">Doanh thu 7 ngày gần nhất</p>
       <div class="hero-num">${money(d7)}</div>
@@ -1305,12 +1352,27 @@ export function renderOrders(ctx, shopId, data, filter) {
   const off = filter.offset, lim = filter.limit;
   const qenc = encodeURIComponent(filter.q ?? '');
   const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&offset=${o}`;
+  // TAB trạng thái kèm SỐ ĐẾM (thay <select> cũ) — mẫu quen thuộc của TikTok Shop/Shopee:
+  // nhìn là biết "còn 12 đơn chờ xác nhận", bấm 1 phát là lọc. Số đếm tôn trọng ô tìm kiếm
+  // + khoảng ngày đang áp (nhưng không tính chính mệnh đề trạng thái) nên luôn khớp kết quả.
+  // Giữ nguyên q/from/to khi đổi tab để không mất bộ lọc người dùng đang xem.
+  const cnts = data.counts ?? {};
+  const keep = `&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}`;
+  const statusTabs = `<div class="stabs" role="tablist" aria-label="Lọc theo trạng thái">${
+    STATUSES.map((s) => {
+      const on = (filter.status ?? '') === s;
+      const label = s ? (STATUS[s] ?? s) : 'Tất cả';
+      const n = cnts[s];
+      return `<a class="stab${on ? ' on' : ''}" href="?status=${esc(s)}${keep}"${on ? ' aria-current="page"' : ''}>${esc(label)}${
+        n != null ? `<span class="cnt">${esc(n)}</span>` : ''}</a>`;
+    }).join('')}</div>`;
   return layout('Đơn hàng', ctx, `<div class="toolbar"><h1 style="margin:0">Đơn hàng</h1>
       <span class="actions"><a class="btn" href="/shops/${esc(shopId)}/orders/new">+ Tạo đơn</a></span></div>
     ${flagged ? `<div class="card" style="background:#fef3c7;border-color:#fcd34d;color:#92400e"><strong>⚠ ${flagged} đơn nghi ngờ (đơn ảo?)</strong> — một nguồn mạng có nhiều SĐT khác nhau đang chờ xử lý. Kiểm tra kỹ trước khi giao; <strong>huỷ đơn ảo để trả lại tồn kho</strong>. (Đơn COD không xác nhận sẽ tự huỷ sau ${esc(7)} ngày.)</div>` : ''}
+    ${statusTabs}
     <div class="card"><form method="GET" class="filters">
+      <input type="hidden" name="status" value="${esc(filter.status ?? '')}">
       <div style="flex:1 1 200px"><label>Tìm (mã đơn / tên / SĐT)</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="123, Nguyễn…, 09…"></div>
-      <div><label>Trạng thái</label><select name="status">${STATUSES.map((s) => `<option value="${s}"${s === filter.status ? ' selected' : ''}>${s ? (STATUS[s] ?? s) : 'Tất cả'}</option>`).join('')}</select></div>
       <div><label>Từ ngày</label><input type="date" name="from" value="${esc(filter.from ?? '')}"></div>
       <div><label>Đến ngày</label><input type="date" name="to" value="${esc(filter.to ?? '')}"></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>

@@ -21,6 +21,14 @@ import { withTenant, audit } from './db.js';
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
+// Biến thể MỒ CÔI = thiếu ánh xạ variant_option_values cho một trục (xảy ra khi shop thu hẹp
+// trục sau khi đã sinh ma trận). Storefront/checkout ẨN nó → tồn của nó KHÔNG bán được.
+// Bản sao y hệt orders.js:28 / purchasing.js:29 (mỗi service tự chứa, không import chéo app).
+// YÊU CẦU: query bao ngoài phải đặt alias biến thể đúng tên `v`.
+const VARIANT_NOT_ORPHAN_SQL = `NOT EXISTS (
+  SELECT 1 FROM product_options po WHERE po.product_id = v.product_id
+    AND NOT EXISTS (SELECT 1 FROM variant_option_values vov
+                     WHERE vov.variant_id = v.id AND vov.option_id = po.id))`;
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
 const MAX_PRICE = 100_000_000_000; // 100 tỷ VND — chặn tràn/nhập nhầm
 
@@ -191,6 +199,11 @@ async function listProducts(res, ctx, _body, _params, query) {
     where.push(`(vn_unaccent(p.title) LIKE vn_unaccent($${args.length})
       OR EXISTS (SELECT 1 FROM variants sv WHERE sv.product_id = p.id AND sv.sku ILIKE $${args.length}))`);
   }
+  // Chốt bản KHÔNG-kể-trạng-thái TRƯỚC khi thêm mệnh đề status → dùng để đếm cho TAB
+  // (mỗi tab hiện "trong kết quả tìm hiện tại, trạng thái này có bao nhiêu SP"). Thêm status
+  // SAU CÙNG nên tham số status luôn là $cuối, khỏi phải đánh số lại (cùng cách orders.js).
+  const countArgs = [...args];
+  const whereNoStatusSql = where.join(' AND ');
   if (['draft', 'active', 'archived'].includes(status)) {
     args.push(status);
     where.push(`p.status = $${args.length}`);
@@ -199,9 +212,23 @@ async function listProducts(res, ctx, _body, _params, query) {
 
   const data = await withTenant(ctx.shopId, async (c) => {
     const total = await c.query(`SELECT count(*)::int AS n FROM products p WHERE ${whereSql}`, args);
+    // Số đếm theo trạng thái cho TAB — 1 lần quét, FILTER theo status.
+    const cnt = (await c.query(`
+      SELECT count(*)::int AS all_n,
+             count(*) FILTER (WHERE p.status = 'active')   AS active,
+             count(*) FILTER (WHERE p.status = 'draft')    AS draft,
+             count(*) FILTER (WHERE p.status = 'archived') AS archived
+        FROM products p WHERE ${whereNoStatusSql}`, countArgs)).rows[0];
     const rows = await c.query(
       `SELECT p.id, p.slug, p.title, p.price_vnd, p.status, p.created_at,
+              -- "Đã bán" đọc CỘT CACHE 0096 (worker tính lại mỗi 15 phút), KHÔNG aggregate.
+              p.sold_count,
               (SELECT count(*)::int FROM variants v WHERE v.product_id = p.id) AS variant_count,
+              -- TỒN "còn bán được" = on_hand - reserved, LOẠI biến thể MỒ CÔI y hệt storefront
+              -- (server.js:538) và checkout — nếu không, admin thấy còn hàng mà khách mua không được.
+              (SELECT coalesce(sum(il.on_hand - il.reserved), 0)::int
+                 FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
+                WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS stock,
               (SELECT m.public_key FROM media m
                  WHERE m.product_id = p.id AND m.status = 'ready' AND m.deleted_at IS NULL
                  ORDER BY m.position, m.created_at LIMIT 1) AS image_key
@@ -215,7 +242,12 @@ async function listProducts(res, ctx, _body, _params, query) {
     const products = rows.rows.map(({ image_key, ...p }) => ({
       ...p, image_url: image_key ? `${MEDIA_PUBLIC_BASE}/${image_key}` : null,
     }));
-    return { total: total.rows[0].n, products, catalog_count: await catalogCount(c), max_products: await planMaxProducts(c) };
+    const n = (x) => Number(x ?? 0);
+    return {
+      total: total.rows[0].n, products,
+      counts: { '': n(cnt.all_n), active: n(cnt.active), draft: n(cnt.draft), archived: n(cnt.archived) },
+      catalog_count: await catalogCount(c), max_products: await planMaxProducts(c),
+    };
   });
   return send(res, 200, { ...data, limit, offset });
 }
@@ -316,6 +348,46 @@ async function setStatus(res, ctx, productId, newStatus, action) {
   });
   if (n !== 1) return send(res, 404, { error: 'không tìm thấy sản phẩm' });
   return send(res, 200, { ok: true, status: newStatus });
+}
+
+// ĐỔI TRẠNG THÁI HÀNG LOẠT — chủ shop tick nhiều SP rồi đăng bán / ẩn / lưu trữ một lượt.
+// Mirror bulkConfirm của đơn hàng (orders.js:180): mỗi SP MỘT transaction riêng → THÀNH CÔNG
+// MỘT PHẦN (SP hỏng không kéo cả lô rollback), trần 100, dedupe bằng Set, lọc lại id ở phía
+// seller vì BFF KHÔNG phải biên tin cậy.
+//
+// Lưu ý: trước đây chỉ có publish(→active) và archive(→archived); KHÔNG có đường đưa SP về
+// 'draft' (updateProduct bỏ qua body.status). Ở đây mở cả 3 đích để chủ shop "ẩn tạm" được.
+const BULK_STATUS = {
+  active: 'product.published',
+  draft: 'product.unpublished',
+  archived: 'product.archived',
+};
+async function bulkStatus(res, ctx, body) {
+  const status = String(body?.status ?? '');
+  // Allowlist Ở CẢ 3 TẦNG (BFF, đây, và CHECK của DB) — status là CHECK constraint chứ
+  // không phải enum type nên không được nhét thẳng giá trị người dùng vào UPDATE.
+  if (!Object.hasOwn(BULK_STATUS, status)) return send(res, 400, { error: 'trạng thái không hợp lệ' });
+  const ids = Array.isArray(body?.product_ids)
+    ? [...new Set(body.product_ids.filter((x) => typeof x === 'string' && /^[0-9a-f-]{36}$/.test(x)))] : [];
+  if (!ids.length) return send(res, 400, { error: 'không có sản phẩm nào được chọn' });
+  if (ids.length > 100) return send(res, 400, { error: 'tối đa 100 sản phẩm mỗi lần' });
+  let changed = 0, skipped = 0;
+  for (const productId of ids) {
+    try {
+      const ok = await withTenant(ctx.shopId, async (c) => {
+        // deleted_at IS NULL: SP đã xoá mềm không được hồi sinh qua đường bulk.
+        const r = await c.query(
+          `UPDATE products SET status = $1 WHERE id = $2 AND deleted_at IS NULL AND status <> $1`,
+          [status, productId]);
+        if (r.rowCount === 1) {
+          await audit(c, BULK_STATUS[status], { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, bulk: true } });
+        }
+        return r.rowCount === 1;
+      });
+      ok ? changed++ : skipped++;   // SP vốn đã ở trạng thái đích → tính skipped, không phải lỗi
+    } catch { skipped++; }
+  }
+  return send(res, 200, { ok: true, changed, skipped, status });
 }
 
 async function deleteProduct(res, ctx, _body, params) {
@@ -845,6 +917,9 @@ export const CATALOG_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/products/import$`), perm: 'catalog.write', fn: (res, ctx, b) => importProducts(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/products/${UUID}$`), perm: 'catalog.read', fn: (res, ctx, b, p) => getProduct(res, ctx, b, p) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/products/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => updateProduct(res, ctx, b, p) },
+  // Bulk PHẢI đứng TRƯỚC route /products/:uuid/... — thực ra UUID regex chặt nên không va,
+  // nhưng giữ thứ tự này cho rõ ý và an toàn nếu sau này regex nới.
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/products/bulk/status$`), perm: 'catalog.write', fn: (res, ctx, b) => bulkStatus(res, ctx, b) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/products/${UUID}/publish$`), perm: 'catalog.write', fn: (res, ctx, b, p) => setStatus(res, ctx, p[1], 'active', 'product.published') },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/products/${UUID}/archive$`), perm: 'catalog.write', fn: (res, ctx, b, p) => setStatus(res, ctx, p[1], 'archived', 'product.archived') },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/products/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => deleteProduct(res, ctx, b, p) },

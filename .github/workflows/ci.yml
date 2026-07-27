@@ -118,6 +118,9 @@ jobs:
           run dbtest "admin web (login/MFA/quản đơn)"   node apps/seller-admin/test/admin-flow.e2e.mjs
           run dbtest "admin web (sản phẩm/tồn kho)"     node apps/seller-admin/test/admin-products.e2e.mjs
           run dbtest "admin web (upload ảnh sản phẩm)"  node apps/seller-admin/test/admin-media.e2e.mjs
+          run dbtest "tín hiệu sàn + việc cần làm"      node apps/seller-admin/test/admin-marketplace.e2e.mjs
+          run dbtest "sổ cái kho + tab/cột/bulk SP"     node apps/seller-admin/test/admin-inventory-products.e2e.mjs
+          run dbtest "xuất CSV đơn + báo cáo so kỳ"     node apps/seller-admin/test/admin-export-reports.e2e.mjs
           run dbtest "admin web (trang nội dung)"       node apps/seller-admin/test/admin-content.e2e.mjs
           run dbtest "admin web (tài khoản/nhân sự)"    node apps/seller-admin/test/admin-account.e2e.mjs
           run dbtest "xuất dữ liệu (seller)"            node apps/seller/test/export.e2e.mjs

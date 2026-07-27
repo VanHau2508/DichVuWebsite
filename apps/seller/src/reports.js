@@ -35,11 +35,56 @@ const todayVN = () => new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 1
 // Ngày THẬT (chặn 2026-02-31 lọt regex → 22008 ở Postgres → 500): roundtrip qua Date UTC.
 const realDate = (s) => { const d = new Date(s + 'T00:00:00Z'); return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s; };
 const addDays = (s, k) => new Date(Date.parse(s + 'T00:00:00Z') + k * 86400e3).toISOString().slice(0, 10);
+// Số ngày của tháng (m 1-based) + tháng dương lịch liền trước một mốc 'YYYY-MM-DD'.
+const lastDayOf = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+const prevMonthOf = (s) => {
+  let [y, m] = s.slice(0, 7).split('-').map(Number);
+  m--; if (m < 1) { m = 12; y--; }
+  return { y, m, pad: `${y}-${String(m).padStart(2, '0')}` };
+};
+// CHỌN NHANH KỲ — server tự sinh from/to. Phải ở SERVER vì client không diễn đạt được ý
+// định "tháng" (tháng 28/29/30/31 ngày khác nhau) để chọn đúng kỳ so sánh.
+const PRESETS = {
+  today: (t) => ({ from: t, to: t }),
+  '7d': (t) => ({ from: addDays(t, -6), to: t }),
+  '30d': (t) => ({ from: addDays(t, -29), to: t }),
+  mtd: (t) => ({ from: `${t.slice(0, 7)}-01`, to: t }),
+  last_month: (t) => { const P = prevMonthOf(t); return { from: `${P.pad}-01`, to: `${P.pad}-${String(lastDayOf(P.y, P.m)).padStart(2, '0')}` }; },
+};
 
-// Validate + chuẩn hoá tham số kỳ. Trả {error} hoặc {from,to,group,days}.
+// KỲ LIỀN TRƯỚC để so sánh. Kỳ THÁNG → tháng dương lịch liền trước (KHÔNG trừ N ngày, vì
+// tháng dài ngắn khác nhau). Còn lại → cùng số ngày, sát ngay trước `from`.
+// group giữ NGUYÊN của kỳ hiện tại: để parseRange ép lại có thể ra group khác → so lệch.
+function prevRange({ from, to, group, preset }) {
+  const wholeMonth = from.slice(8) === '01' && from.slice(0, 7) === to.slice(0, 7);
+  if (preset === 'mtd' || preset === 'last_month' || wholeMonth) {
+    const P = prevMonthOf(from);
+    const L = lastDayOf(P.y, P.m);
+    // Kỳ đang xem có TRỌN tháng không (đến hết ngày cuối của chính tháng đó)?
+    const curLast = lastDayOf(Number(from.slice(0, 4)), Number(from.slice(5, 7)));
+    const isFullMonth = Number(to.slice(8)) === curLast;
+    // TRỌN THÁNG → so với TRỌN tháng trước. Nếu chỉ clamp theo ngày như nhánh dưới thì
+    // tháng NGẮN so với tháng DÀI sẽ cắt cụt kỳ trước (xem tháng 2 → chỉ so 01–28/01,
+    // bỏ mất 29–31/01) → % tăng trưởng bịa ra.
+    // DỞ DANG (mtd, vd hôm nay 15/3) → so cùng số ngày đầu tháng trước (01–15/02), có
+    // clamp cho tháng ngắn hơn (31/03 → 28/02).
+    const d = isFullMonth ? L : Math.min(Number(to.slice(8)), L);
+    return { from: `${P.pad}-01`, to: `${P.pad}-${String(d).padStart(2, '0')}`, group };
+  }
+  const days = Math.round((Date.parse(to) - Date.parse(from)) / 86400e3) + 1;
+  const pt = addDays(from, -1);
+  return { from: addDays(pt, -(days - 1)), to: pt, group };
+}
+
+// Validate + chuẩn hoá tham số kỳ. Trả {error} hoặc {from,to,group,days,preset}.
 function parseRange(query) {
-  const to = query.get('to') ?? todayVN();
-  const from = query.get('from') ?? addDays(to, -29); // mặc định 30 ngày kết thúc hôm nay VN
+  // Preset lạ → BỎ QUA (không 400): BFF render trang lỗi TOÀN PHẦN khi status ≠ 200, người
+  // dùng sẽ mất luôn trang Báo cáo chỉ vì gõ sai 1 tham số trên URL.
+  const pk = query.get('preset');
+  const preset = Object.hasOwn(PRESETS, pk ?? '') ? pk : null;
+  const P = preset ? PRESETS[preset](todayVN()) : null;
+  const to = P ? P.to : (query.get('to') ?? todayVN());
+  const from = P ? P.from : (query.get('from') ?? addDays(to, -29)); // mặc định 30 ngày kết thúc hôm nay VN
   if (!DATE_RE.test(from) || !DATE_RE.test(to)) return { error: 'ngày không hợp lệ (YYYY-MM-DD)' };
   if (!realDate(from) || !realDate(to)) return { error: 'ngày không tồn tại trên lịch' };
   if (from > to) return { error: 'từ-ngày phải ≤ đến-ngày' };
@@ -47,7 +92,7 @@ function parseRange(query) {
   if (days > MAX_DAYS) return { error: `khoảng tối đa ${MAX_DAYS} ngày` };
   let group = query.get('group') === 'month' ? 'month' : 'day';
   if (days > FORCE_MONTH_DAYS) group = 'month'; // ép — response range.group phản ánh
-  return { from, to, group, days };
+  return { from, to, group, days, preset };
 }
 
 // Mảnh SQL bucket theo múi giờ VN cho một cột timestamptz — CHỈ dùng ở SELECT/GROUP BY
@@ -185,9 +230,26 @@ async function computeSales(shopId, { from, to, group, sort }) {
 async function salesReport(res, ctx, _b, _p, query) {
   const R = parseRange(query);
   if (R.error) return send(res, 400, { error: R.error });
-  const sort = SORT_SQL[query.get('sort')] ? query.get('sort') : 'revenue';
+  // Object.hasOwn, KHÔNG `SORT_SQL[x] ? …` — bản cũ để ?sort=constructor / __proto__ lọt
+  // (truthy vì kế thừa từ Object.prototype) rồi nội suy chuỗi rác vào ORDER BY → 500.
+  const sortKey = query.get('sort');
+  const sort = Object.hasOwn(SORT_SQL, sortKey ?? '') ? sortKey : 'revenue';
   const data = await computeSales(ctx.shopId, { ...R, sort });
-  return send(res, 200, { range: { from: R.from, to: R.to, group: R.group }, sort, ...data });
+  // So sánh kỳ trước BẬT mặc định (?compare=off để tắt). Gọi computeSales lần 2 trên kỳ
+  // trước — AN TOÀN dù là transaction riêng: kỳ trước KẾT THÚC trước ngày `from`, mà mọi
+  // bút toán mới đều mang mốc now() (thuộc kỳ hiện tại) nên kỳ trước là bất biến.
+  // CHỈ lấy `totals`: số bucket 2 kỳ có thể khác nhau khi group='month' (vd 100 ngày ra 5
+  // bucket, 100 ngày liền trước ra 4) → ghép series theo chỉ số mảng là sai.
+  let previous = null;
+  if (query.get('compare') !== 'off') {
+    const RP = prevRange(R);
+    const prev = await computeSales(ctx.shopId, { ...RP, sort });
+    previous = { range: { from: RP.from, to: RP.to, group: RP.group }, totals: prev.totals };
+  }
+  return send(res, 200, {
+    range: { from: R.from, to: R.to, group: R.group },
+    preset: R.preset ?? null, sort, compare: previous != null, previous, ...data,
+  });
 }
 
 // GET /shops/:id/reports/export?type=pnl|products — CSV thẳng (aggregate nhỏ, không cần

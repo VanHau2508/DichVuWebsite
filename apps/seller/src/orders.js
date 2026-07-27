@@ -8,6 +8,7 @@
 import crypto from 'node:crypto';
 import { send } from './http.js';
 import { withTenant, audit } from './db.js';
+import { toCsv, CsvText, EXPORT_ORDERS_MAX_ROWS } from './export.js';
 import { isProvince } from './provinces.js';
 
 // Base URL ảnh public (giống storefront) — dựng thumbnail dòng hàng trong chi tiết đơn.
@@ -46,16 +47,20 @@ async function statusEvent(c, order, extra = {}) {
   );
 }
 
-async function listOrders(res, ctx, _b, _p, query) {
-  const limit = Math.min(Math.max(parseInt(query.get('limit') ?? '20', 10) || 20, 1), 100);
-  const offset = Math.max(parseInt(query.get('offset') ?? '0', 10) || 0, 0);
-  const status = query.get('status');
-  // HAI bộ điều kiện, dựng ĐỘC LẬP (không cắt-ghép/đánh-số-lại tham số — cách đó sai ngay khi
-  // một tham số được dùng ở 2 chỗ, như $lk trong mệnh đề tìm kiếm):
-  //   base*  = tìm kiếm + khoảng ngày  → dùng cho SỐ ĐẾM của TAB trạng thái.
-  //   where/args = base* + mệnh đề status → dùng cho danh sách đang xem.
-  // Tab phải đếm "trong kết quả tìm hiện tại, mỗi trạng thái có bao nhiêu đơn"; nếu đếm kèm
-  // cả filter status thì mọi tab về 0 trừ tab đang chọn.
+const ORDER_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded', 'returned'];
+// Bộ lọc đơn dùng CHUNG cho danh sách và xuất CSV — MỘT nguồn sự thật, để "xuất theo bộ lọc
+// đang xem" không bao giờ lệch với thứ người bán đang nhìn.
+//
+// HAI bộ điều kiện dựng ĐỘC LẬP (không cắt-ghép/đánh-số-lại tham số — cách đó sai ngay khi
+// một tham số dùng ở 2 chỗ, như $lk trong mệnh đề tìm kiếm):
+//   whereNoStatusSql/countArgs = tìm kiếm + khoảng ngày → SỐ ĐẾM cho TAB trạng thái.
+//   whereSql/args              = trên + mệnh đề status  → danh sách/CSV đang xem.
+// Tab phải đếm "trong kết quả tìm hiện tại, mỗi trạng thái có bao nhiêu đơn"; đếm kèm cả
+// filter status thì mọi tab về 0 trừ tab đang chọn.
+//
+// Cột để TRẦN (không qualify o.*): mọi truy vấn dùng helper này chỉ có MỘT bảng orders.
+// Nếu sau này JOIN order_lines/shipments thì PHẢI qualify (shipments cũng có cột status).
+function buildOrderFilter(query) {
   const where = [];
   const args = [];
   // Tìm: mã đơn (nếu q toàn số) hoặc tên/điện thoại khách (ILIKE, escape wildcard).
@@ -82,10 +87,19 @@ async function listOrders(res, ctx, _b, _p, query) {
   const countArgs = [...args];
   const whereNoStatusSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
   // Giờ mới thêm status (luôn là tham số CUỐI) cho truy vấn danh sách.
-  if (['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded', 'returned'].includes(status)) {
-    args.push(status); where.push(`status = $${args.length}`);
-  }
-  const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const status = query.get('status');
+  if (ORDER_STATUSES.includes(status)) { args.push(status); where.push(`status = $${args.length}`); }
+  return {
+    args, countArgs, whereNoStatusSql,
+    whereSql: where.length ? 'WHERE ' + where.join(' AND ') : '',
+    status: ORDER_STATUSES.includes(status) ? status : '', from, to, q,
+  };
+}
+
+async function listOrders(res, ctx, _b, _p, query) {
+  const limit = Math.min(Math.max(parseInt(query.get('limit') ?? '20', 10) || 20, 1), 100);
+  const offset = Math.max(parseInt(query.get('offset') ?? '0', 10) || 0, 0);
+  const { args, countArgs, whereNoStatusSql, whereSql } = buildOrderFilter(query);
   const data = await withTenant(ctx.shopId, async (c) => {
     const total = (await c.query(`SELECT count(*)::int n FROM orders ${whereSql}`, args)).rows[0].n;
     // Số đếm theo trạng thái cho TAB (kiểu TikTok Shop/Shopee) — 1 lần quét, FILTER theo status.
@@ -1073,7 +1087,60 @@ async function createReturn(res, ctx, body, params) {
   }
 }
 
+// XUẤT CSV ĐƠN HÀNG theo ĐÚNG bộ lọc đang xem (dùng chung buildOrderFilter với danh sách).
+//
+// Perm 'export' + step-up (KHÔNG phải 'orders.read'): danh sách đơn CỐ TÌNH không trả
+// customer_phone — PII chỉ lộ từng đơn ở trang chi tiết. Cho 'orders.read' xuất CSV là mở
+// kênh hút SĐT/địa chỉ HÀNG LOẠT chưa từng tồn tại. Cùng bậc với xuất báo cáo P&L.
+//
+// KHÔNG xuất bí mật: lookup_token_hash (năng lực tra/huỷ đơn của khách), client_ip_hash, id nội bộ.
+async function exportOrders(res, ctx, _b, _p, query) {
+  const F = buildOrderFilter(query);
+  const out = await withTenant(ctx.shopId, async (c) => {
+    // Đếm TRƯỚC → vượt trần thì bỏ ngay, không dựng chuỗi khổng lồ trong RAM.
+    const n = Number((await c.query(`SELECT count(*)::int AS n FROM orders ${F.whereSql}`, F.args)).rows[0].n);
+    if (n > EXPORT_ORDERS_MAX_ROWS) return { tooMany: n };
+    return { rows: (await c.query(
+      `SELECT order_number, created_at, status, payment_status, payment_method, fulfillment_status,
+              customer_name, customer_phone, customer_email, shipping_address,
+              subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, amount_paid_vnd,
+              coupon_code, points_redeemed, points_discount_vnd, payment_ref, note,
+              paid_at, shipped_at, delivered_at, cancelled_at, returned_at, anonymized_at
+         FROM orders ${F.whereSql} ORDER BY order_number DESC`, F.args)).rows };
+  });
+  if (out.tooMany) {
+    return send(res, 413, { error: `bộ lọc khớp ${out.tooMany} đơn (tối đa ${EXPORT_ORDERS_MAX_ROWS}). Hãy thu hẹp khoảng ngày rồi xuất lại.` });
+  }
+  for (const o of out.rows) {
+    // shipping_address là jsonb → stringify giữ TRỌN (phường/quận/ghi chú). Đơn đã ẩn danh
+    // (0064) có address NULL → phải ra ô RỖNG, không phải chuỗi 'null'.
+    const a = o.shipping_address;
+    o.shipping_address = a == null ? '' : (typeof a === 'string' ? a : JSON.stringify(a));
+    o.customer_phone = new CsvText(o.customer_phone);  // giữ số 0 đầu khi mở bằng Excel
+  }
+  const csv = toCsv(
+    ['order_number', 'created_at', 'status', 'payment_status', 'payment_method', 'fulfillment_status',
+      'customer_name', 'customer_phone', 'customer_email', 'shipping_address',
+      'subtotal_vnd', 'shipping_vnd', 'discount_vnd', 'total_vnd', 'amount_paid_vnd',
+      'coupon_code', 'points_redeemed', 'points_discount_vnd', 'payment_ref', 'note',
+      'paid_at', 'shipped_at', 'delivered_at', 'cancelled_at', 'returned_at', 'anonymized_at'],
+    out.rows);
+  // Xuất PII hàng loạt PHẢI để lại dấu vết. KHÔNG ghi `q` vào nhật ký — người bán hay tìm
+  // bằng SĐT khách, ghi lại là bơm PII vào audit log.
+  await withTenant(ctx.shopId, (c) => audit(c, 'orders.exported', {
+    actorId: ctx.user.id, ip: ctx.ip,
+    metadata: { count: out.rows.length, from: F.from || null, to: F.to || null, status: F.status || null, searched: !!F.q },
+  }));
+  res.writeHead(200, {
+    'content-type': 'text/csv; charset=utf-8',
+    'content-disposition': `attachment; filename="don-hang-${F.from || 'tat-ca'}-${F.to || 'tat-ca'}.csv"`,
+  });
+  return res.end(csv);
+}
+
 export const ORDER_ROUTES = [
+  // /orders/export PHẢI đứng trước /orders/:uuid — 'export' không khớp UUID nhưng giữ thứ tự cho rõ.
+  { m: 'GET', re: new RegExp(`^/shops/${UUID}/orders/export$`), perm: 'export', stepUp: true, fn: (res, ctx, b, p, q) => exportOrders(res, ctx, b, p, q) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/orders$`), perm: 'orders.read', fn: (res, ctx, b, p, q) => listOrders(res, ctx, b, p, q) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders$`), perm: 'orders.write', fn: (res, ctx, b) => createManualOrder(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/sellable-variants$`), perm: 'orders.write', fn: (res, ctx, b, p, q) => listSellableVariants(res, ctx, q) },

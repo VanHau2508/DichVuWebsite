@@ -1151,10 +1151,36 @@ export function renderReports(ctx, shopId, d, f) {
   const tv = f.todayVN, mStart = tv.slice(0, 8) + '01';
   const prevM = (() => { let [y, m] = tv.slice(0, 7).split('-').map(Number); m--; if (m < 1) { m = 12; y--; } const s = `${y}-${String(m).padStart(2, '0')}`; const last = new Date(Date.UTC(y, m, 0)).getUTCDate(); return { from: `${s}-01`, to: `${s}-${String(last).padStart(2, '0')}` }; })();
   const addD = (s, k) => new Date(Date.parse(s + 'T00:00:00Z') + k * 86400e3).toISOString().slice(0, 10);
+  const cmpOff = d.compare === false;
+  // Preset NGÀY giữ link SẠCH (chỉ from+to) — e2e admin-reports assert đúng dạng đó.
+  // Preset THÁNG phải kèm &preset= để SERVER biết ý định "tháng" mà chọn kỳ so sánh là
+  // tháng dương lịch liền trước (28/29/30/31 ngày), không phải "N ngày trước".
   const presets = [
+    { l: 'Hôm nay', from: tv, to: tv },
     { l: '7 ngày', from: addD(tv, -6), to: tv }, { l: '30 ngày', from: addD(tv, -29), to: tv },
-    { l: 'Tháng này', from: mStart, to: tv }, { l: 'Tháng trước', ...prevM },
-  ].map((p) => `<a class="btn ${p.from === from && p.to === to ? '' : 'alt '}sm" href="${base}?${qs({ from: p.from, to: p.to })}">${esc(p.l)}</a>`).join(' ');
+    { l: 'Tháng này', from: mStart, to: tv, preset: 'mtd' }, { l: 'Tháng trước', ...prevM, preset: 'last_month' },
+  ].map((p) => {
+    const extra = { ...(p.preset ? { preset: p.preset } : {}), ...(cmpOff ? { compare: 'off' } : {}) };
+    return `<a class="btn ${p.from === from && p.to === to ? '' : 'alt '}sm" href="${base}?${qs({ from: p.from, to: p.to, ...extra })}">${esc(p.l)}</a>`;
+  }).join(' ');
+  // So sánh KỲ TRƯỚC trên 4 ô chỉ số. Quy ước đã dùng ở Tổng quan: kỳ trước = 0 thì KHÔNG
+  // bịa %. Chỉ tiêu có thể ÂM (lãi gộp/lãi vận hành) → % vô nghĩa, hiện CHÊNH TUYỆT ĐỐI.
+  const prevT = d.previous?.totals ?? null;
+  const delta = (key, { pct = true, money: asMoney = true } = {}) => {
+    if (!prevT) return '';
+    const cur = Number(d.totals?.[key] ?? 0), pv = Number(prevT[key] ?? 0);
+    if (pv === 0) return cur !== 0 ? '<span class="delta flat">● chưa có kỳ trước để so</span>' : '';
+    if (!pct || pv < 0 || cur < 0) {
+      const diff = cur - pv;
+      return `<span class="delta ${diff >= 0 ? 'up' : 'down'}">${diff >= 0 ? '▲' : '▼'} ${asMoney ? money(Math.abs(diff)) : esc(Math.abs(diff))}</span>`;
+    }
+    const v = Math.round(((cur - pv) / pv) * 100);
+    return `<span class="delta ${v >= 0 ? 'up' : 'down'}">${v >= 0 ? '▲' : '▼'} ${esc(Math.abs(v))}%</span>`;
+  };
+  const pr = d.previous?.range;
+  const cmpLine = pr
+    ? `<p class="muted" style="font-size:.82rem;margin:8px 0 0">So với kỳ trước: <strong>${esc(pr.from)} → ${esc(pr.to)}</strong> · <a href="${base}?${qs({ from, to, sort, compare: 'off' })}">Tắt so sánh</a></p>`
+    : `<p class="muted" style="font-size:.82rem;margin:8px 0 0"><a href="${base}?${qs({ from, to, sort })}">Bật so sánh kỳ trước</a></p>`;
   const neg = (v) => Number(v) < 0 ? ' style="color:#b91c1c"' : '';
   const provisional = cc.pct < 100 ? ' <span class="muted" style="font-weight:400">(tạm tính)</span>' : '';
   // P&L dọc: (−)/(+) chữ rõ ràng, số âm đỏ.
@@ -1188,17 +1214,19 @@ export function renderReports(ctx, shopId, d, f) {
         <div><label>Từ ngày</label><input type="date" name="from" value="${esc(from)}"></div>
         <div><label>Đến ngày</label><input type="date" name="to" value="${esc(to)}"></div>
         <input type="hidden" name="sort" value="${esc(sort)}">
+        ${cmpOff ? '<input type="hidden" name="compare" value="off">' : ''}
         <button class="btn sm" type="submit">Xem</button>
         <span style="flex:1"></span>${presets}
       </form>
       ${group === 'month' ? '<p class="muted" style="font-size:.82rem;margin:8px 0 0">Kỳ dài — số liệu gộp theo <strong>tháng</strong>.</p>' : ''}
+      ${cmpLine}
     </div>
     <div class="metrics">
-      <div class="metric"><div class="l">Doanh thu thuần</div><div class="v">${money(t.net_revenue_vnd)}</div><div class="l">${esc(t.orders_paid)} đơn đã thu tiền</div></div>
+      <div class="metric"><div class="l">Doanh thu thuần</div><div class="v">${money(t.net_revenue_vnd)}</div><div class="l">${esc(t.orders_paid)} đơn đã thu tiền ${delta('net_revenue_vnd')}</div></div>
       <div class="metric"><div class="l">Lãi gộp${provisional}</div><div class="v"${neg(t.gross_profit_vnd)}>${money(t.gross_profit_vnd)}</div>
-        <div class="l">${t.net_revenue_vnd > 0 ? `biên ${Math.round((t.gross_profit_vnd / t.net_revenue_vnd) * 100)}%` : ''}</div></div>
-      <div class="metric"><div class="l">Lãi vận hành${provisional}</div><div class="v"${neg(t.operating_profit_vnd)}>${money(t.operating_profit_vnd)}</div><div class="l">gồm ship & phí hãng</div></div>
-      <div class="metric"><div class="l">Giá trị TB/đơn</div><div class="v">${money(t.orders_paid > 0 ? Math.round(t.net_revenue_vnd / t.orders_paid) : 0)}</div></div>
+        <div class="l">${t.net_revenue_vnd > 0 ? `biên ${Math.round((t.gross_profit_vnd / t.net_revenue_vnd) * 100)}%` : ''} ${delta('gross_profit_vnd', { pct: false })}</div></div>
+      <div class="metric"><div class="l">Lãi vận hành${provisional}</div><div class="v"${neg(t.operating_profit_vnd)}>${money(t.operating_profit_vnd)}</div><div class="l">gồm ship & phí hãng ${delta('operating_profit_vnd', { pct: false })}</div></div>
+      <div class="metric"><div class="l">Giá trị TB/đơn</div><div class="v">${money(t.orders_paid > 0 ? Math.round(t.net_revenue_vnd / t.orders_paid) : 0)}</div><div class="l">${delta('orders_paid', { money: false })} đơn</div></div>
     </div>
     <div class="card"><h2 style="margin-top:0">Doanh thu thuần & lãi gộp theo ${group === 'month' ? 'tháng' : 'ngày'}</h2>
       ${profitChart(d.series) || '<p class="muted">Chưa có dữ liệu trong kỳ.</p>'}</div>
@@ -1226,13 +1254,19 @@ export function renderReports(ctx, shopId, d, f) {
 }
 
 // Interstitial mật khẩu cho xuất CSV báo cáo — mang theo type/from/to/group (hidden).
-export function renderReportsStepUp(ctx, shopId, fields, err) {
-  const base = `/shops/${esc(shopId)}/reports`;
+// Màn nhập-lại-mật-khẩu trước khi tải CSV. Dùng chung cho Báo cáo và Đơn hàng — chỉ khác
+// trang gốc + câu giải thích, nên tham số hoá thay vì nhân bản.
+// LƯU Ý: mọi trường lọc PHẢI được phát lại thành hidden, nếu không nhập mật khẩu xong sẽ
+// xuất nhầm phạm vi (mất bộ lọc người dùng đang xem).
+export function renderReportsStepUp(ctx, shopId, fields, err, opts = {}) {
+  const section = opts.section ?? 'reports';
+  const why = opts.why ?? 'Xuất báo cáo là thao tác nhạy cảm — nhập mật khẩu của bạn để tiếp tục.';
+  const base = `/shops/${esc(shopId)}/${esc(section)}`;
   const keep = Object.entries(fields ?? {}).filter(([k, v]) => v != null && k !== 'password')
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('');
   return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
     <h1>Xác nhận mật khẩu</h1>
-    <p class="muted">Xuất báo cáo là thao tác nhạy cảm — nhập mật khẩu của bạn để tiếp tục.</p>
+    <p class="muted">${esc(why)}</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <form method="POST" action="${base}/export/step-up">
       ${keep}
@@ -1366,8 +1400,16 @@ export function renderOrders(ctx, shopId, data, filter) {
       return `<a class="stab${on ? ' on' : ''}" href="?status=${esc(s)}${keep}"${on ? ' aria-current="page"' : ''}>${esc(label)}${
         n != null ? `<span class="cnt">${esc(n)}</span>` : ''}</a>`;
     }).join('')}</div>`;
+  // Xuất CSV theo ĐÚNG bộ lọc đang xem — hidden mang nguyên status/q/from/to sang POST.
+  // Chỉ chủ shop (EXPORT_ROLES) thấy nút: file chứa SĐT + địa chỉ khách hàng loạt.
+  const exportBtn = EXPORT_ROLES.has(ctx.role) ? `<form method="POST" action="/shops/${esc(shopId)}/orders/export" style="display:inline">
+        <input type="hidden" name="status" value="${esc(filter.status ?? '')}">
+        <input type="hidden" name="q" value="${esc(filter.q ?? '')}">
+        <input type="hidden" name="from" value="${esc(filter.from ?? '')}">
+        <input type="hidden" name="to" value="${esc(filter.to ?? '')}">
+        <button class="btn alt" type="submit">⬇ Xuất CSV</button></form>` : '';
   return layout('Đơn hàng', ctx, `<div class="toolbar"><h1 style="margin:0">Đơn hàng</h1>
-      <span class="actions"><a class="btn" href="/shops/${esc(shopId)}/orders/new">+ Tạo đơn</a></span></div>
+      <span class="actions">${exportBtn}<a class="btn" href="/shops/${esc(shopId)}/orders/new">+ Tạo đơn</a></span></div>
     ${flagged ? `<div class="card" style="background:#fef3c7;border-color:#fcd34d;color:#92400e"><strong>⚠ ${flagged} đơn nghi ngờ (đơn ảo?)</strong> — một nguồn mạng có nhiều SĐT khác nhau đang chờ xử lý. Kiểm tra kỹ trước khi giao; <strong>huỷ đơn ảo để trả lại tồn kho</strong>. (Đơn COD không xác nhận sẽ tự huỷ sau ${esc(7)} ngày.)</div>` : ''}
     ${statusTabs}
     <div class="card"><form method="GET" class="filters">
@@ -1828,19 +1870,53 @@ td.r,th.r{text-align:right}.tot{margin-left:auto;width:260px}.tot .row{display:f
 
 // ── Sản phẩm & tồn kho ───────────────────────────────────────────────────────
 const PSTATUSES = ['', 'active', 'draft', 'archived'];
-export function renderProducts(ctx, shopId, data, filter) {
+export function renderProducts(ctx, shopId, data, filter, notice = null) {
   const d = data ?? {}; // backend có thể trả 200 body rỗng → data null; đừng để .products nổ
   const products = d.products ?? [];
   const q = encodeURIComponent(filter.q ?? '');
   const total = d.total ?? products.length;
   const off = filter.offset, lim = filter.limit;
   const nav = (o) => `?q=${q}&status=${esc(filter.status)}&offset=${o}`;
+  // Tồn: '—' = CHƯA BIẾT (API cũ chưa trả cột) ≠ 0 = hết hàng. Giữ đúng quy ước của trang
+  // chi tiết SP (pages.js:2202) để hai trang không "chửi nhau".
+  const stockCell = (p) => {
+    if (p.stock == null) return '<span class="muted" title="Chưa tải được tồn kho">—</span>';
+    const n = Number(p.stock);
+    return `<span class="stock${n <= 0 ? ' zero' : (n < 5 ? ' low' : '')}">${esc(n)}</span>`;
+  };
   const rows = products.map((p) => `<tr>
+    <td><input type="checkbox" name="product_ids" value="${esc(p.id)}" form="pbulk" aria-label="Chọn ${esc(p.title)}"></td>
     <td><div class="pcell">${p.image_url ? `<img class="pthumb" src="${esc(p.image_url)}" alt="" loading="lazy" width="44" height="44">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0"><a href="/shops/${esc(shopId)}/products/${esc(p.id)}">${esc(p.title)}</a><div class="muted" style="font-size:.8rem">${esc(p.slug)}</div></div></div></td>
     <td>${badge(p.status, PSTATUS[p.status] ?? p.status)}</td>
     <td class="num right">${money(p.price_vnd)}</td>
     <td class="num right">${p.variant_count}</td>
+    <td class="num right">${stockCell(p)}</td>
+    <td class="num right">${p.sold_count != null ? esc(p.sold_count) : '<span class="muted">—</span>'}</td>
     <td class="muted">${dt(p.created_at)}</td></tr>`).join('');
+  // TAB trạng thái kèm SỐ ĐẾM (mẫu trang Đơn hàng). Đổi tab GIỮ ô tìm và RESET offset về 0
+  // — nếu giữ offset, user đang ở trang 3 bấm tab khác sẽ thấy trang trắng.
+  const cnts = d.counts ?? {};
+  const statusTabs = `<div class="stabs" role="tablist" aria-label="Lọc theo trạng thái">${
+    PSTATUSES.map((s) => {
+      const on = (filter.status ?? '') === s;
+      const label = s ? (PSTATUS[s] ?? s) : 'Tất cả';
+      const n = cnts[s];
+      return `<a class="stab${on ? ' on' : ''}" href="?status=${esc(s)}&q=${q}"${on ? ' aria-current="page"' : ''}>${esc(label)}${
+        n != null ? `<span class="cnt">${esc(n)}</span>` : ''}</a>`;
+    }).join('')}</div>`;
+  // Thao tác hàng loạt (no-JS): checkbox nằm TRONG <table> nhưng thuộc form ngoài qua
+  // thuộc tính form="pbulk"; mỗi nút dùng formaction riêng → 1 form, 3 đích.
+  // Hidden status/q/offset để PRG quay lại ĐÚNG trang đang xem (mẫu đơn hàng làm rơi bộ lọc).
+  const bulkBar = products.length ? `
+      <form id="pbulk" method="POST" action="/shops/${esc(shopId)}/products/bulk-status" class="actions" style="margin-bottom:10px">
+        <input type="hidden" name="status_filter" value="${esc(filter.status ?? '')}">
+        <input type="hidden" name="q" value="${esc(filter.q ?? '')}">
+        <input type="hidden" name="offset" value="${esc(off)}">
+        <button class="btn sm" type="submit" name="to" value="active">✓ Đăng bán</button>
+        <button class="btn alt sm" type="submit" name="to" value="draft">✎ Chuyển nháp (ẩn)</button>
+        <button class="btn alt sm" type="submit" name="to" value="archived">📦 Lưu trữ</button>
+        <span class="muted" style="font-size:.82rem">Tích chọn ở cột đầu. Sản phẩm đã ở trạng thái đó sẽ được bỏ qua.</span>
+      </form>` : '';
   const mx = d.max_products, cc = d.catalog_count;
   const capLine = mx != null ? `<p class="muted" style="margin:-6px 0 14px">Đã dùng <strong>${esc(cc)}/${esc(mx)}</strong> sản phẩm theo gói.${cc >= mx ? ' <strong style="color:#b45309">Đã đạt giới hạn — nâng gói để thêm.</strong>' : ''}</p>` : '';
   return layout('Sản phẩm', ctx, `
@@ -1848,16 +1924,20 @@ export function renderProducts(ctx, shopId, data, filter) {
       <span class="actions"><a class="btn alt" href="/shops/${esc(shopId)}/products/import">⬆ Nhập CSV</a>
       <a class="btn" href="/shops/${esc(shopId)}/products/new">+ Thêm sản phẩm</a></span></div>
     ${capLine}
+    ${notice ? `<div class="card" style="border-color:#a7f3d0;background:#ecfdf5;color:#065f46">${esc(notice)}</div>` : ''}
+    ${statusTabs}
     <div class="card"><form method="GET" class="filters">
+      <input type="hidden" name="status" value="${esc(filter.status ?? '')}">
       <div style="flex:1 1 200px"><label>Tìm theo tên</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="Ghế sofa…"></div>
-      <div><label>Trạng thái</label><select name="status">${PSTATUSES.map((s) => `<option value="${s}"${s === filter.status ? ' selected' : ''}>${s ? (PSTATUS[s] ?? s) : 'Tất cả'}</option>`).join('')}</select></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
-    <div class="card">${products.length ? `<table><thead><tr><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="card">${products.length ? `${bulkBar}<div class="tblscroll"><table><thead><tr><th></th><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th class="right">Tồn</th><th class="right">Đã bán</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table></div>
       <div class="muted" style="margin-top:12px">${total} sản phẩm ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
-      </div>` : '<p class="muted">Chưa có sản phẩm. Bấm “+ Thêm sản phẩm” để tạo.</p>'}</div>`);
+      </div>
+      <p class="muted" style="font-size:.8rem;margin-bottom:0">“Tồn” là số còn bán được (đã trừ hàng đang giữ chỗ cho đơn chưa chốt). “Đã bán” tính từ đơn đã thanh toán, cập nhật lại mỗi 15 phút.</p>`
+      : '<p class="muted">Chưa có sản phẩm. Bấm “+ Thêm sản phẩm” để tạo.</p>'}</div>`);
 }
 
 // Quản lý danh mục: tạo/sửa/xoá + (gán sản phẩm ở trang chi tiết SP). Hiện storefront /c/:slug.
@@ -2197,11 +2277,16 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
     ? `<form method="POST" action="${base}/archive"><button class="btn alt sm" type="submit">Ẩn (lưu trữ)</button></form>`
     : `<form method="POST" action="${base}/publish"><button class="btn sm" type="submit">${p.status === 'draft' ? 'Đăng bán' : 'Đăng bán lại'}</button></form>`;
   const canDel = (p.variants?.length ?? 0) > 1;
+  // Link sang SỔ CÁI KHO đã lọc sẵn biến thể này — nếu không có, bộ lọc variant_id của sổ cái
+  // là tính năng chết (không đường nào bấm tới). Chỉ hiện với vai xem được khu Kho.
+  const canSeeLedger = INVENTORY_ROLES.has(ctx.role);
   const stock = (vid) => {
     const l = levels[vid];
-    if (!l) return '<span class="muted" title="Chưa tải được tồn kho">—</span>'; // "chưa biết" ≠ "hết hàng"
+    const hist = canSeeLedger
+      ? ` <a class="muted" style="font-size:.78rem" href="/shops/${esc(shopId)}/inventory-ledger?variant_id=${esc(vid)}" title="Xem lịch sử nhập/xuất/điều chỉnh của biến thể này">lịch sử</a>` : '';
+    if (!l) return `<span class="muted" title="Chưa tải được tồn kho">—</span>${hist}`; // "chưa biết" ≠ "hết hàng"
     const cls = l.available <= 0 ? 'zero' : (l.available < 5 ? 'low' : '');
-    return `<span class="stock ${cls} num">${l.available}</span> <span class="muted num" style="font-size:.82rem">(tồn ${l.on_hand} · giữ ${l.reserved})</span>`;
+    return `<span class="stock ${cls} num">${l.available}</span> <span class="muted num" style="font-size:.82rem">(tồn ${l.on_hand} · giữ ${l.reserved})</span>${hist}`;
   };
   // Biên lãi gợi ý server-render cạnh ô giá vốn (0081): đủ giá + vốn → "biên ~X%";
   // vốn ≥ giá bán → cảnh báo MỀM đỏ (bán lỗ chủ đích hợp lệ — seller không chặn).
@@ -2575,6 +2660,9 @@ const ACTION_LABEL = {
   'order.confirmed': 'Xác nhận đơn', 'order.shipped': 'Giao đơn cho vận chuyển', 'order.cancelled': 'Huỷ đơn',
   'order.marked_paid': 'Đánh dấu đã thu tiền', 'order.qr_marked_paid_manual': 'Xác nhận tay chuyển khoản QR',
   'order.refunded': 'Hoàn tiền đơn', 'order.created_manual': 'Tạo đơn tay',
+  // Xuất dữ liệu có PII — phải đọc được trong nhật ký, không để hiện mã thô.
+  'orders.exported': 'Xuất CSV đơn hàng', 'report.exported': 'Xuất CSV báo cáo',
+  'product.unpublished': 'Chuyển sản phẩm về nháp',
   'coupon.created': 'Tạo mã giảm giá', 'coupon.updated': 'Sửa mã giảm giá', 'coupon.deleted': 'Xoá mã giảm giá',
   'customer.note_set': 'Ghi chú khách hàng', 'customer.erased': 'Ẩn danh dữ liệu khách',
   'review.deleted': 'Xoá đánh giá',
@@ -3265,7 +3353,58 @@ function invTabs(shopId, active) {
     ${t(`${base}/suppliers`, 'Nhà cung cấp', active === 'suppliers')}
     ${t(`${base}/stocktakes`, 'Kiểm kê', active === 'stocktakes')}
     ${t(`${base}/purchasing/report`, 'Báo cáo nhập', active === 'report')}
+    ${t(`${base}/inventory-ledger`, 'Sổ cái kho', active === 'ledger')}
   </div>`;
+}
+
+// ── SỔ CÁI KHO (0097) — mọi chuyển động tồn của cả shop, mới nhất trước ───────
+// Chủ shop chỉnh tồn được từ lâu nhưng KHÔNG truy vết được ai/khi nào/vì sao. Dữ liệu vẫn
+// luôn được ghi (inventory_ledger từ 0009), chỉ là chưa từng có màn hình nào đọc nó.
+//
+// Sổ cái là CHỈ-GHI-THÊM ở tầng DB (app_rw bị REVOKE UPDATE/DELETE) → trang này THUẦN
+// CHỈ-ĐỌC, không nút sửa/xoá. Muốn "đính chính" thì tạo dòng điều chỉnh mới.
+const LEDGER_KIND = { receive: 'Nhập kho', ship: 'Xuất kho', adjust: 'Điều chỉnh' };
+const LEDGER_BADGE = { receive: 'delivered', ship: 'shipped', adjust: 'draft' };
+export function renderInventoryLedger(ctx, shopId, data, filter) {
+  const base = `/shops/${esc(shopId)}`;
+  const entries = data?.entries ?? [];
+  const off = filter.offset, lim = filter.limit;
+  const keep = `&kind=${esc(filter.kind ?? '')}${filter.variantId ? `&variant_id=${esc(filter.variantId)}` : ''}`;
+  const nav = (o) => `?offset=${o}${keep}`;
+  const rows = entries.map((e) => {
+    const d = Number(e.delta);
+    const name = e.product_title
+      ? `${esc(e.product_title)}${e.variant_title ? ` <span class="muted">${esc(e.variant_title)}</span>` : ''}`
+      : '<span class="muted">(biến thể đã xoá)</span>';
+    return `<tr>
+      <td class="muted">${dt(e.created_at)}</td>
+      <td>${name}${e.sku ? `<div class="muted" style="font-size:.8rem">${esc(e.sku)}</div>` : ''}</td>
+      <td>${badge(LEDGER_BADGE[e.kind] ?? 'draft', LEDGER_KIND[e.kind] ?? e.kind)}</td>
+      <td class="num right"><strong style="color:${d > 0 ? 'var(--good)' : 'var(--bad)'}">${d > 0 ? '+' : ''}${esc(d)}</strong></td>
+      <td>${e.reason ? esc(e.reason) : '<span class="muted">—</span>'}</td>
+      <td class="muted">${e.actor_email ? esc(e.actor_email) : '<span class="muted">hệ thống</span>'}</td>
+    </tr>`;
+  }).join('');
+  const kOpt = (v, l) => `<option value="${v}"${(filter.kind ?? '') === v ? ' selected' : ''}>${l}</option>`;
+  return layout('Sổ cái kho', ctx, `
+    <h1>Sổ cái kho</h1>
+    ${invTabs(shopId, 'ledger')}
+    <p class="muted" style="margin-top:-8px">Mọi thay đổi tồn kho đều được ghi lại và <strong>không sửa/xoá được</strong>.
+      Hàng đang giữ chỗ cho đơn chưa chốt <strong>không</strong> tạo dòng ở đây (chỉ khoá tồn, chưa xuất kho).
+      Tên sản phẩm là tên <strong>hiện tại</strong>, có thể khác lúc phát sinh.</p>
+    <div class="card"><form method="GET" class="filters">
+      <div><label>Loại</label><select name="kind">${kOpt('', 'Tất cả')}${kOpt('receive', 'Nhập kho')}${kOpt('ship', 'Xuất kho')}${kOpt('adjust', 'Điều chỉnh')}</select></div>
+      ${filter.variantId ? `<input type="hidden" name="variant_id" value="${esc(filter.variantId)}">` : ''}
+      <div><button class="btn alt sm" type="submit">Lọc</button></div>
+      ${filter.variantId ? `<div><a class="btn alt sm" href="${base}/inventory-ledger">Bỏ lọc 1 biến thể</a></div>` : ''}
+    </form></div>
+    <div class="card">${entries.length ? `<div class="tblscroll"><table><thead><tr>
+        <th>Thời điểm</th><th>Sản phẩm</th><th>Loại</th><th class="right">Thay đổi</th><th>Lý do</th><th>Người thực hiện</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="muted" style="margin-top:12px">
+        ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Mới hơn</a>` : '<span style="color:#d1d5db">← Mới hơn</span>'} ·
+        ${data?.has_more ? `<a href="${nav(off + lim)}">Cũ hơn →</a>` : '<span style="color:#d1d5db">Cũ hơn →</span>'}
+      </div>` : '<p class="muted">Chưa có chuyển động kho nào khớp bộ lọc.</p>'}</div>`);
 }
 
 // Danh sách phiếu nhập.

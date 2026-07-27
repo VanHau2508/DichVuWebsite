@@ -21,6 +21,13 @@ const EXPORT_TTL_MIN = 15;
 // Trần tổng dòng: chặn OOM + giới hạn chuỗi V8 (~536M ký tự) + thời gian nén cho shop
 // khổng lồ. Vượt trần → 413 (shop lớn cần xuất bất đồng bộ — ngoài phạm vi MVP).
 const EXPORT_MAX_ROWS = Number(process.env.EXPORT_MAX_ROWS ?? 200000);
+// Trần riêng cho xuất ĐƠN HÀNG thẳng (không qua hàng đợi/ZIP như export ZIP ở dưới).
+// ĐẶT THẤP CÓ CHỦ Ý: toCsv() là ĐỒNG BỘ, mà apps/seller chạy MỘT process node phục vụ
+// MỌI shop → dựng CSV khổng lồ sẽ CHẶN EVENT LOOP, làm treo request của các shop khác
+// (đo được: 50k dòng ≈ 0,8s chặn + ~270MB RSS). 10k đơn/lần đã dư cho một kỳ báo cáo
+// bình thường và giữ thời gian chặn ở mức ~0,15s. Shop cần nhiều hơn thì thu hẹp khoảng
+// ngày rồi xuất nhiều lần (thông báo 413 nói rõ điều đó).
+export const EXPORT_ORDERS_MAX_ROWS = Number(process.env.EXPORT_ORDERS_MAX_ROWS ?? 10000);
 const PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 const genToken = () => crypto.randomBytes(32).toString('base64url');
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
@@ -28,7 +35,15 @@ const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 // ── CSV: RFC 4180 + BOM UTF-8 (Excel đọc đúng tiếng Việt) + chống formula injection ──
 // EXPORT cho reports.js tái dùng (CSV báo cáo P&L) — một serializer duy nhất toàn app.
 const BOM = '﻿';
+// Ô BẮT BUỘC LÀ VĂN BẢN. csvCell MIỄN chèn ' cho giá trị thuần số (để SUM() của Excel chạy
+// trên cột tiền) — nhưng SĐT khách "0912345678" cũng là chuỗi thuần số, nên Excel/Sheets
+// parse thành SỐ và NUỐT số 0 đầu → chủ shop gọi khách không được. Bọc CsvText để ép ô đó
+// thành công thức trả chuỗi ="…", giữ nguyên số 0. Chỉ dùng cho cột định danh (SĐT), KHÔNG
+// dùng cho cột tiền.
+export class CsvText { constructor(v) { this.v = String(v ?? ''); } }
 export function csvCell(v) {
+  // Lọc còn chữ số và vài ký tự định dạng SĐT → không thể chèn công thức qua đường này.
+  if (v instanceof CsvText) { const s = v.v.replace(/[^0-9+\-. ]/g, ''); return s ? `"=""${s}"""` : ''; }
   if (v === null || v === undefined) return '';
   // Date (pg trả timestamptz thành Date) → ISO-8601: máy đọc được, KHÔNG phụ thuộc
   // timezone container (String(Date) cho chuỗi dài, giờ địa phương, không tất định).

@@ -6,5 +6,5 @@
   "description": "Giỏ hàng ẩn danh + tạo đơn (server-side pricing, idempotency, reserve).",
   "engines": { "node": ">=22" },
   "scripts": { "start": "node src/server.js" },
-  "dependencies": { "minio": "^8.0.1", "pg": "^8.13.1", "qrcode": "^1.5.4", "sharp": "^0.33.5" }
+  "dependencies": { "minio": "^8.0.1", "pg": "^8.13.1", "qrcode": "^1.5.4", "sharp": "^0.35.3" }
 }

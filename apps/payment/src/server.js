@@ -229,8 +229,6 @@ async function sepayWebhook(req, res, body) {
   const km = /^Apikey (.+)$/s.exec(req.headers['authorization'] ?? '');
   const key = km ? km[1] : '';
   if (!key) return send(res, 401, { error: 'unauthorized' });
-  const ev = parseEvent(body);
-  if (!ev.ok && !ev.skip) return send(res, ev.status, { error: ev.error });
   const isGlobal = timingSafeEq(key, SEPAY_KEY);
 
   const result = await withTxn(async (c) => {
@@ -241,6 +239,13 @@ async function sepayWebhook(req, res, body) {
       await c.query(`SELECT set_config('app.shop_id', $1, true)`, [cfg.shop_id]);
       scoped = true;
     }
+    // XÁC THỰC XONG rồi mới đụng payload. Trước đây parseEvent chạy TRƯỚC khi kiểm key,
+    // nên key SAI + payload xấu trả 400 thay vì 401 — phá đúng hợp đồng ghi ở đầu file
+    // ("Sai → 401, KHÔNG đụng đơn") và biến webhook tiền thành máy dò: kẻ không có key
+    // vẫn phân biệt được 400 'payload không hợp lệ' / 400 'timestamp bất thường' / 401,
+    // tức là dò ra luật validate để dựng webhook giả. smoke-edge bắt được chỗ này.
+    const ev = parseEvent(body);
+    if (!ev.ok && !ev.skip) return { badRequest: ev };
     if (ev.skip) return { matched: false, reason: ev.skip };
     // Global không quy được shop khi THIẾU ref / không thấy đơn → không ghi hàng đợi được,
     // nhưng KHÔNG nuốt im lặng: log warn để sweepMoneyAlerts/ops còn thấy (gia cố re-audit).
@@ -283,6 +288,7 @@ async function sepayWebhook(req, res, body) {
   });
 
   if (result.unauthorized) return send(res, 401, { error: 'unauthorized' });
+  if (result.badRequest) return send(res, result.badRequest.status, { error: result.badRequest.error });
   return send(res, 200, result);
 }
 

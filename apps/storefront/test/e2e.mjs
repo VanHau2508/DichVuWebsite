@@ -474,7 +474,7 @@ async function main() {
   // ── Banner trang chủ tuỳ chỉnh (Phase 5): carousel ảnh tải riêng + fallback ──
   sect('Banner trang chủ (ảnh tự tải) + fallback hero tự động');
   // Upload 1 ảnh banner thật (seller re-encode WebP) → lấy key banner-.
-  const PNG_1x1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const PNG_1x1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC', 'base64');
   const upB = await fetch(`${SELLER}/shops/${A.shopId}/banner-image`, { method: 'POST', headers: { 'content-type': 'image/png', origin: OS, cookie: `__Host-session=${A.cookie}` }, body: PNG_1x1 });
   const upBJson = await upB.json().catch(() => null);
   const bnKey = upBJson?.key;

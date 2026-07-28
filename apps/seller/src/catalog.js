@@ -32,19 +32,19 @@ const VARIANT_NOT_ORPHAN_SQL = `NOT EXISTS (
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
 const MAX_PRICE = 100_000_000_000; // 100 tỷ VND — chặn tràn/nhập nhầm
 
-const isInt = (x) => Number.isInteger(x);
-const validPrice = (x) => isInt(x) && x >= 0 && x <= MAX_PRICE;
+export const isInt = (x) => Number.isInteger(x);
+export const validPrice = (x) => isInt(x) && x >= 0 && x <= MAX_PRICE;
 // Cân biến thể (gram): null = xoá (dùng mặc định shop khi tính phí ship theo cân).
-const validWeight = (w) => w === null || (isInt(w) && w >= 1 && w <= 50000);
+export const validWeight = (w) => w === null || (isInt(w) && w >= 1 && w <= 50000);
 // Giá GẠCH NGANG (compare-at, 0067): CHỈ hiển thị — checkout luôn tính price_vnd.
 // null = xoá. Khi đặt phải > giá bán (kiểm ở từng handler, cần biết giá hiệu lực).
-const validCompareAt = (x) => x === null || (isInt(x) && x >= 0 && x <= MAX_PRICE);
+export const validCompareAt = (x) => x === null || (isInt(x) && x >= 0 && x <= MAX_PRICE);
 // Giá VỐN (0081): bảng riêng variant_costs — null = xoá. KHÔNG validate cost<giá bán
 // (bán lỗ chủ đích là hợp lệ — flash sale/xả kho; UI chỉ cảnh báo mềm).
-const validCost = (x) => x === null || (isInt(x) && x >= 0 && x <= MAX_PRICE);
-const validTitle = (x) => typeof x === 'string' && x.trim().length >= 1 && x.length <= 200;
-const validSku = (x) => typeof x === 'string' && x.trim().length >= 1 && x.length <= 64;
-const validSlug = (x) => typeof x === 'string' && SLUG_RE.test(x);
+export const validCost = (x) => x === null || (isInt(x) && x >= 0 && x <= MAX_PRICE);
+export const validTitle = (x) => typeof x === 'string' && x.trim().length >= 1 && x.length <= 200;
+export const validSku = (x) => typeof x === 'string' && x.trim().length >= 1 && x.length <= 64;
+export const validSlug = (x) => typeof x === 'string' && SLUG_RE.test(x);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // parent_id (danh mục 2 cấp, 0095): '' / null / undefined → null (cấp trên cùng); chuỗi
 // UUID hợp lệ → giữ; giá trị lạ → false (handler trả 400). Ràng buộc "cha phải cấp-1" +
@@ -77,7 +77,7 @@ function capMeta(meta) {
 const withChanged = (meta, changed) => capMeta({ ...meta, ...(Object.keys(changed).length ? { changed } : {}) });
 
 /** Ánh xạ lỗi unique về thông báo đúng cột. */
-function conflictMessage(err) {
+export function conflictMessage(err) {
   const c = err.constraint ?? '';
   if (c.includes('slug')) return 'slug đã tồn tại trong shop';
   if (c.includes('sku')) return 'SKU đã tồn tại trong shop';
@@ -86,11 +86,11 @@ function conflictMessage(err) {
 
 // ── ép giới hạn gói (max_products) ───────────────────────────────────────────
 // Đọc gói của shop (subscriptions → plans) trong tenant context. NULL = không giới hạn.
-async function planMaxProducts(c) {
+export async function planMaxProducts(c) {
   const r = await c.query(`SELECT pl.max_products FROM subscriptions s JOIN plans pl ON pl.code = s.plan_code WHERE s.shop_id = current_shop_id()`);
   return r.rows[0]?.max_products ?? null;
 }
-const catalogCount = async (c) => (await c.query(`SELECT count(*)::int n FROM products WHERE deleted_at IS NULL`)).rows[0].n;
+export const catalogCount = async (c) => (await c.query(`SELECT count(*)::int n FROM products WHERE deleted_at IS NULL`)).rows[0].n;
 
 // Đồng bộ giá "TỪ" của sản phẩm = min(giá biến thể) — thẻ lưới/sort/lọc storefront đọc
 // products.price_vnd (0093). Gọi trong CÙNG transaction ở MỌI điểm ghi làm đổi giá hoặc
@@ -863,9 +863,8 @@ async function setProductCategories(res, ctx, body, params) {
 // ── Nhập sản phẩm hàng loạt (BFF đã parse CSV → mảng rows). Mỗi dòng = 1 sản phẩm
 // + 1 biến thể + tồn ban đầu, trong MỘT transaction RIÊNG → thành công một phần +
 // báo lỗi từng dòng. Dùng để onboard concierge nhanh (khỏi gõ tay từng SKU). ──
-const IMPORT_MAX_ROWS = 1000;
 // Bỏ dấu tiếng Việt → slug a-z0-9-. (Chỉ tạo khi cột slug trống/không hợp lệ.)
-function slugify(s) {
+export function slugify(s) {
   return String(s ?? '')
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .replace(/đ/g, 'd').replace(/Đ/g, 'd')
@@ -873,81 +872,10 @@ function slugify(s) {
     .replace(/[^a-z0-9]+/g, '-').replace(/(^-+|-+$)/g, '')
     .slice(0, 58);
 }
-async function importProducts(res, ctx, body) {
-  const rows = Array.isArray(body.rows) ? body.rows : [];
-  if (rows.length === 0) return send(res, 400, { error: 'không có dòng nào để nhập' });
-  if (rows.length > IMPORT_MAX_ROWS) return send(res, 413, { error: `tối đa ${IMPORT_MAX_ROWS} dòng mỗi lần nhập` });
-
-  // Ép giới hạn gói: đọc max + số SP hiện có một lần; chặn khi chạm trần trong lúc nhập.
-  const cap = await withTenant(ctx.shopId, async (c) => ({ max: await planMaxProducts(c), count: await catalogCount(c) }));
-  const seen = new Set(); // tránh slug trùng NGAY trong batch
-  let created = 0;
-  const errors = [];
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i] ?? {};
-    const line = i + 2; // dòng 1 là tiêu đề trong file người dùng
-    const title = String(r.title ?? '').trim();
-    const priceStr = String(r.price_vnd ?? '').replace(/[^\d-]/g, '');
-    const priceVnd = priceStr === '' ? NaN : Number.parseInt(priceStr, 10);
-    const sku = String(r.sku ?? '').trim();
-    const status = String(r.status ?? '').trim().toLowerCase() === 'active' ? 'active' : 'draft';
-    const description = (r.description != null && String(r.description).trim() !== '') ? String(r.description) : null;
-    const stockStr = String(r.stock ?? '').replace(/[^\d-]/g, '');
-    const stock = stockStr === '' ? 0 : Number.parseInt(stockStr, 10);
-
-    if (!validTitle(title)) { errors.push({ line, title, error: 'tiêu đề trống hoặc quá dài' }); continue; }
-    if (!validPrice(priceVnd)) { errors.push({ line, title, error: 'giá không hợp lệ' }); continue; }
-    if (!validSku(sku)) { errors.push({ line, title, error: 'SKU trống hoặc quá dài' }); continue; }
-    if (!isInt(stock) || stock < 0) { errors.push({ line, title, error: 'tồn kho không hợp lệ' }); continue; }
-
-    if (cap.max != null && cap.count + created >= cap.max) { errors.push({ line, title, error: `vượt giới hạn gói (${cap.max} sản phẩm)` }); continue; }
-
-    let slug = String(r.slug ?? '').toLowerCase().trim();
-    if (!validSlug(slug)) slug = slugify(title);
-    if (!slug) { errors.push({ line, title, error: 'không tạo được slug từ tiêu đề' }); continue; }
-    if (seen.has(slug)) { let n = 2; while (seen.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`.slice(0, 60); }
-    seen.add(slug);
-
-    try {
-      await withTenant(ctx.shopId, async (c) => {
-        const p = await c.query(
-          `INSERT INTO products (shop_id, slug, title, description, price_vnd, status)
-           VALUES (current_shop_id(), $1, $2, $3, $4, $5) RETURNING id`,
-          [slug, title, description, priceVnd, status],
-        );
-        const productId = p.rows[0].id;
-        const vr = await c.query(
-          `INSERT INTO variants (shop_id, product_id, title, sku, price_vnd, position)
-           VALUES (current_shop_id(), $1, NULL, $2, $3, 0) RETURNING id`,
-          [productId, sku, priceVnd],
-        );
-        if (stock > 0) {
-          // Đặt tồn ban đầu + ghi ledger (giữ bất biến tổng delta ledger == on_hand).
-          await c.query(`INSERT INTO inventory_levels (shop_id, variant_id, on_hand) VALUES (current_shop_id(), $1, $2)`, [vr.rows[0].id, stock]);
-          await c.query(
-            `INSERT INTO inventory_ledger (shop_id, variant_id, delta, kind, reason, actor_id)
-             VALUES (current_shop_id(), $1, $2, 'receive', 'nhập từ CSV', $3)`,
-            [vr.rows[0].id, stock, ctx.user.id],
-          );
-        }
-        await audit(c, 'product.imported', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, slug } });
-      });
-      created++;
-    } catch (err) {
-      // withTenant rollback-on-throw → không để lại sản phẩm thiếu biến thể. Ghi lỗi
-      // dòng và ĐI TIẾP (import phải thành công một phần), không throw ra 500.
-      seen.delete(slug); // dòng lỗi không chiếm slug
-      errors.push({ line, title, error: err.code === '23505' ? conflictMessage(err) : 'lỗi khi tạo sản phẩm' });
-    }
-  }
-  return send(res, 200, { created, failed: errors.length, errors: errors.slice(0, 100) });
-}
-
 // ── routes (perm gác ở router server.js) ─────────────────────────────────────
 export const CATALOG_ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/products$`), perm: 'catalog.read', fn: (res, ctx, b, p, q) => listProducts(res, ctx, b, p, q) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/products$`), perm: 'catalog.write', fn: (res, ctx, b) => createProduct(res, ctx, b) },
-  { m: 'POST', re: new RegExp(`^/shops/${UUID}/products/import$`), perm: 'catalog.write', fn: (res, ctx, b) => importProducts(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/products/${UUID}$`), perm: 'catalog.read', fn: (res, ctx, b, p) => getProduct(res, ctx, b, p) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/products/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => updateProduct(res, ctx, b, p) },
   // Bulk PHẢI đứng TRƯỚC route /products/:uuid/... — thực ra UUID regex chặt nên không va,

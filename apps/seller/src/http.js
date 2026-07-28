@@ -2,20 +2,36 @@
 
 const MAX_BODY = 32 * 1024;
 
-export function readJson(req) {
+/**
+ * Đọc body JSON. `maxBytes` cho phép TỪNG ROUTE nới trần riêng (route.maxBody) — mặc định
+ * 32KB cho mọi endpoint, vì nới toàn cục là mở rộng bề mặt nuốt-bộ-nhớ ở chỗ không cần.
+ *
+ * KHÔNG req.destroy() khi quá cỡ — đây là lỗi cũ ở chính hàm này: huỷ socket giữa chừng
+ * làm client nhận ECONNRESET thay vì 413, tức người dùng thấy "mất kết nối" chứ không thấy
+ * "tệp quá lớn". readBuffer() ngay dưới đã ghi chú đúng cách làm; nay hai hàm làm giống nhau:
+ * (1) từ chối nhanh theo Content-Length, (2) vượt khi streaming thì ngừng gom rồi reject,
+ * để dispatcher gửi 413 kèm Connection: close.
+ */
+export function readJson(req, maxBytes = MAX_BODY) {
   return new Promise((resolve, reject) => {
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      return reject(Object.assign(new Error('body quá lớn'), { statusCode: 413 }));
+    }
     let size = 0;
+    let done = false;
     const chunks = [];
     req.on('data', (c) => {
+      if (done) return;
       size += c.length;
-      if (size > MAX_BODY) {
-        reject(Object.assign(new Error('body quá lớn'), { statusCode: 413 }));
-        req.destroy();
-        return;
+      if (size > maxBytes) {
+        done = true;
+        return reject(Object.assign(new Error('body quá lớn'), { statusCode: 413 }));
       }
       chunks.push(c);
     });
     req.on('end', () => {
+      if (done) return;
       const raw = Buffer.concat(chunks).toString('utf8');
       if (!raw) return resolve({});
       try {
@@ -24,7 +40,7 @@ export function readJson(req) {
         reject(Object.assign(new Error('JSON không hợp lệ'), { statusCode: 400 }));
       }
     });
-    req.on('error', reject);
+    req.on('error', (e) => { if (!done) { done = true; reject(e); } });
   });
 }
 

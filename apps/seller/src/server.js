@@ -20,6 +20,7 @@ import { readJson, readBuffer, send, originAllowed, clientIp } from './http.js';
 import { can, permsFor, ROLES } from './rbac.js';
 import { db, withTenant, audit } from './db.js';
 import { CATALOG_ROUTES } from './catalog.js';
+import { IMPORT_ROUTES } from './import.js';
 import { INVENTORY_ROUTES } from './inventory.js';
 import { MEDIA_ROUTES, initMedia, mediaPublicUrl } from './media.js';
 import { THEME_ADMIN_ROUTES } from './theme.js';
@@ -341,6 +342,7 @@ const ROUTES = [
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/members/${UUID}/role$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b, p) => changeRole(res, ctx, p[1], b) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/members/${UUID}$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b, p) => removeMember(res, ctx, p[1]) },
   ...CATALOG_ROUTES,
+  ...IMPORT_ROUTES,
   ...INVENTORY_ROUTES,
   ...MEDIA_ROUTES,
   ...THEME_ADMIN_ROUTES,
@@ -416,7 +418,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     let body;
     if (['GET', 'DELETE'].includes(req.method)) body = {};
     else if (route.raw) body = await readBuffer(req, MAX_UPLOAD); // upload nhị phân
-    else body = await readJson(req);
+    else body = await readJson(req, route.maxBody);   // route.maxBody: nới trần cho route nhập liệu
     const ctx = { user, role, shopId, ip: clientIp(req) };
     await route.fn(res, ctx, body, params, url.searchParams);
   } catch (err) {

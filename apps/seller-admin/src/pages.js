@@ -107,6 +107,33 @@ textarea{min-height:80px;resize:vertical}
 input[type=file]{width:auto;padding:9px 12px;background:var(--surf);border:1.5px dashed color-mix(in srgb,var(--pri) 30%,var(--bd));border-radius:var(--r);color:var(--soft)}
 .media-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px;align-items:flex-start}
 .tblscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+/* ── docs/44 §8: BẢNG → DANH SÁCH THẺ trên mobile ────────────────────────────
+   Cuộn ngang là cách thu gọn tệ nhất trên điện thoại: người bán phải kéo qua kéo lại
+   mới ghép được "đơn nào — bao nhiêu tiền — trạng thái gì", và cột quan trọng nhất
+   thường nằm ngoài màn hình. Mỗi hàng thành MỘT thẻ, mỗi ô một dòng "nhãn — giá trị".
+
+   Chỉ áp cho <table class="cards"> — lớp này do JS thêm SAU KHI đã gán nhãn từ <th>.
+   Không JS ⇒ không có lớp ⇒ bảng giữ nguyên kiểu cuộn ngang như hiện nay. Nếu áp
+   display:block mà thiếu nhãn thì được một chồng số vô nghĩa — tệ hơn cuộn ngang. */
+@media(max-width:767px){
+  table.cards,table.cards tbody,table.cards tr,table.cards td{display:block;width:100%}
+  table.cards thead{display:none}
+  table.cards{border-collapse:separate;border-spacing:0}
+  table.cards tr{border:1px solid var(--bd);border-radius:var(--r-lg);padding:12px 14px;margin-bottom:12px;background:var(--card)}
+  table.cards tr:hover td{background:transparent}
+  table.cards td{border:0;padding:6px 0;display:flex;gap:12px;align-items:baseline;justify-content:space-between;text-align:right}
+  table.cards td::before{content:attr(data-label);color:var(--mut);font-size:13px;line-height:20px;font-weight:400;text-align:left;flex:0 0 40%;min-width:0}
+  /* Ô rỗng (cột hành động trống, cột đệm) không đẻ ra dòng trắng vô nghĩa. */
+  table.cards td:empty{display:none}
+  /* Ô KHÔNG có nhãn (cột checkbox chọn hàng loạt, cột nút) trải hết chiều ngang. */
+  table.cards td[data-label=""]{justify-content:flex-start;text-align:left}
+  table.cards td[data-label=""]::before{display:none}
+  /* Ô 2 dòng vẫn giữ cấu trúc dòng-chính/dòng-phụ, chỉ căn phải theo thẻ. */
+  table.cards td .t1,table.cards td .t2{text-align:right}
+  table.cards td[data-label=""] .t1,table.cards td[data-label=""] .t2{text-align:left}
+  /* Trong thẻ thì không cần cuộn ngang nữa. */
+  .tblscroll:has(table.cards){overflow-x:visible}
+}
 .savebar{display:flex;justify-content:flex-end;align-items:center;gap:12px;flex-wrap:wrap;margin-top:16px;padding-top:16px;border-top:1px solid var(--bd)}.savebar .muted{margin-right:auto}
 .vartbl th,.vartbl td{padding:11px 10px}.vartbl input{padding:8px 10px;font-size:.9rem}
 /* Tổng quan: số liệu lớn + biểu đồ doanh thu (SVG nội tuyến, không JS) */
@@ -321,6 +348,27 @@ const ADMIN_JS = `(function(){
       if (e.submitter && e.submitter.hasAttribute('data-confirm')) return; // nút đã hỏi rồi
       if (!window.confirm(f.getAttribute('data-confirm'))) e.preventDefault();
     });
+  });
+
+  // ── 3. Bảng → thẻ trên mobile: gán nhãn cột cho từng ô ────────────────────
+  // Đọc chữ ở <th> rồi gắn vào data-label của ô cùng cột. Làm ở đây thay vì render
+  // sẵn data-label trong HTML vì: bật cho một bảng chỉ tốn một thuộc tính data-cards,
+  // không phải sửa tay từng <td> của hàng chục bảng — và nhãn không thể lệch với
+  // tiêu đề cột, vì nó ĐƯỢC LẤY TỪ chính tiêu đề đó.
+  // Lớp .cards chỉ thêm SAU khi gán xong: nếu script chết giữa chừng thì bảng vẫn là
+  // bảng cuộn ngang bình thường, không thành chồng số mất nhãn.
+  document.querySelectorAll('table[data-cards]').forEach(function(t){
+    var ths = Array.prototype.slice.call(t.querySelectorAll('thead th'));
+    if (!ths.length) return;
+    var labels = ths.map(function(th){ return (th.textContent || '').trim(); });
+    Array.prototype.forEach.call(t.querySelectorAll('tbody tr'), function(tr){
+      Array.prototype.forEach.call(tr.children, function(td, i){
+        if (td.tagName === 'TD' && !td.hasAttribute('data-label')) {
+          td.setAttribute('data-label', labels[i] != null ? labels[i] : '');
+        }
+      });
+    });
+    t.classList.add('cards');
   });
 })();`;
 
@@ -1453,7 +1501,7 @@ export function renderOrderNew(ctx, shopId, variants, idem, err, form, picker) {
     </form>` : `<div class="card"><p class="muted" style="margin:0">${pq ? `Không có sản phẩm nào khớp “${esc(pq)}” — thử từ khoá khác hoặc xoá lọc.` : 'Chưa có sản phẩm đang bán nào — thêm sản phẩm trước.'}</p></div>`}`);
 }
 
-export function renderOrders(ctx, shopId, data, filter) {
+export function renderOrders(ctx, shopId, data, filter, nonce = '') {
   const orders = data.orders ?? [];
   // Cảnh báo khi 1 NGUỒN (mạng/kết nối) có ≥4 SĐT KHÁC NHAU đơn chưa xử lý — dấu hiệu 1 kẻ
   // giả nhiều khách. Đếm SĐT phân biệt (không đếm số đơn thô) để tránh báo nhầm mạng chung (CGNAT).
@@ -1514,12 +1562,12 @@ export function renderOrders(ctx, shopId, data, filter) {
         <button class="btn alt sm" type="submit" formaction="/shops/${esc(shopId)}/orders/print-batch" formmethod="get" formtarget="_blank">🖨 In các đơn đã chọn</button>
         <span class="muted" style="font-size:.82rem">Tích chọn ở cột đầu (xác nhận: chỉ đơn "Chờ xử lý"; nhận tiền: chỉ đơn COD chưa thu; đơn khác tự bỏ qua).</span>
       </form>
-      <table><thead><tr><th></th><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Khách</th><th>Thời gian</th><th style="text-align:right">Tổng</th></tr></thead><tbody>${rows}</tbody></table>
+      <table data-cards><thead><tr><th></th><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Khách</th><th>Thời gian</th><th style="text-align:right">Tổng</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="muted" style="margin-top:12px">${total} đơn ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
       </div>` : '<p class="muted">Không tìm thấy đơn nào khớp bộ lọc.</p>'}</div>
-    <a class="btn alt" href="/">← Về bảng điều khiển</a>`);
+    <a class="btn alt" href="/">← Về bảng điều khiển</a>`, nonce);
 }
 
 export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returned) {
@@ -2022,7 +2070,7 @@ export function renderProducts(ctx, shopId, data, filter, notice = null, nonce =
       <div style="flex:1 1 200px"><label>Tìm theo tên</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="Ghế sofa…"></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
-    <div class="card">${products.length ? `${bulkBar}<div class="tblscroll"><table><thead><tr><th><input type="checkbox" data-bulk-all="product_ids" hidden aria-label="Chọn tất cả sản phẩm trên trang"></th><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th class="right">Tồn</th><th class="right" title="Lượt xem trang sản phẩm trong 30 ngày qua">Lượt xem</th><th class="right" title="Số khách đã bấm Yêu thích">Thích</th><th class="right">Đã bán</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="card">${products.length ? `${bulkBar}<div class="tblscroll"><table data-cards><thead><tr><th><input type="checkbox" data-bulk-all="product_ids" hidden aria-label="Chọn tất cả sản phẩm trên trang"></th><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th class="right">Tồn</th><th class="right" title="Lượt xem trang sản phẩm trong 30 ngày qua">Lượt xem</th><th class="right" title="Số khách đã bấm Yêu thích">Thích</th><th class="right">Đã bán</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table></div>
       <div class="muted" style="margin-top:12px">${total} sản phẩm ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}

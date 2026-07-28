@@ -299,9 +299,11 @@ async function main() {
     : bad('chỗ đếm không ẩn');
 
   // Trang KHÔNG xin JS giữ CSP khoá cứng (mặc định an toàn — ADR-011 #4).
-  const rNoJs = await adm('GET', `/shops/${A.shopId}/orders`, { cookie: A.cookie });
+  // Dùng /account: trang chỉ đọc, không bảng, không hàng loạt — sẽ không bao giờ cần JS.
+  // (Trước đây dùng /orders, nhưng Đợt 2 đã bật JS cho trang đó → chứng cứ mất giá trị.)
+  const rNoJs = await adm('GET', '/account', { cookie: A.cookie });
   !/script-src/.test(rNoJs.csp ?? '')
-    ? ok('trang không xin JS: CSP KHÔNG có script-src (mặc định an toàn)')
+    ? ok('trang không xin JS (/account): CSP KHÔNG có script-src (mặc định an toàn)')
     : bad('trang không dùng JS lại mở script-src', rNoJs.csp);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);

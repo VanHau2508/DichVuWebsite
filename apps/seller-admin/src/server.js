@@ -277,7 +277,7 @@ async function ordersList(res, me, cookie, shopId, q) {
   const r = await sellerApi('GET', `/shops/${shopId}/orders?${qs}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được đơn hàng.'));
-  return sendHtml(res, 200, V.renderOrders(ctx, shopId, r.json, { status, q: search, from, to, limit, offset }));
+  return sendHtmlJs(res, 200, (nonce) => V.renderOrders(ctx, shopId, r.json, { status, q: search, from, to, limit, offset }, nonce));
 }
 
 // ── Tạo đơn thủ công (nhân viên chốt đơn Facebook/Zalo rồi gõ vào) ─────────────

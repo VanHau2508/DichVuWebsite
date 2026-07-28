@@ -303,6 +303,19 @@ async function main() {
     if (req.url.startsWith('/ok')) { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(png); }
     if (req.url.startsWith('/redirect')) { res.writeHead(302, { location: 'http://169.254.169.254/latest/meta-data/' }); return res.end(); }
     if (req.url.startsWith('/notimage')) { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(Buffer.from('<?php echo 1; ?>')); }
+    // Ảnh QUÁ CỠ: khai đúng độ dài, vượt trần 8MB → phải bị chặn ở bước đọc Content-Length.
+    if (req.url.startsWith('/big')) {
+      const big = Buffer.alloc(9 * 1024 * 1024, 0x41);
+      res.writeHead(200, { 'content-type': 'image/png', 'content-length': String(big.length) });
+      return res.end(big);
+    }
+    // KHAI MAN độ dài: nói 10 byte rồi đẩy 9MB. Nếu chỉ tin Content-Length thì thủng —
+    // đây là ca chứng minh trần được cưỡng chế CẢ TRONG LÚC DỮ LIỆU ĐANG CHẢY.
+    if (req.url.startsWith('/liar')) {
+      res.writeHead(200, { 'content-type': 'image/png', 'transfer-encoding': 'chunked' });
+      for (let i = 0; i < 9; i++) res.write(Buffer.alloc(1024 * 1024, 0x42));
+      return res.end();
+    }
     res.writeHead(404); res.end();
   });
   await new Promise((res) => srv.listen(80, '0.0.0.0', res));
@@ -352,6 +365,16 @@ async function main() {
   r.json?.created === 1 && r.json?.images?.failed === 1
     ? ok('tệp giả dạng ảnh (content-type nói dối) → sniff magic byte từ chối')
     : bad('ảnh giả lọt qua', JSON.stringify(r.json?.images));
+
+  // Trần kích thước — docs/45 §7 liệt kê ca này, trước đó CHƯA có test nào.
+  const hBig = `to-${uniq()}`;
+  r = await imp([
+    { handle: `${hBig}-1`, title: 'Ảnh quá cỡ', sku: `${hBig}-1`, price_vnd: '1000', image_url: 'http://dbtest/big.png' },
+    { handle: `${hBig}-2`, title: 'Ảnh khai man độ dài', sku: `${hBig}-2`, price_vnd: '1000', image_url: 'http://dbtest/liar.png' },
+  ]);
+  r.json?.created === 2 && r.json?.images?.ok === 0 && r.json?.images?.failed === 2
+    ? ok('ảnh vượt trần 8MB bị chặn — CẢ ca khai man Content-Length (trần cưỡng chế lúc chảy)')
+    : bad('trần kích thước ảnh không chặn', JSON.stringify(r.json?.images));
 
   await new Promise((res) => srv.close(res));
 

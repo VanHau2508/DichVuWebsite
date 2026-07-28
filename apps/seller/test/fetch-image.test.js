@@ -11,6 +11,7 @@
  * không tải được.
  */
 import { test } from 'node:test';
+import http from 'node:http';
 import assert from 'node:assert/strict';
 import { isPublicIPv4, isPublicIPv6, fetchRemoteImage, ImgError } from '../src/fetch-image.js';
 
@@ -100,5 +101,55 @@ test('URL: tên miền phân giải về loopback bị chặn', async () => {
 test('URL rác → url_invalid, không ném ra lỗi lạ', async () => {
   for (const u of ['', 'không phải url', '://', 'http://']) {
     await assert.rejects(() => fetchRemoteImage(u), (e) => e instanceof ImgError);
+  }
+});
+
+// ── Cơ chế GHIM IP: lớp chống DNS-rebinding ────────────────────────────────
+// Đây là lớp DUY NHẤT trong 8 lớp mà mọi test khác KHÔNG chạm tới: các vector đều bị lớp
+// kiểm-DNS chặn TRƯỚC khi tới bước kết nối. Nếu Node âm thầm bỏ qua tham số `lookup` thì
+// toàn bộ test kia vẫn xanh y hệt, còn cửa sổ TOCTOU thì mở toang.
+//
+// Nên kiểm THẲNG cái cơ chế: yêu cầu tới một tên miền KHÔNG TỒN TẠI (.invalid, RFC 2606 —
+// bảo đảm không bao giờ phân giải được), kèm lookup trả về máy chủ cục bộ của chính test.
+// Tới được máy chủ ⇒ Node ĐÃ dùng lookup của ta thay vì tự phân giải. Không tới ⇒ cơ chế
+// ghim vô hiệu và lớp chống rebinding chỉ là niềm tin.
+test('http.request THẬT SỰ dùng tham số lookup (nền tảng của việc ghim IP)', async () => {
+  const srv = http.createServer((req, res) => { res.writeHead(200); res.end('den-noi'); });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  try {
+    const body = await new Promise((resolve, reject) => {
+      const req = http.request({
+        hostname: 'khong-ton-tai-that.invalid', port, path: '/',
+        lookup: (_h, opts, cb) => (opts && opts.all
+          ? cb(null, [{ address: '127.0.0.1', family: 4 }])
+          : cb(null, '127.0.0.1', 4)),
+      }, (res) => {
+        let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve(b));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    assert.equal(body, 'den-noi',
+      'Node phải nối tới ĐỊA CHỈ DO LOOKUP TRẢ VỀ, không tự phân giải tên miền');
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+});
+
+// Tên miền .invalid không phân giải được ⇒ fetchRemoteImage phải dừng ở bước DNS, KHÔNG
+// được coi "không phân giải được" là "an toàn, cứ nối thử".
+test('tên miền không phân giải được → dns, không nối bừa', async () => {
+  await assert.rejects(() => fetchRemoteImage('http://khong-ton-tai-that.invalid/a.png', { timeoutMs: 500 }),
+    (e) => e.code === 'dns' || e.code === 'blocked');
+});
+
+// Ký hiệu IP kiểu bát phân/thập phân là mẹo vượt hàng rào kinh điển với các bộ lọc so CHUỖI.
+// Hàng rào này kiểm ĐỊA CHỈ ĐÃ PHÂN GIẢI nên miễn nhiễm — nhưng phải có test nói rõ điều đó,
+// vì người sửa sau rất dễ "tối ưu" thành so chuỗi trước khi phân giải.
+test('IP viết kiểu bát phân/thập phân vẫn bị chặn (vì kiểm SAU khi phân giải)', async () => {
+  for (const u of ['http://0177.0.0.1/a.png', 'http://2130706433/a.png', 'http://127.1/a.png']) {
+    await assert.rejects(() => fetchRemoteImage(u, { timeoutMs: 500 }),
+      (e) => e.code === 'blocked' || e.code === 'dns' || e.code === 'url_invalid', `phải chặn ${u}`);
   }
 });

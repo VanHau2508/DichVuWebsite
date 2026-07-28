@@ -279,7 +279,7 @@ async function ordersList(res, me, cookie, shopId, q) {
   const r = await sellerApi('GET', `/shops/${shopId}/orders?${qs}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được đơn hàng.'));
-  return sendHtmlJs(res, 200, (nonce) => V.renderOrders(ctx, shopId, r.json, { status, payment, q: search, from, to, limit, offset }, nonce));
+  return sendHtmlJs(res, 200, (nonce) => V.renderOrders({ ...ctx, nonce }, shopId, r.json, { status, payment, q: search, from, to, limit, offset }));
 }
 
 // ── Tạo đơn thủ công (nhân viên chốt đơn Facebook/Zalo rồi gõ vào) ─────────────
@@ -336,7 +336,7 @@ async function orderDetail(res, me, cookie, shopId, oid, err, edited, returned) 
   const shipping = needShipping
     ? await sellerApi('GET', `/shops/${shopId}/shipping`, { cookie }).then((sr) => (sr.status === 200 ? sr.json : null)).catch(() => null)
     : null;
-  return sendHtml(res, err ? 409 : 200, V.renderOrderDetail(ctx, shopId, r.json, err, shipping, edited, returned));
+  return sendHtmlJs(res, err ? 409 : 200, (nonce) => V.renderOrderDetail({ ...ctx, nonce }, shopId, r.json, err, shipping, edited, returned));
 }
 
 // ── SỬA ĐƠN (BFF forward → seller POST .../edit) ──────────────────────────────
@@ -487,14 +487,14 @@ async function customersPage(res, me, cookie, shopId, sp) {
   const offset = Math.max(parseInt(sp.get('offset') ?? '0', 10) || 0, 0), limit = 20;
   const r = await sellerApi('GET', `/shops/${shopId}/customers?q=${encodeURIComponent(q)}&min_orders=${encodeURIComponent(minOrders)}&limit=${limit}&offset=${offset}`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được khách hàng.'));
-  return sendHtml(res, 200, V.renderCustomers(ctx, shopId, r.json, { q, min_orders: Number(minOrders) || 1, offset, limit }, sp.get('erased') === '1'));
+  return sendHtmlJs(res, 200, (nonce) => V.renderCustomers({ ...ctx, nonce }, shopId, r.json, { q, min_orders: Number(minOrders) || 1, offset, limit }, sp.get('erased') === '1'));
 }
 async function customerDetail(res, me, cookie, shopId, phone, saved, err) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'customers');
   const r = await sellerApi('GET', `/shops/${shopId}/customers/${phone}`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tìm thấy khách.'));
-  return sendHtml(res, err ? 409 : 200, V.renderCustomerDetail(ctx, shopId, r.json, saved, err));
+  return sendHtmlJs(res, err ? 409 : 200, (nonce) => V.renderCustomerDetail({ ...ctx, nonce }, shopId, r.json, saved, err));
 }
 // ── Ẩn danh khách (Luật BVDLCN 91/2025) — owner-only + step-up (mirror export) ─
 async function doCustomerErase(res, me, cookie, shopId, phone) {
@@ -606,7 +606,7 @@ async function codPage(res, me, cookie, shopId, done, err) {
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'cod');
   const r = await sellerApi('GET', `/shops/${shopId}/cod/reconciliation`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status === 403 ? 403 : r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được đối soát COD.'));
-  return sendHtml(res, err ? 400 : 200, V.renderCodReconcile(ctx, shopId, r.json, roleFor(me, shopId) === 'owner', done, err));
+  return sendHtmlJs(res, err ? 400 : 200, (nonce) => V.renderCodReconcile({ ...ctx, nonce }, shopId, r.json, roleFor(me, shopId) === 'owner', done, err));
 }
 async function codRemittanceSubmit(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -816,7 +816,7 @@ async function productsList(res, me, cookie, shopId, q, notice = null) {
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được sản phẩm.'));
   // Trang DUY NHẤT hiện dùng JS (ADR-011 danh sách trắng: chọn hàng loạt + xác nhận xoá).
   // sendHtmlJs sinh nonce MỘT LẦN cho cả header CSP lẫn thẻ <script> → không thể lệch.
-  return sendHtmlJs(res, 200, (nonce) => V.renderProducts(ctx, shopId, r.json, { status, stock, q: query, limit, offset }, notice, nonce));
+  return sendHtmlJs(res, 200, (nonce) => V.renderProducts({ ...ctx, nonce }, shopId, r.json, { status, stock, q: query, limit, offset }, notice));
 }
 
 // ĐỔI TRẠNG THÁI HÀNG LOẠT: forward danh sách id (checkbox) → seller (thành công một phần).
@@ -971,7 +971,7 @@ async function couponsPage(res, me, cookie, shopId, notice, err) {
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'coupons');
   const r = await sellerApi('GET', `/shops/${shopId}/coupons`, { cookie });
   if (r.status !== 200 && r.status !== 400) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được khuyến mãi.'));
-  return sendHtml(res, err ? 400 : 200, V.renderCoupons(ctx, shopId, r.status === 200 ? r.json : {}, notice, err));
+  return sendHtmlJs(res, err ? 400 : 200, (nonce) => V.renderCoupons({ ...ctx, nonce }, shopId, r.status === 200 ? r.json : {}, notice, err));
 }
 async function couponCreate(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -997,7 +997,7 @@ async function promotionsPage(res, me, cookie, shopId, notice, err) {
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'promotions');
   const r = await sellerApi('GET', `/shops/${shopId}/promotions`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.status === 403 ? 'Chỉ chủ shop / quản trị / nhân viên sản phẩm quản lý được flash sale.' : (r.json?.error ?? 'Không tải được flash sale.')));
-  return sendHtml(res, err ? 400 : 200, V.renderPromotions(ctx, shopId, r.json, notice, err));
+  return sendHtmlJs(res, err ? 400 : 200, (nonce) => V.renderPromotions({ ...ctx, nonce }, shopId, r.json, notice, err));
 }
 async function promotionCreate(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -1317,7 +1317,7 @@ async function pagesList(res, me, cookie, shopId) {
   const r = await sellerApi('GET', `/shops/${shopId}/pages`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'pages');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được danh sách trang.'));
-  return sendHtml(res, 200, V.renderContentPages(ctx, shopId, r.json));
+  return sendHtmlJs(res, 200, (nonce) => V.renderContentPages({ ...ctx, nonce }, shopId, r.json));
 }
 
 async function pageNew(res, me, cookie, shopId, err, form) {
@@ -1526,7 +1526,7 @@ async function auditPage(res, me, cookie, shopId, sp) {
   const offset = Math.max(parseInt(sp.get('offset') ?? '0', 10) || 0, 0), limit = 50;
   const r = await sellerApi('GET', `/shops/${shopId}/audit-log?limit=${limit}&offset=${offset}`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được nhật ký.'));
-  return sendHtml(res, 200, V.renderAuditLog(ctx, shopId, r.json, { offset, limit }));
+  return sendHtmlJs(res, 200, (nonce) => V.renderAuditLog({ ...ctx, nonce }, shopId, r.json, { offset, limit }));
 }
 
 // ── nhân sự (member management) — SỬA cần step-up; seller cưỡng chế members.write ─
@@ -1535,7 +1535,7 @@ async function membersList(res, me, cookie, shopId, notice, err) {
   const r = await sellerApi('GET', `/shops/${shopId}/members`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'members');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được nhân sự.'));
-  return sendHtml(res, err ? 409 : 200, V.renderMembers(ctx, shopId, r.json, roleFor(me, shopId) === 'owner', notice, err));
+  return sendHtmlJs(res, err ? 409 : 200, (nonce) => V.renderMembers({ ...ctx, nonce }, shopId, r.json, roleFor(me, shopId) === 'owner', notice, err));
 }
 // Lõi thao tác (giả định đã step-up; seller vẫn kiểm lại phía nó).
 async function doInvite(res, me, cookie, shopId, p) {
@@ -1647,7 +1647,7 @@ async function reportsPage(res, me, cookie, shopId, q) {
   // 403 = order_manager/catalog_manager gõ tay URL (nav vốn ẩn) — trang lỗi rõ ràng.
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error === 'forbidden' || r.status === 403 ? 'Chỉ chủ shop / quản trị viên xem được báo cáo lợi nhuận.' : (r.json?.error ?? 'Không tải được báo cáo.')));
   const todayVN = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
-  return sendHtml(res, 200, V.renderReports(ctx, shopId, r.json, { todayVN }));
+  return sendHtmlJs(res, 200, (nonce) => V.renderReports({ ...ctx, nonce }, shopId, r.json, { todayVN }));
 }
 // POST xuất CSV báo cáo → chưa step-up thì interstitial (mang theo type/from/to/group).
 function reportExportFields(f) {
@@ -1745,7 +1745,7 @@ async function purchasingPage(res, me, cookie, shopId, q) {
   const status = ['draft', 'ordered', 'received', 'cancelled'].includes(q.get('status')) ? q.get('status') : '';
   const r = await sellerApi('GET', `/shops/${shopId}/purchase-orders${status ? `?status=${status}` : ''}`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tải được phiếu nhập.')));
-  return sendHtml(res, 200, V.renderPurchasing(ctx, shopId, r.json, { status }));
+  return sendHtmlJs(res, 200, (nonce) => V.renderPurchasing({ ...ctx, nonce }, shopId, r.json, { status }));
 }
 
 async function suppliersPage(res, me, cookie, shopId, q, notice, err) {
@@ -1759,7 +1759,7 @@ async function suppliersPage(res, me, cookie, shopId, q, notice, err) {
   const all = r.json.suppliers ?? [];
   const editing = editId ? all.find((s) => s.id === editId) ?? null : null;
   const list = showInactive ? all : all.filter((s) => s.is_active);
-  return sendHtml(res, err ? 400 : 200, V.renderSuppliers(ctx, shopId, list, { notice, err, editing, showInactive }));
+  return sendHtmlJs(res, err ? 400 : 200, (nonce) => V.renderSuppliers({ ...ctx, nonce }, shopId, list, { notice, err, editing, showInactive }));
 }
 function supplierBody(f) {
   return {
@@ -1820,7 +1820,7 @@ async function poDetailPage(res, me, cookie, shopId, pid, notice, err) {
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'purchasing');
   const r = await sellerApi('GET', `/shops/${shopId}/purchase-orders/${pid}`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tìm thấy phiếu nhập.')));
-  return sendHtml(res, err ? 409 : 200, V.renderPurchaseOrderDetail(ctx, shopId, r.json, notice, err));
+  return sendHtmlJs(res, err ? 409 : 200, (nonce) => V.renderPurchaseOrderDetail({ ...ctx, nonce }, shopId, r.json, notice, err));
 }
 async function poEditPage(res, me, cookie, shopId, pid, err, q) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -1890,7 +1890,7 @@ async function inventoryLedgerPage(res, me, cookie, shopId, q) {
   if (variantId) qs.set('variant_id', variantId);
   const r = await sellerApi('GET', `/shops/${shopId}/inventory/ledger?${qs}`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tải được sổ cái kho.')));
-  return sendHtml(res, 200, V.renderInventoryLedger(ctx, shopId, r.json, { kind, variantId, limit, offset }));
+  return sendHtmlJs(res, 200, (nonce) => V.renderInventoryLedger({ ...ctx, nonce }, shopId, r.json, { kind, variantId, limit, offset }));
 }
 
 // ── Kiểm kê ──────────────────────────────────────────────────────────────────
@@ -1899,7 +1899,7 @@ async function stocktakesPage(res, me, cookie, shopId, notice, err) {
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'stocktakes');
   const r = await sellerApi('GET', `/shops/${shopId}/stocktakes`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tải được kiểm kê.')));
-  return sendHtml(res, err ? 400 : 200, V.renderStocktakes(ctx, shopId, r.json.stocktakes ?? [], { notice, err }));
+  return sendHtmlJs(res, err ? 400 : 200, (nonce) => V.renderStocktakes({ ...ctx, nonce }, shopId, r.json.stocktakes ?? [], { notice, err }));
 }
 async function stocktakeCreate(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);

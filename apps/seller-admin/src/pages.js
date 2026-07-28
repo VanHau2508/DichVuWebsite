@@ -132,6 +132,14 @@ input[type=file]{width:auto;padding:9px 12px;background:var(--surf);border:1.5px
   /* Ô KHÔNG có nhãn (cột checkbox chọn hàng loạt, cột nút) trải hết chiều ngang. */
   table.cards td[data-label=""]{justify-content:flex-start;text-align:left}
   table.cards td[data-label=""]::before{display:none}
+  /* Hàng <tfoot> là dòng TỔNG, không phải một bản ghi — JS cố ý chỉ gán nhãn cho tbody.
+     Không xử riêng thì ô không có data-label vẫn dính quy tắc td ở trên: chừa 40% trống
+     cho nhãn rỗng rồi ép số tiền vào 60% còn lại. Cho cả hàng thành một dải
+     "chữ trái — số phải" (đối soát COD, chi tiết phiếu nhập). */
+  table.cards tfoot{display:block;width:100%}
+  table.cards tfoot tr{display:flex;justify-content:space-between;align-items:baseline;gap:12px;background:var(--surf)}
+  table.cards tfoot td{display:block;width:auto;padding:0;text-align:right}
+  table.cards tfoot td::before{display:none}
   /* Ô 2 dòng vẫn giữ cấu trúc dòng-chính/dòng-phụ, chỉ căn phải theo thẻ. */
   table.cards td .t1,table.cards td .t2{text-align:right}
   table.cards td[data-label=""] .t1,table.cards td[data-label=""] .t2{text-align:left}
@@ -431,9 +439,15 @@ const ADMIN_JS = `(function(){
   });
 })();`;
 
-// nonce rỗng (mặc định) → KHÔNG chèn <script>, và http.js cũng không mở script-src.
-// Trang phải CHỦ ĐỘNG xin JS bằng cách đi qua sendHtmlJs — quên thì hệ khoá cứng như cũ.
-export function layout(title, ctx, body, nonce = '') {
+// Nonce đi theo ctx (`{ ...ctx, nonce }` ở route), KHÔNG phải tham số vị trí của từng hàm
+// render. Lý do đổi: đến lượt bật data-cards cho ~14 trang nữa thì mỗi hàm phải mọc thêm
+// tham số thứ 5–7, và đặt nhầm thứ tự là hỏng ÂM THẦM — nonce lệch ⇒ trình duyệt chặn
+// script, nhưng HTML vẫn đủ nên mọi khẳng định so chuỗi vẫn xanh. Gắn vào ctx thì không
+// còn thứ tự để đặt nhầm.
+// KHÔNG có ctx.nonce ⇒ KHÔNG chèn <script>, và http.js cũng không mở script-src. Trang
+// phải CHỦ ĐỘNG xin JS bằng cách đi qua sendHtmlJs — quên thì hệ khoá cứng như cũ.
+export function layout(title, ctx, body) {
+  const nonce = ctx?.nonce || '';
   const head = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex"><title>${esc(title)}</title><style>${STYLE}</style></head><body>`;
   if (!ctx.user) return `${head}<div class="authwrap">${body}</div></body></html>`;
@@ -1496,10 +1510,10 @@ export function renderReports(ctx, shopId, d, f) {
       ${exportBtns}
     </div>
     <div class="card"><h2 style="margin-top:0">Lãi theo sản phẩm${d.products_truncated ? ' <span class="muted" style="font-size:.82rem">(top 100)</span>' : ''}</h2>
-      ${prodRows ? `<table><thead><tr><th>Sản phẩm</th><th class="right">${sortLink('qty', 'SL')}</th><th class="right">${sortLink('revenue', 'Doanh thu')}</th><th class="right">Giá vốn</th><th class="right">${sortLink('profit', 'Lãi')}</th><th class="right">Biên</th></tr></thead><tbody>${prodRows}</tbody></table>
+      ${prodRows ? `<table data-cards><thead><tr><th>Sản phẩm</th><th class="right">${sortLink('qty', 'SL')}</th><th class="right">${sortLink('revenue', 'Doanh thu')}</th><th class="right">Giá vốn</th><th class="right">${sortLink('profit', 'Lãi')}</th><th class="right">Biên</th></tr></thead><tbody>${prodRows}</tbody></table>
       <p class="muted" style="font-size:.8rem;margin-bottom:0">Doanh thu theo dòng hàng, CHƯA trừ giảm giá cấp đơn + hoàn/trả. Dòng "—" chưa có giá vốn.</p>` : '<p class="muted">Chưa có dữ liệu.</p>'}</div>
     <div class="card"><h2 style="margin-top:0">Theo ${group === 'month' ? 'tháng' : 'ngày'}</h2>
-      <table><thead><tr><th>Kỳ</th><th class="right">Đơn</th><th class="right">Thuần</th><th class="right">Lãi gộp</th><th class="right">Lãi VH</th></tr></thead><tbody>${bucketRows}</tbody></table></div>
+      <table data-cards><thead><tr><th>Kỳ</th><th class="right">Đơn</th><th class="right">Thuần</th><th class="right">Lãi gộp</th><th class="right">Lãi VH</th></tr></thead><tbody>${bucketRows}</tbody></table></div>
     <p class="muted" style="font-size:.82rem">Doanh thu ghi tại <strong>ngày thanh toán</strong>; hoàn/trả trừ tại <strong>ngày phiếu</strong>; giá vốn chốt tại <strong>thời điểm đặt hàng</strong>; số kỳ cũ có thể thay đổi khi sửa đơn đã trả; mốc ngày giờ Việt Nam. Lãi vận hành chưa gồm phí nền tảng/quảng cáo/đóng gói.</p>`);
 }
 
@@ -1616,7 +1630,7 @@ export function renderOrderNew(ctx, shopId, variants, idem, err, form, picker) {
 }
 
 // filter.payment: tình trạng thanh toán đang lọc (đến từ ô số liệu ở Tổng quan).
-export function renderOrders(ctx, shopId, data, filter, nonce = '') {
+export function renderOrders(ctx, shopId, data, filter) {
   const orders = data.orders ?? [];
   // Cảnh báo khi 1 NGUỒN (mạng/kết nối) có ≥4 SĐT KHÁC NHAU đơn chưa xử lý — dấu hiệu 1 kẻ
   // giả nhiều khách. Đếm SĐT phân biệt (không đếm số đơn thô) để tránh báo nhầm mạng chung (CGNAT).
@@ -1686,7 +1700,7 @@ export function renderOrders(ctx, shopId, data, filter, nonce = '') {
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
       </div>` : '<p class="muted">Không tìm thấy đơn nào khớp bộ lọc.</p>'}</div>
-    <a class="btn alt" href="/">← Về bảng điều khiển</a>`, nonce);
+    <a class="btn alt" href="/">← Về bảng điều khiển</a>`);
 }
 
 export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returned) {
@@ -1790,7 +1804,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   // Lịch sử hoàn tiền: mọi bút toán (một phần lẫn toàn bộ) + tổng đã hoàn.
   const refundHistory = (o.refunds ?? []).length ? `
     <div class="card"><h2>Hoàn tiền</h2>
-      <table><thead><tr><th>Thời gian</th><th>Số tiền</th><th>Lý do</th><th>Người thao tác</th></tr></thead><tbody>
+      <table data-cards><thead><tr><th>Thời gian</th><th>Số tiền</th><th>Lý do</th><th>Người thao tác</th></tr></thead><tbody>
         ${o.refunds.map((r) => `<tr><td class="muted">${dt(r.created_at)}</td><td><strong>${money(r.amount_vnd)}</strong></td><td>${esc(r.reason ?? '') || '<span class="muted">—</span>'}${r.restock ? ' <span class="muted">(khai nhập lại kho)</span>' : ''}</td><td class="muted">${esc(r.created_by_email ?? '—')}</td></tr>`).join('')}
       </tbody></table>
       <div style="text-align:right;margin-top:8px"><strong>Tổng đã hoàn ${money(o.refunded_total_vnd ?? 0)}</strong>
@@ -1800,7 +1814,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   // thao tác). Mirror card hoàn tiền — chứng từ trả giữ độc lập với bút toán hoàn.
   const returnHistory = (o.returns ?? []).length ? `
     <div class="card"><h2>Lịch sử đổi-trả</h2>
-      <table><thead><tr><th>Thời gian</th><th>SL trả</th><th>Số hoàn</th><th>Nhập kho</th><th>Lý do</th><th>Người thao tác</th></tr></thead><tbody>
+      <table data-cards><thead><tr><th>Thời gian</th><th>SL trả</th><th>Số hoàn</th><th>Nhập kho</th><th>Lý do</th><th>Người thao tác</th></tr></thead><tbody>
         ${o.returns.map((r) => `<tr><td class="muted">${dt(r.created_at)}</td><td>${esc(r.qty)}</td><td><strong>${money(r.refund_vnd)}</strong></td><td class="muted">${r.restocked ? 'có' : 'không'}</td><td>${esc(r.reason ?? '') || '<span class="muted">—</span>'}</td><td class="muted">${esc(r.created_by_email ?? '—')}</td></tr>`).join('')}
       </tbody></table>
     </div>` : '';
@@ -1808,7 +1822,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   // Đơn nhiều kiện thấy rõ kiện nào chứa gì + trạng thái từng kiện. Thay <p> vận đơn cũ.
   const shipmentsCard = (o.shipments ?? []).length ? `
     <div class="card"><h2>Kiện hàng / vận đơn</h2>
-      <table><thead><tr><th>Mã vận đơn</th><th>Trạng thái</th><th>Hãng</th><th>Mặt hàng</th></tr></thead><tbody>
+      <table data-cards><thead><tr><th>Mã vận đơn</th><th>Trạng thái</th><th>Hãng</th><th>Mặt hàng</th></tr></thead><tbody>
         ${o.shipments.map((s) => `<tr>
           <td><strong>${esc(s.tracking_number ?? '(đang tạo)')}</strong> ${esc(s.carrier ?? '')}</td>
           <td>${esc(SHIP_ST[s.status] ?? s.status)}</td>
@@ -2125,7 +2139,7 @@ td.r,th.r{text-align:right}.tot{margin-left:auto;width:260px}.tot .row{display:f
 
 // ── Sản phẩm & tồn kho ───────────────────────────────────────────────────────
 const PSTATUSES = ['', 'active', 'draft', 'archived'];
-export function renderProducts(ctx, shopId, data, filter, notice = null, nonce = '') {
+export function renderProducts(ctx, shopId, data, filter, notice = null) {
   const d = data ?? {}; // backend có thể trả 200 body rỗng → data null; đừng để .products nổ
   const products = d.products ?? [];
   const q = encodeURIComponent(filter.q ?? '');
@@ -2199,7 +2213,7 @@ export function renderProducts(ctx, shopId, data, filter, notice = null, nonce =
       // sai sự thật và làm chủ shop hoảng — phải mời họ bỏ lọc thay vì mời tạo mới.
       : (filter.status || filter.q || off > 0)
         ? `<p class="muted">Không có sản phẩm nào khớp bộ lọc hiện tại. <a href="?status=&q=">Xoá bộ lọc</a></p>`
-        : '<p class="muted">Chưa có sản phẩm. Bấm “+ Thêm sản phẩm” để tạo.</p>'}</div>`, nonce);
+        : '<p class="muted">Chưa có sản phẩm. Bấm “+ Thêm sản phẩm” để tạo.</p>'}</div>`);
 }
 
 // Quản lý danh mục: tạo/sửa/xoá + (gán sản phẩm ở trang chi tiết SP). Hiện storefront /c/:slug.
@@ -2288,7 +2302,7 @@ export function renderCoupons(ctx, shopId, data, notice, err) {
       <p class="muted" style="font-size:.82rem;margin-bottom:0">Giảm trên <strong>tạm tính</strong> (không giảm phí ship). Khách nhập mã ở trang giỏ hàng.</p>
     </div>
     <div class="card">${cps.length
-      ? `<table><thead><tr><th>Mã</th><th>Ưu đãi</th><th>Đã dùng</th><th>Hết hạn</th><th>Trạng thái</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      ? `<table data-cards><thead><tr><th>Mã</th><th>Ưu đãi</th><th>Đã dùng</th><th>Hết hạn</th><th>Trạng thái</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
       : '<p class="muted">Chưa có mã giảm giá. Tạo ở trên để chạy khuyến mãi.</p>'}</div>`);
 }
 
@@ -2315,7 +2329,7 @@ export function renderPromotions(ctx, shopId, data, notice, err) {
       <form method="POST" action="${base}/promotions/${esc(p.id)}/delete" style="margin:0"><button class="btn warn sm" type="submit">Xoá</button></form>
     </div></td></tr>`;
   const table = ps.length
-    ? `<table><thead><tr><th>Tên</th><th>Ưu đãi</th><th>Phạm vi</th><th>Thời gian (giờ VN)</th><th>Trạng thái</th><th></th></tr></thead><tbody>${ps.map(row).join('')}</tbody></table>`
+    ? `<table data-cards><thead><tr><th>Tên</th><th>Ưu đãi</th><th>Phạm vi</th><th>Thời gian (giờ VN)</th><th>Trạng thái</th><th></th></tr></thead><tbody>${ps.map(row).join('')}</tbody></table>`
     : '<p class="muted">Chưa có chương trình. Tạo ở trên để chạy flash sale.</p>';
   return layout('Flash sale', ctx, `
     <h1>Flash sale — khuyến mãi tự động</h1>
@@ -2662,7 +2676,7 @@ export function renderContentPages(ctx, shopId, data) {
   return layout('Trang nội dung', ctx, `
     <div class="toolbar"><h1 style="margin:0">Trang nội dung</h1>
       <a class="btn" href="/shops/${esc(shopId)}/pages/new">+ Thêm trang</a></div>
-    <div class="card">${pages.length ? `<table><thead><tr><th>Trang</th><th>Trạng thái</th><th class="right">Vị trí menu</th><th>Cập nhật</th></tr></thead><tbody>${rows}</tbody></table>`
+    <div class="card">${pages.length ? `<table data-cards><thead><tr><th>Trang</th><th>Trạng thái</th><th class="right">Vị trí menu</th><th>Cập nhật</th></tr></thead><tbody>${rows}</tbody></table>`
       : '<p class="muted">Chưa có trang nào. Tạo “Giới thiệu”, “Chính sách đổi trả”… bằng nút “+ Thêm trang”.</p>'}</div>`);
 }
 
@@ -2888,7 +2902,7 @@ export function renderMembers(ctx, shopId, data, canWrite, notice, err) {
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${notice?.invited ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0">
       <strong>Đã gửi email lời mời tới ${esc(notice.invited)}.</strong> Họ mở email, bấm link để đặt mật khẩu & tham gia (lời mời sống 7 ngày).</div>` : ''}
-    <div class="card"><table><thead><tr><th>Email</th><th>Vai trò</th><th>Tham gia</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="card"><table data-cards><thead><tr><th>Email</th><th>Vai trò</th><th>Tham gia</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     ${canWrite ? `<div class="card"><h2 style="margin-top:0">Mời thành viên</h2>
       <p class="muted" style="font-size:.85rem">Thao tác nhân sự cần xác nhận lại mật khẩu (step-up).</p>
       <form method="POST" action="${base}/invite">
@@ -3002,7 +3016,7 @@ export function renderAuditLog(ctx, shopId, data, filter) {
   return layout('Nhật ký', ctx, `<h1>Nhật ký hoạt động</h1>
     <p class="muted">Mọi thao tác trong shop đều được ghi lại, không sửa/xoá được.
       Lịch sử đăng nhập, đổi mật khẩu, MFA là sự kiện cấp tài khoản (không gắn shop) nên không hiển thị tại đây.</p>
-    <div class="card">${rows ? `<table><thead><tr><th>Thời điểm</th><th>Người thực hiện</th><th>Hành động</th><th>Chi tiết</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="card">${rows ? `<table data-cards><thead><tr><th>Thời điểm</th><th>Người thực hiện</th><th>Hành động</th><th>Chi tiết</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="muted" style="margin-top:12px">
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Mới hơn</a>` : '<span style="color:#d1d5db">← Mới hơn</span>'} ·
         ${data?.has_more ? `<a href="${nav(off + lim)}">Cũ hơn →</a>` : '<span style="color:#d1d5db">Cũ hơn →</span>'}</div>`
@@ -3236,7 +3250,7 @@ export function renderCustomers(ctx, shopId, data, filter, notice) {
       <div><label>Mua tối thiểu</label><select name="min_orders">${[1, 2, 3, 5].map((n) => `<option value="${n}"${Number(filter.min_orders) === n ? ' selected' : ''}>≥ ${n} đơn</option>`).join('')}</select></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
-    <div class="card">${rows ? `<table><thead><tr><th>Khách</th><th>Số đơn</th><th class="right">Tổng chi</th><th>Mua gần nhất</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="card">${rows ? `<table data-cards><thead><tr><th>Khách</th><th>Số đơn</th><th class="right">Tổng chi</th><th>Mua gần nhất</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="muted" style="margin-top:12px">${esc(String(total))} khách ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}</div>`
@@ -3266,7 +3280,7 @@ export function renderCustomerDetail(ctx, shopId, cu, saved, err) {
         <button class="btn sm" type="submit" style="margin-top:10px">Lưu ghi chú</button>
       </form></div>
     <div class="card"><h2 style="margin-top:0">Lịch sử mua (${esc(String((cu.orders ?? []).length))})</h2>
-      <table><thead><tr><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Thời gian</th><th class="right">Tổng</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <table data-cards><thead><tr><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Thời gian</th><th class="right">Tổng</th></tr></thead><tbody>${rows}</tbody></table></div>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${ctx.role === 'owner' ? `<div class="card" style="border-color:#fca5a5">
       <h2 style="margin-top:0">Xoá dữ liệu cá nhân (ẩn danh)</h2>
@@ -3648,7 +3662,7 @@ export function renderCodReconcile(ctx, shopId, data, isOwner, done, err) {
       ${carrierCards}
     </div>
     <div class="card"><h2 style="margin-top:0">Đơn chờ đối soát (${esc(outstanding.length)})</h2>
-      ${outstanding.length ? `<table><thead><tr>${isOwner ? '<th></th>' : ''}<th>Đơn</th><th>Ngày giao</th><th>Hãng</th><th class="right">Tổng COD</th><th class="right">Phí hãng</th><th class="right">Kỳ vọng nhận</th></tr></thead>
+      ${outstanding.length ? `<table data-cards><thead><tr>${isOwner ? '<th></th>' : ''}<th>Đơn</th><th>Ngày giao</th><th>Hãng</th><th class="right">Tổng COD</th><th class="right">Phí hãng</th><th class="right">Kỳ vọng nhận</th></tr></thead>
         <tbody>${rows}</tbody>
         <tfoot><tr><td colspan="${colspan - 1}" class="muted">Tổng kỳ vọng</td><td class="right num"><strong>${money(data.total_outstanding_vnd ?? 0)}</strong></td></tr></tfoot></table>
         ${isOwner ? '<p class="muted" style="margin:12px 0 0;font-size:.85rem">Tick các đơn thuộc phiếu chuyển tiền của hãng ở cột đầu, rồi ghi phiếu bên dưới.</p>' : '<p class="muted" style="margin:12px 0 0;font-size:.85rem">Chỉ chủ cửa hàng mới ghi được phiếu chuyển tiền.</p>'}`
@@ -3656,7 +3670,7 @@ export function renderCodReconcile(ctx, shopId, data, isOwner, done, err) {
     </div>
     ${recordCard}
     <div class="card"><h2 style="margin-top:0">Lịch sử đối soát</h2>
-      ${remittances.length ? `<table><thead><tr><th>Ngày</th><th>Hãng</th><th>Số đơn</th><th class="right">Kỳ vọng</th><th class="right">Thực nhận</th><th class="right">Chênh lệch</th><th>Ghi chú</th><th>Người ghi</th></tr></thead>
+      ${remittances.length ? `<table data-cards><thead><tr><th>Ngày</th><th>Hãng</th><th>Số đơn</th><th class="right">Kỳ vọng</th><th class="right">Thực nhận</th><th class="right">Chênh lệch</th><th>Ghi chú</th><th>Người ghi</th></tr></thead>
         <tbody>${histRows}</tbody></table>
         <p class="muted" style="margin:12px 0 0;font-size:.85rem">Chênh lệch <span style="color:var(--bad);font-weight:700">âm (đỏ)</span> = hãng còn nợ; <span style="color:var(--good);font-weight:700">≥0 (xanh)</span> = đủ/dư.</p>`
         : '<p class="muted">Chưa có phiếu đối soát nào.</p>'}
@@ -3749,7 +3763,7 @@ export function renderPurchasing(ctx, shopId, data, filter) {
     <div class="toolbar"><h1 style="margin:0">Phiếu nhập hàng</h1>
       <a class="btn" href="${base}/purchasing/new">+ Tạo phiếu nhập</a></div>
     <div class="actions" style="flex-wrap:wrap;margin-bottom:12px">${tab('', 'Tất cả')}${tab('draft', 'Nháp')}${tab('ordered', 'Đã đặt')}${tab('received', 'Đã nhận')}${tab('cancelled', 'Đã huỷ')}</div>
-    <div class="card">${pos.length ? `<table><thead><tr><th>Phiếu</th><th>Trạng thái</th><th>Nhà cung cấp</th><th class="right">Dòng</th><th class="right">Trị giá</th><th>Ngày</th></tr></thead><tbody>${rows}</tbody></table>${data.truncated ? '<p class="muted" style="margin:12px 0 0">⚠ Hiện 200 phiếu gần nhất.</p>' : ''}` : '<p class="muted" style="margin:0">Chưa có phiếu nhập nào. Tạo phiếu để nhập kho + cập nhật giá vốn.</p>'}</div>`);
+    <div class="card">${pos.length ? `<table data-cards><thead><tr><th>Phiếu</th><th>Trạng thái</th><th>Nhà cung cấp</th><th class="right">Dòng</th><th class="right">Trị giá</th><th>Ngày</th></tr></thead><tbody>${rows}</tbody></table>${data.truncated ? '<p class="muted" style="margin:12px 0 0">⚠ Hiện 200 phiếu gần nhất.</p>' : ''}` : '<p class="muted" style="margin:0">Chưa có phiếu nhập nào. Tạo phiếu để nhập kho + cập nhật giá vốn.</p>'}</div>`);
 }
 
 // Nhà cung cấp: danh sách + form tạo/sửa (inline).
@@ -3785,7 +3799,7 @@ export function renderSuppliers(ctx, shopId, suppliers, opts = {}) {
     ${formCard}
     <div class="card"><div class="toolbar"><h2 style="margin:0">Danh sách</h2>
       <a class="btn alt sm" href="${base}/suppliers${opts.showInactive ? '' : '?all=1'}">${opts.showInactive ? 'Chỉ NCC hoạt động' : 'Hiện cả NCC đã ẩn'}</a></div>
-      ${list.length ? `<table><thead><tr><th>Tên</th><th>SĐT</th><th>Liên hệ</th><th>Email</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted" style="margin:0">Chưa có nhà cung cấp nào.</p>'}</div>`);
+      ${list.length ? `<table data-cards><thead><tr><th>Tên</th><th>SĐT</th><th>Liên hệ</th><th>Email</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted" style="margin:0">Chưa có nhà cung cấp nào.</p>'}</div>`);
 }
 
 // Slot chọn biến thể + SL + giá nhập (dùng chung New/Edit phiếu).
@@ -3896,7 +3910,7 @@ export function renderPurchaseOrderDetail(ctx, shopId, po, notice, err) {
       ${po.note ? `<p class="muted" style="margin:6px 0 0">Ghi chú: ${esc(po.note)}</p>` : ''}
       ${po.received_at ? `<p class="muted" style="margin:6px 0 0">Đã nhận: ${dt(po.received_at)}</p>` : (po.ordered_at ? `<p class="muted" style="margin:6px 0 0">Đã đặt: ${dt(po.ordered_at)}</p>` : '')}</div>
     <div class="card"><h2 style="margin-top:0">Hàng${po.status === 'received' ? '' : ' dự kiến'}</h2>
-      ${(po.lines ?? []).length ? `<table><thead><tr><th>Hàng</th><th class="right">SL</th><th class="right">Giá nhập</th><th class="right">Thành tiền</th><th class="right">Tồn hiện tại</th></tr></thead>
+      ${(po.lines ?? []).length ? `<table data-cards><thead><tr><th>Hàng</th><th class="right">SL</th><th class="right">Giá nhập</th><th class="right">Thành tiền</th><th class="right">Tồn hiện tại</th></tr></thead>
         <tbody>${lineRows}</tbody><tfoot><tr><td colspan="3" class="right"><strong>Tổng trị giá</strong></td><td class="right num"><strong>${money(po.subtotal_vnd)}</strong></td><td></td></tr></tfoot></table>`
         : '<p class="muted" style="margin:0">Phiếu chưa có dòng hàng nào.</p>'}</div>
     ${actions.length ? `<div class="actions" style="flex-wrap:wrap">${actions.join('')}</div>` : ''}`);
@@ -3965,7 +3979,7 @@ export function renderStocktakes(ctx, shopId, list, opts = {}) {
         <button class="btn" type="submit" style="margin-top:12px">Bắt đầu đếm</button>
       </form></div>
     <div class="card"><h2 style="margin-top:0">Các phiên</h2>
-      ${rows ? `<table><thead><tr><th>Phiên</th><th>Trạng thái</th><th class="right">Đã đếm</th><th>Ghi chú</th><th>Ngày</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted" style="margin:0">Chưa có phiên kiểm kê nào.</p>'}</div>`);
+      ${rows ? `<table data-cards><thead><tr><th>Phiên</th><th>Trạng thái</th><th class="right">Đã đếm</th><th>Ghi chú</th><th>Ngày</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted" style="margin:0">Chưa có phiên kiểm kê nào.</p>'}</div>`);
 }
 
 // Chi tiết + ghi số đếm cho một phiên kiểm kê.

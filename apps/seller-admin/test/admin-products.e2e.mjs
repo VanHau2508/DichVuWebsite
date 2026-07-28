@@ -298,6 +298,28 @@ async function main() {
     ? ok('chỗ đếm số đang chọn cũng ẩn khi chưa có JS')
     : bad('chỗ đếm không ẩn');
 
+  // ── docs/44 §8: bảng nào gắn data-cards thì trang đó PHẢI xin JS ───────────
+  // Thuộc tính data-cards tự nó không làm gì: JS mới là thứ đọc <th> gán nhãn rồi thêm lớp
+  // .cards. Nếu route quên đổi sang sendHtmlJs thì thuộc tính nằm đó im lặng — bảng vẫn
+  // cuộn ngang trên điện thoại, và không có gì báo. Đây là kiểu hỏng KHÔNG bộ test nào
+  // khác bắt được, vì HTML vẫn đủ và trang vẫn 200.
+  // Liệt kê tường minh chứ không quét động: đúng ý đồ "trang phải CHỦ ĐỘNG xin JS" — thêm
+  // bảng mới mà quên thêm vào đây thì đó là việc của lô sau, còn tụt mất một trang đang có
+  // thì test đỏ ngay.
+  const CARD_PAGES = ['/customers', '/audit-log', '/purchasing', '/suppliers', '/stocktakes',
+    '/inventory-ledger', '/promotions', '/coupons', '/pages', '/members', '/cod'];
+  const nonceBad = [], notOk = [];
+  for (const path of CARD_PAGES) {
+    const pr = await adm('GET', `/shops/${A.shopId}${path}`, { cookie: A.cookie });
+    if (pr.status !== 200) { notOk.push(`${path}→${pr.status}`); continue; }
+    const h = /script-src 'nonce-([^']+)'/.exec(pr.csp ?? '')?.[1];
+    const t = /<script nonce="([^"]+)"/.exec(pr.body)?.[1];
+    if (!h || !t || h !== t) nonceBad.push(path);
+  }
+  nonceBad.length === 0 && notOk.length === 0
+    ? ok(`${CARD_PAGES.length} trang bật thẻ-mobile đều có JS ký nonce KHỚP header`)
+    : bad('trang bật thẻ-mobile thiếu JS ký nonce', `nonce hỏng: ${nonceBad.join(' ') || '—'} | không 200: ${notOk.join(' ') || '—'}`);
+
   // ── docs/44 §7: ô số liệu LÀ LINK tới danh sách ĐÃ LỌC SẴN ────────────────
   // Khẳng định phải chứng minh bộ lọc THẬT SỰ LỌC. Một API nhận tham số rồi lặng lẽ bỏ qua
   // vẫn trả 200 kèm đủ dữ liệu — mọi test kiểu "gọi được, không lỗi" đều xanh, trong khi

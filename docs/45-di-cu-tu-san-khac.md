@@ -32,7 +32,7 @@ một biến thể, không ảnh, không danh mục". Đổ danh mục thật v�
 
 | Không làm | Lý do |
 |---|---|
-| **Nhập đơn hàng cũ** | Khách hàng trong hệ này **không phải bảng riêng** — `customers.js` suy ra từ `orders.customer_phone`. Nên "nhập khách" thực chất là ghi thẳng vào `orders`, tức **đụng đường tiền**: doanh thu, P&L (docs/37), sổ cái kho, điểm thưởng. Câu hỏi "đơn di cư có tính vào doanh thu tháng này không" là **quyết định nghiệp vụ**, không phải chi tiết kỹ thuật — phải chốt trước khi viết dòng code nào. |
+| ~~**Nhập đơn hàng cũ**~~ → **ĐÃ LÀM** (xem §8) | Ban đầu hoãn vì "đơn di cư có tính vào doanh thu không" là **quyết định nghiệp vụ**, không phải chi tiết kỹ thuật. Chủ nền tảng đã chốt: **KHÔNG tính**. |
 | **Cập nhật sản phẩm đã có (upsert)** | Cần quy tắc khớp (theo `sku`? `handle`?) và sẽ **ghi đè giá đang bán**. Một file nhập sai cột giá có thể hạ giá cả cửa hàng trong một lần bấm. v1 chỉ **tạo mới**; dòng trùng `sku` bị từ chối kèm lý do. |
 | **Nhập trực tiếp bằng API của sàn** | Cần app/khoá đối tác của từng sàn và người bán phải cấp quyền. Rào cản vận hành lớn hơn giá trị ở giai đoạn pilot. CSV là mẫu số chung: sàn nào cũng xuất được. |
 
@@ -150,3 +150,34 @@ seller **ghi cảnh báo lúc khởi động** chứ không im lặng.
   giải về IP nội bộ, URL trả chuyển hướng, `file:///etc/passwd` — tất cả phải bị từ chối
   **mà không phát ra kết nối nào**.
 - Trần: >100 biến thể/nhóm, >1000 dòng, ảnh quá lớn.
+
+## 8. Nhập đơn cũ — đã làm (0104 + 0105)
+
+**Quyết định nghiệp vụ (chủ nền tảng chốt):** đơn di cư **không** tính vào doanh thu, báo cáo
+lãi, đối soát COD hay điểm thưởng. Chúng vào hệ thống để **tra cứu** và **gộp thành hồ sơ
+khách hàng** — đó là toàn bộ giá trị: chuyển nền tảng mà không mất lịch sử khách.
+
+**Cách cưỡng chế.** Cột `orders.is_migrated` (0104, mặc định `false` ⇒ mọi đơn đang có không
+đổi hành vi). 12 truy vấn tiền ở 4 dịch vụ lọc nó ra: dashboard (8), reports P&L (5),
+đối soát COD (2), sweep tích điểm (1).
+
+> **Một mẹo đã cân nhắc rồi cố ý bỏ.** Mọi truy vấn tiền đều khoá theo `paid_at IS NOT NULL`,
+> nên để `paid_at` NULL sẽ loại đơn di cư *miễn phí*. Nhưng nó tạo trạng thái **mâu thuẫn** —
+> đơn `payment_status='paid'` mà không có ngày trả — và mọi đoạn mã sau này giả định
+> "đã trả ⇒ có `paid_at`" sẽ sai âm thầm. Cờ tường minh đắt hơn nhưng đọc là hiểu.
+
+**Lưới an toàn không phải sự cẩn thận, mà là test bất biến.** `migrated-orders.e2e` chèn
+**900 triệu** đơn di cư rồi đòi **cả 11 con số tiền không nhúc nhích một đồng**, đồng thời đòi
+chiều ngược lại: hồ sơ khách **phải** nhận. Số cố ý lớn bất thường để lọt vào bất kỳ phép cộng
+nào là lệch hiển nhiên.
+
+**Chỉ nhập phần đầu đơn.** `order_lines.variant_id` là `NOT NULL` ⇒ mỗi dòng hàng phải khớp
+biến thể đang tồn tại, mà danh mục cũ luôn có hàng đã ngừng kinh doanh. Nới `NOT NULL` là phá
+một bất biến kế toán bảo vệ toàn hệ. **Không đụng tồn kho** (hàng đã giao từ lâu; trừ lần nữa
+là tự đẻ âm kho).
+
+**Chống nhập trùng (0105)** bằng **mã đơn gốc**, không bằng (khách + ngày + tiền): một khách
+mua hai đơn cùng ngày cùng giá là chuyện thường, khoá kiểu đó sẽ **nuốt đơn thật**.
+
+**Còn thiếu (v2):** dòng hàng của đơn cũ (cần quyết định về sản phẩm đã ngừng bán) · gộp đơn
+cũ vào `customers.customer_id` khi khách tạo tài khoản storefront.

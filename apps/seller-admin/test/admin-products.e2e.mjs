@@ -308,17 +308,29 @@ async function main() {
   // thì test đỏ ngay.
   const CARD_PAGES = ['/customers', '/audit-log', '/purchasing', '/suppliers', '/stocktakes',
     '/inventory-ledger', '/promotions', '/coupons', '/pages', '/members', '/cod'];
-  const nonceBad = [], notOk = [];
+  const nonceBad = [], notOk = [], chuaBat = [];
+  let coBang = 0;
   for (const path of CARD_PAGES) {
     const pr = await adm('GET', `/shops/${A.shopId}${path}`, { cookie: A.cookie });
     if (pr.status !== 200) { notOk.push(`${path}→${pr.status}`); continue; }
     const h = /script-src 'nonce-([^']+)'/.exec(pr.csp ?? '')?.[1];
     const t = /<script nonce="([^"]+)"/.exec(pr.body)?.[1];
     if (!h || !t || h !== t) nonceBad.push(path);
+    // Có JS thôi CHƯA ĐỦ. Bản đầu của khẳng định này chỉ kiểm nonce, và nó XANH trong khi
+    // bảng Sổ cái kho chưa hề được gắn data-cards — bật sót một bảng không hề báo gì.
+    // Trang nào ĐANG render <table> thì bảng đó phải bật thẻ; trang trạng-thái-rỗng không
+    // có <table> nên tự bỏ qua (đếm coBang để không âm thầm kiểm được 0 trang).
+    // Cắt <style> trước khi quét: biểu định kiểu nội tuyến có chú thích nói VỀ bảng, và
+    // một khẳng định về markup của trang thì không được đọc nhầm sang biểu định kiểu.
+    const markup = pr.body.replace(/<style[\s\S]*?<\/style>/g, '');
+    if (/<table[\s>]/.test(markup)) {
+      coBang++;
+      if (!/<table[^>]*\sdata-cards/.test(markup)) chuaBat.push(path);
+    }
   }
-  nonceBad.length === 0 && notOk.length === 0
-    ? ok(`${CARD_PAGES.length} trang bật thẻ-mobile đều có JS ký nonce KHỚP header`)
-    : bad('trang bật thẻ-mobile thiếu JS ký nonce', `nonce hỏng: ${nonceBad.join(' ') || '—'} | không 200: ${notOk.join(' ') || '—'}`);
+  nonceBad.length === 0 && notOk.length === 0 && chuaBat.length === 0 && coBang >= 3
+    ? ok(`${CARD_PAGES.length} trang có JS ký nonce KHỚP header; ${coBang} trang có bảng đều đã bật data-cards`)
+    : bad('trang bật thẻ-mobile hỏng', `nonce: ${nonceBad.join(' ') || '—'} | không 200: ${notOk.join(' ') || '—'} | bảng chưa bật: ${chuaBat.join(' ') || '—'} | số trang có bảng: ${coBang}`);
 
   // ── docs/44 §7: ô số liệu LÀ LINK tới danh sách ĐÃ LỌC SẴN ────────────────
   // Khẳng định phải chứng minh bộ lọc THẬT SỰ LỌC. Một API nhận tham số rồi lặng lẽ bỏ qua

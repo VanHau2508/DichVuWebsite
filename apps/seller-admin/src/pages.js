@@ -116,7 +116,9 @@ input[type=file]{width:auto;padding:9px 12px;background:var(--surf);border:1.5px
    mới ghép được "đơn nào — bao nhiêu tiền — trạng thái gì", và cột quan trọng nhất
    thường nằm ngoài màn hình. Mỗi hàng thành MỘT thẻ, mỗi ô một dòng "nhãn — giá trị".
 
-   Chỉ áp cho <table class="cards"> — lớp này do JS thêm SAU KHI đã gán nhãn từ <th>.
+   Chỉ áp cho bảng ĐÃ CÓ LỚP cards — lớp đó do JS thêm SAU KHI đã gán nhãn từ tiêu đề cột.
+   (Cố ý không viết thẻ HTML dạng nguyên văn trong chú thích: CSS này đi kèm MỌI trang, nên
+   một chuỗi trông-giống-markup ở đây sẽ khớp regex của e2e đang quét markup của trang.)
    Không JS ⇒ không có lớp ⇒ bảng giữ nguyên kiểu cuộn ngang như hiện nay. Nếu áp
    display:block mà thiếu nhãn thì được một chồng số vô nghĩa — tệ hơn cuộn ngang. */
 @media(max-width:767px){
@@ -3744,7 +3746,7 @@ export function renderInventoryLedger(ctx, shopId, data, filter) {
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
       ${filter.variantId ? `<div><a class="btn alt sm" href="${base}/inventory-ledger">Bỏ lọc 1 biến thể</a></div>` : ''}
     </form></div>
-    <div class="card">${entries.length ? `<div class="tblscroll"><table><thead><tr>
+    <div class="card">${entries.length ? `<div class="tblscroll"><table data-cards><thead><tr>
         <th>Thời điểm</th><th>Sản phẩm</th><th>Loại</th><th class="right">Thay đổi</th><th>Lý do</th><th>Người thực hiện</th>
       </tr></thead><tbody>${rows}</tbody></table></div>
       <div class="muted" style="margin-top:12px">

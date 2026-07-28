@@ -72,6 +72,24 @@ for (let i = 1; i <= MAX_OPTIONS; i++) {
   COLS[`option${i}_value`] = [`option${i}value`, `giatritruc${i}`];
 }
 
+/**
+ * Soi tiêu đề cột của file: cột nào được nhận (kèm tên chuẩn), cột nào BỊ BỎ QUA.
+ * Người bán cần biết "cột Giá của tôi không được nhận" — nếu không, họ nhập xong mới phát
+ * hiện toàn bộ giá về 0 và không hiểu vì sao.
+ */
+export function inspectColumns(rawRows) {
+  const headers = new Set();
+  for (const r of rawRows) for (const k of Object.keys(r ?? {})) headers.add(String(k));
+  const recognised = [], ignored = [];
+  for (const h of headers) {
+    const n = normKey(h);
+    const hit = Object.entries(COLS).find(([, aliases]) => aliases.includes(n));
+    if (hit) recognised.push({ header: h, field: hit[0] });
+    else ignored.push(h);
+  }
+  return { recognised, ignored };
+}
+
 /** Đổi một dòng thô (khoá = tiêu đề cột trong file) sang khoá chuẩn. */
 function mapRow(raw) {
   const byNorm = new Map();
@@ -191,7 +209,10 @@ function buildProduct(group) {
       values.push(v);
       if (!ax.values.includes(v)) ax.values.push(v);
     }
-    const combo = values.join(' ');
+    // Ngăn cách bằng ký tự NUL viết dưới dạng CHUỖI THOÁT (không nhúng byte NUL vào source:
+    // grep sẽ coi tệp là nhị phân và im lặng bỏ qua). Không dùng dấu cách vì ["A B","C"] và
+    // ["A","B C"] sẽ ra cùng một khoá ⇒ báo trùng tổ hợp oan.
+    const combo = values.join('\u0000');
     if (comboSeen.has(combo)) {
       return { ok: false, line, error: `tổ hợp "${values.join(' / ')}" lặp trong cùng sản phẩm` };
     }
@@ -379,6 +400,32 @@ export async function importProducts(res, ctx, body) {
   const rows = raw.map(mapRow);
   const groups = groupRows(rows, hasHandleColumn);
 
+  const columns = inspectColumns(raw);
+
+  // XEM TRƯỚC: kiểm + gộp rồi trả kết quả, KHÔNG ghi một dòng nào và KHÔNG tải ảnh.
+  // Vì sao đáng có: file 500 dòng nhập sai một lần là 500 sản phẩm rác phải xoá tay. Mọi
+  // hàm kiểm ở trên đều THUẦN nên chế độ này gần như miễn phí — chỉ là dừng trước khi ghi.
+  if (body.dry_run === true) {
+    const errs = [], preview = [];
+    let variants = 0, images = 0;
+    for (const g of groups) {
+      const built = buildProduct(g);
+      if (!built.ok) { errs.push({ line: built.line, title: str(g.rows[0].r.title), error: built.error }); continue; }
+      const p = built.product;
+      variants += p.variants.length;
+      images += new Set(p.variants.map((v) => v.imageUrl).filter(Boolean)).size;
+      if (preview.length < 20) {
+        preview.push({ title: p.title, slug: p.slug, variants: p.variants.length,
+          axes: p.axes.map((a) => a.name), category: p.catPath.join(' > ') });
+      }
+    }
+    return send(res, 200, {
+      dry_run: true, rows: raw.length, groups: groups.length,
+      created: groups.length - errs.length, variants, images,
+      failed: errs.length, errors: errs.slice(0, 100), preview, columns,
+    });
+  }
+
   const cap = await withTenant(ctx.shopId, async (c) => ({ max: await planMaxProducts(c), count: await catalogCount(c) }));
 
   const seenSlug = new Set();
@@ -428,7 +475,7 @@ export async function importProducts(res, ctx, body) {
   return send(res, 200, {
     created, variants: variantsCreated, groups: groups.length,
     failed: errors.length, errors: errors.slice(0, 100),
-    images,
+    images, columns,
   });
 }
 

@@ -2450,43 +2450,118 @@ export function renderBlogEditor(ctx, shopId, post, err) {
 }
 
 // Nhập sản phẩm hàng loạt từ CSV (onboard concierge nhanh). Mỗi dòng = 1 sản phẩm.
+// Tệp mẫu — ĐÚNG định dạng docs/45: có handle để gộp biến thể, có trục, danh mục, ảnh URL.
+// Ba dòng đầu cùng handle ⇒ MỘT sản phẩm ba biến thể; dòng cuối handle khác ⇒ sản phẩm riêng.
+// Mẫu phải TỰ NÓ dạy được cách gộp, vì đó là thứ khó hiểu nhất của định dạng này — một mẫu
+// một-dòng-một-sản-phẩm sẽ dạy sai ngay từ đầu.
+export const IMPORT_SAMPLE_CSV = [
+  'handle,title,description,status,category,option1_name,option1_value,option2_name,option2_value,sku,price_vnd,compare_at_price_vnd,cost_vnd,stock,weight_gram,image_url',
+  'ao-thun-basic,Áo thun cotton basic,Cotton 100% co giãn,active,Thời trang > Áo,Màu,Đen,Size,M,ATB-DEN-M,199000,259000,120000,12,220,',
+  'ao-thun-basic,,,,,Màu,Đen,Size,L,ATB-DEN-L,199000,259000,120000,8,240,',
+  'ao-thun-basic,,,,,Màu,Trắng,Size,M,ATB-TRA-M,209000,259000,125000,5,220,',
+  'den-ngu-go,Đèn ngủ để bàn gỗ sồi,,draft,Nhà cửa > Đèn,,,,,DEN-GO-01,390000,,210000,3,900,',
+].join('\n');
+
 export function renderProductImport(ctx, shopId, result, err) {
   const base = `/shops/${esc(shopId)}/products`;
-  const sample = 'title,price_vnd,sku,stock,status,description\nGhế sofa vải 3 chỗ,4990000,SOFA-01,8,active,Ghế sofa phòng khách\nĐèn ngủ để bàn,390000,DEN-01,40,active,';
+  const n = (x) => esc(Number(x ?? 0));
+
+  // Bảng lỗi theo DÒNG trong file gốc — người bán sửa file, không sửa cơ sở dữ liệu.
+  const errRows = (result?.errors ?? []).map((e) => `<tr>
+    <td class="num">${esc(e.line)}</td><td>${esc(e.title || '(trống)')}</td>
+    <td class="muted">${esc(e.error)}</td></tr>`).join('');
+  const errTable = errRows ? `<div class="tblscroll"><table data-cards><thead><tr>
+      <th>Dòng</th><th>Sản phẩm</th><th>Lý do bị bỏ</th></tr></thead><tbody>${errRows}</tbody></table></div>` : '';
+
+  // Cột nhận diện được / bị bỏ qua. Bỏ qua IM LẶNG là cách người bán mất nguyên cột giá mà
+  // không hề biết — nên cột lạ phải hiện ra kèm câu "dữ liệu ở đây KHÔNG được nhập".
+  const cols = result?.columns;
+  const colCard = cols ? `<div class="card">
+    <h2 style="margin-top:0">Cột đọc được từ tệp</h2>
+    <p class="muted" style="margin-top:-6px;font-size:13px">Tên cột không phân biệt hoa thường và dấu cách — <code>Variant SKU</code>, <code>variant_sku</code>, <code>sku</code> là một.</p>
+    <p style="margin:0 0 8px">${(cols.recognised ?? []).map((c) => `<span class="badge delivered" style="margin:0 6px 6px 0;display:inline-block">${esc(c.header)} → ${esc(c.field)}</span>`).join('') || '<span class="muted">không nhận ra cột nào</span>'}</p>
+    ${(cols.ignored ?? []).length ? `<p class="muted" style="margin:0"><strong style="color:var(--warn)">Bỏ qua:</strong> ${cols.ignored.map((h) => `<code>${esc(h)}</code>`).join(', ')} — dữ liệu ở các cột này KHÔNG được nhập.</p>` : ''}
+  </div>` : '';
+
   let resultCard = '';
-  if (result) {
-    const errRows = (result.errors ?? []).map((e) => `<tr><td>${esc(e.line)}</td><td>${esc(e.title || '(trống)')}</td><td class="muted">${esc(e.error)}</td></tr>`).join('');
-    resultCard = `<div class="card ${result.failed ? '' : 'ok'}" style="${result.failed ? 'border-color:#fcd34d;background:#fffbeb' : ''}">
-      <h2 style="margin-top:0">Kết quả nhập</h2>
-      <p><strong style="color:#059669">${esc(result.created)}</strong> sản phẩm đã tạo${result.failed ? ` · <strong style="color:#b45309">${esc(result.failed)}</strong> dòng lỗi (bỏ qua)` : ''} trên tổng ${esc(result.total ?? '')} dòng.</p>
-      ${errRows ? `<table><thead><tr><th>Dòng</th><th>Sản phẩm</th><th>Lỗi</th></tr></thead><tbody>${errRows}</tbody></table>` : ''}
-      ${result.created ? `<p style="margin-bottom:0"><a class="btn alt sm" href="${base}">Xem danh sách sản phẩm →</a></p>` : ''}
+  if (result?.dry_run) {
+    // XEM TRƯỚC: chưa ghi gì. Phải NÓI RÕ điều đó — một trang tên "kết quả" mà không nói đã
+    // ghi hay chưa là chỗ người bán tưởng xong rồi và bỏ đi, cửa hàng vẫn trống.
+    const rows = (result.preview ?? []).map((p) => `<tr>
+      <td>${esc(p.title)}<div class="muted" style="font-size:.8rem">${esc(p.slug)}</div></td>
+      <td class="num">${esc(p.variants)}</td>
+      <td class="muted">${p.axes?.length ? esc(p.axes.join(' × ')) : '—'}</td>
+      <td class="muted">${esc(p.category || '—')}</td></tr>`).join('');
+    resultCard = `<div class="card" style="border-color:var(--indigo)">
+      <h2 style="margin-top:0">Xem trước — <span style="color:var(--indigo)">chưa ghi gì vào cửa hàng</span></h2>
+      <div class="metrics" style="margin-bottom:12px">
+        <div class="metric"><div class="l">Dòng trong tệp</div><div class="v">${n(result.rows)}</div></div>
+        <div class="metric"><div class="l">Sẽ tạo</div><div class="v">${n(result.created)} sản phẩm</div></div>
+        <div class="metric"><div class="l">Biến thể</div><div class="v">${n(result.variants)}</div></div>
+        <div class="metric"><div class="l">Ảnh sẽ tải</div><div class="v">${n(result.images)}</div></div>
+      </div>
+      ${result.failed ? `<p><strong style="color:var(--warn)">${n(result.failed)} sản phẩm sẽ bị bỏ</strong> — sửa các dòng dưới rồi tải lại.</p>${errTable}` : '<p class="muted">Không có lỗi nào.</p>'}
+      ${rows ? `<h2 style="margin:16px 0 6px;font-size:15px">Sản phẩm sẽ tạo${result.created > (result.preview ?? []).length ? ` (${(result.preview ?? []).length} đầu tiên)` : ''}</h2>
+      <div class="tblscroll"><table data-cards><thead><tr><th>Sản phẩm</th><th>Biến thể</th><th>Trục</th><th>Danh mục</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+      <p style="margin:16px 0 0">Ưng ý thì chọn lại tệp ở dưới và bấm <strong>Nhập thật</strong>.</p>
+    </div>`;
+  } else if (result) {
+    const img = result.images ?? { ok: 0, failed: 0, skipped: 0 };
+    resultCard = `<div class="card" style="border-color:${result.failed ? 'var(--warn)' : 'var(--good)'}">
+      <h2 style="margin-top:0">Đã nhập xong</h2>
+      <div class="metrics" style="margin-bottom:12px">
+        <div class="metric"><div class="l">Sản phẩm đã tạo</div><div class="v" style="color:var(--good)">${n(result.created)}</div></div>
+        <div class="metric"><div class="l">Biến thể</div><div class="v">${n(result.variants)}</div></div>
+        <div class="metric"><div class="l">Ảnh tải được</div><div class="v">${n(img.ok)}</div></div>
+        ${result.failed ? `<div class="metric"><div class="l">Bị bỏ</div><div class="v" style="color:var(--warn)">${n(result.failed)}</div></div>` : ''}
+      </div>
+      ${(img.failed || img.skipped) ? `<p class="muted" style="margin-top:-4px">Ảnh: <strong>${n(img.failed)}</strong> không tải được${img.skipped ? `, <strong>${n(img.skipped)}</strong> bỏ qua do hết thời gian hoặc vượt trần` : ''}. Sản phẩm vẫn đã tạo — bạn tự tải ảnh lên sau ở trang sản phẩm.</p>` : ''}
+      ${errTable}
+      ${result.created ? `<p style="margin-bottom:0"><a class="btn" href="${base}">Xem danh sách sản phẩm →</a></p>` : ''}
     </div>`;
   }
+
   return layout('Nhập sản phẩm CSV', ctx, `
     <a class="muted" href="${base}">← Danh sách sản phẩm</a>
-    <h1>Nhập sản phẩm từ CSV</h1>
+    <h1>Nhập sản phẩm từ tệp CSV</h1>
+    <p class="muted" style="margin-top:-8px">Chuyển danh mục từ sàn khác sang. Tệp xuất của Shopify/Haravan dùng được luôn — không cần đổi tên cột.</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${resultCard}
+    ${colCard}
+
     <div class="card">
-      <p>Tải lên tệp <strong>CSV</strong> (UTF-8) — mỗi dòng là một sản phẩm với một biến thể. Cột:</p>
-      <ul class="muted" style="line-height:1.9">
-        <li><code>title</code> — tên sản phẩm <em>(bắt buộc)</em></li>
-        <li><code>price_vnd</code> — giá bán, số nguyên VND, ví dụ <code>4990000</code> <em>(bắt buộc)</em></li>
-        <li><code>sku</code> — mã hàng, duy nhất trong shop <em>(bắt buộc)</em></li>
-        <li><code>stock</code> — tồn kho ban đầu (mặc định 0)</li>
-        <li><code>status</code> — <code>active</code> để bán ngay, hoặc <code>draft</code> (mặc định)</li>
-        <li><code>description</code>, <code>slug</code> — tùy chọn (slug tự tạo từ tên nếu bỏ trống)</li>
-      </ul>
-      <p class="muted" style="font-size:.85rem">Dòng đầu tiên phải là hàng tiêu đề. Tối đa 1000 dòng/lần. Trùng SKU/slug sẽ bị bỏ qua và báo ở kết quả.</p>
-      <form method="POST" action="${base}/import" enctype="multipart/form-data" class="actions" style="align-items:center">
+      <h2 style="margin-top:0">Tải tệp lên</h2>
+      <p class="muted" style="margin-top:-6px">Bấm <strong>Xem trước</strong> để kiểm tra kết quả trước khi ghi — bước này không ghi gì vào cửa hàng.</p>
+      <form method="POST" action="${base}/import" enctype="multipart/form-data" class="actions" style="align-items:center;flex-wrap:wrap;gap:10px">
         <input type="file" name="file" accept=".csv,text/csv" required>
-        <button class="btn" type="submit">Nhập sản phẩm</button>
+        <button class="btn" type="submit" name="mode" value="preview">Xem trước</button>
+        <button class="btn alt" type="submit" name="mode" value="commit"
+          data-confirm="Ghi THẬT vào cửa hàng. Nên bấm Xem trước ít nhất một lần. Tiếp tục?">Nhập thật</button>
       </form>
+      <p class="muted" style="font-size:13px;margin-bottom:0">Tối đa 1000 dòng và 10MB mỗi lần. Sản phẩm nhập vào để ở trạng thái <strong>nháp</strong> trừ khi cột <code>status</code> ghi <code>active</code> — soát lại rồi hãy đăng bán.</p>
     </div>
-    <div class="card"><h2 style="margin-top:0">Mẫu CSV</h2>
-      <pre style="overflow-x:auto;background:#f9fafb;border:1px solid #eceef1;border-radius:8px;padding:12px;font-size:.82rem">${esc(sample)}</pre>
-      <p class="muted" style="font-size:.82rem;margin-bottom:0">Sao chép vào một tệp <code>.csv</code>, sửa dữ liệu rồi tải lên. Có thể mở/soạn bằng Excel hay Google Sheets (lưu dạng CSV UTF-8).</p>
+
+    <div class="card">
+      <h2 style="margin-top:0">Định dạng tệp</h2>
+      <p style="margin-top:-6px"><a class="btn alt sm" href="${base}/import/mau.csv">⬇ Tải tệp mẫu</a>
+        <span class="muted" style="margin-left:8px;font-size:13px">Mở bằng Excel, thay dữ liệu của bạn rồi tải lên.</span></p>
+      <p><strong>Nhiều biến thể của cùng một sản phẩm:</strong> cho các dòng đó cùng giá trị cột <code>handle</code>.
+        Dòng đầu của nhóm ghi tên/mô tả/danh mục; các dòng sau chỉ cần cột biến thể.</p>
+      <div class="tblscroll"><table data-cards><thead><tr><th>Cột</th><th>Bắt buộc</th><th>Ý nghĩa</th></tr></thead><tbody>
+        <tr><td><code>handle</code></td><td class="muted">không</td><td>Khoá gộp biến thể. Bỏ trống ⇒ mỗi dòng một sản phẩm.</td></tr>
+        <tr><td><code>title</code></td><td><strong>có</strong></td><td>Tên sản phẩm (ghi ở dòng đầu của nhóm).</td></tr>
+        <tr><td><code>sku</code></td><td><strong>có</strong></td><td>Mã hàng, không trùng trong cửa hàng.</td></tr>
+        <tr><td><code>price_vnd</code></td><td><strong>có</strong></td><td>Giá bán, ví dụ <code>199000</code>.</td></tr>
+        <tr><td><code>option1_name</code> / <code>option1_value</code></td><td class="muted">không</td><td>Trục biến thể, ví dụ <code>Màu</code> / <code>Đen</code>. Tối đa 3 trục.</td></tr>
+        <tr><td><code>category</code></td><td class="muted">không</td><td>Danh mục, tối đa 2 cấp: <code>Thời trang &gt; Áo</code>.</td></tr>
+        <tr><td><code>image_url</code></td><td class="muted">không</td><td>Địa chỉ ảnh (http/https). Hệ thống tự tải về và lưu.</td></tr>
+        <tr><td><code>compare_at_price_vnd</code></td><td class="muted">không</td><td>Giá gạch ngang — phải lớn hơn giá bán.</td></tr>
+        <tr><td><code>cost_vnd</code></td><td class="muted">không</td><td>Giá vốn, dùng cho báo cáo lãi.</td></tr>
+        <tr><td><code>stock</code></td><td class="muted">không</td><td>Tồn kho ban đầu (mặc định 0).</td></tr>
+        <tr><td><code>weight_gram</code></td><td class="muted">không</td><td>Cân nặng tính bằng <strong>gram</strong> — dùng để tính phí ship.</td></tr>
+        <tr><td><code>status</code></td><td class="muted">không</td><td><code>active</code> để bán ngay, mặc định <code>draft</code>.</td></tr>
+      </tbody></table></div>
+      <p class="muted" style="font-size:13px;margin-bottom:0">Đơn hàng cũ và khách hàng cũ <strong>chưa</strong> nhập được — phần đó chạm vào số liệu doanh thu nên phải làm riêng cho chắc.</p>
     </div>`);
 }
 

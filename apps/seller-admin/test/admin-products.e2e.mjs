@@ -307,7 +307,7 @@ async function main() {
   // bảng mới mà quên thêm vào đây thì đó là việc của lô sau, còn tụt mất một trang đang có
   // thì test đỏ ngay.
   const CARD_PAGES = ['/customers', '/audit-log', '/purchasing', '/suppliers', '/stocktakes',
-    '/inventory-ledger', '/promotions', '/coupons', '/pages', '/members', '/cod'];
+    '/inventory-ledger', '/promotions', '/coupons', '/pages', '/members', '/cod', '/products/import'];
   const nonceBad = [], notOk = [], chuaBat = [];
   let coBang = 0;
   for (const path of CARD_PAGES) {
@@ -378,6 +378,68 @@ async function main() {
   !/script-src/.test(rNoJs.csp ?? '')
     ? ok('trang không xin JS (/account): CSP KHÔNG có script-src (mặc định an toàn)')
     : bad('trang không dùng JS lại mở script-src', rNoJs.csp);
+
+  // ── docs/45: trang NHẬP DANH MỤC — xem trước phải THẬT SỰ không ghi gì ────
+  sect('10. Nhập danh mục CSV (docs/45)');
+  // Multipart dựng tay: helper adm() chỉ biết form urlencoded.
+  const multipart = async (path, { cookie, mode, csv }) => {
+    const bd = '----nt' + uniq();
+    const body = Buffer.concat([
+      Buffer.from(`--${bd}\r\nContent-Disposition: form-data; name="mode"\r\n\r\n${mode}\r\n`),
+      Buffer.from(`--${bd}\r\nContent-Disposition: form-data; name="file"; filename="a.csv"\r\nContent-Type: text/csv\r\n\r\n`),
+      Buffer.from(csv, 'utf8'), Buffer.from(`\r\n--${bd}--\r\n`),
+    ]);
+    const res = await fetch(ADMIN + path, {
+      method: 'POST', redirect: 'manual',
+      headers: { 'content-type': `multipart/form-data; boundary=${bd}`, origin: OADM, cookie: `__Host-session=${cookie}` },
+      body,
+    });
+    return { status: res.status, body: await res.text() };
+  };
+  const countProducts = async () => (await sget(A.shopId, A.cookie, '/products?limit=200')).json.total;
+
+  r = await adm('GET', P('/import'), { cookie: A.cookie });
+  r.status === 200 && /name="mode" value="preview"/.test(r.body) && /name="mode" value="commit"/.test(r.body)
+    ? ok('trang nhập có CẢ hai nút: Xem trước và Nhập thật')
+    : bad('thiếu nút xem trước/nhập thật', String(r.status));
+
+  // BOM UTF-8 bắt buộc: thiếu nó thì Excel trên Windows hiện tiếng Việt thành ký tự rác —
+  // người bán mở tệp mẫu thấy chữ hỏng sẽ kết luận sản phẩm của họ cũng sẽ hỏng.
+  // Phải đọc BYTE THÔ: res.text() của fetch tự NUỐT BOM theo chuẩn WHATWG, nên kiểm bằng
+  // chuỗi đã giải mã sẽ luôn báo "không có BOM" dù máy chủ gửi đúng.
+  const sres = await fetch(ADMIN + P('/import/mau.csv'), { headers: { cookie: `__Host-session=${A.cookie}` } });
+  const sbuf = Buffer.from(await sres.arrayBuffer());
+  const stxt = sbuf.toString('utf8');
+  sres.status === 200 && sbuf[0] === 0xef && sbuf[1] === 0xbb && sbuf[2] === 0xbf
+    && /handle,title/.test(stxt) && (stxt.match(/ao-thun-basic/g) ?? []).length === 3
+    ? ok('tệp mẫu: có BOM UTF-8 (Excel đọc đúng tiếng Việt) + DẠY cách gộp (3 dòng cùng handle)')
+    : bad('tệp mẫu sai', `${sres.status} bom=${sbuf.slice(0, 3).toString('hex')}`);
+
+  const impCsv = [
+    'handle,title,option1_name,option1_value,sku,price_vnd,cot_la_khong_biet',
+    `ao-x,Áo nhập thử,Màu,Đỏ,IMP-${uniq()},150000,rác`,
+    `ao-x,,Màu,Xanh,IMP-${uniq()},160000,rác`,
+  ].join('\n');
+
+  const nBefore = await countProducts();
+  let ir = await multipart(P('/import'), { cookie: A.cookie, mode: 'preview', csv: impCsv });
+  const afterPreview = await countProducts();
+  ir.status === 200 && /chưa ghi gì vào cửa hàng/.test(ir.body) && afterPreview === nBefore
+    ? ok('XEM TRƯỚC: báo rõ "chưa ghi gì" và số sản phẩm KHÔNG đổi')
+    : bad('xem trước có ghi dữ liệu', `${ir.status} ${nBefore}→${afterPreview}`);
+  /1 sản phẩm/.test(ir.body) && /Áo nhập thử/.test(ir.body)
+    ? ok('xem trước hiện đúng kết quả gộp: 2 dòng → 1 sản phẩm 2 biến thể')
+    : bad('xem trước không hiện kết quả gộp');
+  // Cột lạ phải HIỆN RA. Bỏ qua im lặng là cách người bán mất nguyên một cột mà không biết.
+  /cot_la_khong_biet/.test(ir.body) && /KHÔNG được nhập/.test(ir.body)
+    ? ok('cột không nhận ra được liệt kê kèm cảnh báo dữ liệu không vào')
+    : bad('cột lạ bị bỏ qua im lặng');
+
+  ir = await multipart(P('/import'), { cookie: A.cookie, mode: 'commit', csv: impCsv });
+  const afterCommit = await countProducts();
+  ir.status === 200 && /Đã nhập xong/.test(ir.body) && afterCommit === nBefore + 1
+    ? ok(`NHẬP THẬT: sản phẩm vào cửa hàng (${nBefore} → ${afterCommit})`)
+    : bad('nhập thật không ghi', `${ir.status} ${nBefore}→${afterCommit}`);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

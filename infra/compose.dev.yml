@@ -118,6 +118,17 @@ services:
       DATABASE_URL: postgres://app_tls:devpassword@postgres:5432/app
       PLATFORM_DOMAIN: nentang.vn
       PORT: "3010"
+      # Ngân sách tra cứu HẸP CHO DEV/CI (prod giữ mặc định 40 + 20/s).
+      # Vì sao: smoke-tls phải chứng minh token bucket ĐƯỢC ĐẤU vào đường ask thật.
+      # Với 20/s, muốn chứng minh thì phải bắn NHANH HƠN 20 req/s — runner GitHub 2 nhân
+      # dùng chung chỉ đạt ~22 req/s nên bucket gần như không tiêu hao (đo được từ CI #94:
+      # 400 request lọt hết ⟹ trải 18 giây ⟹ 22/s). Đã thua 3 lần khi cố bắn nhanh hơn.
+      # Hạ tốc độ NẠP xuống 2/s thì mọi burst đều vượt ngưỡng, kể cả trên máy rất chậm —
+      # khẳng định trở nên TẤT ĐỊNH. Giữ burst 40 để các mục khác của smoke (≈25 lượt ask
+      # rải rác) không bị vạ lây. SỐ HỌC của bucket đã có unit test riêng với đồng hồ tiêm
+      # (apps/tls-authorize/test/ratelimit.test.js), nên ở đây chỉ cần chứng minh ĐẤU NỐI.
+      LOOKUP_BURST: "40"
+      LOOKUP_PER_SEC: "2"
     depends_on:
       migrate:
         condition: service_completed_successfully

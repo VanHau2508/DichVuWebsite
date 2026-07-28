@@ -237,8 +237,10 @@ ask shopa.test >/dev/null
 # Bỏ hẳn cuộc đua: PIPELINING. 20 socket, mỗi socket ghi SẴN 20 request trong MỘT lệnh
 # write → 400 request nằm trong buffer kernel chỉ sau 20 lần ghi. Không có rào chắn toàn
 # cục nào để treo, và số socket nhỏ nên không đụng trần fd/backlog của runner.
-# Node xử lý pipelining tuần tự mỗi socket ⇒ 20 request đồng thời. Bucket chỉ KHÔNG cạn
-# nếu mỗi request mất ≥1 giây — mức đó thì cả CI đã chết vì lý do khác từ lâu.
+# NHƯNG pipelining một mình KHÔNG đủ: CI #94 cho thấy runner chỉ đạt ~22 req/s (400 request
+# trải 18 giây) trong khi bucket mặc định nạp 20/s — chênh 2, gần như không tiêu hao. Nên
+# compose.dev.yml hạ NẠP xuống 2/s riêng cho dev/CI (prod vẫn 20/s): allowed = 40 + 2×T, muốn
+# 400 request lọt hết thì flood phải kéo dài 180 GIÂY. Biên gấp 10 lần thực tế đo được.
 flood_out=$($COMPOSE exec -T tls-authorize node -e '
   const net = require("net");
   const SOCKS = 20, PER = 20;

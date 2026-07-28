@@ -21,7 +21,10 @@ const OUTSTANDING_SQL = `
        WHERE s.order_id = o.id AND s.provider IS NOT NULL
        ORDER BY s.created_at DESC LIMIT 1
     ) sh ON true
-   WHERE o.payment_method = 'cod' AND o.status = 'delivered' AND o.cod_settled_at IS NULL`;
+   -- Đơn DI CƯ (0104) không bao giờ là đơn chờ đối soát: tiền của chúng do sàn cũ thu, ta
+   -- không hề gửi hàng qua hãng nào. Lọt vào đây là người bán đi đòi hãng một khoản không tồn tại.
+   WHERE o.payment_method = 'cod' AND o.status = 'delivered' AND o.cod_settled_at IS NULL
+     AND NOT o.is_migrated`;
 
 async function reconciliation(res, ctx) {
   const data = await withTenant(ctx.shopId, async (c) => {
@@ -78,7 +81,7 @@ async function recordRemittance(res, ctx, body) {
            LEFT JOIN LATERAL (SELECT provider, carrier_fee_vnd FROM shipments s
                                WHERE s.order_id = o.id AND s.provider IS NOT NULL
                                ORDER BY s.created_at DESC LIMIT 1) sh ON true
-          WHERE o.id = ANY($1::uuid[]) ORDER BY o.id FOR UPDATE OF o`, [sorted],
+          WHERE o.id = ANY($1::uuid[]) AND NOT o.is_migrated ORDER BY o.id FOR UPDATE OF o`, [sorted],
       )).rows;
       const found = new Map(rows.map((r) => [r.id, r]));
       let expected = 0;

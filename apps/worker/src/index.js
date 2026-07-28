@@ -1133,6 +1133,9 @@ async function sweepLoyaltyEarn() {
           WHERE c.enabled = true
             AND o.customer_id IS NOT NULL
             AND o.paid_at IS NOT NULL
+            -- Đơn DI CƯ (0104) KHÔNG tích điểm: khách đã mua ở sàn cũ, tặng điểm cho lịch sử
+            -- là tự tạo ra một khoản NỢ điểm không có doanh thu nào ở đây đối ứng.
+            AND NOT o.is_migrated
             AND o.paid_at <= now() - make_interval(days => c.earn_vesting_days)
             AND o.status NOT IN ('cancelled','refunded','returned')
             AND floor(GREATEST(o.subtotal_vnd - o.discount_vnd - o.points_discount_vnd, 0) / 1000.0)::int

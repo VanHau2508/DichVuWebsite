@@ -39,7 +39,11 @@ async function stats(res, ctx) {
         count(*) FILTER (WHERE status = 'delivered') AS n_delivered,
         count(*) FILTER (WHERE status = 'cancelled') AS n_cancelled,
         count(*) FILTER (WHERE payment_status <> 'paid' AND status NOT IN ('cancelled', 'refunded', 'returned')) AS n_unpaid
-      FROM orders`)).rows[0];
+      FROM orders
+      -- Đơn DI CƯ (0104) bị loại khỏi MỌI con số ở đây: doanh thu, đơn hôm nay, đếm theo
+      -- trạng thái, số đơn chưa thu. Chúng là lịch sử từ sàn khác — tính vào là vừa sai
+      -- doanh thu vừa đẻ ra "việc cần làm" ma mà người bán không xử lý được.
+      WHERE NOT is_migrated`)).rows[0];
     // Hoàn tiền (0070) trừ khỏi doanh thu theo NGÀY TẠO bút toán — MỌI phiếu trên đơn
     // từng paid (ever-paid ở trên KHÔNG loại đơn refunded khỏi doanh thu nữa nên không
     // trừ đúp), TRỪ kind='edit_adjustment' (0081): phiếu chênh sửa-đơn-đã-trả đã phản
@@ -52,7 +56,7 @@ async function stats(res, ctx) {
           AND r.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh' < date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '6 days'), 0) AS rf_prev7,
         coalesce(sum(r.amount_vnd), 0) AS rf_all
       FROM refunds r JOIN orders o ON o.id = r.order_id
-      WHERE o.paid_at IS NOT NULL AND r.kind <> 'edit_adjustment'`)).rows[0];
+      WHERE o.paid_at IS NOT NULL AND NOT o.is_migrated AND r.kind <> 'edit_adjustment'`)).rows[0];
     // Bán chạy 30 ngày + ẢNH: gộp theo tên/sku (snapshot), lấy biến thể GẦN NHẤT làm đại
     // diện → resolve ảnh (ưu tiên ảnh riêng biến thể, không có thì ảnh chính sản phẩm).
     const top = (await c.query(`
@@ -67,7 +71,7 @@ async function stats(res, ctx) {
                  sum(l.qty)::int AS qty, sum(l.qty * l.unit_price_vnd)::bigint AS revenue,
                  (array_agg(l.variant_id ORDER BY o.paid_at DESC))[1] AS vid
             FROM order_lines l JOIN orders o ON o.id = l.order_id
-           WHERE o.paid_at >= now() - interval '30 days'
+           WHERE o.paid_at >= now() - interval '30 days' AND NOT o.is_migrated
            GROUP BY l.title_snapshot, l.sku_snapshot
            ORDER BY revenue DESC LIMIT 5
         ) t`)).rows;
@@ -79,7 +83,7 @@ async function stats(res, ctx) {
                date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '${DAYS - 1} days',
                date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh'),
                interval '1 day') AS d
-        LEFT JOIN orders o ON o.paid_at IS NOT NULL
+        LEFT JOIN orders o ON o.paid_at IS NOT NULL AND NOT o.is_migrated
              AND date_trunc('day', o.paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh') = d
        GROUP BY d ORDER BY d`)).rows;
     // Bút toán hoàn theo ngày (giờ VN) — trừ vào series cùng quy tắc sổ cái với rf ở trên.
@@ -87,7 +91,7 @@ async function stats(res, ctx) {
       SELECT to_char(date_trunc('day', r.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh'), 'YYYY-MM-DD') AS day,
              sum(r.amount_vnd)::bigint AS refunded
         FROM refunds r JOIN orders o ON o.id = r.order_id
-       WHERE o.paid_at IS NOT NULL AND r.kind <> 'edit_adjustment' AND r.created_at >= now() - interval '${DAYS + 1} days'
+       WHERE o.paid_at IS NOT NULL AND NOT o.is_migrated AND r.kind <> 'edit_adjustment' AND r.created_at >= now() - interval '${DAYS + 1} days'
        GROUP BY 1`)).rows;
     const rfMap = new Map(rfByDay.map((r) => [r.day, Number(r.refunded)]));
     for (const s of series) s.revenue = Number(s.revenue) - (rfMap.get(s.day) ?? 0);

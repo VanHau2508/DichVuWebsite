@@ -115,6 +115,11 @@ const bucketSql = (col, group) => group === 'month'
 const rangeSql = (col, i) => `${col} >= ($${i}::date::timestamp AT TIME ZONE '${TZ}') AND ${col} < (($${i + 1}::date + 1)::timestamp AT TIME ZONE '${TZ}')`;
 // COGS: loại đơn đã huỷ/hoàn mà hàng CHƯA BAO GIỜ xuất kho (quy tắc 4).
 const COGS_ORDER_GUARD = `NOT (o.status IN ('cancelled','refunded') AND o.fulfillment_status = 'unfulfilled')`;
+// Đơn DI CƯ (0104) KHÔNG vào bất kỳ con số nào của báo cáo lãi — chủ nền tảng đã chốt:
+// chúng là lịch sử từ sàn khác, chỉ để tra cứu + gộp hồ sơ khách.
+// CỐ Ý viết thành hằng riêng thay vì nhét vào COGS_ORDER_GUARD: tên guard kia nói về COGS,
+// giấu một quy tắc doanh thu vào đó là cách người sau đọc sót. Một token, năm chỗ, grep ra hết.
+const NOT_MIGRATED = `NOT o.is_migrated`;
 // Sort bảng sản phẩm: ALLOWLIST → mảnh SQL cố định (không nội suy query param).
 const SORT_SQL = {
   revenue: 'revenue DESC, qty DESC',
@@ -149,7 +154,7 @@ async function computeSales(shopId, { from, to, group, sort }) {
       `SELECT ${B('o.paid_at')} AS bucket, count(*)::int AS orders_paid,
               sum(o.subtotal_vnd - o.discount_vnd)::bigint AS revenue_goods,
               sum(o.shipping_vnd)::bigint AS shipping_income
-         FROM orders o WHERE ${rangeSql('o.paid_at', 1)} GROUP BY 1`, [from, to])).rows;
+         FROM orders o WHERE ${rangeSql('o.paid_at', 1)} AND ${NOT_MIGRATED} GROUP BY 1`, [from, to])).rows;
     // (2) COGS + độ phủ giá vốn — CÙNG CƠ SỞ DÒNG (đừng trộn header có coupon: pct >100% ảo).
     const q2 = (await c.query(
       `SELECT ${B('o.paid_at')} AS bucket,
@@ -158,19 +163,19 @@ async function computeSales(shopId, { from, to, group, sort }) {
               coalesce(sum(l.qty * l.unit_price_vnd) FILTER (WHERE l.unit_cost_vnd IS NULL), 0)::bigint AS rev_missing_cost,
               count(*) FILTER (WHERE l.unit_cost_vnd IS NULL)::int AS lines_missing_cost
          FROM orders o JOIN order_lines l ON l.order_id = o.id
-        WHERE ${rangeSql('o.paid_at', 1)} AND ${COGS_ORDER_GUARD} GROUP BY 1`, [from, to])).rows;
+        WHERE ${rangeSql('o.paid_at', 1)} AND ${COGS_ORDER_GUARD} AND ${NOT_MIGRATED} GROUP BY 1`, [from, to])).rows;
     // (3) Phiếu hoàn tại ngày phiếu — LOẠI edit_adjustment (quy tắc 2); chỉ đơn từng paid
     //     (phiếu trên đơn chưa thu tiền — COD quên bấm nhận — không trừ doanh thu chưa ghi).
     const q3 = (await c.query(
       `SELECT ${B('r.created_at')} AS bucket, sum(r.amount_vnd)::bigint AS refunds
-         FROM refunds r JOIN orders o ON o.id = r.order_id AND o.paid_at IS NOT NULL
+         FROM refunds r JOIN orders o ON o.id = r.order_id AND o.paid_at IS NOT NULL AND NOT o.is_migrated
         WHERE ${rangeSql('r.created_at', 1)} AND r.kind <> 'edit_adjustment' GROUP BY 1`, [from, to])).rows;
     // (4) Đảo COGS: RMA restock tại ngày phiếu trả, theo snapshot return_lines.
     const q4 = (await c.query(
       `SELECT ${B('r.created_at')} AS bucket,
               coalesce(sum(rl.qty * rl.unit_cost_vnd) FILTER (WHERE rl.unit_cost_vnd IS NOT NULL), 0)::bigint AS cogs_reversal
          FROM returns r JOIN return_lines rl ON rl.return_id = r.id
-         JOIN orders o ON o.id = r.order_id AND o.paid_at IS NOT NULL
+         JOIN orders o ON o.id = r.order_id AND o.paid_at IS NOT NULL AND NOT o.is_migrated
         WHERE r.restocked = true AND ${rangeSql('r.created_at', 1)} GROUP BY 1`, [from, to])).rows;
     // (5) Phí hãng (BÁO GIÁ vận đơn) tại ngày tạo vận đơn — bỏ vận đơn đã huỷ.
     const q5 = (await c.query(
@@ -189,7 +194,7 @@ async function computeSales(shopId, { from, to, group, sort }) {
                 CASE WHEN bool_or(l.unit_cost_vnd IS NULL) THEN NULL
                      ELSE sum(l.qty * (l.unit_price_vnd - l.unit_cost_vnd))::bigint END AS profit
            FROM orders o JOIN order_lines l ON l.order_id = o.id
-          WHERE ${rangeSql('o.paid_at', 1)} AND ${COGS_ORDER_GUARD}
+          WHERE ${rangeSql('o.paid_at', 1)} AND ${COGS_ORDER_GUARD} AND ${NOT_MIGRATED}
           GROUP BY 1, 2
        ) t ORDER BY ${SORT_SQL[sort]} LIMIT 101`, [from, to])).rows;
     return { q1, q2, q3, q4, q5, q6 };

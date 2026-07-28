@@ -284,7 +284,8 @@ for _ in $(seq 20); do
 done
 [ "$found" -eq 1 ] \
   && ok "flood 400 hostname lạ → token bucket chặn trước khi chạm database" \
-  || bad "flood 400 hostname lạ → KHÔNG có log rate_limited; mọi request đều query Postgres"          "$flood_out | log: $($COMPOSE logs --since 60s --tail 3 tls-authorize 2>&1 | tr '
+  || bad "flood 400 hostname lạ → KHÔNG có log rate_limited; mọi request đều query Postgres"          "$flood_out | ngân sách THẬT trong container: $($COMPOSE exec -T tls-authorize printenv 2>&1 | grep -E '^LOOKUP' | tr '
+' ' ')(trống = env KHÔNG tới được container) | log: $($COMPOSE logs --since 60s --tail 2 tls-authorize 2>&1 | tr '
 ' ' ')"
 
 # Khách thật ĐÃ trong cache: cache hit bỏ qua token bucket → không bị vạ lây dù bucket cạn.

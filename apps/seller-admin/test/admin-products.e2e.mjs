@@ -307,7 +307,7 @@ async function main() {
   // bảng mới mà quên thêm vào đây thì đó là việc của lô sau, còn tụt mất một trang đang có
   // thì test đỏ ngay.
   const CARD_PAGES = ['/customers', '/audit-log', '/purchasing', '/suppliers', '/stocktakes',
-    '/inventory-ledger', '/promotions', '/coupons', '/pages', '/members', '/cod', '/products/import'];
+    '/inventory-ledger', '/promotions', '/coupons', '/pages', '/members', '/cod', '/products/import', '/orders/import'];
   const nonceBad = [], notOk = [], chuaBat = [];
   let coBang = 0;
   for (const path of CARD_PAGES) {
@@ -440,6 +440,36 @@ async function main() {
   ir.status === 200 && /Đã nhập xong/.test(ir.body) && afterCommit === nBefore + 1
     ? ok(`NHẬP THẬT: sản phẩm vào cửa hàng (${nBefore} → ${afterCommit})`)
     : bad('nhập thật không ghi', `${ir.status} ${nBefore}→${afterCommit}`);
+
+  // ── docs/45: trang NHẬP ĐƠN CŨ ───────────────────────────────────────────
+  sect('11. Nhập đơn cũ (docs/45)');
+  r = await adm('GET', `/shops/${A.shopId}/orders/import`, { cookie: A.cookie });
+  // Cảnh báo "không tính doanh thu" PHẢI nằm ngay trên trang: đây là quyết định nghiệp vụ
+  // ảnh hưởng tới cách người bán đọc mọi báo cáo về sau. Giấu nó trong tài liệu là để họ
+  // tự phát hiện bằng cách hoang mang vì sao doanh thu không khớp.
+  r.status === 200 && /KHÔNG tính vào doanh thu/.test(r.body)
+    && /name="mode" value="preview"/.test(r.body) && /name="mode" value="commit"/.test(r.body)
+    ? ok('trang nhập đơn cũ: cảnh báo "không tính doanh thu" + hai nút xem-trước/nhập-thật')
+    : bad('trang nhập đơn cũ sai', String(r.status));
+
+  const osRes = await fetch(ADMIN + `/shops/${A.shopId}/orders/import/mau.csv`, { headers: { cookie: `__Host-session=${A.cookie}` } });
+  const osBuf = Buffer.from(await osRes.arrayBuffer());
+  osRes.status === 200 && osBuf[0] === 0xef && /order_code,date,customer_name/.test(osBuf.toString('utf8'))
+    ? ok('tệp mẫu đơn cũ tải được, có BOM UTF-8')
+    : bad('tệp mẫu đơn cũ sai', String(osRes.status));
+
+  const oCsv = [
+    'order_code,date,customer_name,customer_phone,total_vnd',
+    `ADM-${uniq()},10/05/2026,Khách Cũ Admin,0977000111,450000`,
+  ].join('\n');
+  let or2 = await multipart(`/shops/${A.shopId}/orders/import`, { cookie: A.cookie, mode: 'preview', csv: oCsv });
+  or2.status === 200 && /chưa ghi gì vào cửa hàng/.test(or2.body)
+    ? ok('xem trước đơn cũ: nói rõ chưa ghi gì')
+    : bad('xem trước đơn cũ sai', String(or2.status));
+  or2 = await multipart(`/shops/${A.shopId}/orders/import`, { cookie: A.cookie, mode: 'commit', csv: oCsv });
+  or2.status === 200 && /Đã nhập xong/.test(or2.body)
+    ? ok('nhập thật đơn cũ qua trang admin')
+    : bad('nhập thật đơn cũ lỗi', String(or2.status));
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

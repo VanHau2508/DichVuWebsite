@@ -173,6 +173,69 @@ async function main() {
     ? ok('không có bút toán điểm nào gắn với đơn di cư')
     : bad('đơn di cư sinh điểm thưởng', String(led.rows[0].n));
 
+  // ── 6. Endpoint NHẬP ĐƠN CŨ ─────────────────────────────────────────────
+  sect('6. Nhập đơn cũ qua endpoint');
+  const post = (p2, body) => rq(SELLER, 'POST', `/shops/${A.shopId}${p2}`, { body, cookie: A.cookie, origin: OS });
+  const impRows = [
+    { order_code: 'SPE-001', date: '15/06/2026', customer_name: 'Phạm Thị Lan', customer_phone: '0933444555', total_vnd: '1.250.000', status: 'delivered', payment_status: 'paid', address: '12 Lê Lợi', province: 'Đà Nẵng' },
+    { order_code: 'SPE-002', date: '2026-06-20', customer_name: 'Phạm Thị Lan', customer_phone: '0933444555', total_vnd: '750000' },
+    { order_code: 'SPE-003', date: '01/07/2026', customer_name: 'Đơn huỷ', customer_phone: '0933444666', total_vnd: '99000', status: 'đã huỷ' },
+  ];
+
+  let ir = await post('/orders/import', { rows: impRows, dry_run: true });
+  const beforeImp = await snapshot();
+  ir.status === 200 && ir.json?.dry_run === true && ir.json?.created === 3 && ir.json?.customers === 2
+    ? ok('xem trước: 3 đơn / 2 khách, chưa ghi gì')
+    : bad('xem trước đơn cũ sai', JSON.stringify(ir.json));
+
+  ir = await post('/orders/import', { rows: impRows });
+  ir.status === 200 && ir.json?.created === 3 && ir.json?.duplicate === 0
+    ? ok('nhập thật: 3 đơn cũ vào hệ thống')
+    : bad('nhập đơn cũ lỗi', JSON.stringify(ir.json));
+
+  // Bất biến tiền phải GIỮ NGUYÊN kể cả khi đơn vào qua ĐƯỜNG CHÍNH THỨC (không chỉ SQL tay).
+  const afterImp = await snapshot();
+  JSON.stringify(beforeImp) === JSON.stringify(afterImp)
+    ? ok('sau khi nhập qua endpoint, mọi con số tiền VẪN không đổi')
+    : bad('nhập qua endpoint làm lệch số liệu tiền',
+        fields.filter(([k]) => String(beforeImp[k]) !== String(afterImp[k])).map(([k]) => `${k}: ${beforeImp[k]}→${afterImp[k]}`).join(' | '));
+
+  // ── 7. Nhập LẠI cùng tệp → KHÔNG nhân đôi ───────────────────────────────
+  sect('7. Nhập lại cùng tệp: chống nhân đôi tổng chi của khách');
+  const spentOf = async (phone) => {
+    const cs = (await get(`/customers?limit=50&q=${phone}`)).json;
+    return Number((cs?.customers ?? []).find((c) => c.phone === phone)?.total_spent_vnd ?? 0);
+  };
+  const spentBefore = await spentOf('0933444555');
+  ir = await post('/orders/import', { rows: impRows });
+  const spentAfter = await spentOf('0933444555');
+  ir.json?.created === 0 && ir.json?.duplicate === 3 && spentAfter === spentBefore
+    ? ok(`nhập lại → 0 tạo mới, 3 bỏ qua trùng; tổng chi của khách GIỮ NGUYÊN ${spentAfter}`)
+    : bad('nhập lại nhân đôi dữ liệu', `created=${ir.json?.created} dup=${ir.json?.duplicate} ${spentBefore}→${spentAfter}`);
+  spentBefore === 2_000_000
+    ? ok('tổng chi = 1.250.000 + 750.000 (đơn huỷ của khách khác không lẫn vào)')
+    : bad('tổng chi sai', String(spentBefore));
+
+  // ── 8. Từ chối dữ liệu làm hỏng hồ sơ khách ─────────────────────────────
+  sect('8. Từ chối dòng hỏng');
+  ir = await post('/orders/import', { rows: [
+    { order_code: 'X1', date: '01/01/2026', customer_phone: '', total_vnd: '1000' },
+    { order_code: 'X2', date: '01/01/2099', customer_phone: '0900000009', total_vnd: '1000' },
+    { order_code: 'X3', date: 'không phải ngày', customer_phone: '0900000009', total_vnd: '1000' },
+    { order_code: 'X4', date: '01/01/2026', customer_phone: '0900000009', total_vnd: 'abc' },
+  ] });
+  ir.json?.created === 0 && ir.json?.failed === 4
+    && /điện thoại/.test(ir.json.errors[0].error) && /tương lai/.test(ir.json.errors[1].error)
+    ? ok('thiếu SĐT / ngày tương lai / ngày rác / tiền rác → cả 4 bị từ chối kèm lý do')
+    : bad('dòng hỏng lọt qua', JSON.stringify(ir.json?.errors));
+
+  // Không đụng tồn kho: đơn cũ là hàng đã giao ở sàn khác từ lâu.
+  const ledger = await owner.query(
+    `SELECT count(*)::int n FROM inventory_ledger WHERE shop_id = $1`, [A.shopId]);
+  Number(ledger.rows[0].n) === 0
+    ? ok('nhập đơn cũ KHÔNG ghi sổ cái kho (không trừ kho lần hai → không đẻ âm kho)')
+    : bad('đơn cũ đụng tồn kho', String(ledger.rows[0].n));
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

@@ -896,6 +896,31 @@ async function productImport(req, res, me, cookie, shopId) {
   return productImportPage(res, me, cookie, shopId, { ...r.json, total: rows.length }, null);
 }
 
+async function orderImportPage(res, me, cookie, shopId, result, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+  return sendHtmlJs(res, err ? 400 : 200, (nonce) => V.renderOrderImport({ ...ctx, nonce }, shopId, result, err));
+}
+async function orderImport(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  let parsed, tooBig = false;
+  try { parsed = await readMultipartAll(req, 10 * 1024 * 1024); } catch (e) { tooBig = e.statusCode === 413; }
+  if (tooBig) return orderImportPage(res, me, cookie, shopId, null, 'Tệp quá lớn (tối đa 10MB).');
+  const file = (parsed?.files ?? [])[0];
+  const dryRun = String(parsed?.fields?.mode ?? '') !== 'commit';
+  if (!file?.bytes?.length) return orderImportPage(res, me, cookie, shopId, null, 'Chưa chọn tệp CSV hợp lệ.');
+  const rows = parseCsv(file.bytes.toString('utf8'));
+  if (rows.length === 0) return orderImportPage(res, me, cookie, shopId, null, 'Tệp không có dòng dữ liệu.');
+  if (rows.length > 2000) return orderImportPage(res, me, cookie, shopId, null, 'Tối đa 2000 dòng mỗi lần nhập.');
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/import`, { cookie, body: { rows, dry_run: dryRun }, timeoutMs: 60000 });
+  if (r.status !== 200) return orderImportPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không nhập được — kiểm tra quyền hoặc định dạng tệp.');
+  return orderImportPage(res, me, cookie, shopId, { ...r.json, total: rows.length }, null);
+}
+function orderImportSample(res) {
+  return sendDownload(res, Buffer.from('﻿' + V.ORDER_IMPORT_SAMPLE_CSV, 'utf8'),
+    { filename: 'mau-nhap-don-cu.csv', contentType: 'text/csv; charset=utf-8' });
+}
+
 // Tệp mẫu TẢI VỀ (thay vì chỉ hiện chữ để copy): người bán mở thẳng bằng Excel, sửa dữ liệu
 // rồi tải lên — không phải tự đoán cách tạo tệp CSV UTF-8.
 function productImportSample(res) {
@@ -2680,6 +2705,9 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/products/bulk-status$`).exec(p)) && req.method === 'POST') return productsBulkStatus(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/products$`).exec(p)) && req.method === 'POST') return productCreate(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/products/new$`).exec(p)) && req.method === 'GET') return productNew(res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/import/mau.csv$`).exec(p)) && req.method === 'GET') return orderImportSample(res);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/import$`).exec(p)) && req.method === 'GET') return orderImportPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/import$`).exec(p)) && req.method === 'POST') return orderImport(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/products/import/mau.csv$`).exec(p)) && req.method === 'GET') return productImportSample(res);
     if ((m = new RegExp(`^/shops/${UUID}/products/import$`).exec(p)) && req.method === 'GET') return productImportPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/products/import$`).exec(p)) && req.method === 'POST') return productImport(req, res, me, cookie, m[1]);

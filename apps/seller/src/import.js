@@ -479,8 +479,192 @@ export async function importProducts(res, ctx, body) {
   });
 }
 
+
+// ══ NHẬP ĐƠN CŨ (di cư) — docs/45 ══════════════════════════════════════════
+// Chủ nền tảng đã chốt: đơn di cư KHÔNG tính doanh thu/P&L/COD/điểm thưởng (cờ is_migrated,
+// migration 0104). Ở đây chỉ lo GHI ĐÚNG; phần loại trừ do các truy vấn tiền tự lọc, và có
+// bộ migrated-orders.e2e canh bất biến đó.
+//
+// CHỈ NHẬP PHẦN ĐẦU ĐƠN, KHÔNG nhập dòng hàng. Lý do là ràng buộc thật của lược đồ:
+// order_lines.variant_id là NOT NULL, nên mỗi dòng hàng phải khớp một biến thể ĐANG TỒN TẠI.
+// Danh mục cũ luôn có hàng đã ngừng kinh doanh — chúng sẽ không khớp, và cách duy nhất để
+// "nhập được" là nới NOT NULL, tức phá một bất biến kế toán đang bảo vệ toàn hệ. Phần đầu
+// đơn (khách, ngày, tổng tiền) đã đủ cho mục đích đã chọn: HỒ SƠ KHÁCH HÀNG.
+//
+// KHÔNG đụng tồn kho: hàng đã giao ở sàn cũ từ lâu, tồn hiện tại đã phản ánh thực tế rồi.
+// Trừ kho lần nữa là tự tay tạo ra âm kho.
+const ORDER_IMPORT_MAX_ROWS = 2000;
+
+const OCOLS = {
+  order_code: ['ordercode', 'orderid', 'ordernumber', 'madon', 'masodon', 'orderno', 'name'],
+  date: ['date', 'createdat', 'orderdate', 'ngaydat', 'ngay', 'paidat'],
+  customer_name: ['customername', 'name', 'tenkhach', 'khachhang', 'billingname', 'shippingname'],
+  customer_phone: ['customerphone', 'phone', 'sdt', 'sodienthoai', 'billingphone', 'shippingphone'],
+  customer_email: ['customeremail', 'email', 'billingemail'],
+  total_vnd: ['totalvnd', 'total', 'tongtien', 'thanhtien', 'grandtotal'],
+  status: ['status', 'trangthai', 'fulfillmentstatus'],
+  payment_status: ['paymentstatus', 'financialstatus', 'trangthaithanhtoan'],
+  address: ['address', 'diachi', 'shippingaddress', 'billingaddress', 'shippingstreet'],
+  province: ['province', 'tinhthanh', 'shippingprovince', 'city'],
+  note: ['note', 'ghichu', 'notes'],
+};
+// `name` xuất hiện ở CẢ order_code lẫn customer_name (Shopify dùng "Name" cho mã đơn).
+// Thứ tự duyệt trong mapRowBy quyết định: order_code đứng trước nên "Name" về mã đơn —
+// đúng với Shopify. Ai có tệp mà "Name" là tên khách thì đổi tiêu đề cột, và UI nói rõ
+// cột nào được hiểu thành gì nên họ thấy ngay chứ không đoán.
+
+const mapOrderRow = (raw) => {
+  const byNorm = new Map();
+  for (const k of Object.keys(raw ?? {})) byNorm.set(normKey(k), raw[k]);
+  const out = {};
+  for (const [canon, aliases] of Object.entries(OCOLS)) {
+    for (const a of aliases) if (byNorm.has(a)) { out[canon] = byNorm.get(a); break; }
+  }
+  return out;
+};
+
+/**
+ * Ngày từ chuỗi người dùng. Nhận ISO (2026-07-28, kèm giờ) và kiểu Việt Nam 28/07/2026.
+ * Trả Date hoặc null. TỪ CHỐI ngày TƯƠNG LAI: đơn "cũ" mà nằm ở tương lai thì hoặc tệp sai
+ * hoặc đọc nhầm định dạng — cả hai đều làm hỏng hồ sơ khách nếu cứ nhập.
+ */
+function parseOrderDate(v) {
+  const s = String(v ?? '').trim();
+  if (!s) return null;
+  let d = null;
+  const vn = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/.exec(s);
+  if (vn) d = new Date(Date.UTC(Number(vn[3]), Number(vn[2]) - 1, Number(vn[1]), 5));  // ~12h giờ VN
+  else if (/^\d{4}-\d{2}-\d{2}/.test(s)) d = new Date(s.length === 10 ? `${s}T05:00:00Z` : s);
+  if (!d || Number.isNaN(d.getTime())) return null;
+  if (d.getTime() > Date.now() + 86400000) return null;
+  return d;
+}
+
+const O_STATUS = { delivered: 'delivered', completed: 'delivered', done: 'delivered', 'hoàn thành': 'delivered',
+  cancelled: 'cancelled', canceled: 'cancelled', 'đã huỷ': 'cancelled', 'da huy': 'cancelled',
+  refunded: 'refunded', 'hoàn tiền': 'refunded' };
+const O_PAY = { paid: 'paid', 'đã thanh toán': 'paid', 'da thanh toan': 'paid', unpaid: 'unpaid',
+  pending: 'unpaid', refunded: 'refunded' };
+
+export async function importOrders(res, ctx, body) {
+  const raw = Array.isArray(body.rows) ? body.rows : [];
+  if (raw.length === 0) return send(res, 400, { error: 'không có dòng nào để nhập' });
+  if (raw.length > ORDER_IMPORT_MAX_ROWS) return send(res, 413, { error: `tối đa ${ORDER_IMPORT_MAX_ROWS} dòng mỗi lần nhập` });
+
+  const columns = (() => {
+    const headers = new Set();
+    for (const r of raw) for (const k of Object.keys(r ?? {})) headers.add(String(k));
+    const recognised = [], ignored = [];
+    for (const h of headers) {
+      const n = normKey(h);
+      const hit = Object.entries(OCOLS).find(([, al]) => al.includes(n));
+      if (hit) recognised.push({ header: h, field: hit[0] }); else ignored.push(h);
+    }
+    return { recognised, ignored };
+  })();
+
+  const rows = raw.map(mapOrderRow);
+  const errors = [];
+  const ready = [];
+  const seenRef = new Set();
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i], line = i + 2;
+    const phone = str(r.customer_phone).replace(/[^\d+]/g, '');
+    // SĐT là KHOÁ GỘP hồ sơ khách (customers.js gom theo customer_phone). Không có nó thì
+    // đơn vào hệ thống mà chẳng gắn với ai — tức là rác, không phải lịch sử.
+    if (phone.length < 8 || phone.length > 15) { errors.push({ line, title: str(r.order_code), error: 'thiếu hoặc sai số điện thoại (khoá gộp hồ sơ khách)' }); continue; }
+    const when = parseOrderDate(r.date);
+    if (!when) { errors.push({ line, title: str(r.order_code), error: 'ngày đặt trống, sai định dạng, hoặc ở tương lai' }); continue; }
+    const total = intOf(r.total_vnd);
+    if (!isInt(total) || total < 0 || total > 100_000_000_000) { errors.push({ line, title: str(r.order_code), error: 'tổng tiền không hợp lệ' }); continue; }
+
+    const ref = str(r.order_code).slice(0, 120) || null;
+    if (ref && seenRef.has(ref)) { errors.push({ line, title: ref, error: `mã đơn "${ref}" lặp trong cùng tệp` }); continue; }
+    if (ref) seenRef.add(ref);
+
+    const st = O_STATUS[str(r.status).toLowerCase()] ?? 'delivered';
+    const pay = O_PAY[str(r.payment_status).toLowerCase()] ?? (st === 'cancelled' ? 'unpaid' : 'paid');
+    const addrLine = str(r.address), prov = str(r.province);
+    ready.push({
+      line, ref, when, total, phone,
+      name: str(r.customer_name).slice(0, 120) || null,
+      email: str(r.customer_email).slice(0, 200) || null,
+      status: st, pay,
+      address: (addrLine || prov) ? { ...(addrLine ? { line: addrLine.slice(0, 300) } : {}), ...(prov ? { province: prov.slice(0, 100) } : {}) } : null,
+      note: str(r.note).slice(0, 500) || null,
+    });
+  }
+
+  if (body.dry_run === true) {
+    return send(res, 200, {
+      dry_run: true, rows: raw.length, created: ready.length, failed: errors.length,
+      errors: errors.slice(0, 100), columns,
+      preview: ready.slice(0, 20).map((o) => ({
+        ref: o.ref, date: o.when.toISOString().slice(0, 10), name: o.name, phone: o.phone,
+        total_vnd: o.total, status: o.status,
+      })),
+      customers: new Set(ready.map((o) => o.phone)).size,
+    });
+  }
+
+  let created = 0, duplicate = 0;
+  for (const o of ready) {
+    try {
+      await withTenant(ctx.shopId, async (c) => {
+        // Số đơn cấp từ CÙNG bộ đếm với đơn thường: không tái dùng dãy số của sàn cũ (mã sàn
+        // thường có chữ, và trộn dãy sẽ đụng đơn tương lai). Mã gốc giữ ở migrated_ref.
+        // Bộ đếm TỰ CHỮA LÀNH: nâng lên max(order_number)+1 nếu nó đang tụt lại sau dữ liệu
+        // thật. Vì sao cần: bộ đếm và lệnh chèn nằm CÙNG transaction, nên chèn lỗi thì bộ đếm
+        // cũng rollback — nó không bao giờ tiến lên và mọi dòng sau đụng lại y hệt. Đó là
+        // vòng lặp chết, và nó xảy ra thật ngay lần chạy test đầu tiên.
+        const num = (await c.query(
+          `INSERT INTO shop_counters (shop_id, name, value)
+           VALUES (current_shop_id(), 'order_number',
+                   (SELECT coalesce(max(order_number), 0) + 1 FROM orders WHERE shop_id = current_shop_id()))
+           ON CONFLICT (shop_id, name) DO UPDATE
+             SET value = GREATEST(shop_counters.value + 1,
+                   (SELECT coalesce(max(order_number), 0) + 1 FROM orders WHERE shop_id = current_shop_id()))
+           RETURNING value`,
+        )).rows[0].value;
+        await c.query(
+          `INSERT INTO orders (shop_id, order_number, status, payment_status, payment_method,
+             customer_name, customer_phone, customer_email, shipping_address,
+             subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, amount_paid_vnd,
+             created_at, paid_at, delivered_at, cancelled_at, fulfillment_status,
+             note, is_migrated, migrated_ref)
+           VALUES (current_shop_id(), $1, $2, $3, NULL, $4, $5, $6, $7,
+                   $8, 0, 0, $8, $9,
+                   $10, $11, $12, $13, $14,
+                   $15, true, $16)`,
+          [num, o.status, o.pay, o.name, o.phone, o.email, o.address,
+           o.total, o.pay === 'paid' ? o.total : 0,
+           o.when, o.pay === 'paid' ? o.when : null,
+           o.status === 'delivered' ? o.when : null,
+           o.status === 'cancelled' ? o.when : null,
+           o.status === 'delivered' ? 'fulfilled' : 'unfulfilled',
+           o.note, o.ref],
+        );
+      });
+      created++;
+    } catch (err) {
+      // Phân biệt theo TÊN RÀNG BUỘC, không gộp mọi 23505 thành "trùng". Bản đầu gộp hết và
+      // nó BÁO NHẦM: đụng orders_shop_id_order_number_key (bộ đếm tụt) bị đếm thành "đã nhập
+      // rồi", nên người bán thấy "3 đơn bỏ qua vì trùng" trong khi thật ra KHÔNG đơn nào vào.
+      if (err.code === '23505' && err.constraint === 'orders_migrated_ref_uq') { duplicate++; continue; }
+      errors.push({ line: o.line, title: o.ref ?? '', error: err.code === '23505' ? 'trùng dữ liệu đã có' : 'lỗi khi tạo đơn' });
+    }
+  }
+
+  return send(res, 200, {
+    created, duplicate, failed: errors.length, errors: errors.slice(0, 100), columns,
+    customers: new Set(ready.map((x) => x.phone)).size,
+  });
+}
+
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 export const IMPORT_ROUTES = [
+  // maxBody 4MB: 2000 dòng đơn hoá JSON lớn hơn nhập sản phẩm (mỗi dòng có địa chỉ + ghi chú).
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/import$`), perm: 'orders.write', maxBody: 4 * 1024 * 1024, fn: (res, ctx, b) => importOrders(res, ctx, b) },
   // maxBody 2MB (mặc định toàn cục 32KB). 1000 dòng CSV hoá JSON ≈ 200-400KB, nên trần
   // 32KB làm bộ nhập VỠ với mọi file cỡ thật — quá ~150 dòng là hỏng. Lỗi này có từ trước và
   // không bộ test nào bắt được vì bộ nhập chưa từng có test. Nới ĐÚNG route này, không nới

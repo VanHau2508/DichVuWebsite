@@ -2565,6 +2565,110 @@ export function renderProductImport(ctx, shopId, result, err) {
     </div>`);
 }
 
+
+// ── Nhập ĐƠN CŨ từ sàn khác (docs/45) ──────────────────────────────────────
+export const ORDER_IMPORT_SAMPLE_CSV = [
+  'order_code,date,customer_name,customer_phone,customer_email,total_vnd,status,address,province',
+  'SPX-240615-001,15/06/2026,Phạm Thị Lan,0933444555,lan@gmail.com,1250000,delivered,12 Lê Lợi,Đà Nẵng',
+  'SPX-240620-002,20/06/2026,Phạm Thị Lan,0933444555,,750000,delivered,,',
+  'SPX-240701-003,01/07/2026,Trần Văn Nam,0912888777,,99000,đã huỷ,,',
+].join('\n');
+
+export function renderOrderImport(ctx, shopId, result, err) {
+  const base = `/shops/${esc(shopId)}/orders`;
+  const n = (x) => esc(Number(x ?? 0));
+  const errRows = (result?.errors ?? []).map((e) => `<tr>
+    <td class="num">${esc(e.line)}</td><td>${esc(e.title || '(không mã)')}</td>
+    <td class="muted">${esc(e.error)}</td></tr>`).join('');
+  const errTable = errRows ? `<div class="tblscroll"><table data-cards><thead><tr>
+      <th>Dòng</th><th>Mã đơn</th><th>Lý do bị bỏ</th></tr></thead><tbody>${errRows}</tbody></table></div>` : '';
+
+  const cols = result?.columns;
+  const colCard = cols ? `<div class="card">
+    <h2 style="margin-top:0">Cột đọc được từ tệp</h2>
+    <p style="margin:0 0 8px">${(cols.recognised ?? []).map((c) => `<span class="badge delivered" style="margin:0 6px 6px 0;display:inline-block">${esc(c.header)} → ${esc(c.field)}</span>`).join('') || '<span class="muted">không nhận ra cột nào</span>'}</p>
+    ${(cols.ignored ?? []).length ? `<p class="muted" style="margin:0"><strong style="color:var(--warn)">Bỏ qua:</strong> ${cols.ignored.map((h) => `<code>${esc(h)}</code>`).join(', ')} — dữ liệu ở các cột này KHÔNG được nhập.</p>` : ''}
+  </div>` : '';
+
+  let card = '';
+  if (result?.dry_run) {
+    const rows = (result.preview ?? []).map((o) => `<tr>
+      <td>${esc(o.ref || '—')}</td><td class="muted">${esc(o.date)}</td>
+      <td>${esc(o.name || '(không tên)')}<div class="muted" style="font-size:.8rem">${esc(o.phone)}</div></td>
+      <td class="num right">${money(o.total_vnd)}</td>
+      <td class="muted">${esc(o.status)}</td></tr>`).join('');
+    card = `<div class="card" style="border-color:var(--indigo)">
+      <h2 style="margin-top:0">Xem trước — <span style="color:var(--indigo)">chưa ghi gì vào cửa hàng</span></h2>
+      <div class="metrics" style="margin-bottom:12px">
+        <div class="metric"><div class="l">Dòng trong tệp</div><div class="v">${n(result.rows)}</div></div>
+        <div class="metric"><div class="l">Đơn sẽ nhập</div><div class="v">${n(result.created)}</div></div>
+        <div class="metric"><div class="l">Khách hàng</div><div class="v">${n(result.customers)}</div></div>
+      </div>
+      ${result.failed ? `<p><strong style="color:var(--warn)">${n(result.failed)} dòng sẽ bị bỏ</strong> — sửa rồi tải lại.</p>${errTable}` : '<p class="muted">Không có lỗi nào.</p>'}
+      ${rows ? `<div class="tblscroll"><table data-cards><thead><tr><th>Mã gốc</th><th>Ngày</th><th>Khách</th><th class="right">Tổng tiền</th><th>Trạng thái</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+      <p style="margin:16px 0 0">Ưng ý thì chọn lại tệp ở dưới và bấm <strong>Nhập thật</strong>.</p>
+    </div>`;
+  } else if (result) {
+    card = `<div class="card" style="border-color:var(--good)">
+      <h2 style="margin-top:0">Đã nhập xong</h2>
+      <div class="metrics" style="margin-bottom:12px">
+        <div class="metric"><div class="l">Đơn cũ đã nhập</div><div class="v" style="color:var(--good)">${n(result.created)}</div></div>
+        ${result.duplicate ? `<div class="metric"><div class="l">Bỏ qua vì đã có</div><div class="v">${n(result.duplicate)}</div></div>` : ''}
+        ${result.failed ? `<div class="metric"><div class="l">Dòng hỏng</div><div class="v" style="color:var(--warn)">${n(result.failed)}</div></div>` : ''}
+      </div>
+      ${result.duplicate ? '<p class="muted" style="margin-top:-4px">Các đơn bỏ qua đã có sẵn (khớp mã gốc) — nhập lại cùng tệp KHÔNG nhân đôi số liệu khách.</p>' : ''}
+      ${errTable}
+      <p style="margin-bottom:0"><a class="btn" href="/shops/${esc(shopId)}/customers">Xem hồ sơ khách hàng →</a></p>
+    </div>`;
+  }
+
+  return layout('Nhập đơn cũ', ctx, `
+    <a class="muted" href="${base}">← Danh sách đơn</a>
+    <h1>Nhập đơn hàng cũ từ sàn khác</h1>
+    <p class="muted" style="margin-top:-8px">Mang lịch sử mua của khách sang đây, để bạn biết ai đã mua gì trước khi chuyển nền tảng.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+
+    <div class="card" style="border-color:var(--indigo);background:var(--indigobg)">
+      <h2 style="margin-top:0">Đọc kỹ trước khi nhập</h2>
+      <ul style="margin:0;line-height:1.9">
+        <li>Đơn cũ <strong>KHÔNG tính vào doanh thu</strong>, báo cáo lãi, đối soát COD hay điểm thưởng — báo cáo của bạn vẫn chỉ phản ánh việc bán hàng <strong>trên nền tảng này</strong>.</li>
+        <li>Chúng vào hệ thống để <strong>tra cứu</strong> và <strong>gộp thành hồ sơ khách hàng</strong> (ai mua gì, chi bao nhiêu, mua gần nhất khi nào).</li>
+        <li><strong>Không nhập dòng hàng</strong>, chỉ phần đầu đơn — hàng đã ngừng kinh doanh không còn khớp mã nào trong kho hiện tại.</li>
+        <li>Tồn kho <strong>không bị trừ</strong>: hàng đã giao ở sàn cũ từ lâu.</li>
+      </ul>
+    </div>
+
+    ${card}
+    ${colCard}
+
+    <div class="card">
+      <h2 style="margin-top:0">Tải tệp lên</h2>
+      <form method="POST" action="${base}/import" enctype="multipart/form-data" class="actions" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <input type="file" name="file" accept=".csv,text/csv" required>
+        <button class="btn" type="submit" name="mode" value="preview">Xem trước</button>
+        <button class="btn alt" type="submit" name="mode" value="commit"
+          data-confirm="Ghi THẬT vào cửa hàng. Nên bấm Xem trước ít nhất một lần. Tiếp tục?">Nhập thật</button>
+      </form>
+      <p class="muted" style="font-size:13px;margin-bottom:0">Tối đa 2000 dòng mỗi lần.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Định dạng tệp</h2>
+      <p style="margin-top:-6px"><a class="btn alt sm" href="${base}/import/mau.csv">⬇ Tải tệp mẫu</a></p>
+      <div class="tblscroll"><table data-cards><thead><tr><th>Cột</th><th>Bắt buộc</th><th>Ý nghĩa</th></tr></thead><tbody>
+        <tr><td><code>customer_phone</code></td><td><strong>có</strong></td><td>Số điện thoại — <strong>khoá gộp hồ sơ khách</strong>. Thiếu thì đơn không gắn được với ai nên bị bỏ.</td></tr>
+        <tr><td><code>date</code></td><td><strong>có</strong></td><td>Ngày đặt: <code>28/07/2026</code> hoặc <code>2026-07-28</code>. Ngày ở tương lai bị từ chối.</td></tr>
+        <tr><td><code>total_vnd</code></td><td><strong>có</strong></td><td>Tổng tiền đơn.</td></tr>
+        <tr><td><code>order_code</code></td><td class="muted">nên có</td><td>Mã đơn ở sàn cũ. Đây là <strong>khoá chống nhập trùng</strong> — có nó thì nhập lại cùng tệp sẽ bỏ qua thay vì nhân đôi.</td></tr>
+        <tr><td><code>customer_name</code>, <code>customer_email</code></td><td class="muted">không</td><td>Tên và email khách.</td></tr>
+        <tr><td><code>status</code></td><td class="muted">không</td><td><code>delivered</code> (mặc định) · <code>đã huỷ</code> · <code>refunded</code>.</td></tr>
+        <tr><td><code>address</code>, <code>province</code></td><td class="muted">không</td><td>Địa chỉ giao.</td></tr>
+      </tbody></table></div>
+      <p class="muted" style="font-size:13px;margin-bottom:0">Không khai <code>order_code</code> thì hệ thống không có gì để nhận diện, nên nhập lại tệp sẽ tạo đơn trùng.</p>
+    </div>`);
+}
+
+
 export function renderProductNew(ctx, shopId, err, f = {}) {
   return layout('Thêm sản phẩm', ctx, `
     <a class="muted" href="/shops/${esc(shopId)}/products">← Danh sách sản phẩm</a>

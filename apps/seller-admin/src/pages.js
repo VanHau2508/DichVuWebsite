@@ -125,12 +125,19 @@ input[type=file]{width:auto;padding:9px 12px;background:var(--surf);border:1.5px
   table.cards{border-collapse:separate;border-spacing:0}
   table.cards tr{border:1px solid var(--bd);border-radius:var(--r-lg);padding:12px 14px;margin-bottom:12px;background:var(--card)}
   table.cards tr:hover td{background:transparent}
-  table.cards td{border:0;padding:6px 0;display:flex;gap:12px;align-items:baseline;justify-content:space-between;text-align:right}
-  table.cards td::before{content:attr(data-label);color:var(--mut);font-size:13px;line-height:20px;font-weight:400;text-align:left;flex:0 0 40%;min-width:0}
+  /* Nhãn cột đặt TUYỆT ĐỐI ở lề trái; phần giá trị chiếm chỗ còn lại và xuống dòng bình
+     thường. Bản đầu dùng flex và ĐÃ SAI: flex biến MỖI CON của <td> thành một item, nên ô
+     hai con — <a>tên khách</a> + <div>SĐT</div> — bị xếp NGANG cạnh nhau rồi tràn ra ngoài
+     thẻ. Đơn/Sản phẩm không lộ vì ô chính của chúng có sẵn một <div> bọc.
+     Vị trí tuyệt đối không quan tâm ô có mấy con, nên đúng cho mọi bảng. */
+  table.cards td{border:0;position:relative;padding:6px 0 6px 40%;text-align:right;min-height:20px;overflow-wrap:anywhere}
+  table.cards td::before{content:attr(data-label);position:absolute;left:0;top:6px;width:38%;
+    color:var(--mut);font-size:13px;line-height:20px;font-weight:400;text-align:left;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   /* Ô rỗng (cột hành động trống, cột đệm) không đẻ ra dòng trắng vô nghĩa. */
   table.cards td:empty{display:none}
   /* Ô KHÔNG có nhãn (cột checkbox chọn hàng loạt, cột nút) trải hết chiều ngang. */
-  table.cards td[data-label=""]{justify-content:flex-start;text-align:left}
+  table.cards td[data-label=""]{padding-left:0;text-align:left}
   table.cards td[data-label=""]::before{display:none}
   /* Hàng <tfoot> là dòng TỔNG, không phải một bản ghi — JS cố ý chỉ gán nhãn cho tbody.
      Không xử riêng thì ô không có data-label vẫn dính quy tắc td ở trên: chừa 40% trống
@@ -138,11 +145,8 @@ input[type=file]{width:auto;padding:9px 12px;background:var(--surf);border:1.5px
      "chữ trái — số phải" (đối soát COD, chi tiết phiếu nhập). */
   table.cards tfoot{display:block;width:100%}
   table.cards tfoot tr{display:flex;justify-content:space-between;align-items:baseline;gap:12px;background:var(--surf)}
-  table.cards tfoot td{display:block;width:auto;padding:0;text-align:right}
+  table.cards tfoot td{display:block;width:auto;padding:0;min-height:0;text-align:right}
   table.cards tfoot td::before{display:none}
-  /* Ô 2 dòng vẫn giữ cấu trúc dòng-chính/dòng-phụ, chỉ căn phải theo thẻ. */
-  table.cards td .t1,table.cards td .t2{text-align:right}
-  table.cards td[data-label=""] .t1,table.cards td[data-label=""] .t2{text-align:left}
   /* Trong thẻ thì không cần cuộn ngang nữa. */
   .tblscroll:has(table.cards){overflow-x:visible}
 }
@@ -242,8 +246,11 @@ a.metric:hover{transform:translateY(-3px);box-shadow:var(--sh);border-color:colo
    Đây là chỗ DUY NHẤT được dùng cyan/magenta của TikTok (docs/44 §2). */
 .hb-dot{position:absolute;transform:rotate(45deg);pointer-events:none;opacity:.9}
 @media(prefers-reduced-motion:no-preference){.hb-dot{transition:none}}
-/* Thẻ đầu tiên ĐÈ LÊN đáy dải (docs/44 §9 khuôn trang tổng quan). */
+/* Thẻ đầu tiên ĐÈ LÊN đáy dải (docs/44 §9 khuôn trang tổng quan).
+   Phải triệt margin-top của .card bên trong: lề trên 16px của nó GỘP với lề âm ở đây
+   (-60 + 16 = -44), nên đo thật chỉ đè 44px chứ không phải 60px như spec. */
 .hero-lift{position:relative;z-index:3;margin-top:-60px}
+.hero-lift>.card{margin-top:0}
 @media(max-width:767px){.hero-band{min-height:0;padding-bottom:64px}.hero-lift{margin-top:-48px}}
 .dash-hero{position:relative;overflow:hidden;background:linear-gradient(120deg,color-mix(in srgb,var(--brand) 7%,var(--card)),var(--card) 60%);border:1px solid var(--bd);border-radius:var(--r-lg);padding:26px 28px;margin:0 0 20px;box-shadow:var(--sh-sm)}
 .dash-hero::after{content:"";position:absolute;top:-40%;right:-8%;width:300px;height:300px;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--brand2) 12%,transparent),transparent 70%);pointer-events:none}

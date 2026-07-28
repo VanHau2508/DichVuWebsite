@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# Chặn push khi kiểm tra nhanh ở MÁY bị đỏ. Chạy hoàn toàn cục bộ — KHÔNG gọi GitHub,
+# nên hoạt động cả khi quota Actions đã cháy (đúng tình huống 2026-07-28: CI ngừng chạy
+# 4 ngày, hook này là hàng rào tự động DUY NHẤT còn lại).
+#
+# VÌ SAO CÓ. CI đỏ liên tục nhiều ngày mà không ai thấy, và trong đống đỏ đó có 4 CVE
+# libvips nằm đúng đường nhận ảnh từ người lạ. Thứ bắt được nó là `security-scan` — một
+# bước chạy 1 giây, nằm trong `--fast`. Trí nhớ không phải cơ chế; cái này thì là.
+#
+# CÀI (một lần cho mỗi bản clone — thư mục .git/hooks KHÔNG được version):
+#   git config core.hooksPath scripts/hooks
+# GỠ:
+#   git config --unset core.hooksPath
+# BỎ QUA MỘT LẦN (gấp, hoặc đang push nhánh nháp):
+#   git push --no-verify
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 0
+
+RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; BLD=$'\033[1m'; RST=$'\033[0m'
+printf '\n%s▶ pre-push: kiểm tra nhanh ở máy (~3 phút)%s\n' "$BLD" "$RST"
+printf '  Bỏ qua khi cần: %sgit push --no-verify%s\n\n' "$BLD" "$RST"
+
+# stdin của hook mang danh sách ref mà git định đẩy. `docker compose exec` phía dưới có
+# thể nuốt mất nó → cắt hẳn stdin cho lệnh con, tránh treo hoặc ăn nhầm dữ liệu của git.
+bash scripts/ci-local.sh --fast < /dev/null
+rc=$?
+
+if [ "$rc" -eq 0 ]; then
+  printf '\n%s✓ Kiểm tra nhanh XANH — cho push.%s\n' "$GRN" "$RST"
+  printf '  %sLưu ý: --fast KHÔNG chạy 80 bộ e2e. Trước khi DEPLOY hãy chạy đủ:%s\n' "$YEL" "$RST"
+  printf '    bash scripts/ci-local.sh\n\n'
+  exit 0
+fi
+
+if [ "$rc" -eq 2 ]; then
+  # Môi trường chưa sẵn sàng (Docker chưa bật) — CẢNH BÁO chứ KHÔNG chặn.
+  # Chặn vì Docker chưa chạy sẽ khiến người ta dùng --no-verify theo thói quen, và khi đó
+  # hook không bao giờ chạy nữa. Một hàng rào bị vượt hằng ngày tệ hơn một hàng rào
+  # thành thật nói rằng nó chưa kiểm được gì.
+  printf '\n%s⚠ CHƯA KIỂM ĐƯỢC — stack docker chưa chạy. Push vẫn tiếp tục.%s\n' "$YEL" "$RST"
+  printf '  Bật rồi chạy lại nếu muốn chắc:\n'
+  printf '    docker compose -f infra/compose.dev.yml up -d && bash scripts/ci-local.sh --fast\n\n'
+  exit 0
+fi
+
+printf '\n%s✖ Kiểm tra nhanh ĐỎ — CHẶN push.%s\n' "$RED" "$RST"
+printf '  Sửa rồi push lại, hoặc %sgit push --no-verify%s nếu bạn cố ý đẩy bản đang hỏng.\n\n' "$BLD" "$RST"
+exit 1

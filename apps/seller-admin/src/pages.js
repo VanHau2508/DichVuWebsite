@@ -237,6 +237,7 @@ export const THEME_FEATURE_DEFAULTS = [
 
 // Icon nội tuyến (markup → hợp CSP, không tải resource ngoài).
 const ic = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+const PAYMENT_LABEL = { unpaid: 'Chưa thu tiền', pending: 'Chờ đối soát', paid: 'Đã thu tiền', refunded: 'Đã hoàn tiền' };
 const IC_HOME = ic('<path d="M3 9l1-5h16l1 5"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/><path d="M3 9h18"/>');
 const IC_ORDER = ic('<path d="M5 4h14v16l-3-2-2 2-2-2-2 2-3-2z"/><path d="M9 9h6"/><path d="M9 13h6"/>');
 const IC_BOX = ic('<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/>');
@@ -1164,12 +1165,21 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null) {
   // Mỗi ô = 1 việc tồn đọng + link tới đúng trang ĐÃ LỌC SẴN. Ô có việc (n>0) mới nổi màu;
   // hết việc thì xám và không dẫn đi đâu gấp. Sạch việc → hiện lời chúc thay vì lưới trống.
   const td = s?.todo ?? {};
+  // docs/44 §7: "Ô số liệu LÀ LINK — bấm vào con số phải nhảy tới danh sách ĐÃ LỌC SẴN".
+  // Hai ô dưới đây trước đây dẫn tới danh sách ĐẦY ĐỦ: báo "3 đơn chưa thu tiền" rồi mở ra
+  // 400 đơn. Người bán phải tự đi tìm 3 đơn đó — tệ hơn không có link, vì nó dạy người ta
+  // rằng con số trên Tổng quan không dẫn đi đâu cả. Nay có bộ lọc thật ở API (payment=unpaid,
+  // stock=low) nên href trỏ đúng tập hợp mà con số đang đếm.
+  //
+  // Màu lấy từ TOKEN (docs/44 §2: "không được sinh thêm màu ngoài danh sách này"). Bộ hex
+  // cứng cũ (#b45309/#1d4ed8/#7c3aed…) là tàn dư của bảng màu xanh-tím trước đây — để lại
+  // thì lưới này là mảng duy nhất trong admin không theo hệ.
   const TODO = [
-    { n: Number(td.to_confirm ?? 0), label: 'Đơn chờ xác nhận', href: `${base}/orders?status=pending`, tone: '#b45309', bg: '#fffbeb', bd: '#fcd34d', icon: '🕐' },
-    { n: Number(td.to_ship ?? 0), label: 'Đơn chờ gửi hàng', href: `${base}/orders?status=confirmed`, tone: '#1d4ed8', bg: '#eff6ff', bd: '#bfdbfe', icon: '📦' },
-    { n: Number(td.unpaid ?? 0), label: 'Đơn chưa thu tiền', href: `${base}/orders`, tone: '#b91c1c', bg: '#fef2f2', bd: '#fecaca', icon: '💰' },
-    { n: Number(td.reviews_pending ?? 0), label: 'Đánh giá chờ duyệt', href: `${base}/reviews`, tone: '#7c3aed', bg: '#f5f3ff', bd: '#ddd6fe', icon: '⭐' },
-    { n: Number(td.low_stock ?? 0), label: 'Sắp hết hàng', href: `${base}/products`, tone: '#c2410c', bg: '#fff7ed', bd: '#fed7aa', icon: '⚠' },
+    { n: Number(td.to_confirm ?? 0), label: 'Đơn chờ xác nhận', href: `${base}/orders?status=pending`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '🕐' },
+    { n: Number(td.to_ship ?? 0), label: 'Đơn chờ gửi hàng', href: `${base}/orders?status=confirmed`, tone: 'var(--indigo)', bg: 'var(--indigobg)', bd: 'var(--indigo)', icon: '📦' },
+    { n: Number(td.unpaid ?? 0), label: 'Đơn chưa thu tiền', href: `${base}/orders?payment=unpaid`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '💰' },
+    { n: Number(td.reviews_pending ?? 0), label: 'Đánh giá chờ duyệt', href: `${base}/reviews`, tone: 'var(--pri)', bg: 'var(--wash)', bd: 'var(--pri)', icon: '⭐' },
+    { n: Number(td.low_stock ?? 0), label: 'Sắp hết hàng', href: `${base}/products?stock=low`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '⚠' },
   ];
   const openWork = TODO.reduce((a, x) => a + x.n, 0);
   const todoCells = TODO.map((x) => {
@@ -1501,6 +1511,7 @@ export function renderOrderNew(ctx, shopId, variants, idem, err, form, picker) {
     </form>` : `<div class="card"><p class="muted" style="margin:0">${pq ? `Không có sản phẩm nào khớp “${esc(pq)}” — thử từ khoá khác hoặc xoá lọc.` : 'Chưa có sản phẩm đang bán nào — thêm sản phẩm trước.'}</p></div>`}`);
 }
 
+// filter.payment: tình trạng thanh toán đang lọc (đến từ ô số liệu ở Tổng quan).
 export function renderOrders(ctx, shopId, data, filter, nonce = '') {
   const orders = data.orders ?? [];
   // Cảnh báo khi 1 NGUỒN (mạng/kết nối) có ≥4 SĐT KHÁC NHAU đơn chưa xử lý — dấu hiệu 1 kẻ
@@ -1555,7 +1566,11 @@ export function renderOrders(ctx, shopId, data, filter, nonce = '') {
       <div><label>Đến ngày</label><input type="date" name="to" value="${esc(filter.to ?? '')}"></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
-    <div class="card">${orders.length ? `
+    <div class="card">
+      <!-- Chip "đang lọc" nằm NGOÀI nhánh có-dòng: lọc ra 0 kết quả mà không nói đang lọc gì
+           thì người bán thấy trang trống và không hiểu vì sao, cũng không có lối quay ra. -->
+      ${filter.payment ? `<p class="muted" style="margin:0 0 10px">Đang lọc: <strong>${esc(PAYMENT_LABEL[filter.payment] ?? filter.payment)}</strong> · <a href="?${esc(new URLSearchParams({ ...(filter.status ? { status: filter.status } : {}), ...(filter.q ? { q: filter.q } : {}) }).toString())}">Xoá bộ lọc</a></p>` : ''}
+      ${orders.length ? `
       <form id="bulkf" method="POST" action="/shops/${esc(shopId)}/orders/bulk-confirm" class="actions" style="margin-bottom:10px">
         <button class="btn sm" type="submit">✓ Xác nhận các đơn đã chọn</button>
         <button class="btn alt sm" type="submit" formaction="/shops/${esc(shopId)}/orders/bulk-mark-paid">₫ Đã nhận tiền (COD)</button>
@@ -2070,7 +2085,7 @@ export function renderProducts(ctx, shopId, data, filter, notice = null, nonce =
       <div style="flex:1 1 200px"><label>Tìm theo tên</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="Ghế sofa…"></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
-    <div class="card">${products.length ? `${bulkBar}<div class="tblscroll"><table data-cards><thead><tr><th><input type="checkbox" data-bulk-all="product_ids" hidden aria-label="Chọn tất cả sản phẩm trên trang"></th><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th class="right">Tồn</th><th class="right" title="Lượt xem trang sản phẩm trong 30 ngày qua">Lượt xem</th><th class="right" title="Số khách đã bấm Yêu thích">Thích</th><th class="right">Đã bán</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="card">${products.length ? `${bulkBar}${filter.stock === 'low' ? `<p class="muted" style="margin:0 0 10px">Đang lọc: <strong>Sắp hết hàng</strong> · <a href="?${esc(new URLSearchParams({ ...(filter.status ? { status: filter.status } : {}), ...(filter.q ? { q: filter.q } : {}) }).toString())}">Xoá bộ lọc</a></p>` : ''}<div class="tblscroll"><table data-cards><thead><tr><th><input type="checkbox" data-bulk-all="product_ids" hidden aria-label="Chọn tất cả sản phẩm trên trang"></th><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th class="right">Tồn</th><th class="right" title="Lượt xem trang sản phẩm trong 30 ngày qua">Lượt xem</th><th class="right" title="Số khách đã bấm Yêu thích">Thích</th><th class="right">Đã bán</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table></div>
       <div class="muted" style="margin-top:12px">${total} sản phẩm ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}

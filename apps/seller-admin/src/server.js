@@ -270,14 +270,16 @@ async function ordersList(res, me, cookie, shopId, q) {
   const to = DATE_RE.test((q.get('to') ?? '').trim()) ? q.get('to').trim() : '';
   const limit = 20, offset = Math.max(0, parseInt(q.get('offset') ?? '0', 10) || 0);
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const payment = ['unpaid', 'pending', 'paid', 'refunded'].includes(q.get('payment')) ? q.get('payment') : '';
   if (status) qs.set('status', status);
+  if (payment) qs.set('payment', payment);
   if (search) qs.set('q', search);
   if (from) qs.set('from', from);
   if (to) qs.set('to', to);
   const r = await sellerApi('GET', `/shops/${shopId}/orders?${qs}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được đơn hàng.'));
-  return sendHtmlJs(res, 200, (nonce) => V.renderOrders(ctx, shopId, r.json, { status, q: search, from, to, limit, offset }, nonce));
+  return sendHtmlJs(res, 200, (nonce) => V.renderOrders(ctx, shopId, r.json, { status, payment, q: search, from, to, limit, offset }, nonce));
 }
 
 // ── Tạo đơn thủ công (nhân viên chốt đơn Facebook/Zalo rồi gõ vào) ─────────────
@@ -801,16 +803,20 @@ async function productsList(res, me, cookie, shopId, q, notice = null) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const status = ['draft', 'active', 'archived'].includes(q.get('status')) ? q.get('status') : '';
   const query = (q.get('q') ?? '').trim().slice(0, 100);
+  // Ô "Sắp hết hàng" ở Tổng quan bấm sang đây (docs/44 §7). Allowlist một giá trị: tham số
+  // này đi thẳng vào WHERE của API, không nhận gì ngoài 'low'.
+  const stock = q.get('stock') === 'low' ? 'low' : '';
   const limit = 20, offset = Math.max(0, parseInt(q.get('offset') ?? '0', 10) || 0);
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (status) qs.set('status', status);
+  if (stock) qs.set('stock', stock);
   if (query) qs.set('q', query);
   const r = await sellerApi('GET', `/shops/${shopId}/products?${qs}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'products');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được sản phẩm.'));
   // Trang DUY NHẤT hiện dùng JS (ADR-011 danh sách trắng: chọn hàng loạt + xác nhận xoá).
   // sendHtmlJs sinh nonce MỘT LẦN cho cả header CSP lẫn thẻ <script> → không thể lệch.
-  return sendHtmlJs(res, 200, (nonce) => V.renderProducts(ctx, shopId, r.json, { status, q: query, limit, offset }, notice, nonce));
+  return sendHtmlJs(res, 200, (nonce) => V.renderProducts(ctx, shopId, r.json, { status, stock, q: query, limit, offset }, notice, nonce));
 }
 
 // ĐỔI TRẠNG THÁI HÀNG LOẠT: forward danh sách id (checkbox) → seller (thành công một phần).

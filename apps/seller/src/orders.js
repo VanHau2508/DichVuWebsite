@@ -48,6 +48,8 @@ async function statusEvent(c, order, extra = {}) {
 }
 
 const ORDER_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded', 'returned'];
+// Allowlist khớp CHECK constraint của DB (0002). 'pending' = chờ đối soát chuyển khoản.
+const PAYMENT_STATUSES = ['unpaid', 'pending', 'paid', 'refunded'];
 // Bộ lọc đơn dùng CHUNG cho danh sách và xuất CSV — MỘT nguồn sự thật, để "xuất theo bộ lọc
 // đang xem" không bao giờ lệch với thứ người bán đang nhìn.
 //
@@ -83,6 +85,14 @@ function buildOrderFilter(query) {
   const to = (query.get('to') ?? '').trim();
   if (DATE_RE.test(from)) { args.push(from); where.push(`created_at >= $${args.length}::date`); }
   if (DATE_RE.test(to)) { args.push(to); where.push(`created_at < ($${args.length}::date + 1)`); }
+  // Lọc theo TÌNH TRẠNG THANH TOÁN. Ô "Đơn chưa thu tiền" ở Tổng quan bấm vào đây —
+  // docs/44 §7: bấm vào con số phải ra ĐÚNG danh sách đã lọc, không phải danh sách đầy đủ.
+  // Ô báo "3 đơn chưa thu" mà mở ra 400 đơn thì tệ hơn không có link: người bán mất niềm
+  // tin vào con số, và lần sau không bấm nữa.
+  // Đặt TRƯỚC mốc chốt countArgs ⇒ số đếm trên tab trạng thái cũng nằm trong phạm vi lọc
+  // ("trong các đơn chưa thu tiền, có bao nhiêu đơn đang chờ xác nhận").
+  const payment = query.get('payment');
+  if (PAYMENT_STATUSES.includes(payment)) { args.push(payment); where.push(`payment_status = $${args.length}`); }
   // Chốt bản "không kể trạng thái" TRƯỚC khi thêm mệnh đề status → khỏi phải đánh số lại.
   const countArgs = [...args];
   const whereNoStatusSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
@@ -92,7 +102,8 @@ function buildOrderFilter(query) {
   return {
     args, countArgs, whereNoStatusSql,
     whereSql: where.length ? 'WHERE ' + where.join(' AND ') : '',
-    status: ORDER_STATUSES.includes(status) ? status : '', from, to, q,
+    status: ORDER_STATUSES.includes(status) ? status : '',
+    payment: PAYMENT_STATUSES.includes(payment) ? payment : '', from, to, q,
   };
 }
 

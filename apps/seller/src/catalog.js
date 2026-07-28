@@ -202,6 +202,19 @@ async function listProducts(res, ctx, _body, _params, query) {
   // Chốt bản KHÔNG-kể-trạng-thái TRƯỚC khi thêm mệnh đề status → dùng để đếm cho TAB
   // (mỗi tab hiện "trong kết quả tìm hiện tại, trạng thái này có bao nhiêu SP"). Thêm status
   // SAU CÙNG nên tham số status luôn là $cuối, khỏi phải đánh số lại (cùng cách orders.js).
+  // Lọc SẮP HẾT HÀNG. Ô "Sắp hết hàng" ở Tổng quan bấm vào đây (docs/44 §7).
+  // Dùng ĐÚNG ngưỡng per-shop mà worker cảnh báo tồn đang dùng (low_stock_threshold, mặc
+  // định 5) — nếu hai nơi lệch ngưỡng thì con số ở Tổng quan và danh sách sẽ đá nhau, và
+  // người bán không có cách nào biết bên nào đúng.
+  // VARIANT_NOT_ORPHAN_SQL: biến thể mồ côi (thiếu giá trị cho một trục) KHÔNG bán được nên
+  // không tính là sắp hết — nếu tính, danh sách đầy sản phẩm không ai mua được.
+  if (query.get('stock') === 'low') {
+    where.push(`EXISTS (SELECT 1 FROM variants v
+                          JOIN inventory_levels il ON il.variant_id = v.id
+                         WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}
+                           AND (il.on_hand - il.reserved) <= coalesce(
+                                 (SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5))`);
+  }
   const countArgs = [...args];
   const whereNoStatusSql = where.join(' AND ');
   if (['draft', 'active', 'archived'].includes(status)) {

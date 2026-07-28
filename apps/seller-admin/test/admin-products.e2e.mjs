@@ -298,6 +298,45 @@ async function main() {
     ? ok('chỗ đếm số đang chọn cũng ẩn khi chưa có JS')
     : bad('chỗ đếm không ẩn');
 
+  // ── docs/44 §7: ô số liệu LÀ LINK tới danh sách ĐÃ LỌC SẴN ────────────────
+  // Khẳng định phải chứng minh bộ lọc THẬT SỰ LỌC. Một API nhận tham số rồi lặng lẽ bỏ qua
+  // vẫn trả 200 kèm đủ dữ liệu — mọi test kiểu "gọi được, không lỗi" đều xanh, trong khi
+  // người bán bấm vào con số vẫn nhận nguyên danh sách. Nên phải so SỐ LƯỢNG hai chiều.
+  const allP = await adm('GET', `/shops/${A.shopId}/products`, { cookie: A.cookie });
+  const lowP = await adm('GET', `/shops/${A.shopId}/products?stock=low`, { cookie: A.cookie });
+  const nRows = (b) => (b.match(/<tr>/g) ?? []).length;
+  lowP.status === 200 && nRows(lowP.body) <= nRows(allP.body)
+    ? ok(`stock=low lọc thật (${nRows(lowP.body)} ≤ ${nRows(allP.body)} dòng)`)
+    : bad('stock=low không lọc', `low=${nRows(lowP.body)} all=${nRows(allP.body)}`);
+  /Đang lọc:.*Sắp hết hàng/s.test(lowP.body) && /Xoá bộ lọc/.test(lowP.body)
+    ? ok('trang Sản phẩm báo rõ "Đang lọc: Sắp hết hàng" + có lối xoá lọc')
+    : bad('không hiện chip đang-lọc/xoá-lọc');
+  !/Đang lọc:/.test(allP.body)
+    ? ok('không lọc thì KHÔNG hiện chip đang-lọc')
+    : bad('hiện chip đang-lọc khi không lọc');
+
+  // Tham số rác KHÔNG được lọt xuống API (allowlist một giá trị).
+  const junk = await adm('GET', `/shops/${A.shopId}/products?stock=' OR 1=1--`, { cookie: A.cookie });
+  junk.status === 200 && nRows(junk.body) === nRows(allP.body) && !/Đang lọc:/.test(junk.body)
+    ? ok('stock rác bị bỏ qua → trả danh sách đầy đủ, không lọc bừa')
+    : bad('stock rác không bị chặn', String(junk.status));
+
+  // Đơn hàng: payment=unpaid
+  const allO = await adm('GET', `/shops/${A.shopId}/orders`, { cookie: A.cookie });
+  const unpaidO = await adm('GET', `/shops/${A.shopId}/orders?payment=unpaid`, { cookie: A.cookie });
+  unpaidO.status === 200 && nRows(unpaidO.body) <= nRows(allO.body)
+    ? ok(`payment=unpaid lọc thật (${nRows(unpaidO.body)} ≤ ${nRows(allO.body)} dòng)`)
+    : bad('payment=unpaid không lọc', `unpaid=${nRows(unpaidO.body)} all=${nRows(allO.body)}`);
+  /Đang lọc:.*Chưa thu tiền/s.test(unpaidO.body)
+    ? ok('trang Đơn hàng báo rõ "Đang lọc: Chưa thu tiền"')
+    : bad('không hiện chip đang-lọc ở đơn hàng');
+
+  // Ô số liệu ở Tổng quan phải trỏ ĐÚNG hai đường vừa làm — không còn trỏ danh sách trần.
+  const ov = await adm('GET', `/shops/${A.shopId}/overview`, { cookie: A.cookie });
+  ov.body.includes('/orders?payment=unpaid') && ov.body.includes('/products?stock=low')
+    ? ok('ô "Chưa thu tiền" và "Sắp hết hàng" trỏ tới danh sách ĐÃ LỌC')
+    : bad('ô số liệu vẫn trỏ danh sách chưa lọc');
+
   // Trang KHÔNG xin JS giữ CSP khoá cứng (mặc định an toàn — ADR-011 #4).
   // Dùng /account: trang chỉ đọc, không bảng, không hàng loạt — sẽ không bao giờ cần JS.
   // (Trước đây dùng /orders, nhưng Đợt 2 đã bật JS cho trang đó → chứng cứ mất giá trị.)

@@ -8,6 +8,8 @@
  */
 
 import pg from 'pg';
+import http from 'node:http';
+import zlib from 'node:zlib';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
 
@@ -38,6 +40,48 @@ async function rq(base, method, path, { body, cookie, origin } = {}) {
   return { status: r.status, json: j, sc: r.headers.getSetCookie(), raw: t };
 }
 const uidOf = async (email) => (await owner.query('SELECT id FROM users WHERE email=$1', [email])).rows[0]?.id ?? null;
+
+// ── PNG hợp lệ, SINH BẰNG MÃ (không gõ tay) ────────────────────────────────
+// Container test không có `sharp`. Fixture PNG gõ tay từng byte đã một lần hỏng cả 4 bộ test
+// (độ dài IDAT khai 11 trong khi thật là 13 — libpng mới từ chối). Nên ở đây độ dài và CRC
+// đều được TÍNH, không có số nào chép tay.
+const CRC_TBL = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c;
+  }
+  return t;
+})();
+const crc32 = (buf) => {
+  let c = 0xffffffff;
+  for (const b of buf) c = CRC_TBL[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+const chunk = (type, data) => {
+  const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([len, body, crc]);
+};
+function makePng(w, h) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;   // 8-bit RGB
+  const raw = Buffer.alloc(h * (1 + w * 3));
+  for (let y = 0; y < h; y++) {
+    const off = y * (1 + w * 3);
+    raw[off] = 0;                                        // filter none
+    for (let x = 0; x < w; x++) {
+      raw[off + 1 + x * 3] = 0x33; raw[off + 2 + x * 3] = 0x66; raw[off + 3 + x * 3] = 0xaa;
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
 
 async function makeStaff() {
   const email = `staff-${uniq()}@nentang.vn`, password = 'staff strong passphrase';
@@ -246,6 +290,70 @@ async function main() {
   r.status === 404 && !leaked
     ? ok('chủ shop A nhập vào shop B → 404 (không xác nhận tồn tại) + shop B không có hàng lạ')
     : bad('cô lập chéo shop hỏng', `${r.status} leaked=${leaked}`);
+
+  // ── 10. Ảnh theo URL: đường thành công + hàng rào SSRF ──────────────────
+  sect('10. Tải ảnh theo URL (docs/45 §5)');
+  // Máy chủ ảnh GIẢ chạy ngay trong bộ test, cổng 80 (bộ tải chỉ nhận 80/443).
+  // Host `dbtest` nằm trong IMPORT_IMG_ALLOW_HOSTS của compose.dev — lối thoát HẸP để
+  // kiểm được đường-thành-công trong stack toàn IP nội bộ. Mọi lớp khác vẫn nguyên.
+  const png = makePng(40, 30);
+  let hits = 0;
+  const srv = http.createServer((req, res) => {
+    hits++;
+    if (req.url.startsWith('/ok')) { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(png); }
+    if (req.url.startsWith('/redirect')) { res.writeHead(302, { location: 'http://169.254.169.254/latest/meta-data/' }); return res.end(); }
+    if (req.url.startsWith('/notimage')) { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(Buffer.from('<?php echo 1; ?>')); }
+    res.writeHead(404); res.end();
+  });
+  await new Promise((res) => srv.listen(80, '0.0.0.0', res));
+
+  const hImg = `anh-${uniq()}`;
+  r = await imp([{ handle: hImg, title: 'SP có ảnh', sku: `${hImg}-1`, price_vnd: '99000', image_url: 'http://dbtest/ok.png' }]);
+  r.json?.created === 1 && r.json?.images?.ok === 1 && r.json?.images?.failed === 0
+    ? ok('URL ảnh hợp lệ → tải + lưu thành công (images.ok = 1)')
+    : bad('tải ảnh hỏng', JSON.stringify(r.json?.images));
+  // Kiểm ở HAI tầng: (1) danh sách SP trả image_url — đúng thứ admin dùng làm thumbnail;
+  // (2) dòng media ở DB phải 'ready' và có CẢ original_key (bucket private) lẫn public_key
+  //     (bucket public) — chứng minh ảnh đi qua ĐÚNG đường ống, không phải đường tắt nào khác.
+  const pImg = (await a.get('/products?limit=50')).json.products.find((p) => p.slug === hImg);
+  const med = (await owner.query(
+    `SELECT status, original_key, public_key, width, height FROM media WHERE product_id = $1`, [pImg?.id])).rows[0];
+  pImg?.image_url && med?.status === 'ready' && med.original_key && med.public_key
+    && /\.webp$/.test(med.public_key) && Number(med.width) === 40 && Number(med.height) === 30
+    ? ok('ảnh vào ĐÚNG đường ống: bản gốc ở bucket private, bản WebP 40×30 ở public, media=ready')
+    : bad('ảnh không đi đúng đường ống', JSON.stringify({ url: pImg?.image_url, med }));
+
+  // Các vector SSRF: KHÔNG được tải, và sản phẩm vẫn phải vào (thiếu ảnh chứ không mất hàng).
+  const vectors = [
+    ['http://127.0.0.1/ok.png', 'loopback'],
+    ['http://169.254.169.254/latest/meta-data/', 'metadata nhà cung cấp'],
+    ['http://10.0.0.1/ok.png', 'private 10/8'],
+    ['http://[::1]/ok.png', 'loopback IPv6'],
+    ['file:///etc/passwd', 'scheme file'],
+    ['http://dbtest:6379/ok.png', 'cổng ngoài 80/443'],
+    ['http://dbtest/redirect', 'chuyển hướng sang metadata'],
+  ];
+  const before = hits;
+  const hSsrf = `ssrf-${uniq()}`;
+  r = await imp(vectors.map(([u], i) => ({
+    handle: `${hSsrf}-${i}`, title: `Vector ${i}`, sku: `${hSsrf}-${i}`, price_vnd: '1000', image_url: u,
+  })));
+  r.json?.created === vectors.length && r.json?.images?.ok === 0 && r.json?.images?.failed === vectors.length
+    ? ok(`${vectors.length} vector SSRF đều bị chặn, sản phẩm vẫn vào (hàng không mất vì ảnh hỏng)`)
+    : bad('vector SSRF lọt', JSON.stringify(r.json?.images));
+  // Chuyển hướng: máy chủ giả CÓ bị gọi 1 lần (chặng đầu), nhưng KHÔNG được đi tiếp tới metadata.
+  hits - before <= 1
+    ? ok('chuyển hướng bị từ chối tại chặng đầu, không đi tiếp tới đích nội bộ')
+    : bad('đi theo chuyển hướng', `hits +${hits - before}`);
+
+  // Tệp không phải ảnh dù khai content-type image/png → sniff magic byte bắt được.
+  const hFake = `gia-${uniq()}`;
+  r = await imp([{ handle: hFake, title: 'Ảnh giả', sku: `${hFake}-1`, price_vnd: '1000', image_url: 'http://dbtest/notimage.png' }]);
+  r.json?.created === 1 && r.json?.images?.failed === 1
+    ? ok('tệp giả dạng ảnh (content-type nói dối) → sniff magic byte từ chối')
+    : bad('ảnh giả lọt qua', JSON.stringify(r.json?.images));
+
+  await new Promise((res) => srv.close(res));
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

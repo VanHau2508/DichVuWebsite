@@ -210,6 +210,10 @@ services:
     environment:
       # app_rw: vai trò TENANT (RLS). Seller-admin dùng withTenant(shop_id).
       DATABASE_URL: postgres://app_rw:devpassword@postgres:5432/app
+      # Lối thoát kiểm-dải-IP của bộ tải ảnh nhập liệu — CHỈ dev/e2e (docs/45 §5).
+      # Máy chủ ảnh giả của bộ test chạy trong container dbtest, mà mọi IP trong stack đều
+      # nội bộ nên không mở đúng tên này thì KHÔNG kiểm được đường-thành-công.
+      IMPORT_IMG_ALLOW_HOSTS: dbtest
       AUTH_URL: http://auth:3020
       ALLOWED_ORIGINS: https://admin.nentang.vn,https://seller.localtest
       PORT: "3040"

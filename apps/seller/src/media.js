@@ -84,13 +84,18 @@ export function sniffImage(buf) {
   return null;
 }
 
-async function uploadMedia(res, ctx, body, params) {
-  const productId = params[1];
-  const buf = body; // Buffer thô (dispatcher đọc bằng readBuffer khi route.raw)
-
-  if (!Buffer.isBuffer(buf) || buf.length === 0) return send(res, 400, { error: 'thiếu dữ liệu ảnh' });
+/**
+ * LÕI lưu ảnh sản phẩm — tách khỏi tầng HTTP để bộ NHẬP DANH MỤC (import.js) dùng lại ĐÚNG
+ * đường ống này thay vì nhân bản nó. Nhân bản đường ống bảo mật (sniff magic byte → bản gốc
+ * vào bucket PRIVATE → re-encode WebP strip metadata → mới sang bucket PUBLIC) là kiểu trùng
+ * lặp chắc chắn trôi lệch: vá một bên, quên bên kia.
+ *
+ * Trả { id, url, width, height } khi xong; ném Error có .reason khi hỏng. KHÔNG chạm res.
+ */
+export async function storeProductImage(ctx, productId, buf) {
+  if (!Buffer.isBuffer(buf) || buf.length === 0) throw Object.assign(new Error('empty'), { reason: 'empty' });
   const detected = sniffImage(buf);
-  if (!detected) return send(res, 400, { error: 'không phải ảnh hợp lệ (JPEG/PNG/WebP/GIF)' });
+  if (!detected) throw Object.assign(new Error('not_image'), { reason: 'not_image' });
 
   const mediaId = crypto.randomUUID();
   const originalKey = `staging/${ctx.shopId}/${mediaId}`;
@@ -110,7 +115,7 @@ async function uploadMedia(res, ctx, body, params) {
     );
     return true;
   });
-  if (!setup) return send(res, 404, { error: 'không tìm thấy sản phẩm' });
+  if (!setup) throw Object.assign(new Error('no_product'), { reason: 'no_product' });
 
   await minio.putObject(BUCKET_PRIVATE, originalKey, buf, buf.length, { 'Content-Type': detected });
 
@@ -133,9 +138,22 @@ async function uploadMedia(res, ctx, body, params) {
       );
       await audit(c, 'media.uploaded', { actorId: ctx.user.id, ip: ctx.ip, metadata: { mediaId, productId } });
     });
-    return send(res, 201, { id: mediaId, url: `${PUBLIC_BASE}/${publicKey}`, width: info.width, height: info.height });
+    return { id: mediaId, url: `${PUBLIC_BASE}/${publicKey}`, width: info.width, height: info.height };
   } catch (err) {
     await withTenant(ctx.shopId, (c) => c.query(`UPDATE media SET status = 'failed' WHERE id = $1`, [mediaId])).catch(() => {});
+    throw Object.assign(new Error('encode_failed'), { reason: 'encode_failed' });
+  }
+}
+
+// Vỏ HTTP mỏng quanh lõi trên — giữ nguyên hợp đồng mã trạng thái của endpoint upload.
+async function uploadMedia(res, ctx, body, params) {
+  try {
+    const out = await storeProductImage(ctx, params[1], body);
+    return send(res, 201, out);
+  } catch (e) {
+    if (e.reason === 'empty') return send(res, 400, { error: 'thiếu dữ liệu ảnh' });
+    if (e.reason === 'not_image') return send(res, 400, { error: 'không phải ảnh hợp lệ (JPEG/PNG/WebP/GIF)' });
+    if (e.reason === 'no_product') return send(res, 404, { error: 'không tìm thấy sản phẩm' });
     return send(res, 422, { error: 'xử lý ảnh thất bại' });
   }
 }

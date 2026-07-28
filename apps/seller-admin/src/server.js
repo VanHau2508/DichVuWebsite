@@ -882,7 +882,9 @@ async function productImport(req, res, me, cookie, shopId) {
   const rows = parseCsv(file.bytes.toString('utf8'));
   if (rows.length === 0) return productImportPage(res, me, cookie, shopId, null, 'Tệp không có dòng dữ liệu (cần hàng tiêu đề + ít nhất 1 dòng).');
   if (rows.length > 1000) return productImportPage(res, me, cookie, shopId, null, 'Tối đa 1000 dòng mỗi lần nhập.');
-  const r = await sellerApi('POST', `/shops/${shopId}/products/import`, { cookie, body: { rows } });
+  // timeoutMs 70s (mặc định 8s): seller tạo sản phẩm rồi TẢI ẢNH theo URL với ngân sách 45s.
+  // Để 8s thì người bán thấy "không nhập được" trong khi hàng ĐÃ vào — họ bấm lại, nhân đôi.
+  const r = await sellerApi('POST', `/shops/${shopId}/products/import`, { cookie, body: { rows }, timeoutMs: 70000 });
   if (r.status !== 200) return productImportPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không nhập được — kiểm tra quyền hoặc định dạng tệp.');
   return productImportPage(res, me, cookie, shopId, { ...r.json, total: rows.length }, null);
 }

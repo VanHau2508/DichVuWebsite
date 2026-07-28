@@ -20,6 +20,7 @@ import { readJson, readBuffer, send, originAllowed, clientIp } from './http.js';
 import { can, permsFor, ROLES } from './rbac.js';
 import { db, withTenant, audit } from './db.js';
 import { CATALOG_ROUTES } from './catalog.js';
+import { allowPrivateHosts } from './fetch-image.js';
 import { IMPORT_ROUTES } from './import.js';
 import { INVENTORY_ROUTES } from './inventory.js';
 import { MEDIA_ROUTES, initMedia, mediaPublicUrl } from './media.js';
@@ -448,6 +449,11 @@ async function boot() {
 }
 boot();
 
+// Lối thoát kiểm-dải-IP của bộ tải ảnh CHỈ dành cho stack dev. Nếu prod lỡ đặt biến này thì
+// nó phải HIỆN RA trong log lúc khởi động, chứ không im lặng làm yếu hàng rào SSRF.
+if (allowPrivateHosts().length) {
+  log('warn', 'import_img_allow_hosts_set', { hosts: allowPrivateHosts(), note: 'CHỈ dành cho dev/e2e — gỡ ở production' });
+}
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
 
 for (const sig of ['SIGTERM', 'SIGINT']) {

@@ -111,10 +111,28 @@ bán đáng tin". Kẻ tấn công đăng ký shop rồi nhập một CSV chứa
 8. **Không rò chi tiết lỗi.** Người bán chỉ thấy "không tải được ảnh"; không trả mã trạng
    thái/thời gian phản hồi của đích, vì đó chính là kênh của **blind SSRF**.
 
-**Vì sao không tách sang worker.** Đúng là cô lập mạng ở worker sẽ sạch hơn. Nhưng người bán
-cần thấy kết quả nhập **ngay** để sửa file; đẩy sang hàng đợi biến một thao tác thành một
-quy trình chờ. v1 tải đồng bộ trong giới hạn trần trên; nếu sau này số lượng lớn thì chuyển
-sang worker là bước tiếp theo, không phải điều kiện tiên quyết.
+**Ràng buộc ĐO ĐƯỢC đã đổi thiết kế.** BFF gọi seller với timeout mặc định **8 giây**
+(`seller-admin/src/api.js`). Tải ảnh đồng bộ vượt ngay, và hậu quả tệ nhất không phải "chậm"
+mà là: người bán thấy *"không nhập được"* trong khi sản phẩm **đã tạo xong** — họ bấm lại và
+**nhân đôi hàng**. Nên thứ tự là: tạo sản phẩm trước (nhanh) → tải ảnh trong ngân sách còn
+lại → hết giờ thì **bỏ qua ảnh và BÁO SỐ LƯỢNG bỏ qua**, không bao giờ im lặng.
+
+Số đang dùng: timeout lời gọi nhập ở BFF **70s** · ngân sách ảnh **45s** · mỗi ảnh **4s** ·
+6 luồng · tối đa **200 ảnh/lần nhập** · mỗi ảnh **≤ 8MB**. Tất cả chỉnh được bằng biến môi
+trường. Chỉ cổng **80/443**.
+
+**Vì sao chưa tách sang worker.** Worker sẽ cô lập mạng sạch hơn và bỏ hẳn trần thời gian,
+nhưng nó cần: thêm `sharp` vào worker (chưa có) · migration lưu URL nguồn · cấp quyền cho vai
+worker · một sweep mới kèm retry. Đó là khối việc ngang cả tính năng này. v1 chạy đồng bộ
+trong trần; **khi shop thật bắt đầu nhập file vài trăm ảnh thì đây là việc tiếp theo**, và
+phần SSRF không phải viết lại — `fetch-image.js` dùng nguyên.
+
+**Lối thoát cho kiểm thử.** Cả stack dev đều là IP nội bộ, nên đường-thành-công không kiểm
+được nếu hàng rào không có lối ra. `IMPORT_IMG_ALLOW_HOSTS` là **danh sách tên miền tường
+minh** (không phải cờ bật/tắt: cờ lỡ bật ở prod là tắt sạch hàng rào, danh sách chỉ mở đúng
+tên đã ghi) và **chỉ** miễn lớp kiểm dải IP — scheme, cổng, chuyển hướng, trần cỡ, timeout,
+sniff magic byte, re-encode đều giữ nguyên. Chỉ đặt trong `compose.dev.yml`; nếu prod lỡ có,
+seller **ghi cảnh báo lúc khởi động** chứ không im lặng.
 
 ## 6. Ghi nhận & kiểm toán
 

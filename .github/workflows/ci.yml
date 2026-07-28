@@ -64,12 +64,12 @@ jobs:
             g=("$d"/*.test.js)
             [ "${#g[@]}" -ge 1 ] || { echo "thiếu unit test trong $d/ (đổi tên/di chuyển?)"; exit 1; }
           done
-          for f in apps/checkout/test/vietqr.test.js apps/seller/test/rbac.test.js; do
+          for f in apps/checkout/test/vietqr.test.js apps/seller/test/rbac.test.js apps/seller/test/fetch-image.test.js; do
             [ -f "$f" ] || { echo "thiếu unit test $f"; exit 1; }
           done
           files=(packages/auth/test/*.test.js apps/tls-authorize/test/*.test.js \
-                 apps/checkout/test/vietqr.test.js apps/seller/test/rbac.test.js)
-          [ "${#files[@]}" -ge 7 ] || { echo "chỉ thấy ${#files[@]} unit test (<7) — nghi mất file"; exit 1; }
+                 apps/checkout/test/vietqr.test.js apps/seller/test/rbac.test.js apps/seller/test/fetch-image.test.js)
+          [ "${#files[@]}" -ge 8 ] || { echo "chỉ thấy ${#files[@]} unit test (<8) — nghi mất file"; exit 1; }
           node --test "${files[@]}"
 
       # Quét bảo mật TĨNH ở MỌI commit (dependency/secret/PII/pattern). Fail nếu có phát hiện.

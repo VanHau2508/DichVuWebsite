@@ -6,13 +6,36 @@ name: CI
 #   - mutation: gỡ từng lớp phòng thủ → e2e phải chuyển đỏ. Rất chậm (restart service
 #               nhiều lần) nên CHỈ chạy nightly hoặc bấm tay, không chặn mỗi push.
 
+# ── NGÂN SÁCH PHÚT ACTIONS ────────────────────────────────────────────────────
+# Repo PRIVATE ⇒ GitHub Free cho 2.000 phút/tháng. Ngày 2026-07-28 quota CHÁY, mọi job
+# ngừng khởi động ("The job was not started because ... spending limit"), tức là mất
+# TOÀN BỘ lưới an toàn — tệ hơn cả CI đỏ, vì CI đỏ ít ra còn chạy.
+# Phép cộng của cấu hình cũ:
+#   - lịch chạy MỖI ĐÊM, mỗi lần ~1h15m  ⇒ ~3.500 phút/tháng — MỘT MÌNH nó đã gấp 1,75
+#     lần cả quota, trước khi tính bất kỳ lần push nào;
+#   - mỗi push chạy trọn 80 bộ e2e ~45 phút (trước khi đổi sang glob chỉ 19 phút).
+# Cấu hình mới, ước tính ~1.100 phút/tháng:
+#   - push  → CHỈ job `unit` (~2 phút, không cần docker). Rẻ mà vẫn bắt được đúng thứ
+#     đã lọt suốt nhiều ngày: CVE trong dependency + unit test vỡ;
+#   - thứ 2/4/6 → e2e đầy đủ (45' × 13 ≈ 585 phút);
+#   - chủ nhật → mutation (75' × 4 ≈ 300 phút);
+#   - bấm tay bất cứ lúc nào — VÀ ĐÂY LÀ ĐIỀU BẮT BUỘC TRƯỚC MỖI LẦN DEPLOY.
+# Không mất gì ở máy: `bash scripts/ci-local.sh` chạy ĐÚNG chừng đó, miễn phí, không
+# tốn phút nào. CI giữ vai trò riêng của nó — kiểm trên MÁY SẠCH.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: "Phạm vi chạy tay"
+        type: choice
+        default: e2e
+        options: [e2e, mutation]
   schedule:
-    - cron: "0 18 * * *"   # 01:00 giờ VN (UTC+7) — mutation nightly
+    - cron: "0 18 * * 1,3,5"   # 01:00 giờ VN thứ 2/4/6 — e2e đầy đủ
+    - cron: "0 19 * * 0"       # 02:00 giờ VN chủ nhật — mutation
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -55,6 +78,11 @@ jobs:
 
   e2e:
     name: E2E (docker stack)
+    # KHÔNG chạy ở mỗi push nữa (xem ngân sách phút ở đầu file). Chạy thứ 2/4/6 và mỗi
+    # khi bấm tay. TRƯỚC KHI DEPLOY phải bấm tay một lần và chờ xanh.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.scope == 'e2e') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 18 * * 1,3,5')
     runs-on: ubuntu-latest
     # 45' là trần của thời danh-sách-tay 30 bộ. Glob chạy 80 bộ (mỗi bộ còn flushall
     # Redis trước khi chạy) nên phải nới, không thì CI chết vì hết giờ chứ không vì lỗi.
@@ -150,7 +178,10 @@ jobs:
 
   mutation:
     name: Mutation (nightly / manual)
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    # Đắt nhất (~75 phút) và ít gấp nhất ⇒ hạ từ MỖI ĐÊM xuống MỖI TUẦN.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.scope == 'mutation') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 19 * * 0')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:

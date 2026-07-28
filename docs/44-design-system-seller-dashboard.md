@@ -458,9 +458,16 @@ hàng bảng: hàng chục hàng cùng đổ bóng sẽ tạo nhiễu thị giá
 | Font | Be Vietnam Pro đã tự host — **không** tải font ngoài (CSP `font-src 'self'`) |
 
 **Lưu ý quan trọng khi hiện thực:**
-- Seller-admin **được phép dùng JavaScript** (khác storefront) — nhưng vẫn nên ưu tiên
-  no-JS cho các tương tác cơ bản (tab, lọc, phân trang bằng link/form GET) để giữ tốc độ
-  và độ bền.
+- **JS trong seller-admin: xem `docs/04` → ADR-011.** Được phép dùng **JS nội tuyến ký nonce**,
+  nhưng theo **danh sách trắng** (chọn hàng loạt, lọc tức thì, xác nhận xoá, tab/dropdown,
+  đếm ngược, tự lưu nháp) và **mọi tính năng phải chạy đủ khi không có JS**.
+  - Trạng thái code **hiện tại**: CSP `apps/seller-admin/src/http.js:22` vẫn là
+    `default-src 'none'` **chưa có `script-src`** → 0 thẻ script. ADR-011 mới là quyết định,
+    **chưa hiện thực**.
+  - Khi hiện thực phải sửa **cả hai nơi**: `http.js` **và** `infra/caddy/Caddyfile:53`
+    (block `admin.nentang.vn`) — trình duyệt áp **GIAO** hai policy, mà `Caddyfile.dev`
+    không set CSP nên **dev sẽ không phát hiện thiếu sót này**.
+  - Cho tới lúc đó: dựng mọi tương tác bằng **link/form GET + CSS** như hiện tại.
 - Hệ này **độc lập** với hệ MAISON của storefront. Đừng dùng chung token: shop có thể đổi
   màu storefront tuỳ ý, còn bảng điều khiển phải **luôn cùng một bộ nhận diện** cho mọi shop.
 - Màu trong tài liệu là **ước lượng từ ảnh chụp**. Khi có điều kiện đối chiếu trực tiếp

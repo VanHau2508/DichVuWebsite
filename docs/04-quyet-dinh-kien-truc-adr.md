@@ -212,6 +212,70 @@ Mỗi mục trên là một thứ **không thể thêm vào sau mà không viế
 
 ---
 
+## ADR-011 — JS hẹp ký nonce CHỈ cho seller-admin; đường tiền giữ khoá cứng
+
+**Quyết định.** `apps/seller-admin` được phép chạy **JavaScript nội tuyến ký nonce**, theo đúng
+mẫu đã dùng cho GPS checkout (`apps/checkout/src/http.js:35`). Phạm vi giới hạn bằng **danh sách
+trắng** bên dưới, và **mọi tính năng phải hoạt động đầy đủ khi không có JS** (JS chỉ là lớp cải
+thiện, không phải điều kiện để dùng được). `storefront`, `checkout`, `account`, `signup`
+**không đổi** — vẫn `default-src 'none'`, trừ hai ngoại lệ nonce đã có (badge giỏ, GPS).
+
+**Lý do.** Seller-admin không nằm trên đường tiền: người bán **đã đăng nhập**, không ai nhập thẻ
+ở đây, trang không được index, và người mua không bao giờ tới. Rủi ro XSS ở đây khác chất so với
+storefront — kẻ tấn công phải chiếm được phiên người bán trước, mà khi đã chiếm được phiên thì
+họ làm được mọi thứ qua form rồi; JS không mở thêm cánh cửa đáng kể. Đổi lại, người bán **dùng
+admin mỗi ngày**: chọn hàng loạt, lọc tức thì, xác nhận trước khi xoá — những thứ này đổi thẳng
+ra thời gian thật của họ. Đối thủ (TikTok Shop, Shopee seller center) đều là ứng dụng JS; muốn
+ngang hàng ở trải nghiệm quản trị thì no-JS thuần là **trần cứng không vượt được**.
+
+**ADR-008 không bị đụng.** Đây là JS **của nền tảng**, do ta viết, ký nonce từng response. Shop
+vẫn **không** có ô "custom code" — ranh giới đó giữ nguyên vĩnh viễn.
+
+**Cái giá.**
+1. **Bề mặt tấn công tăng** — từ "không thể thực thi JS" sang "thực thi được JS của ta". Nếu
+   `'unsafe-inline'` lọt vào `script-src`, trình duyệt **bỏ qua nonce hoàn toàn** → mất sạch
+   lớp bảo vệ mà vẫn tưởng còn.
+2. **Test đắt hơn.** Hành vi JS cần trình duyệt thật, không so chuỗi HTML được nữa — trong khi
+   quota CI đang cháy. Ràng buộc bù: đường lui no-JS phải test được bằng assertion HTML như cũ.
+3. **CSP hai tầng.** Phải sửa **cả** `infra/caddy/Caddyfile`. Quên → chạy tốt ở dev, chết câm
+   ở prod (xem ràng buộc 1).
+4. **Trượt phạm vi.** "Thêm tí JS nữa thôi" là cách mọi hệ no-JS chết. Danh sách trắng là hàng rào.
+
+**Ràng buộc thực thi — bắt buộc, không ngoại lệ.**
+1. **Sửa ĐÚNG HAI NƠI:** `apps/seller-admin/src/http.js` (CSP theo nonce) **VÀ** block
+   `admin.nentang.vn` trong `infra/caddy/Caddyfile:53`. Trình duyệt áp **GIAO** hai policy;
+   `Caddyfile.dev` **không** set CSP ở edge → **dev không phát hiện được lỗi này**.
+   Luôn kiểm bằng cấu hình prod trước khi phát hành.
+2. **`script-src` chỉ chứa `'nonce-X'`.** Tuyệt đối không `'unsafe-inline'`, không `'unsafe-eval'`,
+   không `'strict-dynamic'`, không host ngoài.
+3. **Một khối `<script nonce>` nội tuyến duy nhất mỗi trang.** Không file `.js` rời, không
+   import, không bundler, không package frontend từ npm (giữ nguyên miễn nhiễm chuỗi cung ứng).
+4. **Nonce sinh mới mỗi response:** `crypto.randomBytes(16).toString('base64')`. Trang không cần
+   JS truyền `nonce=''` → CSP khoá cứng như cũ (**mặc định an toàn**).
+5. **Mọi ghi dữ liệu vẫn qua form POST + CSRF hiện có.** JS được phép cải thiện thao tác,
+   **không** được trở thành đường ghi dữ liệu duy nhất.
+6. **`connect-src 'self'`** chỉ thêm khi thật sự cần `fetch`; mặc định không thêm.
+
+**Danh sách trắng ban đầu.** Chỉ những mục này; muốn thêm phải sửa ADR:
+- Chọn hàng loạt trong bảng (chọn tất cả / bỏ chọn / đếm số đang chọn)
+- Lọc & sắp xếp tức thì **trên dữ liệu đã tải sẵn** trong trang
+- Hộp xác nhận trước hành động phá huỷ (xoá sản phẩm, huỷ đơn)
+- Đóng/mở khối, chuyển tab, menu `⋯`
+- Đếm ngược và mốc thời gian tương đối ("2 phút trước")
+- Tự lưu nháp cho form dài (sản phẩm nhiều biến thể)
+
+**Cấm dùng JS cho.**
+- Bất cứ thứ gì **tính tiền** — giá, khuyến mãi, phí ship, tổng đơn: luôn tính ở server
+- Bất cứ thứ gì thuộc `storefront` / `checkout` / `account` / `signup`
+- Thay thế form POST làm đường ghi dữ liệu
+
+**Đổi ý khi.** Quay lại no-JS tuyệt đối cho seller-admin nếu: (a) phát hiện XSS thật trong
+seller-admin, (b) cấu hình sai làm nonce mất tác dụng lọt tới production, hoặc (c) chi phí test
+hành vi JS vượt quá lợi ích thu được. **Không bao giờ** mở rộng quyết định này sang storefront
+hay checkout — **đường tiền là ranh giới cứng**, đó chính là thứ đang bán được.
+
+---
+
 ## Bảng tóm tắt: thứ tự không thể đảo
 
 Ba quyết định phải đúng ngay lần đầu vì chi phí sửa sau là không chấp nhận được:

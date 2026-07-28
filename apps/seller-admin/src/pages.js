@@ -22,14 +22,17 @@ const FONTFACE = `@font-face{font-family:'Be Vietnam Pro';font-style:normal;font
 @font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/bevietnampro-800-latin-ext.woff2) format('woff2');unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
 @font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/bevietnampro-800-latin.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}`;
 const STYLE = `${FONTFACE}
-:root{--bg:#ffffff;--surf:#f6f8fb;--surface:#f6f8fb;--card:#ffffff;--ink:#0f172a;--soft:#334155;--mut:#64748b;--bd:#e6eaf1;--pri:#2463eb;--prid:#1b48c0;--pri2:#7c3aed;--brand:#2463eb;--brand2:#7c3aed;--brandd:#1b48c0;--wash:#eff4ff;--good:#0e9f6e;--goodbg:#ecfdf5;--warn:#c2410c;--warnbg:#fff7ed;--bad:#b91c1c;--badbg:#fef2f2;--indigo:#4338ca;--indigobg:#e8ebff;--pbtn:#2463eb;--pbtn-h:#1b52d4;--pbtn-ink:#ffffff;--r-sm:8px;--r:10px;--r-lg:14px;--r-xl:20px;--pill:999px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;--sp-6:32px;--sh-sm:0 1px 2px rgba(15,23,42,.05);--sh:0 6px 18px -8px rgba(15,23,42,.12);--sh-lg:0 24px 48px -24px rgba(15,23,42,.22);--sh-pri:0 1px 2px rgba(15,23,42,.12)}
-@media(prefers-color-scheme:dark){:root{--bg:#0a0e1a;--surf:#0f1626;--surface:#0f1626;--card:#161f36;--ink:#eef1f9;--soft:#c2cadd;--mut:#8a94ab;--bd:#26314c;--pri:#6b9bff;--prid:#8fb2ff;--pri2:#a78bfa;--brand:#6b9bff;--brand2:#a78bfa;--brandd:#8fb2ff;--wash:#15203a;--good:#34d399;--goodbg:#0f2a1e;--warn:#fb923c;--warnbg:#2a1c0f;--bad:#f87171;--badbg:#2a1414;--indigo:#c7d2fe;--indigobg:#1e2647;--pbtn:#3f74e8;--pbtn-h:#5285f0;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.4);--sh:0 8px 24px -10px rgba(0,0,0,.55);--sh-lg:0 30px 60px -24px rgba(0,0,0,.65);--sh-pri:0 1px 2px rgba(0,0,0,.5)}}
-:root[data-theme=dark]{--bg:#0a0e1a;--surf:#0f1626;--surface:#0f1626;--card:#161f36;--ink:#eef1f9;--soft:#c2cadd;--mut:#8a94ab;--bd:#26314c;--pri:#6b9bff;--prid:#8fb2ff;--pri2:#a78bfa;--brand:#6b9bff;--brand2:#a78bfa;--brandd:#8fb2ff;--wash:#15203a;--good:#34d399;--goodbg:#0f2a1e;--warn:#fb923c;--warnbg:#2a1c0f;--bad:#f87171;--badbg:#2a1414;--indigo:#c7d2fe;--indigobg:#1e2647;--pbtn:#3f74e8;--pbtn-h:#5285f0;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.4);--sh:0 8px 24px -10px rgba(0,0,0,.55);--sh-lg:0 30px 60px -24px rgba(0,0,0,.65);--sh-pri:0 1px 2px rgba(0,0,0,.5)}
-:root[data-theme=light]{--bg:#ffffff;--surf:#f6f8fb;--surface:#f6f8fb;--card:#ffffff;--ink:#0f172a;--soft:#334155;--mut:#64748b;--bd:#e6eaf1;--pri:#2463eb;--prid:#1b48c0;--pri2:#7c3aed;--brand:#2463eb;--brand2:#7c3aed;--brandd:#1b48c0;--wash:#eff4ff;--good:#0e9f6e;--goodbg:#ecfdf5;--warn:#c2410c;--warnbg:#fff7ed;--bad:#b91c1c;--badbg:#fef2f2;--indigo:#4338ca;--indigobg:#e8ebff;--pbtn:#2463eb;--pbtn-h:#1b52d4;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(15,23,42,.05);--sh:0 6px 18px -8px rgba(15,23,42,.12);--sh-lg:0 24px 48px -24px rgba(15,23,42,.22);--sh-pri:0 1px 2px rgba(15,23,42,.12)}
-*{box-sizing:border-box}html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}body{margin:0;font-family:'Be Vietnam Pro',system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--surf);line-height:1.55;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+:root{--bg:#ffffff;--surf:#f5f6f7;--surface:#f5f6f7;--card:#ffffff;--ink0:#000000;--ink:#161823;--soft:#161823;--mut:#6b6f76;--faint:#9ea1a8;--bd:#e4e6e8;--bd2:#d0d3d6;--row:#f0f1f2;--navon:#f0f3f3;--fielddk:#2a2b32;--pri:#0fa3a3;--prid:#0b8585;--prip:#087272;--pri2:#0fa3a3;--brand:#0fa3a3;--brand2:#0fa3a3;--brandd:#0b8585;--wash:#e8f6f6;--washh:#d6efef;--good:#00b578;--goodbg:#e8f8f2;--warn:#ff8f1f;--warnbg:#fff7e8;--bad:#e8302f;--badbg:#fff1f0;--indigo:#1668dc;--indigobg:#f0f3f3;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.04);--sh:0 4px 12px rgba(0,0,0,.08);--sh-lg:0 8px 32px rgba(0,0,0,.12);--sh-pri:none;--r-sm:8px;--r:8px;--r-lg:12px;--r-xl:12px;--pill:999px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:20px;--sp-6:24px;--sp-7:32px;--sp-8:40px}
+@media(prefers-color-scheme:dark){:root{--bg:#12141a;--surf:#0c0e13;--surface:#0c0e13;--card:#171a21;--ink0:#000000;--ink:#e8eaee;--soft:#e8eaee;--mut:#a2a7b1;--faint:#7b818c;--bd:#2a2e37;--bd2:#3b404b;--row:#23272f;--navon:#17262a;--fielddk:#2a2b32;--pri:#2fd4d4;--prid:#5fe3e3;--prip:#20b7b7;--pri2:#2fd4d4;--brand:#2fd4d4;--brand2:#2fd4d4;--brandd:#5fe3e3;--wash:#11282a;--washh:#173538;--good:#2fd69a;--goodbg:#0e2b22;--warn:#ffa64d;--warnbg:#2e2210;--bad:#ff6b6a;--badbg:#2e1616;--indigo:#7db2ff;--indigobg:#1b2430;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.4);--sh:0 4px 12px rgba(0,0,0,.5);--sh-lg:0 8px 32px rgba(0,0,0,.6);--sh-pri:none}}
+:root[data-theme=dark]{--bg:#12141a;--surf:#0c0e13;--surface:#0c0e13;--card:#171a21;--ink0:#000000;--ink:#e8eaee;--soft:#e8eaee;--mut:#a2a7b1;--faint:#7b818c;--bd:#2a2e37;--bd2:#3b404b;--row:#23272f;--navon:#17262a;--fielddk:#2a2b32;--pri:#2fd4d4;--prid:#5fe3e3;--prip:#20b7b7;--pri2:#2fd4d4;--brand:#2fd4d4;--brand2:#2fd4d4;--brandd:#5fe3e3;--wash:#11282a;--washh:#173538;--good:#2fd69a;--goodbg:#0e2b22;--warn:#ffa64d;--warnbg:#2e2210;--bad:#ff6b6a;--badbg:#2e1616;--indigo:#7db2ff;--indigobg:#1b2430;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.4);--sh:0 4px 12px rgba(0,0,0,.5);--sh-lg:0 8px 32px rgba(0,0,0,.6);--sh-pri:none}
+:root[data-theme=light]{--bg:#ffffff;--surf:#f5f6f7;--surface:#f5f6f7;--card:#ffffff;--ink0:#000000;--ink:#161823;--soft:#161823;--mut:#6b6f76;--faint:#9ea1a8;--bd:#e4e6e8;--bd2:#d0d3d6;--row:#f0f1f2;--navon:#f0f3f3;--fielddk:#2a2b32;--pri:#0fa3a3;--prid:#0b8585;--prip:#087272;--pri2:#0fa3a3;--brand:#0fa3a3;--brand2:#0fa3a3;--brandd:#0b8585;--wash:#e8f6f6;--washh:#d6efef;--good:#00b578;--goodbg:#e8f8f2;--warn:#ff8f1f;--warnbg:#fff7e8;--bad:#e8302f;--badbg:#fff1f0;--indigo:#1668dc;--indigobg:#f0f3f3;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.04);--sh:0 4px 12px rgba(0,0,0,.08);--sh-lg:0 8px 32px rgba(0,0,0,.12);--sh-pri:none}
+*{box-sizing:border-box}html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}body{margin:0;font-family:'Be Vietnam Pro',system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--surf);font-size:14px;line-height:1.45;letter-spacing:0;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 ::selection{background:color-mix(in srgb,var(--pri) 24%,transparent)}
 a{color:var(--pri);text-decoration:none;transition:color .15s}a:hover{color:var(--prid);text-decoration:underline;text-underline-offset:2px}
-h1{font-size:1.6rem;font-weight:800;letter-spacing:-.021em;line-height:1.18;text-wrap:balance;margin:0 0 .5em}h2{font-size:1.06rem;margin:0 0 .7em;font-weight:700;letter-spacing:-.011em;line-height:1.3;text-wrap:balance}h3{font-size:.95rem;font-weight:700;margin:0 0 .5em;letter-spacing:-.008em}
+h1{font-size:28px;font-weight:700;letter-spacing:0;line-height:36px;text-wrap:balance;margin:0 0 12px}
+h2{font-size:20px;margin:0 0 12px;font-weight:600;letter-spacing:0;line-height:28px;text-wrap:balance}
+h3{font-size:16px;font-weight:600;margin:0 0 8px;letter-spacing:0;line-height:24px}
+@media(max-width:767px){h1{font-size:22px;line-height:30px}}
 .authwrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:radial-gradient(52% 42% at 12% 6%,color-mix(in srgb,var(--brand) 11%,transparent),transparent 64%),radial-gradient(46% 40% at 90% 16%,color-mix(in srgb,var(--brand2) 11%,transparent),transparent 62%),var(--surf)}
 .center{width:100%;max-width:428px;margin:40px auto}
 .authwrap .center{margin:0}
@@ -39,44 +42,59 @@ h1{font-size:1.6rem;font-weight:800;letter-spacing:-.021em;line-height:1.18;text
 .center .card>p{color:var(--mut)}
 .center .card input{padding:12px 14px}
 .shell{display:flex;min-height:100vh;background:var(--surf)}
-.side{width:240px;flex:0 0 240px;background:var(--card);border-right:1px solid var(--bd);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
-.side-brand{padding:18px 20px;font-weight:800;font-size:1.04rem;letter-spacing:-.01em;color:var(--ink);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}.side-brand svg{width:20px;height:20px;color:var(--pri)}
-.side-shop{padding:16px 20px 6px;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;font-weight:700;color:var(--mut)}
+.side{width:240px;flex:0 0 240px;background:var(--card);border-right:1px solid var(--row);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.side-brand{padding:0 16px;height:56px;font-weight:600;font-size:1rem;letter-spacing:0;color:var(--ink);border-bottom:1px solid var(--row);display:flex;align-items:center;gap:10px;flex:0 0 auto}.side-brand svg{width:20px;height:20px;color:var(--pri)}
+.side-shop{padding:14px 16px 6px;font-size:13px;line-height:20px;letter-spacing:0;font-weight:400;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .side-nav{padding:6px 12px 12px;display:flex;flex-direction:column;gap:2px;flex:1;overflow-y:auto}
-.side-nav a{position:relative;display:flex;align-items:center;gap:10px;padding:8px 11px;border-radius:var(--r-sm);color:var(--soft);font-size:.9rem;font-weight:500;transition:background .15s,color .15s}.side-nav a svg{width:18px;height:18px;flex:0 0 auto;color:var(--mut);transition:color .15s}
-.side-nav a:hover{background:color-mix(in srgb,var(--pri) 8%,transparent);color:var(--ink);text-decoration:none}.side-nav a:hover svg{color:var(--soft)}
-.side-nav a.on{background:var(--wash);color:var(--pri);font-weight:600}.side-nav a.on svg{color:var(--pri)}.side-nav a.on::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:3px;border-radius:0 3px 3px 0;background:var(--pri)}
+.side-nav a{position:relative;display:flex;align-items:center;gap:12px;min-height:40px;padding:8px 12px;border-radius:var(--r-sm);color:var(--ink);font-size:14px;line-height:20px;font-weight:400;transition:background .12s,color .12s}.side-nav a svg{width:20px;height:20px;flex:0 0 auto;color:var(--ink);transition:color .12s}
+.side-nav a:hover{background:var(--surf);color:var(--ink);text-decoration:none}
+.side-nav a.on{background:var(--navon);color:var(--ink);font-weight:600}.side-nav a.on svg{color:var(--pri)}
 .side-user{border-top:1px solid var(--bd);padding:12px 16px}.side-user .email{color:var(--mut);font-size:.82rem;display:block;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .side-user button{background:var(--card);border:1px solid var(--bd);border-radius:var(--r-sm);padding:8px 12px;font:inherit;font-size:.85rem;cursor:pointer;color:var(--ink);width:100%;transition:background .15s,border-color .15s}.side-user button:hover{background:var(--surf);border-color:color-mix(in srgb,var(--pri) 30%,var(--bd))}
 .main{flex:1;min-width:0;display:flex;flex-direction:column}
-.tbar{background:color-mix(in srgb,var(--card) 85%,transparent);-webkit-backdrop-filter:saturate(180%) blur(12px);backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid var(--bd);padding:13px 26px;display:flex;justify-content:space-between;align-items:center;gap:12px;position:sticky;top:0;z-index:10}
-.tbar .brand{font-weight:800;letter-spacing:-.01em;color:var(--ink);display:flex;align-items:center;gap:8px}.tbar .brand svg{width:20px;height:20px;color:var(--pri)}
-.tbar .acc{font-size:.88rem;color:var(--mut);display:flex;align-items:center;gap:14px}.tbar .acc form{display:inline;margin:0}
-.tbar .acc a{color:var(--soft);font-weight:500}.tbar .acc a:hover{color:var(--pri)}
-.tbar .acc button{background:transparent;border:0;color:var(--mut);cursor:pointer;font:inherit;transition:color .15s}.tbar .acc button:hover{color:var(--ink)}
-.content{padding:28px 28px 56px;max-width:1080px;margin:0 auto;width:100%;flex:1}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:var(--r-lg);padding:22px 24px;margin:18px 0;box-shadow:var(--sh-sm)}.card>h2:first-child,.card>h1:first-child{margin-top:0}
-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:12px 14px;border-bottom:1px solid var(--bd);font-size:.92rem;vertical-align:middle}td:first-child,th:first-child{padding-left:0}td:last-child,th:last-child{padding-right:0}
-th{color:var(--mut);font-weight:700;font-size:.74rem;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;border-bottom:1.5px solid var(--bd)}tr:last-child td{border-bottom:0}tbody tr{transition:background .12s}tbody tr:hover td{background:color-mix(in srgb,var(--pri) 4%,transparent)}
-.btn{display:inline-flex;align-items:center;gap:8px;justify-content:center;background:var(--pbtn);color:var(--pbtn-ink);border:1px solid transparent;border-radius:var(--r);padding:10px 17px;font-size:.92rem;font-weight:600;line-height:1;cursor:pointer;text-decoration:none;box-shadow:var(--sh-pri);transition:background .15s,box-shadow .15s,transform .06s,border-color .15s,opacity .15s;white-space:nowrap}
-.btn:hover{background:var(--pbtn-h);color:var(--pbtn-ink);text-decoration:none;box-shadow:var(--sh)}.btn:active{transform:translateY(1px)}.btn svg{width:16px;height:16px}.btn:disabled,.btn[disabled]{opacity:.5;cursor:not-allowed;box-shadow:none;pointer-events:none}
-.btn.alt{background:var(--card);color:var(--ink);border-color:var(--bd);box-shadow:var(--sh-sm)}.btn.alt:hover{background:var(--surf);border-color:color-mix(in srgb,var(--pri) 40%,var(--bd));color:var(--pri);opacity:1}
-.btn.warn{background:var(--card);color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,var(--bd));box-shadow:var(--sh-sm)}.btn.warn:hover{background:var(--badbg);border-color:var(--bad);color:var(--bad);opacity:1}
-.btn.sm{padding:7px 12px;font-size:.85rem;border-radius:var(--r-sm)}
-label{display:block;font-size:.85rem;margin:14px 0 6px;font-weight:600;color:var(--soft)}
-input,select,textarea{width:100%;padding:10px 12px;border:1px solid var(--bd);border-radius:var(--r);font-size:.95rem;font-family:inherit;color:var(--ink);background:var(--card);transition:border-color .15s,box-shadow .15s}
-input:focus,select:focus,textarea:focus{outline:none;border-color:var(--pri);box-shadow:0 0 0 3px color-mix(in srgb,var(--pri) 18%,transparent)}
-input::placeholder,textarea::placeholder{color:var(--mut)}
+.tbar{background:var(--ink0);border-bottom:0;height:56px;padding:0 20px;display:flex;justify-content:space-between;align-items:center;gap:12px;position:sticky;top:0;z-index:100}
+.tbar .brand{font-weight:600;font-size:18px;letter-spacing:0;color:#fff;display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tbar .brand svg{width:20px;height:20px;color:#fff;flex:0 0 auto}
+@media(max-width:900px){.tbar .brand{font-size:15px}}
+.tbar .acc{font-size:14px;color:#fff;display:flex;align-items:center;gap:8px}.tbar .acc form{display:inline;margin:0}
+.tbar .acc a{color:#161823;font-weight:500;background:#fff;border-radius:var(--pill);padding:8px 16px;line-height:20px;display:inline-block;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tbar .acc a:hover{background:var(--row);color:#161823;text-decoration:none}
+.tbar .acc button{background:var(--fielddk);border:0;color:#fff;cursor:pointer;font:inherit;font-size:14px;line-height:20px;padding:8px 14px;border-radius:var(--pill);transition:background .12s}.tbar .acc button:hover{background:#3a3b44}
+.content{padding:24px 32px 56px;max-width:1600px;margin:0 auto;width:100%;flex:1;background:var(--surf)}
+@media(max-width:1023px){.content{padding:20px 24px 48px}}
+@media(max-width:767px){.content{padding:16px 16px 40px}}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:var(--r-lg);padding:20px 24px;margin:16px 0;box-shadow:none}.card>h2:first-child,.card>h1:first-child{margin-top:0}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:16px 12px;border-bottom:1px solid var(--row);font-size:14px;line-height:22px;vertical-align:top}td:first-child,th:first-child{padding-left:0}td:last-child,th:last-child{padding-right:0}
+th{color:var(--mut);font-weight:500;font-size:13px;line-height:18px;text-transform:none;letter-spacing:0;white-space:nowrap;padding-top:12px;padding-bottom:12px;vertical-align:middle;border-bottom:1px solid var(--bd)}
+tr:last-child td{border-bottom:0}tbody tr{transition:background .12s}tbody tr:hover td{background:var(--surf)}
+/* O chinh 2 dong (§4.7): nen thong tin thay vi them cot. Dong 1 dam, dong 2 phu. */
+td .t1{font-size:14px;font-weight:600;line-height:22px;color:var(--ink)}
+td .t2{font-size:12px;line-height:18px;color:var(--mut);margin-top:2px}
+td .t2.id{color:var(--faint)}
+.btn{display:inline-flex;align-items:center;gap:8px;justify-content:center;background:var(--pbtn);color:var(--pbtn-ink);border:1px solid transparent;border-radius:var(--r);min-height:36px;padding:8px 16px;font-size:14px;font-weight:500;line-height:20px;cursor:pointer;text-decoration:none;box-shadow:none;transition:background .12s,border-color .12s;white-space:nowrap}
+@media(max-width:767px){.btn{min-height:44px}}
+.btn:hover{background:var(--pbtn-h);color:var(--pbtn-ink);text-decoration:none;box-shadow:none}.btn:active{background:var(--prip)}.btn svg{width:16px;height:16px}
+.btn:disabled,.btn[disabled]{background:var(--bd);color:var(--faint);opacity:1;cursor:not-allowed;box-shadow:none;pointer-events:none}
+.btn.alt{background:var(--card);color:var(--ink);border-color:var(--bd);box-shadow:none}.btn.alt:hover{background:var(--surf);border-color:var(--bd2);color:var(--ink);opacity:1}
+.btn.warn{background:var(--card);color:var(--bad);border-color:var(--bd);box-shadow:none}.btn.warn:hover{background:var(--badbg);border-color:var(--bad);color:var(--bad);opacity:1}
+.btn.sm{min-height:32px;padding:6px 12px;font-size:13px;border-radius:var(--r-sm)}@media(max-width:767px){.btn.sm{min-height:44px}}
+label{display:block;font-size:13px;line-height:20px;margin:14px 0 6px;font-weight:500;color:var(--mut)}
+input,select,textarea{width:100%;padding:8px 12px;border:1px solid var(--bd);border-radius:var(--r);font-size:14px;line-height:20px;font-family:inherit;color:var(--ink);background:var(--card);transition:border-color .12s,box-shadow .12s}
+input:not([type=checkbox]):not([type=radio]):not([type=file]),select{height:36px}
+@media(max-width:767px){input:not([type=checkbox]):not([type=radio]):not([type=file]),select{height:44px}}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--pri);box-shadow:0 0 0 3px rgba(15,163,163,.12)}
+input::placeholder,textarea::placeholder{color:var(--faint)}
 textarea{min-height:80px;resize:vertical}
 .err{background:var(--badbg);border:1px solid color-mix(in srgb,var(--bad) 40%,var(--bd));color:var(--bad);border-radius:var(--r);padding:12px 14px;margin:10px 0;font-weight:500}
 .notice{border-radius:var(--r);padding:12px 15px;margin:10px 0;border:1px solid var(--bd);background:var(--card)}
 .notice.success{background:var(--goodbg);border-color:color-mix(in srgb,var(--good) 40%,var(--bd));color:var(--good)}
 .notice.warn{background:var(--warnbg);border-color:color-mix(in srgb,var(--warn) 40%,var(--bd));color:var(--warn)}
 .notice.info{background:var(--wash);border-color:color-mix(in srgb,var(--pri) 35%,var(--bd));color:var(--prid)}
-.badge{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:var(--pill);font-size:.78rem;font-weight:600;line-height:1.3;background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--soft)}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:var(--pill);font-size:13px;font-weight:500;line-height:20px;background:var(--row);color:var(--mut)}
+.badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto}
 .badge.pending{background:var(--warnbg);color:var(--warn)}.badge.confirmed{background:var(--wash);color:var(--prid)}.badge.shipped{background:var(--indigobg);color:var(--indigo)}
 .badge.delivered{background:var(--goodbg);color:var(--good)}.badge.cancelled{background:var(--badbg);color:var(--bad)}.badge.paid{background:var(--goodbg);color:var(--good)}.badge.unpaid{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--soft)}
-.badge.refunded{background:color-mix(in srgb,var(--pri2) 15%,transparent);color:var(--pri2)}
+.badge.refunded{background:var(--wash);color:var(--prid)}
+.badge.unpaid,.badge.archived,.badge.closed{background:var(--row);color:var(--mut)}
 .badge.returned{background:var(--warnbg);color:var(--warn)}
 .badge.active{background:var(--goodbg);color:var(--good)}.badge.draft{background:var(--warnbg);color:var(--warn)}.badge.archived{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--soft)}.badge.published{background:var(--goodbg);color:var(--good)}
 .badge.onboarding{background:var(--wash);color:var(--prid)}.badge.suspended{background:var(--badbg);color:var(--bad)}.badge.closed{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--soft)}
@@ -251,7 +269,64 @@ function sideNav(ctx) {
   return `<nav class="side-nav">${t}</nav>`;
 }
 
-export function layout(title, ctx, body) {
+// Khối JS DUY NHẤT của seller-admin (ADR-011 ràng buộc #3). Điều khiển hoàn toàn bằng
+// data-attribute nên thêm trang mới KHÔNG cần thêm JS — hàng rào chống "trượt phạm vi".
+//
+// Hai tính năng, cả hai đều là LỚP CẢI THIỆN. Tắt JS thì mọi thứ vẫn dùng được đầy đủ:
+//   · chọn hàng loạt — tick từng ô rồi bấm nút, y như trước;
+//   · xoá/huỷ — form POST vẫn gửi thẳng, chỉ là không có bước hỏi lại.
+// Không có đường ghi dữ liệu nào đi qua JS (ràng buộc #5): mọi thứ vẫn là form POST + CSRF.
+const ADMIN_JS = `(function(){
+  // ── 1. Chọn hàng loạt: ô "chọn tất cả" + đếm số đang chọn ──────────────────
+  // Ô master và chỗ đếm được render sẵn nhưng ẨN. Không JS thì người dùng không bao giờ
+  // thấy một điều khiển bấm vào chẳng làm gì — đó mới là hỏng, không phải "thiếu tính năng".
+  document.querySelectorAll('[data-bulk-all]').forEach(function(all){
+    var name = all.getAttribute('data-bulk-all');
+    var boxes = Array.prototype.slice.call(
+      document.querySelectorAll('input[type=checkbox][name="' + name + '"]'));
+    if (!boxes.length) return;
+    var out = document.querySelector('[data-bulk-count="' + name + '"]');
+    var acts = Array.prototype.slice.call(
+      document.querySelectorAll('[data-bulk-act="' + name + '"]'));
+    function sync(){
+      var n = boxes.filter(function(b){ return b.checked; }).length;
+      all.checked = n === boxes.length && n > 0;
+      all.indeterminate = n > 0 && n < boxes.length;
+      if (out) out.textContent = n ? 'Đang chọn ' + n : 'Chưa chọn dòng nào';
+      // Vô hiệu nút khi chưa chọn gì: server vẫn xử lý đúng nếu gửi rỗng (trả bulk_none),
+      // nhưng chặn từ đầu thì người bán không mất một vòng tải trang để biết mình quên tick.
+      acts.forEach(function(b){ b.disabled = n === 0; });
+    }
+    all.hidden = false;
+    if (out) out.hidden = false;
+    all.addEventListener('change', function(){
+      boxes.forEach(function(b){ b.checked = all.checked; });
+      sync();
+    });
+    boxes.forEach(function(b){ b.addEventListener('change', sync); });
+    sync();
+  });
+
+  // ── 2. Hỏi lại trước thao tác phá huỷ ─────────────────────────────────────
+  // Đặt trên form (data-confirm) hoặc trên từng nút (nút thắng, vì một form có thể có
+  // nhiều nút với formaction khác nhau — ví dụ thanh hàng loạt).
+  document.addEventListener('click', function(e){
+    var b = e.target.closest && e.target.closest('[data-confirm]');
+    if (!b || !b.form && b.tagName !== 'BUTTON' && b.tagName !== 'INPUT') return;
+    if (b.tagName !== 'BUTTON' && b.tagName !== 'INPUT') return;
+    if (!window.confirm(b.getAttribute('data-confirm'))) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  document.querySelectorAll('form[data-confirm]').forEach(function(f){
+    f.addEventListener('submit', function(e){
+      if (e.submitter && e.submitter.hasAttribute('data-confirm')) return; // nút đã hỏi rồi
+      if (!window.confirm(f.getAttribute('data-confirm'))) e.preventDefault();
+    });
+  });
+})();`;
+
+// nonce rỗng (mặc định) → KHÔNG chèn <script>, và http.js cũng không mở script-src.
+// Trang phải CHỦ ĐỘNG xin JS bằng cách đi qua sendHtmlJs — quên thì hệ khoá cứng như cũ.
+export function layout(title, ctx, body, nonce = '') {
   const head = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex"><title>${esc(title)}</title><style>${STYLE}</style></head><body>`;
   if (!ctx.user) return `${head}<div class="authwrap">${body}</div></body></html>`;
@@ -270,13 +345,13 @@ export function layout(title, ctx, body) {
           <span class="acc"><a href="/account">Tài khoản</a></span></header>
         <div class="content">${body}</div>
       </div>
-    </div></body></html>`;
+    </div>${nonce ? `<script nonce="${esc(nonce)}">${ADMIN_JS}</script>` : ''}</body></html>`;
   }
   return `${head}<div class="main">
     <header class="tbar"><a class="brand" href="/">${IC_HOME}Quản trị</a>
       <span class="acc"><a href="/account">${esc(ctx.user.email)}</a>${logout}</span></header>
     <div class="content">${body}</div>
-  </div></body></html>`;
+  </div>${nonce ? `<script nonce="${esc(nonce)}">${ADMIN_JS}</script>` : ''}</body></html>`;
 }
 
 // Trang "Giao diện": chủ shop (theme.write) chọn màu thương hiệu → lưu vào theme tokens.
@@ -1883,7 +1958,7 @@ td.r,th.r{text-align:right}.tot{margin-left:auto;width:260px}.tot .row{display:f
 
 // ── Sản phẩm & tồn kho ───────────────────────────────────────────────────────
 const PSTATUSES = ['', 'active', 'draft', 'archived'];
-export function renderProducts(ctx, shopId, data, filter, notice = null) {
+export function renderProducts(ctx, shopId, data, filter, notice = null, nonce = '') {
   const d = data ?? {}; // backend có thể trả 200 body rỗng → data null; đừng để .products nổ
   const products = d.products ?? [];
   const q = encodeURIComponent(filter.q ?? '');
@@ -1927,10 +2002,11 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
         <input type="hidden" name="status_filter" value="${esc(filter.status ?? '')}">
         <input type="hidden" name="q" value="${esc(filter.q ?? '')}">
         <input type="hidden" name="offset" value="${esc(off)}">
-        <button class="btn sm" type="submit" name="to" value="active">✓ Đăng bán</button>
-        <button class="btn alt sm" type="submit" name="to" value="draft">✎ Chuyển nháp (ẩn)</button>
-        <button class="btn alt sm" type="submit" name="to" value="archived">📦 Lưu trữ</button>
-        <span class="muted" style="font-size:.82rem">Tích chọn ở cột đầu. Sản phẩm đã ở trạng thái đó sẽ được bỏ qua.</span>
+        <button class="btn sm" type="submit" name="to" value="active" data-bulk-act="product_ids">✓ Đăng bán</button>
+        <button class="btn alt sm" type="submit" name="to" value="draft" data-bulk-act="product_ids">✎ Chuyển nháp (ẩn)</button>
+        <button class="btn alt sm" type="submit" name="to" value="archived" data-bulk-act="product_ids" data-confirm="Lưu trữ các sản phẩm đang chọn? Chúng sẽ bị ẩn khỏi cửa hàng.">📦 Lưu trữ</button>
+        <span class="muted" data-bulk-count="product_ids" hidden style="font-size:13px"></span>
+        <span class="muted" style="font-size:13px">Tích chọn ở cột đầu. Sản phẩm đã ở trạng thái đó sẽ được bỏ qua.</span>
       </form>` : '';
   const mx = d.max_products, cc = d.catalog_count;
   const capLine = mx != null ? `<p class="muted" style="margin:-6px 0 14px">Đã dùng <strong>${esc(cc)}/${esc(mx)}</strong> sản phẩm theo gói.${cc >= mx ? ' <strong style="color:#b45309">Đã đạt giới hạn — nâng gói để thêm.</strong>' : ''}</p>` : '';
@@ -1946,7 +2022,7 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
       <div style="flex:1 1 200px"><label>Tìm theo tên</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="Ghế sofa…"></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
-    <div class="card">${products.length ? `${bulkBar}<div class="tblscroll"><table><thead><tr><th></th><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th class="right">Tồn</th><th class="right" title="Lượt xem trang sản phẩm trong 30 ngày qua">Lượt xem</th><th class="right" title="Số khách đã bấm Yêu thích">Thích</th><th class="right">Đã bán</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="card">${products.length ? `${bulkBar}<div class="tblscroll"><table><thead><tr><th><input type="checkbox" data-bulk-all="product_ids" hidden aria-label="Chọn tất cả sản phẩm trên trang"></th><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th class="right">Tồn</th><th class="right" title="Lượt xem trang sản phẩm trong 30 ngày qua">Lượt xem</th><th class="right" title="Số khách đã bấm Yêu thích">Thích</th><th class="right">Đã bán</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table></div>
       <div class="muted" style="margin-top:12px">${total} sản phẩm ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
@@ -1956,7 +2032,7 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
       // sai sự thật và làm chủ shop hoảng — phải mời họ bỏ lọc thay vì mời tạo mới.
       : (filter.status || filter.q || off > 0)
         ? `<p class="muted">Không có sản phẩm nào khớp bộ lọc hiện tại. <a href="?status=&q=">Xoá bộ lọc</a></p>`
-        : '<p class="muted">Chưa có sản phẩm. Bấm “+ Thêm sản phẩm” để tạo.</p>'}</div>`);
+        : '<p class="muted">Chưa có sản phẩm. Bấm “+ Thêm sản phẩm” để tạo.</p>'}</div>`, nonce);
 }
 
 // Quản lý danh mục: tạo/sửa/xoá + (gán sản phẩm ở trang chi tiết SP). Hiện storefront /c/:slug.

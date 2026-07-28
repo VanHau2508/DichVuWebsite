@@ -77,5 +77,44 @@ sect "5. File secret / .env"
 found="$(find . -name '.env' -not -path './node_modules/*' 2>/dev/null | grep -v '.env.example' || true)"
 [ -z "$found" ] && ok "không có file .env lộ" || flag ".env lộ: $found"
 
+# ── 6. CSP nonce của seller-admin (ADR-011) ─────────────────────────────────
+# Vì sao canh ở ĐÂY chứ không phải e2e: cả hai lỗi dưới đây chỉ giết production, còn dev
+# thì chạy hoàn hảo (Caddyfile.dev không đặt CSP). Không bộ e2e nào bắt được — chúng chạy
+# trên stack dev. Đây là loại lỗi phải chặn bằng đọc-file, ở bước rẻ nhất, chạy mọi push.
+sect "6. CSP nonce seller-admin (ADR-011)"
+
+# (a) Edge KHÔNG được đặt lại CSP tĩnh cho admin. Chuỗi tĩnh không thể chứa nonce đổi theo
+# response ⇒ thiếu script-src thì rơi về default-src 'none' ⇒ CHẶN SẠCH JS admin ở prod.
+admin_block="$(awk '/^admin\.nentang\.vn \{/,/^\}/' infra/caddy/Caddyfile 2>/dev/null || true)"
+if [ -z "$admin_block" ]; then
+  warn "không tìm thấy block admin.nentang.vn trong Caddyfile — kiểm tay"
+elif printf '%s' "$admin_block" | grep -qi 'Content-Security-Policy'; then
+  flag "Caddyfile đặt CSP TĨNH cho admin.nentang.vn — sẽ chặn sạch JS admin ở PROD (dev không báo). ADR-011: app là nguồn DUY NHẤT."
+else
+  ok "edge không đặt CSP tĩnh cho admin (app là nguồn duy nhất)"
+fi
+
+# (b) script-src của app CHỈ được chứa nonce (ADR-011 #2). 'unsafe-inline' làm trình duyệt
+# BỎ QUA nonce hoàn toàn → mất sạch lớp bảo vệ mà nhìn vào vẫn tưởng còn.
+# Lọc DÒNG CHÚ THÍCH trước khi soi: comment giải thích quy tắc đương nhiên chứa đúng những
+# từ bị cấm ("không 'unsafe-inline'"), grep thô sẽ báo oan — mà guard báo oan là guard sẽ bị
+# tắt. Chỉ xét dòng code thật.
+csp_src="$(grep -n "script-src" apps/seller-admin/src/http.js 2>/dev/null | grep -vE '^[0-9]+:[[:space:]]*(//|\*|/\*)' || true)"
+if [ -z "$csp_src" ]; then
+  ok "seller-admin chưa mở script-src (CSP vẫn khoá cứng)"
+elif printf '%s' "$csp_src" | grep -qE "unsafe-inline|unsafe-eval|strict-dynamic|https?://"; then
+  flag "script-src của seller-admin có giá trị NGOÀI nonce — vi phạm ADR-011 #2:"
+  printf '%s\n' "$csp_src" | sed 's/^/       /'
+else
+  ok "script-src seller-admin chỉ chứa nonce"
+fi
+
+# (c) Đường tiền là ranh giới CỨNG: storefront/checkout/account/signup không được mở JS
+# ngoài hai ngoại lệ nonce đã có từ trước (badge giỏ, GPS checkout).
+money="$(grep -rn "unsafe-inline" apps/storefront/src/http.js apps/checkout/src/http.js \
+        apps/account/src/http.js apps/signup/src/http.js 2>/dev/null | grep "script-src" || true)"
+[ -z "$money" ] && ok "storefront/checkout/account/signup: script-src không có unsafe-inline" \
+  || { flag "unsafe-inline lọt vào script-src của đường tiền — ADR-011 cấm tuyệt đối:"; printf '%s\n' "$money" | sed 's/^/       /'; }
+
 printf '\n\033[1m%d phát hiện cần xử lý\033[0m\n' "$issues"
 [ "$issues" -eq 0 ] || exit 1

@@ -44,7 +44,7 @@ async function adm(method, path, { cookie, origin, form } = {}) {
   if (cookie) h.cookie = `__Host-session=${cookie}`;
   const r = await fetch(ADMIN + path, { method, headers: h, redirect: 'manual', body: form !== undefined ? new URLSearchParams(form).toString() : undefined });
   const t = await r.text();
-  return { status: r.status, location: r.headers.get('location'), sc: r.headers.getSetCookie(), body: t };
+  return { status: r.status, location: r.headers.get('location'), sc: r.headers.getSetCookie(), csp: r.headers.get('content-security-policy'), body: t };
 }
 const login = async (email, password) => ck((await rq(AUTH, 'POST', '/auth/login', { body: { email, password }, origin: OA })).sc);
 const uidOf = async (email) => (await owner.query('SELECT id FROM users WHERE email=$1', [email])).rows[0]?.id ?? null;
@@ -268,6 +268,41 @@ async function main() {
   r = await adm('POST', P(`/${axPid}/options`), { cookie: A.cookie, origin: OADM, form: [['opt_name', ''], ['opt_values', ''], ['opt_name', ''], ['opt_values', ''], ['opt_name', ''], ['opt_values', '']] });
   const cleared = (await sget(A.shopId, A.cookie, `/products/${axPid}`)).json;
   r.status === 303 && cleared.options?.length === 0 ? ok('xoá hết trục → options rỗng') : bad('clear options lỗi', `o=${cleared.options?.length}`);
+
+  // ── ADR-011: JS hẹp ký nonce + ĐƯỜNG LUI KHÔNG-JS phải còn nguyên ─────────
+  // Bất biến ĐẮT NHẤT của quyết định này. Nonce ở header lệch nonce trên thẻ <script>
+  // ⇒ trình duyệt chặn script, nhưng trang vẫn trả về đủ HTML nên mọi assertion so
+  // chuỗi đều xanh — người bán chỉ thấy tính năng im lặng không chạy. Phải so TRỰC TIẾP.
+  r = await adm('GET', `/shops/${A.shopId}/products`, { cookie: A.cookie });
+  const mHdr = /script-src 'nonce-([^']+)'/.exec(r.csp ?? '');
+  const mTag = /<script nonce="([^"]+)"/.exec(r.body);
+  mHdr && mTag && mHdr[1] === mTag[1]
+    ? ok('nonce header CSP === nonce thẻ <script> (sinh một lần, không thể lệch)')
+    : bad('nonce lệch/thiếu', `csp=${mHdr?.[1] ?? 'không có'} tag=${mTag?.[1] ?? 'không có'}`);
+  !/(unsafe-inline|unsafe-eval|strict-dynamic)/.test((r.csp ?? '').split('script-src')[1] ?? '')
+    ? ok('script-src không có unsafe-inline/eval/strict-dynamic (ADR-011 #2)')
+    : bad('script-src chứa giá trị bị cấm', r.csp);
+  (r.body.match(/<script/g) ?? []).length === 1
+    ? ok('đúng MỘT khối <script> nội tuyến (ADR-011 #3)')
+    : bad('số khối script sai', String((r.body.match(/<script/g) ?? []).length));
+
+  // Đường lui không-JS: form + checkbox từng dòng vẫn nguyên; ô "chọn tất cả" và chỗ đếm
+  // phải ẩn — không JS thì đừng bày ra điều khiển bấm vào chẳng làm gì.
+  r.body.includes('id="pbulk"') && /name="product_ids"/.test(r.body)
+    ? ok('không-JS: form hàng loạt + checkbox từng dòng còn nguyên')
+    : bad('mất form hàng loạt');
+  /data-bulk-all="product_ids"[^>]*hidden/.test(r.body)
+    ? ok('ô "chọn tất cả" render sẵn nhưng ẨN (JS mới bật lên)')
+    : bad('ô chọn-tất-cả không ẩn khi chưa có JS');
+  /data-bulk-count="product_ids"[^>]*hidden/.test(r.body)
+    ? ok('chỗ đếm số đang chọn cũng ẩn khi chưa có JS')
+    : bad('chỗ đếm không ẩn');
+
+  // Trang KHÔNG xin JS giữ CSP khoá cứng (mặc định an toàn — ADR-011 #4).
+  const rNoJs = await adm('GET', `/shops/${A.shopId}/orders`, { cookie: A.cookie });
+  !/script-src/.test(rNoJs.csp ?? '')
+    ? ok('trang không xin JS: CSP KHÔNG có script-src (mặc định an toàn)')
+    : bad('trang không dùng JS lại mở script-src', rNoJs.csp);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

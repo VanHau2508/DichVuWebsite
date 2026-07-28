@@ -155,7 +155,7 @@ async function main() {
   };
   cellOf('Đơn chờ xác nhận') === 1 ? ok('đếm "chờ xác nhận" = 1 (khớp dữ liệu thật)') : bad('đếm chờ xác nhận sai', `=${cellOf('Đơn chờ xác nhận')}`);
   cellOf('Đơn chờ gửi hàng') === 1 ? ok('đếm "chờ gửi hàng" = 1 (khớp dữ liệu thật)') : bad('đếm chờ gửi sai', `=${cellOf('Đơn chờ gửi hàng')}`);
-  !r.body.includes('<script') ? ok('Tổng quan vẫn no-JS (không có <script>)') : bad('lọt <script> vào seller-admin');
+  !/<script(?![^>]*nonce=)/.test(r.body) ? ok('Tổng quan: không script NÀO thiếu nonce (ADR-011)') : bad('lọt <script> không nonce');
 
   // ── 2. Tab trạng thái ở Đơn hàng ───────────────────────────────────────────
   sect('2. Đơn hàng: TAB trạng thái có số đếm (thay dropdown)');

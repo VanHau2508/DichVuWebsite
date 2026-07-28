@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 /** Tiện ích HTTP cho admin-web (BFF). Không framework. */
 
 const AMP = /&/g, LT = /</g, GT = />/g, QUOT = /"/g, APOS = /'/g;
@@ -18,12 +19,36 @@ export function parseCookies(req) {
 // nếu không CSP chặn ảnh. Origin đó PHẢI khớp CSP ở edge (Caddyfile) vì trình duyệt
 // áp GIAO hai policy.
 const MEDIA_ORIGIN = (() => { try { return new URL(process.env.MEDIA_PUBLIC_BASE ?? '').origin; } catch { return ''; } })();
-// CSP nghiêm: admin-web là SSR form thuần, KHÔNG script → chống XSS mạnh. no-store: có PII.
-const CSP = `default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:${MEDIA_ORIGIN ? ' ' + MEDIA_ORIGIN : ''}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
-export function sendHtml(res, status, html, setCookies = []) {
+// CSP nghiêm. no-store: trang có PII.
+//
+// ADR-011: seller-admin ĐƯỢC phép chạy JS nội tuyến ký nonce (storefront/checkout/account/
+// signup KHÔNG đổi). Ràng buộc #4 "mặc định an toàn": `script-src` CHỈ xuất hiện khi trang
+// thật sự cần JS. Không truyền nonce → không có script-src → `default-src 'none'` khoá cứng
+// y như trước. 164 lời gọi sendHtml hiện có không đổi một chữ nào, và tất cả đều nằm ở
+// nhánh khoá cứng — thêm JS phải là hành động CÓ Ý, không thể xảy ra do quên.
+//
+// VÌ SAO KHÔNG suy nonce từ chính HTML (đã cân nhắc và BỎ): quét `<script nonce="X">` trong
+// body rồi bơm X vào header thì khỏi phải sửa 164 chỗ — nhưng nó phá huỷ chính thứ nonce bảo
+// vệ. Nonce có giá trị vì kẻ tấn công KHÔNG ĐOÁN ĐƯỢC; nếu header lấy giá trị từ body thì một
+// đoạn `<script nonce="abc">` chèn được vào sẽ tự động được header chúc phúc. Nonce phải do
+// server sinh và dùng cho CẢ HAI nơi.
+const CSP_BASE = `default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:${MEDIA_ORIGIN ? ' ' + MEDIA_ORIGIN : ''}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
+// script-src CHỈ chứa nonce — không 'unsafe-inline', không 'unsafe-eval', không
+// 'strict-dynamic', không host ngoài (ADR-011 #2). scripts/security-scan.sh canh điều này.
+export const cspFor = (nonce) => (nonce ? `${CSP_BASE}; script-src 'nonce-${nonce}'` : CSP_BASE);
+export const newNonce = () => crypto.randomBytes(16).toString('base64');
+
+// Gửi trang CÓ JS: sinh nonce MỘT LẦN rồi đưa cùng một giá trị cho cả hàm dựng HTML lẫn
+// header. Không thể lệch nhau — đó là lý do tồn tại của helper này thay vì để nơi gọi tự
+// sinh rồi tự nhớ truyền hai chỗ.
+export function sendHtmlJs(res, status, build, setCookies = []) {
+  const nonce = newNonce();
+  return sendHtml(res, status, build(nonce), setCookies, nonce);
+}
+export function sendHtml(res, status, html, setCookies = [], nonce = '') {
   const headers = {
     'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
-    'content-security-policy': CSP, 'x-content-type-options': 'nosniff',
+    'content-security-policy': cspFor(nonce), 'x-content-type-options': 'nosniff',
     'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer',
   };
   if (setCookies.length) headers['set-cookie'] = setCookies;

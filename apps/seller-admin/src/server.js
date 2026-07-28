@@ -10,7 +10,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { parseCookies, readForm, readFormAll, readMultipartFile, readMultipartFiles, readMultipartAll, sendHtml, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
+import { parseCookies, readForm, readFormAll, readMultipartFile, readMultipartFiles, readMultipartAll, sendHtml, sendHtmlJs, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
 import { authApi, sellerApi, platformApi, sellerUpload, sellerDownload, loadSession } from './api.js';
 import * as V from './pages.js';
 import { getPreset } from '../presets.js';
@@ -808,7 +808,9 @@ async function productsList(res, me, cookie, shopId, q, notice = null) {
   const r = await sellerApi('GET', `/shops/${shopId}/products?${qs}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'products');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được sản phẩm.'));
-  return sendHtml(res, 200, V.renderProducts(ctx, shopId, r.json, { status, q: query, limit, offset }, notice));
+  // Trang DUY NHẤT hiện dùng JS (ADR-011 danh sách trắng: chọn hàng loạt + xác nhận xoá).
+  // sendHtmlJs sinh nonce MỘT LẦN cho cả header CSP lẫn thẻ <script> → không thể lệch.
+  return sendHtmlJs(res, 200, (nonce) => V.renderProducts(ctx, shopId, r.json, { status, q: query, limit, offset }, notice, nonce));
 }
 
 // ĐỔI TRẠNG THÁI HÀNG LOẠT: forward danh sách id (checkbox) → seller (thành công một phần).

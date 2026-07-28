@@ -151,7 +151,7 @@ async function main() {
   r.status === 200 && /Sổ cái kho/.test(r.body) ? ok('trang mở được') : bad('trang lỗi', `${r.status} ${r.body.slice(0, 150)}`);
   /Nhập kho/.test(r.body) && /nhập đầu kỳ/.test(r.body) ? ok('hiện loại + lý do thật') : bad('thiếu loại/lý do');
   new RegExp(A.email.replace(/[.@+]/g, '\\$&')).test(r.body) ? ok('hiện email người thực hiện') : bad('thiếu người thực hiện');
-  !/<script/.test(r.body) ? ok('trang no-JS (không <script>)') : bad('lọt <script>');
+  !/<script(?![^>]*nonce=)/.test(r.body) ? ok('không script NÀO thiếu nonce (ADR-011)') : bad('lọt <script> không nonce');
   // Chỉ-đọc: không form POST nào nhắm VÀO sổ cái. (Bỏ qua form /logout của khung layout
   // dùng chung — nó có mặt ở mọi trang, không phải thao tác ghi sổ.)
   const writeForms = [...r.body.matchAll(/<form[^>]*method="POST"[^>]*action="([^"]*)"/gi)]

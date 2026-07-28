@@ -43,14 +43,22 @@
 }
 
 # ── Quản trị nhà bán hàng: MỘT origin duy nhất (ADR-005) ─────────────────────
-# CSP PHẢI khớp cái app tự đặt (apps/seller-admin/src/http.js): trình duyệt áp
-# GIAO của hai policy. App là SSR form thuần → cần style-src 'unsafe-inline'
-# (CSS nội tuyến) và img-src data: (QR/ảnh nội tuyến). KHÔNG cho script.
+# CSP: seller-admin tự đặt theo TỪNG RESPONSE, edge KHÔNG đặt nữa (ADR-011).
+#
+# Vì sao bỏ hẳn thay vì "sửa cho khớp": trình duyệt áp GIAO hai policy, mà policy ở đây là
+# chuỗi TĨNH — nó không thể chứa nonce đổi theo từng response. Giữ lại thì mọi giá trị đều
+# sai: thiếu script-src ⇒ rơi về `default-src 'none'` ⇒ CHẶN SẠCH JS admin ở prod trong khi
+# dev vẫn chạy tốt (Caddyfile.dev không đặt CSP) — đúng cái bẫy ADR-011 §Ràng buộc 1 mô tả;
+# còn đặt 'unsafe-inline' để "cho qua" thì nếu app lỡ không gửi policy, edge một mình cho
+# phép MỌI script nội tuyến — mất sạch lớp bảo vệ mà nhìn vào vẫn tưởng còn.
+#
+# ⇒ app là NGUỒN DUY NHẤT của CSP admin. An toàn vì mọi trang đi qua đúng một cửa
+# `sendHtml()` trong apps/seller-admin/src/http.js, và mặc định ở đó là khoá cứng.
+# scripts/security-scan.sh CHẶN việc vô tình thêm lại `header Content-Security-Policy`
+# vào block này — nếu không, lần sau ai đó "khôi phục cho chắc" sẽ giết JS admin ở prod
+# mà dev không hề báo.
 admin.nentang.vn {
 	import security_headers
-	# img-src gồm cdn.nentang.vn để hiện ảnh SP trong admin. PHẢI khớp MEDIA_PUBLIC_BASE
-	# (origin) mà seller-admin tự đặt — trình duyệt áp GIAO hai policy.
-	header Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://cdn.nentang.vn; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 	header Cache-Control "private, no-store"
 	reverse_proxy seller-admin:3001
 }

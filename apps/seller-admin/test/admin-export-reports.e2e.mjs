@@ -204,7 +204,7 @@ async function main() {
   /Hôm nay/.test(a.body) && /7 ngày/.test(a.body) && /Tháng trước/.test(a.body) ? ok('có nút chọn nhanh kỳ (gồm "Hôm nay" mới)') : bad('thiếu nút chọn nhanh');
   /So với kỳ trước:/.test(a.body) ? ok('hiện rõ kỳ đang so sánh') : bad('không nói kỳ so sánh là gì');
   /preset=last_month/.test(a.body) ? ok('nút "Tháng trước" mang &preset= để server chọn đúng kỳ so') : bad('nút tháng thiếu preset');
-  !/<script/.test(a.body) ? ok('trang Báo cáo vẫn no-JS') : bad('lọt <script>');
+  !/<script(?![^>]*nonce=)/.test(a.body) ? ok('trang Báo cáo: không script NÀO thiếu nonce (ADR-011)') : bad('lọt <script> không nonce');
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

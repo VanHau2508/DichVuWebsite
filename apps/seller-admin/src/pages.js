@@ -22,8 +22,8 @@ const FONTFACE = `@font-face{font-family:'Be Vietnam Pro';font-style:normal;font
 @font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/bevietnampro-800-latin-ext.woff2) format('woff2');unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
 @font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/bevietnampro-800-latin.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}`;
 const STYLE = `${FONTFACE}
-:root{--bg:#ffffff;--surf:#f5f6f7;--surface:#f5f6f7;--card:#ffffff;--ink0:#000000;--ink:#161823;--soft:#161823;--mut:#6b6f76;--faint:#9ea1a8;--bd:#e4e6e8;--bd2:#d0d3d6;--row:#f0f1f2;--navon:#f0f3f3;--fielddk:#2a2b32;--pri:#0fa3a3;--prid:#0b8585;--prip:#087272;--pri2:#0fa3a3;--brand:#0fa3a3;--brand2:#0fa3a3;--brandd:#0b8585;--wash:#e8f6f6;--washh:#d6efef;--good:#00b578;--goodbg:#e8f8f2;--warn:#ff8f1f;--warnbg:#fff7e8;--bad:#e8302f;--badbg:#fff1f0;--indigo:#1668dc;--indigobg:#f0f3f3;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.04);--sh:0 4px 12px rgba(0,0,0,.08);--sh-lg:0 8px 32px rgba(0,0,0,.12);--sh-pri:none;--r-sm:8px;--r:8px;--r-lg:12px;--r-xl:12px;--pill:999px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:20px;--sp-6:24px;--sp-7:32px;--sp-8:40px}
-@media(prefers-color-scheme:dark){:root{--bg:#12141a;--surf:#0c0e13;--surface:#0c0e13;--card:#171a21;--ink0:#000000;--ink:#e8eaee;--soft:#e8eaee;--mut:#a2a7b1;--faint:#7b818c;--bd:#2a2e37;--bd2:#3b404b;--row:#23272f;--navon:#17262a;--fielddk:#2a2b32;--pri:#2fd4d4;--prid:#5fe3e3;--prip:#20b7b7;--pri2:#2fd4d4;--brand:#2fd4d4;--brand2:#2fd4d4;--brandd:#5fe3e3;--wash:#11282a;--washh:#173538;--good:#2fd69a;--goodbg:#0e2b22;--warn:#ffa64d;--warnbg:#2e2210;--bad:#ff6b6a;--badbg:#2e1616;--indigo:#7db2ff;--indigobg:#1b2430;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.4);--sh:0 4px 12px rgba(0,0,0,.5);--sh-lg:0 8px 32px rgba(0,0,0,.6);--sh-pri:none}}
+:root{--bg:#ffffff;--surf:#f5f6f7;--surface:#f5f6f7;--card:#ffffff;--ink0:#000000;--ink:#161823;--soft:#161823;--mut:#6b6f76;--faint:#9ea1a8;--bd:#e4e6e8;--bd2:#d0d3d6;--row:#f0f1f2;--navon:#f0f3f3;--fielddk:#2a2b32;--pri:#0fa3a3;--prid:#0b8585;--prip:#087272;--pri2:#0fa3a3;--brand:#0fa3a3;--brand2:#0fa3a3;--brandd:#0b8585;--wash:#e8f6f6;--washh:#d6efef;--good:#00b578;--goodbg:#e8f8f2;--warn:#ff8f1f;--warnbg:#fff7e8;--bad:#e8302f;--badbg:#fff1f0;--indigo:#1668dc;--indigobg:#f0f3f3;--cyan:#25f4ee;--magenta:#fe2c55;--sky:#7dd8f5;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.04);--sh:0 4px 12px rgba(0,0,0,.08);--sh-lg:0 8px 32px rgba(0,0,0,.12);--sh-pri:none;--r-sm:8px;--r:8px;--r-lg:12px;--r-xl:12px;--pill:999px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:20px;--sp-6:24px;--sp-7:32px;--sp-8:40px}
+@media(prefers-color-scheme:dark){:root{--bg:#12141a;--surf:#0c0e13;--surface:#0c0e13;--card:#171a21;--ink0:#000000;--ink:#e8eaee;--soft:#e8eaee;--mut:#a2a7b1;--faint:#7b818c;--bd:#2a2e37;--bd2:#3b404b;--row:#23272f;--navon:#17262a;--fielddk:#2a2b32;--pri:#2fd4d4;--prid:#5fe3e3;--prip:#20b7b7;--pri2:#2fd4d4;--brand:#2fd4d4;--brand2:#2fd4d4;--brandd:#5fe3e3;--wash:#11282a;--washh:#173538;--good:#2fd69a;--goodbg:#0e2b22;--warn:#ffa64d;--warnbg:#2e2210;--bad:#ff6b6a;--badbg:#2e1616;--indigo:#7db2ff;--indigobg:#1b2430;--cyan:#25f4ee;--magenta:#fe2c55;--sky:#7dd8f5;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.4);--sh:0 4px 12px rgba(0,0,0,.5);--sh-lg:0 8px 32px rgba(0,0,0,.6);--sh-pri:none}}
 :root[data-theme=dark]{--bg:#12141a;--surf:#0c0e13;--surface:#0c0e13;--card:#171a21;--ink0:#000000;--ink:#e8eaee;--soft:#e8eaee;--mut:#a2a7b1;--faint:#7b818c;--bd:#2a2e37;--bd2:#3b404b;--row:#23272f;--navon:#17262a;--fielddk:#2a2b32;--pri:#2fd4d4;--prid:#5fe3e3;--prip:#20b7b7;--pri2:#2fd4d4;--brand:#2fd4d4;--brand2:#2fd4d4;--brandd:#5fe3e3;--wash:#11282a;--washh:#173538;--good:#2fd69a;--goodbg:#0e2b22;--warn:#ffa64d;--warnbg:#2e2210;--bad:#ff6b6a;--badbg:#2e1616;--indigo:#7db2ff;--indigobg:#1b2430;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.4);--sh:0 4px 12px rgba(0,0,0,.5);--sh-lg:0 8px 32px rgba(0,0,0,.6);--sh-pri:none}
 :root[data-theme=light]{--bg:#ffffff;--surf:#f5f6f7;--surface:#f5f6f7;--card:#ffffff;--ink0:#000000;--ink:#161823;--soft:#161823;--mut:#6b6f76;--faint:#9ea1a8;--bd:#e4e6e8;--bd2:#d0d3d6;--row:#f0f1f2;--navon:#f0f3f3;--fielddk:#2a2b32;--pri:#0fa3a3;--prid:#0b8585;--prip:#087272;--pri2:#0fa3a3;--brand:#0fa3a3;--brand2:#0fa3a3;--brandd:#0b8585;--wash:#e8f6f6;--washh:#d6efef;--good:#00b578;--goodbg:#e8f8f2;--warn:#ff8f1f;--warnbg:#fff7e8;--bad:#e8302f;--badbg:#fff1f0;--indigo:#1668dc;--indigobg:#f0f3f3;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.04);--sh:0 4px 12px rgba(0,0,0,.08);--sh-lg:0 8px 32px rgba(0,0,0,.12);--sh-pri:none}
 *{box-sizing:border-box}html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}body{margin:0;font-family:'Be Vietnam Pro',system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--surf);font-size:14px;line-height:1.45;letter-spacing:0;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
@@ -59,9 +59,13 @@ h3{font-size:16px;font-weight:600;margin:0 0 8px;letter-spacing:0;line-height:24
 .tbar .acc a{color:#161823;font-weight:500;background:#fff;border-radius:var(--pill);padding:8px 16px;line-height:20px;display:inline-block;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tbar .acc a:hover{background:var(--row);color:#161823;text-decoration:none}
 .tbar .acc button{background:var(--fielddk);border:0;color:#fff;cursor:pointer;font:inherit;font-size:14px;line-height:20px;padding:8px 14px;border-radius:var(--pill);transition:background .12s}.tbar .acc button:hover{background:#3a3b44}
-.content{padding:24px 32px 56px;max-width:1600px;margin:0 auto;width:100%;flex:1;background:var(--surf)}
-@media(max-width:1023px){.content{padding:20px 24px 48px}}
-@media(max-width:767px){.content{padding:16px 16px 40px}}
+/* --pad-x/--pad-t là MỘT nguồn sự thật cho khoảng đệm vùng nội dung: dải hero phải tràn
+   ra đúng mép vùng này bằng margin âm, nên nếu padding và margin âm khai riêng thì mỗi
+   lần đổi điểm ngắt là một dịp để hai số lệch nhau — hở một vệt xám ở mép, hoặc tràn
+   ngang sinh thanh cuộn. Khai một chỗ, cả hai cùng đọc. */
+.content{--pad-x:32px;--pad-t:24px;padding:var(--pad-t) var(--pad-x) 56px;max-width:1600px;margin:0 auto;width:100%;flex:1;background:var(--surf)}
+@media(max-width:1023px){.content{--pad-x:24px;--pad-t:20px;padding-bottom:48px}}
+@media(max-width:767px){.content{--pad-x:16px;--pad-t:16px;padding-bottom:40px}}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:var(--r-lg);padding:20px 24px;margin:16px 0;box-shadow:none}.card>h2:first-child,.card>h1:first-child{margin-top:0}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:16px 12px;border-bottom:1px solid var(--row);font-size:14px;line-height:22px;vertical-align:top}td:first-child,th:first-child{padding-left:0}td:last-child,th:last-child{padding-right:0}
 th{color:var(--mut);font-weight:500;font-size:13px;line-height:18px;text-transform:none;letter-spacing:0;white-space:nowrap;padding-top:12px;padding-bottom:12px;vertical-align:middle;border-bottom:1px solid var(--bd)}
@@ -179,6 +183,31 @@ a.metric:hover{transform:translateY(-3px);box-shadow:var(--sh);border-color:colo
 .stab.on{color:var(--pri);border-bottom-color:var(--pri)}
 .stab .cnt{display:inline-block;min-width:19px;padding:0 6px;border-radius:999px;background:var(--bd2,#e5e7eb);color:var(--soft);font-size:.72rem;font-weight:800;line-height:19px;text-align:center;font-variant-numeric:tabular-nums}
 .stab.on .cnt{background:var(--pri);color:#fff}
+/* ── docs/44 §4.15: dải hero ĐEN, chỉ trang Tổng quan ───────────────────────
+   Tràn hết chiều ngang VÙNG NỘI DUNG bằng margin âm đúng bằng --pad-x (xem chú thích ở
+   .content). overflow:hidden để hình thoi trang trí không đẻ thanh cuộn ngang. */
+.hero-band{position:relative;overflow:hidden;background:var(--ink0);color:#fff;min-height:150px;
+  margin:calc(-1 * var(--pad-t)) calc(-1 * var(--pad-x)) 0;padding:28px var(--pad-x) 76px;display:flex;align-items:center}
+/* Nêm chéo sáng bên phải — cùng màu canvas nên nó "cắt" dải đen chứ không thêm màu mới. */
+.hero-band::after{content:"";position:absolute;inset:0 0 0 auto;width:38%;background:var(--surf);
+  clip-path:polygon(100% 0,100% 100%,0 100%);pointer-events:none}
+@media(max-width:767px){.hero-band::after{display:none}}
+.hb-in{position:relative;z-index:2;max-width:min(760px,100%)}
+.hb-shop{font-size:20px;line-height:28px;font-weight:600;margin:0 0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hb-line{font-size:15px;line-height:22px;color:rgba(255,255,255,.78);margin:0 0 14px}
+/* Nút pill trên nền đen: nền #2A2B32 (Field on Black) — KHÔNG dùng teal ở đây, teal là
+   màu "bấm được" của vùng làm việc; đặt lên dải đen sẽ loãng nghĩa (docs/44 §7). */
+.hb-cta{display:inline-flex;align-items:center;gap:8px;background:var(--fielddk);color:#fff;
+  border-radius:var(--pill);padding:10px 18px;font-size:14px;line-height:20px;font-weight:500;text-decoration:none;transition:background .12s}
+.hb-cta:hover{background:#3a3b44;color:#fff;text-decoration:none}
+@media(max-width:767px){.hb-cta{padding:12px 18px}}
+/* Hình thoi: khối vuông xoay 45°, CHỈ trang trí (aria-hidden + pointer-events:none).
+   Đây là chỗ DUY NHẤT được dùng cyan/magenta của TikTok (docs/44 §2). */
+.hb-dot{position:absolute;transform:rotate(45deg);pointer-events:none;opacity:.9}
+@media(prefers-reduced-motion:no-preference){.hb-dot{transition:none}}
+/* Thẻ đầu tiên ĐÈ LÊN đáy dải (docs/44 §9 khuôn trang tổng quan). */
+.hero-lift{position:relative;z-index:3;margin-top:-60px}
+@media(max-width:767px){.hero-band{min-height:0;padding-bottom:64px}.hero-lift{margin-top:-48px}}
 .dash-hero{position:relative;overflow:hidden;background:linear-gradient(120deg,color-mix(in srgb,var(--brand) 7%,var(--card)),var(--card) 60%);border:1px solid var(--bd);border-radius:var(--r-lg);padding:26px 28px;margin:0 0 20px;box-shadow:var(--sh-sm)}
 .dash-hero::after{content:"";position:absolute;top:-40%;right:-8%;width:300px;height:300px;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--brand2) 12%,transparent),transparent 70%);pointer-events:none}
 .dash-hero .eyebrow{position:relative;font-size:.74rem;text-transform:uppercase;letter-spacing:.09em;color:var(--pri);font-weight:800;margin:0 0 4px}
@@ -1198,11 +1227,35 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null) {
     </div>
     <div class="todo-grid">${todoCells}</div></div>`;
 
+  // Nút pill THÍCH ỨNG: còn việc tồn → dẫn thẳng tới việc đầu tiên đang có (đúng danh sách
+  // đã lọc vừa làm ở lô trước); sạch việc → mời thêm sản phẩm. Một dải hero nói y hệt nhau
+  // ở mọi trạng thái thì chỉ là trang trí; nói khác nhau thì nó mới có việc để làm.
+  const firstOpen = TODO.find((x) => x.n > 0);
+  const cta = firstOpen
+    ? { href: firstOpen.href, label: `${firstOpen.label} (${firstOpen.n})` }
+    : { href: `${base}/products/new`, label: '+ Thêm sản phẩm' };
+  // Hình thoi trang trí — toạ độ cố định, KHÔNG ngẫu nhiên: dải hero nhảy chỗ mỗi lần tải
+  // trang là nhiễu thị giác, và sẽ làm mọi ảnh chụp so sánh trở nên vô dụng.
+  const DOTS = [
+    { t: '18%', l: '52%', s: 28, c: 'var(--cyan)' },   { t: '62%', l: '58%', s: 16, c: 'var(--magenta)' },
+    { t: '30%', l: '68%', s: 40, c: 'var(--sky)' },    { t: '12%', l: '80%', s: 20, c: 'var(--magenta)' },
+    { t: '70%', l: '86%', s: 32, c: 'var(--cyan)' },
+  ];
+  const dots = DOTS.map((d) => `<span class="hb-dot" style="top:${d.t};left:${d.l};width:${d.s}px;height:${d.s}px;background:${d.c}"></span>`).join('');
+  const heroBand = `<section class="hero-band" aria-labelledby="hb-shop">
+    <span aria-hidden="true">${dots}</span>
+    <div class="hb-in">
+      <h1 id="hb-shop" class="hb-shop">${esc(ctx.shopName || 'Cửa hàng của bạn')}</h1>
+      <p class="hb-line">${openWork === 0 ? 'Không còn việc tồn đọng — cửa hàng đang chạy êm.'
+        : `Bạn có <strong>${esc(openWork)}</strong> việc đang chờ xử lý.`}</p>
+      <a class="hb-cta" href="${cta.href}">${esc(cta.label)}</a>
+    </div></section>`;
+
   return layout('Tổng quan', ctx, `
-    <h1>Tổng quan</h1>
-    ${notice ? `<div class="card" style="border-color:#a7f3d0;background:#ecfdf5;color:#065f46">${esc(notice)}</div>` : ''}
-    ${setupCard}
-    ${todoCard}
+    ${heroBand}
+    ${notice ? `<div class="card hero-lift" style="border-color:var(--good);background:var(--goodbg);color:var(--good)">${esc(notice)}</div>` : ''}
+    ${setupCard ? `<div class="hero-lift">${setupCard}</div>` : ''}
+    ${(notice || setupCard) ? todoCard : `<div class="hero-lift">${todoCard}</div>`}
     <div class="dash-hero">
       <p class="eyebrow">Doanh thu 7 ngày gần nhất</p>
       <div class="hero-num">${money(d7)}</div>

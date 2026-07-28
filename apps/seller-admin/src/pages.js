@@ -22,7 +22,7 @@ const FONTFACE = `@font-face{font-family:'Be Vietnam Pro';font-style:normal;font
 @font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/bevietnampro-800-latin-ext.woff2) format('woff2');unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
 @font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/bevietnampro-800-latin.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}`;
 const STYLE = `${FONTFACE}
-:root{--bg:#ffffff;--surf:#f5f6f7;--surface:#f5f6f7;--card:#ffffff;--ink0:#000000;--ink:#161823;--soft:#161823;--mut:#6b6f76;--faint:#9ea1a8;--bd:#e4e6e8;--bd2:#d0d3d6;--row:#f0f1f2;--navon:#f0f3f3;--fielddk:#2a2b32;--pri:#0fa3a3;--prid:#0b8585;--prip:#087272;--pri2:#0fa3a3;--brand:#0fa3a3;--brand2:#0fa3a3;--brandd:#0b8585;--wash:#e8f6f6;--washh:#d6efef;--good:#00b578;--goodbg:#e8f8f2;--warn:#ff8f1f;--warnbg:#fff7e8;--bad:#e8302f;--badbg:#fff1f0;--indigo:#1668dc;--indigobg:#f0f3f3;--cyan:#25f4ee;--magenta:#fe2c55;--sky:#7dd8f5;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.04);--sh:0 4px 12px rgba(0,0,0,.08);--sh-lg:0 8px 32px rgba(0,0,0,.12);--sh-pri:none;--r-sm:8px;--r:8px;--r-lg:12px;--r-xl:12px;--pill:999px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:20px;--sp-6:24px;--sp-7:32px;--sp-8:40px}
+:root{--bg:#ffffff;--surf:#f5f6f7;--surface:#f5f6f7;--card:#ffffff;--ink0:#000000;--ink:#161823;--soft:#161823;--mut:#6b6f76;--faint:#9ea1a8;--bd:#e4e6e8;--bd2:#d0d3d6;--row:#f0f1f2;--navon:#f0f3f3;--fielddk:#2a2b32;--pri:#0fa3a3;--prid:#0b8585;--prip:#087272;--pri2:#0fa3a3;--brand:#0fa3a3;--brand2:#0fa3a3;--brandd:#0b8585;--wash:#e8f6f6;--washh:#d6efef;--good:#00b578;--goodbg:#e8f8f2;--warn:#ff8f1f;--warnbg:#fff7e8;--bad:#e8302f;--badbg:#fff1f0;--indigo:#1668dc;--indigobg:#f0f3f3;--cyan:#25f4ee;--magenta:#fe2c55;--sky:#7dd8f5;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.04);--sh:0 4px 12px rgba(0,0,0,.08);--sh-lg:0 8px 32px rgba(0,0,0,.12);--sh-pri:none;--r-xs:4px;--r-sm:8px;--r:8px;--r-lg:12px;--r-xl:12px;--pill:999px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:20px;--sp-6:24px;--sp-7:32px;--sp-8:40px}
 @media(prefers-color-scheme:dark){:root{--bg:#12141a;--surf:#0c0e13;--surface:#0c0e13;--card:#171a21;--ink0:#000000;--ink:#e8eaee;--soft:#e8eaee;--mut:#a2a7b1;--faint:#7b818c;--bd:#2a2e37;--bd2:#3b404b;--row:#23272f;--navon:#17262a;--fielddk:#2a2b32;--pri:#2fd4d4;--prid:#5fe3e3;--prip:#20b7b7;--pri2:#2fd4d4;--brand:#2fd4d4;--brand2:#2fd4d4;--brandd:#5fe3e3;--wash:#11282a;--washh:#173538;--good:#2fd69a;--goodbg:#0e2b22;--warn:#ffa64d;--warnbg:#2e2210;--bad:#ff6b6a;--badbg:#2e1616;--indigo:#7db2ff;--indigobg:#1b2430;--cyan:#25f4ee;--magenta:#fe2c55;--sky:#7dd8f5;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.4);--sh:0 4px 12px rgba(0,0,0,.5);--sh-lg:0 8px 32px rgba(0,0,0,.6);--sh-pri:none}}
 :root[data-theme=dark]{--bg:#12141a;--surf:#0c0e13;--surface:#0c0e13;--card:#171a21;--ink0:#000000;--ink:#e8eaee;--soft:#e8eaee;--mut:#a2a7b1;--faint:#7b818c;--bd:#2a2e37;--bd2:#3b404b;--row:#23272f;--navon:#17262a;--fielddk:#2a2b32;--pri:#2fd4d4;--prid:#5fe3e3;--prip:#20b7b7;--pri2:#2fd4d4;--brand:#2fd4d4;--brand2:#2fd4d4;--brandd:#5fe3e3;--wash:#11282a;--washh:#173538;--good:#2fd69a;--goodbg:#0e2b22;--warn:#ffa64d;--warnbg:#2e2210;--bad:#ff6b6a;--badbg:#2e1616;--indigo:#7db2ff;--indigobg:#1b2430;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.4);--sh:0 4px 12px rgba(0,0,0,.5);--sh-lg:0 8px 32px rgba(0,0,0,.6);--sh-pri:none}
 :root[data-theme=light]{--bg:#ffffff;--surf:#f5f6f7;--surface:#f5f6f7;--card:#ffffff;--ink0:#000000;--ink:#161823;--soft:#161823;--mut:#6b6f76;--faint:#9ea1a8;--bd:#e4e6e8;--bd2:#d0d3d6;--row:#f0f1f2;--navon:#f0f3f3;--fielddk:#2a2b32;--pri:#0fa3a3;--prid:#0b8585;--prip:#087272;--pri2:#0fa3a3;--brand:#0fa3a3;--brand2:#0fa3a3;--brandd:#0b8585;--wash:#e8f6f6;--washh:#d6efef;--good:#00b578;--goodbg:#e8f8f2;--warn:#ff8f1f;--warnbg:#fff7e8;--bad:#e8302f;--badbg:#fff1f0;--indigo:#1668dc;--indigobg:#f0f3f3;--pbtn:#0fa3a3;--pbtn-h:#0b8585;--pbtn-ink:#ffffff;--sh-sm:0 1px 2px rgba(0,0,0,.04);--sh:0 4px 12px rgba(0,0,0,.08);--sh-lg:0 8px 32px rgba(0,0,0,.12);--sh-pri:none}
@@ -153,7 +153,18 @@ input[type=file]{width:auto;padding:9px 12px;background:var(--surf);border:1.5px
 .mbar i{display:block;height:100%;border-radius:3px;background:var(--pri)}
 .sdot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;display:inline-block;margin-right:7px}
 .pcell{display:flex;align-items:center;gap:11px;min-width:0}
-.pthumb{width:44px;height:44px;flex:0 0 auto;border-radius:10px;object-fit:cover;border:1px solid var(--bd);background:var(--surf);display:block}
+/* docs/44 §4.7: ảnh thu nhỏ ĐƠN HÀNG 40px · SẢN PHẨM 56px, bo 4px, viền mảnh.
+   Bo 10px cũ là của bảng màu trước — ở giao diện vận hành, ảnh bo tròn nhiều làm hàng
+   bảng trông "mềm" và khó quét mắt theo cột. */
+.pthumb{width:40px;height:40px;flex:0 0 auto;border-radius:var(--r-xs);object-fit:cover;border:1px solid var(--row);background:var(--surf);display:block}
+.pthumb.lg{width:56px;height:56px}
+/* §4.7 checkbox: 16px, chọn → nền teal + tick trắng. accent-color làm đúng việc đó bằng
+   control NATIVE — chạy không cần JS, giữ nguyên hành vi bàn phím/đọc màn hình/forced-colors.
+   KHÔNG làm phần "bo 4px, viền 1.5px" của spec: trình duyệt bỏ qua border-radius trên
+   checkbox native, muốn có phải appearance:none rồi tự vẽ dấu tick — đổi lấy 4px bo góc
+   trên ô 16px bằng cách tự dựng lại một control biểu mẫu nằm ngay trên trang Đơn hàng là
+   không đáng. Ghi ra đây để lần sau không ai tưởng chỗ này bị bỏ sót. */
+input[type=checkbox]{width:16px;height:16px;accent-color:var(--pri)}
 .pthumb.ph{display:grid;place-items:center;color:color-mix(in srgb,var(--pri) 55%,var(--mut))}.pthumb.ph svg{width:20px;height:20px}
 .thumb{margin:0;width:120px;position:relative}.thumb img{width:120px;height:120px;object-fit:cover;border-radius:var(--r);border:1px solid var(--bd);display:block}
 .thumb .ph{width:120px;height:120px;border-radius:var(--r);border:1.5px dashed color-mix(in srgb,var(--pri) 25%,var(--bd));display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:.82rem;background:var(--surf);text-align:center}
@@ -183,6 +194,24 @@ a.metric:hover{transform:translateY(-3px);box-shadow:var(--sh);border-color:colo
 .stab.on{color:var(--pri);border-bottom-color:var(--pri)}
 .stab .cnt{display:inline-block;min-width:19px;padding:0 6px;border-radius:999px;background:var(--bd2,#e5e7eb);color:var(--soft);font-size:.72rem;font-weight:800;line-height:19px;text-align:center;font-variant-numeric:tabular-nums}
 .stab.on .cnt{background:var(--pri);color:#fff}
+/* ── docs/44 §4.11: thẻ gợi ý nền bạc hà, cuộn ngang ────────────────────────
+   VAI TRÒ KHÁC HẲN "Việc cần làm": ô kia là việc TỒN ĐỌNG (có số, phải xử lý), khối này
+   là tính năng người bán ĐANG TRẢ TIỀN mà chưa dùng tới. Nền tảng có khuyến mãi, giá vốn,
+   kiểm kê, tên miền riêng, CRM… — checklist onboarding giới thiệu được vài thứ rồi BIẾN
+   MẤT khi shop mở bán, và từ đó không còn gì dẫn người bán tới phần còn lại.
+   Cố ý KHÔNG đặt tên kiểu "đề xuất riêng cho bạn": khối này không cá nhân hoá theo dữ liệu,
+   gọi vậy là hứa quá lời — tiêu đề thật (xem renderOverview) chỉ nói đúng thứ nó làm.
+   Đừng chép nguyên văn chuỗi hiển thị vào comment: CSS đi kèm MỌI trang nên chuỗi ở đây
+   khớp cả regex của e2e đang kiểm khối này VẮNG mặt. */
+.sugg-row{display:flex;gap:16px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;padding-bottom:4px}
+.sugg-card{flex:0 0 auto;width:min(280px,78vw);background:var(--wash);border-radius:var(--r-sm);padding:16px 20px;text-decoration:none;color:var(--ink);transition:background .12s;display:block}
+.sugg-card:hover{background:var(--washh);text-decoration:none;color:var(--ink)}
+.sugg-card .st{font-size:15px;line-height:22px;font-weight:600;margin:0 0 4px}
+.sugg-card .sd{font-size:13px;line-height:20px;color:var(--mut);margin:0 0 10px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* "Mở ›" theo đúng §4.11: 13px/500 --indigo. Đã cân nhắc đổi sang teal (spec cho phép cả
+   hai) nhưng #1668DC trên nền bạc hà #E8F6F6 đạt 4.68:1 — qua AA cho chữ thường, trong khi
+   #0FA3A3 chỉ ~3:1. Giữ indigo cũng tách bạch: teal là nút bấm, đây là link trong thẻ. */
+.sugg-card .sa{font-size:13px;line-height:20px;font-weight:500;color:var(--indigo)}
 /* ── docs/44 §4.15: dải hero ĐEN, chỉ trang Tổng quan ───────────────────────
    Tràn hết chiều ngang VÙNG NỘI DUNG bằng margin âm đúng bằng --pad-x (xem chú thích ở
    .content). overflow:hidden để hình thoi trang trí không đẻ thanh cuộn ngang. */
@@ -1130,7 +1159,7 @@ function revenueChart(series) {
       ${bars}${labels}</svg>`;
 }
 
-export function renderOverview(ctx, shopId, s, setup = null, notice = null) {
+export function renderOverview(ctx, shopId, s, setup = null, notice = null, shopStatus = null) {
   const base = `/shops/${esc(shopId)}`;
   const st = s?.status ?? {};
   const rev = s?.revenue ?? {};
@@ -1153,7 +1182,7 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null) {
   const top = (s?.top_products ?? []);
   const maxTop = Math.max(...top.map((t) => Number(t.revenue) || 0), 1);
   const topRows = top.map((t) => `<tr>
-      <td><div class="pcell">${t.image_url ? `<img class="pthumb" src="${esc(t.image_url)}" alt="" loading="lazy" width="44" height="44">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0">${esc(t.title)}<div class="muted" style="font-size:.8rem">${esc(t.sku ?? '')}</div></div></div></td>
+      <td><div class="pcell">${t.image_url ? `<img class="pthumb" src="${esc(t.image_url)}" alt="" loading="lazy" width="40" height="40">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0">${esc(t.title)}<div class="muted" style="font-size:.8rem">${esc(t.sku ?? '')}</div></div></div></td>
       <td class="num right">${esc(t.qty)}</td>
       <td class="num right"><strong>${money(t.revenue)}</strong><div class="mbar"><i style="width:${Math.round((Number(t.revenue) || 0) / maxTop * 100)}%"></i></div></td></tr>`).join('');
   const chart = revenueChart(s?.series);
@@ -1251,6 +1280,27 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null) {
       <a class="hb-cta" href="${cta.href}">${esc(cta.label)}</a>
     </div></section>`;
 
+  // Cổng là shopStatus === 'active', KHÔNG phải "không có checklist". Ba trạng thái khác
+  // đều rơi vào nhánh setup === null: 'suspended'/'terminated' (đang bị cắt dịch vụ — mời
+  // họ dùng thêm tính năng "đã nằm trong gói" là vô duyên) và cả trường hợp gọi API lấy
+  // shop hỏng (shopStatus = null). Fail-closed: không biết chắc thì không quảng bá.
+  // Giới hạn owner/admin: mọi đường dẫn dưới đây đều cần quyền cấu hình, hiện cho nhân
+  // viên bán hàng chỉ tổ dẫn họ tới trang 403.
+  const canCfg = ctx.role === 'owner' || ctx.role === 'admin';
+  const SUGG = [
+    { t: 'Khuyến mãi & flash sale', d: 'Đặt lịch giảm giá tự động theo khung giờ — giá về đúng cũ khi hết hạn, không phải sửa tay.', href: `${base}/promotions` },
+    { t: 'Tên miền riêng', d: 'Trỏ tên miền của bạn về cửa hàng, có HTTPS tự động.', href: `${base}/domains` },
+    { t: 'Giá vốn & báo cáo lãi', d: 'Nhập giá vốn từng biến thể để báo cáo hiện LÃI THẬT, không chỉ doanh thu.', href: `${base}/reports` },
+    { t: 'Nhập hàng & kiểm kê', d: 'Phiếu nhập tính giá vốn bình quân, kiểm kê 2 lượt đối chiếu tồn thực tế.', href: `${base}/purchasing` },
+    { t: 'Khách hàng', d: 'Xem lịch sử mua của từng khách, ghi chú riêng để chăm sóc lại.', href: `${base}/customers` },
+  ];
+  const suggCard = (shopStatus === 'active' && canCfg) ? `<div class="card">
+      <h2 style="margin:0 0 4px">Có thể bạn chưa dùng</h2>
+      <p class="muted" style="margin:0 0 14px;font-size:13px">Những phần này đã nằm trong gói của bạn.</p>
+      <div class="sugg-row">${SUGG.map((x) => `<a class="sugg-card" href="${x.href}">
+        <p class="st">${esc(x.t)}</p><p class="sd">${esc(x.d)}</p><span class="sa">Mở ›</span></a>`).join('')}</div>
+    </div>` : '';
+
   return layout('Tổng quan', ctx, `
     ${heroBand}
     ${notice ? `<div class="card hero-lift" style="border-color:var(--good);background:var(--goodbg);color:var(--good)">${esc(notice)}</div>` : ''}
@@ -1280,6 +1330,7 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null) {
           <td class="num right"><strong style="color:${l.available <= 0 ? '#b91c1c' : '#b45309'}">${esc(l.available)}</strong></td></tr>`).join('')}
       </tbody></table>
       <p class="muted" style="font-size:.82rem;margin-bottom:0">Chỉnh ngưỡng cảnh báo trong <a href="${base}/settings">Cài đặt</a>. Email nhắc gửi hằng ngày nếu shop có email liên hệ.</p></div>` : ''}
+    ${suggCard}
     ${REPORT_ROLES.has(ctx.role) ? `<p style="margin-top:4px"><a class="btn alt sm" href="${base}/reports">Xem báo cáo lợi nhuận chi tiết →</a></p>` : ''}
     <p class="muted" style="font-size:.82rem">Doanh thu ghi tại <strong>ngày thanh toán</strong> (đơn đã từng thu tiền), hoàn tiền trừ tại ngày phiếu; mốc ngày theo giờ Việt Nam.</p>`);
 }
@@ -1785,7 +1836,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
         vào trang sản phẩm → <strong>Điều chỉnh tồn</strong> để cộng lại số lượng — hệ thống KHÔNG tự cộng
         vì hàng có thể hỏng/thiếu khi về tới nơi.</p></div>` : ''}
     <div class="card"><h2>Sản phẩm</h2><table><tbody>
-      ${(o.lines ?? []).map((l) => `<tr><td><div class="pcell">${l.image_url ? `<img class="pthumb" src="${esc(l.image_url)}" alt="" loading="lazy" width="44" height="44">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0">${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span>${Number(l.shipped_qty) > 0 ? ` <span class="muted">· đã gửi ${esc(l.shipped_qty)}/${esc(l.qty)}</span>` : ''}${Number(l.returned_qty) > 0 ? ` <span class="muted">· đã trả ${esc(l.returned_qty)}</span>` : ''}</div></div></td><td class="muted">${money(l.unit_price_vnd)} × ${esc(l.qty)}</td><td style="text-align:right">${money(Number(l.unit_price_vnd) * l.qty)}</td></tr>`).join('')}
+      ${(o.lines ?? []).map((l) => `<tr><td><div class="pcell">${l.image_url ? `<img class="pthumb" src="${esc(l.image_url)}" alt="" loading="lazy" width="40" height="40">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0">${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span>${Number(l.shipped_qty) > 0 ? ` <span class="muted">· đã gửi ${esc(l.shipped_qty)}/${esc(l.qty)}</span>` : ''}${Number(l.returned_qty) > 0 ? ` <span class="muted">· đã trả ${esc(l.returned_qty)}</span>` : ''}</div></div></td><td class="muted">${money(l.unit_price_vnd)} × ${esc(l.qty)}</td><td style="text-align:right">${money(Number(l.unit_price_vnd) * l.qty)}</td></tr>`).join('')}
     </tbody></table>
       <div style="text-align:right;margin-top:8px" class="muted">Tạm tính ${money(o.subtotal_vnd)} · Ship ${money(o.shipping_vnd)}</div>
       <div style="text-align:right;font-weight:700;font-size:1.1rem">Tổng ${money(o.total_vnd)}</div></div>
@@ -2090,7 +2141,7 @@ export function renderProducts(ctx, shopId, data, filter, notice = null, nonce =
   };
   const rows = products.map((p) => `<tr>
     <td><input type="checkbox" name="product_ids" value="${esc(p.id)}" form="pbulk" aria-label="Chọn ${esc(p.title)}"></td>
-    <td><div class="pcell">${p.image_url ? `<img class="pthumb" src="${esc(p.image_url)}" alt="" loading="lazy" width="44" height="44">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0"><a href="/shops/${esc(shopId)}/products/${esc(p.id)}">${esc(p.title)}</a><div class="muted" style="font-size:.8rem">${esc(p.slug)}</div></div></div></td>
+    <td><div class="pcell">${p.image_url ? `<img class="pthumb lg" src="${esc(p.image_url)}" alt="" loading="lazy" width="56" height="56">` : `<span class="pthumb lg ph">${IC_IMG}</span>`}<div style="min-width:0"><a href="/shops/${esc(shopId)}/products/${esc(p.id)}">${esc(p.title)}</a><div class="muted" style="font-size:.8rem">${esc(p.slug)}</div></div></div></td>
     <td>${badge(p.status, PSTATUS[p.status] ?? p.status)}</td>
     <td class="num right">${money(p.price_vnd)}</td>
     <td class="num right">${p.variant_count}</td>

@@ -250,7 +250,7 @@ async function overviewPage(res, me, cookie, shopId, live) {
     };
   }
   const notice = live === '1' ? '🎉 Cửa hàng đã mở bán chính thức! Chúc bạn nhiều đơn hàng.' : null;
-  return sendHtml(res, 200, V.renderOverview(ctx, shopId, r.json, setup, notice));
+  return sendHtml(res, 200, V.renderOverview(ctx, shopId, r.json, setup, notice, shop?.status ?? null));
 }
 
 // Mở bán (BFF): onboarding → active qua seller, rồi về overview kèm chúc mừng. RBAC ở đây;

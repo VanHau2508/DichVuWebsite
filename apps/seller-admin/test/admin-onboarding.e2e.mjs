@@ -83,6 +83,14 @@ async function main() {
   r.status === 200 && /Hoàn tất thiết lập cửa hàng/.test(r.body) && /0\/4 xong/.test(r.body)
     && /Gắn ngân hàng nhận tiền/.test(r.body) && /Thêm sản phẩm/.test(r.body) && /Mở bán chính thức/.test(r.body) && !r.body.includes('<script')
     ? ok('checklist 0/4 + 4 mục + nút Mở bán, no-JS') : bad('checklist sai', r.body.slice(0, 200));
+  // docs/44 §4.11: khối gợi ý KHÔNG được đứng cạnh checklist thiết lập. Hai khối cùng bảo
+  // người bán "hãy làm cái này" ở một màn hình là nhiễu, và checklist mới là thứ có thứ tự
+  // ưu tiên đúng cho shop chưa mở bán.
+  // Bám class="sugg-row" chứ KHÔNG bám chữ hiển thị: chữ hiển thị còn nằm trong <style>
+  // (tên lớp, chú thích) nên tìm theo chữ sẽ khớp cả khi khối vắng mặt.
+  !/class="sugg-row"/.test(r.body)
+    ? ok('shop onboarding: KHÔNG hiện khối gợi ý (checklist đang giữ vai trò dẫn dắt)')
+    : bad('khối gợi ý đứng cạnh checklist');
 
   sect('2. Thêm sản phẩm + gắn ngân hàng nhận tiền → mục ✓, tiến độ tăng');
   await adm('POST', `/shops/${A.shopId}/products`, { cookie: A.cookie, origin: OADM, form: { title: 'SP demo', slug: `sp-${uniq()}`, price_vnd: '100000', status: 'draft', sku: `SKU-${uniq()}`, variant_price_vnd: '100000' } });
@@ -98,6 +106,22 @@ async function main() {
 
   sect('4. Shop active: checklist ẩn + banner chúc mừng');
   r = await adm('GET', `${OV}?live=1`, { cookie: A.cookie });
+  // Mở bán xong thì checklist biến mất — nếu không có gì thay thế, người bán mất luôn
+  // đường dẫn tới các tính năng chưa dùng. Đây chính là chỗ khối gợi ý lấp vào.
+  const suggHrefs = [...r.body.matchAll(/class="sugg-card" href="([^"]+)"/g)].map((m) => m[1]);
+  /class="sugg-row"/.test(r.body) && suggHrefs.length === 5 && suggHrefs.every((h) => h.startsWith(`/shops/${A.shopId}/`))
+    ? ok(`shop active: khối gợi ý XUẤT HIỆN, ${suggHrefs.length} thẻ trỏ đúng shop`)
+    : bad('shop active không thấy khối gợi ý', `hrefs=${suggHrefs.length}`);
+  // BẤM THẬT từng thẻ. "Route có tồn tại" chưa đủ: thẻ dẫn tới 404/403 còn tệ hơn không có
+  // thẻ — nó dạy người bán rằng khối gợi ý là đồ trang trí. Đây cũng là thứ duy nhất bắt
+  // được khi ai đó đổi tên đường dẫn mà quên sửa danh sách SUGG.
+  const dead = [];
+  for (const h of suggHrefs) {
+    const hit = await adm('GET', h, { cookie: A.cookie });
+    if (hit.status !== 200) dead.push(`${h}→${hit.status}`);
+  }
+  dead.length === 0 ? ok('cả 5 thẻ gợi ý mở được (200), không thẻ nào dẫn tới ngõ cụt')
+    : bad('thẻ gợi ý dẫn tới ngõ cụt', dead.join(' '));
   r.status === 200 && !/Hoàn tất thiết lập cửa hàng/.test(r.body) && /mở bán chính thức/i.test(r.body) && !r.body.includes('<script')
     ? ok('active: checklist ẩn + banner chúc mừng') : bad('sau mở bán sai', r.body.slice(0, 160));
 
@@ -114,6 +138,19 @@ async function main() {
   r = await adm('POST', `/shops/${Bo.shopId}/activate`, { cookie: Bo.cookie });
   const stB2 = await statusOf(Bo.shopId);
   r.status === 403 && stB2 === 'onboarding' ? ok('activate không Origin → 403, B vẫn onboarding') : bad('CSRF activate không chặn', `${r.status} stB=${stB2}`);
+
+  sect('8. Shop bị khoá: KHÔNG quảng bá tính năng "đã nằm trong gói"');
+  // Cổng của khối gợi ý là shopStatus === 'active', KHÔNG phải "vắng checklist". Nếu ai đó
+  // sau này rút gọn về !setup thì shop suspended/terminated rơi vào nhánh HIỆN — tức mời
+  // người đang bị cắt dịch vụ dùng thêm tính năng họ "đã trả tiền". Test này khoá điều đó.
+  await owner.query(`UPDATE shops SET status='suspended' WHERE id=$1`, [A.shopId]);
+  r = await adm('GET', OV, { cookie: A.cookie });
+  const hidSusp = r.status === 200 && !/class="sugg-row"/.test(r.body);
+  await owner.query(`UPDATE shops SET status='active' WHERE id=$1`, [A.shopId]);
+  r = await adm('GET', OV, { cookie: A.cookie });
+  hidSusp && /class="sugg-row"/.test(r.body)
+    ? ok('suspended → ẩn khối gợi ý; trả lại active → hiện lại')
+    : bad('khối gợi ý không theo trạng thái shop', `hidSusp=${hidSusp}`);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

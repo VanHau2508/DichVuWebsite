@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Chạy ĐÚNG những gì CI chạy, nhưng ở máy này.
-#   bash scripts/verify-all.sh          # đầy đủ (~45 phút)
-#   bash scripts/verify-all.sh --fast   # bỏ 80 bộ e2e (~3 phút) — dùng khi sửa vặt
+#   bash scripts/ci-local.sh          # đầy đủ (~45 phút)
+#   bash scripts/ci-local.sh --fast   # bỏ 80 bộ e2e (~3 phút) — dùng khi sửa vặt
 #
 # VÌ SAO CÓ FILE NÀY. Trước đây "đã test, xanh" có nghĩa là "vài bộ e2e tôi tự chọn đã
 # qua ở máy tôi". Nó KHÔNG bao gồm quét bảo mật, không bao gồm 3 bước smoke, và bỏ sót

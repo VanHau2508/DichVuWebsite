@@ -340,6 +340,70 @@ const IC_CLIP = ic('<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9
 const IC_GIFT = ic('<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M5 12v9h14v-9"/><path d="M12 8v13"/><path d="M12 8S10.5 4 8.5 4 6 6 6 6s1 2 3 2M12 8s1.5-4 3.5-4S18 6 18 6s-1 2-3 2"/>');
 
 // Điều hướng dọc trong 1 shop (sidebar) — chỉ hiện mục vai trò được phép.
+
+// ── Trợ giúp (0107) ────────────────────────────────────────────────────────
+// Thông tin liên hệ lấy từ BIẾN MÔI TRƯỜNG của nền tảng, không phải bảng cấu hình: nó là
+// một dòng cho toàn hệ, đổi vài tháng một lần, và thêm cả một bảng + màn hình quản trị cho
+// một dòng là chi phí không đổi lại được gì. Không đặt ⇒ phần liên hệ trực tiếp ẩn đi và
+// người bán vẫn gửi được yêu cầu qua form (đường luôn có).
+const SUPPORT_ZALO = process.env.SUPPORT_ZALO ?? '';
+const SUPPORT_PHONE = process.env.SUPPORT_PHONE ?? '';
+const SUPPORT_MAIL = process.env.SUPPORT_EMAIL ?? '';
+const SUPPORT_HOURS = process.env.SUPPORT_HOURS ?? '';
+
+const TICKET_ST = { open: ['Đang chờ xử lý', 'pending'], resolved: ['Đã xử lý', 'delivered'] };
+
+export function renderHelp(ctx, shopId, tickets, notice, err, form = {}) {
+  const base = `/shops/${esc(shopId)}`;
+  const rows = (tickets ?? []).map((t) => `<tr>
+    <td>${esc(t.subject)}<div class="muted" style="font-size:.8rem">${esc(String(t.body).slice(0, 90))}${String(t.body).length > 90 ? '…' : ''}</div></td>
+    <td>${badge(TICKET_ST[t.status]?.[1] ?? 'draft', TICKET_ST[t.status]?.[0] ?? t.status)}</td>
+    <td class="muted">${dt(t.created_at)}</td></tr>`).join('');
+
+  const contacts = [
+    SUPPORT_ZALO ? ['Zalo', esc(SUPPORT_ZALO)] : null,
+    SUPPORT_PHONE ? ['Điện thoại', `<a href="tel:${esc(SUPPORT_PHONE.replace(/\s/g, ''))}">${esc(SUPPORT_PHONE)}</a>`] : null,
+    SUPPORT_MAIL ? ['Email', `<a href="mailto:${esc(SUPPORT_MAIL)}">${esc(SUPPORT_MAIL)}</a>`] : null,
+  ].filter(Boolean);
+
+  return layout('Trợ giúp', ctx, `
+    <h1>Trợ giúp</h1>
+    <p class="muted" style="margin-top:-8px">Gặp trục trặc hay không biết làm ở đâu — gửi cho chúng tôi, đừng loay hoay một mình.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="card" style="border-color:var(--good);background:var(--goodbg);color:var(--good)">${esc(notice)}</div>` : ''}
+
+    ${contacts.length ? `<div class="card">
+      <h2 style="margin-top:0">Liên hệ trực tiếp</h2>
+      <p class="muted" style="margin-top:-6px">Cần gấp thì gọi hoặc nhắn — nhanh hơn gửi yêu cầu.</p>
+      <div class="tblscroll"><table data-cards><tbody>
+        ${contacts.map(([k, v]) => `<tr><td style="width:140px">${esc(k)}</td><td><strong>${v}</strong></td></tr>`).join('')}
+        ${SUPPORT_HOURS ? `<tr><td>Giờ làm việc</td><td class="muted">${esc(SUPPORT_HOURS)}</td></tr>` : ''}
+      </tbody></table></div>
+    </div>` : ''}
+
+    <div class="card">
+      <h2 style="margin-top:0">Gửi yêu cầu hỗ trợ</h2>
+      <form method="POST" action="${base}/help">
+        <label>Vấn đề của bạn là gì?</label>
+        <input name="subject" maxlength="200" required placeholder="vd: Không tạo được mã vận đơn GHN"
+               value="${esc(form.subject ?? '')}">
+        <label style="margin-top:12px">Mô tả chi tiết</label>
+        <textarea name="body" rows="6" maxlength="5000" required
+          placeholder="Bạn đang làm gì thì gặp lỗi? Màn hình hiện thông báo gì? Càng cụ thể, chúng tôi càng xử lý nhanh.">${esc(form.body ?? '')}</textarea>
+        <p class="muted" style="font-size:13px;margin:8px 0 0">Chúng tôi thấy được tên cửa hàng và email của bạn, không cần ghi lại.</p>
+        <div class="savebar"><button class="btn" type="submit">Gửi yêu cầu</button></div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Yêu cầu đã gửi</h2>
+      ${rows ? `<div class="tblscroll"><table data-cards><thead><tr>
+          <th>Nội dung</th><th>Trạng thái</th><th>Gửi lúc</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<p class="muted" style="margin-bottom:0">Bạn chưa gửi yêu cầu nào.</p>'}
+    </div>`);
+}
+
+
 function sideNav(ctx) {
   if (!ctx.shopId) return '';
   const base = `/shops/${esc(ctx.shopId)}`;
@@ -368,7 +432,10 @@ function sideNav(ctx) {
           + it(`${base}/notify`, 'Thông báo', IC_BELL, ctx.active === 'notify', SHIPPING_ROLES.has(ctx.role))
           + it(`${base}/export`, 'Xuất dữ liệu', IC_DOWN, ctx.active === 'export', EXPORT_ROLES.has(ctx.role))
           + it(`${base}/theme`, 'Giao diện', IC_PALETTE, ctx.active === 'theme', CONTENT_ROLES.has(ctx.role))
-          + it(`${base}/settings`, 'Cài đặt', IC_GEAR, ctx.active === 'settings', CONTENT_ROLES.has(ctx.role));
+          + it(`${base}/settings`, 'Cài đặt', IC_GEAR, ctx.active === 'settings', CONTENT_ROLES.has(ctx.role))
+          // Trợ giúp hiện cho MỌI vai: bắt phải có quyền cấu hình mới kêu cứu được là chặn
+          // đúng người đang cần giúp — nhân viên gặp lỗi lúc 9 giờ tối là người duy nhất có mặt.
+          + it(`${base}/help`, 'Trợ giúp', IC_LOG, ctx.active === 'help', true);
   return `<nav class="side-nav">${t}</nav>`;
 }
 

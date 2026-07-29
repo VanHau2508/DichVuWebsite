@@ -141,7 +141,7 @@ jobs:
           suites=(apps/*/test/*.e2e.mjs apps/*/test/e2e.mjs)
           # "rỗng = xanh giả" (cùng kỷ luật bước unit test): mất-ròng dù 1 file cũng ĐỎ.
           # Xoá bộ test có chủ đích thì hạ số này trong CÙNG commit — buộc phải cố ý.
-          MIN_E2E=80
+          MIN_E2E=83
           [ "${#suites[@]}" -ge "$MIN_E2E" ] || { echo "chỉ ${#suites[@]} bộ e2e (<$MIN_E2E) — nghi mất file"; exit 1; }
           echo "chạy ${#suites[@]} bộ e2e"
           for f in "${suites[@]}"; do

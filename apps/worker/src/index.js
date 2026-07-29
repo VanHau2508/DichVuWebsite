@@ -244,6 +244,16 @@ function compose(topic, p) {
         { url: p.accept_url, label: 'Chấp nhận lời mời' }),
     };
   }
+  if (topic === 'support.ticket_created') {
+    return {
+      subject: `[Hỗ trợ] ${p.subject ?? '(không tiêu đề)'}`,
+      text: `Yêu cầu hỗ trợ mới từ shop ${p.shop_id ?? ''}
+Từ: ${p.from ?? '(không rõ)'}
+`
+        + `${p.context_url ? `Trang: ${p.context_url}
+` : ''}Mã phiếu: ${p.ticket_id ?? ''}`,
+    };
+  }
   if (topic === 'stock.low') {
     const lines = (p.items ?? []).map((i) => `  • ${i.title}${i.variant_title ? ` (${i.variant_title})` : ''} — còn ${i.available}`).join('\n');
     const rowsHtml = (p.items ?? []).map((i) => `<tr><td style="padding:6px 12px 6px 0;border-bottom:1px solid #f3f4f6">${escHtml(i.title)}${i.variant_title ? ` <span style="color:#6b7280">(${escHtml(i.variant_title)})</span>` : ''}</td><td align="right" style="padding:6px 0;border-bottom:1px solid #f3f4f6;white-space:nowrap"><strong>còn ${escHtml(i.available)}</strong></td></tr>`).join('');
@@ -339,9 +349,38 @@ async function poll() {
   } finally { if (c) c.release(); }
 }
 
+// Yêu cầu hỗ trợ → CHỦ NỀN TẢNG. Telegram trước (tới ngay), email sau nếu có cấu hình.
+// KHÔNG throw: hỗ trợ mà làm job fail rồi retry sẽ nhân bản thông báo, và phiếu thì đã nằm
+// trong DB rồi — mất thông báo còn hơn spam chủ nền tảng mười lần cùng một phiếu.
+const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL ?? '';
+async function deliverSupportAlert(p, shopId, outboxId) {
+  const line = `🆘 Yêu cầu hỗ trợ mới
+Shop: ${shopId}
+Từ: ${p?.from ?? '(không rõ)'}
+`
+    + `Tiêu đề: ${p?.subject ?? ''}
+${p?.context_url ? `Trang: ${p.context_url}
+` : ''}`
+    + `Mã phiếu: ${p?.ticket_id ?? ''}`;
+  try {
+    if (TELEGRAM_ON && ALERT_TELEGRAM_CHAT_ID) await tgSend(ALERT_TELEGRAM_CHAT_ID, line);
+  } catch (e) { log('warn', 'support_alert_telegram_failed', { message: e.message }); }
+  try {
+    if (SUPPORT_EMAIL) {
+      await deliverNotification('support.ticket_created', { ...p, to: SUPPORT_EMAIL }, outboxId);
+    }
+  } catch (e) { log('warn', 'support_alert_email_failed', { message: e.message }); }
+  log('info', 'support_alert', { shopId, ticket: p?.ticket_id ?? null,
+    telegram: Boolean(TELEGRAM_ON && ALERT_TELEGRAM_CHAT_ID), email: Boolean(SUPPORT_EMAIL) });
+}
+
 // ── consumer: queue → email ──────────────────────────────────────────────────
 const worker = new Worker('email', async (job) => {
   const { topic, payload, shopId, outboxId } = job.data;
+  // Yêu cầu hỗ trợ (0107) đi ĐƯỜNG RIÊNG: người nhận là CHỦ NỀN TẢNG, không phải khách của
+  // shop. Nhét vào đường email-khách sẽ phải bịa payload.to, và bịa địa chỉ trong đường gửi
+  // thư là cách gửi nhầm người.
+  if (topic === 'support.ticket_created') { await deliverSupportAlert(payload, shopId, outboxId); return; }
   // Telegram cho CHỦ SHOP chạy TRƯỚC + ĐỘC LẬP email: nếu email khách lỗi (relay từ chối →
   // throw → retry → dead-letter), chủ shop VẪN nhận "đơn mới". Idempotent theo outboxId +
   // tự nuốt lỗi (không throw) → không làm fail/nuốt email.

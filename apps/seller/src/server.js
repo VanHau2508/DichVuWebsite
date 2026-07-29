@@ -22,6 +22,7 @@ import { db, withTenant, audit } from './db.js';
 import { CATALOG_ROUTES } from './catalog.js';
 import { allowPrivateHosts } from '../fetch-image.js';
 import { IMPORT_ROUTES } from './import.js';
+import { SUPPORT_ROUTES } from './support.js';
 import { INVENTORY_ROUTES } from './inventory.js';
 import { MEDIA_ROUTES, initMedia, mediaPublicUrl } from './media.js';
 import { THEME_ADMIN_ROUTES } from './theme.js';
@@ -344,6 +345,7 @@ const ROUTES = [
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/members/${UUID}$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b, p) => removeMember(res, ctx, p[1]) },
   ...CATALOG_ROUTES,
   ...IMPORT_ROUTES,
+  ...SUPPORT_ROUTES,
   ...INVENTORY_ROUTES,
   ...MEDIA_ROUTES,
   ...THEME_ADMIN_ROUTES,

@@ -217,8 +217,20 @@ async function main() {
   /<nav class="tabbar"/.test(home) ? ok('trang chủ có thanh tab đáy') : bad('thiếu thanh tab đáy ở trang chủ');
   (home.match(/class="cart-badge"/g) ?? []).length === 2 ? ok('badge giỏ có ở CẢ header lẫn tab đáy') : bad('badge giỏ không đủ 2 chỗ');
   const pdp = await sf(A.host, `/p/${P.slug}`);
-  /<nav class="tabbar"/.test(pdp) && /body:has\(\.pd-actions\) \.tabbar\{display:none\}/.test(pdp)
-    ? ok('trang SP: tab đáy bị CSS ẩn để nhường thanh mua') : bad('PDP không ẩn tab đáy');
+  // Đổi cơ chế: trước đây tab đáy VẪN được phát rồi nhờ CSS `body:has(.pd-actions)` ẩn đi.
+  // :has() chỉ có từ Chrome 105/Safari 15.4/Firefox 121 — trình duyệt cũ bỏ qua luật đó thì
+  // tab đáy (z-index 60, fixed) ĐÈ LÊN thanh mua (z-index 55) và che nút "Thêm vào giỏ".
+  // Nay SERVER quyết: trang có thanh mua thì KHÔNG phát thẻ tab đáy nữa. Khẳng định đổi
+  // theo — và chặt hơn, vì "không có thẻ" đúng trên mọi trình duyệt, còn "có thẻ + có luật
+  // CSS" chỉ đúng trên trình duyệt hiểu luật đó.
+  if (/class="pd-actions"/.test(pdp)) {
+    !/<nav class="tabbar"/.test(pdp) && /<body class="[^"]*has-buybar/.test(pdp)
+      ? ok('trang SP có thanh mua: KHÔNG phát tab đáy (không phụ thuộc :has())')
+      : bad('PDP vẫn phát tab đáy → che nút mua trên trình duyệt cũ');
+  } else {
+    /<nav class="tabbar"/.test(pdp) ? ok('trang SP hết hàng (không thanh mua): vẫn có tab đáy')
+      : bad('PDP không thanh mua mà cũng mất tab đáy');
+  }
   /\.pd-actions\{position:sticky;bottom:0/.test(pdp) ? ok('trang SP có thanh mua dính đáy (mobile)') : bad('thiếu thanh mua dính đáy');
   /Mua ngay/.test(pdp) ? ok('nút "Mua ngay" còn nguyên (không hồi quy)') : bad('mất nút Mua ngay');
 

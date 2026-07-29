@@ -1361,8 +1361,15 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
   .tabbar svg{width:22px;height:22px;display:block}
   /* Nội dung phải chừa chỗ cho thanh cố định, không thì footer bị che. */
   body{padding-bottom:calc(56px + env(safe-area-inset-bottom))}
-  /* Trang SP: ẩn tab bar, nhường chỗ cho thanh MUA dính đáy (y như Shopee). */
+  /* Trang SP: nhường chỗ cho thanh MUA dính đáy (y như Shopee).
+     Class .has-buybar do SERVER gắn (xem page()) — KHÔNG dùng :has() làm cơ chế chính nữa:
+     :has() chỉ có từ Chrome 105/Safari 15.4/Firefox 121, và trình duyệt cũ bỏ qua luật này
+     sẽ để tabbar đè lên nút "Thêm vào giỏ". Đặt một tính năng CSS mới ngay trên nút ra tiền
+     là đánh cược không cần thiết. Server không phát tabbar nữa nên luật .tabbar dưới đây chỉ
+     còn là lưới an toàn (trang cũ trong cache CDN vẫn còn thẻ đó). */
+  body.has-buybar .tabbar,
   body:has(.pd-actions) .tabbar{display:none}
+  body.has-buybar,
   body:has(.pd-actions){padding-bottom:0}
 }
 .pd-actions{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:6px 0 22px}
@@ -1897,7 +1904,7 @@ function cartScript(nonce) {
 // Điện thoại chiếm phần lớn lưu lượng TMĐT Việt. Sàn nào cũng có 4 tab cố định ở đáy để
 // khách nhảy giữa Duyệt ↔ Giỏ ↔ Đơn của tôi trong 1 chạm, thay vì cuộn ngược lên header.
 // Thuần CSS (không JS), chỉ hiện ≤720px, tôn trọng safe-area (tai thỏ iPhone).
-// Trang SP tự ẩn thanh này (xem CSS body:has(.pd-actions)) để nhường chỗ cho thanh MUA.
+// Trang SP KHÔNG phát thẻ này (page() quyết theo markup) để nhường chỗ cho thanh MUA.
 const MOBILE_TABBAR = `<nav class="tabbar" aria-label="Điều hướng nhanh">
   <a href="/"><span class="i">${I_HOME}</span><span>Trang chủ</span></a>
   <a href="/products"><span class="i">${I_GRID}</span><span>Danh mục</span></a>
@@ -1906,10 +1913,22 @@ const MOBILE_TABBAR = `<nav class="tabbar" aria-label="Điều hướng nhanh">
 </nav>`;
 
 function page(title, tokens, bodyHtml, head = '', nonce = '') {
+  // Trang CÓ thanh MUA dính đáy → KHÔNG phát tabbar, và gắn class để bỏ padding đáy.
+  //
+  // Trước đây việc này do CSS `body:has(.pd-actions)` lo — và đó là MỘT ĐIỂM HỎNG DUY NHẤT
+  // đặt ngay trên nút mua. :has() chỉ có từ Chrome 105 / Safari 15.4 / Firefox 121; trình
+  // duyệt cũ hơn (WebView Android đời cũ vẫn còn nhiều ở VN) bỏ qua luật đó ⇒ tabbar
+  // (z-index 60, cao 55px, fixed đáy) VẪN hiện và ĐÈ LÊN thanh mua (z-index 55, cao 69px)
+  // ⇒ "Thêm vào giỏ" và "Mua ngay" bị che gần hết. Hỏng thầm lặng, và hỏng đúng chỗ ra tiền.
+  //
+  // Server BIẾT CHẮC trang có thanh mua hay không — nó vừa dựng ra. Quyết ở đây thì đúng
+  // trên mọi trình duyệt, kể cả trình duyệt chưa ra đời lúc viết dòng này. Bám đúng markup
+  // mà luật CSS cũ bám (class pd-actions) nên hai cơ chế không thể lệch nhau.
+  const hasBuyBar = bodyHtml.includes('class="pd-actions"');
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>${head}<style>${tokensToCss(tokens)}\n${STYLE}</style></head>
-<body>${bodyHtml}${MOBILE_TABBAR}${nonce ? DRAWER_SHELL + QUICKVIEW_SHELL + cartScript(nonce) : ''}</body></html>`;
+<body${hasBuyBar ? ' class="has-buybar"' : ''}>${bodyHtml}${hasBuyBar ? '' : MOBILE_TABBAR}${nonce ? DRAWER_SHELL + QUICKVIEW_SHELL + cartScript(nonce) : ''}</body></html>`;
 }
 
 // Chèn dải "cam kết" (sau hero) và "bộ sưu tập" (trước lưới sản phẩm) nếu layout đã lưu

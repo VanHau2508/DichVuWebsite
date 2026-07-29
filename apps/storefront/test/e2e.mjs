@@ -153,6 +153,40 @@ async function main() {
   sect('2. Chi tiết sản phẩm');
   r = await sf(A.host, `/p/${activeSlug}`);
   r.status === 200 && r.body.includes('&lt;script&gt;') ? ok('chi tiết sản phẩm active → 200') : bad('chi tiết active lỗi', String(r.status));
+  // Thanh MUA dính đáy và tabbar đáy KHÔNG được cùng tồn tại: tabbar (z-index 60, fixed đáy)
+  // sẽ đè lên thanh mua (z-index 55) và che nút "Thêm vào giỏ"/"Mua ngay". Trước đây chỉ CSS
+  // `body:has(.pd-actions)` lo việc đó — một tính năng CSS mới (Chrome 105+) đặt ngay trên
+  // nút ra tiền: trình duyệt cũ bỏ qua luật là hỏng thầm lặng. Nay SERVER quyết, nên khẳng
+  // định được ở mức MARKUP, không cần trình duyệt.
+  // BƠM TỒN trước khi đo. Lần đầu viết khẳng định này nó rẽ nhánh "hết hàng" và XANH mà
+  // KHÔNG kiểm điều đang cần kiểm — sản phẩm của bộ test không có inventory_levels nên
+  // storefront ẩn form mua. Một khẳng định xanh nhờ đi nhầm nhánh còn tệ hơn không có.
+  await owner.query(
+    `INSERT INTO inventory_levels (shop_id, variant_id, on_hand)
+     SELECT $1, v.id, 25 FROM variants v JOIN products p ON p.id = v.product_id
+      WHERE p.shop_id = $1 AND p.slug = $2
+     ON CONFLICT (shop_id, variant_id) DO UPDATE SET on_hand = 25, reserved = 0`,
+    [A.shopId, activeSlug]);
+  r = await sf(A.host, `/p/${activeSlug}`);
+  r.body.includes('class="pd-actions"') ? ok('có tồn → trang SP hiện form mua (tiền đề của 2 khẳng định dưới)')
+    : bad('bơm tồn rồi mà vẫn không có form mua — khẳng định dưới sẽ đi nhầm nhánh');
+  if (r.body.includes('class="pd-actions"')) {
+    !r.body.includes('class="tabbar"') && /<body class="[^"]*has-buybar/.test(r.body)
+      ? ok('trang SP có thanh mua: KHÔNG phát tabbar + body.has-buybar (không phụ thuộc :has())')
+      : bad('trang SP vừa có thanh mua vừa có tabbar → tabbar che nút mua trên trình duyệt cũ');
+  } else {
+    r.body.includes('class="tabbar"') ? ok('trang SP hết hàng (không thanh mua) → vẫn có tabbar')
+      : bad('trang SP không thanh mua mà cũng mất tabbar');
+  }
+  const home = await sf(A.host, '/');
+  home.body.includes('class="tabbar"') && !/<body class="[^"]*has-buybar/.test(home.body)
+    ? ok('trang chủ: có tabbar, không gắn has-buybar') : bad('trang chủ mất tabbar');
+  // TRẢ LẠI tồn = 0. Bài "?instock=1" ở mục sau dùng CHÍNH sản phẩm này làm ca ÂM (phải bị
+  // lọc ra vì hết hàng); để nguyên 25 là bài đó đỏ — và đỏ ở chỗ chẳng liên quan gì tới nó.
+  await owner.query(
+    `UPDATE inventory_levels SET on_hand = 0 WHERE shop_id = $1 AND variant_id IN
+       (SELECT v.id FROM variants v JOIN products p ON p.id = v.product_id
+         WHERE p.shop_id = $1 AND p.slug = $2)`, [A.shopId, activeSlug]);
   r = await sf(A.host, `/p/${draftSlug}`);
   r.status === 404 ? ok('chi tiết sản phẩm DRAFT → 404 (không lộ)') : bad('draft detail lộ', String(r.status));
 

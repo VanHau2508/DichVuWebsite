@@ -83,6 +83,24 @@ export function send(res, status, body, headers = {}) {
   res.end(payload);
 }
 
+/**
+ * ?offset= của các trang danh sách, đã KẸP HAI ĐẦU.
+ *
+ * Vì sao có hàm này thay vì mỗi chỗ tự parse: offset được NỘI SUY thẳng vào chuỗi SQL
+ * (`OFFSET ${offset}` — an toàn vì luôn là số, nhưng không qua tham số hoá). Không có trần
+ * thì `?offset=99999999999999999999` cho 1e20 > bigint → Postgres 'bigint out of range' →
+ * 500. Đáng chú ý: `limit` ở cả 5 trang danh sách ĐÃ kẹp Math.min(...,100) ngay dòng trên,
+ * chỉ offset là quên — nên gom vào một chỗ để không ai quên lại.
+ *
+ * Trần 1 triệu = 10.000 trang × 100 dòng: không giao diện nào lật tới, mà vẫn chặn cả tràn
+ * số lẫn quét sâu (OFFSET lớn buộc Postgres đọc rồi bỏ đúng bấy nhiêu dòng). Cần lấy nhiều
+ * hơn thì dùng đường xuất CSV, không phải lật trang.
+ */
+export const MAX_OFFSET = 1_000_000;
+export function parseOffset(query, key = 'offset') {
+  return Math.min(MAX_OFFSET, Math.max(0, parseInt(query.get(key) ?? '0', 10) || 0));
+}
+
 export function originAllowed(req, allowedOrigins) {
   if (req.method === 'GET' || req.method === 'HEAD') return true;
   const origin = req.headers.origin;

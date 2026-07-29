@@ -293,6 +293,16 @@ async function main() {
   r.body.includes(`<link rel="canonical" href="https://${A.host}/blog?page=2">`) ? ok('canonical /blog?page=2 chứa page=2') : bad('canonical blog trang 2 sai');
   r.body.includes('Bài số 0') ? ok('trang 2 hiện bài cũ nhất (Bài số 0)') : bad('phân trang blog sai nội dung');
   r.body.includes('blog-thumb') && r.body.includes(`/media-public/${FAKE_MEDIA}`) ? ok('danh sách blog hiện ảnh bìa thumbnail') : bad('thiếu cover thumb ở danh sách');
+  // ?page KHỔNG LỒ: trang blog CÔNG KHAI, không cần đăng nhập. offset nội suy thẳng vào SQL
+  // nên trước khi kẹp trần thì 1e20 > bigint → 'bigint out of range' → 500 mà BẤT KỲ AI trên
+  // Internet cũng bắn được vào storefront của shop. Lưới sản phẩm đã kẹp từ đầu, blog quên.
+  // Đặt SAU cụm khẳng định blog ở trên: cả cụm dùng chung biến `r`, chèn vào giữa là cướp
+  // response của bài sau (đã cắn đúng một lần — bài "cover thumb" quay sang soi /products).
+  r = await sf(A.host, '/blog?page=99999999999999999999');
+  r.status === 200 ? ok('blog ?page khổng lồ → 200, không 500 (công khai)') : bad('blog sập vì ?page rác', String(r.status));
+  r = await sf(A.host, '/products?page=99999999999999999999');
+  r.status === 200 ? ok('lưới SP ?page khổng lồ → 200') : bad('lưới SP sập vì ?page rác', String(r.status));
+
   r = await sf(A.host, `/blog/${coverSlug}`);
   r.body.includes('blog-cover') && r.body.includes(`/media-public/${FAKE_MEDIA}`) ? ok('bài blog hiện ảnh bìa trên đầu') : bad('thiếu ảnh bìa trong bài');
   r.body.includes(`<meta property="og:image" content="https://${A.host}/media-public/${FAKE_MEDIA}">`) ? ok('og:image ƯU TIÊN ảnh bìa bài (URL tuyệt đối)') : bad('og:image không ưu tiên cover');

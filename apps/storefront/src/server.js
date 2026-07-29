@@ -797,7 +797,11 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       // /blog/:slug (bài, kèm ảnh bìa). RLS store_blog lọc published.
       if (url.pathname === '/blog') {
         const BLOG_PAGE_SIZE = 12;
-        const bp = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
+        // Kẹp trần 100 trang y như lưới sản phẩm ở trên — trang blog CÔNG KHAI, không cần
+        // đăng nhập, nên `?page=99999999999999999999` (OFFSET vượt bigint) là một cái 500
+        // bất kỳ ai trên Internet cũng bắn được vào storefront của shop. Lưới SP đã kẹp từ
+        // đầu, blog thì quên: cùng tệp, cách nhau 200 dòng.
+        const bp = Math.min(100, Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1));
         const nPosts = Number((await c.query(`SELECT count(*)::int n FROM blog_posts WHERE status = 'published'`)).rows[0].n);
         const posts = (await c.query(
           `SELECT slug, title, excerpt, cover_image_key, published_at FROM blog_posts

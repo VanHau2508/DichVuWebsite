@@ -146,6 +146,15 @@ async function main() {
   r = await a.get('/products', '?status=draft');
   r.status === 200 && r.json.products.every((p) => p.status === 'draft') ? ok('lọc status=draft') : bad('lọc status lỗi', r.raw);
 
+  // ?offset= KHỔNG LỒ không được làm sập trang. offset nội suy thẳng vào SQL nên trước khi
+  // kẹp trần thì 1e20 > bigint → Postgres 'bigint out of range' → 500. `limit` ngay dòng
+  // trên đã kẹp Math.min(...,100) từ đầu, chỉ offset là quên — nên chốt lại bằng test.
+  r = await a.get('/products', '?offset=99999999999999999999');
+  r.status === 200 && Array.isArray(r.json.products) && r.json.products.length === 0
+    ? ok('offset khổng lồ → 200 rỗng, không 500') : bad('offset khổng lồ làm sập list', `${r.status} ${r.raw?.slice(0, 80)}`);
+  r = await a.get('/products', '?offset=-5');
+  r.status === 200 ? ok('offset âm → 200 (OFFSET âm là lỗi cú pháp SQL)') : bad('offset âm làm sập list', r.raw);
+
   // ── 7. Chi tiết / cập nhật / trạng thái ────────────────────────────────────
   sect('7. Chi tiết & vòng đời');
   r = await a.get(`/products/${prodA}`);

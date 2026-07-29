@@ -187,7 +187,18 @@ async function main() {
   /Phiếu hỗ trợ chờ/.test(r.body) && /Phiếu hỗ trợ<\/a>|Phiếu hỗ trợ \(/.test(r.body)
     ? ok('console có ô "Phiếu hỗ trợ chờ" + đường vào hàng đợi') : bad('console thiếu lối vào hàng đợi');
 
-  // ── 10. CSRF ────────────────────────────────────────────────────
+  // ── 10. Tham số trang rác không làm sập console ─────────────────
+  sect('10. ?page rác');
+  // OFFSET nội suy thẳng vào SQL: `?page=9…9` (20 chữ số) cho 1e20 → OFFSET vượt bigint →
+  // Postgres 'bigint out of range' → 500. Kẹp trần ở CẢ hàng đợi phiếu lẫn danh sách shop.
+  for (const [path, label] of [['/platform/support?page=', 'hàng đợi phiếu'], ['/platform?page=', 'danh sách shop']]) {
+    r = await adm('GET', `${path}99999999999999999999`, { cookie: staff.cookie });
+    r.status === 200 ? ok(`${label}: ?page khổng lồ → 200, không 500`) : bad(`${label} sập vì ?page rác`, String(r.status));
+  }
+  r = await adm('GET', '/platform/support?page=abc', { cookie: staff.cookie });
+  r.status === 200 ? ok('?page không phải số → 200') : bad('?page rác làm sập', String(r.status));
+
+  // ── 11. CSRF ────────────────────────────────────────────────────
   sect('10. CSRF');
   r = await adm('POST', `/platform/support/${tOld.id}/resolve`, { cookie: staff.cookie, form: { status: 'open' } });
   const stillOpen = (await owner.query(`SELECT status FROM support_tickets WHERE id=$1`, [tOld.id])).rows[0].status;

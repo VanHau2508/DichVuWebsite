@@ -3,7 +3,7 @@
  * lịch sử mua + ghi chú của shop (customer_notes, 0049). Perm orders.read/write.
  * Đơn 'cancelled' không tính vào tổng chi/số đơn (nhưng vẫn hiện trong lịch sử).
  */
-import { send } from './http.js';
+import { send, parseOffset } from './http.js';
 import { withTenant, audit } from './db.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
@@ -11,7 +11,7 @@ const PHONE = '([0-9]{8,15})';
 
 async function listCustomers(res, ctx, _b, _p, query) {
   const limit = Math.min(Math.max(parseInt(query.get('limit') ?? '20', 10) || 20, 1), 100);
-  const offset = Math.max(parseInt(query.get('offset') ?? '0', 10) || 0, 0);
+  const offset = parseOffset(query);
   const q = (query.get('q') ?? '').trim().slice(0, 100);
   const minOrders = Math.min(Math.max(parseInt(query.get('min_orders') ?? '1', 10) || 1, 1), 1000);
   const args = [minOrders];

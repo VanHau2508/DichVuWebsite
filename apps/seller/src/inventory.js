@@ -9,7 +9,7 @@
  *     ledger == on_hand.
  */
 
-import { send } from './http.js';
+import { send, parseOffset } from './http.js';
 import { withTenant, audit } from './db.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
@@ -103,7 +103,7 @@ async function getLedger(res, ctx, _body, params) {
 // sẽ ra số sai. Sổ cái chỉ có `delta`, không có cột tồn-trước/tồn-sau.
 async function getShopLedger(res, ctx, _body, _params, query) {
   const limit = Math.min(Math.max(parseInt(query.get('limit') ?? '50', 10) || 50, 1), 100);
-  const offset = Math.max(parseInt(query.get('offset') ?? '0', 10) || 0, 0);
+  const offset = parseOffset(query);
   const kind = query.get('kind');
   const variantId = query.get('variant_id');
   // 'reserve'/'release' có trong CHECK của 0009 nhưng KHÔNG chỗ nào ghi (giữ chỗ chỉ đụng

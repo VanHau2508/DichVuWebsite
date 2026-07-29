@@ -186,9 +186,12 @@ async function createShop(req, res, body, staff, ip) {
 // ẩn nút admin-only với operator; gate THẬT vẫn là minRole ở dispatch.
 const SHOPS_PAGE_SIZE = 50;
 const SUB_STATUSES = ['trial', 'active', 'past_due', 'cancelled'];
+// Trần trang: xem chú thích ở listSupportTickets — cùng một lý do, cùng một khuôn.
+const MAX_PAGE = 1e5;
+
 async function listShops(req, res, staff) {
   const url = new URL(req.url, 'http://internal');
-  const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
+  const page = Math.min(MAX_PAGE, Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1));
   const q = (url.searchParams.get('q') ?? '').trim().slice(0, 100);
   const subStatus = (url.searchParams.get('sub_status') ?? '').trim();
   const where = ['s.deleted_at IS NULL'];
@@ -627,10 +630,11 @@ const TICKETS_PAGE_SIZE = 20;
  */
 async function listSupportTickets(req, res) {
   const url = new URL(req.url, 'http://internal');
-  // CHẶN TRÊN cho page: OFFSET nội suy thẳng vào SQL, mà parseInt('9'.repeat(20)) cho 1e20 →
-  // (page-1)*20 thành "2e+21" trong chuỗi truy vấn → lỗi cú pháp SQL → 500. Không phải lỗ
-  // tiêm (giá trị luôn là số), chỉ là 500 vô duyên cho một tham số rác.
-  const page = Math.min(1e6, Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1));
+  // CHẶN TRÊN cho page. OFFSET nội suy thẳng vào chuỗi SQL (an toàn vì luôn là số, nhưng
+  // không tham số hoá): `?page=99999999999999999999` cho 1e20 → OFFSET vượt bigint →
+  // Postgres 'bigint out of range' → 500 cho một tham số rác. Trần cũng chặn quét sâu:
+  // OFFSET lớn buộc Postgres đọc rồi VỨT đúng bấy nhiêu dòng.
+  const page = Math.min(MAX_PAGE, Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1));
   const status = url.searchParams.get('status') === 'resolved' ? 'resolved' : 'open';
   const order = status === 'open' ? 't.created_at ASC' : 't.resolved_at DESC NULLS LAST';
   const [list, counts] = await Promise.all([

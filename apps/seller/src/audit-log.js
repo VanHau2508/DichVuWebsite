@@ -10,14 +10,14 @@
  * shop / platform_staff / system → actor_email NULL nhưng dòng audit VẪN hiện —
  * INNER JOIN sẽ âm thầm nuốt các dòng đó (mất tính toàn vẹn nhật ký).
  */
-import { send } from './http.js';
+import { send, parseOffset } from './http.js';
 import { withTenant } from './db.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 
 async function listAuditLog(res, ctx, _b, _p, query) {
   const limit = Math.min(Math.max(parseInt(query.get('limit') ?? '50', 10) || 50, 1), 100);
-  const offset = Math.max(parseInt(query.get('offset') ?? '0', 10) || 0, 0);
+  const offset = parseOffset(query);
   const rows = await withTenant(ctx.shopId, async (c) => (await c.query(
     // WHERE shop_id thừa so với RLS nhưng cho planner dùng audit_logs_shop_created_idx.
     `SELECT a.id, a.actor_type, a.actor_id, a.action, a.target, a.metadata, a.created_at,

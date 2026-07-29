@@ -6,7 +6,7 @@
  * Huỷ đơn RELEASE reserve tồn kho (trả lại chỗ đã giữ lúc checkout).
  */
 import crypto from 'node:crypto';
-import { send } from './http.js';
+import { send, parseOffset } from './http.js';
 import { withTenant, audit } from './db.js';
 import { toCsv, CsvText, EXPORT_ORDERS_MAX_ROWS } from './export.js';
 import { isProvince } from './provinces.js';
@@ -109,7 +109,7 @@ function buildOrderFilter(query) {
 
 async function listOrders(res, ctx, _b, _p, query) {
   const limit = Math.min(Math.max(parseInt(query.get('limit') ?? '20', 10) || 20, 1), 100);
-  const offset = Math.max(parseInt(query.get('offset') ?? '0', 10) || 0, 0);
+  const offset = parseOffset(query);
   const { args, countArgs, whereNoStatusSql, whereSql } = buildOrderFilter(query);
   const data = await withTenant(ctx.shopId, async (c) => {
     const total = (await c.query(`SELECT count(*)::int n FROM orders ${whereSql}`, args)).rows[0].n;

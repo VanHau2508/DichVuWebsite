@@ -14,7 +14,7 @@
  */
 
 import crypto from 'node:crypto';
-import { send } from './http.js';
+import { send, parseOffset } from './http.js';
 import { withTenant, audit } from './db.js';
 
 // Base URL ảnh public (giống storefront) — dựng URL thumbnail cho danh sách SP trong admin.
@@ -185,7 +185,7 @@ async function createProduct(res, ctx, body) {
 
 async function listProducts(res, ctx, _body, _params, query) {
   const limit = Math.min(Math.max(parseInt(query.get('limit') ?? '20', 10) || 20, 1), 100);
-  const offset = Math.max(parseInt(query.get('offset') ?? '0', 10) || 0, 0);
+  const offset = parseOffset(query);
   const q = (query.get('q') ?? '').trim();
   const status = query.get('status');
 

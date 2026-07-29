@@ -54,22 +54,14 @@ jobs:
       # Mọi module test này chỉ dùng node builtins → không cần npm install.
       - name: Chạy unit test
         run: |
-          shopt -s nullglob
-          # "rỗng = xanh giả" — chốt theo TỪNG NGUỒN, không chỉ tổng:
-          #  - mỗi thư mục test PHẢI còn ≥1 file (đổi tên/di chuyển cả dir → glob về 0 → FAIL).
-          #    Guard cũ "-ge 4" là TỔNG 4 mẫu nên mất trọn dir packages/auth/test vẫn đủ 4 → xanh giả.
-          #  - file lẻ (nullglob KHÔNG rút vì không có ký tự glob) PHẢI thực sự tồn tại → test -f.
-          #  - tổng ≥ số thật hôm nay (7) để mất-ròng dù 1 file cũng đỏ.
-          for d in packages/auth/test apps/tls-authorize/test; do
-            g=("$d"/*.test.js)
-            [ "${#g[@]}" -ge 1 ] || { echo "thiếu unit test trong $d/ (đổi tên/di chuyển?)"; exit 1; }
-          done
-          for f in apps/checkout/test/vietqr.test.js apps/seller/test/rbac.test.js packages/net-guard/test/fetch-image.test.js apps/seller/test/import-amount.test.js apps/seller/test/paging.test.js; do
-            [ -f "$f" ] || { echo "thiếu unit test $f"; exit 1; }
-          done
-          files=(packages/auth/test/*.test.js apps/tls-authorize/test/*.test.js \
-                 apps/checkout/test/vietqr.test.js apps/seller/test/rbac.test.js packages/net-guard/test/fetch-image.test.js apps/seller/test/import-amount.test.js apps/seller/test/paging.test.js)
-          [ "${#files[@]}" -ge 10 ] || { echo "chỉ thấy ${#files[@]} unit test (<10) — nghi mất file"; exit 1; }
+          # Danh sách + số lượng lấy từ NGUỒN CHUNG với scripts/ci-local.sh. Hai nơi chép tay
+          # ĐÃ lệch một lần (máy chỉ chạy 2/5 file lẻ — thiếu cả fetch-image.test.js là hàng
+          # rào SSRF; sàn e2e 80 trong khi thật 84 nên mất trắng 4 bộ vẫn xanh). Nay một chỗ.
+          . scripts/test-manifest.sh
+          # "rỗng = xanh giả" — manifest_check chốt theo TỪNG NGUỒN, và so BẰNG chứ không ≥:
+          # thêm test hay xoá test đều phải sửa con số trong cùng commit, người review thấy.
+          manifest_check || exit 1
+          mapfile -t files < <(manifest_unit_files)
           node --test "${files[@]}"
 
       # Quét bảo mật TĨNH ở MỌI commit (dependency/secret/PII/pattern). Fail nếu có phát hiện.
@@ -137,12 +129,13 @@ jobs:
           # đua giỏ, QR guard, signup, GPS ship…) KHÔNG BAO GIỜ chạy — shipping.e2e
           # hỏng 9 ca nhiều ngày mà CI vẫn xanh. Ai thêm file *.e2e.mjs cũng phải nhớ
           # sửa file này là điều KHÔNG bao giờ xảy ra ⇒ để glob tự lấy.
-          shopt -s nullglob
-          suites=(apps/*/test/*.e2e.mjs apps/*/test/e2e.mjs)
           # "rỗng = xanh giả" (cùng kỷ luật bước unit test): mất-ròng dù 1 file cũng ĐỎ.
-          # Xoá bộ test có chủ đích thì hạ số này trong CÙNG commit — buộc phải cố ý.
-          MIN_E2E=84
-          [ "${#suites[@]}" -ge "$MIN_E2E" ] || { echo "chỉ ${#suites[@]} bộ e2e (<$MIN_E2E) — nghi mất file"; exit 1; }
+          # Glob + số lượng nằm ở NGUỒN CHUNG scripts/test-manifest.sh — cùng chỗ với
+          # ci-local.sh, và so BẰNG chứ không ≥ (sàn ≥ dung thứ mất trắng đúng phần chênh,
+          # tức là dung thứ đúng thứ nó sinh ra để chặn).
+          . scripts/test-manifest.sh
+          manifest_check || exit 1
+          mapfile -t suites < <(manifest_e2e_files)
           echo "chạy ${#suites[@]} bộ e2e"
           for f in "${suites[@]}"; do
             # auth e2e chạy TRONG container auth (cần env/secret riêng của nó);

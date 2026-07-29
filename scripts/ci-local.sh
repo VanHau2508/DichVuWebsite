@@ -2,7 +2,7 @@
 #
 # Chạy ĐÚNG những gì CI chạy, nhưng ở máy này.
 #   bash scripts/ci-local.sh          # đầy đủ (~45 phút)
-#   bash scripts/ci-local.sh --fast   # bỏ 80 bộ e2e (~3 phút) — dùng khi sửa vặt
+#   bash scripts/ci-local.sh --fast   # bỏ toàn bộ e2e (~3 phút) — dùng khi sửa vặt
 #
 # VÌ SAO CÓ FILE NÀY. Trước đây "đã test, xanh" có nghĩa là "vài bộ e2e tôi tự chọn đã
 # qua ở máy tôi". Nó KHÔNG bao gồm quét bảo mật, không bao gồm 3 bước smoke, và bỏ sót
@@ -19,6 +19,8 @@
 set -uo pipefail   # CỐ Ý không -e: phải chạy HẾT rồi mới kết luận, không dừng ở lỗi đầu
 
 cd "$(dirname "$0")/.."
+# NGUỒN CHUNG danh sách test với .github/workflows/ci.yml — xem đầu file đó.
+. scripts/test-manifest.sh
 COMPOSE="docker compose -f infra/compose.dev.yml"
 GRN=$'\033[32m'; RED=$'\033[31m'; BLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
 FAST=0; [ "${1:-}" = "--fast" ] && FAST=1
@@ -51,10 +53,11 @@ printf '  toàn bộ service đang chạy\n'
 
 step "1. Unit test (thuần, không cần stack)"
 shopt -s nullglob
-ufiles=(packages/auth/test/*.test.js apps/tls-authorize/test/*.test.js \
-        apps/checkout/test/vietqr.test.js apps/seller/test/rbac.test.js)
-if [ "${#ufiles[@]}" -lt 7 ]; then
-  fail "chỉ thấy ${#ufiles[@]} unit test (<7) — nghi mất file"
+# Danh sách lấy từ NGUỒN CHUNG với ci.yml. Trước đây file này giữ danh sách riêng và đã
+# lệch: chỉ 2 file lẻ thay vì 5, nên fetch-image.test.js (hàng rào SSRF) KHÔNG hề chạy ở máy.
+mapfile -t ufiles < <(manifest_unit_files)
+if ! manifest_check > /tmp/va-manifest.log 2>&1; then
+  fail "DANH SÁCH TEST lệch khai báo:$(printf '\n      %s' "$(cat /tmp/va-manifest.log)")"
 elif node --test "${ufiles[@]}" > /tmp/va-unit.log 2>&1; then
   pass "unit $(grep -E '^# pass' /tmp/va-unit.log | tr -d '#')"
 else
@@ -78,13 +81,14 @@ fi
 
 if [ "$FAST" -eq 1 ]; then
   step "4. E2E — BỎ QUA (--fast)"
-  printf '  %sChưa chạy 80 bộ e2e. KHÔNG được gọi kết quả này là "xanh".%s\n' "$DIM" "$RST"
+  printf '  %sChưa chạy %d bộ e2e. KHÔNG được gọi kết quả này là "xanh".%s\n' "$DIM" "$MANIFEST_E2E_COUNT" "$RST"
 else
   step "4. E2E — lấy bằng GLOB, y hệt CI"
-  suites=(apps/*/test/*.e2e.mjs apps/*/test/e2e.mjs)
-  MIN_E2E=80
-  if [ "${#suites[@]}" -lt "$MIN_E2E" ]; then
-    fail "chỉ ${#suites[@]} bộ e2e (<$MIN_E2E) — nghi mất file"
+  mapfile -t suites < <(manifest_e2e_files)
+  # Số đúng ĐÃ kiểm ở bước 1 (manifest_check, so BẰNG chứ không ≥). Sàn cũ ở đây là 80 trong
+  # khi thực tế 84 — dung thứ cho việc mất trắng 4 bộ mà không ai biết.
+  if [ "${#suites[@]}" -eq 0 ]; then
+    fail "không thấy bộ e2e nào — glob hỏng?"
   else
     printf '  %s%d bộ, ước tính ~45 phút%s\n' "$DIM" "${#suites[@]}" "$RST"
     for f in "${suites[@]}"; do
@@ -115,7 +119,7 @@ printf '\n%s══════ TỔNG KẾT ══════%s\n' "$BLD" "$RST
 for l in "${lines[@]}"; do [ "${l#*FAIL}" != "$l" ] && printf '  %s\n' "$l"; done
 if [ "$fails" -eq 0 ]; then
   if [ "$FAST" -eq 1 ]; then
-    printf '%sMỌI THỨ ĐÃ CHẠY ĐỀU QUA — nhưng --fast BỎ QUA 80 bộ e2e.%s\n' "$GRN" "$RST"
+    printf '%sMỌI THỨ ĐÃ CHẠY ĐỀU QUA — nhưng --fast BỎ QUA toàn bộ e2e.%s\n' "$GRN" "$RST"
   else
     printf '%sXANH: %d mục, 0 đỏ. Tương đương phạm vi của CI (trừ máy sạch + cấu hình thật).%s\n' "$GRN" "${#lines[@]}" "$RST"
   fi

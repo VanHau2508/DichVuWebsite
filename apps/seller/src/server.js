@@ -20,7 +20,7 @@ import { readJson, readBuffer, send, originAllowed, clientIp } from './http.js';
 import { can, permsFor, ROLES } from './rbac.js';
 import { db, withTenant, audit } from './db.js';
 import { CATALOG_ROUTES } from './catalog.js';
-import { allowPrivateHosts } from './fetch-image.js';
+import { allowPrivateHosts } from '../fetch-image.js';
 import { IMPORT_ROUTES } from './import.js';
 import { INVENTORY_ROUTES } from './inventory.js';
 import { MEDIA_ROUTES, initMedia, mediaPublicUrl } from './media.js';

@@ -2506,16 +2506,17 @@ export function renderProductImport(ctx, shopId, result, err) {
       <p style="margin:16px 0 0">Ưng ý thì chọn lại tệp ở dưới và bấm <strong>Nhập thật</strong>.</p>
     </div>`;
   } else if (result) {
-    const img = result.images ?? { ok: 0, failed: 0, skipped: 0 };
+    const img = result.images ?? { queued: 0, invalid: 0, skipped: 0 };
     resultCard = `<div class="card" style="border-color:${result.failed ? 'var(--warn)' : 'var(--good)'}">
       <h2 style="margin-top:0">Đã nhập xong</h2>
       <div class="metrics" style="margin-bottom:12px">
         <div class="metric"><div class="l">Sản phẩm đã tạo</div><div class="v" style="color:var(--good)">${n(result.created)}</div></div>
         <div class="metric"><div class="l">Biến thể</div><div class="v">${n(result.variants)}</div></div>
-        <div class="metric"><div class="l">Ảnh tải được</div><div class="v">${n(img.ok)}</div></div>
+        <div class="metric"><div class="l">Ảnh đang tải nền</div><div class="v">${n(img.queued)}</div></div>
         ${result.failed ? `<div class="metric"><div class="l">Bị bỏ</div><div class="v" style="color:var(--warn)">${n(result.failed)}</div></div>` : ''}
       </div>
-      ${(img.failed || img.skipped) ? `<p class="muted" style="margin-top:-4px">Ảnh: <strong>${n(img.failed)}</strong> không tải được${img.skipped ? `, <strong>${n(img.skipped)}</strong> bỏ qua do hết thời gian hoặc vượt trần` : ''}. Sản phẩm vẫn đã tạo — bạn tự tải ảnh lên sau ở trang sản phẩm.</p>` : ''}
+      ${img.queued ? `<p class="muted" style="margin-top:-4px">Ảnh được tải <strong>ở chế độ nền</strong> và hiện dần trong vài phút — không cần chờ ở trang này.</p>` : ''}
+      ${(img.invalid || img.skipped) ? `<p class="muted" style="margin-top:-4px"><strong style="color:var(--warn)">${n(img.invalid)}</strong> địa chỉ ảnh sai định dạng (phải bắt đầu bằng <code>http://</code> hoặc <code>https://</code>) nên không tải được${img.skipped ? `, <strong>${n(img.skipped)}</strong> bỏ qua do vượt trần mỗi lần nhập` : ''}. Sản phẩm vẫn đã tạo — bạn tự tải ảnh lên sau ở trang sản phẩm.</p>` : ''}
       ${errTable}
       ${result.created ? `<p style="margin-bottom:0"><a class="btn" href="${base}">Xem danh sách sản phẩm →</a></p>` : ''}
     </div>`;

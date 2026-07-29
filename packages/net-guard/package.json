@@ -1,0 +1,6 @@
+{
+  "name": "@nentang/net-guard",
+  "private": true,
+  "type": "module",
+  "main": "src/fetch-image.js"
+}

@@ -181,6 +181,11 @@ services:
 
   seller:
     build: { context: ../apps/seller }
+    volumes:
+      # Hàng rào SSRF dùng chung (image không có packages/) — import '../fetch-image.js'.
+      # CÙNG MỘT BẢN với service kia: nhân bản đường ống bảo mật là kiểu trùng lặp chắc
+      # chắn trôi lệch — vá một bên, quên bên kia.
+      - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
     restart: unless-stopped
     <<: *logging
     environment:
@@ -297,6 +302,11 @@ services:
 
   worker:
     build: { context: ../apps/worker }
+    volumes:
+      # Hàng rào SSRF dùng chung (image không có packages/) — import '../fetch-image.js'.
+      # CÙNG MỘT BẢN với service kia: nhân bản đường ống bảo mật là kiểu trùng lặp chắc
+      # chắn trôi lệch — vá một bên, quên bên kia.
+      - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
     restart: unless-stopped
     <<: *logging
     environment:

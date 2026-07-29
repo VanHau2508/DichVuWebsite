@@ -131,14 +131,22 @@ export async function fetchRemoteImage(rawUrl, { maxBytes = 8 * 1024 * 1024, tim
   const mod = u.protocol === 'https:' ? https : http;
   return new Promise((resolve, reject) => {
     let settled = false;
-    const fail = (code) => { if (!settled) { settled = true; reject(new ImgError(code)); } };
+    // `extra` gắn thêm mã HTTP của đích để bên GỌI quyết định có thử lại hay không: 30x/4xx là
+    // vĩnh viễn (chuyển hướng ta không bao giờ đi theo; 404 sẽ không tự có lại), 5xx thì đáng
+    // lùi giờ thử lại. KHÔNG bao giờ đưa con số này ra cho người gửi URL — đó là kênh blind
+    // SSRF; nó chỉ dùng nội bộ cho chính sách thử lại và cho log của ta.
+    const fail = (code, extra) => {
+      if (settled) return;
+      settled = true;
+      reject(Object.assign(new ImgError(code), extra ?? {}));
+    };
     const req = mod.request({
       protocol: u.protocol, hostname: host, port, path: `${u.pathname}${u.search}`,
       method: 'GET', lookup, servername: host,   // servername: SNI + kiểm chứng chỉ theo TÊN MIỀN
       headers: { accept: 'image/*', 'user-agent': 'nentang-import/1' },
     }, (res) => {
       // 30x cũng rơi vào đây → từ chối, KHÔNG đi theo.
-      if (res.statusCode !== 200) { res.resume(); return fail('status'); }
+      if (res.statusCode !== 200) { res.resume(); return fail('status', { httpStatus: res.statusCode }); }
       const len = Number(res.headers['content-length']);
       if (Number.isFinite(len) && len > maxBytes) { res.destroy(); return fail('too_big'); }
       const chunks = [];

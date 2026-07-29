@@ -907,6 +907,121 @@ async function sweepReviewImages() {
   return { removed };
 }
 
+
+// ── sweep: TẢI ẢNH SẢN PHẨM THEO URL cho bộ nhập di cư (0106, docs/45 §5) ────
+// Bản đầu tải ảnh ĐỒNG BỘ trong request nhập nên phải sống dưới thời gian chờ của BFF:
+// trần 200 ảnh / 45 giây mỗi lần. Shop 300 sản phẩm × 3 ảnh phải nhập 5 lần — đúng thứ ma
+// sát mà cả tính năng di cư sinh ra để xoá bỏ. Nay bộ nhập chỉ XẾP HÀNG (dòng media
+// 'pending' kèm source_url, không chạm mạng) và worker tải nền, không còn trần thời gian.
+//
+// Hàng rào SSRF KHÔNG viết lại: dùng CHUNG packages/net-guard với seller (mount /app/fetch-image.js).
+// Nhân bản đường ống bảo mật là kiểu trùng lặp chắc chắn trôi lệch — vá một bên, quên bên kia.
+//
+// Vai app_expiry (0106 cấp quyền THEO CỘT + policy riêng): worker KHÔNG thấy cột nào ngoài
+// những cột nó cần, và không role nào bypass RLS nên phải có policy tường minh.
+const MEDIAFETCH_MS = Number(process.env.MEDIAFETCH_SWEEP_MS ?? 20000);
+const MEDIAFETCH_BATCH = Number(process.env.MEDIAFETCH_BATCH ?? 24);
+const MEDIAFETCH_CONC = Number(process.env.MEDIAFETCH_CONC ?? 6);
+const MEDIAFETCH_MAX_ATTEMPTS = Number(process.env.MEDIAFETCH_MAX_ATTEMPTS ?? 4);
+const MEDIAFETCH_TIMEOUT_MS = Number(process.env.MEDIAFETCH_TIMEOUT_MS ?? 8000);
+const MEDIAFETCH_MAX_BYTES = Number(process.env.MEDIAFETCH_MAX_BYTES ?? 8 * 1024 * 1024);
+
+async function fetchOneMedia(mc, row, BPRIV, BPUB) {
+  const sharp = (await import('sharp')).default;
+  const { fetchRemoteImage } = await import('../fetch-image.js');
+  const buf = await fetchRemoteImage(row.source_url, {
+    maxBytes: MEDIAFETCH_MAX_BYTES, timeoutMs: MEDIAFETCH_TIMEOUT_MS,
+  });
+  // Sniff magic byte TRƯỚC khi đưa cho sharp: content-type của đích nói dối được, và ta
+  // không muốn ném dữ liệu tuỳ ý vào bộ giải mã ảnh nếu chưa biết nó là ảnh.
+  const sig = buf.length >= 12 && (
+    (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) ||
+    (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) ||
+    (buf.slice(0, 4).toString('latin1') === 'RIFF' && buf.slice(8, 12).toString('latin1') === 'WEBP') ||
+    (buf.slice(0, 4).toString('latin1') === 'GIF8'));
+  if (!sig) throw Object.assign(new Error('not_image'), { permanent: true });
+
+  // original_key do bộ nhập đặt sẵn lúc xếp hàng — DÙNG LẠI, không tự dựng: hai nơi tự dựng
+  // tên object là hai nơi có thể lệch nhau, và khi lệch thì bản gốc thành rác không truy được.
+  const originalKey = row.original_key;
+  const publicKey = `${row.shop_id}/${row.id}.webp`;
+  await mc.putObject(BPRIV, originalKey, buf, buf.length);
+  // Re-encode → WebP. sharp mặc định strip metadata; .rotate() áp EXIF rồi bỏ. Đây là bước
+  // biến "ảnh có payload nhúng" thành ảnh sạch — GIỐNG HỆT đường ảnh tự tải lên.
+  const { data, info } = await sharp(buf).rotate()
+    .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
+    .webp({ quality: 82 }).toBuffer({ resolveWithObject: true });
+  await mc.putObject(BPUB, publicKey, data, data.length, { 'Content-Type': 'image/webp' });
+  return { originalKey, publicKey, width: info.width, height: info.height, size: data.length };
+}
+
+async function sweepMediaFetch() {
+  if (!expiryDb) return { done: 0 };
+  const BPRIV = process.env.MEDIA_BUCKET_PRIVATE ?? 'media-private';
+  const BPUB = process.env.MEDIA_BUCKET_PUBLIC ?? 'media-public';
+  let done = 0, failed = 0;
+  try {
+    // CLAIM TRƯỚC KHI LÀM: tăng fetch_attempts + đẩy next_attempt_at ngay khi nhận việc.
+    // Không có bước này thì worker chết giữa chừng sẽ để dòng ở 'pending' với mốc cũ, và
+    // vòng sau nhặt lại y hệt — quay vòng vô hạn trên đúng một URL hỏng.
+    // Lùi giờ theo LUỸ THỪA: 1' → 5' → 25' (đích quá tải cần thời gian, không phải bị đập).
+    const rows = (await expiryDb.query(`
+      UPDATE media SET fetch_attempts = fetch_attempts + 1,
+             next_attempt_at = now() + make_interval(mins => power(5, fetch_attempts)::int)
+       WHERE id IN (
+         SELECT id FROM media
+          WHERE status = 'pending' AND source_url IS NOT NULL AND deleted_at IS NULL
+            AND fetch_attempts < $1
+            AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+          ORDER BY next_attempt_at NULLS FIRST, created_at
+          LIMIT $2)
+      RETURNING id, shop_id, source_url, original_key, fetch_attempts`, [MEDIAFETCH_MAX_ATTEMPTS, MEDIAFETCH_BATCH])).rows;
+    if (rows.length === 0) return { done: 0 };
+
+    const mc = await getMinio();
+    let next = 0;
+    const worker = async () => {
+      for (;;) {
+        const row = rows[next++];
+        if (!row) return;
+        try {
+          const out = await fetchOneMedia(mc, row, BPRIV, BPUB);
+          await expiryDb.query(
+            `UPDATE media SET status = 'ready', original_key = $2, public_key = $3,
+                    content_type = 'image/webp', width = $4, height = $5, size_bytes = $6,
+                    next_attempt_at = NULL
+              WHERE id = $1`,
+            [row.id, out.originalKey, out.publicKey, out.width, out.height, out.size]);
+          done++;
+        } catch (e) {
+          failed++;
+          // Lỗi VĨNH VIỄN (không phải ảnh, URL bị hàng rào chặn, scheme/cổng sai) thì đánh
+          // 'failed' NGAY, đừng thử lại 4 lần — URL đó sẽ không tự tốt lên, và mỗi lần thử
+          // là một kết nối ra ngoài mà ta phải chịu trách nhiệm.
+          // VĨNH VIỄN: hàng rào chặn (blocked/scheme/port/userinfo/url_invalid/dns), không phải
+          // ảnh, hoặc đích trả 3xx/4xx — chuyển hướng ta không bao giờ đi theo, và 404 sẽ không
+          // tự có lại. 5xx / timeout / lỗi mạng thì lùi giờ thử lại: đích quá tải cần thời gian,
+          // không phải bị đập liên tục.
+          const httpPerm = Number.isFinite(e.httpStatus) && e.httpStatus >= 300 && e.httpStatus < 500;
+          const perm = e.permanent === true || httpPerm
+            || ['blocked', 'scheme', 'port', 'userinfo', 'url_invalid', 'dns'].includes(e.code);
+          if (perm || Number(row.fetch_attempts) >= MEDIAFETCH_MAX_ATTEMPTS) {
+            await expiryDb.query(`UPDATE media SET status = 'failed', next_attempt_at = NULL WHERE id = $1`, [row.id])
+              .catch(() => {});
+          }
+          log('warn', 'mediafetch_row_failed', { id: row.id, reason: e.code ?? e.message, http: e.httpStatus ?? null, attempt: row.fetch_attempts, permanent: perm });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(MEDIAFETCH_CONC, rows.length) }, worker));
+  } catch (e) {
+    // Kỷ luật chống crash-loop: nuốt mọi lỗi, không bao giờ throw ra setInterval.
+    log('error', 'mediafetch_error', { message: e.message });
+  }
+  if (done || failed) log('info', 'mediafetch', { done, failed });
+  return { done, failed };
+}
+
 // ── sweep: GỘP LƯỢT XEM sản phẩm từ Redis vào DB (0098) ──────────────────────
 // Storefront (vai công khai CHỈ-ĐỌC) đếm vào hash Redis `pv:<ngày VN>:<shopId>`, field =
 // productId. Worker gộp vào product_view_daily rồi xoá khoá. Nhờ vậy đường nóng công khai
@@ -1521,6 +1636,8 @@ const staleTimer = (expiryDb && TELEGRAM_ON) ? setInterval(sweepStaleOrders, STA
 const loyaltyEarnTimer = loyaltyDb ? setInterval(sweepLoyaltyEarn, LOYALTY_SWEEP_MS) : null;
 const loyaltyClawTimer = loyaltyDb ? setInterval(sweepLoyaltyClawback, LOYALTY_SWEEP_MS) : null;
 const signupTimer = signupDb ? setInterval(sweepSignups, SIGNUP_SWEEP_MS) : null;
+// Tải ảnh nhập-di-cư (0106): dùng pool app_expiry như các sweep chéo shop khác.
+const mediaFetchTimer = expiryDb ? setInterval(sweepMediaFetch, MEDIAFETCH_MS) : null;
 
 // ── HTTP: health + stats (cho e2e kiểm dead-letter) ──────────────────────────
 const server = http.createServer((req, res) => runReq(req, res, async () => {

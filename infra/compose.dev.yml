@@ -243,6 +243,10 @@ services:
       MEDIA_BUCKET_PUBLIC: media-public
       MEDIA_PUBLIC_BASE: /media-public
     volumes:
+      # Hàng rào SSRF dùng chung (image không có packages/) — import '../fetch-image.js'.
+      # CÙNG MỘT BẢN với service kia: nhân bản đường ống bảo mật là kiểu trùng lặp chắc
+      # chắn trôi lệch — vá một bên, quên bên kia.
+      - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
       # Mount PHẢI khớp CMD (node src/server.js → /app/src). Xem docs/09 §6.
       - ../apps/seller/src:/app/src:ro
     depends_on:
@@ -392,8 +396,18 @@ services:
   worker:
     build:
       context: ../apps/worker
+    volumes:
+      # Hàng rào SSRF dùng chung (image không có packages/) — import '../fetch-image.js'.
+      # CÙNG MỘT BẢN với service kia: nhân bản đường ống bảo mật là kiểu trùng lặp chắc
+      # chắn trôi lệch — vá một bên, quên bên kia.
+      - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
     restart: unless-stopped
     environment:
+      # Lối thoát kiểm-dải-IP cho e2e (docs/45 §5) — CHỈ dev. Máy chủ ảnh giả của bộ
+      # test chạy trong container dbtest, mọi IP trong stack đều nội bộ.
+      IMPORT_IMG_ALLOW_HOSTS: dbtest
+      # Sweep tải ảnh chạy dày hơn ở dev để e2e không phải chờ lâu.
+      MEDIAFETCH_SWEEP_MS: "2000"
       DATABASE_URL: postgres://app_worker:devpassword@postgres:5432/app
       # Pool riêng, role hẹp: hết hạn đơn QR + release reserve (0022).
       DATABASE_URL_EXPIRY: postgres://app_expiry:devpassword@postgres:5432/app

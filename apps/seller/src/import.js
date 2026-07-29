@@ -16,8 +16,6 @@
 import crypto from 'node:crypto';
 import { send } from './http.js';
 import { withTenant, audit } from './db.js';
-import { storeProductImage } from './media.js';
-import { fetchRemoteImage, ImgError } from './fetch-image.js';
 import {
   isInt, validPrice, validTitle, validSku, validSlug, validWeight, validCompareAt, validCost,
   slugify, planMaxProducts, catalogCount, conflictMessage,
@@ -28,18 +26,25 @@ const MAX_VARIANTS_PER_PRODUCT = 100;   // cùng trần với ma trận biến t
 const MAX_OPTIONS = 3;
 const MAX_CATEGORY_DEPTH = 2;           // 0095: chỉ 2 cấp
 
-// ── Trần cho việc tải ảnh (docs/45 §5) ────────────────────────────────────
-// Vì sao có TRẦN THỜI GIAN chứ không chỉ trần số lượng: BFF gọi seller với timeout 8 GIÂY
-// (seller-admin/src/api.js). Vượt là người bán thấy "không nhập được" TRONG KHI sản phẩm ĐÃ
-// tạo xong — họ bấm lại và nhân đôi hàng. Đó là hỏng tệ hơn không có ảnh. Nên: tạo sản phẩm
-// trước (nhanh), tải ảnh sau trong ngân sách còn lại, hết giờ thì BỎ QUA ảnh và BÁO SỐ
-// LƯỢNG bỏ qua — không bao giờ im lặng.
-// Bước tiếp theo khi cần quy mô lớn hơn là đẩy sang worker (docs/45 §5 đã ghi).
-const IMG_MAX_BYTES = 8 * 1024 * 1024;
-const IMG_TIMEOUT_MS = Number(process.env.IMPORT_IMG_TIMEOUT_MS ?? 4000);
-const IMG_BUDGET_MS = Number(process.env.IMPORT_IMG_BUDGET_MS ?? 45000);
-const IMG_CONCURRENCY = 6;
-const IMG_MAX_PER_IMPORT = Number(process.env.IMPORT_IMG_MAX ?? 200);
+// ── Ảnh: XẾP HÀNG cho worker, không tải trong request (docs/45 §5, 0106) ──
+// Bản đầu tải đồng bộ ngay tại đây nên phải sống dưới thời gian chờ của BFF: trần 200 ảnh /
+// 45 giây mỗi lần nhập. Shop 300 sản phẩm × 3 ảnh phải nhập 5 lần — đúng thứ ma sát mà cả
+// tính năng di cư sinh ra để xoá bỏ. Nay chỉ GHI HÀNG ĐỢI (dòng media 'pending' kèm
+// source_url), worker tải nền: hết trần thời gian, hết trần số lượng, request lại nhanh.
+//
+// VẪN kiểm URL NGAY TẠI ĐÂY (rẻ, không chạm mạng): người bán phải biết LIỀN nếu tệp dùng
+// đường dẫn tương đối hay sai scheme, chứ không phải mười phút sau mới thấy 300 ảnh hỏng.
+const IMG_MAX_PER_IMPORT = Number(process.env.IMPORT_IMG_MAX ?? 2000);
+
+/** URL có DÁNG hợp lệ để xếp hàng? Chỉ kiểm cú pháp — hàng rào SSRF thật chạy ở worker. */
+function looksFetchable(u) {
+  let x;
+  try { x = new URL(String(u)); } catch { return false; }
+  if (x.protocol !== 'http:' && x.protocol !== 'https:') return false;
+  if (x.username || x.password) return false;
+  const port = x.port ? Number(x.port) : (x.protocol === 'https:' ? 443 : 80);
+  return port === 80 || port === 443;
+}
 
 // ── Bí danh cột ────────────────────────────────────────────────────────────
 // Chuẩn hoá tên cột trước khi so: bỏ dấu cách/gạch/ngoặc, hạ hoa thường. Nhờ vậy
@@ -359,36 +364,6 @@ async function insertProduct(ctx, p) {
   });
 }
 
-// ── Tải ảnh sau khi đã tạo sản phẩm ────────────────────────────────────────
-/**
- * jobs: [{ productId, url, line }]. Chạy pool nhỏ, dừng khi hết ngân sách thời gian.
- * Lỗi từng ảnh KHÔNG làm hỏng sản phẩm — hàng đã vào rồi, thiếu ảnh thì người bán bù sau.
- */
-async function fetchImages(ctx, jobs, deadline) {
-  let okCount = 0, failed = 0, skipped = 0;
-  let next = 0;
-  const takeOne = () => (next < jobs.length ? jobs[next++] : null);
-  const worker = async () => {
-    for (;;) {
-      const job = takeOne();
-      if (!job) return;
-      if (Date.now() > deadline) { skipped++; continue; }   // hết giờ: đếm tiếp cho đủ, không im lặng
-      try {
-        const buf = await fetchRemoteImage(job.url, { maxBytes: IMG_MAX_BYTES, timeoutMs: IMG_TIMEOUT_MS });
-        await storeProductImage(ctx, job.productId, buf);
-        okCount++;
-      } catch (e) {
-        failed++;
-        // Ghi log CHI TIẾT ở phía ta; phía người bán chỉ nhận con số. Trả mã lỗi/thời gian
-        // phản hồi của đích về cho người gửi URL chính là kênh của BLIND SSRF.
-        if (e instanceof ImgError) job.reason = e.code;
-      }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(IMG_CONCURRENCY, jobs.length) }, worker));
-  return { ok: okCount, failed, skipped };
-}
-
 // ── Handler ────────────────────────────────────────────────────────────────
 export async function importProducts(res, ctx, body) {
   const raw = Array.isArray(body.rows) ? body.rows : [];
@@ -430,9 +405,8 @@ export async function importProducts(res, ctx, body) {
 
   const seenSlug = new Set();
   const errors = [];
-  const imgJobs = [];
-  let created = 0, variantsCreated = 0, imgOverflow = 0;
-  const deadline = Date.now() + IMG_BUDGET_MS;
+  let created = 0, variantsCreated = 0;
+  let imgQueued = 0, imgInvalid = 0, imgOverflow = 0;
 
   for (const g of groups) {
     const built = buildProduct(g);
@@ -459,8 +433,24 @@ export async function importProducts(res, ctx, body) {
       for (const v of p.variants) {
         if (!v.imageUrl || seenUrl.has(v.imageUrl)) continue;
         seenUrl.add(v.imageUrl);
-        if (imgJobs.length < IMG_MAX_PER_IMPORT) imgJobs.push({ productId, url: v.imageUrl, line: v.line });
-        else imgOverflow++;
+        if (!looksFetchable(v.imageUrl)) { imgInvalid++; continue; }
+        if (imgQueued >= IMG_MAX_PER_IMPORT) { imgOverflow++; continue; }
+        // Dòng media 'pending' + source_url CHÍNH LÀ đơn vị công việc của worker — không cần
+        // bảng hàng đợi riêng: dòng này đã có shop_id/product_id/position và đã nằm sẵn trong
+        // mọi truy vấn hiển thị, nên ảnh hiện ra ngay khi worker chuyển nó sang 'ready'.
+        // Sinh id Ở TẦNG ỨNG DỤNG để đặt sẵn original_key (cột NOT NULL, không mặc định) —
+        // đúng khuôn uploadMedia: ghi dòng trước, đẩy object sau. Worker chỉ việc dùng lại key
+        // này chứ không tự dựng, nên tên object không thể lệch giữa hai đường.
+        const mediaId = crypto.randomUUID();
+        try {
+          await withTenant(ctx.shopId, (c) => c.query(
+            `INSERT INTO media (id, shop_id, product_id, status, source_url, original_key, position)
+             VALUES ($3, current_shop_id(), $1, 'pending', $2, $4,
+                     (SELECT coalesce(max(position), -1) + 1 FROM media WHERE product_id = $1 AND deleted_at IS NULL))`,
+            [productId, v.imageUrl.slice(0, 2000), mediaId, `staging/${ctx.shopId}/${mediaId}`],
+          ));
+          imgQueued++;
+        } catch { imgInvalid++; }   // đếm ĐÚNG MỘT lần: bản đầu tăng cả hai biến
       }
     } catch (err) {
       // withTenant rollback-on-throw ⇒ không để lại sản phẩm thiếu biến thể/thiếu map trục.
@@ -469,13 +459,13 @@ export async function importProducts(res, ctx, body) {
     }
   }
 
-  const images = imgJobs.length ? await fetchImages(ctx, imgJobs, deadline) : { ok: 0, failed: 0, skipped: 0 };
-  images.skipped += imgOverflow;   // vượt trần số ảnh cũng là "bỏ qua", phải hiện ra
-
   return send(res, 200, {
     created, variants: variantsCreated, groups: groups.length,
     failed: errors.length, errors: errors.slice(0, 100),
-    images, columns,
+    // queued: worker sẽ tải nền · invalid: URL sai dáng, KHÔNG bao giờ tải được ·
+    // skipped: vượt trần số ảnh mỗi lần nhập. Không con số nào im lặng.
+    images: { queued: imgQueued, invalid: imgInvalid, skipped: imgOverflow },
+    columns,
   });
 }
 

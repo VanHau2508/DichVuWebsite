@@ -322,59 +322,76 @@ async function main() {
 
   const hImg = `anh-${uniq()}`;
   r = await imp([{ handle: hImg, title: 'SP có ảnh', sku: `${hImg}-1`, price_vnd: '99000', image_url: 'http://dbtest/ok.png' }]);
-  r.json?.created === 1 && r.json?.images?.ok === 1 && r.json?.images?.failed === 0
-    ? ok('URL ảnh hợp lệ → tải + lưu thành công (images.ok = 1)')
-    : bad('tải ảnh hỏng', JSON.stringify(r.json?.images));
-  // Kiểm ở HAI tầng: (1) danh sách SP trả image_url — đúng thứ admin dùng làm thumbnail;
-  // (2) dòng media ở DB phải 'ready' và có CẢ original_key (bucket private) lẫn public_key
-  //     (bucket public) — chứng minh ảnh đi qua ĐÚNG đường ống, không phải đường tắt nào khác.
+  // Bộ nhập giờ chỉ XẾP HÀNG (0106) — không chạm mạng, nên request nhanh và không còn trần
+  // thời gian. Ảnh do worker tải nền.
+  r.json?.created === 1 && r.json?.images?.queued === 1 && r.json?.images?.invalid === 0
+    ? ok('URL hợp lệ → xếp hàng cho worker (images.queued = 1), request KHÔNG chạm mạng')
+    : bad('xếp hàng ảnh hỏng', JSON.stringify(r.json?.images));
+
   const pImg = (await a.get('/products?limit=50')).json.products.find((p) => p.slug === hImg);
-  const med = (await owner.query(
-    `SELECT status, original_key, public_key, width, height FROM media WHERE product_id = $1`, [pImg?.id])).rows[0];
-  pImg?.image_url && med?.status === 'ready' && med.original_key && med.public_key
-    && /\.webp$/.test(med.public_key) && Number(med.width) === 40 && Number(med.height) === 30
-    ? ok('ảnh vào ĐÚNG đường ống: bản gốc ở bucket private, bản WebP 40×30 ở public, media=ready')
-    : bad('ảnh không đi đúng đường ống', JSON.stringify({ url: pImg?.image_url, med }));
+  let med = (await owner.query(`SELECT status, source_url, public_key FROM media WHERE product_id = $1`, [pImg?.id])).rows[0];
+  med?.status === 'pending' && med.source_url === 'http://dbtest/ok.png' && !med.public_key
+    ? ok('dòng media pending + source_url = ĐƠN VỊ CÔNG VIỆC của worker (không cần bảng hàng đợi riêng)')
+    : bad('không ghi hàng đợi', JSON.stringify(med));
 
-  // Các vector SSRF: KHÔNG được tải, và sản phẩm vẫn phải vào (thiếu ảnh chứ không mất hàng).
-  const vectors = [
-    ['http://127.0.0.1/ok.png', 'loopback'],
-    ['http://169.254.169.254/latest/meta-data/', 'metadata nhà cung cấp'],
-    ['http://10.0.0.1/ok.png', 'private 10/8'],
-    ['http://[::1]/ok.png', 'loopback IPv6'],
-    ['file:///etc/passwd', 'scheme file'],
-    ['http://dbtest:6379/ok.png', 'cổng ngoài 80/443'],
-    ['http://dbtest/redirect', 'chuyển hướng sang metadata'],
-  ];
-  const before = hits;
-  const hSsrf = `ssrf-${uniq()}`;
-  r = await imp(vectors.map(([u], i) => ({
-    handle: `${hSsrf}-${i}`, title: `Vector ${i}`, sku: `${hSsrf}-${i}`, price_vnd: '1000', image_url: u,
-  })));
-  r.json?.created === vectors.length && r.json?.images?.ok === 0 && r.json?.images?.failed === vectors.length
-    ? ok(`${vectors.length} vector SSRF đều bị chặn, sản phẩm vẫn vào (hàng không mất vì ảnh hỏng)`)
-    : bad('vector SSRF lọt', JSON.stringify(r.json?.images));
-  // Chuyển hướng: máy chủ giả CÓ bị gọi 1 lần (chặng đầu), nhưng KHÔNG được đi tiếp tới metadata.
-  hits - before <= 1
-    ? ok('chuyển hướng bị từ chối tại chặng đầu, không đi tiếp tới đích nội bộ')
-    : bad('đi theo chuyển hướng', `hits +${hits - before}`);
+  // Chờ worker xử — sweep chạy mỗi MEDIAFETCH_SWEEP_MS (dev đặt ngắn).
+  for (let i = 0; i < 40 && med?.status === 'pending'; i++) {
+    await sleep(1000);
+    med = (await owner.query(`SELECT status, public_key, width, height FROM media WHERE product_id = $1`, [pImg?.id])).rows[0];
+  }
+  med?.status === 'ready' && /\.webp$/.test(med.public_key ?? '') && Number(med.width) === 40 && Number(med.height) === 30
+    ? ok('worker tải xong: bản WebP 40×30 ở bucket public, media=ready')
+    : bad('worker không xử lý được hàng đợi', JSON.stringify(med));
 
-  // Tệp không phải ảnh dù khai content-type image/png → sniff magic byte bắt được.
+  // URL sai DÁNG bị bắt NGAY tại request (rẻ, không chạm mạng) — người bán biết liền nếu tệp
+  // dùng đường dẫn tương đối, chứ không phải mười phút sau mới thấy 300 ảnh hỏng.
+  const hBad2 = `xau-${uniq()}`;
+  r = await imp([
+    { handle: `${hBad2}-1`, title: 'URL tương đối', sku: `${hBad2}-1`, price_vnd: '1000', image_url: '/images/a.png' },
+    { handle: `${hBad2}-2`, title: 'Scheme sai', sku: `${hBad2}-2`, price_vnd: '1000', image_url: 'file:///etc/passwd' },
+    { handle: `${hBad2}-3`, title: 'Cổng lạ', sku: `${hBad2}-3`, price_vnd: '1000', image_url: 'http://dbtest:6379/a.png' },
+  ]);
+  r.json?.created === 3 && r.json?.images?.queued === 0 && r.json?.images?.invalid === 3
+    ? ok('3 URL sai dáng bị bắt NGAY tại request, sản phẩm vẫn vào')
+    : bad('URL sai dáng lọt vào hàng đợi', JSON.stringify(r.json?.images));
+
+  // Vector SSRF: xếp hàng được (đúng dáng) nhưng worker PHẢI từ chối và đánh 'failed' NGAY,
+  // không thử lại — URL trỏ mạng nội bộ sẽ không tự tốt lên.
+  const hSsrf2 = `ssrfw-${uniq()}`;
+  r = await imp([
+    { handle: `${hSsrf2}-1`, title: 'Loopback', sku: `${hSsrf2}-1`, price_vnd: '1000', image_url: 'http://127.0.0.1/ok.png' },
+    { handle: `${hSsrf2}-2`, title: 'Metadata', sku: `${hSsrf2}-2`, price_vnd: '1000', image_url: 'http://169.254.169.254/latest/meta-data/' },
+    { handle: `${hSsrf2}-3`, title: 'Chuyển hướng', sku: `${hSsrf2}-3`, price_vnd: '1000', image_url: 'http://dbtest/redirect' },
+  ]);
+  const ssrfIds = (await owner.query(
+    `SELECT m.id FROM media m JOIN products p ON p.id = m.product_id
+      WHERE p.slug LIKE $1`, [`${hSsrf2}%`])).rows.map((x) => x.id);
+  let states = [];
+  for (let i = 0; i < 40; i++) {
+    states = (await owner.query(`SELECT status, fetch_attempts FROM media WHERE id = ANY($1::uuid[])`, [ssrfIds])).rows;
+    if (states.length && states.every((x) => x.status !== 'pending')) break;
+    await sleep(1000);
+  }
+  states.length === 3 && states.every((x) => x.status === 'failed')
+    ? ok('worker chặn 3 vector SSRF, đánh failed NGAY (không quay vòng thử lại URL nội bộ)')
+    : bad('worker xử lý sai vector SSRF', JSON.stringify(states));
+  states.every((x) => Number(x.fetch_attempts) === 1)
+    ? ok('lỗi VĨNH VIỄN chỉ thử đúng 1 lần — mỗi lần thử là một kết nối ra ngoài ta phải chịu trách nhiệm')
+    : bad('thử lại lỗi vĩnh viễn', JSON.stringify(states.map((x) => x.fetch_attempts)));
+
+  // Tệp giả dạng ảnh: xếp hàng được nhưng sniff magic byte ở worker bắt.
   const hFake = `gia-${uniq()}`;
   r = await imp([{ handle: hFake, title: 'Ảnh giả', sku: `${hFake}-1`, price_vnd: '1000', image_url: 'http://dbtest/notimage.png' }]);
-  r.json?.created === 1 && r.json?.images?.failed === 1
-    ? ok('tệp giả dạng ảnh (content-type nói dối) → sniff magic byte từ chối')
-    : bad('ảnh giả lọt qua', JSON.stringify(r.json?.images));
-
-  // Trần kích thước — docs/45 §7 liệt kê ca này, trước đó CHƯA có test nào.
-  const hBig = `to-${uniq()}`;
-  r = await imp([
-    { handle: `${hBig}-1`, title: 'Ảnh quá cỡ', sku: `${hBig}-1`, price_vnd: '1000', image_url: 'http://dbtest/big.png' },
-    { handle: `${hBig}-2`, title: 'Ảnh khai man độ dài', sku: `${hBig}-2`, price_vnd: '1000', image_url: 'http://dbtest/liar.png' },
-  ]);
-  r.json?.created === 2 && r.json?.images?.ok === 0 && r.json?.images?.failed === 2
-    ? ok('ảnh vượt trần 8MB bị chặn — CẢ ca khai man Content-Length (trần cưỡng chế lúc chảy)')
-    : bad('trần kích thước ảnh không chặn', JSON.stringify(r.json?.images));
+  const fakeP = (await a.get('/products?limit=50')).json.products.find((p) => p.slug === hFake);
+  let fakeMed = null;
+  for (let i = 0; i < 40; i++) {
+    fakeMed = (await owner.query(`SELECT status FROM media WHERE product_id = $1`, [fakeP?.id])).rows[0];
+    if (fakeMed?.status && fakeMed.status !== 'pending') break;
+    await sleep(1000);
+  }
+  fakeMed?.status === 'failed'
+    ? ok('tệp giả dạng ảnh (content-type nói dối) → sniff magic byte ở worker từ chối')
+    : bad('ảnh giả lọt qua worker', JSON.stringify(fakeMed));
 
   await new Promise((res) => srv.close(res));
 

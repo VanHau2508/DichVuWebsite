@@ -959,7 +959,9 @@ async function helpSubmit(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
   const r = await sellerApi('POST', `/shops/${shopId}/support`,
-    { cookie, body: { subject: f.subject, body: f.body, context_url: f.context_url || null } });
+    { cookie, body: { subject: f.subject, body: f.body, context_url: f.context_url || null,
+      // UA của TRÌNH DUYỆT phải đi từ đây: seller chỉ thấy UA của chính BFF này.
+      ua: req.headers['user-agent'] ?? null } });
   if (r.status !== 201) return helpPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không gửi được yêu cầu.', f);
   // PRG: gửi xong thì chuyển hướng, không để F5 gửi lại phiếu y hệt.
   return redirect(res, `/shops/${shopId}/help?sent=1`);

@@ -1,6 +1,6 @@
 # 46 — Hỗ trợ người bán: từ lời kêu cứu tới lời trả lời
 
-Migration `0107` (bảng phiếu) + `0108` (ghi chú xử lý, email người gửi).
+Migration `0107` (bảng phiếu) + `0108` (ghi chú xử lý, email người gửi) + `0109` (bối cảnh chẩn đoán).
 
 ## 1. Vì sao có
 
@@ -98,7 +98,7 @@ Thông tin liên hệ để ở **biến môi trường** chứ không phải b�
 
 * `apps/seller-admin/test/admin-support.e2e.mjs` (12) — chiều đi: form, PRG chống-F5-gửi-lặp,
   lưu DB + outbox, `order_manager` gửi được, cô lập chéo shop hai chiều, chặn rỗng, trần phiếu.
-* `apps/seller-admin/test/platform-support.e2e.mjs` (24) — chiều về: hàng đợi xuyên shop,
+* `apps/seller-admin/test/platform-support.e2e.mjs` (30) — chiều về: hàng đợi xuyên shop,
   người ngoài bị chặn mà **không lộ nội dung**, FIFO, cờ quá hạn, xử lý → outbox đúng người
   nhận, bấm hai lần **không nhân đôi thông báo**, mở lại, ghi chú hiện đúng bên người bán,
   operator xử được nhưng vẫn không khoá được shop, CSRF.
@@ -106,11 +106,38 @@ Thông tin liên hệ để ở **biến môi trường** chứ không phải b�
 Bộ thứ hai **dọn phiếu mở tồn** trước khi đo: hàng đợi xếp cũ-trước, mỗi trang 20 phiếu, nên
 rác của lần chạy trước chiếm sạch trang 1 và khẳng định về thứ tự hoá ra đang đo bãi rác.
 
+## 5b. Bối cảnh chẩn đoán (0109)
+
+Vòng hỏi-đáp đắt nhất của hỗ trợ không phải "lỗi gì" mà là **"anh đang ở đâu, với tư cách
+gì"**. Rất nhiều phiếu hoá ra không phải lỗi: người gửi đang ở vai `order_manager` nên không
+thấy nút cấu hình, hoặc shop còn `onboarding` nên chưa bật thứ họ đang tìm, hoặc trình duyệt
+của họ không chạy được tính năng đó. Máy biết sẵn cả ba lúc bấm gửi — hỏi lại người đang bực
+là lãng phí một vòng, mà mỗi vòng là một cơ hội để họ bỏ đi.
+
+`support_tickets.diag` (jsonb) chép: **vai người gửi · trạng thái shop · trình duyệt**.
+
+* **Vai lấy từ `ctx.role`** (seller tự suy ra từ membership), KHÔNG nhận từ body. Đây là thứ
+  quyết định "vì sao anh không thấy nút" — để BFF khai thì phiếu có thể nói sai. Có e2e gửi
+  kèm vai giả để chốt.
+* **UA thì ngược lại, BẮT BUỘC nhận từ body.** Trình duyệt nói chuyện với seller-admin; seller
+  chỉ thấy UA của chính BFF (undici) — đọc ở đó sẽ ra một chuỗi vô nghĩa *trông rất giống dữ
+  liệu thật*, và đó là kiểu sai tệ nhất.
+* Hiển thị là **một dòng người đọc được** ("Vai: chủ shop · shop đang thiết lập · Android ·
+  Chrome"), không đổ JSON — đổ object ra màn hình là đẩy việc phân tích sang người đang vội.
+  Trạng thái `active` cố ý IM LẶNG: chỉ nói khi có gì bất thường.
+* jsonb chứ không phải cột rời: bối cảnh còn nở thêm, và không truy vấn nghiệp vụ nào lọc
+  theo nó — chỉ đọc bằng mắt trên đúng một màn hình.
+
 ## 6. Còn thiếu (v2)
 
 * **Không có ô tìm/lọc theo shop** trong hàng đợi. Với vài chục shop thì lật trang là đủ và
   FIFO là mặc định đúng; khi backlog lớn thì cần.
 * **Không có trả lời trong sản phẩm** — ghi chú là một chiều. Muốn hỏi lại thì vẫn phải
   email/Zalo (nút `mailto:` trên mỗi phiếu đã điền sẵn tiêu đề).
-* **Không đính kèm ảnh chụp màn hình.** Hạ tầng đã có (`0101` ảnh đánh giá: sniff magic byte +
-  re-encode sharp + bucket private) nên cắm vào là được, chỉ là chưa cắm.
+* **Không đính kèm ảnh chụp màn hình.** Hạ tầng NHẬN tệp đã có (`0101`: sniff magic byte +
+  re-encode sharp + bucket private) — nhưng khâu HIỂN THỊ mới là chỗ vướng: seller-admin
+  không có quyền MinIO, nó proxy byte qua seller (`reviewImage`). Người xem phiếu là chủ nền
+  tảng, không có tư cách thành viên shop, nên đường đó dùng lại không được — phải cắm MinIO
+  vào service `platform` (thêm credential + thêm bề mặt cho một service đang chỉ chạm
+  Postgres). Đó là một quyết định hạ tầng, không phải một buổi code. §5b là phần 80% giá
+  trị lấy được mà không cần trả giá đó.

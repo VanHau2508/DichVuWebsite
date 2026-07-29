@@ -35,12 +35,28 @@ async function createTicket(res, ctx, body) {
       `SELECT count(*)::int n FROM support_tickets WHERE status = 'open'`)).rows[0].n);
     if (open >= MAX_OPEN_PER_SHOP) return { tooMany: true };
 
+    // Bối cảnh CHẨN ĐOÁN (0109): ba thứ trả lời sẵn ba câu hỏi tốn một vòng qua lại nhất —
+    // "anh đang ở vai gì" (rất nhiều phiếu là do vai thấp không thấy nút), "shop đang trạng
+    // thái nào" (onboarding thì chưa bật hết), "máy nào" (tính năng không chạy trên trình
+    // duyệt đó). Máy biết sẵn cả ba lúc bấm gửi; hỏi lại người đang bực là lãng phí.
+    const shopStatus = (await c.query(`SELECT status FROM shops WHERE id = current_shop_id()`)).rows[0]?.status ?? null;
+    const diag = {
+      // Vai lấy từ ctx (seller tự suy ra từ membership) chứ KHÔNG nhận từ body: đây là thứ
+      // quyết định "vì sao anh không thấy nút", để BFF khai thì phiếu có thể nói sai.
+      role: ctx.role ?? null,
+      shop_status: shopStatus,
+      // UA thì NGƯỢC LẠI, bắt buộc nhận từ body: trình duyệt nói chuyện với seller-admin,
+      // còn seller chỉ thấy UA của chính BFF (undici) — đọc ở đây sẽ ra một chuỗi vô nghĩa
+      // trông rất giống dữ liệu thật. Cắt 200 ký tự: chỉ cần nhận ra máy, không cần cả chuỗi.
+      ua: str(body.ua).slice(0, 200) || null,
+    };
+
     // from_email CHÉP LẠI (0108) chứ không để console JOIN users: app_platform không có quyền
     // nào trên bảng users, và phiếu phải nhớ ai gửi kể cả khi người đó rời shop sau này.
     const t = (await c.query(
-      `INSERT INTO support_tickets (shop_id, user_id, subject, body, context_url, from_email)
-       VALUES (current_shop_id(), $1, $2, $3, $4, $5) RETURNING id, created_at`,
-      [ctx.user.id, subject, content, contextUrl, ctx.user.email ?? null],
+      `INSERT INTO support_tickets (shop_id, user_id, subject, body, context_url, from_email, diag)
+       VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6) RETURNING id, created_at`,
+      [ctx.user.id, subject, content, contextUrl, ctx.user.email ?? null, diag],
     )).rows[0];
 
     // Outbox (ADR-006) CÙNG TRANSACTION với phiếu: không có chuyện báo cho chủ nền tảng một
@@ -61,7 +77,7 @@ async function createTicket(res, ctx, body) {
 
 async function listTickets(res, ctx) {
   const rows = await withTenant(ctx.shopId, async (c) => (await c.query(
-    `SELECT id, subject, body, context_url, status, created_at, resolved_at, resolution_note
+    `SELECT id, subject, body, context_url, status, created_at, resolved_at, resolution_note, diag
        FROM support_tickets ORDER BY created_at DESC LIMIT 50`)).rows);
   return send(res, 200, { tickets: rows });
 }

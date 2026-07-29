@@ -106,12 +106,33 @@ async function main() {
   let r = await adm('GET', '/platform/support', { cookie: staff.cookie });
   r.status === 200 && r.body.includes(sOld) && r.body.includes(sNew)
     ? ok('console thấy phiếu của CẢ HAI shop') : bad('không thấy phiếu xuyên shop', String(r.status));
+  // Bối cảnh phải HIỆN RA, không chỉ nằm trong DB: dữ liệu đúng mà không ai thấy thì không
+  // rút ngắn được vòng hỏi-đáp nào — mà rút ngắn nó mới là lý do 0109 tồn tại.
+  /Vai: <strong>chủ shop<\/strong>/.test(r.body)
+    ? ok('hàng đợi hiện VAI người gửi (dịch sang tiếng Việt, không đổ JSON)')
+    : bad('console không hiện bối cảnh chẩn đoán');
   r.body.indexOf(sOld) < r.body.indexOf(sNew)
     ? ok('FIFO: phiếu chờ lâu nhất đứng trước') : bad('sai thứ tự hàng đợi (mới-trước bỏ đói người chờ lâu)');
   tOld.from_email === A.email
     ? ok('phiếu chép sẵn email người gửi (console không cần đọc bảng users)') : bad('thiếu from_email', String(tOld.from_email));
   /Trang:/.test(r.body) && r.body.includes('/shops/x/orders')
     ? ok('hiện trang người bán đang đứng lúc gửi') : bad('mất context_url');
+
+  // ── 1b. Bối cảnh chẩn đoán (0109) ───────────────────────────────
+  sect('1b. Phiếu tự mang bối cảnh chẩn đoán');
+  const dg = (await owner.query(`SELECT diag FROM support_tickets WHERE id=$1`, [tOld.id])).rows[0].diag;
+  dg && dg.role === 'owner' && dg.shop_status
+    ? ok(`ghi vai + trạng thái shop (role=${dg.role}, shop=${dg.shop_status})`) : bad('thiếu diag', JSON.stringify(dg));
+  // Vai phải do SELLER tự suy ra từ membership. Nếu nó tin body thì BFF (hoặc bất kỳ ai gọi
+  // được API) khai vai nào cũng được — và phiếu sẽ nói sai đúng cái quyết định "vì sao anh
+  // không thấy nút". Gửi kèm role giả rồi soi lại DB.
+  const sFake = `Vai-giả-${uniq()}`;
+  await adm('POST', `/shops/${A.shopId}/help`, { cookie: A.cookie, origin: OADM,
+    form: { subject: sFake, body: 'thử khai vai giả', role: 'owner_gia', diag: '{"role":"root"}' } });
+  const dgF = (await owner.query(`SELECT diag FROM support_tickets WHERE subject=$1`, [sFake])).rows[0]?.diag;
+  dgF && dgF.role === 'owner'
+    ? ok('vai lấy từ membership, KHÔNG nhận từ body (khai giả không ăn thua)')
+    : bad('vai bị body chi phối', JSON.stringify(dgF));
 
   // ── 2. Người ngoài ──────────────────────────────────────────────
   sect('2. Người ngoài không vào được hàng đợi');

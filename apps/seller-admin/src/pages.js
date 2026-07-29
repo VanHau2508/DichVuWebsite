@@ -1133,6 +1133,38 @@ const TKT_SUB_ST = { trial: 'dùng thử', active: 'đang trả phí', past_due:
 // biến hàng đợi thành một bức tường chữ, và người ta sẽ ngừng đọc từ phiếu thứ ba.
 const TKT_FOLD = 600;
 
+// Bối cảnh chẩn đoán (0109) — HIỂN THỊ NHƯ MỘT DÒNG NGƯỜI ĐỌC ĐƯỢC, không phải đổ JSON.
+// Đổ nguyên object ra màn hình là đẩy việc phân tích sang người đang vội. Ba mẩu này tồn tại
+// để trả lời sẵn "vì sao anh không thấy nút" — phải đọc được trong một cái liếc.
+//
+// VAI làm nổi bật vì nó là nguyên nhân hay gặp nhất mà cũng hay bị bỏ qua nhất: chủ shop báo
+// lỗi và nhân viên báo lỗi là hai câu chuyện khác nhau.
+const DIAG_ROLE = { owner: 'chủ shop', admin: 'quản trị', catalog_manager: 'quản lý SP', order_manager: 'quản lý đơn' };
+const DIAG_SHOP = { onboarding: 'shop đang thiết lập', suspended: 'shop TẠM KHOÁ', terminated: 'shop đã đóng' };
+// Nhận diện máy từ user-agent bằng vài mẫu thô. Cố ý KHÔNG dùng thư viện: ta chỉ cần biết
+// "iPhone hay máy tính", sai một chút cũng không hại — còn dựng cả bộ phân tích UA cho một
+// dòng chú thích thì mới là sai chỗ.
+function uaShort(ua) {
+  const s = String(ua ?? '');
+  if (!s) return null;
+  const os = /iPhone|iPad/.test(s) ? 'iPhone/iPad' : /Android/.test(s) ? 'Android'
+    : /Mac OS X/.test(s) ? 'Mac' : /Windows/.test(s) ? 'Windows' : null;
+  const br = /Edg\//.test(s) ? 'Edge' : /OPR\/|Opera/.test(s) ? 'Opera'
+    : /Chrome\//.test(s) ? 'Chrome' : /Safari\//.test(s) ? 'Safari' : /Firefox\//.test(s) ? 'Firefox' : null;
+  return [os, br].filter(Boolean).join(' · ') || null;
+}
+function diagLine(diag) {
+  if (!diag || typeof diag !== 'object') return '';
+  const role = DIAG_ROLE[diag.role] ?? diag.role;
+  const shop = DIAG_SHOP[diag.shop_status];   // 'active' KHÔNG hiện — bình thường thì im lặng
+  const ua = uaShort(diag.ua);
+  return [
+    role ? `<span>Vai: <strong>${esc(role)}</strong></span>` : '',
+    shop ? `<span class="muted">${esc(shop)}</span>` : '',
+    ua ? `<span class="muted">${esc(ua)}</span>` : '',
+  ].filter(Boolean).join('');
+}
+
 export function renderPlatformSupport(ctx, data, opts = {}) {
   const tickets = data?.tickets ?? [];
   const status = data?.status === 'resolved' ? 'resolved' : 'open';
@@ -1162,6 +1194,7 @@ export function renderPlatformSupport(ctx, data, opts = {}) {
         : `<p class="prosetxt">${esc(body)}</p>`}
       <div class="tmeta">
         <span class="muted">${esc(t.plan_code ?? 'chưa có gói')} · ${esc(TKT_SUB_ST[t.sub_status] ?? t.sub_status ?? '—')}</span>
+        ${diagLine(t.diag)}
         ${mail ? `<a href="mailto:${esc(mail)}?subject=${esc(encodeURIComponent(`[Hỗ trợ] ${t.subject}`))}">${esc(mail)}</a>` : '<span class="muted">không rõ người gửi</span>'}
         ${t.context_url ? `<span class="muted">Trang: <code>${esc(String(t.context_url).slice(0, 120))}</code></span>` : ''}
       </div>

@@ -640,7 +640,7 @@ async function listSupportTickets(req, res) {
   const [list, counts] = await Promise.all([
     db.query(
       `SELECT t.id, t.shop_id, t.subject, t.body, t.context_url, t.status, t.from_email,
-              t.created_at, t.resolved_at, t.resolution_note,
+              t.created_at, t.resolved_at, t.resolution_note, t.diag,
               s.name AS shop_name, s.slug AS shop_slug, s.status AS shop_status,
               sub.plan_code, sub.status AS sub_status
          FROM support_tickets t

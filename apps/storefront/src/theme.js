@@ -772,8 +772,15 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 /* Thanh thông báo (không sticky — cuộn qua là ẩn, nhường chỗ header).
    Nền NEO TỐI 14% để chữ trắng vẫn đọc được kể cả khi shop chọn màu chủ đạo hơi sáng
    (mặc định #141414 gần như không đổi). Cùng lý do áp cho gradient hero bên dưới. */
-.topbar{background:color-mix(in srgb,var(--color-primary) 86%,#0a0a0a);color:#fff;text-align:center;font-size:.8rem;font-weight:500;letter-spacing:.02em;padding:8px 16px}
-.hdr{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--color-bg) 86%,transparent);backdrop-filter:saturate(1.5) blur(12px);-webkit-backdrop-filter:saturate(1.5) blur(12px);border-bottom:1px solid color-mix(in srgb,var(--color-border) 70%,transparent)}
+/* DỰ PHÒNG MÀU ĐẶC trước mỗi color-mix() ở các thanh NỔI TRÊN nội dung (.topbar, .hdr,
+   .tabbar, .pd-actions). color-mix() chỉ có từ Chrome 111 / Safari 16.2 / Firefox 113 —
+   MỚI HƠN cả :has(). Trình duyệt cũ BỎ khai báo không hiểu (đúng chuẩn, không báo lỗi) ⇒
+   thanh mất nền ⇒ nội dung cuộn xuyên qua, chữ chồng chữ. Riêng .topbar còn có color:#fff
+   nên mất nền là chữ TRẮNG TRÊN NỀN TRẮNG — biến mất hẳn.
+   Hai khai báo cùng thuộc tính: trình duyệt hiểu color-mix dùng cái sau (không đổi gì),
+   trình duyệt cũ giữ cái trước. Đây là cách xuống cấp của CSS, không phải mẹo. */
+.topbar{background:var(--color-primary);background:color-mix(in srgb,var(--color-primary) 86%,#0a0a0a);color:#fff;text-align:center;font-size:.8rem;font-weight:500;letter-spacing:.02em;padding:8px 16px}
+.hdr{position:sticky;top:0;z-index:20;background:var(--color-bg);background:color-mix(in srgb,var(--color-bg) 86%,transparent);backdrop-filter:saturate(1.5) blur(12px);-webkit-backdrop-filter:saturate(1.5) blur(12px);border-bottom:1px solid color-mix(in srgb,var(--color-border) 70%,transparent)}
 .hdr .wrap{display:flex;align-items:center;min-height:68px;gap:18px}
 /* Brand editorial: chữ HOA giãn cách (khí chất MAISON); logo ảnh giữ nguyên kích thước. */
 .brand{font-family:var(--font-heading);font-weight:800;font-size:1.06rem;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(52vw,320px);display:inline-flex;align-items:center}
@@ -1352,7 +1359,7 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
 .tabbar{display:none}
 @media(max-width:720px){
   .tabbar{display:grid;grid-template-columns:repeat(4,1fr);position:fixed;left:0;right:0;bottom:0;z-index:60;
-    background:color-mix(in srgb,var(--color-bg) 92%,transparent);backdrop-filter:saturate(1.4) blur(10px);
+    background:var(--color-bg);background:color-mix(in srgb,var(--color-bg) 92%,transparent);backdrop-filter:saturate(1.4) blur(10px);
     border-top:1px solid var(--color-border);padding-bottom:env(safe-area-inset-bottom);box-shadow:0 -2px 14px rgba(0,0,0,.06)}
   .tabbar a{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:8px 4px 7px;
     font-size:.66rem;font-weight:600;color:var(--color-muted);text-decoration:none;line-height:1.1;min-height:54px}
@@ -1454,7 +1461,7 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
      tầm ngón cái, khách không phải cuộn ngược lên. Vẫn là CHÍNH form cũ (POST /cart/add) →
      no-JS chạy y nguyên, không nhân đôi form (tránh lệch số lượng/biến thể đã chọn). */
   .pd-actions{position:sticky;bottom:0;z-index:55;margin:6px -20px 0;padding:10px 16px calc(10px + env(safe-area-inset-bottom));
-    background:color-mix(in srgb,var(--color-bg) 94%,transparent);backdrop-filter:saturate(1.4) blur(10px);
+    background:var(--color-bg);background:color-mix(in srgb,var(--color-bg) 94%,transparent);backdrop-filter:saturate(1.4) blur(10px);
     border-top:1px solid var(--color-border);box-shadow:0 -2px 14px rgba(0,0,0,.07);flex-wrap:nowrap;gap:8px}
   .pd-actions .qty{width:64px;padding:12px 6px;flex:0 0 auto}
   .pd-actions .btn{min-width:0;padding:12px 10px;font-size:.92rem;white-space:nowrap}

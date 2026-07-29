@@ -58,7 +58,7 @@ body{margin:0;font-family:'Be Vietnam Pro',system-ui,-apple-system,"Segoe UI",Ro
 a{color:var(--pri);text-decoration:none}a:hover{text-decoration:underline}
 .wrap{max-width:600px;margin:0 auto;padding:16px 20px}
 @media(min-width:680px){.wrap{max-width:640px;padding:24px 20px}}
-.hdr{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--card) 80%,transparent);backdrop-filter:saturate(180%) blur(12px);-webkit-backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid var(--bd)}
+.hdr{position:sticky;top:0;z-index:20;background:var(--card);background:color-mix(in srgb,var(--card) 80%,transparent);backdrop-filter:saturate(180%) blur(12px);-webkit-backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid var(--bd)}
 .hdr .wrap{display:flex;justify-content:space-between;align-items:center;min-height:58px;padding:8px 20px}
 .brand{font-weight:800;font-size:1.14rem;letter-spacing:-.02em;background:linear-gradient(135deg,var(--brand),var(--pri2));-webkit-background-clip:text;background-clip:text;color:transparent}
 .brand:hover{text-decoration:none}
@@ -101,7 +101,7 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--pri);box
 .addr-new{display:none;margin-top:2px}
 #addr-new:checked~.addr-new{display:block}
 .badge-def{display:inline-block;font-size:.7rem;background:var(--goodbg);color:var(--good);padding:1px 7px;border-radius:var(--pill);font-weight:600;vertical-align:middle}
-@media(max-width:680px){.checkout-submit{position:sticky;bottom:0;z-index:15;margin:14px -20px 0;padding:12px 20px calc(12px + env(safe-area-inset-bottom));background:color-mix(in srgb,var(--card) 92%,transparent);backdrop-filter:saturate(180%) blur(10px);-webkit-backdrop-filter:saturate(180%) blur(10px);border-top:1px solid var(--bd)}}
+@media(max-width:680px){.checkout-submit{position:sticky;bottom:0;z-index:15;margin:14px -20px 0;padding:12px 20px calc(12px + env(safe-area-inset-bottom));background:var(--card);background:color-mix(in srgb,var(--card) 92%,transparent);backdrop-filter:saturate(180%) blur(10px);-webkit-backdrop-filter:saturate(180%) blur(10px);border-top:1px solid var(--bd)}}
 .bank{background:var(--surf);border:1px solid var(--bd);border-radius:var(--r);padding:14px}.bank .row{border-color:var(--bd)}
 .qrbox{text-align:center;margin:14px 0}.qrbox svg{max-width:220px;height:auto;border:1px solid var(--bd);border-radius:var(--r);padding:8px;background:#fff}
 .badge{display:inline-flex;align-items:center;gap:5px;padding:5px 13px;border-radius:var(--pill);font-size:.82rem;font-weight:600;line-height:1.3}

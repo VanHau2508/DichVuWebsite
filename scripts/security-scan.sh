@@ -116,5 +116,33 @@ money="$(grep -rn "unsafe-inline" apps/storefront/src/http.js apps/checkout/src/
 [ -z "$money" ] && ok "storefront/checkout/account/signup: script-src không có unsafe-inline" \
   || { flag "unsafe-inline lọt vào script-src của đường tiền — ADR-011 cấm tuyệt đối:"; printf '%s\n' "$money" | sed 's/^/       /'; }
 
+# ── 7. CSS mới ở thanh NỔI: phải có dự phòng màu đặc ─────────────────────────
+# Vì sao canh ở ĐÂY: giống mục 6, đây là lỗi chỉ giết TRÌNH DUYỆT CŨ của khách, còn máy dev
+# và mọi bộ e2e (đều chạy Chrome mới) thì xanh hoàn hảo — không test hành vi nào bắt được.
+#
+# color-mix() chỉ có từ Chrome 111 / Safari 16.2 / Firefox 113 (mới hơn cả :has()). Trình
+# duyệt cũ BỎ khai báo không hiểu — đúng chuẩn CSS, im lặng. Với thanh position:sticky|fixed
+# nổi trên nội dung thì mất nền = nội dung cuộn xuyên qua, chữ chồng chữ; riêng .topbar còn
+# color:#fff nên thành chữ TRẮNG TRÊN NỀN TRẮNG. ĐÃ ĐO: bỏ color-mix ⇒ cả 3 thanh về
+# rgba(0,0,0,0), có dự phòng ⇒ nền đặc, đọc được.
+#
+# Quy tắc: trong luật CSS có position:sticky|fixed, mọi background:color-mix(...) PHẢI có một
+# khai báo background màu-đặc đứng NGAY TRƯỚC. Cascade lo phần còn lại.
+sect "7. Dự phòng CSS cho trình duyệt cũ (color-mix ở thanh nổi)"
+css_bad=0
+for f in apps/storefront/src/theme.js apps/checkout/src/pages.js apps/seller-admin/src/pages.js; do
+  [ -f "$f" ] || { warn "không thấy $f — bỏ qua"; continue; }
+  miss="$(tr '}' '\n' < "$f" \
+    | grep -E 'position:(sticky|fixed)' \
+    | grep -E 'background:color-mix\(' \
+    | grep -vE 'background:(var\([^)]*\)|#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)|transparent);background:color-mix\(' || true)"
+  if [ -n "$miss" ]; then
+    css_bad=1
+    flag "$f: thanh sticky/fixed dùng background:color-mix() mà KHÔNG có dự phòng màu đặc đứng trước:"
+    printf '%s\n' "$miss" | cut -c1-110 | sed 's/^/       /'
+  fi
+done
+[ "$css_bad" -eq 0 ] && ok "mọi thanh sticky/fixed có dự phòng màu đặc trước color-mix()"
+
 printf '\n\033[1m%d phát hiện cần xử lý\033[0m\n' "$issues"
 [ "$issues" -eq 0 ] || exit 1

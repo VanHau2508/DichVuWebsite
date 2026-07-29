@@ -36,10 +36,37 @@ const DISPOSABLE = new Set([
 ]);
 
 /** slug đã bị dành riêng / mạo danh brand → không cho tạo (áp cả /signup lẫn check-slug). */
+/**
+ * Chuỗi vừa là thương hiệu vừa là TỪ THÔNG DỤNG → chỉ chặn khi trùng TRỌN slug, không chặn
+ * khi nằm lẫn bên trong. Danh sách này là các ca ≥6 ký tự cần miễn trừ; các chuỗi <6 ký tự
+ * đã tự động chỉ-khớp-trọn theo quy tắc bên dưới.
+ */
+const AMBIGUOUS = new Set(['pancake']); // bánh pancake là món, không phải chỉ tên phần mềm
+
+/**
+ * Slug có bị cấm không.
+ *
+ * KHỚP TRỌN với mọi thương hiệu; khớp CHUỖI CON chỉ với thương hiệu dài (≥6) và không nằm
+ * trong AMBIGUOUS.
+ *
+ * Bản đầu khớp chuỗi con với TẤT CẢ, kể cả 'be' (2 ký tự) và 'nhanh'. Hậu quả đo được:
+ *   me-va-be · do-choi-cho-be · be-yeu-shop · bepgiadinh · banh-beo-co-ba   ← đều CHẶN
+ *   giao-hang-nhanh · ship-nhanh-24h · an-nhanh · sapoche-vuon              ← đều CHẶN
+ * Tức là chặn gần trọn ngành hàng MẸ & BÉ, mọi shop có chữ "nhanh", và cả tiệm bánh
+ * pancake — bằng đúng một câu "Địa chỉ này không sử dụng được" không giải thích gì. Người
+ * bán thử hai ba tên rồi bỏ đi, và ta không bao giờ biết đã mất ai.
+ *
+ * ĐÁNH ĐỔI CÓ CHỦ Ý: 'tiki-store' hay 'grab-food' nay lọt qua. Chấp nhận, vì hai loại sai
+ * KHÔNG cân nhau — kẻ chiếm tên thì ta thấy được và có sẵn đường tạm khoá shop (một thao tác
+ * tay), còn người bán thật bị chặn thì im lặng rời đi và không để lại dấu vết nào.
+ *
+ * Cũng chính chuỗi 'be' làm bộ e2e verify-provision đỏ ~1/24 lượt: slug ngẫu nhiên 8 ký tự
+ * trúng 'be' với xác suất ~0,54%, kỳ vọng ~1 lần trong 192 nháp — đo được đúng 1.
+ */
 export function isSlugDenied(slug) {
   const s = String(slug ?? '').toLowerCase();
   if (RESERVED.has(s)) return true;
-  return BRANDS.some((b) => s.includes(b));
+  return BRANDS.some((b) => s === b || (b.length >= 6 && !AMBIGUOUS.has(b) && s.includes(b)));
 }
 
 /** email domain dùng-một-lần → nuốt im lặng (không tạo nháp, trả trang trung tính). */

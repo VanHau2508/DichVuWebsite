@@ -92,3 +92,25 @@ service `account`/`loyalty` (chưa push) — cần cập nhật cùng đợt dep
   GET no-side-effect + token 1-lần + double-verify→1 shop + nhánh b/c + CSRF.
 - `apps/worker/test/signup-sweep.e2e.mjs` (5) — email verify tới Mailpit + sweep expired→giải-phóng-slug
   + giữ nháp còn hạn.
+
+## Danh sách cấm slug — sửa 2026-07-29
+
+Khớp CHUỖI CON với mọi thương hiệu là quá tay. Trong danh sách có `'be'` (2 ký tự) và
+`'nhanh'` — hậu quả ĐO ĐƯỢC: `me-va-be` · `do-choi-cho-be` · `be-yeu-shop` · `bepgiadinh` ·
+`banh-beo-co-ba` · `giao-hang-nhanh` · `an-nhanh` · `sapoche-vuon` · `tiem-banh-pancake` đều
+bị chặn. Tức là chặn gần trọn ngành hàng **mẹ & bé** cùng mọi shop có chữ "nhanh", bằng đúng
+một câu *"Địa chỉ này không sử dụng được"* không giải thích gì.
+
+Đây là chặn ĐẦU TIÊN của phễu self-serve và nó hỏng **im lặng**: không log, không phiếu hỗ
+trợ, người bán thử vài tên rồi bỏ đi.
+
+**Quy tắc mới:** khớp TRỌN với mọi thương hiệu; khớp chuỗi con chỉ với thương hiệu ≥6 ký tự
+và không nằm trong `AMBIGUOUS` (hiện có `pancake`).
+
+**Đánh đổi có chủ ý:** `tiki-store`, `grab-food` nay lọt qua. Chấp nhận — kẻ chiếm tên thì ta
+thấy được và có sẵn đường tạm khoá shop (một thao tác tay), còn người bán thật bị chặn thì im
+lặng rời đi, không để lại dấu vết nào. Hai loại sai không cân nhau.
+
+Chính chuỗi `'be'` cũng là thủ phạm làm `verify-provision.e2e` đỏ ~1/24 lượt: slug ngẫu nhiên
+8 ký tự trúng `'be'` với xác suất ~0,54%, kỳ vọng ~1 lần trong 192 nháp — đo được đúng 1.
+Test mới: `apps/signup/test/denylist.test.js` (7 ca, cổng unit mọi commit).

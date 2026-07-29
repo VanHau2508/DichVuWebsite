@@ -32,10 +32,11 @@ MANIFEST_UNIT_FILES=(
   packages/net-guard/test/fetch-image.test.js
   apps/seller/test/import-amount.test.js
   apps/seller/test/paging.test.js
+  apps/signup/test/denylist.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=10
+MANIFEST_UNIT_COUNT=11
 MANIFEST_E2E_COUNT=84
 
 manifest_unit_files() {

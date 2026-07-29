@@ -637,6 +637,17 @@ async function listSupportTickets(req, res) {
   const page = Math.min(MAX_PAGE, Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1));
   const status = url.searchParams.get('status') === 'resolved' ? 'resolved' : 'open';
   const order = status === 'open' ? 't.created_at ASC' : 't.resolved_at DESC NULLS LAST';
+  // Lọc theo SHOP hoặc theo nội dung phiếu, CÙNG MỘT Ô. Chủ nền tảng đang tìm thì trong đầu
+  // họ là "cái vụ của shop Sofa" hoặc "cái vụ GHN" — bắt chọn đúng loại trước khi gõ là bắt
+  // họ dịch câu hỏi của mình sang cấu trúc dữ liệu của ta.
+  const q = (url.searchParams.get('q') ?? '').trim().slice(0, 100);
+  const args = [status];
+  let qSql = '';
+  if (q) {
+    // Escape ký tự đặc biệt của LIKE — gõ '%' phải khớp NGHĨA ĐEN (khuôn của listShops).
+    args.push(`%${q.replace(/[\\%_]/g, (ch) => '\\' + ch)}%`);
+    qSql = ' AND (s.name ILIKE $2 OR s.slug ILIKE $2 OR t.subject ILIKE $2)';
+  }
   const [list, counts] = await Promise.all([
     db.query(
       `SELECT t.id, t.shop_id, t.subject, t.body, t.context_url, t.status, t.from_email,
@@ -646,11 +657,13 @@ async function listSupportTickets(req, res) {
          FROM support_tickets t
          JOIN shops s ON s.id = t.shop_id
          LEFT JOIN subscriptions sub ON sub.shop_id = t.shop_id
-        WHERE t.status = $1
+        WHERE t.status = $1${qSql}
         ORDER BY ${order}
         LIMIT ${TICKETS_PAGE_SIZE + 1} OFFSET ${(page - 1) * TICKETS_PAGE_SIZE}`,
-      [status],
+      args,
     ),
+    // Số đếm trên TAB luôn là TỔNG, KHÔNG theo bộ lọc: nó là "còn bao nhiêu việc", không phải
+    // "tìm được bao nhiêu". Cho nó nhảy theo ô tìm là làm mất đúng con số người ta đang canh.
     db.query(`SELECT status, COUNT(*)::int AS n FROM support_tickets GROUP BY status`),
   ]);
   const rows = list.rows.slice(0, TICKETS_PAGE_SIZE);
@@ -659,6 +672,7 @@ async function listSupportTickets(req, res) {
     tickets: rows,
     status,
     page,
+    q,
     has_more: list.rows.length > TICKETS_PAGE_SIZE,
     counts: { open: byStatus.open ?? 0, resolved: byStatus.resolved ?? 0 },
   });

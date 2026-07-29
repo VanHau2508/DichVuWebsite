@@ -139,7 +139,9 @@ async function platformCreate(req, res, me, cookie) {
 async function platformSupport(res, me, cookie, sp, opts = {}) {
   const status = sp?.get('status') === 'resolved' ? 'resolved' : 'open';
   const page = Math.max(1, parseInt(sp?.get('page') ?? '1', 10) || 1);
-  const r = await platformApi('GET', `/ops/support?status=${status}${page > 1 ? `&page=${page}` : ''}`, { cookie });
+  const q = (sp?.get('q') ?? '').trim().slice(0, 100);
+  const r = await platformApi('GET',
+    `/ops/support?status=${status}${page > 1 ? `&page=${page}` : ''}${q ? `&q=${encodeURIComponent(q)}` : ''}`, { cookie });
   if (r.status !== 200) return platDenied(res, me);
   const done = sp?.get('done');
   const notice = done === 'resolve'

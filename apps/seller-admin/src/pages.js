@@ -1170,7 +1170,18 @@ export function renderPlatformSupport(ctx, data, opts = {}) {
   const status = data?.status === 'resolved' ? 'resolved' : 'open';
   const counts = data?.counts ?? {};
   const page = data?.page ?? 1;
-  const linkTo = (st, pg = 1) => `/platform/support?status=${st}${pg > 1 ? `&page=${pg}` : ''}`;
+  // Ô lọc ĐI THEO khi đổi tab / lật trang. Gõ xong rồi bấm sang tab kia mà mất chữ vừa gõ là
+  // kiểu nhỏ-nhặt khiến người ta thôi dùng bộ lọc.
+  const q = data?.q ?? '';
+  const qs = (o = {}) => {
+    const sp = new URLSearchParams();
+    const v = { status, q, page: 1, ...o };
+    sp.set('status', v.status);
+    if (v.q) sp.set('q', v.q);
+    if (Number(v.page) > 1) sp.set('page', String(v.page));
+    return `/platform/support?${sp.toString()}`;
+  };
+  const linkTo = (st, pg = 1) => qs({ status: st, page: pg });
   const tab = (st, label) => `<a class="btn sm ${st === status ? '' : 'alt'}" href="${esc(linkTo(st))}">${esc(label)} (${esc(counts[st] ?? 0)})</a>`;
 
   const card = (t) => {
@@ -1213,9 +1224,13 @@ export function renderPlatformSupport(ctx, data, opts = {}) {
     </div>`;
   };
 
-  const empty = status === 'open'
-    ? '<div class="card"><p class="muted" style="margin:0">Không còn phiếu nào đang chờ. Hàng đợi sạch.</p></div>'
-    : '<div class="card"><p class="muted" style="margin:0">Chưa có phiếu nào được xử lý.</p></div>';
+  // Trống VÌ LỌC khác hẳn trống VÌ HẾT VIỆC — nói "hàng đợi sạch" khi người ta vừa gõ nhầm
+  // một chữ là nói dối về trạng thái hệ thống.
+  const empty = q
+    ? `<div class="card"><p class="muted" style="margin:0">Không có phiếu nào khớp “${esc(q)}” trong tab này. <a href="${esc(qs({ q: '' }))}">Xoá lọc</a></p></div>`
+    : status === 'open'
+      ? '<div class="card"><p class="muted" style="margin:0">Không còn phiếu nào đang chờ. Hàng đợi sạch.</p></div>'
+      : '<div class="card"><p class="muted" style="margin:0">Chưa có phiếu nào được xử lý.</p></div>';
   const pager = (page > 1 || data?.has_more) ? `<div class="actions" style="margin-top:10px">
       ${page > 1 ? `<a class="btn alt sm" href="${esc(linkTo(status, page - 1))}">← Trang trước</a>` : ''}
       <span class="muted" style="align-self:center">Trang ${esc(page)}</span>
@@ -1228,7 +1243,15 @@ export function renderPlatformSupport(ctx, data, opts = {}) {
     ${opts.err ? `<div class="err">${esc(opts.err)}</div>` : ''}
     ${opts.notice ? `<div class="card" style="border-color:var(--good);background:var(--goodbg);color:var(--good)">${esc(opts.notice)}</div>` : ''}
     <div class="actions" style="flex-wrap:wrap;margin-bottom:12px">${tab('open', 'Đang chờ')} ${tab('resolved', 'Đã xử lý')}</div>
-    ${status === 'open' && tickets.length
+    <form method="GET" action="/platform/support" class="actions" style="align-items:end;flex-wrap:wrap;margin-bottom:12px">
+      <input type="hidden" name="status" value="${esc(status)}">
+      <div><label>Lọc</label><input name="q" value="${esc(q)}" maxlength="100"
+        placeholder="tên shop hoặc nội dung phiếu" style="width:280px"></div>
+      <button class="btn sm" type="submit">Tìm</button>
+      ${q ? `<a class="btn alt sm" href="${esc(qs({ q: '' }))}">Xoá lọc</a>` : ''}
+    </form>
+    ${q ? `<p class="muted" style="margin:-6px 0 12px">${esc(tickets.length)} phiếu khớp “${esc(q)}” trong tab này. Số trên tab vẫn là TỔNG.</p>` : ''}
+    ${status === 'open' && tickets.length && !q
       ? '<p class="muted" style="margin:-4px 0 12px">Xếp theo thứ tự CHỜ LÂU NHẤT trước.</p>' : ''}
     ${tickets.length ? tickets.map(card).join('') : empty}
     ${pager}`);

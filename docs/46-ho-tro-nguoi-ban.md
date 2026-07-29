@@ -98,7 +98,7 @@ Thông tin liên hệ để ở **biến môi trường** chứ không phải b�
 
 * `apps/seller-admin/test/admin-support.e2e.mjs` (12) — chiều đi: form, PRG chống-F5-gửi-lặp,
   lưu DB + outbox, `order_manager` gửi được, cô lập chéo shop hai chiều, chặn rỗng, trần phiếu.
-* `apps/seller-admin/test/platform-support.e2e.mjs` (30) — chiều về: hàng đợi xuyên shop,
+* `apps/seller-admin/test/platform-support.e2e.mjs` (36) — chiều về: hàng đợi xuyên shop,
   người ngoài bị chặn mà **không lộ nội dung**, FIFO, cờ quá hạn, xử lý → outbox đúng người
   nhận, bấm hai lần **không nhân đôi thông báo**, mở lại, ghi chú hiện đúng bên người bán,
   operator xử được nhưng vẫn không khoá được shop, CSRF.
@@ -128,10 +128,21 @@ là lãng phí một vòng, mà mỗi vòng là một cơ hội để họ bỏ 
 * jsonb chứ không phải cột rời: bối cảnh còn nở thêm, và không truy vấn nghiệp vụ nào lọc
   theo nó — chỉ đọc bằng mắt trên đúng một màn hình.
 
+### Ô lọc hàng đợi
+
+Một ô `?q=` duy nhất, khớp **tên shop · slug · tiêu đề phiếu**. Người đang tìm nghĩ "cái vụ
+của shop Sofa" hoặc "cái vụ GHN" — bắt chọn đúng loại trước khi gõ là bắt họ dịch câu hỏi của
+mình sang cấu trúc dữ liệu của ta.
+
+* **Số trên tab vẫn là TỔNG**, không nhảy theo bộ lọc: nó là "còn bao nhiêu việc", không phải
+  "tìm được bao nhiêu". Cho nó tụt xuống (1) khi đang lọc là làm mất đúng con số đang canh.
+* Bộ lọc **đi theo** khi đổi tab và lật trang.
+* **Trống-vì-lọc nói khác trống-vì-hết-việc** — báo "hàng đợi sạch" khi người ta vừa gõ nhầm
+  một chữ là nói dối về trạng thái hệ thống.
+* `%` và `_` được escape → khớp nghĩa đen (khuôn của `listShops`).
+
 ## 6. Còn thiếu (v2)
 
-* **Không có ô tìm/lọc theo shop** trong hàng đợi. Với vài chục shop thì lật trang là đủ và
-  FIFO là mặc định đúng; khi backlog lớn thì cần.
 * **Không có trả lời trong sản phẩm** — ghi chú là một chiều. Muốn hỏi lại thì vẫn phải
   email/Zalo (nút `mailto:` trên mỗi phiếu đã điền sẵn tiêu đề).
 * **Không đính kèm ảnh chụp màn hình.** Hạ tầng NHẬN tệp đã có (`0101`: sniff magic byte +

@@ -91,8 +91,9 @@ async function main() {
   await owner.query(`UPDATE support_tickets SET status='resolved', resolved_at=now() WHERE status='open'`);
 
   const staff = await makeStaff();
-  const A = await makeShopOwner(staff.cookie, `psup-a-${uniq()}`);
-  const Bs = await makeShopOwner(staff.cookie, `psup-b-${uniq()}`);
+  const slugA = `psup-a-${uniq()}`, slugB = `psup-b-${uniq()}`;
+  const A = await makeShopOwner(staff.cookie, slugA);
+  const Bs = await makeShopOwner(staff.cookie, slugB);
   ok('dựng nhân viên nền tảng + 2 shop');
 
   // ── 1. Hàng đợi XUYÊN SHOP ────────────────────────────────────────
@@ -133,6 +134,33 @@ async function main() {
   dgF && dgF.role === 'owner'
     ? ok('vai lấy từ membership, KHÔNG nhận từ body (khai giả không ăn thua)')
     : bad('vai bị body chi phối', JSON.stringify(dgF));
+
+  // ── 1c. Ô lọc hàng đợi ──────────────────────────────────────────
+  sect('1c. Lọc theo shop / nội dung');
+  r = await adm('GET', `/platform/support?q=${encodeURIComponent(slugA)}`, { cookie: staff.cookie });
+  r.status === 200 && r.body.includes(sOld) && !r.body.includes(sNew)
+    ? ok('lọc theo slug shop → chỉ còn phiếu của shop đó') : bad('lọc theo shop sai', String(r.status));
+  // CÙNG một ô cũng tìm được theo nội dung phiếu — người đang tìm nghĩ "cái vụ GHN", không
+  // nghĩ "trường subject".
+  r = await adm('GET', `/platform/support?q=${encodeURIComponent(sNew.slice(0, 12))}`, { cookie: staff.cookie });
+  r.body.includes(sNew) && !r.body.includes(sOld)
+    ? ok('cùng ô đó lọc được theo nội dung phiếu') : bad('lọc theo nội dung sai');
+  // Số trên TAB là TỔNG, KHÔNG nhảy theo ô lọc: nó là "còn bao nhiêu việc", không phải
+  // "tìm được bao nhiêu". Đang lọc còn 1 phiếu mà tab tụt về (1) là mất con số đang canh.
+  /Đang chờ \(\d+\)/.test(r.body) && !/Đang chờ \(1\)/.test(r.body)
+    ? ok('số trên tab vẫn là TỔNG khi đang lọc') : bad('số trên tab nhảy theo bộ lọc');
+  // Bộ lọc phải ĐI THEO khi đổi tab, không thì gõ xong bấm tab kia là mất chữ vừa gõ.
+  new RegExp(`href="[^"]*status=resolved[^"]*q=`).test(r.body)
+    ? ok('link sang tab kia mang theo bộ lọc') : bad('đổi tab là mất bộ lọc');
+  r = await adm('GET', '/platform/support?q=khong-co-gi-khop-dau-xxx', { cookie: staff.cookie });
+  // Trống VÌ LỌC phải nói khác trống VÌ HẾT VIỆC — báo "hàng đợi sạch" khi người ta vừa gõ
+  // nhầm một chữ là nói dối về trạng thái hệ thống.
+  /không có phiếu nào khớp/i.test(r.body) && !/Hàng đợi sạch/.test(r.body)
+    ? ok('trống-vì-lọc nói khác trống-vì-hết-việc') : bad('trạng thái trống nói sai');
+  // Ký tự đặc biệt của LIKE phải khớp NGHĨA ĐEN, không thành ký tự đại diện.
+  r = await adm('GET', '/platform/support?q=%25', { cookie: staff.cookie });
+  r.status === 200 && !r.body.includes(sOld)
+    ? ok("gõ '%' khớp nghĩa đen, không thành ký tự đại diện") : bad("'%' bị hiểu thành wildcard");
 
   // ── 2. Người ngoài ──────────────────────────────────────────────
   sect('2. Người ngoài không vào được hàng đợi');

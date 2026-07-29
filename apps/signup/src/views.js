@@ -90,8 +90,27 @@ export function renderSignupForm(plans, { error, f = {}, ct = '', domain = 'nent
     <p class="foot muted">Đã có tài khoản? <a href="${esc(admin)}/">Đăng nhập</a></p>`);
 }
 
+// Liên hệ hỗ trợ trên trang trung tính — cùng biến môi trường với trang Trợ giúp (docs/46).
+// Không đặt ⇒ phần này ẩn, trang vẫn có nút "Thử lại".
+const SUP_ZALO = process.env.SUPPORT_ZALO ?? '';
+const SUP_PHONE = process.env.SUPPORT_PHONE ?? '';
+const SUP_MAIL = process.env.SUPPORT_EMAIL ?? '';
+
 // Trang trung tính SAU khi nộp — GIỐNG HỆT dù email mới / đã tồn tại / bị nuốt (enum-safe).
+//
+// LỐI THOÁT là phần bắt buộc, không phải trang trí. Trang này cố ý không nói được điều gì đã
+// xảy ra (đúng, để không cho ai dò email đã đăng ký). Hệ quả: người bị các hàng rào chống bot
+// NUỐT NHẦM sẽ kiểm hộp thư spam, không thấy gì, rồi HẾT ĐƯỜNG — trong khi vẫn tin là đã gửi.
+// Với trần 5 nháp/IP/giờ thì gửi lại vài lần còn tự khoá mình thêm một tiếng, cũng im lặng.
+//
+// Hai lối ra dưới đây KHÔNG làm yếu lớp chống dò email: chúng hiện y hệt cho MỌI người nộp,
+// không phụ thuộc email có tồn tại hay không.
 export function renderSignupDone(email) {
+  const lienHe = [
+    SUP_ZALO ? `Zalo <strong>${esc(SUP_ZALO)}</strong>` : '',
+    SUP_PHONE ? `<a href="tel:${esc(SUP_PHONE.replace(/\s/g, ''))}">${esc(SUP_PHONE)}</a>` : '',
+    SUP_MAIL ? `<a href="mailto:${esc(SUP_MAIL)}">${esc(SUP_MAIL)}</a>` : '',
+  ].filter(Boolean).join(' · ');
   return layout('Kiểm tra email', `
     <div class="card ok-hero">
       <div class="big">📬</div>
@@ -99,6 +118,8 @@ export function renderSignupDone(email) {
       <p class="lede">Nếu <strong>${esc(email)}</strong> hợp lệ, chúng tôi vừa gửi một liên kết xác minh.
         Bấm vào liên kết đó để kích hoạt cửa hàng.</p>
       <p class="muted">Không thấy email? Kiểm tra hộp thư spam. Liên kết hết hạn sau 30 phút.</p>
+      <p class="foot">Chờ vài phút vẫn chưa thấy? <a href="/signup">Thử lại</a>${
+        lienHe ? ` hoặc nhắn cho chúng tôi: ${lienHe}` : ''}.</p>
     </div>`);
 }
 

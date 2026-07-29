@@ -121,7 +121,17 @@ async function doSignup(req, res) {
   // bot(honeypot/timing) · email dùng-một-lần · vượt trần Redis. → chống dò email + farm trial.
   const rl = await hit(redis, `rl:signup:ip:${iph}`, { limit: SIGNUP_RL_LIMIT, windowSec: 3600 }).catch(() => ({ allowed: true }));
   const ts = checkFormTs(f.ct);
-  const swallow = Boolean(f.website) || !ts.ok || ts.ageMs < FORM_MIN_MS || isDisposableEmail(email) || !rl.allowed;
+  // LÝ DO nuốt — ghi log phía SERVER, KHÔNG lộ ra client (trang trả về vẫn y hệt mọi trường
+  // hợp, enum-safe nguyên vẹn). Trước đây mọi lý do gộp thành một biến boolean, nên chặn nhầm
+  // người thật là VÔ HÌNH tuyệt đối: không log, không phiếu hỗ trợ, không dấu vết. Đã trả giá
+  // một lần với danh sách cấm slug (4cfc637) — chỉ lộ ra vì một bộ e2e đỏ chập chờn.
+  const swallowReason = Boolean(f.website) ? 'honeypot'
+    : !ts.ok ? 'form_ts_sai'
+    : ts.ageMs < FORM_MIN_MS ? 'gui_qua_nhanh'
+    : isDisposableEmail(email) ? 'email_dung_mot_lan'
+    : !rl.allowed ? 'tran_redis_ip'
+    : null;
+  const swallow = swallowReason !== null;
 
   const token = generateToken();
   try {
@@ -130,7 +140,11 @@ async function doSignup(req, res) {
       await c.query(`SELECT pg_advisory_xact_lock(hashtextextended('signup-ip:'||$1, 0))`, [iph]);
       const nRecent = Number((await c.query(
         `SELECT count(*)::int n FROM shop_signups WHERE ip_hash=$1 AND created_at > now() - interval '1 hour'`, [iph])).rows[0].n);
-      if (swallow || nRecent >= SIGNUP_IP_CAP) return; // nuốt: không ghi gì
+      if (swallow || nRecent >= SIGNUP_IP_CAP) {
+        // Log KHÔNG chứa email/IP thô (PII) — chỉ lý do + tuổi form, đủ để đếm và đặt cảnh báo.
+        log('warn', 'signup_swallowed', { reason: swallowReason ?? 'tran_ip_gio', ageMs: ts.ageMs });
+        return; // nuốt: không ghi gì vào DB
+      }
       // Reserve slug NGUYÊN TỬ (cùng key ở provision signup-3/4).
       await c.query(`SELECT pg_advisory_xact_lock(hashtextextended('signup-slug:'||$1, 0))`, [slug]);
       if (!(await slugFree(c, slug))) throw Object.assign(new Error('slug taken'), { code: 'SLUG_TAKEN' });

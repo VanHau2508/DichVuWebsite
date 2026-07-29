@@ -114,3 +114,35 @@ lặng rời đi, không để lại dấu vết nào. Hai loại sai không câ
 Chính chuỗi `'be'` cũng là thủ phạm làm `verify-provision.e2e` đỏ ~1/24 lượt: slug ngẫu nhiên
 8 ký tự trúng `'be'` với xác suất ~0,54%, kỳ vọng ~1 lần trong 192 nháp — đo được đúng 1.
 Test mới: `apps/signup/test/denylist.test.js` (7 ca, cổng unit mọi commit).
+
+## Rà các chặn IM LẶNG — 2026-07-29
+
+Năm nhánh "nuốt im lặng" của `/signup` (honeypot · form-ts sai · gửi <2s · email dùng-một-lần
+· trần Redis) cộng trần 5 nháp/IP/giờ. Đã soi từng cái bằng dữ liệu thật:
+
+| Nhánh | Rủi ro chặn nhầm người thật | Kết luận |
+|---|---|---|
+| honeypot `website` | autofill điền vào ô ẩn | **Không** — đã có `autocomplete="off"` + `tabindex="-1"` + `aria-hidden` |
+| `!ts.ok` (HMAC form-ts) | secret đổi khi restart ⇒ nuốt sạch form đang mở | **Không** — `SIGNUP_FORM_SECRET` là biến môi trường cố định, prod bắt buộc |
+| form-ts hết hạn | để tab lâu rồi nộp | **Không có hạn trên** — cố ý, mở tab bao lâu cũng nộp được |
+| gửi <2s | người gõ nhanh | Thấp — `ct` phát lúc render, người thật luôn >2s |
+| email dùng-một-lần | tên miền thật chứa tên miền rác | **Không** — so khớp TRỌN tên miền, `notmailinator.com` lọt qua |
+| trần 5 nháp/IP/giờ | CGNAT, văn phòng chung IP | **Có** — và im lặng. Xem dưới |
+
+**Hai lỗ đã vá:**
+
+1. **Trang trung tính là NGÕ CỤT.** Nó cố ý không nói được gì đã xảy ra (đúng, chống dò email),
+   nên người bị nuốt nhầm kiểm spam, không thấy gì, rồi hết đường — trong khi vẫn tin đã gửi.
+   Với trần 5/IP/giờ, gửi lại vài lần còn tự khoá thêm một tiếng, cũng im lặng. Nay có
+   **"Thử lại" + liên hệ hỗ trợ** (`SUPPORT_ZALO/PHONE/EMAIL`, ẩn nếu không đặt). Hiện y hệt
+   cho MỌI người nộp nên **không lộ thêm gì**.
+
+2. **Chặn nhầm là vô hình tuyệt đối** — không log, không dấu vết. Nay ghi
+   `signup_swallowed` kèm **lý do** (`honeypot` · `form_ts_sai` · `gui_qua_nhanh` ·
+   `email_dung_mot_lan` · `tran_redis_ip` · `tran_ip_gio`) ở phía SERVER, không chứa
+   email/IP thô. Đếm được, đặt cảnh báo được.
+
+**Bất biến mới có test:** ba ngả — bị nuốt vì honeypot, bị nuốt vì email rác, đăng ký thật —
+trả HTML **y hệt từng byte**, khác đúng ở địa chỉ email hiển thị lại. So byte thay vì tìm một
+câu, vì rẽ nhánh có thể lẻn vào bất kỳ đâu.
+

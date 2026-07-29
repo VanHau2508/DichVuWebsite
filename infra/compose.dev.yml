@@ -350,6 +350,9 @@ services:
       ADMIN_PUBLIC_ORIGIN: https://admin.localtest:8443
       IP_PEPPER: dev-ip-pepper
       SIGNUP_FORM_SECRET: dev-signup-form-secret
+      SUPPORT_ZALO: "0900000000"
+      SUPPORT_PHONE: "0900000000"
+      SUPPORT_EMAIL: hotro@nentang.vn
     volumes:
       - ../apps/signup/src:/app/apps/signup/src:ro
       - ../apps/signup/test:/app/apps/signup/test:ro

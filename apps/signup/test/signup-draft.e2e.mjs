@@ -68,6 +68,7 @@ async function main() {
   sect('4. Nuốt im lặng: honeypot / timing / email dùng-một-lần → trung tính KHÔNG nháp');
   const hp = goodForm({ website: 'http://bot.com' });
   r = await req('POST', '/signup', { form: hp, xff: '203.0.113.13' });
+  const bodyHoneypot = r.body;
   r.status === 200 && /Kiểm tra email/.test(r.body) && (await draftCount(hp.slug)) === 0 ? ok('honeypot → nuốt (không nháp)') : bad('honeypot không nuốt', await draftCount(hp.slug));
   const fast = goodForm({ ct: ct(0) }); // form-ts tuổi ~0 < 2s = bot
   r = await req('POST', '/signup', { form: fast, xff: '203.0.113.14' });
@@ -102,6 +103,26 @@ async function main() {
   for (let i = 0; i < 6; i++) { const gf = goodForm(); lastSlug = gf.slug; await req('POST', '/signup', { form: gf, xff: capIp }); }
   // 5 đầu tạo nháp; nháp thứ 6 (lastSlug) bị nuốt vì đã đủ trần.
   (await draftCount(lastSlug)) === 0 ? ok('nháp thứ 6 cùng IP bị nuốt (trần 5/giờ)') : bad('trần IP không chặn', await draftCount(lastSlug));
+
+  // ── Trang trung tính: KHÔNG rẽ nhánh, và có LỐI THOÁT ───────────────────────
+  sect('5. Trang trung tính giống hệt nhau + có lối thoát');
+  // Bất biến MẠNH NHẤT của lớp chống dò email: mọi ngả — bị nuốt vì bot, bị nuốt vì email
+  // dùng-một-lần, và đăng ký THẬT — phải trả HTML y hệt, khác đúng ở địa chỉ email hiển thị
+  // lại. So TỪNG BYTE thay vì tìm một câu, vì rẽ nhánh có thể lẻn vào bất kỳ đâu.
+  const gOk = goodForm();
+  const rOk = await req('POST', '/signup', { form: gOk, xff: '203.0.113.31' });
+  const gDis = goodForm({ email: `z-${uniq()}@mailinator.com` });
+  const rDis = await req('POST', '/signup', { form: gDis, xff: '203.0.113.32' });
+  const noEmail = (h, e) => String(h).split(e).join('EMAIL');
+  noEmail(rOk.body, gOk.email) === noEmail(rDis.body, gDis.email)
+    ? ok('đăng ký THẬT và bị-nuốt trả HTML y hệt (khác đúng địa chỉ email)')
+    : bad('trang trung tính RẼ NHÁNH theo kết quả — rò thông tin dò email');
+  noEmail(bodyHoneypot, hp.email) === noEmail(rOk.body, gOk.email)
+    ? ok('nhánh honeypot cũng y hệt nhánh thành công') : bad('nhánh honeypot khác nhánh thành công');
+  // LỐI THOÁT: người bị nuốt NHẦM phải có đường đi tiếp, không thì họ chờ mãi một email không
+  // bao giờ tới. Link hiện cho MỌI người nộp nên không lộ thêm gì.
+  /href="\/signup"/.test(rOk.body)
+    ? ok('trang trung tính có lối "Thử lại"') : bad('trang trung tính là NGÕ CỤT — không có đường đi tiếp');
 
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();

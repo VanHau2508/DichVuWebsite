@@ -121,11 +121,20 @@ Số đang dùng: timeout lời gọi nhập ở BFF **70s** · ngân sách ản
 6 luồng · tối đa **200 ảnh/lần nhập** · mỗi ảnh **≤ 8MB**. Tất cả chỉnh được bằng biến môi
 trường. Chỉ cổng **80/443**.
 
-**Vì sao chưa tách sang worker.** Worker sẽ cô lập mạng sạch hơn và bỏ hẳn trần thời gian,
-nhưng nó cần: thêm `sharp` vào worker (chưa có) · migration lưu URL nguồn · cấp quyền cho vai
-worker · một sweep mới kèm retry. Đó là khối việc ngang cả tính năng này. v1 chạy đồng bộ
-trong trần; **khi shop thật bắt đầu nhập file vài trăm ảnh thì đây là việc tiếp theo**, và
-phần SSRF không phải viết lại — `fetch-image.js` dùng nguyên.
+**ĐÃ TÁCH SANG WORKER (0106).** Trần 200 ảnh / 45 giây đã biến mất: bộ nhập chỉ **xếp hàng**
+(dòng `media` trạng thái `pending` kèm `source_url` — không cần bảng hàng đợi riêng vì dòng đó
+đã có `shop_id`/`product_id`/`position` và đã nằm trong mọi truy vấn hiển thị), worker tải nền.
+
+Hàng rào SSRF nằm ở **`packages/net-guard`**, seller và worker dùng **chung một bản**: nhân bản
+một đường ống bảo mật là kiểu trùng lặp chắc chắn trôi lệch.
+
+**Vẫn kiểm URL ngay tại request** (rẻ, không chạm mạng) để người bán biết *liền* nếu tệp dùng
+đường dẫn tương đối hay sai scheme, chứ không phải mười phút sau mới thấy 300 ảnh hỏng.
+
+Chính sách thử lại: **3xx/4xx là vĩnh viễn** (chuyển hướng ta không bao giờ đi theo; 404 sẽ
+không tự có lại) · **5xx/timeout** lùi giờ **luỹ thừa 1′→5′→25′**, tối đa 4 lần. **Claim trước
+khi làm** (tăng `fetch_attempts` ngay khi nhận việc) — thiếu bước này thì worker chết giữa
+chừng sẽ để dòng quay vòng vô hạn trên đúng một URL hỏng.
 
 **Lối thoát cho kiểm thử.** Cả stack dev đều là IP nội bộ, nên đường-thành-công không kiểm
 được nếu hàng rào không có lối ra. `IMPORT_IMG_ALLOW_HOSTS` là **danh sách tên miền tường

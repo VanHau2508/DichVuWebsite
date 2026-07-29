@@ -183,6 +183,27 @@ async function main() {
     ? ok('nhận đúng Handle/Title/Variant SKU/Variant Price/Compare At/Grams')
     : bad('bí danh cột không khớp', JSON.stringify(d3?.variants?.[0]));
 
+  // ── 3b. Hình dạng tệp Shopify THẬT: dòng CHỈ CÓ ẢNH ─────────────────────
+  sect('3b. Tệp Shopify thật: ảnh phụ nằm ở DÒNG RIÊNG chỉ có Handle + Image Src');
+  // Đây là hình dạng tệp xuất Shopify/Haravan thật, không phải ca hiếm: ảnh thứ 2, 3... của
+  // một sản phẩm nằm ở dòng riêng KHÔNG có SKU/giá. Nếu bộ nhập đòi SKU+giá ở mọi dòng thì
+  // một tệp bình thường sẽ báo hàng chục "dòng lỗi" và người bán tưởng tệp của mình hỏng.
+  const h3b = `ao-khoac-${uniq()}`;
+  r = await imp([
+    { 'Handle': h3b, 'Title': 'Áo khoác dù', 'Option1 Name': 'Màu', 'Option1 Value': 'Đen',
+      'Variant SKU': `${h3b}-den`, 'Variant Price': '450000', 'Image Src': 'http://dbtest/ok.png' },
+    { 'Handle': h3b, 'Option1 Name': 'Màu', 'Option1 Value': 'Xám',
+      'Variant SKU': `${h3b}-xam`, 'Variant Price': '450000' },
+    { 'Handle': h3b, 'Image Src': 'http://dbtest/ok.png?2' },     // DÒNG CHỈ CÓ ẢNH
+    { 'Handle': h3b, 'Image Src': 'http://dbtest/ok.png?3' },     // DÒNG CHỈ CÓ ẢNH
+  ]);
+  r.json?.created === 1 && r.json?.variants === 2 && r.json?.failed === 0
+    ? ok('dòng chỉ-có-ảnh KHÔNG bị tính là lỗi; sản phẩm vẫn 2 biến thể')
+    : bad('dòng chỉ-có-ảnh bị coi là lỗi (tệp Shopify thật sẽ đầy lỗi giả)', JSON.stringify(r.json));
+  r.json?.images?.queued === 3
+    ? ok('cả 3 ảnh (1 ở dòng biến thể + 2 ở dòng riêng) đều vào hàng đợi')
+    : bad('mất ảnh ở dòng riêng', JSON.stringify(r.json?.images));
+
   // ── 4. Danh mục 2 cấp ───────────────────────────────────────────────────
   sect('4. Danh mục: tạo cây 2 cấp, cấp 3 bị từ chối');
   const cats = (await a.get('/categories')).json;

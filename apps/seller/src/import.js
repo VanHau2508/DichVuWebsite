@@ -145,12 +145,24 @@ function groupRows(rows, hasHandleColumn) {
  * Mọi lỗi đều kèm SỐ DÒNG trong file gốc — người bán sửa file chứ không sửa cơ sở dữ liệu.
  */
 function buildProduct(group) {
-  const head = group.rows[0];
+  // DÒNG CHỈ CÓ ẢNH: tệp xuất Shopify/Haravan đặt ảnh thứ 2, 3... của một sản phẩm ở DÒNG
+  // RIÊNG chỉ có Handle + Image Src — không SKU, không giá. Đây là hình dạng BÌNH THƯỜNG của
+  // tệp thật, không phải ca hiếm. Bản đầu đòi SKU+giá ở mọi dòng nên một tệp Shopify chuẩn
+  // nhập được ĐÚNG KHÔNG GÌ CẢ: dòng ảnh báo "SKU trống" và cả nhóm bị bỏ theo quy tắc
+  // nhóm-lỗi-bỏ-cả-nhóm. Nay tách rõ hai loại dòng.
+  const isVariantRow = (r) => str(r.sku) !== '' || str(r.price_vnd) !== '';
+  const variantRows = group.rows.filter(({ r }) => isVariantRow(r));
+  // Thông tin cấp sản phẩm lấy từ dòng ĐẦU TIÊN CÓ TIÊU ĐỀ, không phải dòng đầu tuyệt đối:
+  // nếu tệp mở nhóm bằng một dòng ảnh thì dòng đầu không có title.
+  const head = group.rows.find(({ r }) => str(r.title) !== '') ?? group.rows[0];
   const h = head.r;
   const title = str(h.title);
   if (!validTitle(title)) return { ok: false, line: head.line, error: 'tiêu đề trống hoặc quá dài' };
+  if (variantRows.length === 0) {
+    return { ok: false, line: head.line, error: 'nhóm không có dòng nào khai SKU/giá (toàn dòng ảnh?)' };
+  }
 
-  if (group.rows.length > MAX_VARIANTS_PER_PRODUCT) {
+  if (variantRows.length > MAX_VARIANTS_PER_PRODUCT) {
     return { ok: false, line: head.line, error: `quá ${MAX_VARIANTS_PER_PRODUCT} biến thể trong một sản phẩm` };
   }
 
@@ -158,7 +170,7 @@ function buildProduct(group) {
   // lệch thì cả nhóm bị từ chối kèm số dòng lệch (xem chú thích đầu file).
   const axisNames = [];
   for (let i = 1; i <= MAX_OPTIONS; i++) {
-    for (const { r } of group.rows) {
+    for (const { r } of variantRows) {
       const n = str(r[`option${i}_name`]);
       if (n) { axisNames[i - 1] = n; break; }
     }
@@ -168,7 +180,7 @@ function buildProduct(group) {
     if (!axisNames[i]) break;                              // trục phải liên tục từ 1
     axes.push({ name: axisNames[i], idx: i + 1, values: [] });
   }
-  for (const { line, r } of group.rows) {
+  for (const { line, r } of variantRows) {
     for (const ax of axes) {
       const n = str(r[`option${ax.idx}_name`]);
       if (n && n !== ax.name) {
@@ -176,7 +188,7 @@ function buildProduct(group) {
       }
     }
   }
-  if (axes.length === 0 && group.rows.length > 1) {
+  if (axes.length === 0 && variantRows.length > 1) {
     return { ok: false, line: head.line, error: 'nhóm nhiều dòng nhưng không khai trục biến thể (option1_name)' };
   }
 
@@ -184,7 +196,7 @@ function buildProduct(group) {
   const variants = [];
   const comboSeen = new Set();
   const skuSeen = new Set();
-  for (const { line, r } of group.rows) {
+  for (const { line, r } of variantRows) {
     const sku = str(r.sku);
     if (!validSku(sku)) return { ok: false, line, error: 'SKU trống hoặc quá dài' };
     if (skuSeen.has(sku)) return { ok: false, line, error: `SKU "${sku}" lặp trong cùng sản phẩm` };
@@ -229,6 +241,15 @@ function buildProduct(group) {
   // Giá CẤP SẢN PHẨM = nhỏ nhất trong nhóm — khớp cách storefront hiện "từ ...₫".
   const basePrice = Math.min(...variants.map((v) => v.price));
 
+  // Thư viện ảnh = ảnh của MỌI dòng trong nhóm theo thứ tự dòng (gồm cả dòng chỉ-có-ảnh),
+  // bỏ trùng URL. Gom ở đây thay vì lấy từ variants: dòng ảnh không sinh ra biến thể nào.
+  const images = [];
+  const seenImg = new Set();
+  for (const { r } of group.rows) {
+    const u = str(r.image_url);
+    if (u && !seenImg.has(u)) { seenImg.add(u); images.push(u); }
+  }
+
   const statusRaw = str(h.status).toLowerCase();
   // Mặc định `draft` là CỐ Ý: nhập xong không tự bày bán. Người bán soát giá/ảnh rồi mới đăng.
   const status = (statusRaw === 'active' || statusRaw === 'true' || statusRaw === 'published') ? 'active' : 'draft';
@@ -246,7 +267,7 @@ function buildProduct(group) {
   return {
     ok: true,
     product: {
-      line: head.line, title, slug, status, basePrice, catPath, axes, variants,
+      line: head.line, title, slug, status, basePrice, catPath, axes, variants, images,
       description: str(h.description) === '' ? null : String(h.description),
     },
   };
@@ -382,13 +403,15 @@ export async function importProducts(res, ctx, body) {
   // hàm kiểm ở trên đều THUẦN nên chế độ này gần như miễn phí — chỉ là dừng trước khi ghi.
   if (body.dry_run === true) {
     const errs = [], preview = [];
-    let variants = 0, images = 0;
+    let variants = 0, imgOk = 0, imgBad = 0;
     for (const g of groups) {
       const built = buildProduct(g);
       if (!built.ok) { errs.push({ line: built.line, title: str(g.rows[0].r.title), error: built.error }); continue; }
       const p = built.product;
       variants += p.variants.length;
-      images += new Set(p.variants.map((v) => v.imageUrl).filter(Boolean)).size;
+      // Đếm ĐÚNG NHƯ lúc ghi thật: xem trước báo "10 ảnh" rồi lúc nhập ra "7 xếp hàng,
+      // 3 sai định dạng" là xem trước nói dối.
+      for (const u of p.images) (looksFetchable(u) ? imgOk++ : imgBad++);
       if (preview.length < 20) {
         preview.push({ title: p.title, slug: p.slug, variants: p.variants.length,
           axes: p.axes.map((a) => a.name), category: p.catPath.join(' > ') });
@@ -396,7 +419,8 @@ export async function importProducts(res, ctx, body) {
     }
     return send(res, 200, {
       dry_run: true, rows: raw.length, groups: groups.length,
-      created: groups.length - errs.length, variants, images,
+      created: groups.length - errs.length, variants,
+      images: { queued: imgOk, invalid: imgBad },
       failed: errs.length, errors: errs.slice(0, 100), preview, columns,
     });
   }
@@ -428,12 +452,8 @@ export async function importProducts(res, ctx, body) {
       const productId = await insertProduct(ctx, p);
       created++;
       variantsCreated += p.variants.length;
-      // Ảnh của SP = ảnh của mọi dòng trong nhóm, theo thứ tự dòng, bỏ trùng URL.
-      const seenUrl = new Set();
-      for (const v of p.variants) {
-        if (!v.imageUrl || seenUrl.has(v.imageUrl)) continue;
-        seenUrl.add(v.imageUrl);
-        if (!looksFetchable(v.imageUrl)) { imgInvalid++; continue; }
+      for (const url of p.images) {
+        if (!looksFetchable(url)) { imgInvalid++; continue; }
         if (imgQueued >= IMG_MAX_PER_IMPORT) { imgOverflow++; continue; }
         // Dòng media 'pending' + source_url CHÍNH LÀ đơn vị công việc của worker — không cần
         // bảng hàng đợi riêng: dòng này đã có shop_id/product_id/position và đã nằm sẵn trong
@@ -447,7 +467,7 @@ export async function importProducts(res, ctx, body) {
             `INSERT INTO media (id, shop_id, product_id, status, source_url, original_key, position)
              VALUES ($3, current_shop_id(), $1, 'pending', $2, $4,
                      (SELECT coalesce(max(position), -1) + 1 FROM media WHERE product_id = $1 AND deleted_at IS NULL))`,
-            [productId, v.imageUrl.slice(0, 2000), mediaId, `staging/${ctx.shopId}/${mediaId}`],
+            [productId, url.slice(0, 2000), mediaId, `staging/${ctx.shopId}/${mediaId}`],
           ));
           imgQueued++;
         } catch { imgInvalid++; }   // đếm ĐÚNG MỘT lần: bản đầu tăng cả hai biến

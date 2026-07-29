@@ -2498,7 +2498,7 @@ export function renderProductImport(ctx, shopId, result, err) {
         <div class="metric"><div class="l">Dòng trong tệp</div><div class="v">${n(result.rows)}</div></div>
         <div class="metric"><div class="l">Sẽ tạo</div><div class="v">${n(result.created)} sản phẩm</div></div>
         <div class="metric"><div class="l">Biến thể</div><div class="v">${n(result.variants)}</div></div>
-        <div class="metric"><div class="l">Ảnh sẽ tải</div><div class="v">${n(result.images)}</div></div>
+        <div class="metric"><div class="l">Ảnh sẽ tải</div><div class="v">${n(result.images?.queued)}${result.images?.invalid ? ` <span style="font-size:13px;color:var(--warn)">+${n(result.images.invalid)} sai địa chỉ</span>` : ''}</div></div>
       </div>
       ${result.failed ? `<p><strong style="color:var(--warn)">${n(result.failed)} sản phẩm sẽ bị bỏ</strong> — sửa các dòng dưới rồi tải lại.</p>${errTable}` : '<p class="muted">Không có lỗi nào.</p>'}
       ${rows ? `<h2 style="margin:16px 0 6px;font-size:15px">Sản phẩm sẽ tạo${result.created > (result.preview ?? []).length ? ` (${(result.preview ?? []).length} đầu tiên)` : ''}</h2>

@@ -15,6 +15,7 @@
 
 import crypto from 'node:crypto';
 import { send } from './http.js';
+import { parseAmount, parseOrderDate } from './import-parse.js';
 import { withTenant, audit } from './db.js';
 import {
   isInt, validPrice, validTitle, validSku, validSlug, validWeight, validCompareAt, validCost,
@@ -109,13 +110,8 @@ function mapRow(raw) {
 }
 
 const str = (v) => String(v ?? '').trim();
-/** Số nguyên từ chuỗi người dùng: bỏ mọi ký tự không phải số (dấu chấm phân nhóm, "₫", "đ"). */
-const intOf = (v, dflt = null) => {
-  const s = String(v ?? '').replace(/[^\d-]/g, '');
-  if (s === '') return dflt;
-  const n = Number.parseInt(s, 10);
-  return Number.isNaN(n) ? dflt : n;
-};
+
+const intOf = parseAmount;   // tên cũ giữ nguyên cho các chỗ gọi hiện có
 
 // ── Gộp dòng thành nhóm sản phẩm ───────────────────────────────────────────
 /**
@@ -532,23 +528,6 @@ const mapOrderRow = (raw) => {
   }
   return out;
 };
-
-/**
- * Ngày từ chuỗi người dùng. Nhận ISO (2026-07-28, kèm giờ) và kiểu Việt Nam 28/07/2026.
- * Trả Date hoặc null. TỪ CHỐI ngày TƯƠNG LAI: đơn "cũ" mà nằm ở tương lai thì hoặc tệp sai
- * hoặc đọc nhầm định dạng — cả hai đều làm hỏng hồ sơ khách nếu cứ nhập.
- */
-function parseOrderDate(v) {
-  const s = String(v ?? '').trim();
-  if (!s) return null;
-  let d = null;
-  const vn = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/.exec(s);
-  if (vn) d = new Date(Date.UTC(Number(vn[3]), Number(vn[2]) - 1, Number(vn[1]), 5));  // ~12h giờ VN
-  else if (/^\d{4}-\d{2}-\d{2}/.test(s)) d = new Date(s.length === 10 ? `${s}T05:00:00Z` : s);
-  if (!d || Number.isNaN(d.getTime())) return null;
-  if (d.getTime() > Date.now() + 86400000) return null;
-  return d;
-}
 
 const O_STATUS = { delivered: 'delivered', completed: 'delivered', done: 'delivered', 'hoàn thành': 'delivered',
   cancelled: 'cancelled', canceled: 'cancelled', 'đã huỷ': 'cancelled', 'da huy': 'cancelled',

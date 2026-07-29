@@ -469,10 +469,33 @@ async function main() {
     : bad('entry tháng hiện tại sai', JSON.stringify(lastM ?? null));
 
   // expiring_soon chứa shop vừa dựng (kỳ +3 ngày, status trial).
-  const expHit = (mtr.expiring_soon ?? []).find((x) => x.id === expShopId);
-  expHit && expHit.plan_code === 'care' && expHit.sub_status === 'trial'
-    ? ok('expiring_soon chứa shop hết hạn sau 3 ngày (trial/care)')
-    : bad('expiring_soon thiếu shop đã dựng', JSON.stringify(mtr.expiring_soon ?? null));
+  //
+  // Khẳng định HỢP ĐỒNG, không phải sự trùng hợp. Bản đầu chỉ tìm shop mình trong danh sách
+  // và ĐỎ VĨNH VIỄN trên DB dev: endpoint trả 20 shop sắp hết hạn SỚM NHẤT, mà DB dev tích
+  // 1748 shop hết hạn sớm hơn mốc +3 ngày ⇒ shop của bài test không bao giờ lọt LIMIT 20.
+  // CI chạy DB trắng nên xanh — tức là bài test chỉ đúng trên một loại máy, và ở loại máy
+  // còn lại nó dạy người ta bỏ qua màu đỏ.
+  //
+  // Điều thật sự cần kiểm: shop nằm trong cửa sổ 7 ngày thì PHẢI có mặt, TRỪ KHI danh sách
+  // đã đầy 20 chỗ bởi những shop hết hạn còn sớm hơn nó. Viết đúng như vậy thì đúng trên cả
+  // hai loại máy, và còn chặt HƠN bản cũ vì kiểm luôn thứ tự + trần.
+  const expList = mtr.expiring_soon ?? [];
+  const expHit = expList.find((x) => x.id === expShopId);
+  const expEnd = new Date((await owner.query(
+    `SELECT current_period_end e FROM subscriptions WHERE shop_id = $1`, [expShopId])).rows[0].e).getTime();
+  const crowdedOut = expList.length >= 20 && expList.every((x) => new Date(x.current_period_end).getTime() <= expEnd);
+  if (expHit) {
+    expHit.plan_code === 'care' && expHit.sub_status === 'trial'
+      ? ok('expiring_soon chứa shop hết hạn sau 3 ngày (trial/care)')
+      : bad('expiring_soon có shop nhưng sai gói/trạng thái', JSON.stringify(expHit));
+  } else if (crowdedOut) {
+    ok(`expiring_soon đầy ${expList.length} chỗ bởi shop hết hạn sớm hơn — đúng thứ tự + trần (DB dev tích dữ liệu)`);
+  } else {
+    bad('expiring_soon thiếu shop đã dựng mà danh sách CHƯA đầy shop sớm hơn', JSON.stringify(expList));
+  }
+  const sorted = expList.every((x, i) => i === 0
+    || new Date(expList[i - 1].current_period_end).getTime() <= new Date(x.current_period_end).getTime());
+  sorted ? ok('expiring_soon sắp theo hạn tăng dần (sắp hết trước)') : bad('expiring_soon sai thứ tự');
 
   // Đếm theo trạng thái khớp DB; churn là số (proxy — không có cancelled_at).
   const dbActive = await owner.query(

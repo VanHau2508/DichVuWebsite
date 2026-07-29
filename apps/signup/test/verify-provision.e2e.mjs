@@ -36,11 +36,28 @@ function req(method, path, { form, xff = '203.0.113.9', origin = `https://${HOST
 }
 const goodForm = (over = {}) => ({ name: 'Nhà Xinh', slug: `v-${uniq()}`, email: `u-${uniq()}@gmail.com`, password: 'matkhau-manh-2026', plan_code: 'platform', website: '', ct: ct(), ...over });
 // Đăng ký + móc token thô từ link outbox (chỉ test có được — thực tế đi qua email).
+/**
+ * Tạo nháp + lấy token verify.
+ *
+ * NÉM khi không ra token, KHÔNG trả null lặng lẽ. Endpoint /signup cố ý NUỐT IM LẶNG mọi lý
+ * do từ chối (trần per-IP, bot-guard, email dùng-một-lần) để chống dò email — đúng về bảo mật,
+ * nhưng nghĩa là bài test không phân biệt được "bị từ chối" với "đã tạo". Trước đây draft()
+ * trả {token:null} và 7/8 ca gọi KHÔNG kiểm, nên một lần bị từ chối sẽ chạy tiếp với token
+ * rỗng rồi đỏ ở tận khẳng định sau đó — mang nhãn của khẳng định ĐÓ, không phải nhãn của lỗi
+ * thật. Đã trả giá: ca "double provision" đỏ với cnt=0 oneOk=0, đọc như một cuộc đua provision
+ * thua, mất một vòng điều tra dài mới thấy chữ ký đó chính là "nháp chưa từng được tạo"
+ * (không shop, và cả hai phản hồi đều là trang token-không-hợp-lệ).
+ */
 async function draft(over = {}) {
   const f = goodForm(over);
-  await req('POST', '/signup', { form: f, xff: `10.9.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}` });
+  const r = await req('POST', '/signup', { form: f, xff: `10.9.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}` });
   const link = (await owner.query(`SELECT payload->>'link' AS l FROM outbox WHERE topic='signup.verify' AND payload->>'to'=$1 ORDER BY id DESC LIMIT 1`, [f.email])).rows[0]?.l;
   const token = link ? new URL(link).searchParams.get('token') : null;
+  if (!token) {
+    const row = (await owner.query(`SELECT status FROM shop_signups WHERE slug=$1`, [f.slug])).rows[0];
+    throw new Error(`TIỀN ĐỀ HỎNG: /signup không ra token verify (HTTP ${r.status}, dòng shop_signups=${row?.status ?? 'KHÔNG CÓ'}).`
+      + ' Nháp bị nuốt — trần per-IP/bot-guard/rate-limit, KHÔNG phải lỗi provision.');
+  }
   return { ...f, token };
 }
 const shopBySlug = async (slug) => (await owner.query(`SELECT id, status, created_via FROM shops WHERE lower(slug)=$1`, [slug])).rows[0] ?? null;

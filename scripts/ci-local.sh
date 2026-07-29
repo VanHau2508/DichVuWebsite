@@ -97,10 +97,16 @@ else
       clear_rl
       out=$($COMPOSE exec -T "$cont" node "$f" 2>&1 | tr -d '\r')
       sum=$(printf '%s' "$out" | grep -oE '[0-9]+ pass, [0-9]+ fail' | tail -1)
+      # Bộ ĐỎ thì GIỮ LẠI output. Trước đây chỉ giữ con số "10 pass, 1 fail" rồi vứt dòng
+      # FAIL — nên muốn biết hỏng gì phải dựng lại hiện trường, mà bộ chỉ đỏ TRONG lượt đầy
+      # đủ (chạy riêng thì xanh) thì dựng lại chính là thứ khó nhất. Đã mất một vòng đoán mò
+      # vì thiếu đúng ba dòng này.
       case "$sum" in
         *' 0 fail') pass "$f — $sum" ;;
-        '')         fail "$f — KHÔNG CHẠY ĐƯỢC: $(printf '%s' "$out" | tail -2 | head -1 | cut -c1-120)" ;;
-        *)          fail "$f — $sum" ;;
+        '')         log=/tmp/va-e2e-$(echo "$f" | tr '/.' '--').log; printf '%s' "$out" > "$log"
+                    fail "$f — KHÔNG CHẠY ĐƯỢC: $(printf '%s' "$out" | tail -2 | head -1 | cut -c1-100) [$log]" ;;
+        *)          log=/tmp/va-e2e-$(echo "$f" | tr '/.' '--').log; printf '%s' "$out" > "$log"
+                    fail "$f — $sum · $(printf '%s' "$out" | grep -E '^\s*(FAIL|.*\[31m)' | head -1 | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-90) [$log]" ;;
       esac
     done
   fi

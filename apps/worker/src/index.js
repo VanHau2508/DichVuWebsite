@@ -254,6 +254,22 @@ Từ: ${p.from ?? '(không rõ)'}
 ` : ''}Mã phiếu: ${p.ticket_id ?? ''}`,
     };
   }
+  // Chiều VỀ (0108): người nhận là NGƯỜI BÁN, người gửi là NỀN TẢNG. Cố ý KHÔNG truyền
+  // shop_name vào payload → brandOf() rơi về PLATFORM_BRAND: thư này do nentang.vn gửi, đóng
+  // dấu tên shop của chính người nhận lên đó là mạo danh họ với chính họ.
+  if (topic === 'support.ticket_resolved') {
+    const done = p.note
+      ? `Chúng tôi đã xử lý:\n\n${p.note}`
+      : 'Yêu cầu của bạn đã được xử lý.';
+    return {
+      subject: `Đã xử lý yêu cầu hỗ trợ: ${p.subject ?? ''}`,
+      text: `Chào bạn,\n\nYêu cầu "${p.subject ?? ''}" đã được xử lý xong.\n\n${done}\n\nNếu vẫn chưa ổn, bạn gửi lại một yêu cầu mới trong mục Trợ giúp — chúng tôi xem tiếp.`,
+      html: emailHtml(p, 'Yêu cầu hỗ trợ đã được xử lý',
+        par(`Yêu cầu <strong>${escHtml(p.subject ?? '')}</strong> đã được xử lý xong.`) +
+        (p.note ? par(escHtml(p.note)) : '') +
+        par('<span style="color:#6b7280">Nếu vẫn chưa ổn, bạn gửi lại một yêu cầu mới trong mục Trợ giúp — chúng tôi xem tiếp.</span>')),
+    };
+  }
   if (topic === 'stock.low') {
     const lines = (p.items ?? []).map((i) => `  • ${i.title}${i.variant_title ? ` (${i.variant_title})` : ''} — còn ${i.available}`).join('\n');
     const rowsHtml = (p.items ?? []).map((i) => `<tr><td style="padding:6px 12px 6px 0;border-bottom:1px solid #f3f4f6">${escHtml(i.title)}${i.variant_title ? ` <span style="color:#6b7280">(${escHtml(i.variant_title)})</span>` : ''}</td><td align="right" style="padding:6px 0;border-bottom:1px solid #f3f4f6;white-space:nowrap"><strong>còn ${escHtml(i.available)}</strong></td></tr>`).join('');
@@ -1478,6 +1494,9 @@ function tgMessageFor(topic, p) {
   if (topic === 'order.status_changed' && p.status === 'cancelled') return `❌ Đơn #${p.order_number} đã huỷ${p.reason === 'expired' ? ' (tự huỷ quá hạn)' : ''}.`;
   if (topic === 'order.status_changed' && p.status === 'returned') return `↩️ Đơn #${p.order_number} bị HOÀN (bom hàng) — hàng đang về cửa hàng. Nhận lại hàng rồi cập nhật tồn kho (Điều chỉnh tồn).`;
   if (topic === 'stock.low') return `📦 ${p.items?.length ?? 0} sản phẩm SẮP HẾT HÀNG (còn ≤ ${p.threshold}). Kiểm kho + nhập thêm.`;
+  // Phiếu hỗ trợ đã xử (0108): người bán đang CHỜ tin này, nên Telegram tới ngay là đúng —
+  // không bắt họ phải mở email hay đoán xem đã tới lượt mình chưa.
+  if (topic === 'support.ticket_resolved') return `✅ Yêu cầu hỗ trợ "${p.subject ?? ''}" đã được xử lý.${p.note ? `\n${p.note}` : ''}`;
   if (topic === 'subscription.reminder') {
     // Thiếu nhánh này = nửa Telegram của dunning âm thầm TẮT (return null bên dưới).
     const plan = p.plan_name || p.plan_code || '';

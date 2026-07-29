@@ -281,7 +281,7 @@ async function listPlans(req, res) {
 // đã có quyền (plans/subscriptions/shops/platform_invoices, 0006/0061). Không đụng
 // dữ liệu khách mua. 6 truy vấn song song, mỗi cái đều nhỏ (bảng quản lý ~trăm dòng).
 async function getMetrics(req, res) {
-  const [mrr, byStatus, byPlan, byMonth, expiring, churn, collected] = await Promise.all([
+  const [mrr, byStatus, byPlan, byMonth, expiring, churn, collected, tickets] = await Promise.all([
     // MRR = tổng giá gói/tháng của thuê bao đang TÍNH TIỀN (active + past_due —
     // past_due vẫn là doanh thu định kỳ đang đòi, chưa mất). Trial/cancelled không tính.
     db.query(
@@ -338,6 +338,12 @@ async function getMetrics(req, res) {
               COALESCE(SUM(amount_vnd), 0)::bigint AS total
          FROM platform_invoices`,
     ),
+    // Phiếu hỗ trợ đang chờ + cái CŨ NHẤT (0108). Con số đứng cạnh MRR là cố ý: hàng đợi hỗ
+    // trợ dài là một chỉ số kinh doanh, không phải việc vặt — nó báo trước churn tháng sau.
+    db.query(
+      `SELECT COUNT(*)::int AS open, MIN(created_at) AS oldest
+         FROM support_tickets WHERE status = 'open'`,
+    ),
   ]);
   const statusCounts = { trial: 0, active: 0, past_due: 0, cancelled: 0 };
   for (const r of byStatus.rows) statusCounts[r.status] = r.n;
@@ -355,6 +361,8 @@ async function getMetrics(req, res) {
     churn_90d_is_estimate: churn.rows[0].legacy > 0,
     collected_30d_vnd: collected.rows[0].d30,
     collected_total_vnd: collected.rows[0].total,
+    open_tickets: tickets.rows[0].open,
+    oldest_open_ticket_at: tickets.rows[0].oldest,
   });
 }
 
@@ -601,8 +609,124 @@ async function exportShop(req, res, shopId) {
   });
 }
 
+// ── hàng đợi phiếu hỗ trợ (0107/0108) ────────────────────────────────────────
+// Chủ nền tảng nhận Telegram khi có phiếu mới, nhưng Telegram KHÔNG phải hàng đợi: không
+// biết cái nào đã xử, không tra lại được, cuộn qua là mất. Đây là hàng đợi thật.
+const TICKETS_PAGE_SIZE = 20;
+
+/**
+ * Danh sách phiếu XUYÊN SHOP. Policy platform_all (0107) cho phép; RLS vẫn bật.
+ *
+ * Thứ tự CỐ Ý khác nhau theo tab:
+ *   open     → created_at TĂNG DẦN (FIFO). Hàng đợi hỗ trợ xếp mới-trước sẽ bỏ đói đúng
+ *              người đã chờ lâu nhất — cũng là người sắp bỏ đi.
+ *   resolved → resolved_at GIẢM DẦN: đang xem lại việc vừa làm.
+ *
+ * Kèm gói + trạng thái thuê bao: phiếu của shop ĐANG TRẢ TIỀN không giống phiếu của một bản
+ * dùng thử mở hôm qua, và console không nên bắt mở tab khác mới biết mình đang nói với ai.
+ */
+async function listSupportTickets(req, res) {
+  const url = new URL(req.url, 'http://internal');
+  // CHẶN TRÊN cho page: OFFSET nội suy thẳng vào SQL, mà parseInt('9'.repeat(20)) cho 1e20 →
+  // (page-1)*20 thành "2e+21" trong chuỗi truy vấn → lỗi cú pháp SQL → 500. Không phải lỗ
+  // tiêm (giá trị luôn là số), chỉ là 500 vô duyên cho một tham số rác.
+  const page = Math.min(1e6, Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1));
+  const status = url.searchParams.get('status') === 'resolved' ? 'resolved' : 'open';
+  const order = status === 'open' ? 't.created_at ASC' : 't.resolved_at DESC NULLS LAST';
+  const [list, counts] = await Promise.all([
+    db.query(
+      `SELECT t.id, t.shop_id, t.subject, t.body, t.context_url, t.status, t.from_email,
+              t.created_at, t.resolved_at, t.resolution_note,
+              s.name AS shop_name, s.slug AS shop_slug, s.status AS shop_status,
+              sub.plan_code, sub.status AS sub_status
+         FROM support_tickets t
+         JOIN shops s ON s.id = t.shop_id
+         LEFT JOIN subscriptions sub ON sub.shop_id = t.shop_id
+        WHERE t.status = $1
+        ORDER BY ${order}
+        LIMIT ${TICKETS_PAGE_SIZE + 1} OFFSET ${(page - 1) * TICKETS_PAGE_SIZE}`,
+      [status],
+    ),
+    db.query(`SELECT status, COUNT(*)::int AS n FROM support_tickets GROUP BY status`),
+  ]);
+  const rows = list.rows.slice(0, TICKETS_PAGE_SIZE);
+  const byStatus = Object.fromEntries(counts.rows.map((r) => [r.status, r.n]));
+  return send(res, 200, {
+    tickets: rows,
+    status,
+    page,
+    has_more: list.rows.length > TICKETS_PAGE_SIZE,
+    counts: { open: byStatus.open ?? 0, resolved: byStatus.resolved ?? 0 },
+  });
+}
+
+/**
+ * Đánh dấu ĐÃ XỬ LÝ + đóng vòng phản hồi về người bán.
+ *
+ * IDEMPOTENT nhờ guard status='open': bấm hai lần (F5, hai nhân viên cùng mở) chỉ đổi trạng
+ * thái MỘT lần → chỉ MỘT outbox → người bán không nhận hai email cho cùng một phiếu. Lần thứ
+ * hai trả {already:true} chứ không 409: người bấm không làm gì sai, và kết quả họ muốn đã đạt.
+ *
+ * Outbox CÙNG TRANSACTION (ADR-006): không có phiếu đã đóng mà người bán không hay biết.
+ * payload.to lấy từ t.from_email đã chép sẵn trên phiếu — console không có quyền đọc users.
+ */
+async function resolveTicket(req, res, ticketId, staff, ip, body) {
+  const note = String(body?.note ?? '').trim().slice(0, 2000) || null;
+  const client = await db.connect();
+  let t;
+  try {
+    await client.query('BEGIN');
+    t = (await client.query(
+      `UPDATE support_tickets
+          SET status = 'resolved', resolved_at = now(), resolved_by = $2, resolution_note = $3
+        WHERE id = $1 AND status = 'open'
+        RETURNING shop_id, subject, from_email`,
+      [ticketId, staff.user.id, note],
+    )).rows[0];
+    if (t) {
+      await client.query(
+        `INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'support.ticket_resolved', $2)`,
+        [t.shop_id, { ticket_id: ticketId, subject: t.subject, note, to: t.from_email }],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  if (!t) {
+    const ex = await db.query(`SELECT status FROM support_tickets WHERE id = $1`, [ticketId]);
+    if (!ex.rows[0]) return send(res, 404, { error: 'không tìm thấy phiếu' });
+    return send(res, 200, { ok: true, already: true, status: ex.rows[0].status });
+  }
+  await audit('support.ticket_resolved', { shopId: t.shop_id, actorId: staff.user.id, ip, metadata: { ticketId, noted: Boolean(note) } });
+  return send(res, 200, { ok: true, status: 'resolved' });
+}
+
+// Mở lại phiếu đóng nhầm/đóng sớm. KHÔNG báo lại người bán (không có gì mới để nói) và XOÁ
+// ghi chú cũ — giữ lại nghĩa là để một lời giải thích không còn đúng nằm trên phiếu đang mở.
+// Thiếu đường này thì "đã xử lý" là ngõ cụt, và người ta sẽ né không dám bấm.
+async function reopenTicket(req, res, ticketId, staff, ip) {
+  const r = await db.query(
+    `UPDATE support_tickets
+        SET status = 'open', resolved_at = NULL, resolved_by = NULL, resolution_note = NULL
+      WHERE id = $1 AND status = 'resolved' RETURNING shop_id`,
+    [ticketId],
+  );
+  if (r.rowCount === 0) {
+    const ex = await db.query(`SELECT status FROM support_tickets WHERE id = $1`, [ticketId]);
+    if (!ex.rows[0]) return send(res, 404, { error: 'không tìm thấy phiếu' });
+    return send(res, 200, { ok: true, already: true, status: ex.rows[0].status });
+  }
+  await audit('support.ticket_reopened', { shopId: r.rows[0].shop_id, actorId: staff.user.id, ip, metadata: { ticketId } });
+  return send(res, 200, { ok: true, status: 'open' });
+}
+
 // ── router ───────────────────────────────────────────────────────────────────
 const SHOP_ID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
+const TICKET_ID = SHOP_ID;
 // minRole:'admin' = route GHI/PHÁ HOẠI/TIỀN — operator chỉ được các route đọc
 // (list/detail/plans/metrics). Xem docstring requireStaff. stepUp = gõ lại mật
 // khẩu trong 5' (đợt 4.4). export là GET đọc-only nhưng dump cả sổ quản lý →
@@ -618,6 +742,12 @@ const ROUTES = [
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/suspend$`), minRole: 'admin', stepUp: true, fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'suspend', s, ip, b) },
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/restore$`), minRole: 'admin', stepUp: true, fn: (req, res, b, s, ip, p) => setShopStatus(req, res, p[0], 'restore', s, ip, b) },
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/subscription/renew$`), minRole: 'admin', stepUp: true, fn: (req, res, b, s, ip, p) => renewSubscription(req, res, p[0], s, ip, b) },
+  // Phiếu hỗ trợ CỐ Ý không khoá minRole:'admin'. Trả lời hỗ trợ chính là việc của operator;
+  // bắt phải là admin nghĩa là chỉ chủ nền tảng trả lời được — đúng cái nút cổ chai ta đang gỡ.
+  // Thao tác cũng không phá hoại: đổi một nhãn, và đã có đường mở lại.
+  { m: 'GET', re: /^\/ops\/support$/, fn: (req, res) => listSupportTickets(req, res) },
+  { m: 'POST', re: new RegExp(`^/ops/support/${TICKET_ID}/resolve$`), fn: (req, res, b, s, ip, p) => resolveTicket(req, res, p[0], s, ip, b) },
+  { m: 'POST', re: new RegExp(`^/ops/support/${TICKET_ID}/reopen$`), fn: (req, res, b, s, ip, p) => reopenTicket(req, res, p[0], s, ip) },
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/terminate$`), minRole: 'admin', stepUp: true, fn: (req, res, b, s, ip, p) => terminateShop(req, res, p[0], s, ip, b) },
 ];
 

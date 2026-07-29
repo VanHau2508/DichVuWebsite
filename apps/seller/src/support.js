@@ -35,10 +35,12 @@ async function createTicket(res, ctx, body) {
       `SELECT count(*)::int n FROM support_tickets WHERE status = 'open'`)).rows[0].n);
     if (open >= MAX_OPEN_PER_SHOP) return { tooMany: true };
 
+    // from_email CHÉP LẠI (0108) chứ không để console JOIN users: app_platform không có quyền
+    // nào trên bảng users, và phiếu phải nhớ ai gửi kể cả khi người đó rời shop sau này.
     const t = (await c.query(
-      `INSERT INTO support_tickets (shop_id, user_id, subject, body, context_url)
-       VALUES (current_shop_id(), $1, $2, $3, $4) RETURNING id, created_at`,
-      [ctx.user.id, subject, content, contextUrl],
+      `INSERT INTO support_tickets (shop_id, user_id, subject, body, context_url, from_email)
+       VALUES (current_shop_id(), $1, $2, $3, $4, $5) RETURNING id, created_at`,
+      [ctx.user.id, subject, content, contextUrl, ctx.user.email ?? null],
     )).rows[0];
 
     // Outbox (ADR-006) CÙNG TRANSACTION với phiếu: không có chuyện báo cho chủ nền tảng một
@@ -59,7 +61,7 @@ async function createTicket(res, ctx, body) {
 
 async function listTickets(res, ctx) {
   const rows = await withTenant(ctx.shopId, async (c) => (await c.query(
-    `SELECT id, subject, body, context_url, status, created_at, resolved_at
+    `SELECT id, subject, body, context_url, status, created_at, resolved_at, resolution_note
        FROM support_tickets ORDER BY created_at DESC LIMIT 50`)).rows);
   return send(res, 200, { tickets: rows });
 }

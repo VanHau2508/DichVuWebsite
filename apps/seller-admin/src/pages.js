@@ -141,6 +141,12 @@ input[type=file]{width:auto;padding:9px 12px;background:var(--surf);border:1.5px
   /* Ô KHÔNG có nhãn (cột checkbox chọn hàng loạt, cột nút) trải hết chiều ngang. */
   table.cards td[data-label=""]{padding-left:0;text-align:left}
   table.cards td[data-label=""]::before{display:none}
+  /* Ô chứa VĂN XUÔI (nội dung phiếu hỗ trợ, ghi chú xử lý): xếp nhãn LÊN TRÊN thay vì
+     dành 40% bề ngang cho nó. Đo thật ở 375px: ghi chú nằm trong ô có nhãn chỉ còn 109px
+     → 33 dòng mỗi dòng 3-4 ký tự. Cột nhãn 40% là đúng cho GIÁ TRỊ NGẮN (số tiền, trạng
+     thái, ngày) — sai cho một đoạn văn. */
+  table.cards td.stack{padding-left:0;text-align:left}
+  table.cards td.stack::before{position:static;display:block;width:auto;margin-bottom:2px}
   /* Hàng <tfoot> là dòng TỔNG, không phải một bản ghi — JS cố ý chỉ gán nhãn cho tbody.
      Không xử riêng thì ô không có data-label vẫn dính quy tắc td ở trên: chừa 40% trống
      cho nhãn rỗng rồi ép số tiền vào 60% còn lại. Cho cả hàng thành một dải
@@ -172,6 +178,17 @@ input[type=file]{width:auto;padding:9px 12px;background:var(--surf);border:1.5px
    bảng trông "mềm" và khó quét mắt theo cột. */
 .pthumb{width:40px;height:40px;flex:0 0 auto;border-radius:var(--r-xs);object-fit:cover;border:1px solid var(--row);background:var(--surf);display:block}
 .pthumb.lg{width:56px;height:56px}
+/* Phiếu hỗ trợ (0108). Thân phiếu là VĂN XUÔI người bán gõ — pre-wrap giữ nguyên xuống dòng
+   của họ (mô tả từng bước gặp lỗi mà bị ép thành một khối liền là mất đúng thứ cần đọc). */
+.tkt{border-left:3px solid var(--bd)}
+.tkt.late{border-left-color:var(--bad)}
+/* max-width theo ch: phần còn lại của trang quản trị là BẢNG nên trải hết bề ngang là đúng,
+   nhưng đây là văn xuôi. Ở màn 1280 thân phiếu rộng ~1150px = dòng hơn 150 ký tự, mắt phải
+   quét ngang rồi dò lại đầu dòng — người đọc bỏ giữa chừng đúng lúc cần đọc kỹ nhất. */
+.prosetxt{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;max-width:74ch}
+.tkt .prosetxt{margin:10px 0 0}
+.tkt summary{cursor:pointer;color:var(--pri);font-size:.88rem;margin-top:6px}
+.tkt .tmeta{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;font-size:.85rem;margin-top:12px;padding-top:10px;border-top:1px solid var(--row)}
 /* §4.7 checkbox: 16px, chọn → nền teal + tick trắng. accent-color làm đúng việc đó bằng
    control NATIVE — chạy không cần JS, giữ nguyên hành vi bàn phím/đọc màn hình/forced-colors.
    KHÔNG làm phần "bo 4px, viền 1.5px" của spec: trình duyệt bỏ qua border-radius trên
@@ -355,8 +372,11 @@ const TICKET_ST = { open: ['Đang chờ xử lý', 'pending'], resolved: ['Đã 
 
 export function renderHelp(ctx, shopId, tickets, notice, err, form = {}) {
   const base = `/shops/${esc(shopId)}`;
+  // Ghi chú xử lý (0108) nằm NGAY trong ô nội dung, không phải một cột thứ tư: nó là CÂU TRẢ
+  // LỜI cho việc người bán hỏi — đọc nó quan trọng hơn đọc lại tiêu đề mình vừa gõ.
   const rows = (tickets ?? []).map((t) => `<tr>
-    <td>${esc(t.subject)}<div class="muted" style="font-size:.8rem">${esc(String(t.body).slice(0, 90))}${String(t.body).length > 90 ? '…' : ''}</div></td>
+    <td class="stack">${esc(t.subject)}<div class="muted" style="font-size:.8rem">${esc(String(t.body).slice(0, 90))}${String(t.body).length > 90 ? '…' : ''}</div>
+      ${t.resolution_note ? `<div class="prosetxt" style="margin-top:8px;padding:8px 10px;background:var(--goodbg);color:var(--good);border-radius:var(--r-xs);font-size:.85rem;text-align:left">${esc(t.resolution_note)}</div>` : ''}</td>
     <td>${badge(TICKET_ST[t.status]?.[1] ?? 'draft', TICKET_ST[t.status]?.[0] ?? t.status)}</td>
     <td class="muted">${dt(t.created_at)}</td></tr>`).join('');
 
@@ -1027,6 +1047,8 @@ function platformOverview(m) {
       ${tile('Dùng thử', esc(st.trial ?? 0), `quá hạn: ${st.past_due ?? 0} · đã huỷ: ${st.cancelled ?? 0}`)}
       ${tile('Đã thu 30 ngày', money(m.collected_30d_vnd ?? 0))}
       ${tile('Tổng đã thu', money(m.collected_total_vnd ?? 0), 'từ trước tới nay')}
+      ${tile('Phiếu hỗ trợ chờ', esc(m.open_tickets ?? 0),
+        m.oldest_open_ticket_at ? `chờ lâu nhất: ${ago(m.oldest_open_ticket_at)}` : 'hàng đợi sạch')}
     </div>
     <div class="card"><h2 style="margin-top:0">Doanh thu thu thuê bao 12 tháng</h2>
       ${chart || '<p class="muted">Chưa ghi nhận khoản thu nào.</p>'}
@@ -1073,7 +1095,10 @@ export function renderPlatformShops(ctx, data, metrics = null, filters = {}) {
     </div>` : '';
   return layout('Console nền tảng', ctx, `
     <div class="toolbar"><h1 style="margin:0">Console nền tảng</h1>
-      ${isOperator ? '<span class="muted">Vai trò: operator (chỉ xem)</span>' : '<a class="btn" href="/platform/new">+ Tạo cửa hàng</a>'}</div>
+      <div class="actions" style="gap:8px;flex-wrap:wrap">
+        <a class="btn alt" href="/platform/support">Phiếu hỗ trợ${Number(metrics?.open_tickets) > 0 ? ` (${esc(metrics.open_tickets)})` : ''}</a>
+        ${isOperator ? '<span class="muted" style="align-self:center">Vai trò: operator (chỉ xem)</span>' : '<a class="btn" href="/platform/new">+ Tạo cửa hàng</a>'}
+      </div></div>
     ${platformOverview(metrics)}
     <div class="card">
       <form method="GET" action="/platform" class="actions" style="align-items:end;flex-wrap:wrap;margin-bottom:10px">
@@ -1087,6 +1112,95 @@ export function renderPlatformShops(ctx, data, metrics = null, filters = {}) {
       <p class="muted" style="margin-top:10px">${esc(shops.length)} / ${esc(total)} cửa hàng${q ? ` khớp “${esc(q)}”` : ''}.</p>${pager}`
       : `<p class="muted">${q || subStatus ? 'Không có cửa hàng nào khớp bộ lọc.' : 'Chưa có cửa hàng nào. Bấm “Tạo cửa hàng”.'}</p>`}</div>`);
 }
+// ── Hàng đợi phiếu hỗ trợ (0108) ─────────────────────────────────────────────
+// Thời gian TƯƠNG ĐỐI, không phải dấu thời gian. Ở đây câu hỏi duy nhất là "người này đã chờ
+// bao lâu rồi" — "3 ngày trước" trả lời ngay, "14:32 27/07" bắt người đọc tự trừ.
+const ago = (ts) => {
+  const ms = Date.now() - new Date(ts).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return 'vừa xong';
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return 'vừa xong';
+  if (m < 60) return `${m} phút trước`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} giờ trước`;
+  return `${Math.floor(h / 24)} ngày trước`;
+};
+// Ngưỡng TRỄ. Người bán gặp sự cố mà chờ quá một ngày thì lời hứa hỗ trợ đã hỏng, dù cuối
+// cùng có trả lời. Danh sách xếp cũ-trước nên phiếu trễ tự nổi lên đầu — không cần lọc riêng.
+const LATE_MS = 24 * 3600 * 1000;
+const TKT_SUB_ST = { trial: 'dùng thử', active: 'đang trả phí', past_due: 'quá hạn', cancelled: 'đã huỷ' };
+// Thân phiếu dài thì gập lại sau <details> (thẻ gốc, no-JS): 20 phiếu × 5000 ký tự mở sẵn
+// biến hàng đợi thành một bức tường chữ, và người ta sẽ ngừng đọc từ phiếu thứ ba.
+const TKT_FOLD = 600;
+
+export function renderPlatformSupport(ctx, data, opts = {}) {
+  const tickets = data?.tickets ?? [];
+  const status = data?.status === 'resolved' ? 'resolved' : 'open';
+  const counts = data?.counts ?? {};
+  const page = data?.page ?? 1;
+  const linkTo = (st, pg = 1) => `/platform/support?status=${st}${pg > 1 ? `&page=${pg}` : ''}`;
+  const tab = (st, label) => `<a class="btn sm ${st === status ? '' : 'alt'}" href="${esc(linkTo(st))}">${esc(label)} (${esc(counts[st] ?? 0)})</a>`;
+
+  const card = (t) => {
+    const late = status === 'open' && (Date.now() - new Date(t.created_at).getTime()) > LATE_MS;
+    const body = String(t.body ?? '');
+    const long = body.length > TKT_FOLD;
+    const mail = String(t.from_email ?? '').replace(/[^A-Za-z0-9@._+-]/g, '');
+    return `<div class="card tkt${late ? ' late' : ''}">
+      <div class="toolbar" style="margin-bottom:6px;gap:10px">
+        <div class="actions" style="gap:8px;flex-wrap:wrap">
+          <strong>${esc(ago(t.created_at))}</strong>
+          ${late ? badge('cancelled', 'Quá hạn 24h') : ''}
+          ${status === 'resolved' ? badge('delivered', `Xong ${esc(ago(t.resolved_at ?? t.created_at))}`) : ''}
+        </div>
+        <a class="btn alt sm" href="/platform/shops/${esc(t.shop_id)}">${esc(t.shop_name ?? t.shop_slug ?? 'cửa hàng')} →</a>
+      </div>
+      <h2 style="margin:0;font-size:1.05rem">${esc(t.subject)}</h2>
+      ${long
+        ? `<p class="prosetxt">${esc(body.slice(0, TKT_FOLD))}…</p>
+           <details><summary>Xem đầy đủ</summary><p class="prosetxt">${esc(body)}</p></details>`
+        : `<p class="prosetxt">${esc(body)}</p>`}
+      <div class="tmeta">
+        <span class="muted">${esc(t.plan_code ?? 'chưa có gói')} · ${esc(TKT_SUB_ST[t.sub_status] ?? t.sub_status ?? '—')}</span>
+        ${mail ? `<a href="mailto:${esc(mail)}?subject=${esc(encodeURIComponent(`[Hỗ trợ] ${t.subject}`))}">${esc(mail)}</a>` : '<span class="muted">không rõ người gửi</span>'}
+        ${t.context_url ? `<span class="muted">Trang: <code>${esc(String(t.context_url).slice(0, 120))}</code></span>` : ''}
+      </div>
+      ${status === 'open' ? `<form method="POST" action="/platform/support/${esc(t.id)}/resolve" style="margin-top:12px">
+          <input type="hidden" name="status" value="open">
+          <label>Đã xử lý ra sao? <span class="muted">(người bán đọc được — để trống cũng gửi được)</span></label>
+          <textarea name="note" rows="2" maxlength="2000" placeholder="vd: Đã bật lại kết nối GHN cho shop, thử tạo vận đơn lại giúp anh nhé."></textarea>
+          <div class="savebar"><button class="btn" type="submit">Đánh dấu đã xử lý</button></div>
+        </form>`
+        : `${t.resolution_note ? `<div class="prosetxt" style="margin-top:12px;padding:10px 12px;background:var(--goodbg);color:var(--good);border-radius:var(--r-xs)">${esc(t.resolution_note)}</div>`
+            : '<p class="muted" style="margin:12px 0 0;font-size:.85rem">Xử lý xong nhưng không ghi chú gì.</p>'}
+          <form method="POST" action="/platform/support/${esc(t.id)}/reopen" style="margin-top:10px">
+            <input type="hidden" name="status" value="resolved">
+            <button class="btn alt sm" type="submit">Mở lại phiếu</button>
+          </form>`}
+    </div>`;
+  };
+
+  const empty = status === 'open'
+    ? '<div class="card"><p class="muted" style="margin:0">Không còn phiếu nào đang chờ. Hàng đợi sạch.</p></div>'
+    : '<div class="card"><p class="muted" style="margin:0">Chưa có phiếu nào được xử lý.</p></div>';
+  const pager = (page > 1 || data?.has_more) ? `<div class="actions" style="margin-top:10px">
+      ${page > 1 ? `<a class="btn alt sm" href="${esc(linkTo(status, page - 1))}">← Trang trước</a>` : ''}
+      <span class="muted" style="align-self:center">Trang ${esc(page)}</span>
+      ${data?.has_more ? `<a class="btn alt sm" href="${esc(linkTo(status, page + 1))}">Trang sau →</a>` : ''}
+    </div>` : '';
+
+  return layout('Phiếu hỗ trợ', ctx, `
+    <a class="muted" href="/platform">← Console nền tảng</a>
+    <div class="toolbar"><h1 style="margin:0">Phiếu hỗ trợ</h1></div>
+    ${opts.err ? `<div class="err">${esc(opts.err)}</div>` : ''}
+    ${opts.notice ? `<div class="card" style="border-color:var(--good);background:var(--goodbg);color:var(--good)">${esc(opts.notice)}</div>` : ''}
+    <div class="actions" style="flex-wrap:wrap;margin-bottom:12px">${tab('open', 'Đang chờ')} ${tab('resolved', 'Đã xử lý')}</div>
+    ${status === 'open' && tickets.length
+      ? '<p class="muted" style="margin:-4px 0 12px">Xếp theo thứ tự CHỜ LÂU NHẤT trước.</p>' : ''}
+    ${tickets.length ? tickets.map(card).join('') : empty}
+    ${pager}`);
+}
+
 export function renderPlatformShopNew(ctx, err, f = {}, plans = []) {
   return layout('Tạo cửa hàng', ctx, `
     <a class="muted" href="/platform">← Console nền tảng</a>

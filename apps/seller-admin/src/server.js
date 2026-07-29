@@ -135,6 +135,33 @@ async function platformCreate(req, res, me, cookie) {
   if (isDenied(r.status)) return platDenied(res, me);
   return platformShopNew(res, me, cookie, r.json?.error ?? 'Không tạo được cửa hàng.', f);
 }
+// ── hàng đợi phiếu hỗ trợ (0108) ─────────────────────────────────────────────
+async function platformSupport(res, me, cookie, sp, opts = {}) {
+  const status = sp?.get('status') === 'resolved' ? 'resolved' : 'open';
+  const page = Math.max(1, parseInt(sp?.get('page') ?? '1', 10) || 1);
+  const r = await platformApi('GET', `/ops/support?status=${status}${page > 1 ? `&page=${page}` : ''}`, { cookie });
+  if (r.status !== 200) return platDenied(res, me);
+  const done = sp?.get('done');
+  const notice = done === 'resolve'
+    ? (sp?.get('already') ? 'Phiếu này đã được xử lý trước đó.' : 'Đã đánh dấu xử lý xong — người bán nhận được thông báo.')
+    : done === 'reopen' ? 'Đã mở lại phiếu.' : null;
+  return sendHtml(res, 200, V.renderPlatformSupport(platCtx(me), r.json ?? {}, { notice, ...opts }));
+}
+// PRG: xử lý xong thì REDIRECT về đúng tab đang đứng. F5 sau khi bấm "đã xử lý" mà POST lại
+// thì cũng vô hại (endpoint idempotent theo guard status), nhưng để trình duyệt hỏi
+// "gửi lại biểu mẫu?" là bắt người ta đoán — cứ redirect cho hết chuyện.
+async function platformSupportAction(req, res, me, cookie, ticketId, action) {
+  const f = await readForm(req);
+  const back = f.status === 'resolved' ? 'resolved' : 'open';
+  const r = await platformApi('POST', `/ops/support/${ticketId}/${action}`, { cookie, body: { note: String(f.note ?? '') } });
+  if (isDenied(r.status)) return platDenied(res, me);
+  if (r.status !== 200) {
+    return platformSupport(res, me, cookie, new URLSearchParams({ status: back }), { err: r.json?.error ?? 'Thao tác không thực hiện được.' });
+  }
+  const done = action === 'resolve' ? 'resolved' : 'open';
+  return redirect(res, `/platform/support?status=${done}&done=${action}${r.json?.already ? '&already=1' : ''}`);
+}
+
 async function platformShopDetail(res, me, cookie, shopId, opts = {}) {
   const [r, pr] = await Promise.all([
     platformApi('GET', `/ops/shops/${shopId}`, { cookie }),
@@ -2647,6 +2674,8 @@ async function handle(req, res, url, p) {
     let pm;
     if (p === '/platform' && req.method === 'GET') return platformShops(res, me, cookie, url.searchParams);
     if (p === '/platform/new' && req.method === 'GET') return platformShopNew(res, me, cookie, null, {});
+    if (p === '/platform/support' && req.method === 'GET') return platformSupport(res, me, cookie, url.searchParams);
+    if ((pm = new RegExp(`^/platform/support/${UUID}/(resolve|reopen)$`).exec(p)) && req.method === 'POST') return platformSupportAction(req, res, me, cookie, pm[1], pm[2]);
     if (p === '/platform' && req.method === 'POST') return platformCreate(req, res, me, cookie);
     if ((pm = new RegExp(`^/platform/shops/${UUID}$`).exec(p)) && req.method === 'GET') return platformShopDetail(res, me, cookie, pm[1]);
     if ((pm = new RegExp(`^/platform/shops/${UUID}/invite$`).exec(p)) && req.method === 'POST') return platformInvite(req, res, me, cookie, pm[1]);

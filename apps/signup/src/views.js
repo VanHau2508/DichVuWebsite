@@ -76,8 +76,9 @@ export function renderSignupForm(plans, { error, f = {}, ct = '', domain = 'nent
           <option value="food"${f.industry === 'food' ? ' selected' : ''}>Thực phẩm / Đồ uống</option>
           <option value="furniture"${f.industry === 'furniture' ? ' selected' : ''}>Nội thất</option>
           <option value="cosmetics"${f.industry === 'cosmetics' ? ' selected' : ''}>Mỹ phẩm</option>
+          <option value="general"${f.industry === 'general' ? ' selected' : ''}>Khác / Đa ngành</option>
         </select>
-        <p class="muted" style="margin:5px 0 0">Shop sẽ có sẵn màu sắc & bố cục hợp ngành — đổi lại bất cứ lúc nào trong phần Giao diện.</p>
+        <p class="muted" style="margin:5px 0 0">Shop sẽ có sẵn màu sắc &amp; bố cục hợp ngành. Bỏ trống cũng được — nhận giao diện trung tính, đổi lại bất cứ lúc nào trong phần Giao diện.</p>
 
         <label>Chọn gói</label>
         <div class="plans">${planHtml}</div>

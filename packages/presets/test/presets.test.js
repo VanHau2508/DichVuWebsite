@@ -9,20 +9,23 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PRESETS, getPreset, listPresets, presetChoices } from '../src/index.js';
+import { PRESETS, getPreset, listPresets, presetChoices, FALLBACK_PRESET } from '../src/index.js';
 import { sanitizeTokens, tokensToCss } from '../../../apps/storefront/src/theme.js';
 
 // section registry (theme.js:250) — render bỏ qua key lạ, nên preset PHẢI nằm trong tập này.
 const VALID_SECTIONS = new Set(['header', 'hero', 'hero_side', 'features', 'collections', 'product_grid', 'product_spotlight', 'category_bar', 'category_rows', 'flash_sale', 'promo_banners', 'blog', 'story', 'footer']);
 // 11 khoá token hợp lệ (9 màu + radius + spacing). KHÔNG font.*.
 const TOKEN_KEYS = ['color.primary', 'color.primary-dark', 'color.accent', 'color.bg', 'color.surface', 'color.hero-bg', 'color.text', 'color.muted', 'color.border', 'radius', 'spacing'];
-const SLUGS = ['fashion', 'food', 'furniture', 'cosmetics'];
+const SLUGS = ['fashion', 'food', 'furniture', 'cosmetics', 'general'];
 
-test('có đúng 4 preset ngành + helper', () => {
+test('có đúng 5 preset (4 ngành + general) + helper', () => {
   assert.deepEqual(listPresets().sort(), [...SLUGS].sort());
   assert.equal(getPreset('khong-ton-tai'), null);
   assert.equal(getPreset(undefined), null);
-  assert.equal(presetChoices().length, 4);
+  assert.equal(presetChoices().length, 5);
+  // 0115: 'general' vừa là lựa chọn "Khác", vừa là preset rơi-về khi bỏ trống.
+  assert.equal(FALLBACK_PRESET, 'general');
+  assert.ok(getPreset(FALLBACK_PRESET), 'preset rơi-về PHẢI tồn tại');
   for (const c of presetChoices()) assert.ok(c.slug && c.name && c.description);
 });
 
@@ -96,7 +99,7 @@ test('tokensToCss: radius 0 → nút+ô danh mục vuông; radius khác → gi�
     assert.ok(!css.includes('--btn-radius: 0'), `radius ${soft} KHÔNG được phát --btn-radius:0`);
     assert.ok(!css.includes('--cat-radius: 0'), `radius ${soft} KHÔNG được phát --cat-radius:0`);
   }
-  // đúng cả 4 preset thật: chỉ furniture (radius 0) là sharp
+  // đúng cả 5 preset thật: chỉ furniture (radius 0) là sharp
   for (const slug of SLUGS) {
     const css = tokensToCss(getPreset(slug).tokens);
     assert.equal(css.includes('--btn-radius: 0'), slug === 'furniture', `${slug}: cờ sharp sai`);

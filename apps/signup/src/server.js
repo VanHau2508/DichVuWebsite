@@ -23,7 +23,7 @@ import { passwordError } from '../../../packages/auth/src/password-policy.js';
 import { send, sendHtml, readForm, sameOrigin, clientIp } from './http.js';
 import * as V from './views.js';
 import { isSlugDenied, isDisposableEmail } from './denylist.js';
-import { getPreset } from '../../../packages/presets/src/index.js';
+import { getPreset, FALLBACK_PRESET } from '../../../packages/presets/src/index.js';
 
 const PORT = Number(process.env.PORT ?? 3064);
 const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN ?? 'nentang.vn';
@@ -247,24 +247,25 @@ async function doVerify(req, res) {
       // app_signup chỉ có INSERT, ON CONFLICT cần SELECT → permission denied, đã kiểm RLS). industry
       // đã enum-safe (chỉ nhận slug có preset). layout là MẢNG → BẮT BUỘC JSON.stringify (node-pg ép
       // mảng thành array-literal, không phải jsonb). Không chọn ngành → không seed → DEFAULT_LAYOUT.
-      const preset = getPreset(d.industry);
-      if (preset) {
-        await c.query(`INSERT INTO themes (shop_id, tokens, layout) VALUES ($1,$2,$3)`,
-          [shopId, JSON.stringify(preset.tokens), JSON.stringify(preset.layout)]);
-        // Banner mặc định (0114): preset seed hero.slides RỖNG, mà hero_side và
-        // promo_banners chỉ render khi có slide → shop mới hiện 3 khối thay vì 12.
-        // Worker vẽ bộ banner đầu tiên theo palette shop đã chọn.
-        //
-        // CHỈ khi có preset. Không chọn ngành ⇒ không có dòng themes để ghi, và
-        // DEFAULT_LAYOUT của storefront vốn không có hero_side/promo_banners —
-        // phát sự kiện chỉ để worker log cảnh báo rồi bỏ qua.
-        //
-        // shop_id để NULL và mang id trong payload: policy signup_outbox_ins ràng
-        // WITH CHECK (shop_id IS NULL) — app_signup CỐ Ý không được phát sự kiện
-        // gắn tenant. Cùng lối với 'signup.verify'. Cùng transaction (ADR-006).
-        await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES (NULL, 'shop.banners_seed', $1)`,
-          [{ shop_id: shopId, industry: d.industry }]);
-      }
+      // MỌI shop đều có theme (0115). Không chọn ngành / chọn giá trị lạ → rơi về
+      // preset 'general'. Trước đây nhánh đó không seed gì, storefront về
+      // DEFAULT_LAYOUT 5 khối — cả một nhóm shop nhận bố cục cũ.
+      //
+      // LƯU Ý: chỉ THEME rơi về general, `shops.industry` vẫn NULL. Cột đó ghi
+      // "họ nói gì", không phải "ta đoán gì".
+      const themeSlug = getPreset(d.industry) ? d.industry : FALLBACK_PRESET;
+      const preset = getPreset(themeSlug);
+      await c.query(`INSERT INTO themes (shop_id, tokens, layout) VALUES ($1,$2,$3)`,
+        [shopId, JSON.stringify(preset.tokens), JSON.stringify(preset.layout)]);
+      // Banner mặc định (0114): preset seed hero.slides RỖNG, mà hero_side và
+      // promo_banners chỉ render khi có slide → shop mới hiện 3 khối thay vì 12.
+      // Worker vẽ bộ banner đầu tiên theo palette vừa seed.
+      //
+      // shop_id để NULL và mang id trong payload: policy signup_outbox_ins ràng
+      // WITH CHECK (shop_id IS NULL) — app_signup CỐ Ý không được phát sự kiện
+      // gắn tenant. Cùng lối với 'signup.verify'. Cùng transaction (ADR-006).
+      await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES (NULL, 'shop.banners_seed', $1)`,
+        [{ shop_id: shopId, industry: themeSlug }]);
       await c.query(`UPDATE shop_signups SET provisioned_shop_id=$1 WHERE id=$2`, [shopId, d.id]);
       return { kind: 'ok', name: d.name, slug: d.slug };
     });

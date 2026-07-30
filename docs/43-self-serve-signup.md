@@ -228,10 +228,28 @@ tokens, layout)` + `UPDATE (layout)` trên `themes` — không hơn.
 4. **Chữ mặc định cố ý trung tính** ("Hàng mới về", "Ưu đãi đang có"). Đây là banner
    chạy trên cửa hàng THẬT của người khác — không hứa hộ họ "giao trong 2 giờ".
 
-**Chỉ phát sự kiện khi có preset.** Không chọn ngành ⇒ không có dòng `themes` để
-ghi, và `DEFAULT_LAYOUT` vốn không có `hero_side`/`promo_banners`. *(Còn tồn: shop
-không chọn ngành vẫn nhận bố cục 5 khối — nên bắt buộc chọn ngành, hoặc gán preset
-mặc định. Chưa làm.)*
+### Preset `general` — đóng nốt nhánh "không chọn ngành" (0115)
+
+Lỗ còn lại sau 0114: bỏ trống ngành ⇒ **không có dòng `themes`**, storefront rơi về
+`DEFAULT_LAYOUT` đúng 5 khối (header · hero · lưới SP · blog · footer) — không
+`hero_side`, không `promo_banners`, không `flash_sale`, không `category_bar`. Cả một
+nhóm shop nhận bố cục cũ, và banner mặc định không với tới được vì không có gì để ghi.
+
+Thêm preset thứ 5 `general` (trung tính, xanh mực + nhấn teal, cùng 12 khối). Nó đóng
+**hai vai**:
+
+- **lựa chọn "Khác / Đa ngành"** trên form — chọn có ý thì `shops.industry='general'`
+  (0115 nới CHECK ở cả `shops` lẫn `shop_signups`);
+- **preset rơi-về** khi để trống hoặc gửi giá trị lạ — seed theme `general` nhưng
+  **`shops.industry` vẫn NULL**.
+
+Chỗ tách đôi đó là có chủ ý: cột `industry` ghi *họ nói gì*, không phải *ta đoán gì*.
+Đoán rồi lưu là bịa dữ liệu, và sau này mọi thống kê theo ngành sẽ sai.
+
+**Bắt được lúc làm:** `packages/presets/test/presets.test.js` (14 ca, có ca khẳng định
+"đúng 4 preset") **chưa từng nằm trong `scripts/test-manifest.sh`** — không cổng nào
+chạy nó. Đúng lớp lỗi manifest sinh ra để chặn, ở dạng "chưa bao giờ được thêm vào".
+Đã thêm; số unit 11 → 13.
 
 **Kết quả đo lại** trên shop do chính luồng self-serve tạo: hero `hero-n1` → `hero-split
 hero-n3`, thêm 2 ô phụ + 3 ô promo + 3 nút CTA, 8 ảnh banner.

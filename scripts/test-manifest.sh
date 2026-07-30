@@ -34,10 +34,14 @@ MANIFEST_UNIT_FILES=(
   apps/seller/test/paging.test.js
   apps/signup/test/denylist.test.js
   packages/banner-art/test/unit.test.js
+  # Có từ lâu nhưng CHƯA TỪNG nằm trong danh sách nào — phát hiện khi thêm preset
+  # thứ 5 (0115): bộ này khẳng định "đúng 4 preset" mà không cổng nào chạy nó.
+  # Đúng lớp lỗi file này sinh ra để chặn, chỉ là ở dạng "chưa bao giờ được thêm".
+  packages/presets/test/presets.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=12
+MANIFEST_UNIT_COUNT=13
 MANIFEST_E2E_COUNT=84
 
 manifest_unit_files() {

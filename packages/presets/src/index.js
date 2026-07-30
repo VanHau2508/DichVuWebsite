@@ -241,7 +241,72 @@ export const PRESETS = {
       { section: 'footer', props: {} },
     ],
   },
+
+  // ── Đa ngành — trung tính, dùng khi shop không thuộc 4 nhóm trên ──────────────
+  //
+  // Vừa là lựa chọn "Khác" trên form đăng ký, VỪA là preset rơi-về khi để trống.
+  // Vì sao phải có: không chọn ngành thì trước đây shop KHÔNG có dòng themes, và
+  // DEFAULT_LAYOUT của storefront chỉ 5 khối (không hero_side/promo_banners/
+  // flash_sale/category_bar) → cả một nhóm shop nhận bố cục cũ, và banner mặc
+  // định (0114) không với tới được vì không có gì để ghi vào.
+  //
+  // Palette cố ý NHẠT và không mang tính ngành nào: xanh mực trung tính + nhấn
+  // teal. Shop đổi sang preset khác hay tự chỉnh màu đều không thấy hụt hẫng.
+  general: {
+    name: 'Khác / Đa ngành',
+    description: 'Trung tính, sạch, hợp mọi mặt hàng — đổi màu và bố cục sau lúc nào cũng được.',
+    tokens: {
+      'color.primary': '#1f2933',
+      'color.primary-dark': '#0f1721',
+      'color.accent': '#0f8b8d',
+      'color.bg': '#ffffff',
+      'color.surface': '#f5f7f8',
+      'color.hero-bg': '#eceff1',
+      'color.text': '#1f2933',
+      'color.muted': '#6b7680',
+      'color.border': '#dfe4e8',
+      radius: '8px',
+      spacing: '18px',
+    },
+    layout: [
+      { section: 'header', props: {
+        nav_style: 'band',
+        topbar_text: 'Giao hàng toàn quốc · Đổi trả trong 7 ngày',
+        menu_show_featured: true, menu_show_new: true, menu_show_sale: true,
+        nav_links: [
+          { label: 'Tất cả sản phẩm', url: '/products' },
+          { label: 'Hàng mới', url: '/products?sort=new' },
+          { label: 'Khuyến mãi', url: '/products?sort=sale' },
+        ],
+      } },
+      { section: 'hero', props: {
+        variant: 'split',
+        eyebrow: 'Cửa hàng trực tuyến',
+        title: 'Mua sắm dễ dàng, giao tận nơi',
+        subtitle: 'Chọn sản phẩm, đặt hàng trong vài bước — hỗ trợ đổi trả và thanh toán khi nhận hàng.',
+        slides: [],
+      } },
+      { section: 'hero_side', props: { slides: [] } },
+      { section: 'flash_sale', props: { title: 'Ưu đãi có hạn' } },
+      { section: 'promo_banners', props: { title: 'Ưu đãi nổi bật', slides: [] } },
+      { section: 'category_bar', props: {} },
+      { section: 'product_grid', props: { title: 'Sản phẩm nổi bật', columns: 4, limit: 8 } },
+      { section: 'category_rows', props: {} },
+      { section: 'story', props: {} },
+      { section: 'features', props: { items: [
+        { title: 'Giao hàng toàn quốc', desc: 'Đơn hàng được chuyển tới tận nơi trên khắp cả nước.' },
+        { title: 'Thanh toán khi nhận', desc: 'Chọn COD hoặc chuyển khoản — tuỳ bạn thấy tiện hơn.' },
+        { title: 'Đổi trả trong 7 ngày', desc: 'Hàng chưa dùng, còn nguyên hộp thì đổi trả dễ dàng.' },
+        { title: 'Hỗ trợ tận tình', desc: 'Nhắn tin hoặc gọi điện, cửa hàng phản hồi trong giờ làm việc.' },
+      ] } },
+      { section: 'blog', props: {} },
+      { section: 'footer', props: {} },
+    ],
+  },
 };
+
+/** Preset dùng khi shop không chọn ngành (hoặc chọn giá trị lạ). */
+export const FALLBACK_PRESET = 'general';
 
 /** Trả preset theo slug ngành, hoặc null nếu không có (slug lạ → gọi phía dùng tự bỏ qua). */
 export const getPreset = (slug) => (typeof slug === 'string' && Object.hasOwn(PRESETS, slug)) ? PRESETS[slug] : null;

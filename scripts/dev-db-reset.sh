@@ -59,7 +59,12 @@ $DC up -d || exit 1
 $DC run --rm migrate 2>&1 | tail -3
 
 echo
-echo "${GRN}${BLD}Xong.${RST} Hai bước lấy lại bàn thử giao diện:"
-echo "  bash scripts/seed-demo.sh       # tạo lại 4 shop demo + nội dung + ảnh"
-echo "  bash scripts/dev-lan-host.sh    # gắn lại hostname LAN để mở trên điện thoại"
-echo "${YLW}Lưu ý: shop nha-xinh và mọi shop bạn tự tạo tay đã mất — chỉ 4 shop demo dựng lại được.${RST}"
+echo "${GRN}${BLD}Xong.${RST} Lấy lại bàn thử giao diện:"
+echo "  bash scripts/seed-demo.sh                              # 4 shop demo + nội dung + ảnh"
+for d in dev-snapshots/*/; do
+  [ -d "$d" ] || continue
+  echo "  bash scripts/shop-snapshot.sh restore $(basename "$d")"
+done
+echo "  bash scripts/dev-lan-host.sh                           # gắn lại hostname LAN"
+echo "${YLW}Shop KHÔNG có trong hai danh sách trên đã mất hẳn. Muốn giữ shop nào thì${RST}"
+echo "${YLW}chụp TRƯỚC:  bash scripts/shop-snapshot.sh dump <slug>${RST}"

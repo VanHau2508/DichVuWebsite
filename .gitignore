@@ -19,3 +19,7 @@ tmp/
 
 # Cấu hình cục bộ theo máy (không chia sẻ)
 .claude/settings.local.json
+
+# Bản chụp shop dev (scripts/shop-snapshot.sh) — vài MB ảnh nhị phân, và là
+# trạng thái CỦA MÁY NÀY chứ không phải mã nguồn.
+dev-snapshots/

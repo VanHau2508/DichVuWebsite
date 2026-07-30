@@ -42,6 +42,7 @@ export const PRESETS = {
     },
     layout: [
       { section: 'header', props: {
+        nav_style: 'band',
         topbar_text: 'Miễn phí giao hàng cho đơn từ 500.000₫ · Đổi trả linh hoạt trong 30 ngày',
         menu_show_featured: false, menu_show_new: true, menu_show_sale: true,
         nav_links: [
@@ -51,12 +52,18 @@ export const PRESETS = {
         ],
       } },
       { section: 'hero', props: {
+        variant: 'split',
         eyebrow: 'Bộ sưu tập Thu Đông 2026',
         title: 'Phong cách định hình dấu ấn riêng',
         subtitle: 'Thiết kế chọn lọc, chất liệu cao cấp và những đường cắt tôn dáng — dành cho người mặc muốn nói lên cá tính mà không cần phô trương.',
         slides: [],
       } },
+      { section: 'hero_side', props: { slides: [] } },
+      { section: 'flash_sale', props: { title: 'Săn deal hôm nay' } },
+      { section: 'promo_banners', props: { title: 'Ưu đãi nổi bật', slides: [] } },
+      { section: 'category_bar', props: {} },
       { section: 'product_grid', props: { title: 'Hàng mới về', columns: 4, limit: 8 } },
+      { section: 'category_rows', props: {} },
       { section: 'collections', props: { title: 'Khám phá bộ sưu tập' } },
       { section: 'story', props: {
         title: 'Thời trang là ngôn ngữ của sự tự tin',
@@ -93,6 +100,7 @@ export const PRESETS = {
     },
     layout: [
       { section: 'header', props: {
+        nav_style: 'band',
         topbar_text: 'Freeship đơn từ 300K nội thành · Giao nhanh 2 giờ · Cam kết tươi mỗi ngày',
         menu_show_featured: true, menu_show_new: true, menu_show_sale: true,
         nav_links: [
@@ -102,20 +110,27 @@ export const PRESETS = {
         ],
       } },
       { section: 'hero', props: {
+        variant: 'split',
         eyebrow: 'Tươi ngon mỗi ngày',
         title: 'Thực phẩm sạch, chọn kỹ từ nông trại',
         subtitle: 'Rau củ, trái cây và đặc sản chọn lọc — giao tận nơi trong ngày, giữ trọn độ tươi cho bữa cơm nhà bạn.',
         slides: [],
       } },
+      { section: 'hero_side', props: { slides: [] } },
+      { section: 'flash_sale', props: { title: 'Giờ vàng giá sốc' } },
+      { section: 'promo_banners', props: { title: 'Ưu đãi nổi bật', slides: [] } },
       { section: 'category_bar', props: {} },
       { section: 'product_grid', props: { title: 'Ưu đãi hôm nay', columns: 4, limit: 8 } },
       { section: 'category_rows', props: {} },
+      { section: 'collections', props: { title: 'Mua theo nhóm hàng' } },
+      { section: 'story', props: {} },
       { section: 'features', props: { items: [
         { title: 'Tươi mỗi ngày', desc: 'Nhập hàng từ sáng sớm, chọn lọc kỹ, không để tồn quá 24 giờ.' },
         { title: 'Giao nhanh 2 giờ', desc: 'Đặt trước 15h, nhận ngay trong ngày nội thành, giữ lạnh suốt hành trình.' },
         { title: 'Nguồn gốc rõ ràng', desc: 'Truy xuất tận vườn, đạt chuẩn an toàn thực phẩm VietGAP.' },
         { title: 'Đổi trả trong 24h', desc: 'Không hài lòng về độ tươi? Hoàn tiền hoặc đổi mới, không hỏi lý do.' },
       ] } },
+      { section: 'blog', props: {} },
       { section: 'footer', props: {} },
     ],
   },
@@ -140,6 +155,7 @@ export const PRESETS = {
     },
     layout: [
       { section: 'header', props: {
+        nav_style: 'band',
         topbar_text: 'Miễn phí giao lắp nội thành · Bảo hành khung 5 năm · 2 showroom Hà Nội & TP.HCM',
         menu_show_featured: true, menu_show_new: true, menu_show_sale: true,
         nav_links: [
@@ -149,14 +165,20 @@ export const PRESETS = {
         ],
       } },
       { section: 'hero', props: {
+        variant: 'split',
         eyebrow: 'Nội thất cao cấp · Bảo hành dài hạn',
         title: 'Kiến tạo không gian sống đẳng cấp',
         subtitle: 'Sofa, giường, bàn ăn thiết kế tinh tế — chất liệu cao cấp, bền đẹp theo thời gian, giao lắp tận nơi toàn quốc.',
         slides: [],
       } },
+      { section: 'hero_side', props: { slides: [] } },
+      { section: 'flash_sale', props: { title: 'Ưu đãi có hạn' } },
+      { section: 'promo_banners', props: { title: 'Ưu đãi nổi bật', slides: [] } },
       { section: 'category_bar', props: {} },
       { section: 'product_grid', props: { title: 'Mẫu mới về', columns: 4, limit: 8 } },
       { section: 'category_rows', props: {} },
+      { section: 'collections', props: { title: 'Khám phá không gian' } },
+      { section: 'story', props: {} },
       { section: 'features', props: { items: [
         { title: 'Giao lắp tận nơi', desc: 'Kỹ thuật tư vấn, vận chuyển và lắp đặt tận nhà trên toàn quốc.' },
         { title: 'Chất lượng vượt trội', desc: 'Thiết kế bắt mắt, mẫu mã đa dạng, vật liệu cao cấp, độ bền vượt trội.' },
@@ -187,8 +209,8 @@ export const PRESETS = {
     },
     layout: [
       { section: 'header', props: {
-        topbar_text: 'Miễn phí giao hàng cho đơn từ 500K · Tư vấn loại da miễn phí với chuyên viên',
         nav_style: 'band',
+        topbar_text: 'Miễn phí giao hàng cho đơn từ 500K · Tư vấn loại da miễn phí với chuyên viên',
         menu_show_featured: true, menu_show_new: true, menu_show_sale: true,
         nav_links: [
           { label: 'Trang điểm', url: '/products' },
@@ -208,8 +230,11 @@ export const PRESETS = {
       { section: 'hero_side', props: { slides: [] } },
       { section: 'flash_sale', props: { title: 'Flash sale' } },
       { section: 'promo_banners', props: { title: 'Ưu đãi nổi bật', slides: [] } },
+      { section: 'category_bar', props: {} },
       { section: 'product_grid', props: { title: 'Sản phẩm bán chạy', columns: 5 } },
+      { section: 'category_rows', props: {} },
       { section: 'collections', props: { title: 'Danh mục làm đẹp' } },
+      { section: 'story', props: {} },
       { section: 'features', props: { items: [
         { title: '100% chính hãng', desc: 'Cam kết hàng thật, đầy đủ tem phụ và nguồn gốc rõ ràng.' },
         { title: 'Thành phần lành tính', desc: 'Bảng thành phần minh bạch, không cồn khô, không paraben.' },

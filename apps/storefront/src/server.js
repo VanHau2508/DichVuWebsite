@@ -268,7 +268,7 @@ const LANDING_CFG = {
   brand: process.env.PLATFORM_BRAND ?? 'Nền Tảng',
 };
 
-function sendHtml(res, status, html, { shopSlug, cache, preview, nonce } = {}) {
+function sendHtml(res, status, html, { shopSlug, cache, preview, nonce, noindex } = {}) {
   const headers = {
     'content-type': 'text/html; charset=utf-8',
     'x-content-type-options': 'nosniff',
@@ -284,6 +284,20 @@ function sendHtml(res, status, html, { shopSlug, cache, preview, nonce } = {}) {
   if (preview) {
     headers['cache-control'] = 'no-store';
     headers['x-robots-tag'] = 'noindex, nofollow';
+  } else if (noindex) {
+    // Shop CHƯA CÓ SẢN PHẨM NÀO. Vẫn phục vụ bình thường cho người có link (quyết định sản
+    // phẩm: shop onboarding bán được ngay), nhưng KHÔNG mời công cụ tìm kiếm lập chỉ mục một
+    // cửa hàng rỗng: ấn tượng đầu tiên trên Google của người bán sẽ là "chưa có sản phẩm nào",
+    // và Google giữ ảnh chụp đó khá lâu sau khi họ đã đăng hàng.
+    //
+    // Dùng HEADER chứ KHÔNG chặn ở robots.txt: robots.txt cấm CRAWL, mà không crawl thì bot
+    // không đọc được chỉ thị noindex — URL vẫn lọt chỉ mục qua liên kết ngoài. Cho vào, rồi
+    // bảo đừng lập chỉ mục, mới là cách chắc chắn. 'follow' để liên kết vẫn được đi tiếp.
+    //
+    // TỰ KHỎI: đăng sản phẩm đầu tiên là header biến mất. Không nút bấm, không cờ trong DB,
+    // không thêm một trạng thái nữa để người bán quên.
+    headers['x-robots-tag'] = 'noindex, follow';
+    headers['cache-control'] = 'no-store'; // đừng để CDN giữ bản noindex sau khi đã có hàng
   } else if (cache) {
     // CHỈ đặt Cache-Control cho trang cache được (home/product/category).
     // Trang 404/bảo trì KHÔNG đặt → để Caddy làm chủ no-store trên /cart /checkout
@@ -917,7 +931,16 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     if (data.blog === 'list') return sendHtml(res, 200, renderBlogList(ctx, data.posts ?? [], { canonical, prevUrl, nextUrl, blogPage: data.blogPage ?? null }), { shopSlug: data.shop.slug, cache: true, nonce });
     if (data.blog === 'post') return sendHtml(res, 200, renderBlogPost(ctx, data.post, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
     if (data.search) return sendHtml(res, 200, renderSearch(ctx, { canonical }), { shopSlug: data.shop.slug, nonce });
-    return sendHtml(res, 200, renderHome(ctx, { canonical, prevUrl, nextUrl }), { shopSlug: data.shop.slug, cache: true, nonce });
+    // Trang chủ là cửa vào mà công cụ tìm kiếm lập chỉ mục. Danh sách SP đã nạp xong ở trên
+    // nên phép kiểm này KHÔNG tốn thêm truy vấn nào.
+    //
+    // products RỖNG = shop THẬT SỰ chưa có hàng: lưới trang chủ chạy productGrid('', [], 0, N)
+    // — KHÔNG bộ lọc nào — và RLS store_products chỉ để lọt SP active chưa xoá. Đã kiểm kỹ chỗ
+    // này: noindex NHẦM một shop đang bán là tự tay cắt nguồn khách của họ, tệ hơn hẳn cái nó
+    // định phòng.
+    const trong = !(ctx.products?.length);
+    return sendHtml(res, 200, renderHome(ctx, { canonical, prevUrl, nextUrl }),
+      { shopSlug: data.shop.slug, cache: !trong, noindex: trong, nonce });
   } catch (err) {
     log('error', 'render_error', { path: url.pathname, message: err.message, stack: err.stack });
     if (!res.headersSent) sendHtml(res, 500, renderNotFound());

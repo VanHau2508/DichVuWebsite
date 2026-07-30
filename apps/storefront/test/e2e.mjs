@@ -193,7 +193,25 @@ async function main() {
   // ── 3. Cô lập chéo shop ────────────────────────────────────────────────────
   sect('3. Cô lập chéo shop');
   const Bs = await makeShopOwner(staff, `storeb-${uniq()}`);
+  // Shop VỪA DỰNG, CHƯA CÓ HÀNG — đúng cảnh người bán tự đăng ký lúc 2 giờ sáng: subdomain
+  // đã sống và công khai ngay. Vẫn phục vụ người có link (shop onboarding bán được ngay), NHƯNG
+  // không được mời công cụ tìm kiếm lập chỉ mục một cửa hàng rỗng — ấn tượng đầu tiên của họ
+  // trên Google sẽ là "chưa có sản phẩm nào", và Google giữ ảnh chụp đó rất lâu sau khi đã có hàng.
+  let rEmpty = await sf(Bs.host, '/');
+  rEmpty.status === 200 && /noindex/.test(rEmpty.headers['x-robots-tag'] ?? '')
+    ? ok('shop chưa có hàng: vẫn 200 cho người có link, nhưng x-robots-tag noindex')
+    : bad('shop rỗng vẫn mời lập chỉ mục', `${rEmpty.status} robots=${rEmpty.headers['x-robots-tag'] ?? '(không có)'}`);
+  /no-store/.test(rEmpty.headers['cache-control'] ?? '')
+    ? ok('shop rỗng: no-store (CDN không giữ bản noindex sau khi shop đã đăng hàng)')
+    : bad('bản noindex bị CDN cache', rEmpty.headers['cache-control'] ?? '(không có)');
   await mkProduct(Bs.shopId, Bs.cookie, { title: 'HÀNG CỦA SHOP B', slug: `b-${uniq()}`, price_vnd: 1, status: 'active', variants: [{ sku: `B-${uniq()}`, price_vnd: 1 }] });
+  // Ngay khi có SP đầu tiên, noindex phải TỰ TẮT — cơ chế bám hàng hoá, không bám trạng thái
+  // shop và không cần ai bấm nút. Đây là nửa quan trọng hơn: noindex NHẦM một shop đang bán là
+  // tự tay cắt nguồn khách của họ, tệ hơn hẳn cái nó định phòng.
+  rEmpty = await sf(Bs.host, '/');
+  !/noindex/.test(rEmpty.headers['x-robots-tag'] ?? '')
+    ? ok('có SP đầu tiên → noindex TỰ TẮT (không nút bấm, không cờ DB)')
+    : bad('shop đã có hàng mà vẫn noindex — đang cắt nguồn khách', rEmpty.headers['x-robots-tag']);
   r = await sf(A.host, '/');
   !r.body.includes('HÀNG CỦA SHOP B') ? ok('storefront A KHÔNG hiện sản phẩm shop B (RLS)') : bad('rò sản phẩm chéo shop');
   r = await sf(Bs.host, '/');

@@ -396,6 +396,17 @@ async function main() {
   // Mốc "đã gửi hãng" đo bằng shipments.created_at (app_expiry không đọc được shipped_at) → backdate 8 ngày.
   await owner.query(`INSERT INTO shipments (shop_id, order_id, carrier, tracking_number, status, created_at)
                      VALUES ($1, $2, 'GHN', 'STALE-${uniq()}', 'in_transit', now() - interval '8 days')`, [A.shopId, oidShip]);
+  // ĐUA VỚI QUÉT ĐỊNH KỲ. Worker tự chạy sweepStaleOrders mỗi STALE_SWEEP_MS (5 phút).
+  // Nếu một vòng quét chen vào GIỮA lúc ta backdate đơn và lúc gọi sweep tay, nó digest
+  // shop này trước, đặt khoá `tgstale:<shop>:<ngày>`, và sweep tay trả shops:0 — đúng
+  // hành vi (một digest/shop/ngày) nhưng test đo nhầm lượt gọi.
+  //
+  // Trên DB sạch cửa sổ đua chỉ vài trăm ms nên gần như không bao giờ dính. DB dev tích
+  // luỹ >1000 đơn ứ khiến mỗi vòng quét kéo dài hàng giây → cửa sổ rộng hẳn ra, và bộ này
+  // ĐỎ trong lượt CI đầy đủ trong khi chạy riêng vẫn xanh. Xoá khoá ngay trước khi gọi:
+  // bỏ phần đua, KHÔNG nới lỏng khẳng định nào bên dưới.
+  const vnDay = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
+  await redisCmd(`DEL tgstale:${A.shopId}:${vnDay}`);
   const st1 = await (await fetch(`${WORKER}/internal/stale-sweep`, { method: 'POST' })).json();
   await sleep(300);
   const dig = tg.sent.find((mm) => String(mm.chat_id) === CHAT && /Đơn ứ/.test(mm.text ?? '') && (mm.text ?? '').includes(`#${ostale.orderNum}`));

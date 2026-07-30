@@ -146,3 +146,18 @@ Năm nhánh "nuốt im lặng" của `/signup` (honeypot · form-ts sai · gửi
 trả HTML **y hệt từng byte**, khác đúng ở địa chỉ email hiển thị lại. So byte thay vì tìm một
 câu, vì rẽ nhánh có thể lẻn vào bất kỳ đâu.
 
+### Cảnh báo khi hàng rào chặn hàng loạt
+
+Log `signup_swallowed` không ai đọc thì cũng như không ghi. signup `INCR swallow:<lý_do>`
+(khoá sống 1 giờ, **fail-open** — Redis chết không được chặn ai đăng ký); worker `SCAN` trong
+`sweepMoneyAlerts` và đẩy vào **đúng kênh cảnh báo đã có** (Telegram + chống-spam
+`ALERT_REPEAT_MS`). Không dựng kênh mới — thêm một kênh là thêm một chỗ để quên.
+
+**Thông điệp TÁCH THEO LÝ DO** — đây là toàn bộ giá trị. Nuốt là hành vi ĐÚNG với bot nên
+tổng số một mình vô nghĩa: `honeypot ×200` là bot đập cửa (bình thường), còn `tran_ip_gio ×25`
+hay `gui_qua_nhanh ×25` là hàng rào đang chặn **người thật**. Ngưỡng
+`ALERT_SIGNUP_SWALLOW_MAX` mặc định 20/giờ.
+
+Lý do ghi nhận là **cái khớp đầu tiên** theo thứ tự kiểm (honeypot → form_ts_sai →
+gui_qua_nhanh → email_dung_mot_lan → tran_redis_ip → tran_ip_gio), không phải mọi lý do khớp.
+

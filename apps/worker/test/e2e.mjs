@@ -11,6 +11,7 @@
  */
 
 import http from 'node:http';
+import net from 'node:net';
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
@@ -279,6 +280,35 @@ async function main() {
   asweep.metrics.unmatched_old >= 1 && asweep.breaches >= 1
     ? ok(`sweep phát hiện ${asweep.metrics.unmatched_old} giao dịch chưa khớp >1h → ${asweep.breaches} cảnh báo`)
     : bad('không phát hiện tiền chưa khớp', JSON.stringify(asweep));
+  // ── Cảnh báo ĐĂNG KÝ bị chặn im lặng ─────────────────────────────────────────
+  // signup nuốt bot bằng cách trả trang trung tính và KHÔNG ghi gì — đúng về bảo mật, nhưng
+  // nghĩa là chặn nhầm NGƯỜI THẬT cũng vô hình y hệt (đã trả giá với danh sách cấm slug).
+  // Nay signup đếm sang Redis theo LÝ DO, sweep gom lại thành cảnh báo.
+  // Nói RESP thẳng qua socket: dbtest KHÔNG có ioredis, và thêm một phụ thuộc chỉ để đặt hai
+  // khoá là cái giá không đáng. Lệnh inline (kết bằng CRLF) là phần giao thức Redis cổ nhất.
+  const redisCmd = (line) => new Promise((resolve, reject) => {
+    const sock = net.createConnection({ host: 'redis', port: 6379 }, () => sock.write(line + '\r\n'));
+    sock.setTimeout(3000, () => { sock.destroy(); reject(new Error('redis timeout')); });
+    sock.once('data', (d) => { sock.end(); resolve(String(d)); });
+    sock.once('error', reject);
+  });
+  await redisCmd('SET swallow:honeypot 18 EX 3600');
+  await redisCmd('SET swallow:tran_ip_gio 7 EX 3600');
+  const sw = await (await fetch(`${WORKER}/internal/alert-sweep`, { method: 'POST' })).json();
+  sw.metrics.swallow_total === 25 && sw.metrics.swallow_by?.honeypot === 18
+    ? ok('sweep đọc đúng counter nuốt đăng ký (25 = 18 honeypot + 7 trần IP)')
+    : bad('sweep không đọc được counter nuốt', JSON.stringify(sw.metrics?.swallow_by));
+  const swMsg = (sw.breach_list ?? []).find((b) => /ĐĂNG KÝ bị chặn/.test(b)) ?? '';
+  // Thông điệp PHẢI tách theo lý do — đó là toàn bộ giá trị của cảnh báo này.
+  /honeypot ×18/.test(swMsg) && /tran_ip_gio ×7/.test(swMsg)
+    ? ok('cảnh báo ghi rõ TỪNG LÝ DO kèm số (phân biệt bot với hàng rào chặn nhầm)')
+    : bad('cảnh báo không tách theo lý do', swMsg || '(không có cảnh báo nuốt)');
+  await redisCmd('DEL swallow:honeypot swallow:tran_ip_gio');
+  const sw0 = await (await fetch(`${WORKER}/internal/alert-sweep`, { method: 'POST' })).json();
+  sw0.metrics.swallow_total === 0 && !(sw0.breach_list ?? []).some((b) => /ĐĂNG KÝ bị chặn/.test(b))
+    ? ok('xoá counter → cảnh báo nuốt TẮT (không kẹt báo động giả)')
+    : bad('cảnh báo nuốt không tắt khi hết counter', String(sw0.metrics?.swallow_total));
+
   await sleep(400); // chờ worker POST webhook
   alerts.some((a) => /chưa khớp/i.test(a.text ?? ''))
     ? ok('đã ĐẨY cảnh báo tới webhook (nội dung "tiền chưa khớp")') : bad('webhook không nhận cảnh báo', JSON.stringify(alerts).slice(0, 200));

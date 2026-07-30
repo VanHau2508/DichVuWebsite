@@ -1602,6 +1602,7 @@ const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL ?? '';
 const ALERT_SWEEP_MS = Number(process.env.ALERT_SWEEP_MS ?? 300000);      // 5 phút
 const ALERT_REPEAT_MS = Number(process.env.ALERT_REPEAT_MS ?? 3600000);   // nhắc lại mỗi 1h nếu còn
 const ALERT_UNMATCHED_MAX = Number(process.env.ALERT_UNMATCHED_MAX ?? 1); // ≥N giao dịch chưa khớp >1h
+const ALERT_SIGNUP_SWALLOW_MAX = Number(process.env.ALERT_SIGNUP_SWALLOW_MAX ?? 20); // ≥N lần nuốt đăng ký/giờ
 const ALERT_OUTBOX_MAX = Number(process.env.ALERT_OUTBOX_MAX ?? 20);      // ≥N email tồn >10'
 const ALERT_EMAIL_FAIL_MAX = Number(process.env.ALERT_EMAIL_FAIL_MAX ?? 5);
 // Dead-man's switch: ping URL này mỗi nhịp alert-sweep — im lặng → monitor NGOÀI báo động.
@@ -1647,11 +1648,31 @@ async function sweepMoneyAlerts() {
   // Đếm failed HIỆN CÓ trong Redis. removeOnFail giữ 7 ngày/1000 job (poll()) — dài hơn
   // rất nhiều cửa sổ quét 5' + ALERT_REPEAT_MS 1h, nên trần retention KHÔNG làm lọt cảnh báo.
   try { m.email_failed = Number((await queue.getJobCounts('failed')).failed ?? 0); } catch {}
+  // Đăng ký bị NUỐT IM LẶNG (signup ghi counter Redis, khoá sống 1 giờ). Nuốt là hành vi ĐÚNG
+  // với bot, nên ngưỡng cao và thông điệp TÁCH THEO LÝ DO: 'honeypot ×200' là bot đập cửa —
+  // bình thường; 'tran_ip_gio ×25' hay 'gui_qua_nhanh ×25' là hàng rào đang chặn NGƯỜI THẬT,
+  // và đó mới là thứ ta không có cách nào khác để nhìn thấy (docs/43).
+  m.swallow_by = {};
+  try {
+    const rc = await queue.client;
+    let cur = '0';
+    do {
+      const [next, keys] = await rc.scan(cur, 'MATCH', 'swallow:*', 'COUNT', 200);
+      cur = next;
+      for (const k of keys) m.swallow_by[k.slice('swallow:'.length)] = Number(await rc.get(k)) || 0;
+    } while (cur !== '0');
+  } catch (e) { log('error', 'alert_swallow_error', { message: e.message }); }
+  m.swallow_total = Object.values(m.swallow_by).reduce((a, b) => a + b, 0);
 
   const breaches = [];
   if (m.unmatched_old >= ALERT_UNMATCHED_MAX) breaches.push(`${m.unmatched_old} giao dịch tiền CHƯA KHỚP quá 1h (tiền về nhưng chưa vào đơn — kiểm hàng đợi đối soát)`);
   if (m.outbox_backlog >= ALERT_OUTBOX_MAX) breaches.push(`${m.outbox_backlog} email TỒN ĐỌNG >10' (worker gửi mail có thể đang kẹt)`);
   if (m.email_failed >= ALERT_EMAIL_FAIL_MAX) breaches.push(`${m.email_failed} email gửi THẤT BẠI (dead-letter)`);
+  if (m.swallow_total >= ALERT_SIGNUP_SWALLOW_MAX) {
+    const chiTiet = Object.entries(m.swallow_by).sort((x, y) => y[1] - x[1])
+      .map(([r, n]) => `${r} ×${n}`).join(', ');
+    breaches.push(`${m.swallow_total} lượt ĐĂNG KÝ bị chặn im lặng trong ~1h (${chiTiet})`);
+  }
 
   const state = breaches.join(' | ');
   const now = Date.now();
@@ -1674,7 +1695,11 @@ async function sweepMoneyAlerts() {
     catch (e) { log('warn', 'heartbeat_ping_failed', { message: e.message }); }
     finally { clearTimeout(t); }
   }
-  return { metrics: m, breaches: breaches.length };
+  // Trả cả DANH SÁCH chuỗi cảnh báo, không chỉ số đếm: nội dung mới là thứ đáng kiểm.
+  // Vd cảnh báo nuốt đăng ký chỉ có ích khi nó TÁCH THEO LÝ DO — 'honeypot ×200' (bot, bình
+  // thường) khác hẳn 'tran_ip_gio ×25' (hàng rào đang chặn người thật). Đếm được 1 cảnh báo
+  // mà không biết nó nói gì thì test chỉ chứng minh có-thứ-gì-đó nổ.
+  return { metrics: m, breaches: breaches.length, breach_list: breaches };
 }
 
 const timer = setInterval(poll, POLL_MS);

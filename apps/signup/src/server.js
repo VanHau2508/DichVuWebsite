@@ -142,7 +142,15 @@ async function doSignup(req, res) {
         `SELECT count(*)::int n FROM shop_signups WHERE ip_hash=$1 AND created_at > now() - interval '1 hour'`, [iph])).rows[0].n);
       if (swallow || nRecent >= SIGNUP_IP_CAP) {
         // Log KHÔNG chứa email/IP thô (PII) — chỉ lý do + tuổi form, đủ để đếm và đặt cảnh báo.
-        log('warn', 'signup_swallowed', { reason: swallowReason ?? 'tran_ip_gio', ageMs: ts.ageMs });
+        const why = swallowReason ?? 'tran_ip_gio';
+        log('warn', 'signup_swallowed', { reason: why, ageMs: ts.ageMs });
+        // Đếm sang Redis để worker gom lại thành CẢNH BÁO (log không ai đọc thì cũng như không
+        // ghi). Khoá sống 1 giờ ⇒ giá trị đọc được là "số lần nuốt trong ~1 giờ qua".
+        // FAIL-OPEN tuyệt đối: Redis chết KHÔNG được làm hỏng đường đăng ký.
+        try {
+          const k = `swallow:${why}`;
+          if (await redis.incr(k) === 1) await redis.expire(k, 3600);
+        } catch { /* bỏ qua: đếm được thì tốt, không đếm được cũng không chặn ai */ }
         return; // nuốt: không ghi gì vào DB
       }
       // Reserve slug NGUYÊN TỬ (cùng key ở provision signup-3/4).

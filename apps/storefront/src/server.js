@@ -483,8 +483,16 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       if (!sm) return sendHtml(res, 404, renderNotFound());
       const escXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const loc = (path) => `  <url><loc>${escXml(`https://${host}${path}`)}</loc></url>`;
-      const urls = [loc('/'), loc('/products'), ...sm.cats.map((c) => loc(`/products?cat=${c.slug}`)), ...sm.prods.map((p) => loc(`/p/${p.slug}`)), ...sm.pages.map((p) => loc(`/pages/${p.slug}`)),
-        ...(sm.blog.length ? [loc('/blog'), ...sm.blog.map((b) => loc(`/blog/${b.slug}`))] : [])];
+      // Sitemap là LỜI MỜI, nên chỉ mời vào chỗ có thứ để xem. Shop chưa có gì mà vẫn liệt kê
+      // '/' và '/products' là tự mâu thuẫn: trang chủ rỗng đã trả noindex, mời rồi lại đuổi.
+      // Khuôn này vốn đã đúng với /blog (chỉ thêm khi có bài) — nay áp cho cả hai chỗ kia.
+      const coGiDo = sm.prods.length || sm.pages.length || sm.blog.length;
+      const urls = [
+        ...(coGiDo ? [loc('/')] : []),
+        ...(sm.prods.length ? [loc('/products'), ...sm.cats.map((c) => loc(`/products?cat=${c.slug}`))] : []),
+        ...sm.prods.map((p) => loc(`/p/${p.slug}`)),
+        ...sm.pages.map((pg) => loc(`/${pg.slug}`)),
+        ...(sm.blog.length ? [loc('/blog'), ...sm.blog.map((b) => loc(`/blog/${b.slug}`))] : [])]
       const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
       res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': CACHE_PUBLIC });
       return res.end(xml);
@@ -926,9 +934,20 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       if (data.preview) return sendHtml(res, 200, renderPage(ctx, data.page, { preview: true, canonical }), { shopSlug: data.shop.slug, preview: true, nonce });
       return sendHtml(res, 200, renderPage(ctx, data.page, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
     }
-    if (data.productsPage) return sendHtml(res, 200, renderProducts(ctx, { canonical, prevUrl, nextUrl, catSlug: data.catSlug }), { shopSlug: data.shop.slug, cache: true, nonce });
+    // Lưới KHÔNG có kết quả nào (shop chưa có hàng, hoặc lọc/danh mục ra rỗng) → cùng lý lẽ
+    // với trang chủ: đừng để công cụ tìm kiếm lập chỉ mục một trang trống. pageInfo.total là
+    // TỔNG khớp bộ lọc, đã tính sẵn — không tốn truy vấn thêm.
+    if (data.productsPage) {
+      const trongLuoi = !(data.pageInfo?.total);
+      return sendHtml(res, 200, renderProducts(ctx, { canonical, prevUrl, nextUrl, catSlug: data.catSlug }),
+        { shopSlug: data.shop.slug, cache: !trongLuoi, noindex: trongLuoi, nonce });
+    }
     if (data.product) return sendHtml(res, 200, renderProduct(ctx, data.product, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
-    if (data.blog === 'list') return sendHtml(res, 200, renderBlogList(ctx, data.posts ?? [], { canonical, prevUrl, nextUrl, blogPage: data.blogPage ?? null }), { shopSlug: data.shop.slug, cache: true, nonce });
+    if (data.blog === 'list') {
+      const trongBlog = !(data.posts?.length);
+      return sendHtml(res, 200, renderBlogList(ctx, data.posts ?? [], { canonical, prevUrl, nextUrl, blogPage: data.blogPage ?? null }),
+        { shopSlug: data.shop.slug, cache: !trongBlog, noindex: trongBlog, nonce });
+    }
     if (data.blog === 'post') return sendHtml(res, 200, renderBlogPost(ctx, data.post, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
     if (data.search) return sendHtml(res, 200, renderSearch(ctx, { canonical }), { shopSlug: data.shop.slug, nonce });
     // Trang chủ là cửa vào mà công cụ tìm kiếm lập chỉ mục. Danh sách SP đã nạp xong ở trên

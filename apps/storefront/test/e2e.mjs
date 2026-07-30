@@ -204,6 +204,18 @@ async function main() {
   /no-store/.test(rEmpty.headers['cache-control'] ?? '')
     ? ok('shop rỗng: no-store (CDN không giữ bản noindex sau khi shop đã đăng hàng)')
     : bad('bản noindex bị CDN cache', rEmpty.headers['cache-control'] ?? '(không có)');
+  // Ba mặt SEO còn lại của một shop rỗng. Vá mỗi trang chủ là chưa đủ: lưới /products và
+  // /blog rỗng vẫn là trang mỏng, còn sitemap thì TỰ MÂU THUẪN — mời Google vào '/' trong khi
+  // '/' trả noindex.
+  for (const [path, ten] of [['/products', 'lưới sản phẩm'], ['/blog', 'trang blog']]) {
+    const rp = await sf(Bs.host, path);
+    /noindex/.test(rp.headers['x-robots-tag'] ?? '')
+      ? ok(`shop rỗng: ${ten} cũng noindex`) : bad(`${ten} rỗng vẫn cho lập chỉ mục`, rp.headers['x-robots-tag'] ?? '-');
+  }
+  const smEmpty = await sf(Bs.host, '/sitemap.xml');
+  (smEmpty.body.match(/<url>/g) ?? []).length === 0
+    ? ok('shop rỗng: sitemap KHÔNG mời vào trang nào')
+    : bad('sitemap vẫn mời vào trang rỗng', String((smEmpty.body.match(/<loc>[^<]*<\/loc>/g) ?? []).slice(0, 3)));
   await mkProduct(Bs.shopId, Bs.cookie, { title: 'HÀNG CỦA SHOP B', slug: `b-${uniq()}`, price_vnd: 1, status: 'active', variants: [{ sku: `B-${uniq()}`, price_vnd: 1 }] });
   // Ngay khi có SP đầu tiên, noindex phải TỰ TẮT — cơ chế bám hàng hoá, không bám trạng thái
   // shop và không cần ai bấm nút. Đây là nửa quan trọng hơn: noindex NHẦM một shop đang bán là
@@ -212,6 +224,10 @@ async function main() {
   !/noindex/.test(rEmpty.headers['x-robots-tag'] ?? '')
     ? ok('có SP đầu tiên → noindex TỰ TẮT (không nút bấm, không cờ DB)')
     : bad('shop đã có hàng mà vẫn noindex — đang cắt nguồn khách', rEmpty.headers['x-robots-tag']);
+  const smFull = await sf(Bs.host, '/sitemap.xml');
+  smFull.body.includes('<loc>') && /\/products</.test(smFull.body)
+    ? ok('có SP đầu tiên → sitemap mời lại / và /products')
+    : bad('sitemap không hồi phục sau khi shop có hàng', String((smFull.body.match(/<url>/g) ?? []).length));
   r = await sf(A.host, '/');
   !r.body.includes('HÀNG CỦA SHOP B') ? ok('storefront A KHÔNG hiện sản phẩm shop B (RLS)') : bad('rò sản phẩm chéo shop');
   r = await sf(Bs.host, '/');

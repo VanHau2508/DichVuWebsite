@@ -15,6 +15,10 @@ cd "$(dirname "$0")/.."
 DC=(docker compose -f infra/compose.dev.yml)
 
 "${DC[@]}" cp scripts/seed-demo.mjs seller:/app/seed-demo.mjs
+# presets đi kèm: cần khi shop demo CHƯA tồn tại (sau dev-db-reset.sh) — seed phải tự
+# dựng theme từ preset ngành. Chép sang chứ không mount vào compose: đây là script dev,
+# không đáng để một service production mang thêm file chỉ vì nó.
+"${DC[@]}" cp packages/presets/src/index.js seller:/app/presets.js
 "${DC[@]}" exec -T \
   -e SEED_DATABASE_URL="postgres://app_owner:devpassword@postgres:5432/app" \
   seller node /app/seed-demo.mjs

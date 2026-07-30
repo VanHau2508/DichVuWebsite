@@ -14,6 +14,10 @@ import pg from 'pg';
 import * as Minio from 'minio';
 import sharp from 'sharp';
 import { randomUUID } from 'node:crypto';
+// Chép sang bởi seed-demo.sh (image seller không có thư mục packages/).
+// './' chứ không '../': file này chạy ở /app/seed-demo.mjs, không nằm trong src/
+// như worker (worker dùng '../fetch-image.js' vì nguồn nó ở /app/src/).
+import { PRESETS } from './presets.js';
 
 const db = new pg.Client({ connectionString: process.env.SEED_DATABASE_URL });
 const minio = new Minio.Client({
@@ -104,7 +108,7 @@ async function put(key, buf) {
 // c1/c2 = nền ảnh (tint nhạt của palette ngành), ink = màu nét.
 const SHOPS = [
   {
-    slug: 'demo-fashion', c1: '#faf7f5', c2: '#ece3dc', ink: '#3d3733', accent: '#b08968',
+    slug: 'demo-fashion', industry: 'fashion', c1: '#faf7f5', c2: '#ece3dc', ink: '#3d3733', accent: '#b08968',
     hero: [['Bộ sưu tập Thu Đông', 'Vải mềm, phom chuẩn, mặc là thấy khác', 'khoac'],
            ['Ưu đãi thành viên 30%', 'Đăng ký nhận mã trong hôm nay', 'vay'],
            ['Hàng mới về mỗi thứ Sáu', 'Số lượng giới hạn theo mẫu', 'ao']],
@@ -130,7 +134,7 @@ const SHOPS = [
     ],
   },
   {
-    slug: 'demo-food', c1: '#f4faf3', c2: '#dfeedd', ink: '#2c4a2b', accent: '#3f8f4a',
+    slug: 'demo-food', industry: 'food', c1: '#f4faf3', c2: '#dfeedd', ink: '#2c4a2b', accent: '#3f8f4a',
     hero: [['Tươi mỗi sáng, giao trong 2 giờ', 'Nhập từ trang trại, không tồn quá 24 giờ', 'la'],
            ['Rau củ hữu cơ chuẩn VietGAP', 'Có chứng nhận, truy xuất từng lô', 'qua'],
            ['Combo đi chợ cả tuần', 'Tiết kiệm tới 25% so với mua lẻ', 'thit']],
@@ -156,7 +160,7 @@ const SHOPS = [
     ],
   },
   {
-    slug: 'demo-furniture', c1: '#f5f6f7', c2: '#e2e6ea', ink: '#3a4652', accent: '#d26e4b',
+    slug: 'demo-furniture', industry: 'furniture', c1: '#f5f6f7', c2: '#e2e6ea', ink: '#3a4652', accent: '#d26e4b',
     hero: [['Showroom nội thất Bắc Âu', 'Gỗ tự nhiên, bảo hành khung 10 năm', 'sofa'],
            ['Trọn bộ phòng khách từ 15 triệu', 'Đo đạc và tư vấn tại nhà miễn phí', 'ban'],
            ['Giao lắp tận nơi toàn quốc', 'Kỹ thuật viên lắp đặt trong ngày', 'giuong']],
@@ -182,7 +186,7 @@ const SHOPS = [
     ],
   },
   {
-    slug: 'demo-cosmetics', c1: '#fdf5f8', c2: '#f6dde7', ink: '#8a3d5c', accent: '#e0699a',
+    slug: 'demo-cosmetics', industry: 'cosmetics', c1: '#fdf5f8', c2: '#f6dde7', ink: '#8a3d5c', accent: '#e0699a',
     hero: [['Son mới ra mắt — 12 tông', 'Chất kem lì, lên màu chuẩn ánh sáng Việt', 'son'],
            ['Mua 2 tặng 1 toàn bộ son', 'Chỉ trong 3 ngày, số lượng có hạn', 'tuyp'],
            ['Chăm da mùa hanh khô', 'Routine 4 bước cho da thường đến khô', 'serum']],
@@ -254,10 +258,32 @@ async function wipe(shopId) {
   if (keys.length) await minio.removeObjects(BUCKET, keys);
 }
 
+/**
+ * Tạo shop demo nếu chưa có. Cần cho luồng sau khi chạy dev-db-reset.sh: bàn thử
+ * giao diện phải dựng lại được bằng MỘT lệnh, không thì reset thành ra phá.
+ * Đủ ba thứ để storefront phục vụ được: shops + domains (đã verify) + themes.
+ */
+async function ensureShop(cfg) {
+  const found = (await db.query('SELECT id FROM shops WHERE slug=$1', [cfg.slug])).rows[0];
+  if (found) return found.id;
+
+  const name = 'Demo ' + cfg.slug.replace(/^demo-/, '');
+  const shopId = (await db.query(
+    `INSERT INTO shops (slug, name, status, industry, created_via) VALUES ($1,$2,'active',$3,'staff') RETURNING id`,
+    [cfg.slug, name, cfg.industry])).rows[0].id;
+  await db.query(
+    `INSERT INTO domains (shop_id, hostname, verification_token, verified_at, is_primary)
+     VALUES ($1,$2,'dev-demo-seed',now(),true)`,
+    [shopId, `${cfg.slug}.nentang.vn`]);
+  const preset = PRESETS[cfg.industry];
+  await db.query(`INSERT INTO themes (shop_id, tokens, layout) VALUES ($1,$2,$3)`,
+    [shopId, JSON.stringify(preset.tokens), JSON.stringify(preset.layout)]);
+  console.log(`  + tạo mới shop ${cfg.slug}`);
+  return shopId;
+}
+
 async function seedShop(cfg) {
-  const { rows } = await db.query('SELECT id FROM shops WHERE slug=$1', [cfg.slug]);
-  if (!rows.length) { console.log(`  bỏ qua ${cfg.slug} (không có shop)`); return; }
-  const shopId = rows[0].id;
+  const shopId = await ensureShop(cfg);
   await wipe(shopId);
 
   // Danh mục 2 cấp — để mega-menu và sidebar cây có gì mà hiện.

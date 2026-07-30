@@ -22,7 +22,7 @@ cd "$(dirname "$0")/.."
 # NGUỒN CHUNG danh sách test với .github/workflows/ci.yml — xem đầu file đó.
 . scripts/test-manifest.sh
 COMPOSE="docker compose -f infra/compose.dev.yml"
-GRN=$'\033[32m'; RED=$'\033[31m'; BLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
+GRN=$'\033[32m'; RED=$'\033[31m'; YLW=$'\033[33m'; BLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
 FAST=0; [ "${1:-}" = "--fast" ] && FAST=1
 
 fails=0; lines=()
@@ -131,5 +131,22 @@ if [ "$fails" -eq 0 ]; then
   fi
 else
   printf '%sĐỎ: %d mục hỏng (xem danh sách trên).%s\n' "$RED" "$fails" "$RST"
+fi
+
+# ── Cảnh báo DB dev phình ────────────────────────────────────────────────────
+# Mỗi lượt đầy đủ đẻ thêm ~400 shop và vài trăm đơn; không ai dọn. Nó KHÔNG chỉ làm
+# chậm — nó đổi hành vi theo thời gian rồi sinh lỗi đỏ GIẢ: 2026-07-30, >1000 đơn ứ
+# kéo dài vòng quét định kỳ của worker từ vài trăm ms lên hàng giây, đủ để ca
+# "digest đơn ứ" đỏ ở đây trong khi chạy riêng bộ đó xanh. Mất một lượt 45 phút.
+#
+# In ở CUỐI, sau kết luận: đây là chỗ người ta thực sự đọc.
+DEV_SHOP_WARN=${DEV_SHOP_WARN:-2000}
+nshop=$($COMPOSE exec -T postgres psql -U app_owner -d app -qtA \
+        -c 'SELECT count(*) FROM shops' 2>/dev/null | tr -d '\r ')
+if [ -n "$nshop" ] && [ "$nshop" -gt "$DEV_SHOP_WARN" ] 2>/dev/null; then
+  printf '\n%sDB dev đang có %s shop (ngưỡng %s).%s Dữ liệu tích luỹ đã từng sinh lỗi đỏ GIẢ\n' \
+    "$YLW" "$nshop" "$DEV_SHOP_WARN" "$RST"
+  printf 'vì làm chậm quét định kỳ. Dọn:  %sbash scripts/dev-db-reset.sh%s  (chạy không tham số = chỉ đo)\n' \
+    "$BLD" "$RST"
 fi
 exit $(( fails > 0 ))

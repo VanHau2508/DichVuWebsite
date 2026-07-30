@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 #
 # Mở shop dev trên ĐIỆN THOẠI THẬT khi chưa deploy gì cả.
-#   bash scripts/dev-lan-host.sh                     # tự dò IP LAN, đổi 4 shop demo
+#   bash scripts/dev-lan-host.sh                     # tự dò IP LAN, đổi các shop mặc định
 #   bash scripts/dev-lan-host.sh 192.168.2.38        # chỉ định IP
+#   bash scripts/dev-lan-host.sh auto shop-a shop-b  # chỉ định thêm shop (auto = tự dò IP)
 #   bash scripts/dev-lan-host.sh --revert            # trả miền chính về *.nentang.vn
+#
+# DB dev có hơn 5000 shop rác từ test nên KHÔNG quét cả bảng — chỉ đúng danh sách.
 #
 # Cơ chế: storefront nhận diện shop CHỈ bằng Host header đối chiếu bảng `domains`
 # (verified_at IS NOT NULL), Caddy dev có site block bắt-tất-cả với on-demand TLS
@@ -19,13 +22,16 @@ export PATH="$PATH:/c/Program Files/Docker/Docker/resources/bin"
 export MSYS_NO_PATHCONV=1
 cd "$(dirname "$0")/.."
 
-SHOPS="'demo-fashion','demo-food','demo-furniture','demo-cosmetics'"
+DEFAULT_SLUGS=(demo-fashion demo-food demo-furniture demo-cosmetics nha-xinh-1nh1va)
 PSQL=(docker compose -f infra/compose.dev.yml exec -T postgres psql -U app_owner -d app -v ON_ERROR_STOP=1 -qtA)
 
 if [ "${1:-}" = "--revert" ]; then
-  "${PSQL[@]}" <<SQL
+  # Lấy lại danh sách từ chính các alias đang tồn tại → revert đúng cả shop
+  # được truyền thêm ở lần chạy trước, không cần nhớ lại đã truyền những gì.
+  "${PSQL[@]}" <<'SQL'
 UPDATE domains d SET is_primary = (d.hostname LIKE '%.nentang.vn')
-FROM shops s WHERE s.id = d.shop_id AND s.slug IN ($SHOPS);
+FROM shops s WHERE s.id = d.shop_id
+  AND s.id IN (SELECT shop_id FROM domains WHERE hostname LIKE '%.nip.io');
 DELETE FROM domains WHERE hostname LIKE '%.nip.io';
 SQL
   echo "Đã trả miền chính về *.nentang.vn và xoá alias nip.io."
@@ -33,6 +39,17 @@ SQL
 fi
 
 IP="${1:-}"
+[ "$IP" = "auto" ] && IP=""
+shift || true
+SLUGS=("${DEFAULT_SLUGS[@]}" "$@")
+# Danh sách slug → chuỗi 'a','b' cho mệnh đề IN. Slug chỉ gồm [a-z0-9-] nên nối
+# thẳng là an toàn; chặn sớm nếu ai đó truyền ký tự lạ.
+LIST=""
+for s in "${SLUGS[@]}"; do
+  [[ "$s" =~ ^[a-z0-9-]+$ ]] || { echo "slug không hợp lệ: $s" >&2; exit 1; }
+  LIST="$LIST${LIST:+,}'$s'"
+done
+
 if [ -z "$IP" ]; then
   # Địa chỉ IPv4 riêng đầu tiên không phải loopback/APIPA/vEthernet của Docker-WSL.
   IP=$(powershell.exe -NoProfile -Command \
@@ -48,14 +65,14 @@ echo "IP LAN: $IP"
 DELETE FROM domains WHERE hostname LIKE '%.nip.io';
 INSERT INTO domains (shop_id, hostname, verification_token, verified_at, is_primary)
 SELECT s.id, s.slug || '.$DASH.nip.io', 'dev-lan-alias', now(), true
-FROM shops s WHERE s.slug IN ($SHOPS);
+FROM shops s WHERE s.slug IN ($LIST);
 UPDATE domains d SET is_primary = (d.hostname LIKE '%.nip.io')
-FROM shops s WHERE s.id = d.shop_id AND s.slug IN ($SHOPS);
+FROM shops s WHERE s.id = d.shop_id AND s.slug IN ($LIST);
 SQL
 
 echo
 echo "Mở trên điện thoại (cùng Wi-Fi) — bấm qua cảnh báo chứng chỉ, CA nội bộ của Caddy:"
-for slug in demo-fashion demo-food demo-furniture demo-cosmetics; do
+for slug in "${SLUGS[@]}"; do
   url="https://$slug.$DASH.nip.io:8443/"
   # -o NUL chứ không /dev/null: MSYS_NO_PATHCONV=1 chặn dịch đường dẫn nên curl
   # (bản Windows) coi /dev/null là tệp thật và fail ghi → exit 23 dù HTTP 200.

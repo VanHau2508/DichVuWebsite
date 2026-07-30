@@ -190,3 +190,48 @@ người bán **không nhận được gì** từ lúc xác minh email tới lú
 **Hai lần quyền-theo-cột bắt lỗi** (0111 `shops.deleted_at`, 0113 `products.created_at`): cột
 nằm trong `WHERE`/hàm gộp cũng phải xin. Cả hai đều do e2e phát hiện, không phải do đọc code.
 
+
+---
+
+## §9 — Banner mặc định cho shop mới (0114)
+
+**Đo được, không phải phỏng đoán:** shop vừa cấp phát xong render **3 khối**
+(`hero` tự-động 1 cảnh · `features` · lưới SP), trong khi 4 shop demo đủ nội dung
+render **9 khối**. Nguyên nhân tách bạch được:
+
+| Khối thiếu | Vì sao | Nền tảng lo được? |
+|---|---|---|
+| `hero_side`, `promo_banners` | preset seed `slides: []`, theme.js bỏ qua khối không có slide hợp lệ | **có** |
+| `hero` chỉ 1 cảnh | không có banner → rơi về hero tự-động | **có** |
+| `category_bar`, `category_rows` | shop chưa tạo danh mục | không — dữ liệu của họ |
+| `flash_sale` | shop chưa có khuyến mãi | không — dữ liệu của họ |
+
+Ba khối đầu mất trắng chỉ vì chưa ai tải ảnh lên. Với phương án "một bố cục cho
+mọi ngành" thì đó là lỗ hổng thẳng vào lời hứa: shop mới nhìn không giống mẫu họ
+vừa chọn.
+
+**Đường đi.** `packages/banner-art` (ESM lá, zero-dep, trả về CHUỖI SVG) → signup
+ghi outbox `shop.banners_seed` **cùng transaction** với `INSERT themes` (ADR-006)
+→ worker vẽ 3 hero + 2 phụ + 3 promo, `sharp` ra webp, đẩy MinIO, ghi key vào
+`themes.layout`. Migration 0114 cấp cho `app_worker` đúng `SELECT (shop_id,
+tokens, layout)` + `UPDATE (layout)` trên `themes` — không hơn.
+
+**Bốn quyết định đáng ghi:**
+
+1. **Màu lấy từ `themes.tokens`, KHÔNG lấy từ preset.** Chủ shop đổi màu trước khi
+   worker kịp chạy thì banner vẫn khớp. Worker cũng khỏi phải mount `packages/presets`.
+2. **Không vẽ chữ vào ảnh.** theme.js đã phủ headline/sub/CTA bằng HTML
+   (`.hbanner-overlay`); vẽ thêm là chữ đúp. Và image không cài fontconfig nên
+   `<text>` ra ô vuông tofu — đã dính thật một lần.
+3. **Idempotent theo hướng "người thật thắng máy".** Có slide rồi thì bỏ qua, kể cả
+   khi chủ shop tự tải ảnh trước lúc worker chạy.
+4. **Chữ mặc định cố ý trung tính** ("Hàng mới về", "Ưu đãi đang có"). Đây là banner
+   chạy trên cửa hàng THẬT của người khác — không hứa hộ họ "giao trong 2 giờ".
+
+**Chỉ phát sự kiện khi có preset.** Không chọn ngành ⇒ không có dòng `themes` để
+ghi, và `DEFAULT_LAYOUT` vốn không có `hero_side`/`promo_banners`. *(Còn tồn: shop
+không chọn ngành vẫn nhận bố cục 5 khối — nên bắt buộc chọn ngành, hoặc gán preset
+mặc định. Chưa làm.)*
+
+**Kết quả đo lại** trên shop do chính luồng self-serve tạo: hero `hero-n1` → `hero-split
+hero-n3`, thêm 2 ô phụ + 3 ô promo + 3 nút CTA, 8 ảnh banner.

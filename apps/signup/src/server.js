@@ -251,6 +251,19 @@ async function doVerify(req, res) {
       if (preset) {
         await c.query(`INSERT INTO themes (shop_id, tokens, layout) VALUES ($1,$2,$3)`,
           [shopId, JSON.stringify(preset.tokens), JSON.stringify(preset.layout)]);
+        // Banner mặc định (0114): preset seed hero.slides RỖNG, mà hero_side và
+        // promo_banners chỉ render khi có slide → shop mới hiện 3 khối thay vì 12.
+        // Worker vẽ bộ banner đầu tiên theo palette shop đã chọn.
+        //
+        // CHỈ khi có preset. Không chọn ngành ⇒ không có dòng themes để ghi, và
+        // DEFAULT_LAYOUT của storefront vốn không có hero_side/promo_banners —
+        // phát sự kiện chỉ để worker log cảnh báo rồi bỏ qua.
+        //
+        // shop_id để NULL và mang id trong payload: policy signup_outbox_ins ràng
+        // WITH CHECK (shop_id IS NULL) — app_signup CỐ Ý không được phát sự kiện
+        // gắn tenant. Cùng lối với 'signup.verify'. Cùng transaction (ADR-006).
+        await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES (NULL, 'shop.banners_seed', $1)`,
+          [{ shop_id: shopId, industry: d.industry }]);
       }
       await c.query(`UPDATE shop_signups SET provisioned_shop_id=$1 WHERE id=$2`, [shopId, d.id]);
       return { kind: 'ok', name: d.name, slug: d.slug };

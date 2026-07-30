@@ -404,6 +404,8 @@ services:
       # CÙNG MỘT BẢN với service kia: nhân bản đường ống bảo mật là kiểu trùng lặp chắc
       # chắn trôi lệch — vá một bên, quên bên kia.
       - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
+      # Bộ vẽ banner mặc định (0114) — import '../banner-art.js'. Cùng lối mount.
+      - ../packages/banner-art/src/index.js:/app/banner-art.js:ro
     restart: unless-stopped
     environment:
       # Lối thoát kiểm-dải-IP cho e2e (docs/45 §5) — CHỈ dev. Máy chủ ảnh giả của bộ

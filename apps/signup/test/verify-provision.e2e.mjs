@@ -151,6 +151,21 @@ async function main() {
   const ind7b = s7b ? (await owner.query(`SELECT industry FROM shops WHERE id=$1`, [s7b.id])).rows[0]?.industry : 'x';
   s7b && nTh === 0 && ind7b === null ? ok('không chọn ngành → industry NULL + KHÔNG seed themes') : bad('seed nhầm khi trống', `n=${nTh} ind=${ind7b}`);
 
+  // 7d. BANNER MẶC ĐỊNH (0114): cùng transaction với themes → 1 sự kiện outbox.
+  // Kiểm shop_id IS NULL: policy signup_outbox_ins ràng WITH CHECK (shop_id IS NULL),
+  // gắn tenant vào cột sẽ bị RLS chặn CÂM (INSERT không ném lỗi, chỉ mất dòng) —
+  // nên phải soi đúng cột chứ không chỉ đếm dòng.
+  const evQ = `SELECT shop_id, payload FROM outbox WHERE topic='shop.banners_seed' AND payload->>'shop_id'=$1`;
+  const ev7 = s7 ? (await owner.query(evQ, [s7.id])).rows : [];
+  ev7.length === 1 && ev7[0].shop_id === null && ev7[0].payload.industry === 'cosmetics'
+    ? ok('chọn ngành → 1 outbox shop.banners_seed (shop_id NULL, industry trong payload)')
+    : bad('sự kiện banner sai', JSON.stringify(ev7));
+
+  // Không có preset thì KHÔNG phát: không có dòng themes để ghi, và DEFAULT_LAYOUT
+  // vốn không có hero_side/promo_banners → sự kiện chỉ để worker bỏ qua.
+  const ev7b = s7b ? (await owner.query(evQ, [s7b.id])).rows : [{}];
+  ev7b.length === 0 ? ok('không chọn ngành → KHÔNG phát sự kiện banner') : bad('phát thừa sự kiện banner', JSON.stringify(ev7b));
+
   // 7c. enum-safe: industry RÁC → provision vẫn nguyên tử (shop tạo đủ), KHÔNG seed, KHÔNG lỗi (không vi phạm CHECK)
   const d7c = await draft({ industry: '<script>alert(1)</script>' });
   const r7c = await req('POST', '/signup/verify', { form: { token: d7c.token, ct: ct() } });

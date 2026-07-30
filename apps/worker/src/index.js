@@ -412,9 +412,63 @@ ${p?.context_url ? `Trang: ${p.context_url}
     telegram: Boolean(TELEGRAM_ON && ALERT_TELEGRAM_CHAT_ID), email: Boolean(SUPPORT_EMAIL) });
 }
 
+// ── banner mặc định cho shop mới (0114) ──────────────────────────────────────
+// Preset ngành seed `hero.slides: []`; theme.js chỉ render hero_side/promo_banners
+// khi có slide hợp lệ → shop vừa cấp phát hiện 3 khối thay vì 12. Ở đây vẽ bộ
+// banner đầu tiên theo ĐÚNG palette shop đang dùng (đọc themes.tokens, KHÔNG đọc
+// preset) → chủ shop đổi màu trước khi worker chạy thì banner vẫn khớp.
+//
+// Key phải khớp BANNER_KEY_RE của theme.js: <shop-uuid>/banner-<uuid>.webp
+async function seedShopBanners(payload, outboxId) {
+  const shopId = payload?.shop_id;
+  if (!/^[0-9a-f-]{36}$/i.test(String(shopId ?? ''))) {
+    log('warn', 'banner_seed_bad_payload', { outboxId });
+    return;
+  }
+  const row = (await db.query('SELECT tokens, layout FROM themes WHERE shop_id = $1', [shopId])).rows[0];
+  if (!row || !Array.isArray(row.layout)) { log('warn', 'banner_seed_no_theme', { outboxId }); return; }
+
+  // IDEMPOTENT: đã có slide (worker chạy lại, hoặc chủ shop tự tải ảnh trước khi
+  // ta kịp) thì KHÔNG đè. Banner của người thật luôn thắng banner máy vẽ.
+  const hero = row.layout.find((s) => s && s.section === 'hero');
+  if (Array.isArray(hero?.props?.slides) && hero.props.slides.length) {
+    log('info', 'banner_seed_skip_existing', { outboxId });
+    return;
+  }
+
+  const { bannerPlan } = await import('../banner-art.js');
+  const sharp = (await import('sharp')).default;
+  const minio = await getMinio();
+  const BPUB = process.env.MEDIA_BUCKET_PUBLIC ?? 'media-public';
+
+  const made = { hero: [], side: [], promo: [] };
+  for (const b of bannerPlan(payload?.industry ?? null, row.tokens)) {
+    const key = `${shopId}/banner-${crypto.randomUUID()}.webp`;
+    const buf = await sharp(Buffer.from(b.svg)).webp({ quality: 84 }).toBuffer();
+    await minio.putObject(BPUB, key, buf, buf.length, { 'Content-Type': 'image/webp' });
+    // button_label BẮT BUỘC đi kèm button_link ở hero: thiếu nhãn thì
+    // heroBannerInner bỏ nút CTA, im lặng không báo lỗi.
+    made[b.slot].push({
+      image_key: key, headline: b.headline, sub: b.sub, button_link: '/products',
+      ...(b.slot === 'hero' ? { button_label: 'Xem sản phẩm' } : {}),
+    });
+  }
+
+  const bySlot = { hero: made.hero, hero_side: made.side, promo_banners: made.promo };
+  for (const s of row.layout) {
+    if (s && bySlot[s.section]) s.props = { ...s.props, slides: bySlot[s.section] };
+  }
+  // layout là MẢNG → JSON.stringify, không thì node-pg ép thành array-literal.
+  await db.query('UPDATE themes SET layout = $2 WHERE shop_id = $1', [shopId, JSON.stringify(row.layout)]);
+  log('info', 'banner_seed_done', { outboxId, n: made.hero.length + made.side.length + made.promo.length });
+}
+
 // ── consumer: queue → email ──────────────────────────────────────────────────
 const worker = new Worker('email', async (job) => {
   const { topic, payload, shopId, outboxId } = job.data;
+  // Banner mặc định (0114): KHÔNG phải email — đi đường riêng và DỪNG tại đây.
+  // Rơi xuống deliverNotification sẽ gửi JSON thô tới một địa chỉ không tồn tại.
+  if (topic === 'shop.banners_seed') { await seedShopBanners(payload, outboxId); return; }
   // Yêu cầu hỗ trợ (0107) đi ĐƯỜNG RIÊNG: người nhận là CHỦ NỀN TẢNG, không phải khách của
   // shop. Nhét vào đường email-khách sẽ phải bịa payload.to, và bịa địa chỉ trong đường gửi
   // thư là cách gửi nhầm người.

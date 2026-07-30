@@ -205,6 +205,17 @@ async function listShops(req, res, staff) {
     args.push(subStatus);
     where.push(`sub.status = $${args.length}`);
   }
+  // Lọc "chưa có sản phẩm": nhóm cần gọi điện giúp. Trước đây console không phân biệt được
+  // shop mở 10 ngày chưa đăng gì với shop đang bán tốt — nhìn y hệt nhau, chỉ khác cột đã-thu
+  // bằng 0. Không thấy thì không giúp được ai.
+  //
+  // ĐỌC CỜ shops.first_product_at, KHÔNG đếm bảng products. Bản đầu tôi viết
+  // `NOT EXISTS (SELECT 1 FROM products ...)` và test bắt ngay: app_platform CỐ TÌNH không có
+  // quyền trên bảng nghiệp vụ (nguyên tắc #1 ở đầu file — "platform không mặc định xem dữ liệu
+  // khách mua", có test canh). Cấp thêm quyền để tiện hiển thị là phá đúng ranh giới đó; đưa
+  // MỘT CỜ lên bảng shops thì console biết ai đang mắc kẹt mà vẫn không nhìn thấy hàng hoá.
+  const activity = url.searchParams.get('activity') ?? '';
+  if (activity === 'noproduct') where.push(`s.first_product_at IS NULL`);
   // subscriptions UNIQUE(shop_id) từ 0065 → LEFT JOIN không nhân dòng, COUNT chuẩn.
   const whereSql = where.join(' AND ');
   const [list, total] = await Promise.all([
@@ -212,7 +223,8 @@ async function listShops(req, res, staff) {
       `SELECT s.id, s.slug, s.name, s.status, s.created_at,
               d.hostname AS subdomain, sub.plan_code, sub.status AS sub_status,
               (SELECT COALESCE(SUM(pi.amount_vnd), 0)::bigint
-                 FROM platform_invoices pi WHERE pi.shop_id = s.id) AS total_collected_vnd
+                 FROM platform_invoices pi WHERE pi.shop_id = s.id) AS total_collected_vnd,
+              s.first_product_at
          FROM shops s
          LEFT JOIN domains d ON d.shop_id = s.id AND d.is_primary
          LEFT JOIN subscriptions sub ON sub.shop_id = s.id
@@ -235,6 +247,7 @@ async function listShops(req, res, staff) {
     total: total.rows[0].n,
     has_more: page * SHOPS_PAGE_SIZE < total.rows[0].n,
     staff_role: staff.staffRole,
+    activity,
   });
 }
 

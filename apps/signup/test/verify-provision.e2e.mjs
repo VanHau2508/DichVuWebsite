@@ -86,6 +86,14 @@ async function main() {
     ? ok('provision đủ: shop(self_serve)+domain(verified)+trial(có hạn)+owner+audit; user verified; nháp→provisioned; KHÔNG cookie')
     : bad('provision thiếu', `shop=${!!shop} dom=${!!dom?.verified_at} sub=${sub?.status} mem=${mem?.role} usr=${!!usr?.email_verified_at} aud=${aud} draft=${draftStatus?.status} noCookie=${noCookie}`);
 
+  // contact_email PHẢI được đặt = email vừa xác minh. Không phải chi tiết nhỏ: cảnh báo SẮP
+  // HẾT HÀNG lọc `WHERE s.contact_email IS NOT NULL`, nên bỏ trống là tính năng đó chưa từng
+  // tới được một shop self-serve nào — làm xong mà im lặng không chạy.
+  const ce = (await owner.query(`SELECT contact_email FROM shops WHERE lower(slug)=$1`, [d.slug])).rows[0];
+  ce?.contact_email === d.email
+    ? ok('provision đặt contact_email = email đã xác minh (mở đường cho cảnh báo tồn kho + nhắc)')
+    : bad('contact_email trống sau provision', String(ce?.contact_email));
+
   sect('2. Token 1-lần: verify lại token đã dùng → trung tính, KHÔNG shop thứ 2');
   r = await req('POST', '/signup/verify', { form: { token: d.token, ct: ct() } });
   const cnt = Number((await owner.query(`SELECT count(*)::int n FROM shops WHERE lower(slug)=$1`, [d.slug])).rows[0].n);

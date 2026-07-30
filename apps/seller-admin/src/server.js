@@ -107,11 +107,13 @@ async function platformShops(res, me, cookie, sp) {
   const filters = {
     q: String(sp?.get('q') ?? '').trim().slice(0, 100),
     sub_status: String(sp?.get('sub_status') ?? '').trim(),
+    activity: String(sp?.get('activity') ?? '').trim(),
     page: Math.max(1, parseInt(sp?.get('page') ?? '1', 10) || 1),
   };
   const qs = new URLSearchParams();
   if (filters.q) qs.set('q', filters.q);
   if (filters.sub_status) qs.set('sub_status', filters.sub_status);
+  if (filters.activity) qs.set('activity', filters.activity);
   if (filters.page > 1) qs.set('page', String(filters.page));
   const qstr = qs.toString();
   const [r, mr] = await Promise.all([

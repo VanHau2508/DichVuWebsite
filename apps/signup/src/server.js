@@ -228,9 +228,14 @@ async function doVerify(req, res) {
       }
       // Provision shop (mirror platform createShop:145-169; invariant current_period_end cưỡng chế CHECK 0091).
       const shopId = (await c.query(
-        `INSERT INTO shops (slug, name, status, locale, currency, timezone, created_via, industry)
-         VALUES ($1,$2,'onboarding',$3,$4,$5,'self_serve',$6) RETURNING id`,
-        [d.slug, d.name, d.locale, d.currency, d.timezone, d.industry])).rows[0].id;
+        // contact_email = CHÍNH email vừa xác minh. Trước đây bỏ trống, và hậu quả không nằm ở
+        // đây mà ở nơi khác: cảnh báo SẮP HẾT HÀNG lọc `WHERE s.contact_email IS NOT NULL`, nên
+        // nó chưa từng tới được MỘT shop self-serve nào — tính năng làm xong mà im lặng không
+        // chạy. Ta đang giữ sẵn địa chỉ đã xác minh trong tay, không có lý do gì để trống.
+        // Người bán vẫn đổi được ở phần Cài đặt.
+        `INSERT INTO shops (slug, name, status, locale, currency, timezone, created_via, industry, contact_email)
+         VALUES ($1,$2,'onboarding',$3,$4,$5,'self_serve',$6,$7) RETURNING id`,
+        [d.slug, d.name, d.locale, d.currency, d.timezone, d.industry, d.email])).rows[0].id;
       await c.query(`INSERT INTO domains (shop_id, hostname, verification_token, verified_at, is_primary) VALUES ($1,$2,$3,now(),true)`,
         [shopId, `${d.slug}.${PLATFORM_DOMAIN}`, generateToken()]);
       await c.query(`INSERT INTO subscriptions (shop_id, plan_code, status, current_period_end) VALUES ($1,$2,'trial', now() + ($3 || ' days')::interval)`,

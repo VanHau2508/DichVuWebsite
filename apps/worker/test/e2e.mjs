@@ -309,6 +309,41 @@ async function main() {
     ? ok('xoá counter → cảnh báo nuốt TẮT (không kẹt báo động giả)')
     : bad('cảnh báo nuốt không tắt khi hết counter', String(sw0.metrics?.swallow_total));
 
+  // ── Nhắc MỘT LẦN người bán chưa đăng sản phẩm (0110) ─────────────────────────
+  // Sau khi xác minh email, người bán không nhận thêm gì cho tới lúc thuê bao sắp hết hạn.
+  // Email này lấp đúng khoảng im lặng đó — và phải ĐÚNG MỘT LẦN: tên miền gửi thư còn mới,
+  // nhắc lặp vào hộp thư người chưa tương tác là cách nhanh nhất để kéo cả nền tảng vào spam.
+  const mkShop = async (name, email, createdAt) => (await owner.query(
+    `INSERT INTO shops (slug, name, status, contact_email, created_at, created_via)
+     VALUES ('nudge-' || substr(md5(random()::text), 1, 8), $1, 'onboarding', $2, $3, 'self_serve')
+     RETURNING id`, [name, email, createdAt])).rows[0].id;
+  const nudged = async (id) => Number((await owner.query(
+    `SELECT count(*)::int n FROM outbox WHERE shop_id = $1 AND topic = 'shop.onboarding_nudge'`, [id])).rows[0].n);
+  const CU = '2026-01-01';
+  const shopCu = await mkShop('nudge cu 0 SP', 'a@vidu.vn', CU);
+  const shopMoi = await mkShop('nudge moi', 'b@vidu.vn', new Date().toISOString());
+  const shopCoHang = await mkShop('nudge co hang', 'c@vidu.vn', CU);
+  await owner.query(`INSERT INTO products (shop_id, slug, title, price_vnd, status) VALUES ($1,'nx','NX',1000,'active')`, [shopCoHang]);
+  const shopKhongMail = await mkShop('nudge khong mail', null, CU);
+
+  await fetch(`${WORKER}/internal/nudge-sweep`, { method: 'POST' });
+  (await nudged(shopCu)) === 1 ? ok('shop cũ chưa có SP → nhắc 1 lần') : bad('không nhắc shop cần nhắc');
+  // Quét lại: dấu onboarding_nudged_at phải chặn lần thứ hai. Chiếm-quyền-trước + outbox CÙNG
+  // transaction nên không có cửa nào gửi hai lần, cũng không có cửa nào đánh dấu mà quên gửi.
+  await fetch(`${WORKER}/internal/nudge-sweep`, { method: 'POST' });
+  (await nudged(shopCu)) === 1 ? ok('quét lần 2 KHÔNG gửi lại (đúng một lần)') : bad('gửi lặp email nhắc');
+  (await nudged(shopMoi)) === 0 ? ok('shop mới mở chưa tới hạn → chưa nhắc') : bad('nhắc quá sớm');
+  (await nudged(shopCoHang)) === 0 ? ok('shop ĐÃ có sản phẩm → không nhắc') : bad('nhắc nhầm shop đang bán');
+  (await nudged(shopKhongMail)) === 0 ? ok('shop không có contact_email → bỏ qua, không nổ') : bad('nhắc shop không có email');
+  const pl = (await owner.query(
+    `SELECT payload->>'to' AS t FROM outbox WHERE shop_id = $1 AND topic = 'shop.onboarding_nudge'`, [shopCu])).rows[0];
+  pl?.t === 'a@vidu.vn' ? ok('email gửi đúng contact_email của shop') : bad('sai người nhận', String(pl?.t));
+  for (const id of [shopCu, shopMoi, shopCoHang, shopKhongMail]) {
+    await owner.query(`DELETE FROM products WHERE shop_id=$1`, [id]);
+    await owner.query(`DELETE FROM outbox WHERE shop_id=$1`, [id]);
+    await owner.query(`DELETE FROM shops WHERE id=$1`, [id]);
+  }
+
   await sleep(400); // chờ worker POST webhook
   alerts.some((a) => /chưa khớp/i.test(a.text ?? ''))
     ? ok('đã ĐẨY cảnh báo tới webhook (nội dung "tiền chưa khớp")') : bad('webhook không nhận cảnh báo', JSON.stringify(alerts).slice(0, 200));

@@ -525,6 +525,19 @@ async function main() {
     ? ok(`?q=${slug} tìm thấy shop + meta {page,total,page_size}`) : bad('tìm theo slug lỗi', r.raw);
   r.json?.staff_role === 'admin'
     ? ok('list trả staff_role=admin (Console ẩn/hiện nút theo vai trò)') : bad('thiếu staff_role', r.raw);
+
+  // Cờ "đã đăng sản phẩm chưa" + bộ lọc nhóm mắc kẹt. ĐỌC CỜ trên shops, KHÔNG đếm bảng
+  // products: app_platform cố tình không có quyền ở đó (nguyên tắc #1 đầu file). Bản đầu tôi
+  // viết NOT EXISTS(products) và chính bộ test này bắt ngay — permission denied.
+  const shopsList = (await req(PLATFORM, 'GET', '/ops/shops', { cookie: staffCookie })).json?.shops ?? [];
+  shopsList.length && 'first_product_at' in shopsList[0]
+    ? ok('danh sách shop mang cờ first_product_at (không đụng bảng products)')
+    : bad('thiếu cờ first_product_at', JSON.stringify(Object.keys(shopsList[0] ?? {})));
+  const loc = await req(PLATFORM, 'GET', '/ops/shops?activity=noproduct', { cookie: staffCookie });
+  loc.status === 200 && (loc.json?.shops ?? []).every((x) => x.first_product_at === null)
+    ? ok('lọc activity=noproduct chỉ trả shop CHƯA đăng sản phẩm')
+    : bad('bộ lọc chưa-có-SP lọt shop đang bán', String(loc.status));
+  loc.json?.activity === 'noproduct' ? ok('payload trả lại activity để UI giữ bộ lọc') : bad('thiếu activity trong payload');
   r = await req(PLATFORM, 'GET', `/ops/shops?q=khong-ton-tai-${uniq()}`, { cookie: staffCookie });
   r.status === 200 && r.json.shops.length === 0 && r.json.total === 0 && r.json.has_more === false
     ? ok('?q không khớp → rỗng, total 0, has_more false') : bad('q không khớp vẫn ra shop', r.raw);

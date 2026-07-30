@@ -435,6 +435,9 @@ services:
       LOYALTY_SWEEP_MS: "300000"
       # Pool riêng, role hẹp app_signup: GC nháp self-serve signup treo → giải phóng slug (0091).
       DATABASE_URL_SIGNUP: postgres://app_signup:devpassword@postgres:5432/app
+      ADMIN_URL: https://admin.localtest
+      NUDGE_AFTER_HOURS: "48"
+      NUDGE_SWEEP_MS: "5000"
       SIGNUP_SWEEP_MS: "300000"
       SUBSCRIPTION_GRACE_DAYS: "7"
       # Email liên hệ nền tảng trong copy nhắc hạn thuê bao (e2e assert xác định).

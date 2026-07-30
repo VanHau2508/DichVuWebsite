@@ -270,6 +270,28 @@ Từ: ${p.from ?? '(không rõ)'}
         par('<span style="color:#6b7280">Nếu vẫn chưa ổn, bạn gửi lại một yêu cầu mới trong mục Trợ giúp — chúng tôi xem tiếp.</span>')),
     };
   }
+  if (topic === 'shop.onboarding_nudge') {
+    // Email DUY NHẤT ta gửi cho người bán ở giai đoạn này, nên nó phải đáng một lần mở hộp thư:
+    // nói địa chỉ shop đã sống, nói việc kế tiếp, hết. Không khoe tính năng, không giục mua gói.
+    const cta = p.admin_url ? { url: p.admin_url, label: 'Thêm sản phẩm đầu tiên' } : null;
+    return {
+      subject: `Cửa hàng ${p.shop_name ?? ''} đã sẵn sàng — còn thiếu sản phẩm`,
+      text: `Cửa hàng "${p.shop_name ?? ''}" của bạn đã hoạt động, nhưng chưa có sản phẩm nào nên khách vào chưa mua được gì.
+
+`
+        + `Thêm một sản phẩm là bán được ngay — không cần chờ thiết lập xong hết.
+`
+        + `${p.admin_url ? `
+Vào trang quản trị: ${p.admin_url}
+` : ''}`
+        + `
+Vướng ở đâu cứ trả lời email này, chúng tôi hỗ trợ.`,
+      html: emailHtml(p, `Cửa hàng đã sẵn sàng — còn thiếu sản phẩm`,
+        par(`Cửa hàng <strong>${escHtml(p.shop_name ?? '')}</strong> của bạn đã hoạt động, nhưng chưa có sản phẩm nào nên khách vào chưa mua được gì.`)
+        + par('Thêm <strong>một</strong> sản phẩm là bán được ngay — không cần chờ thiết lập xong hết.')
+        + par('<span style="color:#6b7280">Vướng ở đâu cứ trả lời email này, chúng tôi hỗ trợ.</span>'), cta),
+    };
+  }
   if (topic === 'stock.low') {
     const lines = (p.items ?? []).map((i) => `  • ${i.title}${i.variant_title ? ` (${i.variant_title})` : ''} — còn ${i.available}`).join('\n');
     const rowsHtml = (p.items ?? []).map((i) => `<tr><td style="padding:6px 12px 6px 0;border-bottom:1px solid #f3f4f6">${escHtml(i.title)}${i.variant_title ? ` <span style="color:#6b7280">(${escHtml(i.variant_title)})</span>` : ''}</td><td align="right" style="padding:6px 0;border-bottom:1px solid #f3f4f6;white-space:nowrap"><strong>còn ${escHtml(i.available)}</strong></td></tr>`).join('');
@@ -1603,6 +1625,12 @@ const ALERT_SWEEP_MS = Number(process.env.ALERT_SWEEP_MS ?? 300000);      // 5 p
 const ALERT_REPEAT_MS = Number(process.env.ALERT_REPEAT_MS ?? 3600000);   // nhắc lại mỗi 1h nếu còn
 const ALERT_UNMATCHED_MAX = Number(process.env.ALERT_UNMATCHED_MAX ?? 1); // ≥N giao dịch chưa khớp >1h
 const ALERT_SIGNUP_SWALLOW_MAX = Number(process.env.ALERT_SIGNUP_SWALLOW_MAX ?? 20); // ≥N lần nuốt đăng ký/giờ
+const NUDGE_AFTER_HOURS = Number(process.env.NUDGE_AFTER_HOURS ?? 48);      // nhắc sau N giờ kể từ khi mở shop
+const NUDGE_SWEEP_MS = Number(process.env.NUDGE_SWEEP_MS ?? 3600000);       // quét mỗi 1h (việc không gấp)
+// Link về trang quản trị trong email nhắc. Không đặt ⇒ email vẫn gửi, chỉ bỏ nút bấm —
+// KHÔNG được để một biến thiếu làm hỏng cả email (xem cách nó suýt hỏng: tôi viết
+// ADMIN_LOGIN_URL không tồn tại, ReferenceError rơi vào catch và biến thành log lỗi câm).
+const ADMIN_URL = (process.env.ADMIN_URL ?? '').replace(/\/+$/, '');
 const ALERT_OUTBOX_MAX = Number(process.env.ALERT_OUTBOX_MAX ?? 20);      // ≥N email tồn >10'
 const ALERT_EMAIL_FAIL_MAX = Number(process.env.ALERT_EMAIL_FAIL_MAX ?? 5);
 // Dead-man's switch: ping URL này mỗi nhịp alert-sweep — im lặng → monitor NGOÀI báo động.
@@ -1703,7 +1731,75 @@ async function sweepMoneyAlerts() {
 }
 
 const timer = setInterval(poll, POLL_MS);
+
+// ── sweep: NHẮC MỘT LẦN người bán chưa đăng sản phẩm nào (0110) ───────────────
+// Sau khi xác minh email, người bán không nhận thêm gì cho tới lúc thuê bao sắp hết hạn —
+// nền tảng im lặng đúng lúc họ cần được dắt nhất. Đây là email DUY NHẤT ta gửi cho họ ở giai
+// đoạn đó, nên nó phải đáng: nói rõ shop đã sống ở địa chỉ nào và việc kế tiếp là gì.
+//
+// ĐÚNG MỘT LẦN, không phải chuỗi nhắc: tên miền gửi thư còn mới. Nhắc nhiều lần vào hộp thư
+// người chưa từng tương tác là cách nhanh nhất để vào spam — và khi đó MỌI email khác của nền
+// tảng (xác nhận đơn, đặt lại mật khẩu) cùng chết theo.
+async function sweepOnboardingNudge() {
+  if (!expiryDb) return { sent: 0, flagged: 0 };
+  // TRƯỚC KHI NHẮC: cập nhật cờ first_product_at (0112) cho shop đã đăng hàng. Console nền
+  // tảng đọc cờ này thay vì đếm bảng products — app_platform cố tình không có quyền ở đó.
+  // Lấy min(created_at) THẬT chứ không phải lúc phát hiện: cùng công sức mà không nói dối về
+  // thời điểm. Chạy trước phần nhắc để một shop vừa đăng hàng không bị nhắc oan ở cùng nhịp.
+  let flagged = 0;
+  try {
+    flagged = (await expiryDb.query(`
+      UPDATE shops s SET first_product_at = p.dau_tien
+        FROM (SELECT shop_id, min(created_at) AS dau_tien FROM products
+               WHERE deleted_at IS NULL GROUP BY shop_id) p
+       WHERE p.shop_id = s.id AND s.first_product_at IS NULL AND s.deleted_at IS NULL`)).rowCount;
+  } catch (e) { log('error', 'first_product_flag_error', { message: e.message }); }
+
+  let rows;
+  try {
+    // Điều kiện "chưa có SP nào" đọc bảng products — app_expiry đã có quyền (0050 low stock).
+    // KHÔNG nhắc shop suspended/terminated: họ hết cửa rồi, nhắc thêm là vô duyên.
+    rows = (await expiryDb.query(`
+      SELECT s.id, s.name, s.contact_email
+        FROM shops s
+       WHERE s.onboarding_nudged_at IS NULL
+         AND s.deleted_at IS NULL
+         AND s.status IN ('onboarding', 'active')
+         AND s.contact_email IS NOT NULL
+         AND s.created_at < now() - ($1 || ' hours')::interval
+         AND s.first_product_at IS NULL
+       ORDER BY s.created_at
+       LIMIT 50`, [String(NUDGE_AFTER_HOURS)])).rows;
+  } catch (e) { log('error', 'nudge_query_error', { message: e.message }); return { sent: 0 }; }
+
+  let sent = 0;
+  for (const r of rows) {
+    let c;
+    try {
+      c = await expiryDb.connect();
+      await c.query('BEGIN');
+      // CHIẾM QUYỀN TRƯỚC rồi mới ghi outbox, cùng một transaction: hai worker chạy song song
+      // thì chỉ một cái lấy được dòng, và tx hỏng thì dấu-đã-gửi hoàn nguyên cùng outbox.
+      // Không có cửa nào gửi hai lần, cũng không có cửa nào đánh dấu mà quên gửi.
+      const claimed = await c.query(
+        `UPDATE shops SET onboarding_nudged_at = now() WHERE id = $1 AND onboarding_nudged_at IS NULL`, [r.id]);
+      if (claimed.rowCount === 1) {
+        await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'shop.onboarding_nudge', $2)`,
+          [r.id, { to: r.contact_email, shop_name: r.name, admin_url: ADMIN_URL || null }]);
+        sent++;
+      }
+      await c.query('COMMIT');
+    } catch (e) {
+      await c?.query('ROLLBACK').catch(() => {});
+      log('error', 'nudge_send_error', { message: e.message });
+    } finally { c?.release(); }
+  }
+  if (sent || flagged) log('info', 'onboarding_nudge', { sent, flagged });
+  return { sent, flagged };
+}
+
 const expiryTimer = expiryDb ? setInterval(sweepExpired, EXPIRY_SWEEP_MS) : null;
+const nudgeTimer = expiryDb ? setInterval(sweepOnboardingNudge, NUDGE_SWEEP_MS) : null;
 const lowstockTimer = expiryDb ? setInterval(sweepLowStock, LOWSTOCK_SWEEP_MS) : null;
 const prodStatsTimer = expiryDb ? setInterval(sweepProductStats, PRODSTATS_SWEEP_MS) : null;
 const prodViewTimer = expiryDb ? setInterval(sweepProductViews, PRODVIEW_SWEEP_MS) : null;
@@ -1837,6 +1933,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     return res.end(JSON.stringify(r));
   }
   // Kích hoạt quét cảnh báo đường tiền ngay (nội bộ — cho cron + e2e xác định).
+  // Kích hoạt sweep nhắc-onboarding ngay (nội bộ — để e2e tất định, không chờ hẹn giờ).
+  if (url.pathname === '/internal/nudge-sweep' && req.method === 'POST') {
+    const r = await sweepOnboardingNudge();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   if (url.pathname === '/internal/alert-sweep' && req.method === 'POST') {
     const r = await sweepMoneyAlerts();
     res.writeHead(200, { 'content-type': 'application/json' });

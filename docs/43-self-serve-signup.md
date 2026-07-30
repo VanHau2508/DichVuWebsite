@@ -161,3 +161,32 @@ hay `gui_qua_nhanh ×25` là hàng rào đang chặn **người thật**. Ngư�
 Lý do ghi nhận là **cái khớp đầu tiên** theo thứ tự kiểm (honeypot → form_ts_sai →
 gui_qua_nhanh → email_dung_mot_lan → tran_redis_ip → tran_ip_gio), không phải mọi lý do khớp.
 
+## Shop đăng ký rồi bỏ ngang — khảo sát + xử lý (2026-07-30)
+
+**Hai nghi vấn của tôi ĐỀU SAI, nêu ra để không ai đi lại:**
+* *"Shop bỏ ngang kẹt lại mãi"* — không. Sweep chạy đủ vòng đời: `trial/active` quá hạn →
+  `past_due` → quá ân hạn → `cancelled` **kèm** `shops.status='suspended'`.
+* *"29 shop không có thuê bao = lỗ billing"* — không. `createShop` và `doVerify` đều chèn
+  subscription **vô điều kiện, cùng transaction**; API không thể đẻ ra shop thiếu thuê bao.
+  Toàn bộ là seed dev + test cắm SQL thẳng.
+
+**Chỗ thật sự hở:** không gì phân biệt shop chưa từng đăng sản phẩm với shop đang bán. Console
+liệt kê `status/plan/đã thu` — shop mở 10 ngày, 0 SP, 0 đơn nhìn **y hệt** shop bán tốt. Và
+người bán **không nhận được gì** từ lúc xác minh email tới lúc thuê bao sắp hết hạn.
+
+**Đã làm:**
+1. `shops.first_product_at` (0112) — worker điền `min(products.created_at)`. Console đọc CỜ,
+   **không đếm bảng products**: `app_platform` cố tình không có quyền ở đó (nguyên tắc #1 của
+   0006) và test bắt ngay khi tôi thử — *permission denied for table products*. Thêm cột
+   "Hàng hoá" + bộ lọc "⚠ Chưa có sản phẩm".
+2. Email nhắc **đúng một lần** sau 48 giờ (0110) — chiếm-quyền-trước bằng
+   `UPDATE ... WHERE onboarding_nudged_at IS NULL` rồi ghi outbox **cùng transaction**.
+   Một lần, không phải chuỗi: tên miền gửi thư còn mới, nhắc lặp vào hộp thư người chưa tương
+   tác là cách nhanh nhất kéo cả nền tảng vào spam.
+3. `contact_email` đặt lúc cấp phát = email vừa xác minh. Không phải chi tiết nhỏ: cảnh báo
+   **sắp hết hàng** lọc `WHERE contact_email IS NOT NULL`, mà **455/455** shop self-serve đều
+   trống ⇒ tính năng đó **chưa từng tới được ai**.
+
+**Hai lần quyền-theo-cột bắt lỗi** (0111 `shops.deleted_at`, 0113 `products.created_at`): cột
+nằm trong `WHERE`/hàm gộp cũng phải xin. Cả hai đều do e2e phát hiện, không phải do đọc code.
+

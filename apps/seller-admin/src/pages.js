@@ -1069,11 +1069,13 @@ export function renderPlatformShops(ctx, data, metrics = null, filters = {}) {
   const subStatus = filters.sub_status ?? '';
   const page = data?.page ?? 1;
   // Link giữ nguyên bộ lọc hiện tại, ghi đè phần cần đổi (chip trạng thái / pager).
+  const activity = data?.activity ?? filters.activity ?? '';
   const linkTo = (over = {}) => {
     const sp = new URLSearchParams();
-    const v = { q, sub_status: subStatus, page: '', ...over };
+    const v = { q, sub_status: subStatus, activity, page: '', ...over };
     if (v.q) sp.set('q', v.q);
     if (v.sub_status) sp.set('sub_status', v.sub_status);
+    if (v.activity) sp.set('activity', v.activity);
     if (v.page && Number(v.page) > 1) sp.set('page', String(v.page));
     const s = sp.toString();
     return `/platform${s ? `?${s}` : ''}`;
@@ -1085,6 +1087,9 @@ export function renderPlatformShops(ctx, data, metrics = null, filters = {}) {
     <td><a href="/platform/shops/${esc(s.id)}">${esc(s.name)}</a><div class="muted" style="font-size:.8rem">${esc(s.subdomain ?? s.slug)}</div></td>
     <td>${badge(s.status, PLAT_STATUS[s.status] ?? s.status)}</td>
     <td>${esc(s.plan_code ?? '—')} <span class="muted">${esc(s.sub_status ?? '')}</span></td>
+    <td>${s.first_product_at
+      ? `<span class="muted" title="Sản phẩm đầu tiên: ${esc(dt(s.first_product_at))}">✓ đã đăng</span>`
+      : '<span class="badge draft" title="Chưa đăng sản phẩm nào — khách vào chưa mua được gì">⚠ chưa có SP</span>'}</td>
     <td class="right">${money(s.total_collected_vnd ?? 0)}</td>
     <td class="muted">${dt(s.created_at)}</td></tr>`).join('');
   const total = data?.total ?? shops.length;
@@ -1108,7 +1113,11 @@ export function renderPlatformShops(ctx, data, metrics = null, filters = {}) {
         ${q || subStatus ? `<a class="btn alt sm" href="/platform">Xoá lọc</a>` : ''}
       </form>
       <div class="actions" style="flex-wrap:wrap;margin-bottom:10px">${chips}</div>
-      ${shops.length ? `<table><thead><tr><th>Cửa hàng</th><th>Trạng thái</th><th>Gói</th><th class="right">Đã thu</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="actions" style="flex-wrap:wrap;margin-bottom:10px">
+        <a class="btn sm ${activity === 'noproduct' ? '' : 'alt'}" href="${esc(linkTo({ activity: activity === 'noproduct' ? '' : 'noproduct' }))}"
+           title="Nhóm cần gọi điện giúp: đã mở shop nhưng chưa đăng sản phẩm nào">⚠ Chưa có sản phẩm</a>
+      </div>
+      ${shops.length ? `<table><thead><tr><th>Cửa hàng</th><th>Trạng thái</th><th>Gói</th><th>Hàng hoá</th><th class="right">Đã thu</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table>
       <p class="muted" style="margin-top:10px">${esc(shops.length)} / ${esc(total)} cửa hàng${q ? ` khớp “${esc(q)}”` : ''}.</p>${pager}`
       : `<p class="muted">${q || subStatus ? 'Không có cửa hàng nào khớp bộ lọc.' : 'Chưa có cửa hàng nào. Bấm “Tạo cửa hàng”.'}</p>`}</div>`);
 }

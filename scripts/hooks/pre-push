@@ -16,6 +16,10 @@
 #   git push --no-verify
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)" || exit 0
+# NGUỒN CHUNG số lượng bộ test (cùng chỗ với ci.yml và ci-local.sh). Trước đây dòng nhắc dưới
+# ghi cứng "80 bộ e2e" trong khi thực tế 84 — vô hại về hành vi, nhưng đó là LỜI NÓI SAI với
+# người đọc, và mọi con số lệch đều bắt đầu đúng như vậy.
+. scripts/test-manifest.sh 2>/dev/null || MANIFEST_E2E_COUNT='?'
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; BLD=$'\033[1m'; RST=$'\033[0m'
 printf '\n%s▶ pre-push: kiểm tra nhanh ở máy (~3 phút)%s\n' "$BLD" "$RST"
@@ -28,7 +32,7 @@ rc=$?
 
 if [ "$rc" -eq 0 ]; then
   printf '\n%s✓ Kiểm tra nhanh XANH — cho push.%s\n' "$GRN" "$RST"
-  printf '  %sLưu ý: --fast KHÔNG chạy 80 bộ e2e. Trước khi DEPLOY hãy chạy đủ:%s\n' "$YEL" "$RST"
+  printf '  %sLưu ý: --fast KHÔNG chạy %s bộ e2e. Trước khi DEPLOY hãy chạy đủ:%s\n' "$YEL" "$MANIFEST_E2E_COUNT" "$RST"
   printf '    bash scripts/ci-local.sh\n\n'
   exit 0
 fi

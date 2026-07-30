@@ -361,6 +361,22 @@ async function main() {
   r.body.includes(`<link rel="canonical" href="https://${A.host}/blog?page=2">`) ? ok('canonical /blog?page=2 chứa page=2') : bad('canonical blog trang 2 sai');
   r.body.includes('Bài số 0') ? ok('trang 2 hiện bài cũ nhất (Bài số 0)') : bad('phân trang blog sai nội dung');
   r.body.includes('blog-thumb') && r.body.includes(`/media-public/${FAKE_MEDIA}`) ? ok('danh sách blog hiện ảnh bìa thumbnail') : bad('thiếu cover thumb ở danh sách');
+  // Header mobile phải là MỘT HÀNG. Không đo được pixel trong e2e (không có trình duyệt), nên
+  // chốt bằng chính ba khai báo CSS quyết định điều đó — nếu ai gỡ, khẳng định này đỏ:
+  //  * flex:1 1 0 cho .brand — basis 0 mới ngăn xuống hàng. flex:1 1 auto KHÔNG đủ vì container
+  //    có flex-wrap:wrap thì trình duyệt quyết định xuống hàng TRƯỚC khi co, dựa trên basis;
+  //  * .hicons flex:0 0 auto — giỏ/tài khoản không nhường chỗ cho tên shop;
+  //  * min-height 56px trong media mobile — sàn 68px của desktop là trần thật, gom một hàng
+  //    rồi mà không hạ sàn thì header vẫn 69px.
+  const css = (await sf(A.host, '/')).body;
+  /\.brand\{order:1;margin-right:auto;flex:1 1 0;min-width:0\}/.test(css)
+    ? ok('header mobile: .brand flex-basis 0 (ngăn cụm icon xuống hàng 2)')
+    : bad('mất flex:1 1 0 của .brand — header mobile sẽ tách 2 hàng lại');
+  /\.hicons\{order:2;flex:0 0 auto\}/.test(css)
+    ? ok('header mobile: cụm icon KHÔNG co') : bad('icon giỏ/tài khoản bị cho co');
+  /\.hdr \.wrap\{min-height:56px/.test(css)
+    ? ok('header mobile: sàn chiều cao 56px (desktop vẫn 68px)') : bad('mất sàn 56px cho mobile');
+
   // ?page KHỔNG LỒ: trang blog CÔNG KHAI, không cần đăng nhập. offset nội suy thẳng vào SQL
   // nên trước khi kẹp trần thì 1e20 > bigint → 'bigint out of range' → 500 mà BẤT KỲ AI trên
   // Internet cũng bắn được vào storefront của shop. Lưới sản phẩm đã kẹp từ đầu, blog quên.

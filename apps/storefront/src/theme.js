@@ -853,9 +853,33 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
    Icon giỏ/tài khoản/tìm kiếm LUÔN hiện (ngoài burger); dropdown "Sản phẩm" bung tĩnh (touch không hover). */
 @media(max-width:860px){
   .hdr .wrap{flex-wrap:wrap;row-gap:10px;gap:10px}
-  .navburger{display:inline-flex;order:0}
-  .brand{order:1;margin-right:auto}
-  .hicons{order:2}
+  /* Sàn chiều cao 68px là cỡ header DESKTOP. Trên mobile nó thành trần thật: gom về một hàng
+     rồi mà header vẫn 69px vì đụng sàn. Cụm icon cao 42px nên 56px vẫn thoáng, và đây là cỡ
+     thanh điều hướng quen thuộc trên điện thoại. Gap 18→12: thừa chỗ khi chỉ có 3 khối.
+     CHỈ đổi trong media mobile — desktop giữ nguyên 68px. */
+  .hdr .wrap{min-height:56px;gap:12px}
+  /* Giãn chữ .16em là dáng thương hiệu ở desktop; trên 375px nó ngốn ~2,7px mỗi ký tự, tức
+     ~38px cho một cái tên 14 chữ — đúng phần làm tên bị cắt đuôi. Hạ xuống .07em lấy lại chỗ
+     mà vẫn giữ chất chữ hoa giãn. */
+  .brand{letter-spacing:.07em}
+  .navburger{display:inline-flex;order:0;flex:0 0 auto}
+  /* MỘT HÀNG trên mobile: burger + tên shop + cụm icon.
+     Trước đây ba khối này tự xuống hai hàng và header cao 84px — trên màn 375×812 thì header
+     dính (84) + tab đáy (55) ăn 17% chiều cao, lúc nào cũng vậy, ở mọi trang. Nguyên nhân
+     KHÔNG phải thiếu chỗ thật sự mà là tên shop không chịu co: 40 + 187 + 134 + 2 khoảng cách
+     = 381px trên ~335px khả dụng, chỉ vượt 46px nên cụm icon bị đẩy xuống.
+     flex:1 1 0 chứ KHÔNG phải 1 1 auto — chỗ này dễ sai và tôi đã sai một lần: trong container
+     có flex-wrap:wrap, trình duyệt quyết định XUỐNG HÀNG TRƯỚC rồi mới co. Quyết định đó dựa
+     trên flex-basis, mà 'auto' = bề rộng nội dung (195px) ⇒ tổng vẫn vượt ⇒ icon vẫn bị đẩy
+     xuống, cho phép co cũng vô ích. basis 0 làm hàng 1 chỉ còn 40+134+gap, chắc chắn vừa, rồi
+     brand nở ra chiếm phần trống còn lại. Không bỏ được flex-wrap vì .hnav cần flex-basis:100%
+     để chiếm trọn hàng riêng khi menu mở.
+     min-width:0 mở khoá co (mặc định min-width:auto = không co dưới nội dung); .brand vốn đã có
+     ellipsis nên tên dài chỉ cắt đuôi.
+     Icon KHÔNG co (flex:0 0 auto) — giỏ hàng và tài khoản là đường ra tiền, không nhường chỗ
+     cho một cái tên. */
+  .brand{order:1;margin-right:auto;flex:1 1 0;min-width:0}
+  .hicons{order:2;flex:0 0 auto}
   .hnav{order:3;display:none;flex-basis:100%;flex-direction:column;align-items:stretch;gap:0;padding:4px 0 8px;margin:0;background:var(--color-bg);border-top:1px solid var(--color-border)}
   .hnav>a,.hnav-trig{padding:12px 2px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 60%,transparent)}
   .navtoggle:checked~.hnav{display:flex}

@@ -64,7 +64,6 @@ export const PRESETS = {
       { section: 'category_bar', props: {} },
       { section: 'product_grid', props: { title: 'Hàng mới về', columns: 4, limit: 8 } },
       { section: 'category_rows', props: {} },
-      { section: 'collections', props: { title: 'Khám phá bộ sưu tập' } },
       { section: 'story', props: {
         title: 'Thời trang là ngôn ngữ của sự tự tin',
         body: 'Chúng tôi tin mỗi bộ trang phục là một tuyên ngôn. Từ khâu chọn vải đến từng đường kim mũi chỉ, mọi thiết kế đều hướng tới sự tối giản tinh tế — bền đẹp theo thời gian thay vì chạy theo mùa vụ. Đó là cách chúng tôi đồng hành cùng phong cách của bạn, mỗi ngày.',
@@ -122,7 +121,6 @@ export const PRESETS = {
       { section: 'category_bar', props: {} },
       { section: 'product_grid', props: { title: 'Ưu đãi hôm nay', columns: 4, limit: 8 } },
       { section: 'category_rows', props: {} },
-      { section: 'collections', props: { title: 'Mua theo nhóm hàng' } },
       { section: 'story', props: {} },
       { section: 'features', props: { items: [
         { title: 'Tươi mỗi ngày', desc: 'Nhập hàng từ sáng sớm, chọn lọc kỹ, không để tồn quá 24 giờ.' },
@@ -177,7 +175,6 @@ export const PRESETS = {
       { section: 'category_bar', props: {} },
       { section: 'product_grid', props: { title: 'Mẫu mới về', columns: 4, limit: 8 } },
       { section: 'category_rows', props: {} },
-      { section: 'collections', props: { title: 'Khám phá không gian' } },
       { section: 'story', props: {} },
       { section: 'features', props: { items: [
         { title: 'Giao lắp tận nơi', desc: 'Kỹ thuật tư vấn, vận chuyển và lắp đặt tận nhà trên toàn quốc.' },
@@ -233,7 +230,6 @@ export const PRESETS = {
       { section: 'category_bar', props: {} },
       { section: 'product_grid', props: { title: 'Sản phẩm bán chạy', columns: 5 } },
       { section: 'category_rows', props: {} },
-      { section: 'collections', props: { title: 'Danh mục làm đẹp' } },
       { section: 'story', props: {} },
       { section: 'features', props: { items: [
         { title: '100% chính hãng', desc: 'Cam kết hàng thật, đầy đủ tem phụ và nguồn gốc rõ ràng.' },

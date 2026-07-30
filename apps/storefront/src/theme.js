@@ -377,6 +377,10 @@ const SECTIONS = {
     const burger = `<label for="navtoggle" class="navburger" aria-hidden="true">☰</label>`;
     const brandHtml = `<a href="/" class="brand">${ctx.shop.logo_url ? `<img src="${esc(ctx.shop.logo_url)}" alt="${esc(ctx.shop.name)}" class="brand-logo">` : esc(ctx.shop.name)}</a>`;
     const navHtml = `<nav class="hnav">
+      <form class="hnav-search" method="GET" action="/search" role="search">
+        <input name="q" value="${esc(ctx.query ?? '')}" placeholder="Tìm sản phẩm…" aria-label="Tìm sản phẩm">
+        <button type="submit" aria-label="Tìm">${I_SEARCH}</button>
+      </form>
       <a href="/">Trang chủ</a>
       ${productMenu}
       ${aboutLink}
@@ -837,6 +841,9 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .hicon .i svg{width:21px;height:21px}
 .cart-badge{position:absolute;top:3px;right:3px;min-width:18px;height:18px;padding:0 5px;border-radius:var(--pill);background:var(--color-primary);color:#fff;font-size:.66rem;font-weight:800;line-height:18px;text-align:center;font-variant-numeric:tabular-nums;box-shadow:0 0 0 2px var(--color-bg)}
 .cart-badge[hidden]{display:none}
+/* Ô tìm trong NGĂN KÉO burger — chỉ dùng ở mobile (xem media ≤860px). Ẩn mặc định để
+   desktop giữ nguyên icon-thả-xuống. */
+.hnav-search{display:none}
 /* Tìm kiếm reveal (checkbox + :checked ~ .hsearch — no-JS, như hamburger). */
 .hsearch-wrap{position:relative}
 .hsearch{position:absolute;top:calc(100% + 10px);right:0;display:none;align-items:center;gap:4px;background:var(--color-bg);border:1px solid var(--color-border);border-radius:var(--pill);padding:4px 4px 4px 8px;box-shadow:var(--sh-lg);z-index:30}
@@ -858,6 +865,22 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
      thanh điều hướng quen thuộc trên điện thoại. Gap 18→12: thừa chỗ khi chỉ có 3 khối.
      CHỈ đổi trong media mobile — desktop giữ nguyên 68px. */
   .hdr .wrap{min-height:56px;gap:12px}
+  /* TÌM KIẾM RỜI KHỎI HEADER trên mobile. 375px không đủ cho burger + tên shop + 3 icon: tên
+     shop chỉ còn 129px ≈ 8 ký tự, nên "Sofa Ngọc Việt" hay "Thời Trang Cao Cấp" đều bị cắt
+     đuôi ở MỌI trang. Bỏ icon tìm trả lại 46px cho tên — thứ khách nhìn để biết mình đang ở
+     đâu, và là thứ shop trả tiền để được nhìn thấy.
+     ĐỔI LẠI KHÔNG PHẢI MẤT: trong ngăn kéo là Ô NHẬP THẬT chứ không phải cái icon. Trước đây
+     tìm kiếm ở mobile là HAI chạm (icon → hiện ô); nay mở burger là gõ được ngay, vẫn hai chạm
+     nhưng chạm đầu tiên còn mở ra cả menu. Không dùng JS: form GET thuần, no-JS chạy y nguyên.
+     Ô nằm ĐẦU ngăn kéo vì tìm kiếm là việc người ta mở menu để làm nhiều nhất. */
+  .hicons .hsearch-wrap{display:none}
+  .hnav-search{display:flex;gap:6px;align-items:center;padding:10px 0 12px;border-bottom:1px solid var(--color-border)}
+  .hnav-search input{flex:1 1 auto;min-width:0;padding:11px 14px;border:1px solid var(--color-border);
+    border-radius:var(--pill);font-size:1rem;font-family:inherit;background:var(--color-bg);color:var(--color-text)}
+  .hnav-search input:focus{outline:none;border-color:var(--color-primary)}
+  .hnav-search button{flex:0 0 auto;display:grid;place-items:center;width:44px;height:44px;border:0;
+    border-radius:50%;background:var(--color-primary);color:#fff;cursor:pointer}
+  .hnav-search svg{width:20px;height:20px}
   /* Giãn chữ .16em là dáng thương hiệu ở desktop; trên 375px nó ngốn ~2,7px mỗi ký tự, tức
      ~38px cho một cái tên 14 chữ — đúng phần làm tên bị cắt đuôi. Hạ xuống .07em lấy lại chỗ
      mà vẫn giữ chất chữ hoa giãn. */

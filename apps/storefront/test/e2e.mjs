@@ -376,6 +376,14 @@ async function main() {
     ? ok('header mobile: cụm icon KHÔNG co') : bad('icon giỏ/tài khoản bị cho co');
   /\.hdr \.wrap\{min-height:56px/.test(css)
     ? ok('header mobile: sàn chiều cao 56px (desktop vẫn 68px)') : bad('mất sàn 56px cho mobile');
+  // Tìm kiếm rời khỏi header mobile → vào ngăn kéo burger, dạng Ô NHẬP THẬT (không phải icon).
+  // Form GET thuần, no-JS chạy y nguyên. Ba thứ phải cùng đúng, thiếu một là hỏng:
+  /<form class="hnav-search" method="GET" action="\/search"/.test(css)
+    ? ok('ngăn kéo có ô tìm THẬT (form GET, no-JS)') : bad('thiếu ô tìm trong ngăn kéo burger');
+  /\.hicons \.hsearch-wrap\{display:none\}/.test(css)
+    ? ok('mobile: icon tìm rời khỏi header (trả 46px cho tên shop)') : bad('icon tìm vẫn chiếm chỗ ở header mobile');
+  css.includes('.hnav-search{display:none}')
+    ? ok('desktop: ô trong ngăn kéo vẫn ẩn (giữ nguyên icon thả-xuống)') : bad('ô ngăn kéo lọt ra desktop');
 
   // ?page KHỔNG LỒ: trang blog CÔNG KHAI, không cần đăng nhập. offset nội suy thẳng vào SQL
   // nên trước khi kẹp trần thì 1e20 > bigint → 'bigint out of range' → 500 mà BẤT KỲ AI trên

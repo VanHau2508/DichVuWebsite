@@ -315,6 +315,47 @@ function heroSplit(mainSlides, sideSlides) {
   </div></div></section>`;
 }
 
+// ── Kênh bán & mạng xã hội (footer + nút nổi) ────────────────────────────────
+// Chỉ nhận `kind` trong BẢNG NÀY. Đây là điểm mấu chốt về an toàn: người bán không
+// nhập được markup, icon, màu hay tên — chỉ chọn một khoá có sẵn, hệ thống tự dựng.
+// Tên kênh dùng chữ viết tắt 2 ký tự thay vì logo thương hiệu: logo là tài sản của
+// bên khác, nhúng vào hàng nghìn shop là chuyện pháp lý chứ không phải chuyện CSS.
+// FB/SP… đủ nhận ra, và `title`+aria-label mang tên đầy đủ cho người đọc màn hình.
+const CHANNELS = {
+  facebook: { name: 'Facebook', ini: 'FB', c: '#1877f2' },
+  instagram: { name: 'Instagram', ini: 'IG', c: '#e1306c' },
+  tiktok: { name: 'TikTok', ini: 'TT', c: '#111111' },
+  youtube: { name: 'YouTube', ini: 'YT', c: '#ff0000' },
+  zalo: { name: 'Zalo', ini: 'ZL', c: '#0068ff' },
+  messenger: { name: 'Messenger', ini: 'MS', c: '#0084ff' },
+  shopee: { name: 'Shopee', ini: 'SP', c: '#ee4d2d' },
+  lazada: { name: 'Lazada', ini: 'LZ', c: '#0f146d' },
+  tiki: { name: 'Tiki', ini: 'TK', c: '#1a94ff' },
+  sendo: { name: 'Sendo', ini: 'SD', c: '#d0021b' },
+  phone: { name: 'Gọi ngay', ini: 'ĐT', c: '' }, // c rỗng → dùng màu chủ đạo của shop
+};
+/** Một pill kênh: vòng tròn chữ viết tắt + tên. `extern` mở tab mới + noopener. */
+function channelPill(kind, url, cls) {
+  const m = CHANNELS[kind];
+  if (!m) return ''; // kind lạ (dữ liệu cũ / API thẳng) → bỏ, không render thô
+  const tel = url.startsWith('tel:');
+  const ext = /^https?:/i.test(url);
+  return `<a class="chn ${cls}" href="${esc(url)}"${m.c ? ` style="--c:${m.c}"` : ''}`
+    + `${ext ? ' target="_blank" rel="noopener nofollow"' : ''} title="${esc(m.name)}" aria-label="${esc(m.name)}">`
+    + `<span class="chn-i">${esc(m.ini)}</span><span class="chn-t">${esc(tel ? url.slice(4) : m.name)}</span></a>`;
+}
+const chList = (raw) => (Array.isArray(raw) ? raw : []).filter((x) => x && CHANNELS[x.kind] && typeof x.url === 'string' && x.url);
+function channelRow(raw, cls) {
+  const items = chList(raw);
+  return items.length ? `<div class="chn-row">${items.map((x) => channelPill(x.kind, x.url, cls)).join('')}</div>` : '';
+}
+/** Cụm nút liên hệ NỔI góc phải. Rỗng → không phát thẻ nào (không chiếm z-index vô ích). */
+function floatButtons(raw) {
+  const items = chList(raw).slice(0, 4);
+  return items.length
+    ? `<div class="fab" aria-label="Liên hệ nhanh">${items.map((x) => channelPill(x.kind, x.url, 'fab-b')).join('')}</div>` : '';
+}
+
 // ── section renderers (nhận dữ liệu ĐÃ đọc, escape khi render) ────────────────
 const SECTIONS = {
   // Thanh thông báo (props.topbar_text, sửa ở trang Giao diện; trống → câu mặc định an toàn
@@ -717,6 +758,15 @@ const SECTIONS = {
   // (trang CMS trong menu — giữ nguyên đường /pages/:slug cho test + SEO).
   footer: (props, ctx) => {
     const s = ctx.shop;
+    // Cấu hình kênh nằm ở props section footer trong layout. Nhưng SÁU trang (SP, giỏ,
+    // blog, tra cứu…) gọi SECTIONS.footer({}, ctx) với props RỖNG — chỉ trang chủ đi qua
+    // layout. Nếu chỉ đọc props thì kênh biến mất ở mọi trang trừ trang chủ. Nên tự tra
+    // lại section của chính mình trong layout khi props không mang cấu hình.
+    const cfg = (props && (props.social || props.float)) ? props
+      : ((Array.isArray(ctx.theme?.layout) ? ctx.theme.layout : [])
+        .find((x) => x && x.section === 'footer')?.props ?? {});
+    const social = channelRow(cfg.social, 'ftr-chn');
+    const floats = floatButtons(cfg.float);
     const cats = (Array.isArray(ctx.categories) ? ctx.categories : []).slice(0, 4)
       .map((c) => `<a href="/products?cat=${esc(c.slug)}">${esc(c.name)}</a>`).join('');
     const shopCol = (cats || ctx.hasBlog)
@@ -735,11 +785,12 @@ const SECTIONS = {
           <div class="ftr-brand">${esc(ctx.shop.name)}</div>
           ${bits.length ? `<div class="ftr-contact">${bits.join('<br>')}</div>` : ''}
           <div class="badges"><span>${I_TRUCK}Giao toàn quốc</span><span>${I_SHIELD}COD · QR</span></div>
+          ${social}
         </div>
         ${shopCol}${helpCol}${menuCol}
       </div>
       <div class="copy">© ${esc(ctx.shop.name)}</div>
-    </div></footer>`;
+    </div></footer>${floats}`;
   },
 };
 
@@ -1401,6 +1452,31 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
 .ftr-contact{font-size:.85rem;color:var(--color-muted);margin:0 0 14px;line-height:1.7}
 .ftr .badges{display:flex;gap:18px;flex-wrap:wrap}.ftr .badges span{display:inline-flex;align-items:center;gap:6px}.ftr .badges svg{width:16px;height:16px;color:var(--color-primary)}
 .ftr .copy{margin-top:30px;padding-top:18px;border-top:1px solid var(--color-border);font-size:.84rem}
+/* ── Kênh bán & mạng xã hội ───────────────────────────────────────────────────
+   Một kiểu pill dùng cho CẢ hai chỗ (footer + nút nổi) — khác nhau chỉ ở lớp phụ.
+   --c là màu thương hiệu của kênh, do server đặt inline từ bảng CHANNELS; kênh
+   không có màu riêng (Gọi ngay) rơi về màu chủ đạo của shop. */
+.chn-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.chn{--c:var(--color-primary);display:inline-flex;align-items:center;gap:8px;padding:6px 12px 6px 6px;border-radius:999px;
+  border:1px solid var(--color-border);background:var(--color-bg);color:var(--color-text);font-size:.82rem;font-weight:600;
+  text-decoration:none;transition:border-color .15s,box-shadow .15s,transform .15s}
+.chn:hover{border-color:var(--c);box-shadow:0 2px 10px color-mix(in srgb,var(--c) 26%,transparent);color:var(--c)}
+.chn-i{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;flex:0 0 26px;border-radius:999px;
+  background:var(--c);color:#fff;font-size:.66rem;font-weight:800;letter-spacing:.02em}
+/* Nút NỔI: cùng pill, neo cố định góc phải. z-index 45 — TRÊN nội dung nhưng DƯỚI
+   lightbox(50)/thanh mua(55)/tabbar(60)/drawer(70) để không bao giờ che một lớp phủ. */
+.fab{position:fixed;right:14px;bottom:16px;z-index:45;display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.fab .chn{background:var(--color-bg);box-shadow:0 4px 16px rgba(0,0,0,.16);border-color:transparent;padding:7px 14px 7px 7px}
+.fab .chn:hover{transform:translateY(-1px)}
+@media(max-width:720px){
+  /* Trên mobile chỉ còn vòng tròn: pill đầy đủ ăn ngang màn hình và đè lên nội dung. */
+  .fab{right:10px;bottom:70px;gap:10px}
+  .fab .chn{padding:8px}
+  .fab .chn-t{display:none}
+  .fab .chn-i{width:34px;height:34px;flex-basis:34px;font-size:.72rem}
+  /* Trang SP có thanh mua dính đáy (cao ~64px) → đẩy cụm nút lên khỏi nó. */
+  body.has-buybar .fab{bottom:84px}
+}
 @media(max-width:900px){.ftr-grid{grid-template-columns:1fr 1fr}.ftr-about{grid-column:1/-1}}
 @media(max-width:480px){.ftr-grid{grid-template-columns:1fr}}
 .center-msg{max-width:520px;margin:80px auto;text-align:center;padding:0 20px}.center-msg h1{font-size:1.8rem;margin:0 0 10px;font-weight:800;letter-spacing:-.02em}.center-msg p{color:var(--color-muted)}

@@ -2378,6 +2378,21 @@ async function themeSave(req, res, me, cookie, shopId) {
       if (label && url) navLinks.push({ label, url }); // bỏ hàng thiếu nhãn hoặc URL
     }
     if (navLinks.length) head.props.nav_links = navLinks; else delete head.props.nav_links;
+    // Kênh bán & mạng xã hội (footer). MỘT bảng nhập → HAI prop: social (chân trang) và
+    // float (nút nổi, chỉ dòng có tick). Không tick dòng nào thì float bị XOÁ hẳn — nếu
+    // dùng setOrDel với mảng rỗng, `[]` là truthy nên prop sẽ ở lại và storefront phải
+    // đoán. Seller re-sanitize kind theo whitelist + dựng tel: cho kênh Gọi ngay.
+    const foot = findOrInsert('footer', null);
+    const social = [], float = [];
+    for (let i = 0; i < 6; i++) {
+      const kind = String(f[`ch_kind_${i}`] ?? '').trim();
+      const url = String(f[`ch_url_${i}`] ?? '').trim().slice(0, 300);
+      if (!kind || !url) continue;
+      social.push({ kind, url });
+      if (f[`ch_float_${i}`]) float.push({ kind, url });
+    }
+    if (social.length) foot.props.social = social; else delete foot.props.social;
+    if (float.length) foot.props.float = float; else delete foot.props.float;
     const hero = findOrInsert('hero', 'header');
     setOrDel(hero.props, 'eyebrow', String(f.hero_eyebrow ?? '').trim().slice(0, 60));
     setOrDel(hero.props, 'title', String(f.hero_title ?? '').trim().slice(0, 120));

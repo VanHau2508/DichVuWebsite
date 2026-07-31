@@ -84,6 +84,47 @@ function sanitizeHeaderNav(layout) {
   }
 }
 
+// ── Kênh bán & mạng xã hội trên footer ───────────────────────────────────────
+// props.social = danh sách hiện ở footer, props.float = nút liên hệ nổi. Mỗi mục
+// {kind, url}. `kind` phải nằm trong WHITELIST — storefront tra bảng để lấy tên/màu/
+// icon, nên kind lạ không render được gì; chặn ở đây để dữ liệu bẩn không vào DB.
+// Trùng kind bị loại: một shop có MỘT trang Facebook, hai mục chỉ là lỗi nhập.
+const CHANNEL_KINDS = new Set(['facebook', 'instagram', 'tiktok', 'youtube', 'zalo',
+  'messenger', 'shopee', 'lazada', 'tiki', 'sendo', 'phone']);
+const MAX_SOCIAL = 8, MAX_FLOAT = 4;
+function sanitizeChannels(raw, max) {
+  if (!Array.isArray(raw)) return [];
+  const out = [], seen = new Set();
+  for (const it of raw) {
+    if (!it || typeof it !== 'object') continue;
+    const kind = clampStr(it.kind, 20).toLowerCase();
+    if (!CHANNEL_KINDS.has(kind) || seen.has(kind)) continue;
+    let url;
+    if (kind === 'phone') {
+      // Người bán nhập SỐ, không nhập URL — tự dựng tel:. safeLink cố tình không cho
+      // tel: (nó dành cho link điều hướng); ở đây ta biết chắc ngữ nghĩa nên dựng tay,
+      // và chỉ giữ chữ số với dấu + để không nhét được gì khác vào href.
+      const digits = clampStr(it.url, 24).replace(/[^\d+]/g, '');
+      url = digits.replace(/\D/g, '').length >= 8 ? `tel:${digits}` : '';
+    } else url = safeLink(it.url);
+    if (!url) continue;
+    seen.add(kind);
+    out.push({ kind, url });
+    if (out.length >= max) break;
+  }
+  return out;
+}
+function sanitizeFooterChannels(layout) {
+  if (!Array.isArray(layout)) return;
+  const f = layout.find((s) => s && typeof s === 'object' && s.section === 'footer');
+  if (!f || !f.props || typeof f.props !== 'object') return;
+  for (const [key, max] of [['social', MAX_SOCIAL], ['float', MAX_FLOAT]]) {
+    if (f.props[key] === undefined) continue;
+    const v = sanitizeChannels(f.props[key], max);
+    if (v.length) f.props[key] = v; else delete f.props[key];
+  }
+}
+
 // Đi qua layout, tìm MỌI section có props.slides → validate. Sai key → trả chuỗi lỗi;
 // hợp lệ → thay bằng bản đã chuẩn hoá (rỗng → xoá prop). Mutate layout tại chỗ.
 function validateBannerInLayout(layout, shopId) {
@@ -121,6 +162,7 @@ async function putTheme(res, ctx, body) {
     const bannerErr = validateBannerInLayout(layout, ctx.shopId);
     if (bannerErr) return send(res, 400, { error: bannerErr });
     sanitizeHeaderNav(layout); // menu "Sản phẩm": ép bool toggle + lọc nav_links (Phase 5b)
+    sanitizeFooterChannels(layout); // kênh bán/mạng xã hội footer + nút nổi: kind whitelist
   }
   await withTenant(ctx.shopId, async (c) => {
     await c.query(

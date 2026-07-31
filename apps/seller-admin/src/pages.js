@@ -347,6 +347,16 @@ export const THEME_FEATURE_DEFAULTS = [
   { icon: 'wallet', title: 'Thanh toán an toàn', desc: 'COD khi nhận hàng hoặc chuyển khoản QR tiện lợi.' },
 ];
 
+// Kênh bán & mạng xã hội hiện ở chân trang. PHẢI khớp CHANNEL_KINDS ở apps/seller
+// (nơi cưỡng chế) và bảng CHANNELS ở storefront (nơi có tên/màu). Ba nơi vì ba
+// service không chia sẻ mã; seller là nơi CHẶN, hai nơi kia chỉ là bày ra.
+export const CHANNEL_OPTIONS = [
+  ['facebook', 'Facebook'], ['instagram', 'Instagram'], ['tiktok', 'TikTok'],
+  ['youtube', 'YouTube'], ['zalo', 'Zalo'], ['messenger', 'Messenger'],
+  ['shopee', 'Shopee'], ['lazada', 'Lazada'], ['tiki', 'Tiki'], ['sendo', 'Sendo'],
+  ['phone', 'Gọi ngay (điện thoại)'],
+];
+
 // Icon nội tuyến (markup → hợp CSP, không tải resource ngoài).
 const ic = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
 const PAYMENT_LABEL = { unpaid: 'Chưa thu tiền', pending: 'Chờ đối soát', paid: 'Đã thu tiền', refunded: 'Đã hoàn tiền' };
@@ -723,6 +733,28 @@ export function renderTheme(ctx, theme, notice, linkTargets = {}) {
     <label style="margin-top:10px;display:block">Liên kết tuỳ chỉnh (tối đa ${NAV_ROWS})</label>
     ${navRows}
   </div>`;
+  // Kênh bán & mạng xã hội. MỘT bảng cho cả hai chỗ hiện: mỗi dòng là một kênh, tick
+  // "nút nổi" thì kênh đó thêm một nút ở góc phải màn hình. Hai danh sách riêng sẽ bắt
+  // chủ shop nhập link Zalo hai lần — cùng một thông tin, hai chỗ, chắc chắn lệch nhau.
+  const ftrProps = sectionProps(theme?.layout, 'footer');
+  const chSaved = Array.isArray(ftrProps.social) ? ftrProps.social : [];
+  const chFloat = new Set((Array.isArray(ftrProps.float) ? ftrProps.float : []).map((x) => x && x.kind));
+  const CH_ROWS = 6;
+  const chRows = Array.from({ length: CH_ROWS }, (_, i) => {
+    const c = chSaved[i] ?? {};
+    const val = c.kind === 'phone' && typeof c.url === 'string' ? c.url.replace(/^tel:/, '') : (c.url ?? '');
+    return `<div style="display:flex;gap:8px;align-items:center;padding:5px 0;flex-wrap:wrap">
+      <select name="ch_kind_${i}" style="flex:0 0 150px"><option value="">— Chọn kênh —</option>${
+  CHANNEL_OPTIONS.map(([k, n]) => `<option value="${esc(k)}"${c.kind === k ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>
+      <input name="ch_url_${i}" maxlength="300" value="${esc(val)}" placeholder="https://facebook.com/… (kênh Gọi ngay: nhập số điện thoại)" style="flex:1 1 260px">
+      <label class="muted" style="font-size:.85rem;display:inline-flex;align-items:center;gap:6px;white-space:nowrap">
+        <input type="checkbox" name="ch_float_${i}" value="1"${c.kind && chFloat.has(c.kind) ? ' checked' : ''} style="width:auto"> Nút nổi</label>
+    </div>`;
+  }).join('');
+  const channelCard = `<div class="card"><h2 style="margin-top:0">Kênh bán &amp; mạng xã hội</h2>
+    <p class="muted" style="font-size:.85rem;margin-top:0">Hiện ở chân trang mọi trang. Tick <strong>Nút nổi</strong> để kênh đó thêm một nút ở góc phải màn hình cho khách bấm liên hệ nhanh (tối đa 4). Mỗi kênh chỉ nhập MỘT lần; dòng thiếu kênh hoặc thiếu địa chỉ sẽ bị bỏ qua.</p>
+    ${chRows}
+  </div>`;
   const bannerForm = `<form method="POST" action="/shops/${esc(ctx.shopId)}/theme/banner" enctype="multipart/form-data" style="margin-top:16px">
     <div class="card"><h2 style="margin-top:0">Banner trang chủ (ảnh tự tải)</h2>
       <p class="muted" style="font-size:.85rem;margin:0">Tải tối đa ${BANNER_ROWS} ảnh banner riêng cho dải đầu trang. <strong>Có ít nhất 1 banner → thay carousel tự động</strong> (ảnh phủ kín + chữ + nút). Bỏ trống tất cả = dùng hero tự động (chữ + ảnh sản phẩm). <strong>Ảnh NGANG tỉ lệ ~2:1</strong> (vd 1600×760px) hiển thị đẹp nhất; tỉ lệ khác vẫn hiện ĐỦ (hệ thống tự lấp nền mờ, không cắt). Ảnh nén WebP, tối đa 10MB mỗi ảnh.</p>
@@ -816,6 +848,7 @@ export function renderTheme(ctx, theme, notice, linkTargets = {}) {
         <p class="muted" style="font-size:.85rem;margin-bottom:0">Để trống = dùng câu mặc định. Chỉ hứa điều shop làm được (phí ship, đổi trả…).</p>
       </div>
       ${navMenuCard}
+      ${channelCard}
       <div class="card"><h2 style="margin-top:0">Nội dung trang chủ (dải hero)</h2>
         <p class="muted" style="font-size:.85rem;margin-top:0">Banner đầu trang tự chuyển tối đa 3 cảnh: cảnh 1 là nội dung dưới đây, cảnh 2-3 lấy tự động từ sản phẩm có ảnh của shop.</p>
         <label>Dòng nhãn nhỏ</label><input name="hero_eyebrow" maxlength="60" value="${esc(hero.eyebrow ?? '')}" placeholder="Cửa hàng chính thức">

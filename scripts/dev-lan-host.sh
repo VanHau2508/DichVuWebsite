@@ -4,6 +4,7 @@
 #   bash scripts/dev-lan-host.sh                     # tự dò IP LAN, đổi các shop mặc định
 #   bash scripts/dev-lan-host.sh 192.168.2.38        # chỉ định IP
 #   bash scripts/dev-lan-host.sh auto shop-a shop-b  # chỉ định thêm shop (auto = tự dò IP)
+#   bash scripts/dev-lan-host.sh --check             # IP hiện tại có khớp hostname không
 #   bash scripts/dev-lan-host.sh --revert            # trả miền chính về *.nentang.vn
 #
 # DB dev có hơn 5000 shop rác từ test nên KHÔNG quét cả bảng — chỉ đúng danh sách.
@@ -24,6 +25,27 @@ cd "$(dirname "$0")/.."
 
 DEFAULT_SLUGS=(demo-fashion demo-food demo-furniture demo-cosmetics nha-xinh-1nh1va)
 PSQL=(docker compose -f infra/compose.dev.yml exec -T postgres psql -U app_owner -d app -v ON_ERROR_STOP=1 -qtA)
+
+# IPv4 riêng đầu tiên, bỏ loopback/APIPA/vEthernet của Docker-WSL.
+detect_ip() {
+  powershell.exe -NoProfile -Command \
+    "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { \$_.InterfaceAlias -notlike '*WSL*' -and \$_.IPAddress -notlike '127.*' -and \$_.IPAddress -notlike '169.254.*' } | Select-Object -First 1 -ExpandProperty IPAddress)" \
+    | tr -d '\r\n '
+}
+
+# --check: IP Wi-Fi đổi theo DHCP là chuyện thường (3 lần trong một ngày, đã đo).
+# Khi đổi thì MỌI link nip.io chết theo kiểu `000` — trông y hệt Caddy/storefront
+# hỏng, và đã tốn một vòng chẩn đoán dù bẫy này do chính tôi ghi ra. Để máy nhắc.
+if [ "${1:-}" = "--check" ]; then
+  cur=$(detect_ip); [ -n "$cur" ] || exit 0
+  have=$("${PSQL[@]}" -c \
+    "SELECT DISTINCT split_part(hostname, '.', 2) FROM domains WHERE hostname LIKE '%.nip.io'" 2>/dev/null | tr -d '\r')
+  [ -n "$have" ] || exit 0                       # chưa gắn hostname LAN nào → không có gì để lệch
+  if printf '%s\n' "$have" | grep -qx "${cur//./-}"; then exit 0; fi
+  echo "IP LAN đổi: hostname đang trỏ $(printf '%s' "$have" | tr '\n' ',' | tr -- '-' '.') — máy giờ là $cur"
+  echo "→ link nip.io sẽ chết (curl trả 000). Gắn lại:  bash scripts/dev-lan-host.sh"
+  exit 1
+fi
 
 if [ "${1:-}" = "--revert" ]; then
   # Lấy lại danh sách từ chính các alias đang tồn tại → revert đúng cả shop
@@ -50,12 +72,7 @@ for s in "${SLUGS[@]}"; do
   LIST="$LIST${LIST:+,}'$s'"
 done
 
-if [ -z "$IP" ]; then
-  # Địa chỉ IPv4 riêng đầu tiên không phải loopback/APIPA/vEthernet của Docker-WSL.
-  IP=$(powershell.exe -NoProfile -Command \
-    "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { \$_.InterfaceAlias -notlike '*WSL*' -and \$_.IPAddress -notlike '127.*' -and \$_.IPAddress -notlike '169.254.*' } | Select-Object -First 1 -ExpandProperty IPAddress)" \
-    | tr -d '\r\n ')
-fi
+[ -n "$IP" ] || IP=$(detect_ip)
 [ -n "$IP" ] || { echo "Không dò được IP LAN. Truyền tay: bash scripts/dev-lan-host.sh 192.168.x.y" >&2; exit 1; }
 
 DASH="${IP//./-}"

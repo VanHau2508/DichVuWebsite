@@ -140,6 +140,10 @@ fi
 # "digest đơn ứ" đỏ ở đây trong khi chạy riêng bộ đó xanh. Mất một lượt 45 phút.
 #
 # In ở CUỐI, sau kết luận: đây là chỗ người ta thực sự đọc.
+# IP LAN đổi theo DHCP → mọi link nip.io chết kiểu `000`, trông y hệt server hỏng.
+# In ngay cạnh cảnh báo phình: hai thứ hay cắn nhất sau một lượt chạy dài.
+bash scripts/dev-lan-host.sh --check 2>/dev/null | sed "s/^/${YLW}/;s/\$/${RST}/"
+
 DEV_SHOP_WARN=${DEV_SHOP_WARN:-2000}
 nshop=$($COMPOSE exec -T postgres psql -U app_owner -d app -qtA \
         -c 'SELECT count(*) FROM shops' 2>/dev/null | tr -d '\r ')

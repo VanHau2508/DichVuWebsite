@@ -55,6 +55,17 @@ done
 
 echo
 echo "${BLD}Dựng lại…${RST}"
+# CHỜ ENGINE. Chu kỳ down → up là lúc dễ mất Docker Desktop nhất (đã dính một lần:
+# engine chết ngay sau `down`, và lượt CI kế tiếp dừng ở tiền kiểm — may là nó từ
+# chối thẳng chứ không chạy rỗng rồi báo xanh). Không chờ thì `up -d` đổ ngay ở đây,
+# đúng lúc DB vừa bị xoá sạch — trạng thái tệ nhất để bỏ dở giữa chừng.
+for i in $(seq 1 30); do
+  docker info >/dev/null 2>&1 && break
+  [ "$i" = 1 ] && printf '  chờ Docker engine'
+  printf '.'; sleep 5
+  [ "$i" = 30 ] && { echo; echo "${RED}Docker engine không lên sau 150s. Bật Docker Desktop rồi chạy:${RST}"; \
+                     echo "  docker compose -f infra/compose.dev.yml up -d && docker compose -f infra/compose.dev.yml run --rm migrate"; exit 1; }
+done
 $DC up -d || exit 1
 $DC run --rm migrate 2>&1 | tail -3
 

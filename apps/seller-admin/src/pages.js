@@ -103,6 +103,17 @@ textarea{min-height:80px;resize:vertical}
 .badge.active{background:var(--goodbg);color:var(--good)}.badge.draft{background:var(--warnbg);color:var(--warn)}.badge.archived{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--soft)}.badge.published{background:var(--goodbg);color:var(--good)}
 .badge.onboarding{background:var(--wash);color:var(--prid)}.badge.suspended{background:var(--badbg);color:var(--bad)}.badge.closed{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--soft)}
 .muted{color:var(--mut)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
+/* Cụm thao tác đơn hàng chia theo VIỆC. Trước đây mọi nút nằm chung một hàng cuốn dòng
+   nên trông "nằm không đều" và không gợi ý cái nào dùng khi nào — mà một trong số đó
+   tiêu tiền thật. Mỗi nhóm: nhãn nhỏ in hoa + hàng nút + (tuỳ) một dòng giải thích.
+   align-items:flex-start để nút có ô nhập kèm (lý do huỷ, tick nhập-lại-kho) không kéo
+   giãn các nút trơn cùng hàng — đó chính là thứ làm cụm cũ so le. */
+.actgrp{border-top:1px solid var(--bd);margin-top:14px;padding-top:10px}
+.actgrp:first-of-type{border-top:0;margin-top:10px;padding-top:0}
+.actgrp-l{display:block;font-size:.72rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
+.actgrp .actions{margin-top:8px;align-items:flex-start}
+.actgrp .actions form{display:flex;flex-direction:column;gap:6px}
+.actgrp-h{font-size:.82rem;margin:8px 0 0;line-height:1.5}
 .filters{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.filters>div{flex:0 0 auto}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}@media(max-width:560px){.grid2{grid-template-columns:1fr}}
 .inline{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}.inline input{width:auto}
@@ -1990,14 +2001,18 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
        </div>`
     : `<label style="display:block;font-size:.82rem;margin-bottom:6px">Lý do huỷ (tuỳ chọn — gửi cho khách)
          <input name="reason" maxlength="500" placeholder="vd: khách đổi ý"></label>`;
-  let actions = '';
-  if (o.status === 'pending') actions = act('confirm', 'Xác nhận đơn') + act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra);
-  else if (o.status === 'confirmed') actions = act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra);
-  else if (o.status === 'shipped' && o.fulfillment_status === 'fulfilled') actions = act('deliver', 'Đã giao xong');
+  // TÁCH THEO VIỆC, không rải ngang một hàng. Người bán báo cụm nút "nằm không đều,
+  // rối, không hiểu mục đích". Gốc rễ: nút xử-lý-đơn, nút tiền, nút sửa/trả và nút huỷ
+  // đứng chung một dòng nên không có gì gợi ý cái nào dùng khi nào — mà chúng thuộc ba
+  // nhóm việc khác hẳn nhau, và một trong số đó tiêu tiền thật.
+  let flowActions = '', cancelAction = '';
+  if (o.status === 'pending') { flowActions = act('confirm', 'Xác nhận đơn'); cancelAction = act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra); }
+  else if (o.status === 'confirmed') cancelAction = act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra);
+  else if (o.status === 'shipped' && o.fulfillment_status === 'fulfilled') flowActions = act('deliver', 'Đã giao xong');
   // BOM HÀNG / HOÀN VỀ (audit #58): đơn ĐANG GIAO khách không nhận → hàng về. Restock phần đã gửi +
   // nhả reserve phần chưa gửi (đơn tách bỏ dở) → tồn sạch. Hiện cho MỌI đơn shipped (đủ/một-phần).
   if (o.status === 'shipped' && ['owner', 'admin'].includes(ctx.role)) {
-    actions += act('mark-returned', '↩ Bom hàng / Hoàn về', 'btn warn sm',
+    flowActions += act('mark-returned', '↩ Bom hàng / Hoàn về', 'btn warn sm',
       '<label style="display:block;font-size:.82rem;margin-bottom:6px"><input type="checkbox" name="restock" checked style="width:auto"> Nhập lại kho (bỏ tick nếu hàng hỏng)</label>');
   }
   // Card giao tay per-dòng: SL mặc định = còn lại; giảm để TÁCH kiện, gửi nốt sau. order_line_id[]
@@ -2098,6 +2113,22 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
         </tr>`).join('')}
       </tbody></table>
     </div>` : '';
+  // Cụm nút chia theo VIỆC, mỗi nhóm một hàng có nhãn. Nhóm rỗng thì biến mất hẳn —
+  // không để nhãn trơ không có nút nào bên dưới.
+  const grp = (label, html, hint = '') => (html
+    ? `<div class="actgrp"><span class="actgrp-l">${label}</span>
+         <div class="actions">${html}</div>${hint ? `<p class="muted actgrp-h">${hint}</p>` : ''}</div>`
+    : '');
+  // Hai nút TIỀN hay bị nhầm nhau — người bán đã hỏi thẳng "nút Hoàn tiền để làm gì".
+  // Chúng KHÁC nhau ở chỗ hàng có quay về hay không, nên nói đúng câu đó tại chỗ.
+  const moneyHint = (refundAction && returnAction)
+    ? '“Hoàn tiền” = trả tiền, hàng KHÔNG quay về (gồm cả phí ship). “Nhận trả hàng” = khách gửi hàng về, tự hoàn tiền hàng và nhập lại kho.'
+    : refundAction ? 'Hoàn tiền mà hàng không quay về — dùng cả khi cần trả lại phí ship.' : '';
+  const actionGroups = (grp('Xử lý đơn', flowActions)
+    + grp('Sửa đơn', editAction + editPaidAction)
+    + grp('Tiền', payAction + refundAction + returnAction, moneyHint)
+    + grp('Huỷ đơn', cancelAction)) || '<div class="actions"><span class="muted">Không có thao tác.</span></div>';
+
   // CÒN NỢ KHÁCH (0117): đơn đã huỷ mà khách đã trả tiền và chưa hoàn đủ. Treo băng đỏ
   // tới khi có phiếu hoàn bù đủ — khoản nợ phải nằm trong tầm mắt, không nằm trong trí nhớ.
   const owed = Number(o.total_vnd) - Number(o.refunded_total_vnd ?? 0);
@@ -2119,7 +2150,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     <div class="card"><span class="pill">${badge(o.status, STATUS[o.status] ?? o.status)}</span>
       <span class="pill">${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} ${esc(o.payment_method?.toUpperCase() ?? '')}</span>
       ${['confirmed', 'shipped'].includes(o.status) && ['partial', 'fulfilled'].includes(o.fulfillment_status) ? `<span class="pill">${badge(o.fulfillment_status === 'fulfilled' ? 'delivered' : 'shipped', o.fulfillment_status === 'fulfilled' ? 'Đã gửi đủ' : 'Giao một phần')}</span>` : ''}
-      <div class="actions">${(editAction + editPaidAction + actions + payAction + refundAction + returnAction) || '<span class="muted">Không có thao tác.</span>'}</div></div>
+      ${actionGroups}</div>
     ${o.status === 'returned' ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg)">
       <h2 style="margin-top:0">↩️ Đơn bị hoàn (bom hàng)</h2>
       <p class="muted" style="margin-bottom:0">Hãng vận chuyển báo hàng đang/đã hoàn về. Khi <strong>nhận lại hàng thực tế</strong>,

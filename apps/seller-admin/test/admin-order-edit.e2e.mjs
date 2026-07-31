@@ -200,6 +200,21 @@ async function main() {
   });
   (r.status === 403 && await lineQty(o1.orderId, vid) === 1) ? ok('POST /edit không Origin → 403, đơn giữ nguyên') : bad('edit thiếu Origin không bị chặn', `${r.status} db=${await lineQty(o1.orderId, vid)}`);
 
+  // ── Cụm thao tác chia theo VIỆC (khiếu nại: "nằm không đều, rối, không hiểu mục đích")
+  // Bất biến: mỗi nhóm nút PHẢI có nhãn, và KHÔNG có nhãn nào trơ không nút nào bên dưới.
+  // Nhãn trơ là cách hỏng dễ xảy ra nhất khi thêm điều kiện hiện/ẩn nút về sau.
+  r = await adm('GET', durl, { cookie: cookieA });
+  // Cắt theo NHÃN chứ không cố khớp cặp <div> lồng nhau — regex không đếm được ngoặc,
+  // và bản đầu của chính ca này báo "1 nhóm rỗng" chỉ vì nhóm "Sửa đơn" dùng thẻ
+  // <a class="btn"> chứ không phải <button>. Chấp nhận CẢ HAI dạng nút.
+  const labels = [...r.body.matchAll(/<span class="actgrp-l">([^<]+)<\/span>/g)].map((m) => m[1]);
+  const chunks = r.body.split('<span class="actgrp-l">').slice(1)
+    .map((c) => c.split('<span class="actgrp-l">')[0]);
+  const emptyGroups = chunks.filter((c) => !/<button|<a class="btn/.test(c)).length;
+  labels.length >= 2 && emptyGroups === 0
+    ? ok(`cụm thao tác chia nhóm có nhãn (${labels.join(' · ')}), không nhóm rỗng`)
+    : bad('cụm thao tác không chia nhóm / có nhãn trơ', `nhãn=${labels.join(',')} rỗng=${emptyGroups}`);
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

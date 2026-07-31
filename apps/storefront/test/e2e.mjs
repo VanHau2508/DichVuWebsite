@@ -271,6 +271,46 @@ async function main() {
   pr.body.includes('Mua ngay') && pr.body.includes('name="buynow"') ? ok('nút "Mua ngay" (buynow)') : bad('thiếu Mua ngay');
   pr.body.includes('class="specs"') && pr.body.includes('Chất liệu') ? ok('bảng thông số hiển thị') : bad('thiếu specs');
   pr.body.includes('id="gsel-0"') || pr.body.includes('class="pd-media"') ? ok('khối gallery render') : bad('thiếu gallery');
+
+  // ── 6b. Gallery: mũi tên trái/phải + mô tả về cột phải ──────────────────────
+  // Chủ shop báo: ảnh chính chiếm nửa trang, thumbnail rơi xuống dòng, và mô tả nằm
+  // tít dưới đáy nên đọc giá xong là gặp khoảng trắng. Ba thứ này kiểm được ở HTML.
+  // Ảnh cắm thẳng bằng SQL: đường upload thật cần MinIO + sharp, không phải thứ ca
+  // này muốn kiểm — nó kiểm CÁCH DỰNG gallery khi đã có nhiều ảnh.
+  sect('6b. Mũi tên gallery + mô tả cột phải');
+  for (let i = 0; i < 3; i++) {
+    await owner.query(
+      `INSERT INTO media (shop_id, product_id, status, original_key, public_key, position)
+       VALUES ($1,$2,'ready',$3,$3,$4)`, [A.shopId, axPid, `${A.shopId}/ax-${i}.webp`, i]);
+  }
+  const longText = 'Thảm dệt thủ công, sợi dày, chống trượt. '.repeat(12); // > 320 ký tự → phải kẹp
+  await owner.query(`UPDATE products SET description = $2 WHERE id = $1`, [axPid, longText]);
+  pr = await sf(A.host, `/p/${axSlug}`);
+  const nThumb = (pr.body.match(/class="th t-\d+"/g) ?? []).length;
+  const nPrev = (pr.body.match(/class="pv n-\d+"/g) ?? []).length;
+  nThumb === 3 && nPrev === 3 ? ok('3 ảnh → 3 thumbnail + 3 cặp mũi tên') : bad('gallery sai số lượng', `thumb ${nThumb}, mũi tên ${nPrev}`);
+  // Vòng lại hai đầu: ảnh đầu lùi về ảnh cuối, ảnh cuối tiến về ảnh đầu.
+  /class="pv n-0" for="gsel-2"/.test(pr.body) && /class="nx n-2" for="gsel-0"/.test(pr.body)
+    ? ok('mũi tên vòng lại hai đầu (0←→2)') : bad('mũi tên không vòng lại');
+  // Mô tả phải nằm TRONG cột phải (.pd-info), tức sau .pd-info và trước khi lưới đóng.
+  // Cắt bỏ khối <style> trước khi đo — trong CSS cũng có chuỗi .pd-desc.
+  const bodyOnly = pr.body.slice(pr.body.indexOf('</style>'));
+  const iInfo = bodyOnly.indexOf('class="pd-info"'), iDesc = bodyOnly.indexOf('class="pd-desc"');
+  // Đo ĐỘ SÂU <div>, không đo thứ tự. Bản đầu chỉ so vị trí pd-info < pd-desc < pd-block —
+  // và đột biến "trả mô tả về dưới lưới" VẪN XANH, vì ở bố cục cũ mô tả cũng nằm giữa hai
+  // mốc đó. Đếm thẻ mở/đóng thì phân biệt được: đo thật cho 1 (còn trong pd-info) và
+  // −1 (pd-info + pd-grid đã đóng). Thẻ mở của chính pd-desc tính vào +1 nên mốc là > 0.
+  const seg = bodyOnly.slice(iInfo, iDesc);
+  const depth = (seg.match(/<div\b/g) ?? []).length - (seg.match(/<\/div>/g) ?? []).length;
+  iInfo > 0 && iDesc > iInfo && depth > 0 ? ok('mô tả nằm TRONG cột phải (.pd-info chưa đóng)') : bad('mô tả không ở cột phải', `độ sâu ${depth}`);
+  pr.body.includes('id="descmore"') && pr.body.includes('Xem thêm') && !/class="dsc open"/.test(pr.body)
+    ? ok('mô tả DÀI → kẹp lại + nút "Xem thêm"') : bad('mô tả dài không kẹp');
+  // Mô tả NGẮN thì hiện trọn, không có nút — bấm "Xem thêm" mà không thêm gì là tệ hơn.
+  await owner.query(`UPDATE products SET description = 'Thảm ngắn gọn.' WHERE id = $1`, [axPid]);
+  pr = await sf(A.host, `/p/${axSlug}`);
+  /class="dsc open"/.test(pr.body) && !pr.body.includes('id="descmore"')
+    ? ok('mô tả NGẮN → hiện trọn, không có nút thừa') : bad('mô tả ngắn vẫn bị kẹp');
+  await owner.query(`UPDATE products SET description = $2 WHERE id = $1`, [axPid, longText]);
   // ?variant= biến thể cuối → giá của nó (500000 + 3*10000 = 530.000) + chip đánh dấu.
   const lastV = vrows[vrows.length - 1].id;
   pr = await sf(A.host, `/p/${axSlug}?variant=${lastV}`);

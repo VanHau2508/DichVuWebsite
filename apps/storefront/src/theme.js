@@ -1349,12 +1349,17 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
 @media(max-width:560px){.card-meta{font-size:.72rem}}
 .pd{padding:28px 20px 52px}
 .crumb{font-size:.85rem;color:var(--color-muted);margin:0 0 20px}.crumb a:hover{color:var(--color-primary)}
-.pd-grid{display:grid;grid-template-columns:1fr 1fr;gap:44px;align-items:start}
-.pd-media{display:flex;flex-direction:column;gap:12px}
+/* Cột ảnh CHẶN TRẦN thay vì ăn nửa trang. Với 1fr 1fr, màn 1320px cho khung ảnh
+   vuông ~630px — to hơn cả màn hình điện thoại, và đẩy giá/nút mua xuống quá xa.
+   Trần 440px là cỡ các sàn (Shopee/Tiki) dùng: ảnh vẫn rõ, phần bán hàng lên cao. */
+.pd-grid{display:grid;grid-template-columns:minmax(0,440px) minmax(0,1fr);gap:40px;align-items:start}
+@media(max-width:1040px){.pd-grid{grid-template-columns:minmax(0,40%) minmax(0,1fr);gap:26px}}
+.pd-media{display:flex;flex-direction:column;gap:10px}
 .pd-media .main{aspect-ratio:1;background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--r-lg);overflow:hidden;display:flex;align-items:center;justify-content:center;color:#c4c8cf;box-shadow:var(--sh-sm)}
-.pd-media .main img{width:100%;height:100%;object-fit:cover}.pd-media .main svg{width:56px;height:56px}
-.pd-media .thumbs{display:flex;gap:10px;flex-wrap:wrap}
-.pd-media .thumbs img{width:74px;height:74px;object-fit:cover;border:1px solid var(--color-border);border-radius:10px}
+/* contain, KHÔNG cover: ảnh sản phẩm bị cắt là mất thông tin người mua cần thấy. */
+.pd-media .main img{width:100%;height:100%;object-fit:contain}.pd-media .main svg{width:56px;height:56px}
+.pd-media .thumbs{display:flex;gap:8px;flex-wrap:nowrap}
+.pd-media .thumbs img{object-fit:cover;border:1px solid var(--color-border);border-radius:10px}
 .pd-info h1{margin:0 0 12px;font-size:2rem;font-weight:800;letter-spacing:-.02em;line-height:1.18}
 .pd-info .price{font-size:1.8rem;font-weight:800;letter-spacing:-.02em;color:var(--color-primary);margin:0 0 20px;font-variant-numeric:tabular-nums}
 .pd-info .desc{color:color-mix(in srgb,var(--color-text) 72%,var(--color-bg));line-height:1.75;margin:0 0 24px;white-space:pre-line}
@@ -1405,9 +1410,20 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
 .pd-media .main{position:relative}
 .pd-media .stack{position:absolute;inset:0}
 .pd-media .slide{display:none;position:absolute;inset:0}
-.pd-media .slide img{width:100%;height:100%;object-fit:cover;cursor:zoom-in}
-${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{display:block}#gsel-${i}:checked~.thumbs .t-${i}{border-color:var(--color-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--color-primary) 30%,transparent)}`).join('')}
-.pd-media .thumbs .th{width:70px;height:70px;border:2px solid var(--color-border);border-radius:10px;overflow:hidden;cursor:pointer;padding:0;background:none;display:block;transition:border-color .15s,box-shadow .15s}
+.pd-media .slide img{width:100%;height:100%;object-fit:contain;cursor:zoom-in}
+${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{display:block}#gsel-${i}:checked~.main .nav .n-${i}{display:flex}#gsel-${i}:checked~.thumbs .t-${i}{border-color:var(--color-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--color-primary) 30%,transparent)}`).join('')}
+/* Thumbnail CO LẠI cho vừa MỘT hàng trong khung, không xuống dòng và không cuộn ngang:
+   flex:1 1 0 chia đều phần còn lại, max-width giữ chúng khỏi phình khi chỉ có 2-3 ảnh. */
+.pd-media .thumbs .th{flex:1 1 0;min-width:0;max-width:74px;width:auto;height:auto;aspect-ratio:1;border:2px solid var(--color-border);border-radius:10px;overflow:hidden;cursor:pointer;padding:0;background:none;display:block;transition:border-color .15s,box-shadow .15s}
+/* Mũi tên trái/phải: mỗi ảnh có CẶP nhãn riêng, chỉ cặp của ảnh đang chọn được hiện
+   (luật #gsel-i:checked ở trên). Nhãn trỏ tới radio kề bên nên bấm là đổi ảnh — vẫn 0 JS.
+   Vòng lại ở hai đầu (ảnh cuối → ảnh đầu) cho giống mọi carousel người dùng đã quen. */
+.pd-media .nav{position:absolute;inset:0;z-index:2;pointer-events:none}
+.pd-media .nav label{display:none;position:absolute;top:50%;transform:translateY(-50%);width:36px;height:36px;border-radius:999px;
+  background:color-mix(in srgb,var(--color-bg) 92%,transparent);border:1px solid var(--color-border);align-items:center;justify-content:center;
+  cursor:pointer;pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,.14);color:var(--color-text);font-size:1.15rem;line-height:1;-webkit-user-select:none;user-select:none}
+.pd-media .nav label:hover{background:var(--color-bg);border-color:var(--color-primary);color:var(--color-primary)}
+.pd-media .nav .pv{left:10px}.pd-media .nav .nx{right:10px}
 .pd-media .thumbs .th:hover{border-color:color-mix(in srgb,var(--color-primary) 55%,var(--color-border))}
 .pd-media .thumbs .th img{width:100%;height:100%;object-fit:cover;display:block;border:0;border-radius:0}
 .lightbox{display:none}
@@ -1453,6 +1469,25 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
 .pd-actions .qty:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 22%,transparent)}
 .btn-alt{background:var(--color-bg);color:var(--color-primary);border:1px solid color-mix(in srgb,var(--color-primary) 55%,var(--color-border))}
 .btn-alt:hover{background:color-mix(in srgb,var(--color-primary) 8%,var(--color-bg));border-color:var(--color-primary)}
+/* ── Mô tả nằm NGAY CỘT PHẢI, có "Xem thêm" ──────────────────────────────────
+   Trước đây mô tả là một section riêng NẰM DƯỚI cả lưới ảnh+giá. Người mua đọc xong
+   giá thì gặp khoảng trắng, phải cuộn tiếp mới thấy shop nói gì về hàng. Đưa lên cột
+   phải là bố cục các sàn dùng.
+   Kẹp chiều cao + nút mở rộng bằng checkbox ẩn + :checked (không JS). Chỉ kẹp khi mô
+   tả THẬT SỰ dài (server tự quyết, xem longDesc) — mô tả 2 dòng mà vẫn có "Xem thêm"
+   thì bấm vào không thấy gì thêm, tệ hơn là không có. */
+.pd-desc{margin:24px 0 0;padding:20px 0 0;border-top:1px solid var(--color-border)}
+.pd-desc h2{font-size:1.05rem;font-weight:800;letter-spacing:-.01em;margin:0 0 12px}
+.pd-desc .dsc{position:relative;max-height:190px;overflow:hidden;color:color-mix(in srgb,var(--color-text) 72%,var(--color-bg));line-height:1.8}
+.pd-desc .dsc p{margin:0 0 12px}.pd-desc .dsc ul{margin:0 0 12px;padding-left:1.3em}
+.pd-desc .dsc::after{content:"";position:absolute;left:0;right:0;bottom:0;height:56px;pointer-events:none;
+  background:linear-gradient(to bottom,transparent,var(--color-bg))}
+.pd-desc .dsc.open{max-height:none}.pd-desc .dsc.open::after{display:none}
+#descmore:checked~.dsc{max-height:none}#descmore:checked~.dsc::after{display:none}
+.pd-desc .dmore{display:inline-block;margin-top:12px;font-size:.9rem;font-weight:700;color:var(--color-primary);cursor:pointer;border-bottom:1px solid currentColor}
+.pd-desc .dmore:hover{opacity:.8}
+.pd-desc .dmore .m2{display:none}
+#descmore:checked~.dmore .m1{display:none}#descmore:checked~.dmore .m2{display:inline}
 .pd-block{margin:44px 0 0;padding:28px 0 0;border-top:1px solid var(--color-border)}
 .pd-block h2{font-size:1.25rem;font-weight:800;letter-spacing:-.02em;margin:0 0 16px}
 .pd-block .desc{color:color-mix(in srgb,var(--color-text) 72%,var(--color-bg));line-height:1.8}
@@ -2195,7 +2230,7 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
   const galleryHtml = gallery.length ? `
       <div class="pd-media" id="gallery">
         ${gallery.map((_, i) => `<input class="gsel vh" type="radio" name="gsel" id="gsel-${i}"${i === 0 ? ' checked' : ''} aria-label="Ảnh ${i + 1}">`).join('')}
-        <div class="main"><div class="stack">${gallery.map((m, i) => `<a class="slide s-${i}" href="#lb-${i}" aria-label="Phóng to"><img src="${esc(m.url)}" alt="${esc(p.title)}"${i ? ' loading="lazy"' : ''}></a>`).join('')}</div></div>
+        <div class="main"><div class="stack">${gallery.map((m, i) => `<a class="slide s-${i}" href="#lb-${i}" aria-label="Phóng to"><img src="${esc(m.url)}" alt="${esc(p.title)}"${i ? ' loading="lazy"' : ''}></a>`).join('')}</div>${gallery.length > 1 ? `<div class="nav">${gallery.map((_, i) => `<label class="pv n-${i}" for="gsel-${(i - 1 + gallery.length) % gallery.length}" title="Ảnh trước" aria-label="Ảnh trước">‹</label><label class="nx n-${i}" for="gsel-${(i + 1) % gallery.length}" title="Ảnh sau" aria-label="Ảnh sau">›</label>`).join('')}</div>` : ''}</div>
         ${gallery.length > 1 ? `<div class="thumbs">${gallery.map((m, i) => `<label class="th t-${i}" for="gsel-${i}"><img src="${esc(m.url)}" alt="" loading="lazy"></label>`).join('')}</div>` : ''}
         ${gallery.map((m, i) => `<div class="lightbox" id="lb-${i}"><a class="lb-bg" href="#gallery" aria-label="Đóng"></a><img src="${esc(m.url)}" alt="${esc(p.title)}"></div>`).join('')}
       </div>` : '<div class="pd-media"><div class="main">' + I_IMG + '</div></div>';
@@ -2268,7 +2303,16 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
   const skuHtml = selected?.sku ? `<div class="pd-sku">Mã: ${esc(selected.sku)}</div>` : '';
   const specs = Array.isArray(p.specs) ? p.specs : [];
   const specsHtml = specs.length ? `<section class="pd-block"><h2>Thông số</h2><table class="specs">${specs.map((s) => `<tr><th>${esc(s.name)}</th><td>${esc(s.value)}</td></tr>`).join('')}</table></section>` : '';
-  const descHtml = p.description ? `<section class="pd-block"><h2>Mô tả sản phẩm</h2><div class="desc" itemprop="description">${formatDesc(p.description)}</div></section>` : '';
+  // Mô tả về CỘT PHẢI (ngay dưới nút mua) thay vì một section dưới đáy lưới.
+  // Chỉ kẹp + gắn "Xem thêm" khi mô tả đủ dài để CÓ phần bị giấu; ngắn thì hiện trọn.
+  // 320 ký tự ≈ 4-5 dòng ở cột phải, xấp xỉ đúng chỗ max-height 190px cắt.
+  const longDesc = String(p.description ?? '').trim().length > 320;
+  const descHtml = p.description ? `<div class="pd-desc">
+            <h2>Mô tả sản phẩm</h2>
+            ${longDesc ? '<input class="vh" type="checkbox" id="descmore">' : ''}
+            <div class="dsc${longDesc ? '' : ' open'}" itemprop="description">${formatDesc(p.description)}</div>
+            ${longDesc ? '<label class="dmore" for="descmore"><span class="m1">Xem thêm</span><span class="m2">Thu gọn</span></label>' : ''}
+          </div>` : '';
   const related = Array.isArray(p.related) ? p.related : [];
   const relatedHtml = related.length ? `<section class="pd-block related"><h2>Có thể bạn thích</h2><div class="grid">${productCards(related)}</div></section>` : '';
 
@@ -2383,9 +2427,9 @@ export function renderProduct(ctx, p, { canonical = null } = {}) {
           ${selector}
           ${actions}
           <div class="trust"><span>${I_TRUCK}Giao hàng toàn quốc</span><span>${I_SHIELD}Thanh toán COD hoặc QR</span></div>
+          ${descHtml}
         </div>
       </div>
-      ${descHtml}
       ${specsHtml}
       ${qaHtml}
       ${reviewsHtml}

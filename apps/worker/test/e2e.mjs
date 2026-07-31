@@ -280,6 +280,24 @@ async function main() {
   asweep.metrics.unmatched_old >= 1 && asweep.breaches >= 1
     ? ok(`sweep phát hiện ${asweep.metrics.unmatched_old} giao dịch chưa khớp >1h → ${asweep.breaches} cảnh báo`)
     : bad('không phát hiện tiền chưa khớp', JSON.stringify(asweep));
+  // ── Đã cắm đủ dây vận hành chưa ─────────────────────────────────────────────
+  // Cảnh báo tiền nổ mà không có kênh nào nhận thì nó BIẾN MẤT — và chủ nền tảng chỉ
+  // phát hiện điều đó đúng lúc có sự cố. /internal/readiness nói trước, ngay sau deploy.
+  const rd = await fetch(`${WORKER}/internal/readiness`);
+  const rdj = await rd.json();
+  const byKey = Object.fromEntries((rdj.items ?? []).map((i) => [i.key, i]));
+  // Dev CÓ ALERT_WEBHOOK_URL (chính stub ở trên) nên kênh cảnh báo phải báo ĐÃ cắm.
+  (byKey.alert_channel?.ok === true && byKey.worker_heartbeat && byKey.support_inbox)
+    ? ok('readiness liệt kê đủ 3 mục, nhận ra kênh cảnh báo đã cắm')
+    : bad('readiness sai', JSON.stringify(rdj));
+  // Chưa cắm đủ → 503, để cron/giám sát ngoài bắt được mà không phải đọc log.
+  (rdj.ready === false) === (rd.status === 503)
+    ? ok('mã HTTP khớp trạng thái (thiếu dây → 503)') : bad('mã HTTP không khớp', `${rd.status} ready=${rdj.ready}`);
+  // KHÔNG được rò giá trị bí mật — chỉ boolean + TÊN biến cần đặt.
+  const raw = JSON.stringify(rdj);
+  (!/https?:\/\/dbtest:9103/.test(raw) && !/\d{6,}:[A-Za-z0-9_-]{20,}/.test(raw))
+    ? ok('không rò giá trị webhook/token, chỉ nêu tên biến') : bad('RÒ BÍ MẬT trong readiness', raw.slice(0, 200));
+
   // ── Cảnh báo ĐĂNG KÝ bị chặn im lặng ─────────────────────────────────────────
   // signup nuốt bot bằng cách trả trang trung tính và KHÔNG ghi gì — đúng về bảo mật, nhưng
   // nghĩa là chặn nhầm NGƯỜI THẬT cũng vô hình y hệt (đã trả giá với danh sách cấm slug).

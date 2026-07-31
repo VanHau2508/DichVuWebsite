@@ -185,6 +185,31 @@ kid `k0`, VẪN PHẢI đặt (gate khởi động + giải mã blob legacy). C�
 
 ---
 
+## Tự kiểm "đã cắm đủ dây chưa" — `GET /internal/readiness` (worker)
+
+Checklist dưới đây là giấy; cái này là **máy tự trả lời**. Sau mỗi lần deploy:
+
+```bash
+docker compose exec worker wget -qO- localhost:3080/internal/readiness
+```
+
+`200` = đủ dây. `503` = còn thiếu, và JSON nói rõ **thiếu mục nào, cần đặt biến nào, và
+hỏng chuyện gì nếu bỏ qua**. Chỉ trả boolean + TÊN biến — không bao giờ trả giá trị
+(token/URL là bí mật), có ca test giữ điều đó.
+
+Ba mục nó kiểm:
+
+| Mục | Cần | Không có thì |
+|---|---|---|
+| `alert_channel` | `TELEGRAM_BOT_TOKEN` + `ALERT_TELEGRAM_CHAT_ID`, **hoặc** `ALERT_WEBHOOK_URL` | Cảnh báo đường tiền nổ rồi **biến mất** — không ai nhận |
+| `worker_heartbeat` | `WORKER_HEARTBEAT_URL` | Worker chết thì không ai biết — chính nó là thứ gửi cảnh báo |
+| `support_inbox` | `SUPPORT_EMAIL` | Người bán gửi yêu cầu hỗ trợ mà không ai được báo |
+
+Worker cũng **tự kêu lúc khởi động**: mỗi mục thiếu là một dòng log `level=error`,
+`event=ops_not_wired`. Và khi một cảnh báo tiền nổ mà không gửi được đi đâu, nó ghi
+`event=ops_alert_undeliverable` ở mức `error` — trước đây chuyện đó chỉ là một cờ
+`sent: false` lẫn trong dòng warn, nghĩa là chỉ thấy khi đọc lại log SAU sự cố.
+
 ## Checklist go-live (đánh dấu đủ mới nhận khách trả tiền)
 
 - [ ] `BACKUP_ENC_KEY` thật + `OFFSITE_CMD`/`OFFSITE_DEST` + cron backup chạy + **đã diễn tập restore**
@@ -192,6 +217,8 @@ kid `k0`, VẪN PHẢI đặt (gate khởi động + giải mã blob legacy). C�
 - [ ] Giám sát uptime NGOÀI VPS trỏ vào URL công khai + `HEALTHCHECK_PING_URL` cho backup
 - [ ] SMTP relay thật (`SMTP_USER`/`SMTP_PASSWORD`) + domain gửi đã verify + SPF/DKIM/DMARC = PASS (gửi thử tới Gmail)
 - [ ] `WORKER_HEARTBEAT_URL` thật + healthchecks.io grace ≥ 15' + đã thấy 1 ping thành công
+- [ ] `SUPPORT_EMAIL` thật — phiếu hỗ trợ của người bán phải tới được ai đó
+- [ ] **`/internal/readiness` trả 200** (dấu này thay cho việc tự nhớ 3 dòng trên)
 - [ ] (Ngoài phạm vi doc này) VPS + floating IP + tên miền + secret prod thật (KHÔNG devpassword) +
       SMTP relay thật + **API key GHTK/GHN production** cho các shop
 

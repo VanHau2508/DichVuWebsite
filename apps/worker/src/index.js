@@ -1774,6 +1774,15 @@ async function sweepMoneyAlerts() {
     const sent = await postAlert(`⚠ NỀN TẢNG — cảnh báo vận hành:\n- ${breaches.join('\n- ')}`, m, 'warning');
     if (sent) { lastAlertState = state; lastAlertAt = now; }
     log('warn', 'ops_alert', { breaches: breaches.length, metrics: m, sent });
+    // Cảnh báo tiền nổ mà KHÔNG có kênh nào nhận = cảnh báo đó biến mất. Trước đây chỉ
+    // có cờ `sent: false` lẫn trong một dòng warn — đọc lại log sau sự cố thì mới thấy.
+    // Sự-cố-không-ai-biết nguy hiểm hơn chính sự cố, nên nó phải là ERROR và phải nói
+    // rõ cần cắm biến nào. Không in giá trị biến nào (chúng là bí mật).
+    if (!sent) {
+      log('error', 'ops_alert_undeliverable', {
+        breaches, hint: 'Chưa cấu hình kênh nhận cảnh báo. Đặt TELEGRAM_BOT_TOKEN + ALERT_TELEGRAM_CHAT_ID, hoặc ALERT_WEBHOOK_URL.',
+      });
+    }
   } else if (!state && lastAlertState) {
     await postAlert('✓ NỀN TẢNG — các cảnh báo vận hành đã hết.', m, 'ok');
     lastAlertState = ''; lastAlertAt = 0;
@@ -1888,6 +1897,13 @@ const mediaFetchTimer = expiryDb ? setInterval(sweepMediaFetch, MEDIAFETCH_MS) :
 const server = http.createServer((req, res) => runReq(req, res, async () => {
   const url = new URL(req.url, 'http://internal');
   if (await health(url.pathname, res, { db: () => db.query('SELECT 1'), redis: async () => (await queue.client).ping() })) return;
+  // Đã cắm đủ dây vận hành chưa. CHỈ boolean + tên biến cần đặt — không trả giá trị
+  // nào, vì đây là token/URL bí mật. Nội bộ mạng trong như /stats (Caddy không route).
+  if (url.pathname === '/internal/readiness' && req.method === 'GET') {
+    const r = opsReadiness();
+    res.writeHead(r.ready ? 200 : 503, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   if (url.pathname === '/stats') {
     const counts = await queue.getJobCounts('completed', 'failed', 'active', 'waiting', 'delayed');
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -2024,7 +2040,32 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   }
   res.writeHead(404); res.end();
 }));
-server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
+/**
+ * Tình trạng CẮM DÂY vận hành — chỉ boolean + tên biến, KHÔNG BAO GIỜ giá trị.
+ * Dùng cho hai chỗ: dòng log lúc khởi động, và GET /internal/readiness để người vận
+ * hành kiểm sau khi deploy mà không phải ssh vào đọc biến môi trường.
+ */
+function opsReadiness() {
+  const alertChannel = Boolean((TELEGRAM_ON && ALERT_TELEGRAM_CHAT_ID) || ALERT_WEBHOOK_URL);
+  const items = [
+    { key: 'alert_channel', ok: alertChannel, need: 'TELEGRAM_BOT_TOKEN + ALERT_TELEGRAM_CHAT_ID hoặc ALERT_WEBHOOK_URL',
+      why: 'Cảnh báo đường tiền (giao dịch chưa khớp, email kẹt) sẽ KHÔNG tới ai.' },
+    { key: 'worker_heartbeat', ok: Boolean(WORKER_HEARTBEAT_URL), need: 'WORKER_HEARTBEAT_URL',
+      why: 'Worker chết thì không ai biết — chính nó là thứ gửi cảnh báo.' },
+    { key: 'support_inbox', ok: Boolean(SUPPORT_EMAIL || (TELEGRAM_ON && ALERT_TELEGRAM_CHAT_ID)), need: 'SUPPORT_EMAIL',
+      why: 'Người bán gửi yêu cầu hỗ trợ mà không ai nhận được thông báo.' },
+  ];
+  return { ready: items.every((i) => i.ok), items };
+}
+server.listen(PORT, '0.0.0.0', () => {
+  log('info', 'listening', { port: PORT });
+  // Nói NGAY lúc khởi động, không đợi tới lúc có sự cố mới phát hiện là mình câm.
+  const r = opsReadiness();
+  for (const i of r.items) {
+    if (!i.ok) log('error', 'ops_not_wired', { item: i.key, need: i.need, why: i.why });
+  }
+  log('info', 'ops_readiness', { ready: r.ready, missing: r.items.filter((i) => !i.ok).map((i) => i.key) });
+});
 
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, async () => {

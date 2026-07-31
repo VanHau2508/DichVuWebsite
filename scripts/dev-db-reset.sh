@@ -38,6 +38,10 @@ echo "  khoá redis      $($DC exec -T redis redis-cli DBSIZE 2>/dev/null | tr -
 
 if [ "${1:-}" != "--yes" ]; then
   echo
+  echo "${RED}${BLD}MẤT CẢ TÀI KHOẢN ĐĂNG NHẬP.${RST} users / memberships / platform_staff bị xoá theo,"
+  echo "và bản chụp shop KHÔNG giữ chúng. Reset xong, shop còn nguyên nhưng không ai vào được."
+  echo "Dựng lại:  ${BLD}bash scripts/dev-make-admin.sh <email> <mật-khẩu> [--staff] [slug-shop ...]${RST}"
+  echo
   echo "${YLW}Mới chỉ ĐO. Chạy thật:${RST}  bash scripts/dev-db-reset.sh --yes"
   echo "Sẽ xoá volume: ${VOLS[*]}"
   echo "Giữ nguyên: nentang-dev_caddy_data (CA nội bộ — không phải bấm lại cảnh báo chứng chỉ)"

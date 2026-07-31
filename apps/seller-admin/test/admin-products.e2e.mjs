@@ -210,10 +210,12 @@ async function main() {
   const allMatch = want.every((w) => { const v = afterBulk.find((x) => x.id === w.id); return v && Number(v.price_vnd) === w.price && Number(v.compare_at_vnd) === w.compare && Number(v.cost_vnd) === w.cost && Number(v.weight_gram) === w.weight; });
   okRedir && allMatch ? ok('lưu hàng loạt 4 biến thể → 303 ?saved=4 + DB đổi hết (giá/gạch/vốn/cân)') : bad('bulk save lỗi', `${r.status} loc=${r.location} match=${allMatch}`);
 
-  // Trang render 1 form gộp id="bulkvars" + nút "Lưu tất cả biến thể", KHÔNG có <script> (CSP no-JS).
+  // Trang render MỘT form gộp id="pall" → /save-all, KHÔNG <script> (CSP no-JS).
   r = await adm('GET', P(`/${axPid}`), { cookie: A.cookie });
-  r.body.includes(`/products/${axPid}/variants/bulk"`) && r.body.includes('Lưu tất cả biến thể') && r.body.includes('id="bulkvars"') && !r.body.includes('<script')
-    ? ok('chi tiết: 1 form gộp "Lưu tất cả biến thể", không <script>') : bad('bulk form markup sai', `bulk=${r.body.includes('/variants/bulk')} btn=${r.body.includes('Lưu tất cả')} script=${r.body.includes('<script')}`);
+  r.body.includes(`action="/shops/${A.shopId}/products/${axPid}/save-all"`) && r.body.includes('id="pall"')
+    && r.body.includes('Lưu tất cả') && !r.body.includes('<script')
+    ? ok('chi tiết: MỘT form id="pall" → /save-all, không <script>')
+    : bad('form gộp save-all sai', `pall=${r.body.includes('id="pall"')} act=${r.body.includes('/save-all"')}`);
 
   // Lỗi từng dòng KHÔNG bị nuốt: 1 biến thể cân rác (→ seller 400), trang báo lỗi (không 303), dòng khác vẫn lưu.
   const badForm = {};
@@ -240,15 +242,47 @@ async function main() {
   stRedir && deltaOk ? ok('bulk tồn: điền 2 dòng → 303 ?stocked=2, CHỈ 2 dòng đổi (+7/+3), 2 dòng trống giữ nguyên')
     : bad('bulk stock lỗi', `${r.status} loc=${r.location} d0=${after[vs[0].id] - before[vs[0].id]} d1=${after[vs[1].id] - before[vs[1].id]} d2=${after[vs[2].id] - before[vs[2].id]} d3=${after[vs[3].id] - before[vs[3].id]}`);
 
-  // Trang render form id="bulkstock" + ô delta_<id> thuộc form đó + nút "Cập nhật tồn", KHÔNG <script>.
+  // BẤT BIẾN QUAN TRỌNG NHẤT của thiết kế một-nút: KHÔNG ô nào bị MỒ CÔI khỏi form.
+  //
+  // Các ô nằm rải trong nhiều thẻ <div class="card"> nên không bọc được bằng cây DOM —
+  // chúng dính vào form bằng thuộc tính form="pall". Thêm một ô mới mà quên thuộc tính
+  // đó thì ô ấy IM LẶNG không được gửi: người bán gõ, bấm Lưu, báo thành công, dữ liệu
+  // không đổi. Đếm nút hay tìm chuỗi không bắt được lớp lỗi này — phải soi TỪNG thẻ.
   r = await adm('GET', P(`/${axPid}`), { cookie: A.cookie });
-  r.body.includes('id="bulkstock"') && r.body.includes(`/products/${axPid}/inventory/bulk"`) && r.body.includes(`name="delta_${vs[0].id}"`) && r.body.includes('Cập nhật tồn') && !r.body.includes('<script')
-    ? ok('chi tiết: form gộp "Cập nhật tồn" (bulkstock), ô delta_<id>, không <script>')
-    : bad('bulk stock markup sai', `form=${r.body.includes('id="bulkstock"')} act=${r.body.includes('/inventory/bulk')} cell=${r.body.includes(`name="delta_${vs[0].id}"`)} btn=${r.body.includes('Cập nhật tồn')}`);
+  const editable = /<(?:input|select|textarea)[^>]*[ "]name="(title|slug|price_vnd|description|seo_title|seo_description|(?:price|compare|cost|weight|delta|media)_[0-9a-f-]{36}|stock_reason)"[^>]*>/g;
+  const orphans = [...r.body.matchAll(editable)].filter((mm) => !/[ "]form="pall"/.test(mm[0])).map((mm) => mm[1]);
+  orphans.length === 0
+    ? ok(`mọi ô sửa đều thuộc form "pall" (${[...r.body.matchAll(editable)].length} ô, 0 mồ côi)`)
+    : bad('có ô KHÔNG thuộc form pall → bấm Lưu sẽ im lặng bỏ qua', orphans.slice(0, 6).join(', '));
 
-  // Hết nút trùng: nút "Lưu tất cả biến thể" (đóng </button>) xuất hiện ĐÚNG 1 lần (bỏ nút đầu bảng).
-  const nBtn = (r.body.match(/>Lưu tất cả biến thể<\/button>/g) ?? []).length;
-  nBtn === 1 ? ok('chỉ 1 nút "Lưu tất cả biến thể" (hết trùng)') : bad('nút lưu biến thể bị trùng', `đếm=${nBtn}`);
+  // MỘT lần POST /save-all đổi ĐỦ: thông tin + giá biến thể + tồn. Đây là toàn bộ lý do
+  // tính năng tồn tại — người bán báo "mỗi lần chỉnh phải bấm cập nhật rất phiền".
+  // Tồn KHÔNG nằm trong /products/:id — phải hỏi /variants/:id/inventory (helper onHand
+  // đã có sẵn ở ca bulk-tồn phía trên). Đọc nhầm nguồn thì before=after=0 và ca này
+  // XANH RỖNG dù tồn không hề đổi.
+  const stBefore = await onHand(vs[1].id);
+  const infoBefore = (await sget(A.shopId, A.cookie, `/products/${axPid}`)).json;
+  r = await adm("POST", P(`/${axPid}/save-all`), { cookie: A.cookie, origin: OADM, form: {
+    title: 'Tên đổi bằng save-all', slug: infoBefore.slug, price_vnd: '123000',
+    description: infoBefore.description ?? '', seo_title: '', seo_description: '',
+    [`price_${vs[0].id}`]: '222000', [`compare_${vs[0].id}`]: '', [`cost_${vs[0].id}`]: '', [`weight_${vs[0].id}`]: '',
+    [`delta_${vs[1].id}`]: '5', stock_reason: 'kiểm save-all',
+  } });
+  const afterAll = (await sget(A.shopId, A.cookie, `/products/${axPid}`)).json;
+  const vAfter = afterAll.variants.find((v) => v.id === vs[0].id);
+  const stAfter = await onHand(vs[1].id);
+  r.status === 303 && afterAll.title === 'Tên đổi bằng save-all' && Number(vAfter.price_vnd) === 222000
+    && stAfter - stBefore === 5
+    ? ok('MỘT POST /save-all: đổi tên + giá biến thể + tồn (+5) cùng lúc')
+    : bad('save-all không ghi đủ', `${r.status} title=${afterAll.title} gia=${vAfter?.price_vnd} dTon=${stAfter - stBefore}`);
+  // TRẢ LẠI tồn: +5 làm biến thể thoát ngưỡng "sắp hết hàng", khiến ca lọc stock=low
+  // phía sau đỏ oan. Bộ test này dùng CHUNG một shop xuyên suốt nên ca nào đổi dữ liệu
+  // phải tự dọn — nếu không, thứ tự chạy trở thành một phần của điều kiện đúng/sai.
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/variants/${vs[1].id}/inventory/adjust`,
+    { body: { delta: -5, reason: 'dọn sau kiểm save-all' }, cookie: A.cookie, origin: OS });
+
+  // Nút "Gán" riêng từng ảnh đã bỏ (người bán báo gán từng cái rất mệt).
+  !/>Gán<\/button>/.test(r.body) ? ok('bỏ nút "Gán" riêng mỗi ảnh') : bad('vẫn còn nút Gán lẻ');
 
   // Lỗi từng dòng KHÔNG bị nuốt: 1 delta âm vượt tồn → seller 400, trang báo lỗi (không 303).
   const badStock = { reason: 'thử vượt' };

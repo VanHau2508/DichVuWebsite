@@ -1187,6 +1187,88 @@ async function productUpdate(req, res, me, cookie, shopId, pid) {
   return productDetail(res, me, cookie, shopId, pid, r.json?.error ?? 'Không lưu được thay đổi.', f);
 }
 
+/**
+ * LƯU TẤT CẢ (một nút cho cả trang sửa sản phẩm).
+ *
+ * Người bán báo: "nhiều chỗ cập nhật riêng lẻ, mỗi lần chỉnh phải bấm cập nhật, gán
+ * từng ảnh rất mệt". Đúng — trang này vốn có 4 nút lưu rời: thông tin, giá biến thể
+ * (bulkvars), điều chỉnh tồn (bulkstock), và MỘT nút "Gán" cho MỖI ảnh.
+ *
+ * Gom ở TẦNG BFF, KHÔNG đụng API `seller`: handler này chỉ gọi lại đúng những endpoint
+ * cũ, đúng thứ tự, đúng số lần. Nghĩa là sổ kho, chống oversell, RLS, quyền và bút toán
+ * y hệt như khi bấm lẻ — chỉ khác ở chỗ người dùng bấm một lần. Đường tiền/kho không có
+ * mã mới nào để mà sai.
+ *
+ * Chạy HẾT các bước rồi mới kết luận (không dừng ở lỗi đầu): sửa giá không đáng bị nuốt
+ * chỉ vì slug trùng. Có lỗi → hiện lại trang kèm những gì ĐÃ lưu và lỗi cụ thể, giữ
+ * nguyên giá trị vừa nhập.
+ *
+ * Tồn kho làm SAU CÙNG — nó là bước duy nhất ghi sổ cái không thể sửa lại bằng cách lưu
+ * đè, nên chỉ chạy khi mọi thứ khác đã xong.
+ */
+async function productSaveAll(req, res, me, cookie, shopId, pid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const done = [], errs = [];
+
+  // 1) Thông tin sản phẩm.
+  const info = await sellerApi('PATCH', `/shops/${shopId}/products/${pid}`, { cookie, body: {
+    title: String(f.title ?? '').trim(), slug: String(f.slug ?? '').trim().toLowerCase(),
+    price_vnd: parseVnd(f.price_vnd), description: String(f.description ?? '').trim() || null,
+    seo_title: String(f.seo_title ?? '').trim() || null,
+    seo_description: String(f.seo_description ?? '').trim() || null,
+  } });
+  if (info.status === 200) done.push('thông tin'); else errs.push(info.json?.error ?? 'không lưu được thông tin');
+
+  // 2) Giá / giá gạch / giá vốn / cân của từng biến thể — parse Y HỆT variantBulkPrice.
+  const vidsPrice = Object.keys(f).map((k) => new RegExp(`^price_${UUID}$`).exec(k)?.[1]).filter(Boolean);
+  let nPrice = 0;
+  for (const vid of vidsPrice) {
+    const wraw = String(f[`weight_${vid}`] ?? '').trim(), craw = String(f[`compare_${vid}`] ?? '').trim();
+    const coraw = String(f[`cost_${vid}`] ?? '').trim();
+    const r = await sellerApi('PATCH', `/shops/${shopId}/products/${pid}/variants/${vid}`, { cookie, body: {
+      price_vnd: parseVnd(f[`price_${vid}`]),
+      weight_gram: wraw === '' ? null : (Number.isFinite(Number(wraw)) ? Math.round(Number(wraw)) : -1),
+      compare_at_vnd: craw === '' ? null : (Number.isFinite(Number(craw)) ? Math.round(Number(craw)) : -1),
+      cost_vnd: coraw === '' ? null : (Number.isFinite(Number(coraw)) ? Math.round(Number(coraw)) : -1),
+    } });
+    if (r.status === 200) nPrice++; else errs.push(r.json?.error ?? `giá biến thể ${vid.slice(0, 8)} lỗi`);
+  }
+  if (nPrice) done.push(`${nPrice} biến thể`);
+
+  // 3) Gán ảnh cho biến thể. CHỈ gửi ô nào ĐỔI so với hiện trạng (media_cur_<id> là
+  //    giá trị đang lưu, render kèm) → không bắn N lượt ghi thừa mỗi lần bấm Lưu.
+  const mids = Object.keys(f).map((k) => new RegExp(`^media_${UUID}$`).exec(k)?.[1]).filter(Boolean);
+  let nMedia = 0;
+  for (const mid of mids) {
+    const want = String(f[`media_${mid}`] ?? '').trim();
+    if (want === String(f[`media_cur_${mid}`] ?? '').trim()) continue;
+    const r = await sellerApi('POST', `/shops/${shopId}/media/${mid}/variant`, { cookie, body: { variant_id: want || null } });
+    if (r.status === 200) nMedia++; else errs.push(r.json?.error ?? `gán ảnh ${mid.slice(0, 8)} lỗi`);
+  }
+  if (nMedia) done.push(`${nMedia} ảnh`);
+
+  // 4) Điều chỉnh tồn — sau cùng, và chỉ những dòng có nhập số.
+  const reason = String(f.stock_reason ?? '').trim() || null;
+  const vidsStock = Object.keys(f).map((k) => new RegExp(`^delta_${UUID}$`).exec(k)?.[1]).filter(Boolean);
+  let nStock = 0;
+  for (const vid of vidsStock) {
+    const raw = String(f[`delta_${vid}`] ?? '').replace(/[^\d-]/g, '');
+    if (raw === '' || raw === '-') continue;
+    const delta = parseInt(raw, 10);
+    if (!Number.isFinite(delta) || delta === 0) continue;
+    const r = await sellerApi('POST', `/shops/${shopId}/variants/${vid}/inventory/adjust`, { cookie, body: { delta, reason } });
+    if (r.status === 200) nStock++; else errs.push(r.json?.error ?? `tồn biến thể ${vid.slice(0, 8)} lỗi`);
+  }
+  if (nStock) done.push(`tồn ${nStock} biến thể`);
+
+  if (errs.length) {
+    const msg = `Đã lưu: ${done.join(', ') || 'không có gì'}. Lỗi: ${errs.slice(0, 4).join('; ')}${errs.length > 4 ? '…' : ''}`;
+    return productDetail(res, me, cookie, shopId, pid, msg, f);
+  }
+  return redirect(res, `/shops/${shopId}/products/${pid}?saved=${encodeURIComponent(done.join(', ') || 'không có thay đổi')}`);
+}
+
 async function productStatus(res, me, cookie, shopId, pid, action) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const r = await sellerApi('POST', `/shops/${shopId}/products/${pid}/${action}`, { cookie });
@@ -2794,13 +2876,21 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/promotions/${UUID}/products$`).exec(p)) && req.method === 'POST') return promotionAddProduct(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/promotions/${UUID}/products/${UUID}/remove$`).exec(p)) && req.method === 'POST') return promotionRemoveProduct(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'GET') {
-      const sv = parseInt(url.searchParams.get('saved') ?? '', 10);
+      const svRaw = url.searchParams.get('saved') ?? '';
+      const sv = parseInt(svRaw, 10);
       const st = parseInt(url.searchParams.get('stocked') ?? '', 10);
+      // "Lưu tất cả" trả về DANH SÁCH phần đã lưu ("thông tin, 3 biến thể, tồn 2 biến thể")
+      // chứ không phải một con số — nói rõ cái gì đã đổi thì người bán mới yên tâm là cú
+      // bấm duy nhất đã chạm đủ mọi thứ họ vừa sửa. Cắt độ dài; page vẫn esc() khi render.
       const notice = (Number.isFinite(sv) && sv > 0) ? `Đã lưu ${sv} biến thể.`
+        : svRaw ? `✓ Đã lưu: ${svRaw.slice(0, 160)}.`
         : (Number.isFinite(st) && st > 0) ? `Đã cập nhật tồn ${st} biến thể.` : null;
       return productDetail(res, me, cookie, m[1], m[2], undefined, undefined, notice);
     }
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}$`).exec(p)) && req.method === 'POST') return productUpdate(req, res, me, cookie, m[1], m[2]);
+    // Một nút "Lưu tất cả" cho cả trang sửa SP. Các endpoint lẻ GIỮ NGUYÊN — trang tạo
+    // SP mới và mọi liên kết cũ vẫn dùng chúng.
+    if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/save-all$`).exec(p)) && req.method === 'POST') return productSaveAll(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/(publish|archive)$`).exec(p)) && req.method === 'POST') return productStatus(res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/delete$`).exec(p)) && req.method === 'POST') return productDelete(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/products/${UUID}/options$`).exec(p)) && req.method === 'POST') return optionsSave(req, res, me, cookie, m[1], m[2]);

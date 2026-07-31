@@ -112,6 +112,14 @@ textarea{min-height:80px;resize:vertical}
 .covpick:has(input:checked){border-color:var(--acc,#2563eb);box-shadow:0 0 0 2px color-mix(in srgb,var(--acc,#2563eb) 30%,transparent)}
 .covnone{display:flex;align-items:center;justify-content:center;aspect-ratio:1/1;font-size:.8rem;color:var(--mut);text-align:center;padding:6px}
 .covlab{display:block;font-size:.72rem;color:var(--mut);padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Danh sách "chép dòng này để chèn ảnh giữa bài". <details> nên mặc định gấp lại,
+   không chiếm chỗ của người chỉ muốn viết chữ. */
+.snip{margin:8px 0 0;border:1px solid var(--bd);border-radius:var(--r);padding:8px 10px;background:var(--surf)}
+.snip summary{cursor:pointer;font-size:.86rem;font-weight:600}
+.snipgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;max-height:300px;overflow-y:auto}
+.snipit{border:1px solid var(--bd);border-radius:var(--r);overflow:hidden;background:var(--bg,#fff)}
+.snipit img{width:100%;aspect-ratio:16/10;object-fit:cover;display:block}
+.snipit code{display:block;font-size:.68rem;padding:5px 6px;word-break:break-all;line-height:1.35;-webkit-user-select:all;user-select:all}
 /* Cụm thao tác đơn hàng chia theo VIỆC. Trước đây mọi nút nằm chung một hàng cuốn dòng
    nên trông "nằm không đều" và không gợi ý cái nào dùng khi nào — mà một trong số đó
    tiêu tiền thật. Mỗi nhóm: nhãn nhỏ in hoa + hàng nút + (tuỳ) một dòng giải thích.
@@ -2773,6 +2781,55 @@ export function renderBlogList(ctx, shopId, data) {
       ? `<table><thead><tr><th>Bài viết</th><th>Trạng thái</th><th>Cập nhật</th></tr></thead><tbody>${rows}</tbody></table>`
       : '<p class="muted">Chưa có bài viết. Bấm “Viết bài” — bài đã đăng hiện ở <code>/blog</code> trên storefront (tốt cho SEO & marketing).</p>'}</div>`);
 }
+/**
+ * BỘ CHỌN ẢNH dùng chung cho mọi chỗ cần "chọn một ảnh của shop".
+ *
+ * Trước đây mỗi chỗ như vậy là một ô text bắt dán chuỗi `<shop-id>/<media-id>.webp`,
+ * kèm câu hướng dẫn "vào trang Sản phẩm, mở ảnh, lấy phần sau /media-public/". Chủ shop
+ * nói thẳng: đọc xong vẫn không biết phải chèn gì. Ô nào người dùng không tự đoán được
+ * cách điền thì tính năng đó coi như không tồn tại — và đó là lý do "Blog và trang nội
+ * dung khó vận hành".
+ *
+ * Radio thuần HTML nên vẫn 0-JS. `noneLabel` rỗng = KHÔNG có lựa chọn "không ảnh"
+ * (section ảnh bắt buộc phải có ảnh; ảnh bìa blog thì được phép trống).
+ *
+ * Ảnh đang dùng mà KHÔNG nằm trong danh sách (ảnh tải riêng, không gắn sản phẩm nào)
+ * vẫn phải hiện: thiếu nó thì bấm Lưu là ảnh biến mất mà không ai hiểu vì sao.
+ */
+export function mediaPicker(name, cur, media, { noneLabel = 'Không dùng ảnh' } = {}) {
+  const one = (key, url, label, checked) => `<label class="covpick">
+      <input type="radio" name="${esc(name)}" value="${esc(key)}"${checked ? ' checked' : ''}>
+      ${url ? `<img src="${esc(url)}" alt="" loading="lazy">` : `<span class="covnone">${esc(noneLabel)}</span>`}
+      ${label ? `<span class="covlab">${esc(label)}</span>` : ''}
+    </label>`;
+  const list = Array.isArray(media) ? media : [];
+  const inList = list.some((m) => m.public_key === cur);
+  return `<div class="covgrid">
+      ${noneLabel ? one('', null, '', !cur) : ''}
+      ${cur && !inList ? one(cur, `/media-public/${cur}`, 'ảnh đã tải lên', true) : ''}
+      ${list.map((m) => one(m.public_key, m.url, m.product_title, m.public_key === cur)).join('')}
+    </div>`;
+}
+
+/**
+ * Ảnh CHÈN GIỮA BÀI blog. Ảnh bìa đã có bộ chọn, nhưng ảnh trong thân bài vẫn phải là
+ * một dòng `[anh:<key>|mô tả]` — đây là cú pháp văn bản, không thể thay bằng radio.
+ *
+ * Việc còn làm được là bỏ chỗ NHỚ: bày sẵn từng ảnh kèm ĐÚNG dòng cần dán, để người
+ * viết chỉ việc bôi đen và chép. Trước đây placeholder viết "[anh:<key-media>|mô tả]"
+ * rồi để mặc người dùng tự đi tìm key ở đâu đó — đúng cái họ nói là không hiểu.
+ */
+function insertSnippets(media) {
+  const list = (Array.isArray(media) ? media : []).slice(0, 24);
+  if (!list.length) return '';
+  return `<details class="snip"><summary>Chèn ảnh vào giữa bài (${list.length} ảnh có sẵn)</summary>
+    <p class="muted" style="font-size:.83rem;margin:6px 0">Chép dòng dưới mỗi ảnh rồi dán vào ô Nội dung, <strong>trên một dòng riêng</strong>. Sửa phần sau dấu <code>|</code> thành mô tả ảnh của bạn.</p>
+    <div class="snipgrid">${list.map((m) => `<div class="snipit">
+        <img src="${esc(m.url)}" alt="" loading="lazy">
+        <code>[anh:${esc(m.public_key)}|${esc(m.product_title ?? 'mô tả ảnh')}]</code>
+      </div>`).join('')}</div></details>`;
+}
+
 // Blog: soạn/sửa bài. publish/gỡ/xoá TÁCH khỏi form chính (không lồng form).
 export function renderBlogEditor(ctx, shopId, post, err, media = []) {
   const base = `/shops/${esc(shopId)}/blog`;
@@ -2795,21 +2852,8 @@ export function renderBlogEditor(ctx, shopId, post, err, media = []) {
   //   1) CHỌN từ ảnh đã có — radio thuần HTML, giữ nguyên 0-JS, ảnh đang dùng tick sẵn.
   //   2) TẢI LÊN ảnh mới — form riêng, chỉ hiện với bài ĐÃ tạo (bài mới chưa có chỗ gắn).
   const cur = p.cover_image_key ?? '';
-  const pick = (key, url, label, checked) => `<label class="covpick${checked ? ' on' : ''}">
-      <input type="radio" name="cover_image_key" value="${esc(key)}"${checked ? ' checked' : ''}>
-      ${url ? `<img src="${esc(url)}" alt="" loading="lazy">` : '<span class="covnone">Không dùng ảnh</span>'}
-      ${label ? `<span class="covlab">${esc(label)}</span>` : ''}
-    </label>`;
-  // Ảnh đang dùng có thể là ảnh TẢI LÊN riêng (không nằm trong danh sách ảnh sản phẩm)
-  // → vẫn phải hiện, nếu không bấm Lưu là mất ảnh bìa mà không ai hiểu vì sao.
-  const inList = media.some((m) => m.public_key === cur);
-  const coverPicker = `
-    <div class="covgrid">
-      ${pick('', null, '', !cur)}
-      ${cur && !inList ? pick(cur, `/media-public/${cur}`, 'ảnh đã tải lên', true) : ''}
-      ${media.map((m) => pick(m.public_key, m.url, m.product_title, m.public_key === cur)).join('')}
-    </div>
-    ${media.length === 0 && !cur ? '<p class="muted" style="font-size:.83rem;margin:6px 0 0">Chưa có ảnh nào. Tải ảnh sản phẩm lên trước, hoặc dùng nút tải ảnh bìa bên dưới.</p>' : ''}`;
+  const coverPicker = mediaPicker('cover_image_key', cur, media)
+    + (media.length === 0 && !cur ? '<p class="muted" style="font-size:.83rem;margin:6px 0 0">Chưa có ảnh nào. Tải ảnh sản phẩm lên trước, hoặc dùng nút tải ảnh bìa bên dưới.</p>' : '');
   return layout(isNew ? 'Viết bài' : `Sửa bài`, ctx, `
     <a class="muted" href="${base}">← Blog</a>
     <div class="toolbar"><h1 style="margin:0">${isNew ? 'Viết bài mới' : esc(p.title)}</h1>${isNew ? '' : badge(p.status, p.status === 'published' ? 'Đã đăng' : 'Nháp')}</div>
@@ -2820,7 +2864,8 @@ export function renderBlogEditor(ctx, shopId, post, err, media = []) {
       <label>Tóm tắt (hiện ở danh sách blog)</label><textarea name="excerpt" maxlength="500" rows="2">${esc(p.excerpt ?? '')}</textarea>
       <label>Ảnh bìa <span class="muted" style="font-weight:400">(tuỳ chọn — hiện ở danh sách blog, đầu bài, và khi chia sẻ Facebook/Zalo)</span></label>
       ${coverPicker}
-      <label>Nội dung</label><textarea name="body" rows="14" maxlength="50000" placeholder="Viết nội dung bài… (cách dòng để tách đoạn). Chèn ảnh: một dòng riêng dạng [anh:<key-media>|mô tả ảnh]">${esc(p.body ?? '')}</textarea>
+      <label>Nội dung</label><textarea name="body" rows="14" maxlength="50000" placeholder="Viết nội dung bài… (cách dòng để tách đoạn). Muốn chèn ảnh giữa bài: xem danh sách ảnh ngay dưới ô này.">${esc(p.body ?? '')}</textarea>
+      ${insertSnippets(media)}
       <div class="actions" style="margin-top:12px"><button class="btn" type="submit">${isNew ? 'Tạo bài (nháp)' : 'Lưu thay đổi'}</button></div>
     </form>
     ${isNew
@@ -3279,7 +3324,7 @@ export function renderPageNew(ctx, shopId, err, f = {}) {
     </form>`);
 }
 
-export function renderPageEditor(ctx, shopId, p, err, notice, form) {
+export function renderPageEditor(ctx, shopId, p, err, notice, form, media = []) {
   const base = `/shops/${esc(shopId)}/pages/${esc(p.id)}`;
   const blocks = p.blocks ?? [];
   const revs = p.revisions ?? [];
@@ -3288,9 +3333,12 @@ export function renderPageEditor(ctx, shopId, p, err, notice, form) {
   const blockEdit = (b) => {
     if (b.type === 'divider') return '<p class="muted" style="margin:4px 0">— đường kẻ ngang —</p>';
     const hid = `<input type="hidden" name="type" value="${esc(b.type)}">`;
-    if (b.type === 'image') return `<form method="POST" action="${base}/blocks/${esc(b.id)}/edit">${hid}
-      <img src="/media-public/${esc(b.key ?? '')}" alt="" loading="lazy" style="max-height:90px;max-width:160px;border:1px solid #eceef1;border-radius:8px;margin-bottom:6px">
-      <input name="key" required maxlength="120" value="${esc(b.key ?? '')}" placeholder="key ảnh: <shop-id>/<media-id>.webp">
+    // Ảnh: CHỌN từ ảnh sẵn có hoặc TẢI LÊN ảnh mới, không còn ô dán "key ảnh".
+    // multipart vì có ô tệp; tệp (nếu chọn) GHI ĐÈ ảnh đang tick.
+    if (b.type === 'image') return `<form method="POST" action="${base}/blocks/${esc(b.id)}/edit" enctype="multipart/form-data">${hid}
+      ${mediaPicker('key', b.key ?? '', media, { noneLabel: '' })}
+      <label style="font-size:.82rem">… hoặc tải ảnh mới lên (ghi đè lựa chọn trên)</label>
+      <input type="file" name="file" accept="image/*">
       <input name="alt" required maxlength="300" value="${esc(b.alt ?? '')}" placeholder="Mô tả ảnh (alt — bắt buộc)">
       <input name="caption" maxlength="500" value="${esc(b.caption ?? '')}" placeholder="Chú thích dưới ảnh (tuỳ chọn)">
       <button class="btn alt sm" type="submit">Lưu section</button></form>`;
@@ -3339,18 +3387,23 @@ export function renderPageEditor(ctx, shopId, p, err, notice, form) {
     <div class="card"><h2 style="margin-top:0">Nội dung (section)</h2>
       <p class="muted" style="font-size:.85rem">Sửa/thêm/xoá là lưu vào bản NHÁP. Dùng ↑ ↓ để đổi thứ tự. Bấm “Đăng trang” để đưa lên storefront.</p>
       ${blocks.length ? blocks.map(blockCard).join('') : '<p class="muted">Chưa có section nào — thêm bên dưới.</p>'}
-      <h2>Thêm section</h2>
+      <h2>Thêm section chữ</h2>
       <form method="POST" action="${base}/blocks">
-        <div class="grid2"><div><label>Loại</label><select name="type">${Object.entries(BTYPE).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div></div>
-        <label>Nội dung</label><textarea name="text" maxlength="5000" placeholder="Tiêu đề / đoạn / trích: gõ nội dung • Danh sách: mỗi dòng 1 mục • Đường kẻ / Hình ảnh: để trống"></textarea>
+        <div class="grid2"><div><label>Loại</label><select name="type">${Object.entries(BTYPE).filter(([k]) => k !== 'image').map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div></div>
+        <label>Nội dung</label><textarea name="text" maxlength="5000" placeholder="Tiêu đề / đoạn / trích: gõ nội dung • Danh sách: mỗi dòng 1 mục • Đường kẻ: để trống"></textarea>
         <label>Nguồn trích (chỉ dùng cho Trích dẫn)</label><input name="cite" maxlength="200">
-        <div class="grid2">
-          <div><label>Key ảnh (chỉ dùng cho Hình ảnh)</label><input name="key" maxlength="120" placeholder="<shop-id>/<media-id>.webp"></div>
-          <div><label>Mô tả ảnh (alt)</label><input name="alt" maxlength="300" placeholder="VD: Ghế sofa xám trong phòng khách"></div>
-        </div>
-        <label>Chú thích ảnh (tuỳ chọn)</label><input name="caption" maxlength="500">
-        <p class="muted" style="font-size:.8rem;margin:4px 0 8px">Key ảnh = ảnh ĐÃ upload ở sản phẩm (trang Sản phẩm → Ảnh, phần đường dẫn sau <code>/media-public/</code>) hoặc logo shop. Không upload ảnh mới tại đây.</p>
-        <button class="btn alt" type="submit">Thêm section</button>
+        <button class="btn alt" type="submit">Thêm section chữ</button>
+      </form>
+      <h2 style="margin-top:22px">Thêm ảnh</h2>
+      <p class="muted" style="font-size:.85rem;margin-top:0">Chọn một ảnh đã có, hoặc chọn tệp để tải ảnh mới lên. <strong>Mô tả ảnh</strong> là câu ngắn nói ảnh chụp gì — người khiếm thị và Google đọc câu này.</p>
+      <form method="POST" action="${base}/blocks" enctype="multipart/form-data">
+        <input type="hidden" name="type" value="image">
+        ${media.length ? mediaPicker('key', '', media, { noneLabel: '' }) : '<p class="muted" style="font-size:.83rem">Chưa có ảnh nào sẵn — chọn tệp bên dưới để tải lên.</p>'}
+        <label>… hoặc tải ảnh mới lên (ghi đè lựa chọn trên)</label>
+        <input type="file" name="file" accept="image/*">
+        <label>Mô tả ảnh (alt — bắt buộc)</label><input name="alt" required maxlength="300" placeholder="VD: Ghế sofa xám trong phòng khách">
+        <label>Chú thích dưới ảnh (tuỳ chọn)</label><input name="caption" maxlength="500">
+        <button class="btn alt" type="submit" style="margin-top:8px">Thêm ảnh</button>
       </form>
     </div>
     ${revs.length ? `<div class="card"><h2 style="margin-top:0">Lịch sử bản đăng</h2><table><tbody>

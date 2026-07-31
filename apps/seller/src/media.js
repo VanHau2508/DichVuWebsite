@@ -256,7 +256,16 @@ async function listShopMedia(res, ctx) {
  * Khác ở QUYỀN: người viết bài có content.write chứ không nhất thiết có theme.write.
  */
 async function uploadContentImage(res, ctx, body) {
-  return uploadBanner(res, ctx, body);
+  // Tiền tố RIÊNG `content-`, không dùng lại `banner-`. Bản đầu gọi thẳng uploadBanner
+  // nên ảnh ra key `<shop>/banner-<uuid>.webp` — mà blog.js/content.js chỉ nhận
+  // `<shop>/<uuid>.webp` hoặc `logo-`, nên PATCH sau đó bị 400 "key ảnh không hợp lệ".
+  // Nút "Tải ảnh bìa lên" vì thế CHƯA TỪNG chạy được; e2e lúc đó chỉ kiểm phần hiển
+  // thị bộ chọn nên không thấy. Prefix riêng còn giữ đúng ngữ nghĩa: ảnh nội dung
+  // không phải banner, và BANNER_KEY_RE không nên nhận nó.
+  const r = await putDisplayImage(res, body, `${ctx.shopId}/content-${crypto.randomUUID()}.webp`, 1600, 1600);
+  if (!r) return undefined;
+  await withTenant(ctx.shopId, (c) => audit(c, 'shop.content_image_uploaded', { actorId: ctx.user.id, ip: ctx.ip, metadata: {} })).catch(() => {});
+  return send(res, 200, { key: r.key, url: mediaPublicUrl(r.key) });
 }
 
 /**

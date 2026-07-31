@@ -154,6 +154,86 @@ async function main() {
   r = await adm('POST', E('/preview'), { cookie: A.cookie, origin: OADM });
   r.status === 200 && /Link xem trước/.test(r.body) && /preview=/.test(r.body) ? ok('xem trước → hiện link kèm token') : bad('preview lỗi', r.body.slice(0, 200));
 
+  // ── 6b. Section ẢNH: chọn ảnh sẵn có hoặc tải lên, KHÔNG dán "key ảnh" ──────
+  // Chủ shop nói trang nội dung khó vận hành. Nguyên nhân cụ thể: ô "Key ảnh" bắt dán
+  // chuỗi <shop-id>/<media-id>.webp, kèm hướng dẫn "vào trang Sản phẩm lấy phần sau
+  // /media-public/". Không ai tự đoán ra, nên section ảnh coi như không dùng được.
+  sect('6b. Section ảnh: chọn sẵn có / tải lên');
+  const PNG_1x1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC', 'base64');
+  // Gửi multipart đúng như trình duyệt gửi form có <input type=file>.
+  const admMulti = async (path, parts) => {
+    const bd = `----vaBoundary${uniq()}`;
+    const chunks = [];
+    for (const p of parts) {
+      chunks.push(Buffer.from(`--${bd}\r\nContent-Disposition: form-data; name="${p.name}"`
+        + (p.filename ? `; filename="${p.filename}"\r\nContent-Type: image/png` : '') + '\r\n\r\n'));
+      chunks.push(Buffer.isBuffer(p.value) ? p.value : Buffer.from(String(p.value)));
+      chunks.push(Buffer.from('\r\n'));
+    }
+    chunks.push(Buffer.from(`--${bd}--\r\n`));
+    const res = await fetch(ADMIN + path, {
+      method: 'POST', redirect: 'manual',
+      headers: { 'content-type': `multipart/form-data; boundary=${bd}`, origin: OADM, cookie: `__Host-session=${A.cookie}` },
+      body: Buffer.concat(chunks),
+    });
+    return { status: res.status, location: res.headers.get('location'), body: await res.text() };
+  };
+
+  r = await adm('GET', E(''), { cookie: A.cookie });
+  // Không còn ô text bắt dán key, và form thêm ảnh phải là multipart có ô tệp.
+  const noKeyBox = !/name="key"[^>]*placeholder="[^"]*media-id/.test(r.body) && !r.body.includes('/media-public/</code>');
+  const hasUpload = /enctype="multipart\/form-data"[\s\S]{0,900}name="file"/.test(r.body) && r.body.includes('name="type" value="image"');
+  (r.status === 200 && noKeyBox && hasUpload)
+    ? ok('trang sửa: bỏ ô dán "key ảnh", có form thêm ảnh kèm ô tệp') : bad('vẫn còn ô key / thiếu ô tệp', `noKey=${noKeyBox} upload=${hasUpload}`);
+
+  // Tải TỆP → tự upload, tự lấy key, tạo section ảnh.
+  let ir = await admMulti(E('/blocks'), [
+    { name: 'type', value: 'image' }, { name: 'alt', value: 'Ảnh cửa hàng' },
+    { name: 'file', filename: 'a.png', value: PNG_1x1 },
+  ]);
+  pg = (await page(A.shopId, A.cookie, pid)).json;
+  const imgBlk = (pg.blocks ?? []).find((b) => b.type === 'image');
+  (ir.status === 303 && imgBlk && /\.webp$/.test(imgBlk.key ?? '') && imgBlk.key.startsWith(`${A.shopId}/`) && imgBlk.alt === 'Ảnh cửa hàng')
+    ? ok('chọn tệp → tự tải lên + tạo section ảnh (key trong namespace shop)')
+    : bad('thêm ảnh bằng tệp lỗi', `${ir.status} ${JSON.stringify(imgBlk)} | ${(/class="err">([^<]*)/.exec(ir.body) ?? [])[1] ?? ir.body.slice(0, 160)}`);
+
+  // CHỌN ảnh sẵn có (radio key, không kèm tệp) → dùng đúng key đó.
+  const pickedKey = imgBlk.key;
+  ir = await admMulti(E('/blocks'), [
+    { name: 'type', value: 'image' }, { name: 'alt', value: 'Ảnh chọn lại' }, { name: 'key', value: pickedKey },
+  ]);
+  pg = (await page(A.shopId, A.cookie, pid)).json;
+  const picked = (pg.blocks ?? []).filter((b) => b.type === 'image').at(-1);
+  (ir.status === 303 && picked?.key === pickedKey && picked.alt === 'Ảnh chọn lại')
+    ? ok('chọn ảnh sẵn có (không kèm tệp) → dùng đúng ảnh đó') : bad('chọn ảnh sẵn có lỗi', JSON.stringify(picked));
+
+  // Không chọn gì cả → báo lỗi RÕ, không tạo section ảnh rỗng.
+  const beforeN = (pg.blocks ?? []).length;
+  ir = await admMulti(E('/blocks'), [{ name: 'type', value: 'image' }, { name: 'alt', value: 'Thiếu ảnh' }]);
+  pg = (await page(A.shopId, A.cookie, pid)).json;
+  (ir.status === 409 && /Chưa chọn ảnh/.test(ir.body) && (pg.blocks ?? []).length === beforeN)
+    ? ok('không chọn ảnh nào → báo lỗi rõ, không tạo section rỗng') : bad('section ảnh rỗng vẫn lọt', `${ir.status} n=${pg.blocks?.length}`);
+
+  // Blog: ảnh giữa bài vẫn là cú pháp text, nhưng phải bày sẵn dòng cần chép.
+  const bl = await adm('POST', `/shops/${A.shopId}/blog`, { cookie: A.cookie, origin: OADM, form: { title: 'Bài có ảnh', slug: `ba-${uniq()}`, body: 'x' } });
+  const blId = /\/blog\/([0-9a-f-]{36})$/.exec(bl.location ?? '')?.[1];
+  r = await adm('GET', `/shops/${A.shopId}/blog/${blId}`, { cookie: A.cookie });
+  (r.status === 200 && (r.body.includes('Chèn ảnh vào giữa bài') || !r.body.includes('[anh:<key-media>')))
+    ? ok('soạn blog: không còn bắt tự nghĩ ra key ảnh') : bad('blog vẫn để mặc người dùng tìm key');
+
+  // ĐƯỜNG TẢI ẢNH BÌA — chạy THẬT, không chỉ kiểm nút có hiện.
+  //
+  // Đây là lỗ đã để lọt một lỗi thật: nút "Tải ảnh bìa lên" ship ra mà chưa từng chạy
+  // được, vì ảnh nội dung sinh key `<shop>/banner-<uuid>.webp` còn blog chỉ nhận
+  // `<shop>/<uuid>.webp` hoặc `logo-`. Bộ test khi đó chỉ khẳng định "trang có bộ chọn
+  // ảnh" nên xanh trơn. Kiểm sự CÓ MẶT của một nút không nói gì về việc bấm nó có được.
+  ir = await admMulti(`/shops/${A.shopId}/blog/${blId}/cover`, [{ name: 'file', filename: 'c.png', value: PNG_1x1 }]);
+  const post = await rq(SELLER, 'GET', `/shops/${A.shopId}/blog/${blId}`, { cookie: A.cookie });
+  const cover = post.json?.cover_image_key;
+  (ir.status === 303 && typeof cover === 'string' && cover.startsWith(`${A.shopId}/`) && cover.endsWith('.webp'))
+    ? ok('tải ảnh bìa blog → gắn được vào bài (key hợp lệ với blog.js)')
+    : bad('tải ảnh bìa blog KHÔNG gắn được', `${ir.status} cover=${cover} | ${(/class="err">([^<]*)/.exec(ir.body) ?? [])[1] ?? ''}`);
+
   // ── 7. Xoá trang + cô lập + CSRF ───────────────────────────────────────────
   sect('7. Xoá & cô lập & CSRF');
   r = await adm('POST', E('/delete'), { cookie: A.cookie, origin: OADM });

@@ -1563,10 +1563,15 @@ async function pageCreate(req, res, me, cookie, shopId) {
 
 async function pageEditor(res, me, cookie, shopId, pid, err, notice, form) {
   if (!isMember(me, shopId)) return denyShop(res, me);
-  const r = await sellerApi('GET', `/shops/${shopId}/pages/${pid}`, { cookie });
+  // Nạp SONG SONG ảnh của shop cho bộ chọn ảnh section — trang này vốn đã gọi 2 API,
+  // thêm một tuần tự nữa là thêm một vòng chờ cho mỗi lần mở trang.
+  const [r, media] = await Promise.all([
+    sellerApi('GET', `/shops/${shopId}/pages/${pid}`, { cookie }),
+    shopMedia(shopId, cookie),
+  ]);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'pages');
   if (r.status !== 200 || !r.json) return sendHtml(res, r.status === 200 ? 502 : r.status, V.renderError(ctx, r.json?.error ?? 'Không tìm thấy trang.'));
-  return sendHtml(res, err ? 409 : 200, V.renderPageEditor(ctx, shopId, r.json, err, notice, form));
+  return sendHtml(res, err ? 409 : 200, V.renderPageEditor(ctx, shopId, r.json, err, notice, form, media));
 }
 
 async function pageUpdate(req, res, me, cookie, shopId, pid) {
@@ -1613,16 +1618,50 @@ async function pageDelete(res, me, cookie, shopId, pid) {
   return pageEditor(res, me, cookie, shopId, pid, r.json?.error ?? 'Không xoá được trang.');
 }
 
+/**
+ * Đọc form section. Section CHỮ gửi url-encoded như cũ; section ẢNH gửi multipart vì
+ * có ô tệp. Chọn ảnh sẵn có = radio `key`; chọn thêm tệp thì tệp GHI ĐÈ — người dùng
+ * vừa tick vừa chọn tệp thì ý định rõ ràng là muốn dùng tệp mới.
+ * Trả { f, err }: f đã có sẵn key đúng, err là câu báo lỗi cho người dùng.
+ */
+async function readBlockForm(req, cookie, shopId) {
+  const ct = req.headers['content-type'] ?? '';
+  if (!ct.startsWith('multipart/')) return { f: await readForm(req), err: null };
+  let parsed;
+  try { parsed = await readMultipartAll(req, 10 * 1024 * 1024); } catch (e) {
+    return { f: {}, err: e.statusCode === 413 ? 'Ảnh quá lớn (tối đa 10MB).' : 'Không đọc được tệp tải lên.' };
+  }
+  const f = { ...parsed.fields };
+  const file = (parsed.files ?? []).find((x) => x.bytes?.length);
+  if (!file) return { f, err: null };
+  const up = await sellerUpload(`/shops/${shopId}/content-image`, { cookie, bytes: file.bytes });
+  if (up.status !== 200 || !up.json?.key) return { f, err: up.json?.error ?? 'Tải ảnh thất bại.' };
+  f.key = up.json.key;
+  return { f, err: null };
+}
+
 async function blockAdd(req, res, me, cookie, shopId, pid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
-  const r = await sellerApi('POST', `/shops/${shopId}/pages/${pid}/blocks`, { cookie, body: blockBody(await readForm(req)) });
+  const { f, err } = await readBlockForm(req, cookie, shopId);
+  if (err) return pageEditor(res, me, cookie, shopId, pid, err);
+  if (f.type === 'image' && !String(f.key ?? '').trim()) {
+    return pageEditor(res, me, cookie, shopId, pid, 'Chưa chọn ảnh: bấm một ảnh có sẵn hoặc chọn tệp để tải lên.');
+  }
+  const r = await sellerApi('POST', `/shops/${shopId}/pages/${pid}/blocks`, { cookie, body: blockBody(f) });
   if (r.status === 201) return redirect(res, `/shops/${shopId}/pages/${pid}`);
   return pageEditor(res, me, cookie, shopId, pid, r.json?.error ?? 'Không thêm được section.');
 }
 
 async function blockEdit(req, res, me, cookie, shopId, pid, bid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
-  const r = await sellerApi('PATCH', `/shops/${shopId}/pages/${pid}/blocks/${bid}`, { cookie, body: blockBody(await readForm(req)) });
+  const { f, err } = await readBlockForm(req, cookie, shopId);
+  if (err) return pageEditor(res, me, cookie, shopId, pid, err);
+  // Cùng lý do như blockAdd: seller sẽ trả 400 "key không hợp lệ", nhưng câu đó không
+  // nói cho người dùng biết phải LÀM GÌ. Chặn tại đây với câu chỉ đúng thao tác.
+  if (f.type === 'image' && !String(f.key ?? '').trim()) {
+    return pageEditor(res, me, cookie, shopId, pid, 'Chưa chọn ảnh: bấm một ảnh có sẵn hoặc chọn tệp để tải lên.');
+  }
+  const r = await sellerApi('PATCH', `/shops/${shopId}/pages/${pid}/blocks/${bid}`, { cookie, body: blockBody(f) });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/pages/${pid}`);
   return pageEditor(res, me, cookie, shopId, pid, r.json?.error ?? 'Không lưu được section.');
 }

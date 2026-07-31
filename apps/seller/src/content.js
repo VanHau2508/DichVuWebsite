@@ -17,7 +17,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // (logo: "<shop_id>/logo-<uuid>.webp"). Block ảnh CHỈ nhận key đúng định dạng này —
 // KHÔNG có đường upload mới, seller dán key ảnh đã upload ở sản phẩm/logo.
 const U36 = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-const MEDIA_KEY_RE = new RegExp(`^${U36}/(?:logo-)?${U36}\\.webp$`);
+// `content-`: ảnh tải thẳng từ trình soạn trang (POST /shops/:id/content-image) — xem
+// chú thích cùng tên ở blog.js. Section ảnh giờ có nút tải lên nên phải nhận tiền tố này.
+const MEDIA_KEY_RE = new RegExp(`^${U36}/(?:logo-|content-)?${U36}\\.webp$`);
 const isInt = (x) => Number.isInteger(x);
 const PREVIEW_TTL_MIN = 30; // link preview sống ngắn — nó lộ nội dung chưa xuất bản
 const genToken = () => crypto.randomBytes(32).toString('base64url');

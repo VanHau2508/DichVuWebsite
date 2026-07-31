@@ -15,7 +15,10 @@ const validTitle = (x) => typeof x === 'string' && x.trim().length >= 1 && x.len
 // "<shop_id>/<media_id>.webp"). Chỉ nhận key ĐÚNG ĐỊNH DẠNG + thuộc CHÍNH shop
 // (tiền tố shop_id) — không upload mới, dán key ảnh đã upload.
 const U36 = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-const MEDIA_KEY_RE = new RegExp(`^${U36}/(?:logo-)?${U36}\\.webp$`);
+// `content-`: ảnh TẢI THẲNG từ trình soạn (POST /shops/:id/content-image). Thiếu tiền tố
+// này thì nút "Tải ảnh bìa lên" báo lỗi key không hợp lệ NGAY SAU KHI upload thành công —
+// đúng lỗi đã xảy ra khi ảnh nội dung còn dùng chung tiền tố `banner-`.
+const MEDIA_KEY_RE = new RegExp(`^${U36}/(?:logo-|content-)?${U36}\\.webp$`);
 // Trả {ok, val} — chuỗi rỗng/null → null (xoá ảnh bìa); key sai định dạng/chéo shop → lỗi.
 function parseCover(x, shopId) {
   const s = String(x ?? '').trim();

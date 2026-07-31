@@ -22,8 +22,18 @@ vào Postgres mới và thấy dữ liệu sống sót.
 1. Sinh khoá mã hoá: `openssl rand -base64 48` → đặt `BACKUP_ENC_KEY` trong `.env`.
    **GIỮ RIÊNG khoá này** (KHÔNG lưu cùng nơi chứa backup — vd để trong trình quản lý mật khẩu).
    Mất khoá = mất luôn khả năng khôi phục.
-2. Cấu hình đích offsite (S3/Backblaze B2/box khác) qua `OFFSITE_CMD` + `OFFSITE_DEST` trong `.env`.
-   Ví dụ rclone: `OFFSITE_CMD='rclone copy --s3-no-check-bucket'`, `OFFSITE_DEST='b2:nentang-backup'`.
+2. Cấu hình đích offsite. **Đã có sẵn bộ đẩy** `scripts/offsite-s3.sh` — chạy `mc` trong
+   container nên KHÔNG phải cài aws-cli/rclone lên VPS, và dùng được với AWS S3, Backblaze
+   B2, Cloudflare R2, Wasabi hay MinIO. Trong `.env`:
+   ```
+   OFFSITE_CMD=bash scripts/offsite-s3.sh
+   BACKUP_S3_ENDPOINT=https://s3.us-west-004.backblazeb2.com
+   BACKUP_S3_BUCKET=nentang-backup
+   BACKUP_S3_ACCESS_KEY=…      BACKUP_S3_SECRET_KEY=…
+   ```
+   Dùng **khoá riêng chỉ ghi được vào bucket backup**, không dùng khoá toàn quyền: máy chạy
+   backup bị chiếm thì kẻ tấn công cũng không xoá được bản cũ.
+   Bộ đẩy **TỪ CHỐI** nếu thư mục còn tệp chưa mã hoá — cổng cuối trước khi dữ liệu rời máy.
 3. Cron trên VPS:
    ```cron
    */15 * * * *  cd /srv/nentang && bash scripts/backup.sh wal    # WAL (RPO ~15')
@@ -32,6 +42,25 @@ vào Postgres mới và thấy dữ liệu sống sót.
 4. **DIỄN TẬP KHÔI PHỤC (bắt buộc — backup không restore được = vô nghĩa):**
    trên máy staging: `bash scripts/restore.sh verify /đường-dẫn-backup-tải-về`
    → phải thấy "giải mã + kiểm tra dump hợp lệ". Làm định kỳ (vd hằng tháng).
+
+### Trạng thái đã kiểm (2026-07-31)
+
+Ba mắt xích đã chạy thật trên stack dev, không phải chỉ có mã:
+
+| Mắt xích | Cách kiểm | Kết quả |
+|---|---|---|
+| Khôi phục vào máy MỚI | `backup-restore-drill.sh` | 11/11 — 206 shop, 259 đơn, 15 vai trò, RLS FORCE, cô lập tenant còn hoạt động |
+| Mã hoá end-to-end | `verify-backup-encryption.sh` | 17/17 — khoá SAI giải mã THẤT BẠI, khoá đúng khôi phục được, marker sống sót |
+| Đẩy offsite | `backup.sh` + `offsite-s3.sh` → MinIO | 5 tệp `.enc` lên kho đối tượng; khoá sai → exit 1; gieo tệp chưa mã hoá → TỪ CHỐI |
+
+Hai điều tìm ra khi chạy, không thấy được bằng đọc mã:
+- `backup.sh` truyền **cả thư mục** ở chế độ full nhưng truyền **một tệp** ở chế độ wal —
+  bộ đẩy phải nhận cả hai (bản đầu chỉ nhận tệp nên chế độ full đổ ngay).
+- Chế độ full đẩy **trọn thư mục**, nên một tệp lỡ chưa mã hoá cũng theo ra ngoài. Nay
+  bộ đẩy tự chặn (bỏ qua tệp RỖNG như `wal.tar.gz` khi chưa bật WAL archive).
+
+**CÒN THIẾU cho production:** tài khoản kho lưu trữ thật + khoá (chỉ bạn tạo được), cron
+trên VPS, và `HEALTHCHECK_PING_URL` để backup ngừng chạy thì có người biết.
 
 ---
 

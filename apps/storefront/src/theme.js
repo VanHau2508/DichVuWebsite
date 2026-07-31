@@ -333,18 +333,25 @@ function catMono(name) {
 // Tên kênh dùng chữ viết tắt 2 ký tự thay vì logo thương hiệu: logo là tài sản của
 // bên khác, nhúng vào hàng nghìn shop là chuyện pháp lý chứ không phải chuyện CSS.
 // FB/SP… đủ nhận ra, và `title`+aria-label mang tên đầy đủ cho người đọc màn hình.
+// Glyph TỰ VẼ, không phải tệp logo chính hãng. Chủ shop muốn "có logo cho chuyên
+// nghiệp" — nhưng nhúng tệp thương hiệu của bên khác vào hàng nghìn storefront là
+// chuyện pháp lý. Vẽ hình gợi nhớ (chữ f, khung máy ảnh, nút play, bong bóng chat,
+// túi mua sắm) + đúng màu thương hiệu + tên đầy đủ trong title/aria: nhận ra ngay,
+// và không giả vờ là tài sản của họ. Đây cũng là cách các bộ icon mã nguồn mở làm.
+const G = (p, fill = true) => `<svg viewBox="0 0 24 24" ${fill ? 'fill="currentColor"' : 'fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"'} aria-hidden="true">${p}</svg>`;
+const I_BAG = G('<path d="M6 8h12l-1 11H7z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8" fill="none" stroke="currentColor" stroke-width="1.8"/>', true);
 const CHANNELS = {
-  facebook: { name: 'Facebook', ini: 'FB', c: '#1877f2' },
-  instagram: { name: 'Instagram', ini: 'IG', c: '#e1306c' },
-  tiktok: { name: 'TikTok', ini: 'TT', c: '#111111' },
-  youtube: { name: 'YouTube', ini: 'YT', c: '#ff0000' },
-  zalo: { name: 'Zalo', ini: 'ZL', c: '#0068ff' },
-  messenger: { name: 'Messenger', ini: 'MS', c: '#0084ff' },
-  shopee: { name: 'Shopee', ini: 'SP', c: '#ee4d2d' },
-  lazada: { name: 'Lazada', ini: 'LZ', c: '#0f146d' },
-  tiki: { name: 'Tiki', ini: 'TK', c: '#1a94ff' },
-  sendo: { name: 'Sendo', ini: 'SD', c: '#d0021b' },
-  phone: { name: 'Gọi ngay', ini: 'ĐT', c: '' }, // c rỗng → dùng màu chủ đạo của shop
+  facebook: { name: 'Facebook', c: '#1877f2', i: G('<path d="M13.5 21v-7.5H16l.5-3h-3V8.6c0-.9.3-1.5 1.6-1.5H16.6V4.4A22 22 0 0 0 14.4 4.3c-2.3 0-3.9 1.4-3.9 4v2.2H8v3h2.5V21z"/>') },
+  instagram: { name: 'Instagram', c: '#e1306c', i: G('<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17" cy="7" r="1.3" fill="currentColor" stroke="none"/>', false) },
+  tiktok: { name: 'TikTok', c: '#111111', i: G('<path d="M14 4v9.6a2.9 2.9 0 1 1-2.4-2.85V13a1 1 0 1 0 1 1V4h1.4c.4 1.9 1.9 3.3 3.9 3.5v2.1A6.2 6.2 0 0 1 14 8.2z"/>') },
+  youtube: { name: 'YouTube', c: '#ff0000', i: G('<rect x="2.6" y="5.6" width="18.8" height="12.8" rx="3.6"/><path d="M10.4 9.4l5.2 2.6-5.2 2.6z" fill="#fff"/>') },
+  zalo: { name: 'Zalo', c: '#0068ff', i: G('<path d="M12 3.6c-4.9 0-8.9 3.3-8.9 7.4 0 2.4 1.4 4.6 3.5 5.9-.1.8-.5 2-1.4 3 .1.2.3.3.5.2 1.7-.5 3-1.3 3.7-1.9 .8.2 1.7.3 2.6.3 4.9 0 8.9-3.3 8.9-7.5S16.9 3.6 12 3.6z"/><path d="M9.1 9.2h4.1L9.4 13.4h4" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>') },
+  messenger: { name: 'Messenger', c: '#0084ff', i: G('<path d="M12 3.4c-4.9 0-8.7 3.6-8.7 8.1 0 2.5 1.2 4.7 3.1 6.2v3.1l2.9-1.6c.8.2 1.7.3 2.7.3 4.9 0 8.7-3.6 8.7-8S16.9 3.4 12 3.4z"/><path d="M6.9 14.3l4.3-4.5 2.2 2.3 3.5-2.3-4.2 4.5-2.2-2.3z" fill="#fff"/>') },
+  shopee: { name: 'Shopee', c: '#ee4d2d', i: I_BAG },
+  lazada: { name: 'Lazada', c: '#0f146d', i: I_BAG },
+  tiki: { name: 'Tiki', c: '#1a94ff', i: I_BAG },
+  sendo: { name: 'Sendo', c: '#d0021b', i: I_BAG },
+  phone: { name: 'Gọi ngay', c: '', i: G('<path d="M6.6 3.2h3.1l1.5 3.9-2 1.4a12.6 12.6 0 0 0 5.6 5.6l1.4-2 3.9 1.5v3.1c0 .9-.8 1.7-1.7 1.6C10.6 17.9 6.1 13.4 5 6.5c-.1-.9.7-1.7 1.6-1.7z"/>') },
 };
 /** Một pill kênh: vòng tròn chữ viết tắt + tên. `extern` mở tab mới + noopener. */
 function channelPill(kind, url, cls) {
@@ -354,7 +361,7 @@ function channelPill(kind, url, cls) {
   const ext = /^https?:/i.test(url);
   return `<a class="chn ${cls}" href="${esc(url)}"${m.c ? ` style="--c:${m.c}"` : ''}`
     + `${ext ? ' target="_blank" rel="noopener nofollow"' : ''} title="${esc(m.name)}" aria-label="${esc(m.name)}">`
-    + `<span class="chn-i">${esc(m.ini)}</span><span class="chn-t">${esc(tel ? url.slice(4) : m.name)}</span></a>`;
+    + `<span class="chn-i">${m.i}</span><span class="chn-t">${esc(tel ? url.slice(4) : m.name)}</span></a>`;
 }
 const chList = (raw) => (Array.isArray(raw) ? raw : []).filter((x) => x && CHANNELS[x.kind] && typeof x.url === 'string' && x.url);
 function channelRow(raw, cls) {
@@ -803,18 +810,43 @@ const SECTIONS = {
       s.contact_phone ? `ĐT: ${esc(s.contact_phone)}` : '',
       s.contact_email ? `Email: ${esc(s.contact_email)}` : '',
     ].filter(Boolean);
-    return `<footer class="ftr"><div class="wrap">
-      <div class="ftr-grid">
-        <div class="ftr-about">
-          <div class="ftr-brand">${esc(ctx.shop.name)}</div>
-          ${bits.length ? `<div class="ftr-contact">${bits.join('<br>')}</div>` : ''}
-          <div class="badges"><span>${I_TRUCK}Giao toàn quốc</span><span>${I_SHIELD}COD · QR</span></div>
-          ${social}
+    // Bố cục 4 TẦNG kiểu M.O.I (chủ shop chỉ thẳng trang đó làm chuẩn):
+    //   1) dải thương hiệu + cam kết   2) lưới cột liên kết
+    //   3) dải "thanh toán | theo dõi" 4) dòng bản quyền căn giữa
+    // Nền = màu chủ đạo, chữ trắng — giống M.O.I và hợp với luật đã có của trang Giao
+    // diện ("màu chủ đạo nên chọn màu đậm/tối để chữ rõ"), vì banner/topbar cũng đã
+    // dựa vào đúng giả định đó.
+    //
+    // KHÔNG bê nguyên dải "đăng ký nhận email" của M.O.I: nền tảng chưa có danh sách
+    // người đăng ký nào để lưu vào. Một ô email + nút bấm mà gửi đi không tới đâu thì
+    // tệ hơn là không có — khách điền xong tưởng đã đăng ký. Cần thì làm thành tính
+    // năng thật (bảng + trang quản lý), không phải một khối trang trí.
+    const payRow = `<div class="ftr-pay">
+        <h4>Phương thức thanh toán</h4>
+        <div class="paylist">
+          <span class="pay">${I_TRUCK}COD — trả khi nhận</span>
+          <span class="pay">${I_SHIELD}Chuyển khoản QR</span>
         </div>
-        ${shopCol}${helpCol}${menuCol}
+      </div>`;
+    const followRow = social
+      ? `<div class="ftr-follow"><h4>Theo dõi chúng tôi</h4>${social}</div>` : '';
+    return `<footer class="ftr">
+      <div class="ftr-hd"><div class="wrap">
+        <div class="ftr-mark">${ctx.shop.logo_url ? `<img src="${esc(ctx.shop.logo_url)}" alt="${esc(ctx.shop.name)}">` : ''}<span>${esc(ctx.shop.name)}</span></div>
+        <div class="badges"><span>${I_TRUCK}Giao hàng toàn quốc</span><span>${I_SHIELD}Thanh toán COD hoặc QR</span></div>
+      </div></div>
+      <div class="wrap ftr-body">
+        <div class="ftr-grid">
+          <div class="ftr-about">
+            <h4>Thông tin liên hệ</h4>
+            ${bits.length ? `<div class="ftr-contact">${bits.join('<br>')}</div>` : '<div class="ftr-contact">Liên hệ cửa hàng để được tư vấn.</div>'}
+          </div>
+          ${shopCol}${helpCol}${menuCol}
+        </div>
       </div>
-      <div class="copy">© ${esc(ctx.shop.name)}</div>
-    </div></footer>${floats}`;
+      <div class="ftr-strip"><div class="wrap">${payRow}${followRow}</div></div>
+      <div class="ftr-legal"><div class="wrap">© ${esc(ctx.shop.name)}${s.business_address ? ` · ${esc(s.business_address)}` : ''}</div></div>
+    </footer>${floats}`;
   },
 };
 
@@ -1504,15 +1536,45 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
 .btn-solid:hover{background:var(--color-primary-dark);transform:translateY(-2px)}
 @media(max-width:820px){.story .wrap{grid-template-columns:1fr;gap:18px}}
 /* ── Footer 4 cột ── */
-.ftr{border-top:1px solid var(--color-border);background:var(--color-surface);margin-top:36px}
-.ftr .wrap{padding:clamp(38px,5vw,56px) 20px 26px;color:var(--color-muted);font-size:.88rem}
-.ftr-grid{display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr;gap:32px}
-.ftr-brand{font-family:var(--font-heading);font-weight:800;font-size:1rem;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text);margin:0 0 12px}
-.ftr-col h4{margin:0 0 12px;font-size:.76rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--color-text)}
-.ftr-col a{display:block;padding:4px 0;color:var(--color-muted);font-weight:500;transition:color .15s}.ftr-col a:hover{color:var(--color-primary)}
-.ftr-contact{font-size:.85rem;color:var(--color-muted);margin:0 0 14px;line-height:1.7}
-.ftr .badges{display:flex;gap:18px;flex-wrap:wrap}.ftr .badges span{display:inline-flex;align-items:center;gap:6px}.ftr .badges svg{width:16px;height:16px;color:var(--color-primary)}
-.ftr .copy{margin-top:30px;padding-top:18px;border-top:1px solid var(--color-border);font-size:.84rem}
+/* ── CHÂN TRANG 4 TẦNG (dựng theo M.O.I Cosmetics — chủ shop chỉ thẳng trang đó) ──
+   Nền = MÀU CHỦ ĐẠO, chữ trắng. Trang Giao diện vốn đã dặn "màu chủ đạo nên chọn màu
+   đậm/tối để chữ rõ" và banner/topbar đã dựa vào đúng giả định đó, nên chân trang
+   dùng chung luật ấy chứ không đẻ ra token mới.
+   Vạch ngăn giữa các tầng là trắng-mờ, không phải --color-border: trên nền màu thì
+   đường viền xám biến mất. */
+.ftr{background:var(--color-primary);color:#fff;margin-top:48px}
+.ftr .wrap{padding:0 20px}
+.ftr a{color:rgba(255,255,255,.9)}
+.ftr h4{margin:0 0 14px;font-family:var(--font-heading);font-size:.95rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#fff}
+/* Tầng 1 — thương hiệu + cam kết */
+.ftr-hd{border-bottom:1px solid rgba(255,255,255,.22)}
+.ftr-hd .wrap{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;padding-top:26px;padding-bottom:26px}
+.ftr-mark{display:inline-flex;align-items:center;gap:12px;font-family:var(--font-heading);font-weight:800;font-size:1.5rem;letter-spacing:.14em;text-transform:uppercase;color:#fff}
+.ftr-mark img{max-height:42px;max-width:150px;object-fit:contain}
+.ftr .badges{display:flex;gap:22px;flex-wrap:wrap;font-size:.88rem;color:rgba(255,255,255,.92)}
+.ftr .badges span{display:inline-flex;align-items:center;gap:7px}
+.ftr .badges svg{width:18px;height:18px;color:#fff;flex:0 0 18px}
+/* Tầng 2 — lưới cột */
+.ftr-body{padding-top:34px;padding-bottom:30px}
+.ftr-grid{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:34px}
+.ftr-col a{display:block;padding:5px 0;font-weight:500;font-size:.92rem;transition:opacity .15s}
+.ftr-col a:hover{opacity:.72;text-decoration:none}
+.ftr-contact{font-size:.92rem;line-height:1.85;color:rgba(255,255,255,.92)}
+/* Tầng 3 — thanh toán | theo dõi */
+.ftr-strip{border-top:1px solid rgba(255,255,255,.22)}
+.ftr-strip .wrap{display:flex;align-items:center;justify-content:space-between;gap:26px;flex-wrap:wrap;padding-top:24px;padding-bottom:24px}
+.ftr-strip h4{margin-bottom:12px}
+.paylist{display:flex;gap:10px;flex-wrap:wrap}
+.pay{display:inline-flex;align-items:center;gap:8px;padding:9px 15px;border-radius:999px;background:rgba(255,255,255,.14);
+  border:1px solid rgba(255,255,255,.26);font-size:.86rem;font-weight:600;color:#fff}
+.pay svg{width:17px;height:17px;flex:0 0 17px}
+.ftr-follow .chn-row{margin-top:0}
+/* Trên nền màu: pill kênh dùng nền TRẮNG cho icon thương hiệu nổi đúng màu của nó. */
+.ftr .chn{background:#fff;border-color:transparent;color:var(--color-text)}
+.ftr .chn:hover{box-shadow:0 3px 14px rgba(0,0,0,.18);color:var(--c)}
+/* Tầng 4 — bản quyền */
+.ftr-legal{border-top:1px solid rgba(255,255,255,.22)}
+.ftr-legal .wrap{padding-top:18px;padding-bottom:22px;text-align:center;font-size:.85rem;color:rgba(255,255,255,.84)}
 /* ── Kênh bán & mạng xã hội ───────────────────────────────────────────────────
    Một kiểu pill dùng cho CẢ hai chỗ (footer + nút nổi) — khác nhau chỉ ở lớp phụ.
    --c là màu thương hiệu của kênh, do server đặt inline từ bảng CHANNELS; kênh
@@ -1523,7 +1585,8 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
   text-decoration:none;transition:border-color .15s,box-shadow .15s,transform .15s}
 .chn:hover{border-color:var(--c);box-shadow:0 2px 10px color-mix(in srgb,var(--c) 26%,transparent);color:var(--c)}
 .chn-i{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;flex:0 0 26px;border-radius:999px;
-  background:var(--c);color:#fff;font-size:.66rem;font-weight:800;letter-spacing:.02em}
+  background:var(--c);color:#fff}
+.chn-i svg{width:15px;height:15px;display:block}
 /* Nút NỔI: cùng pill, neo cố định góc phải. z-index 45 — TRÊN nội dung nhưng DƯỚI
    lightbox(50)/thanh mua(55)/tabbar(60)/drawer(70) để không bao giờ che một lớp phủ. */
 .fab{position:fixed;right:14px;bottom:16px;z-index:45;display:flex;flex-direction:column;align-items:flex-end;gap:8px}
@@ -1538,11 +1601,34 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
   /* Trang SP có thanh mua dính đáy (cao ~64px) → đẩy cụm nút lên khỏi nó. */
   body.has-buybar .fab{bottom:84px}
 }
-@media(max-width:900px){.ftr-grid{grid-template-columns:1fr 1fr}.ftr-about{grid-column:1/-1}}
+@media(max-width:900px){.ftr-grid{grid-template-columns:1fr 1fr}.ftr-about{grid-column:1/-1}
+  .ftr-hd .wrap,.ftr-strip .wrap{flex-direction:column;align-items:flex-start;gap:16px}}
 /* ≤480 GIỮ 2 cột thay vì rơi về 1. Một cột làm chân trang cao 774px ở màn 375 — khách
    phải cuộn qua gần một màn hình rưỡi toàn liên kết. Nhãn ở đây đều ngắn ("Trang chủ",
    "Giỏ hàng") nên 2 cột ~150px vẫn đọc tốt, và chiều cao giảm gần nửa. */
-@media(max-width:480px){.ftr-grid{gap:22px 18px}.ftr-col h4{margin-bottom:8px}.ftr-col a{padding:3px 0}}
+@media(max-width:560px){
+  /* Kênh ở chân trang rút còn ICON như M.O.I: 6 pill có chữ chiếm 3 hàng (chân trang
+     vọt lên 1038px ở màn 375). Icon một hàng, tên vẫn nằm trong title/aria cho trình
+     đọc màn hình. Nút NỔI vốn đã rút icon từ trước. */
+  .ftr .chn{padding:7px}
+  .ftr .chn-t{display:none}
+  .ftr .chn-i{width:34px;height:34px;flex-basis:34px}
+  .ftr .chn-i svg{width:19px;height:19px}
+  .ftr-grid{gap:22px 18px}
+  .ftr-col h4{margin-bottom:8px}
+  .ftr-col a{padding:3px 0}
+  .ftr-mark{font-size:1.25rem}
+  .ftr-hd .wrap,.ftr-strip .wrap{padding-top:20px;padding-bottom:20px}
+  .ftr-body{padding-top:26px;padding-bottom:22px}
+  .ftr .badges{gap:14px;font-size:.84rem}
+  /* Chip thanh toán nhỏ lại để hai cái vừa MỘT hàng — xếp chồng làm tầng này phình
+     lên 330px, lệch hẳn so với các tầng khác. */
+  .pay{padding:6px 10px;font-size:.75rem;gap:5px}
+  .pay svg{width:14px;height:14px;flex-basis:14px}
+  .paylist{gap:8px}
+  .ftr-strip .wrap{gap:18px}
+  .ftr-strip h4{margin-bottom:9px}
+}
 .center-msg{max-width:520px;margin:80px auto;text-align:center;padding:0 20px}.center-msg h1{font-size:1.8rem;margin:0 0 10px;font-weight:800;letter-spacing:-.02em}.center-msg p{color:var(--color-muted)}
 .preview-banner{position:sticky;top:0;z-index:30;background:#b45309;color:#fff;padding:10px 20px;font-weight:600;text-align:center;font-size:.9rem}
 /* ── Trang sản phẩm nâng cấp: gallery no-JS (radio+:checked), chip biến thể, specs, lightbox ── */

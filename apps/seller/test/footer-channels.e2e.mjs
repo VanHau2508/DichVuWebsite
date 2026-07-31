@@ -155,8 +155,10 @@ async function main() {
   // /products do CHÍNH storefront phục vụ và KHÔNG đi qua layout (khác trang chủ) —
   // đúng đường mà lỗi "props rỗng" sẽ lộ ra. (/cart là của service checkout, 404 ở đây.)
   let pr = await sf(A.host, '/products');
-  (pr.status === 200 && /class="chn ftr-chn"[^>]*shopee\.vn/.test(pr.body) && pr.body.includes('>SP<'))
-    ? ok('pill Shopee hiện ở chân trang /products (props rỗng → tra lại layout)')
+  // Icon giờ là SVG tự vẽ, không còn chữ viết tắt 2 ký tự — ca này trước kiểm '>SP<'.
+  (pr.status === 200 && /class="chn ftr-chn"[^>]*shopee\.vn/.test(pr.body)
+    && /<span class="chn-i"><svg /.test(pr.body) && /title="Shopee"/.test(pr.body))
+    ? ok('pill Shopee hiện ở chân trang /products, icon là SVG (props rỗng → tra lại layout)')
     : bad('kênh mất ở trang không-phải-trang-chủ', String(pr.status));
   /href="tel:0912345678"/.test(pr.body) && pr.body.includes('>0912345678<')
     ? ok('kênh Gọi ngay → href tel: + hiện đúng số') : bad('tel: sai');

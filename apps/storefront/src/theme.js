@@ -375,7 +375,15 @@ const SECTIONS = {
     const band = hp.nav_style === 'band';
     const toggle = `<input type="checkbox" id="navtoggle" class="navtoggle vh" aria-label="Mở/đóng menu">`;
     const burger = `<label for="navtoggle" class="navburger" aria-hidden="true">☰</label>`;
-    const brandHtml = `<a href="/" class="brand">${ctx.shop.logo_url ? `<img src="${esc(ctx.shop.logo_url)}" alt="${esc(ctx.shop.name)}" class="brand-logo">` : esc(ctx.shop.name)}</a>`;
+    // LOGO KHÔNG NUỐT TÊN SHOP. Trước đây đây là phép chọn HOẶC: có logo thì chỉ hiện
+    // ảnh, mất hẳn chữ — chủ shop tải logo dạng biểu tượng lên là tên cửa hàng biến mất.
+    // Nay hiện CẢ HAI. Logo đã chứa sẵn tên (kiểu wordmark) thì tắt chữ bằng
+    // header props brand_show_name=false.
+    const showName = props.brand_show_name !== false && saved.brand_show_name !== false;
+    const brandHtml = `<a href="/" class="brand">`
+      + (ctx.shop.logo_url ? `<img src="${esc(ctx.shop.logo_url)}" alt="${esc(ctx.shop.name)}" class="brand-logo">` : '')
+      + (!ctx.shop.logo_url || showName ? `<span class="brand-name">${esc(ctx.shop.name)}</span>` : '')
+      + `</a>`;
     const navHtml = `<nav class="hnav">
       <form class="hnav-search" method="GET" action="/search" role="search">
         <input name="q" value="${esc(ctx.query ?? '')}" placeholder="Tìm sản phẩm…" aria-label="Tìm sản phẩm">
@@ -593,7 +601,8 @@ const SECTIONS = {
     const cell = (s) => {
       const src = esc(`${MEDIA_PUBLIC_BASE}/${s.image_key}`);
       const cap = s.headline ? `<span class="promo-cap">${esc(s.headline)}</span>` : '';
-      const inner = `<img src="${src}" alt="${esc(s.headline || '')}" loading="lazy">${cap}`;
+      const inner = `<img class="promo-bg" src="${src}" alt="" aria-hidden="true" loading="lazy">`
+        + `<img src="${src}" alt="${esc(s.headline || '')}" loading="lazy">${cap}`;
       const href = s.button_link ? normLink(s.button_link) : '';
       return href ? `<a class="promo-cell" href="${esc(href)}">${inner}</a>` : `<div class="promo-cell">${inner}</div>`;
     };
@@ -789,7 +798,12 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 /* Brand editorial: chữ HOA giãn cách (khí chất MAISON); logo ảnh giữ nguyên kích thước. */
 .brand{font-family:var(--font-heading);font-weight:800;font-size:1.06rem;letter-spacing:.16em;text-transform:uppercase;color:var(--color-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:min(52vw,320px);display:inline-flex;align-items:center}
 .brand-logo{max-width:min(52vw,180px)}
-.brand-logo{max-height:40px;max-width:180px;width:auto;display:block}
+/* Logo ĐỨNG CẠNH tên shop (không thay thế). Logo nhỏ lại để chữ còn chỗ; khoảng
+   cách 10px; tên tự cắt bằng ellipsis khi màn hẹp thay vì đẩy vỡ header. */
+.brand-logo{max-height:34px;max-width:120px;width:auto;display:block;flex:0 0 auto}
+.brand{gap:10px}
+.brand-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+@media(max-width:560px){.brand-logo{max-height:28px;max-width:84px}}
 .hnav{display:flex;align-items:center;gap:22px;font-size:.86rem;flex-wrap:wrap;margin-right:auto}
 .hnav>a,.hnav-trig{color:var(--color-muted);font-weight:600;letter-spacing:.02em;transition:color .15s}
 .hnav>a:hover,.hnav-trig:hover{color:var(--color-primary)}
@@ -1138,7 +1152,10 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 /* Lưới SP nổi bật + trang danh mục (#san-pham): 3 cột thoáng như mẫu → 2 (tablet) → 1 (mobile). */
 #san-pham .grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:28px}
 @media(max-width:960px){#san-pham .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}}
-@media(max-width:560px){#san-pham .grid{grid-template-columns:1fr}}
+/* Điện thoại: 2 CỘT, không phải 1. Sàn TMĐT Việt (Shopee/TikTok Shop) và chính
+   trang mẫu chủ shop đối chiếu đều 2 cột — 1 cột làm thẻ quá to, khách phải cuộn
+   gấp đôi mới thấy hết hàng. gap nhỏ lại cho vừa bề ngang máy. */
+@media(max-width:560px){#san-pham .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}}
 /* ═══ GĐ2 preset — bố cục khác theo ngành: số cột lưới · collections cards · product_spotlight ═══ */
 /* Cột lưới SP nổi bật (product_grid prop columns 2..5). #san-pham .grid.grid-cN (id+2 class) THẮNG
    rule cứng #san-pham .grid ở trên; media query PHẢI lặp selector (không cộng specificity). */
@@ -1147,7 +1164,7 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 #san-pham .grid.grid-c4{grid-template-columns:repeat(4,minmax(0,1fr));gap:22px}
 #san-pham .grid.grid-c5{grid-template-columns:repeat(5,minmax(0,1fr));gap:18px}
 @media(max-width:960px){#san-pham .grid.grid-c2,#san-pham .grid.grid-c3,#san-pham .grid.grid-c4,#san-pham .grid.grid-c5{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}}
-@media(max-width:560px){#san-pham .grid.grid-c2,#san-pham .grid.grid-c3,#san-pham .grid.grid-c4,#san-pham .grid.grid-c5{grid-template-columns:1fr}}
+@media(max-width:560px){#san-pham .grid.grid-c2,#san-pham .grid.grid-c3,#san-pham .grid.grid-c4,#san-pham .grid.grid-c5{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}}
 /* collections 'cards' (tile TO hơn, ít cột) — nền/hiệu ứng .coll-tile giữ nguyên, tự về 1 cột mobile */
 .coll-grid.coll-cards{grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:22px}
 .coll-grid.coll-cards .coll-tile{min-height:250px;padding:30px 32px;border-radius:var(--r-xl)}
@@ -1213,7 +1230,12 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 /* 3 BANNER KHUYẾN MÃI ngang bằng (preset M.O.I) — ảnh shop upload, tự-ẩn khi rỗng. */
 .promo-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
 .promo-cell{position:relative;display:block;overflow:hidden;border-radius:var(--r-lg);aspect-ratio:16/9;background:var(--color-surface)}
-.promo-cell img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .4s}
+/* KHÔNG cắt ảnh. Trước đây object-fit:cover trên khung cứng 16/9 xén mất mép của
+   mọi banner khác tỉ lệ — chủ shop hỏi thẳng "lỗi scale hay phải tìm đúng tỉ lệ?".
+   Câu trả lời đúng là hệ thống tự lo: nền MỜ phủ kín (giữ khung đều nhau) + ảnh
+   THẬT contain phía trên (không mất gì). Đúng cách hero đã dùng. */
+.promo-cell img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block;transition:transform .4s;z-index:1}
+.promo-cell .promo-bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;filter:blur(18px) saturate(1.1);transform:scale(1.12);z-index:0}
 .promo-cell:hover img{transform:scale(1.04)}
 .promo-cap{position:absolute;left:0;right:0;bottom:0;padding:10px 14px;background:linear-gradient(0deg,rgba(0,0,0,.5),transparent);color:#fff;font-weight:700;font-size:.9rem}
 @media(max-width:640px){.promo-grid{grid-template-columns:1fr}}

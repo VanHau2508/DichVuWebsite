@@ -637,6 +637,25 @@ async function main() {
     ? ok('overlay: headline + sub + nút (link nội bộ)') : bad('overlay banner thiếu field');
   !r.body.includes('phu-tu-dong')
     ? ok('có banner → KHÔNG render hero tự động (subtitle cũ biến mất)') : bad('hero tự động vẫn render cùng banner');
+  // ── Menu "Sản phẩm" trên mobile: GẬP, không xổ sẵn ──────────────────────────
+  // Chủ shop báo: mở hamburger là toàn bộ danh mục xổ hết, "nhìn hơi rối". Cơ chế gập
+  // là CSS thuần (checkbox ẩn + luật ~), nên e2e không đo được cái hiện/ẩn — nhưng đo
+  // được thứ mà nếu hỏng thì CSS đó chết câm: THỨ TỰ DOM. Luật `.catdrop:checked~
+  // .hnav-menu` chỉ chạy khi checkbox đứng TRƯỚC menu trong cùng cha; ai đó đảo hai
+  // dòng đó là menu mở không được nữa mà chẳng có gì báo.
+  sect('Menu mobile: nút gập danh mục');
+  r = await sf(A.host, '/');
+  const drop = /<div class="hnav-drop">([\s\S]*?)<\/div>\s*<\/div>/.exec(r.body)?.[0] ?? '';
+  const iCb = drop.indexOf('id="catdrop"'), iMenu = drop.indexOf('class="hnav-menu');
+  (iCb > 0 && iMenu > iCb)
+    ? ok('checkbox gập đứng TRƯỚC menu trong cùng .hnav-drop (luật ~ mới chạy)')
+    : bad('sai thứ tự DOM — menu sẽ không mở được', `cb=${iCb} menu=${iMenu}`);
+  /<label class="hnav-trigm" for="catdrop">/.test(drop)
+    ? ok('nhãn gập trỏ đúng checkbox') : bad('nhãn gập sai/thiếu');
+  // Nhãn thay thẻ <a> ở mobile → phải còn một đường tới /products bên trong menu.
+  /<a class="mega-all" href="\/products">/.test(drop)
+    ? ok('có "Tất cả sản phẩm" trong menu (mobile không mất đường tới /products)') : bad('thiếu lối vào /products');
+
   // ── Ảnh danh mục (0118): tự đặt THẮNG ảnh suy từ SP; không có ảnh → chữ cái đầu ──
   // Chủ shop báo "ô danh mục trống, xấu": dải danh mục lấy ảnh SP mới nhất trong danh
   // mục, shop chưa có SP thì mọi ô là một icon lưới xám giống hệt nhau.

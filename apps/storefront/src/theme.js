@@ -412,9 +412,21 @@ const SECTIONS = {
     // Hàng lối-tắt (Nổi bật/Hàng mới/Khuyến mãi + liên kết riêng) nằm trên cùng, mảnh; danh mục
     // là phần chính bên dưới. Trig CLICK đi thẳng /products (touch/mobile không hover được).
     const quickRow = [shortcuts, navLinksHtml].filter(Boolean).join('');
+    // HAI bộ kích hoạt cho CÙNG một menu, mỗi bộ hiện ở một cỡ màn:
+    //   desktop = <a> + hover (như cũ, không đổi gì);
+    //   mobile  = <label> gập/mở bằng checkbox ẩn.
+    // Vì sao phải tách: trên mobile trước đây menu bị đặt display:flex CỐ ĐỊNH nên vừa
+    // mở hamburger là toàn bộ danh mục xổ hết — chủ shop nói "nhìn hơi rối". Mà cũng
+    // không thể dùng chính thẻ <a> làm nút gập: chạm vào nó là ĐI tới /products.
+    // <details> thì hỏng desktop (trình duyệt giấu nội dung khi chưa [open], CSS không
+    // đè lại được một cách đáng tin), nên chọn checkbox+label — vẫn 0 JS.
+    // "Tất cả sản phẩm" nằm TRONG menu để mobile không mất đường tới /products.
     const productMenu = `<div class="hnav-drop">
+        <input type="checkbox" id="catdrop" class="catdrop vh" aria-label="Mở danh mục sản phẩm">
         <a class="hnav-trig" href="/products" aria-haspopup="true">Sản phẩm<span class="caret" aria-hidden="true">▾</span></a>
+        <label class="hnav-trigm" for="catdrop">Sản phẩm<span class="caretm" aria-hidden="true">▾</span></label>
         <div class="hnav-menu hnav-mega" role="menu">
+          <a class="mega-all" href="/products">Tất cả sản phẩm</a>
           ${quickRow ? `<div class="mega-quick">${quickRow}</div>` : ''}
           ${catCols ? `<div class="mega-cols">${catCols}</div>` : ''}
         </div>
@@ -891,6 +903,14 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .hnav-drop:hover .hnav-menu,.hnav-drop:focus-within .hnav-menu{display:flex}
 .hnav-menu a{padding:9px 12px;border-radius:var(--r-sm);color:var(--color-text);font-weight:500;white-space:nowrap;transition:background .15s,color .15s}
 .hnav-menu a:hover{background:var(--color-hero-bg);color:var(--color-primary)}
+/* Nút gập MOBILE và link "Tất cả sản phẩm": chỉ tồn tại ở ≤720px (bật lại trong media
+   query cuối file). Ẩn ở đây để desktop giữ NGUYÊN hành vi hover cũ, không đổi gì. */
+.hnav-trigm,.mega-all{display:none}
+/* Checkbox gập chỉ dùng ở mobile. Phải display:none (không phải .vh) ở desktop: .vh chỉ
+   che bằng clip nên phần tử VẪN NHẬN FOCUS, mà nó nằm trong .hnav-drop → :focus-within
+   khớp → menu desktop dính mở. Đo thật lúc chưa vá: ở 1280px menu hiện sẵn sau khi
+   checkbox từng được focus. display:none đưa nó ra khỏi luồng tab luôn. */
+.catdrop{display:none}
 .hnav-sep{height:1px;background:var(--color-border);margin:6px 6px}
 /* Menu danh mục SỔ DỌC + FLYOUT PHẢI (0095): danh sách 1 cột; danh mục CÓ CON → rê chuột,
    con hiện PANEL RIÊNG bên PHẢI (KHÔNG đẩy mục khác xuống — chịu được nhiều con). Con nằm
@@ -981,12 +1001,30 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
   .brand{order:1;margin-right:auto;flex:1 1 0;min-width:0}
   .hicons{order:2;flex:0 0 auto}
   .hnav{order:3;display:none;flex-basis:100%;flex-direction:column;align-items:stretch;gap:0;padding:4px 0 8px;margin:0;background:var(--color-bg);border-top:1px solid var(--color-border)}
-  .hnav>a,.hnav-trig{padding:12px 2px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 60%,transparent)}
+  .hnav>a,.hnav-trig,.hnav-trigm{padding:12px 2px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 60%,transparent)}
   .navtoggle:checked~.hnav{display:flex}
   .hnav-drop{position:static}
   .caret{display:none}
-  .hnav-menu{position:static;display:flex;box-shadow:none;border:0;border-radius:0;padding:2px 0 8px 14px;min-width:0;background:transparent}
+  /* Mobile: hàng "Sản phẩm" là NÚT GẬP, không phải link. Trước đây menu để display:flex
+     cố định nên mở hamburger là xổ sạch danh mục. Thẻ <a> desktop ẩn đi (chạm vào nó sẽ
+     ĐI chứ không mở), thay bằng <label> gạt checkbox ẩn — vẫn 0 JS, vẫn dùng bàn phím
+     được (checkbox nhận focus, Space bật/tắt). */
+  .hnav-trig{display:none}
+  .catdrop{display:block}   /* mobile: bật lại, .vh lo phần che — vẫn dùng bàn phím được */
+  .hnav-trigm{display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;
+    color:var(--color-muted);font-weight:600;letter-spacing:.02em;-webkit-user-select:none;user-select:none}
+  .caretm{transition:transform .18s;font-size:.8em;opacity:.75}
+  .catdrop:checked~.hnav-trigm .caretm{transform:rotate(180deg)}
+  .hnav-menu{position:static;display:none;box-shadow:none;border:0;border-radius:0;padding:2px 0 8px 14px;min-width:0;background:transparent}
+  /* PHẢI tắt hover/:focus-within ở đây. Chúng là affordance của desktop, nhưng trên
+     mobile chạm nhãn xong thì CHECKBOX GIỮ FOCUS → :focus-within khớp → menu dính mở,
+     chạm lại không gập được. Đo thật lúc chưa vá: checked=false mà menu vẫn hiện.
+     Luật :checked đặt SAU và thêm một cấp .hnav-drop để chắc chắn thắng. */
+  .hnav-drop:hover .hnav-menu,.hnav-drop:focus-within .hnav-menu{display:none}
+  .hnav-drop .catdrop:checked~.hnav-menu{display:flex}
   .hnav-menu a{padding:9px 2px}
+  /* Mở gập rồi thì vẫn phải tới được /products — thẻ <a> gốc đã ẩn ở trên. */
+  .mega-all{display:block;font-weight:700}
   .hnav-sep{display:none}
   /* Menu mobile (chạm, không hover): flyout → hiện hết con INLINE thụt lề, bỏ mũi + header. */
   .hnav-mega{padding:2px 0 8px 14px}
@@ -1002,7 +1040,7 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
   .navtoggle:checked~.hnav-band{display:block}
   .hdr-band .hnav-band .wrap{display:block;padding:0}
   .hdr-band .hnav{display:flex;background:var(--color-primary);border-top:0;padding:2px 0 8px;margin:0}
-  .hdr-band .hnav>a,.hdr-band .hnav-trig{color:#fff;border-bottom-color:rgba(255,255,255,.22);padding:12px 16px}
+  .hdr-band .hnav>a,.hdr-band .hnav-trig,.hdr-band .hnav-trigm{color:#fff;border-bottom-color:rgba(255,255,255,.22);padding:12px 16px}
   .hdr-band .hnav-menu{background:var(--color-bg);border-radius:8px;margin:2px 12px 6px;padding:6px}
 }
 /* ── HERO CAROUSEL (thuần CSS, không JS — hợp CSP default-src 'none') ─────────────
@@ -1501,7 +1539,10 @@ a.sort-link:hover{border-color:var(--color-primary);color:var(--color-primary);b
   body.has-buybar .fab{bottom:84px}
 }
 @media(max-width:900px){.ftr-grid{grid-template-columns:1fr 1fr}.ftr-about{grid-column:1/-1}}
-@media(max-width:480px){.ftr-grid{grid-template-columns:1fr}}
+/* ≤480 GIỮ 2 cột thay vì rơi về 1. Một cột làm chân trang cao 774px ở màn 375 — khách
+   phải cuộn qua gần một màn hình rưỡi toàn liên kết. Nhãn ở đây đều ngắn ("Trang chủ",
+   "Giỏ hàng") nên 2 cột ~150px vẫn đọc tốt, và chiều cao giảm gần nửa. */
+@media(max-width:480px){.ftr-grid{gap:22px 18px}.ftr-col h4{margin-bottom:8px}.ftr-col a{padding:3px 0}}
 .center-msg{max-width:520px;margin:80px auto;text-align:center;padding:0 20px}.center-msg h1{font-size:1.8rem;margin:0 0 10px;font-weight:800;letter-spacing:-.02em}.center-msg p{color:var(--color-muted)}
 .preview-banner{position:sticky;top:0;z-index:30;background:#b45309;color:#fff;padding:10px 20px;font-weight:600;text-align:center;font-size:.9rem}
 /* ── Trang sản phẩm nâng cấp: gallery no-JS (radio+:checked), chip biến thể, specs, lightbox ── */

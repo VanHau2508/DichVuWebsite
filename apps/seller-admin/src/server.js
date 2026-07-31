@@ -821,6 +821,10 @@ async function orderAction(req, res, me, cookie, shopId, oid, action) {
     // Bom hàng: checkbox "Nhập lại kho" (checked → restock; bỏ → hàng hỏng không nhập lại).
     const f = await readFormAll(req);
     body = { restock: f.get('restock') != null, reason: String(f.get('reason') ?? '').trim() };
+  } else if (action === 'cancel') {
+    // Lý do huỷ (0117) — seller BẮT BUỘC có khi đơn đã thanh toán, và gửi nó cho khách.
+    const f = await readFormAll(req);
+    body = { reason: String(f.get('reason') ?? '').trim() };
   }
   const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/${action}`, { cookie, body });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}`);

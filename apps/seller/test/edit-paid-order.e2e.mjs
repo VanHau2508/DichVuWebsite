@@ -135,6 +135,44 @@ async function main() {
   r = await rq(SELLER, 'POST', eurl(id2), { body: { lines: [{ variant_id: A, qty: 3 }], customer: cust }, cookie: mc, origin: OS });
   r.status === 403 && r.json?.required === 'refund' ? ok('order_manager → 403 (thiếu perm refund)') : bad('role thấp sửa được đơn đã trả!', `${r.status} ${JSON.stringify(r.json)}`);
 
+  sect('Huỷ đơn ĐÃ TRẢ TIỀN (0117): bắt buộc lý do, lý do đi vào email khách');
+  // Trước 0117 nhánh cancel không hề nhìn payment_status: đơn khách đã chuyển khoản huỷ
+  // được bằng một cú bấm, không lý do, không phiếu hoàn, email chỉ nói "đã huỷ". Tiền
+  // không mất khỏi sổ nhưng KHOẢN NỢ KHÁCH biến mất khỏi tầm mắt.
+  const cid = await mkPaidOrder();
+  const curl = `/shops/${shopId}/orders/${cid}/cancel`;
+  r = await rq(SELLER, 'POST', curl, { body: {}, cookie: oc, origin: OS });
+  r.status === 400 && /lý do/i.test(r.json?.error ?? '')
+    ? ok('đơn đã trả + KHÔNG lý do → 400') : bad('huỷ lọt không cần lý do', `${r.status} ${JSON.stringify(r.json)}`);
+  (await colOf(cid, 'status')) === 'confirmed'
+    ? ok('đơn KHÔNG bị huỷ khi thiếu lý do (không đổi trạng thái nửa vời)') : bad('đơn đã đổi trạng thái dù 400');
+
+  r = await rq(SELLER, 'POST', curl, { body: { reason: 'hết hàng, không kịp giao' }, cookie: oc, origin: OS });
+  r.status === 200 ? ok('có lý do → huỷ được (không CẤM, chỉ bắt nêu lý do)') : bad('huỷ có lý do vẫn hỏng', String(r.status));
+  (await colOf(cid, 'cancel_reason')) === 'hết hàng, không kịp giao'
+    ? ok('lý do lưu vào orders.cancel_reason') : bad('không lưu lý do');
+
+  // Email khách PHẢI mang lý do + số tiền sẽ hoàn — người mất tiền có quyền biết.
+  const ev = (await owner.query(
+    `SELECT payload FROM outbox WHERE topic='order.status_changed'
+       AND payload->>'status'='cancelled' AND shop_id=$1 ORDER BY id DESC LIMIT 1`, [shopId])).rows[0]?.payload;
+  ev?.cancel_reason === 'hết hàng, không kịp giao' && Number(ev?.refund_due_vnd) === 530000
+    ? ok('outbox mang cancel_reason + refund_due_vnd = 530.000đ') : bad('payload email thiếu', JSON.stringify(ev));
+
+  // KHÔNG tự tạo phiếu hoàn: tiền ra khỏi tài khoản là việc người bán làm tay. Bịa một
+  // bút toán "đã hoàn" trong khi tiền chưa đi là nói dối sổ sách.
+  Number((await owner.query(`SELECT count(*)::int n FROM refunds WHERE order_id=$1`, [cid])).rows[0].n) === 0
+    ? ok('KHÔNG tự tạo phiếu hoàn (tiền chưa thật sự đi)') : bad('tự bịa phiếu hoàn');
+
+  // Đơn CHƯA trả tiền: lý do vẫn tuỳ chọn — không thêm ma sát chỗ không cần.
+  const cartU = (await co("POST", "/cart/items", { json: { variant_id: A, qty: 1 } })).cartCookie;
+  // payment_method BẮT BUỘC — thiếu thì checkout không tạo đơn, và truy vấn "đơn mới
+  // nhất" bên dưới nhặt trúng đơn VỪA HUỶ ở trên rồi báo 409. Đã dính đúng bẫy đó.
+  await co('POST', '/checkout', { json: { customer: { name: 'K2', phone: '0912000112', email: 'k2@x.vn' }, address: { line: 'Số 2', province: 'Hà Nội' }, payment_method: 'cod' }, cartCookie: cartU, idem: `u-${uniq()}` });
+  const uid = (await owner.query(`SELECT id FROM orders WHERE shop_id=$1 AND status='pending' ORDER BY created_at DESC LIMIT 1`, [shopId])).rows[0].id;
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${uid}/cancel`, { body: {}, cookie: oc, origin: OS });
+  r.status === 200 ? ok('đơn CHƯA trả → huỷ không cần lý do') : bad('bắt lý do cả đơn chưa trả', String(r.status));
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

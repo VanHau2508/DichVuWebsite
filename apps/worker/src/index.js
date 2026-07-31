@@ -168,6 +168,17 @@ function compose(topic, p) {
       };
     }
     const label = { confirmed: 'đã được xác nhận', shipped: 'đang trên đường giao', delivered: 'đã giao thành công', cancelled: 'đã huỷ', refunded: 'đã hoàn tiền', returned: 'đã được hoàn về cửa hàng' }[p.status] ?? p.status;
+    // HUỶ ĐƠN (0117): người mất tiền có quyền biết VÌ SAO và BAO NHIÊU sẽ được trả.
+    // Trước đây email chỉ nói "đã huỷ" — khách đã chuyển khoản không có thông tin nào
+    // về khoản tiền của mình.
+    const cancelWhy = p.status === 'cancelled' && p.cancel_reason ? `\nLý do: ${p.cancel_reason}` : '';
+    const cancelDue = p.status === 'cancelled' && Number(p.refund_due_vnd) > 0
+      ? `\nBạn đã thanh toán ${money(p.refund_due_vnd)} cho đơn này — cửa hàng sẽ hoàn lại khoản tiền trên. `
+        + 'Nếu sau vài ngày làm việc chưa nhận được, vui lòng liên hệ cửa hàng.' : '';
+    const cancelWhyHtml = p.status === 'cancelled' && p.cancel_reason ? par(`Lý do: ${escHtml(p.cancel_reason)}`) : '';
+    const cancelDueHtml = p.status === 'cancelled' && Number(p.refund_due_vnd) > 0
+      ? par(`Bạn đã thanh toán <strong>${escHtml(money(p.refund_due_vnd))}</strong> cho đơn này — cửa hàng sẽ hoàn lại khoản tiền trên. `
+        + 'Nếu sau vài ngày làm việc chưa nhận được, vui lòng liên hệ cửa hàng.') : '';
     const extra = p.status === 'shipped' && p.tracking_number ? `\nMã vận đơn: ${p.tracking_number} — bạn có thể tra trên trang của hãng vận chuyển.`
       : p.status === 'delivered' ? '\nCảm ơn bạn đã mua hàng! Nếu có vấn đề với sản phẩm, hãy liên hệ cửa hàng.'
       : p.tracking_number ? `\nMã vận đơn: ${p.tracking_number}` : '';
@@ -176,9 +187,10 @@ function compose(topic, p) {
       : p.tracking_number ? par(`Mã vận đơn: <strong>${escHtml(p.tracking_number)}</strong>`) : '';
     return {
       subject: `Đơn hàng #${p.order_number} — ${label}`,
-      text: `Đơn hàng #${p.order_number} ${label}.${extra}${footer}`,
+      text: `Đơn hàng #${p.order_number} ${label}.${cancelWhy}${cancelDue}${extra}${footer}`,
       html: emailHtml(p, `Đơn hàng #${p.order_number} — ${label}`,
-        par(`Đơn hàng <strong>#${escHtml(p.order_number)}</strong> ${escHtml(label)}.`) + extraHtml, trackCta),
+        par(`Đơn hàng <strong>#${escHtml(p.order_number)}</strong> ${escHtml(label)}.`)
+        + cancelWhyHtml + cancelDueHtml + extraHtml, trackCta),
     };
   }
   if (topic === 'user.password_reset') {

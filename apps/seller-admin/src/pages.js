@@ -1978,9 +1978,21 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   // hiện khi đã gửi ĐỦ (fulfillment='fulfilled') — khớp guard seller (deliver partial → 409).
   const remLines = (o.lines ?? []).map((l) => ({ ...l, remaining: Number(l.qty) - Number(l.shipped_qty ?? 0) })).filter((l) => l.remaining > 0);
   const canShipManual = ['confirmed', 'shipped'].includes(o.status) && remLines.length > 0;
+  // HUỶ ĐƠN (0117): đơn ĐÃ TRẢ TIỀN thì lý do là BẮT BUỘC — seller trả 400 nếu thiếu,
+  // và lý do đi thẳng vào email cho khách. Nói rõ ngay tại nút là khách sẽ đọc được nó,
+  // để người bán không gõ ghi chú nội bộ vào đây.
+  const paidCancel = o.payment_status === 'paid';
+  const cancelExtra = paidCancel
+    ? `<div class="err" style="margin-bottom:8px;padding:10px 12px">Khách <strong>đã thanh toán ${esc(money(o.total_vnd))}</strong>.
+         Huỷ đơn KHÔNG tự hoàn tiền — bạn phải chuyển lại cho khách.
+         <label style="display:block;margin-top:6px;font-size:.85rem">Lý do huỷ (bắt buộc — khách sẽ nhận được lý do này)
+           <input name="reason" required maxlength="500" placeholder="vd: hết hàng, không kịp giao trước Tết"></label>
+       </div>`
+    : `<label style="display:block;font-size:.82rem;margin-bottom:6px">Lý do huỷ (tuỳ chọn — gửi cho khách)
+         <input name="reason" maxlength="500" placeholder="vd: khách đổi ý"></label>`;
   let actions = '';
-  if (o.status === 'pending') actions = act('confirm', 'Xác nhận đơn') + act('cancel', 'Huỷ đơn', 'btn warn sm');
-  else if (o.status === 'confirmed') actions = act('cancel', 'Huỷ đơn', 'btn warn sm');
+  if (o.status === 'pending') actions = act('confirm', 'Xác nhận đơn') + act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra);
+  else if (o.status === 'confirmed') actions = act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra);
   else if (o.status === 'shipped' && o.fulfillment_status === 'fulfilled') actions = act('deliver', 'Đã giao xong');
   // BOM HÀNG / HOÀN VỀ (audit #58): đơn ĐANG GIAO khách không nhận → hàng về. Restock phần đã gửi +
   // nhả reserve phần chưa gửi (đơn tách bỏ dở) → tồn sạch. Hiện cho MỌI đơn shipped (đủ/một-phần).
@@ -2086,6 +2098,13 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
         </tr>`).join('')}
       </tbody></table>
     </div>` : '';
+  // CÒN NỢ KHÁCH (0117): đơn đã huỷ mà khách đã trả tiền và chưa hoàn đủ. Treo băng đỏ
+  // tới khi có phiếu hoàn bù đủ — khoản nợ phải nằm trong tầm mắt, không nằm trong trí nhớ.
+  const owed = Number(o.total_vnd) - Number(o.refunded_total_vnd ?? 0);
+  const cancelDebt = (o.status === 'cancelled' && o.payment_status === 'paid' && owed > 0)
+    ? `<div class="err"><strong>Còn nợ khách ${esc(money(owed))}</strong> — đơn đã huỷ nhưng khách đã thanh toán.
+         Chuyển khoản lại cho khách, rồi bấm <em>Hoàn tiền</em> bên dưới để ghi nhận. Băng này biến mất khi đã hoàn đủ.</div>`
+    : '';
   return layout(`Đơn #${o.order_number}`, ctx, `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
       <a class="muted" href="/shops/${esc(shopId)}/orders">← Danh sách đơn</a>
@@ -2095,6 +2114,8 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     ${edited ? `<div class="notice ok">✓ Đã lưu sửa đơn — tồn kho &amp; tổng tiền đã cập nhật theo thay đổi.${Number(edited) > 0 ? ` Đã tạo <strong>phiếu hoàn ${money(Number(edited))}</strong> — hãy chuyển khoản lại cho khách.` : ''}</div>` : ''}
     ${returned ? `<div class="notice ok">✓ Đã nhận trả hàng — đã tạo <strong>phiếu hoàn ${money(Number(returned.refund) || 0)}</strong> (tiền hàng, không gồm ship). Hãy chuyển khoản lại cho khách. Hàng ${returned.restock ? '<strong>đã nhập lại kho</strong>' : '<strong>KHÔNG</strong> nhập lại kho'}.</div>` : ''}
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${cancelDebt}
+    ${o.status === 'cancelled' && o.cancel_reason ? `<div class="card" style="border-color:var(--bd)"><strong>Lý do huỷ:</strong> ${esc(o.cancel_reason)}<br><span class="muted" style="font-size:.85rem">Khách đã nhận lý do này qua email.</span></div>` : ''}
     <div class="card"><span class="pill">${badge(o.status, STATUS[o.status] ?? o.status)}</span>
       <span class="pill">${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} ${esc(o.payment_method?.toUpperCase() ?? '')}</span>
       ${['confirmed', 'shipped'].includes(o.status) && ['partial', 'fulfilled'].includes(o.fulfillment_status) ? `<span class="pill">${badge(o.fulfillment_status === 'fulfilled' ? 'delivered' : 'shipped', o.fulfillment_status === 'fulfilled' ? 'Đã gửi đủ' : 'Giao một phần')}</span>` : ''}

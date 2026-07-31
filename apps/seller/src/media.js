@@ -217,6 +217,36 @@ async function uploadBanner(res, ctx, body) {
   return send(res, 200, { key: publicKey, url: mediaPublicUrl(publicKey) });
 }
 
+/**
+ * MỌI ảnh đã upload của shop, mới nhất trước — để người viết blog/trang nội dung CHỌN
+ * lại ảnh sẵn có thay vì phải tự đi tìm rồi dán "key media" bằng tay.
+ *
+ * Trước đây ô ảnh bìa blog bắt dán chuỗi `<shop-id>/<media-id>.webp`. Chủ shop nói
+ * thẳng: đọc giải thích cũng không hiểu phải chèn cái gì. Một ô mà người dùng không
+ * thể tự đoán ra cách điền thì tính năng coi như không tồn tại.
+ *
+ * Chỉ trả ảnh ĐÃ xử lý xong (status='ready') và kèm tên sản phẩm để nhận ra ảnh nào.
+ * Ảnh banner/logo không có dòng media nên không nằm ở đây — bù lại có đường TẢI LÊN.
+ */
+async function listShopMedia(res, ctx) {
+  const rows = await withTenant(ctx.shopId, async (c) => (await c.query(
+    `SELECT m.public_key, p.title AS product_title, m.created_at
+       FROM media m JOIN products p ON p.id = m.product_id
+      WHERE m.status = 'ready' AND m.public_key IS NOT NULL AND m.deleted_at IS NULL
+        AND p.deleted_at IS NULL
+      ORDER BY m.created_at DESC LIMIT 200`)).rows);
+  return send(res, 200, { media: rows.map((r) => ({ ...r, url: mediaPublicUrl(r.public_key) })) });
+}
+
+/**
+ * Tải ảnh cho NỘI DUNG (ảnh bìa blog, ảnh trong bài). Dùng lại đúng đường xử lý của
+ * uploadBanner — sniff magic byte, re-encode WebP (bỏ payload nhúng), đẩy MinIO.
+ * Khác ở QUYỀN: người viết bài có content.write chứ không nhất thiết có theme.write.
+ */
+async function uploadContentImage(res, ctx, body) {
+  return uploadBanner(res, ctx, body);
+}
+
 async function listMedia(res, ctx, _body, params) {
   const productId = params[1];
   const rows = await withTenant(ctx.shopId, async (c) => {
@@ -301,6 +331,8 @@ export const MEDIA_ROUTES = [
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/media/${UUID}$`), perm: 'catalog.write', fn: (res, ctx, b, p) => deleteMedia(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/media/${UUID}/variant$`), perm: 'catalog.write', fn: (res, ctx, b, p) => assignVariant(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/logo$`), perm: 'shop.write', raw: true, fn: (res, ctx, b) => uploadLogo(res, ctx, b) },
+  { m: 'GET',  re: new RegExp(`^/shops/${UUID}/media$`), perm: 'content.read', fn: (res, ctx) => listShopMedia(res, ctx) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/content-image$`), perm: 'content.write', raw: true, fn: (res, ctx, b) => uploadContentImage(res, ctx, b) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/logo$`), perm: 'shop.write', fn: (res, ctx) => deleteLogo(res, ctx) },
   // Banner trang chủ (Phase 5): upload ảnh riêng cho carousel hero. theme.write (owner/admin).
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/banner-image$`), perm: 'theme.write', raw: true, fn: (res, ctx, b) => uploadBanner(res, ctx, b) },

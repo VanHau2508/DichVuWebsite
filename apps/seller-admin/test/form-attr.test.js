@@ -51,3 +51,31 @@ test('mọi form="X" đều có <form id="X"> trong cùng hàm render', () => {
   assert.ok(checked > 0, 'không tìm thấy thuộc tính form= nào — regex hỏng?');
   assert.deepEqual(orphans, [], `\n  ${orphans.join('\n  ')}\n`);
 });
+
+test('ô nhập NẰM TRONG một <form> thì không được mang form= trỏ đi nơi khác', () => {
+  // Bất biến thứ hai, bắt lớp lỗi mà bất biến thứ nhất KHÔNG thấy: id có tồn tại,
+  // nhưng ô lại đang nằm trong một <form> KHÁC. Khi đó nó bị CƯỚP khỏi form chứa nó
+  // (form đó submit thiếu ô) và ĐỒNG THỜI chen vào form kia — mang theo cả `required`
+  // nên chặn luôn nút Lưu của form kia.
+  //
+  // Đã xảy ra thật: ô "Giá (VND)" của form "Thêm biến thể lẻ" bị dán form="pall" nên
+  // bấm "Lưu tất cả" báo "Vui lòng điền vào trường này" ở một ô người dùng không định
+  // điền, còn nút "Thêm biến thể" thì gửi thiếu giá.
+  const src = fs.readFileSync(SRC, 'utf8').split('\n')
+    .map((l) => (/^\s*(\/\/|\*|\/\*)/.test(l) ? '' : l));
+
+  const bad = [];
+  let depth = 0;
+  for (const [i, line] of src.entries()) {
+    const opens = (line.match(/<form\b/g) ?? []).length;
+    const closes = (line.match(/<\/form>/g) ?? []).length;
+    // Kiểm TRƯỚC khi cộng/trừ độ sâu của chính dòng này, trừ phần <form> mở trên dòng.
+    const inside = depth > 0;
+    if (inside) {
+      for (const m of line.matchAll(/\bform="([\w-]+)"/g)) bad.push(`dòng ${i + 1}: form="${m[1]}" nằm trong <form> khác`);
+    }
+    depth += opens - closes;
+    if (depth < 0) depth = 0;
+  }
+  assert.deepEqual(bad, [], `\n  ${bad.join('\n  ')}\n`);
+});

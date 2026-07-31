@@ -992,17 +992,23 @@ async function blogList(res, me, cookie, shopId) {
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được blog.'));
   return sendHtml(res, 200, V.renderBlogList(ctx, shopId, r.json));
 }
+// Ảnh sẵn có của shop — để người viết bài CHỌN thay vì phải dán "key media" bằng tay.
+// Lỗi thì trả mảng rỗng: thiếu ảnh gợi ý không đáng làm hỏng cả trang soạn bài.
+const shopMedia = async (shopId, cookie) => {
+  const r = await sellerApi('GET', `/shops/${shopId}/media`, { cookie });
+  return r.status === 200 ? (r.json?.media ?? []) : [];
+};
 async function blogNew(res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'blog');
-  return sendHtml(res, 200, V.renderBlogEditor(ctx, shopId, null, null));
+  return sendHtml(res, 200, V.renderBlogEditor(ctx, shopId, null, null, await shopMedia(shopId, cookie)));
 }
 async function blogEditor(res, me, cookie, shopId, id, err) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const r = await sellerApi('GET', `/shops/${shopId}/blog/${id}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'blog');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tìm thấy bài viết.'));
-  return sendHtml(res, err ? 400 : 200, V.renderBlogEditor(ctx, shopId, r.json, err));
+  return sendHtml(res, err ? 400 : 200, V.renderBlogEditor(ctx, shopId, r.json, err, await shopMedia(shopId, cookie)));
 }
 const blogForm = (f) => ({ title: String(f.title ?? '').trim(), slug: String(f.slug ?? '').toLowerCase().trim(), excerpt: String(f.excerpt ?? ''), body: String(f.body ?? ''), cover_image_key: String(f.cover_image_key ?? '').trim() });
 async function blogCreate(req, res, me, cookie, shopId) {
@@ -1011,7 +1017,7 @@ async function blogCreate(req, res, me, cookie, shopId) {
   const r = await sellerApi('POST', `/shops/${shopId}/blog`, { cookie, body });
   if (r.status === 201) return redirect(res, `/shops/${shopId}/blog/${r.json.id}`);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'blog');
-  return sendHtml(res, 400, V.renderBlogEditor(ctx, shopId, body, r.json?.error ?? 'Không tạo được bài.')); // body không có id → form "mới" giữ giá trị
+  return sendHtml(res, 400, V.renderBlogEditor(ctx, shopId, body, r.json?.error ?? 'Không tạo được bài.', await shopMedia(shopId, cookie))); // body không có id → form "mới" giữ giá trị
 }
 async function blogUpdate(req, res, me, cookie, shopId, id) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -1019,8 +1025,31 @@ async function blogUpdate(req, res, me, cookie, shopId, id) {
   const r = await sellerApi('PATCH', `/shops/${shopId}/blog/${id}`, { cookie, body });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/blog/${id}`);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'blog');
-  return sendHtml(res, 400, V.renderBlogEditor(ctx, shopId, { ...body, id, status: 'draft' }, r.json?.error ?? 'Không lưu được bài.'));
+  return sendHtml(res, 400, V.renderBlogEditor(ctx, shopId, { ...body, id, status: 'draft' }, r.json?.error ?? 'Không lưu được bài.', await shopMedia(shopId, cookie)));
 }
+/**
+ * TẢI ẢNH BÌA cho bài viết (0-JS): nhận tệp → forward byte thô sang seller
+ * /content-image (sniff magic byte + re-encode WebP) → lấy key trả về → PATCH vào bài
+ * → redirect. Người dùng không bao giờ phải nhìn thấy chuỗi "key media".
+ *
+ * Chỉ làm được với bài ĐÃ tạo: không có id thì chưa có chỗ để gắn key. Form soạn bài
+ * mới nói rõ điều đó thay vì hiện một nút bấm vào là lỗi.
+ */
+async function blogCoverUpload(req, res, me, cookie, shopId, id) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  let files = [];
+  try { files = await readMultipartFiles(req); } catch (e) {
+    if (e.statusCode === 413) return blogEditor(res, me, cookie, shopId, id, 'Ảnh quá lớn.');
+  }
+  files = files.filter((f) => f.bytes?.length);
+  if (!files.length) return blogEditor(res, me, cookie, shopId, id, 'Chưa chọn ảnh.');
+  const up = await sellerUpload(`/shops/${shopId}/content-image`, { cookie, bytes: files[0].bytes });
+  if (up.status !== 200 || !up.json?.key) return blogEditor(res, me, cookie, shopId, id, up.json?.error ?? 'Tải ảnh thất bại.');
+  const r = await sellerApi('PATCH', `/shops/${shopId}/blog/${id}`, { cookie, body: { cover_image_key: up.json.key } });
+  if (r.status !== 200) return blogEditor(res, me, cookie, shopId, id, r.json?.error ?? 'Không gắn được ảnh bìa.');
+  return redirect(res, `/shops/${shopId}/blog/${id}`);
+}
+
 async function blogStatus(res, me, cookie, shopId, id, action) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   await sellerApi('POST', `/shops/${shopId}/blog/${id}/${action}`, { cookie, body: {} });
@@ -2855,6 +2884,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/blog$`).exec(p)) && req.method === 'GET') return blogList(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/blog/new$`).exec(p)) && req.method === 'GET') return blogNew(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/blog$`).exec(p)) && req.method === 'POST') return blogCreate(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/blog/${UUID}/cover$`).exec(p)) && req.method === 'POST') return blogCoverUpload(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/blog/${UUID}/publish$`).exec(p)) && req.method === 'POST') return blogStatus(res, me, cookie, m[1], m[2], 'publish');
     if ((m = new RegExp(`^/shops/${UUID}/blog/${UUID}/unpublish$`).exec(p)) && req.method === 'POST') return blogStatus(res, me, cookie, m[1], m[2], 'unpublish');
     if ((m = new RegExp(`^/shops/${UUID}/blog/${UUID}/delete$`).exec(p)) && req.method === 'POST') return blogDelete(res, me, cookie, m[1], m[2]);

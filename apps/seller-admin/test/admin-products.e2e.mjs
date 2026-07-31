@@ -250,7 +250,16 @@ async function main() {
   // không đổi. Đếm nút hay tìm chuỗi không bắt được lớp lỗi này — phải soi TỪNG thẻ.
   r = await adm('GET', P(`/${axPid}`), { cookie: A.cookie });
   const editable = /<(?:input|select|textarea)[^>]*[ "]name="(title|slug|price_vnd|description|seo_title|seo_description|(?:price|compare|cost|weight|delta|media)_[0-9a-f-]{36}|stock_reason)"[^>]*>/g;
-  const orphans = [...r.body.matchAll(editable)].filter((mm) => !/[ "]form="pall"/.test(mm[0])).map((mm) => mm[1]);
+  // BỎ QUA ô nằm TRONG một <form> khác: nó đã thuộc form đó rồi, không cần (và không
+  // được) mang form="pall". Ví dụ ô "Giá" của form "Thêm biến thể lẻ" — trùng tên
+  // price_vnd với giá sản phẩm. Bản đầu của ca này không phân biệt nên báo đỏ oan
+  // ngay sau khi tôi sửa đúng chỗ đó.
+  const outside = (idx) => {
+    const before = r.body.slice(0, idx);
+    return (before.match(/<form/g) ?? []).length === (before.match(/<\/form>/g) ?? []).length;
+  };
+  const orphans = [...r.body.matchAll(editable)]
+    .filter((mm) => outside(mm.index) && !/[ "]form="pall"/.test(mm[0])).map((mm) => mm[1]);
   orphans.length === 0
     ? ok(`mọi ô sửa đều thuộc form "pall" (${[...r.body.matchAll(editable)].length} ô, 0 mồ côi)`)
     : bad('có ô KHÔNG thuộc form pall → bấm Lưu sẽ im lặng bỏ qua', orphans.slice(0, 6).join(', '));

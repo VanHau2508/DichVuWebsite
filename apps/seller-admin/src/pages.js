@@ -103,6 +103,15 @@ textarea{min-height:80px;resize:vertical}
 .badge.active{background:var(--goodbg);color:var(--good)}.badge.draft{background:var(--warnbg);color:var(--warn)}.badge.archived{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--soft)}.badge.published{background:var(--goodbg);color:var(--good)}
 .badge.onboarding{background:var(--wash);color:var(--prid)}.badge.suspended{background:var(--badbg);color:var(--bad)}.badge.closed{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--soft)}
 .muted{color:var(--mut)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
+/* Lưới chọn ảnh bìa: radio thuần HTML, không JS. Ảnh đang chọn có viền đậm nhờ
+   :checked + selector anh em — cùng lối no-JS đã dùng ở gallery storefront. */
+.covgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:10px;margin:6px 0 4px;max-height:280px;overflow-y:auto;padding:2px}
+.covpick{position:relative;display:block;cursor:pointer;border:2px solid var(--bd);border-radius:var(--r);overflow:hidden;background:var(--surf)}
+.covpick input{position:absolute;opacity:0;pointer-events:none}
+.covpick img{width:100%;aspect-ratio:1/1;object-fit:cover;display:block}
+.covpick:has(input:checked){border-color:var(--acc,#2563eb);box-shadow:0 0 0 2px color-mix(in srgb,var(--acc,#2563eb) 30%,transparent)}
+.covnone{display:flex;align-items:center;justify-content:center;aspect-ratio:1/1;font-size:.8rem;color:var(--mut);text-align:center;padding:6px}
+.covlab{display:block;font-size:.72rem;color:var(--mut);padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* Cụm thao tác đơn hàng chia theo VIỆC. Trước đây mọi nút nằm chung một hàng cuốn dòng
    nên trông "nằm không đều" và không gợi ý cái nào dùng khi nào — mà một trong số đó
    tiêu tiền thật. Mỗi nhóm: nhãn nhỏ in hoa + hàng nút + (tuỳ) một dòng giải thích.
@@ -2720,7 +2729,7 @@ export function renderBlogList(ctx, shopId, data) {
       : '<p class="muted">Chưa có bài viết. Bấm “Viết bài” — bài đã đăng hiện ở <code>/blog</code> trên storefront (tốt cho SEO & marketing).</p>'}</div>`);
 }
 // Blog: soạn/sửa bài. publish/gỡ/xoá TÁCH khỏi form chính (không lồng form).
-export function renderBlogEditor(ctx, shopId, post, err) {
+export function renderBlogEditor(ctx, shopId, post, err, media = []) {
   const base = `/shops/${esc(shopId)}/blog`;
   const p = post ?? {};
   const isNew = !p.id;
@@ -2731,6 +2740,31 @@ export function renderBlogEditor(ctx, shopId, post, err) {
       : `<form method="POST" action="${base}/${esc(p.id)}/publish"><button class="btn" type="submit">Đăng bài</button></form>`}
     <form method="POST" action="${base}/${esc(p.id)}/delete"><button class="btn warn" type="submit">Xoá bài</button></form>
   </div></div>`;
+  // BỘ CHỌN ẢNH BÌA — thay cho ô bắt dán "key media".
+  //
+  // Ô cũ yêu cầu người dùng tự đi tìm chuỗi `<shop-id>/<media-id>.webp` rồi dán vào.
+  // Chủ shop nói thẳng: đọc giải thích cũng không hiểu phải chèn cái gì. Một ô mà
+  // người dùng không thể tự đoán ra cách điền thì tính năng coi như không tồn tại.
+  //
+  // Nay hai đường, đúng hai cách chủ shop đề xuất:
+  //   1) CHỌN từ ảnh đã có — radio thuần HTML, giữ nguyên 0-JS, ảnh đang dùng tick sẵn.
+  //   2) TẢI LÊN ảnh mới — form riêng, chỉ hiện với bài ĐÃ tạo (bài mới chưa có chỗ gắn).
+  const cur = p.cover_image_key ?? '';
+  const pick = (key, url, label, checked) => `<label class="covpick${checked ? ' on' : ''}">
+      <input type="radio" name="cover_image_key" value="${esc(key)}"${checked ? ' checked' : ''}>
+      ${url ? `<img src="${esc(url)}" alt="" loading="lazy">` : '<span class="covnone">Không dùng ảnh</span>'}
+      ${label ? `<span class="covlab">${esc(label)}</span>` : ''}
+    </label>`;
+  // Ảnh đang dùng có thể là ảnh TẢI LÊN riêng (không nằm trong danh sách ảnh sản phẩm)
+  // → vẫn phải hiện, nếu không bấm Lưu là mất ảnh bìa mà không ai hiểu vì sao.
+  const inList = media.some((m) => m.public_key === cur);
+  const coverPicker = `
+    <div class="covgrid">
+      ${pick('', null, '', !cur)}
+      ${cur && !inList ? pick(cur, `/media-public/${cur}`, 'ảnh đã tải lên', true) : ''}
+      ${media.map((m) => pick(m.public_key, m.url, m.product_title, m.public_key === cur)).join('')}
+    </div>
+    ${media.length === 0 && !cur ? '<p class="muted" style="font-size:.83rem;margin:6px 0 0">Chưa có ảnh nào. Tải ảnh sản phẩm lên trước, hoặc dùng nút tải ảnh bìa bên dưới.</p>' : ''}`;
   return layout(isNew ? 'Viết bài' : `Sửa bài`, ctx, `
     <a class="muted" href="${base}">← Blog</a>
     <div class="toolbar"><h1 style="margin:0">${isNew ? 'Viết bài mới' : esc(p.title)}</h1>${isNew ? '' : badge(p.status, p.status === 'published' ? 'Đã đăng' : 'Nháp')}</div>
@@ -2739,11 +2773,19 @@ export function renderBlogEditor(ctx, shopId, post, err) {
       <label>Tiêu đề</label><input name="title" required maxlength="200" value="${esc(p.title ?? '')}">
       <label>Đường dẫn (slug)</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" value="${esc(p.slug ?? '')}" placeholder="meo-chon-ghe-sofa">
       <label>Tóm tắt (hiện ở danh sách blog)</label><textarea name="excerpt" maxlength="500" rows="2">${esc(p.excerpt ?? '')}</textarea>
-      <label>Ảnh bìa (key media — tuỳ chọn)</label><input name="cover_image_key" maxlength="120" value="${esc(p.cover_image_key ?? '')}" placeholder="<shop-id>/<media-id>.webp">
-      <p class="muted" style="font-size:.8rem;margin:2px 0 8px">Dán key ảnh ĐÃ upload ở sản phẩm/logo (phần sau <code>/media-public/</code>). Ảnh bìa hiện ở danh sách blog + đầu bài + khi chia sẻ Facebook/Zalo.</p>
+      <label>Ảnh bìa <span class="muted" style="font-weight:400">(tuỳ chọn — hiện ở danh sách blog, đầu bài, và khi chia sẻ Facebook/Zalo)</span></label>
+      ${coverPicker}
       <label>Nội dung</label><textarea name="body" rows="14" maxlength="50000" placeholder="Viết nội dung bài… (cách dòng để tách đoạn). Chèn ảnh: một dòng riêng dạng [anh:<key-media>|mô tả ảnh]">${esc(p.body ?? '')}</textarea>
       <div class="actions" style="margin-top:12px"><button class="btn" type="submit">${isNew ? 'Tạo bài (nháp)' : 'Lưu thay đổi'}</button></div>
-    </form></div>
+    </form>
+    ${isNew
+      ? '<p class="muted" style="font-size:.83rem;margin:10px 0 0">Muốn dùng ảnh bìa RIÊNG (không phải ảnh sản phẩm)? Tạo bài nháp trước, rồi tải ảnh lên ở đây.</p>'
+      : `<form method="POST" action="${base}/${esc(p.id)}/cover" enctype="multipart/form-data" class="actions" style="margin-top:14px;border-top:1px solid var(--bd);padding-top:14px">
+          <input type="file" name="file" accept="image/*" required>
+          <button class="btn alt sm" type="submit">Tải ảnh bìa lên</button>
+          <span class="muted" style="font-size:.82rem">JPEG/PNG/WebP/GIF. Ảnh tự nén lại thành WebP.</span>
+        </form>`}
+    </div>
     ${manage}`);
 }
 
@@ -3127,7 +3169,7 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
       <p class="muted" style="font-size:.85rem">Dùng khi KHÔNG dùng phân loại đa trục ở trên (thêm tay từng biến thể).</p>
       <form method="POST" action="${base}/variants" class="inline">
         <div><label>SKU</label><input name="sku" required maxlength="64" style="width:160px"></div>
-        <div><label>Giá (VND)</label><input form="pall" name="price_vnd" type="number" min="0" step="1000" required style="width:140px"></div>
+        <div><label>Giá (VND)</label><input name="price_vnd" type="number" min="0" step="1000" required style="width:140px"></div>
         <button class="btn alt sm" type="submit">Thêm biến thể</button>
       </form>
     </div>

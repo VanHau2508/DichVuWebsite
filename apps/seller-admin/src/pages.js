@@ -1284,7 +1284,7 @@ export function renderPlatformShopNew(ctx, err, f = {}, plans = []) {
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <div class="card"><form method="POST" action="/platform">
       <label>Tên cửa hàng</label><input name="name" value="${esc(f.name ?? '')}" required maxlength="200" placeholder="Nhà Xinh Décor">
-      <label>Subdomain (slug)</label><input form="pall" name="slug" value="${esc(f.slug ?? '')}" required pattern="[a-z0-9-]+" maxlength="40" placeholder="nha-xinh">
+      <label>Subdomain (slug)</label><input name="slug" value="${esc(f.slug ?? '')}" required pattern="[a-z0-9-]+" maxlength="40" placeholder="nha-xinh">
       <div class="muted" style="font-size:.82rem;margin:2px 0 8px">→ <code>&lt;slug&gt;.nentang.vn</code> (chỉ a-z, 0-9, gạch ngang)</div>
       <label>Gói dịch vụ</label><select name="plan_code">${planOptions(plans, f.plan_code)}</select>
       <div class="actions" style="margin-top:14px"><button class="btn" type="submit">Tạo cửa hàng</button></div>
@@ -2564,7 +2564,7 @@ export function renderCategories(ctx, shopId, data, notice, err) {
     <div class="card"><h2 style="margin-top:0">Thêm danh mục</h2>
       <form method="POST" action="${base}/categories" class="actions" style="align-items:end;flex-wrap:wrap">
         <div><label>Tên</label><input name="name" required maxlength="200" placeholder="Thịt heo"></div>
-        <div><label>Đường dẫn (slug)</label><input form="pall" name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" placeholder="thit-heo"></div>
+        <div><label>Đường dẫn (slug)</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" placeholder="thit-heo"></div>
         <div><label>Danh mục cha</label><select name="parent_id">${createParentSel}</select></div>
         <button class="btn" type="submit">Thêm danh mục</button>
       </form>
@@ -2646,7 +2646,7 @@ export function renderPromotions(ctx, shopId, data, notice, err) {
     <div class="card"><h2 style="margin-top:0">Tạo chương trình</h2>
       <form method="POST" action="${base}/promotions">
         <div class="filters" style="align-items:end">
-          <div><label>Tên chương trình</label><input form="pall" name="title" required maxlength="120" placeholder="Sale cuối tuần" style="width:200px"></div>
+          <div><label>Tên chương trình</label><input name="title" required maxlength="120" placeholder="Sale cuối tuần" style="width:200px"></div>
           <div><label>Loại giảm</label><select name="kind"><option value="percent">% phần trăm</option><option value="fixed">Số tiền (đ)</option></select></div>
           <div><label>Giá trị</label><input name="value" type="number" min="1" required placeholder="20" style="width:110px"></div>
           <div><label>Phạm vi</label><select name="scope"><option value="all">Toàn bộ sản phẩm</option><option value="products">Chọn sản phẩm</option></select></div>
@@ -2736,8 +2736,8 @@ export function renderBlogEditor(ctx, shopId, post, err) {
     <div class="toolbar"><h1 style="margin:0">${isNew ? 'Viết bài mới' : esc(p.title)}</h1>${isNew ? '' : badge(p.status, p.status === 'published' ? 'Đã đăng' : 'Nháp')}</div>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <div class="card"><form method="POST" action="${action}">
-      <label>Tiêu đề</label><input form="pall" name="title" required maxlength="200" value="${esc(p.title ?? '')}">
-      <label>Đường dẫn (slug)</label><input form="pall" name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" value="${esc(p.slug ?? '')}" placeholder="meo-chon-ghe-sofa">
+      <label>Tiêu đề</label><input name="title" required maxlength="200" value="${esc(p.title ?? '')}">
+      <label>Đường dẫn (slug)</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" value="${esc(p.slug ?? '')}" placeholder="meo-chon-ghe-sofa">
       <label>Tóm tắt (hiện ở danh sách blog)</label><textarea name="excerpt" maxlength="500" rows="2">${esc(p.excerpt ?? '')}</textarea>
       <label>Ảnh bìa (key media — tuỳ chọn)</label><input name="cover_image_key" maxlength="120" value="${esc(p.cover_image_key ?? '')}" placeholder="<shop-id>/<media-id>.webp">
       <p class="muted" style="font-size:.8rem;margin:2px 0 8px">Dán key ảnh ĐÃ upload ở sản phẩm/logo (phần sau <code>/media-public/</code>). Ảnh bìa hiện ở danh sách blog + đầu bài + khi chia sẻ Facebook/Zalo.</p>
@@ -2975,13 +2975,13 @@ export function renderProductNew(ctx, shopId, err, f = {}) {
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <form method="POST" action="/shops/${esc(shopId)}/products">
       <div class="card"><h2 style="margin-top:0">Thông tin</h2>
-        <label>Tên sản phẩm *</label><input form="pall" name="title" required maxlength="200" value="${esc(f.title ?? '')}">
-        <label>Đường dẫn (slug) *</label><input form="pall" name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" value="${esc(f.slug ?? '')}" placeholder="ghe-sofa-3-cho">
+        <label>Tên sản phẩm *</label><input name="title" required maxlength="200" value="${esc(f.title ?? '')}">
+        <label>Đường dẫn (slug) *</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" value="${esc(f.slug ?? '')}" placeholder="ghe-sofa-3-cho">
         <div class="grid2">
-          <div><label>Giá (VND) *</label><input form="pall" name="price_vnd" type="number" min="0" step="1000" required value="${esc(f.price_vnd ?? '')}"></div>
+          <div><label>Giá (VND) *</label><input name="price_vnd" type="number" min="0" step="1000" required value="${esc(f.price_vnd ?? '')}"></div>
           <div><label>Trạng thái</label><select name="status"><option value="draft"${f.status !== 'active' ? ' selected' : ''}>Nháp</option><option value="active"${f.status === 'active' ? ' selected' : ''}>Đăng bán ngay</option></select></div>
         </div>
-        <label>Mô tả</label><textarea form="pall" name="description" maxlength="5000">${esc(f.description ?? '')}</textarea>
+        <label>Mô tả</label><textarea name="description" maxlength="5000">${esc(f.description ?? '')}</textarea>
       </div>
       <div class="card"><h2 style="margin-top:0">Biến thể đầu tiên</h2>
         <p class="muted">Mỗi sản phẩm cần ít nhất 1 biến thể. Thêm biến thể khác sau khi tạo.</p>
@@ -3182,10 +3182,10 @@ export function renderPageNew(ctx, shopId, err, f = {}) {
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <form method="POST" action="/shops/${esc(shopId)}/pages">
       <div class="card">
-        <label>Tiêu đề *</label><input form="pall" name="title" required maxlength="200" value="${esc(f.title ?? '')}" placeholder="Giới thiệu">
-        <label>Đường dẫn (slug) *</label><input form="pall" name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" value="${esc(f.slug ?? '')}" placeholder="gioi-thieu">
-        <label>SEO title</label><input form="pall" name="seo_title" maxlength="120" value="${esc(f.seo_title ?? '')}">
-        <label>SEO description</label><textarea form="pall" name="seo_description" maxlength="320">${esc(f.seo_description ?? '')}</textarea>
+        <label>Tiêu đề *</label><input name="title" required maxlength="200" value="${esc(f.title ?? '')}" placeholder="Giới thiệu">
+        <label>Đường dẫn (slug) *</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" value="${esc(f.slug ?? '')}" placeholder="gioi-thieu">
+        <label>SEO title</label><input name="seo_title" maxlength="120" value="${esc(f.seo_title ?? '')}">
+        <label>SEO description</label><textarea name="seo_description" maxlength="320">${esc(f.seo_description ?? '')}</textarea>
       </div>
       <button class="btn" type="submit">Tạo trang (nháp)</button>
       <p class="muted" style="font-size:.85rem">Tạo xong sẽ vào trình sửa: thêm section (tiêu đề, đoạn văn, danh sách…) rồi bấm Đăng.</p>
@@ -3239,13 +3239,13 @@ export function renderPageEditor(ctx, shopId, p, err, notice, form) {
       </div></div>
       ${p.published_revision ? `<p class="muted">Đang đăng: bản #${p.published_revision}. Sửa bên dưới chỉ đổi bản NHÁP tới khi bấm Đăng.</p>` : '<p class="muted">Chưa đăng bao giờ — storefront chưa thấy trang này.</p>'}
       <form method="POST" action="${base}">
-        <label>Tiêu đề</label><input form="pall" name="title" required maxlength="200" value="${mval('title')}">
+        <label>Tiêu đề</label><input name="title" required maxlength="200" value="${mval('title')}">
         <div class="grid2">
           <div><label>Đường dẫn (slug)</label><input value="/${esc(p.slug)}" disabled></div>
           <div><label>Vị trí menu (trống = ẩn khỏi menu)</label><input name="menu_position" type="number" value="${mval('menu_position')}"></div>
         </div>
-        <label>SEO title</label><input form="pall" name="seo_title" maxlength="120" value="${mval('seo_title')}">
-        <label>SEO description</label><textarea form="pall" name="seo_description" maxlength="320">${mval('seo_description')}</textarea>
+        <label>SEO title</label><input name="seo_title" maxlength="120" value="${mval('seo_title')}">
+        <label>SEO description</label><textarea name="seo_description" maxlength="320">${mval('seo_description')}</textarea>
         <button class="btn" type="submit" style="margin-top:10px">Lưu thông tin (nháp)</button>
       </form>
     </div>

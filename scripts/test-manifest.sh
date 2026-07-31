@@ -38,10 +38,13 @@ MANIFEST_UNIT_FILES=(
   # thứ 5 (0115): bộ này khẳng định "đúng 4 preset" mà không cổng nào chạy nó.
   # Đúng lớp lỗi file này sinh ra để chặn, chỉ là ở dạng "chưa bao giờ được thêm".
   packages/presets/test/presets.test.js
+  # Bất biến mức MÃ NGUỒN: form="X" phải có id="X" cùng hàm. E2E không bắt được
+  # lớp lỗi này vì chúng POST thẳng body, bỏ qua ngữ nghĩa gom-ô của trình duyệt.
+  apps/seller-admin/test/form-attr.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=13
+MANIFEST_UNIT_COUNT=14
 MANIFEST_E2E_COUNT=84
 
 manifest_unit_files() {

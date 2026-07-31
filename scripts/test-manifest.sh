@@ -41,10 +41,13 @@ MANIFEST_UNIT_FILES=(
   # Bất biến mức MÃ NGUỒN: form="X" phải có id="X" cùng hàm. E2E không bắt được
   # lớp lỗi này vì chúng POST thẳng body, bỏ qua ngữ nghĩa gom-ô của trình duyệt.
   apps/seller-admin/test/form-attr.test.js
+  # Quy tắc XOÁ ảnh trưng bày. Phần rủi ro nhất của đường dọn rác (xoá nhầm ảnh đang
+  # hiển thị) — e2e không dựng nổi ca biên "ảnh vừa tải 5 phút trước", unit dựng được.
+  apps/seller/test/media-gc.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=14
+MANIFEST_UNIT_COUNT=15
 MANIFEST_E2E_COUNT=85
 
 manifest_unit_files() {

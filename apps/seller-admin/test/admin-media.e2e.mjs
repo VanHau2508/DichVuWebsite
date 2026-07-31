@@ -16,6 +16,7 @@ const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
 const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
 const ADMIN = process.env.ADMIN_URL ?? 'http://seller-admin:3001';
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OADM = process.env.ADMIN_ORIGIN ?? 'https://admin.localtest';
+const OS = 'https://seller.localtest'; // gọi thẳng seller (đường dọn ảnh) chứ không qua BFF
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 4 });
 // Token lời mời KHÔNG còn trong API response (email hoá, 0073) — lấy từ outbox qua owner SQL (ADR-006: cùng tx với INSERT invitations nên đọc được ngay).
 const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
@@ -167,6 +168,75 @@ async function main() {
   // reorder không phải hoán vị đúng → 422 (không lén thêm/bớt)
   r = await adm('POST', M(`/media/${RANDOM_UUID()}/moveup`), { cookie: A.cookie, origin: OADM });
   r.status === 303 ? ok('move ảnh không tồn tại → no-op (303)') : bad('move id lạ lỗi', String(r.status));
+
+  // ── 6. Dọn ảnh trưng bày không dùng ────────────────────────────────────────
+  //
+  // Ảnh banner/logo/nội dung/danh mục không có dòng nào trong DB nên object cũ nằm lại
+  // kho vĩnh viễn khi bị thay. Đường dọn này XOÁ TỆP, nên ca quan trọng nhất ở đây
+  // KHÔNG phải "nó có xoá không" mà là "nó có chừa ảnh đang dùng ra không".
+  //
+  // Container dev đặt MEDIA_GC_GRACE_HOURS=0 để chạy được nhánh xoá thật; luật ân hạn
+  // 48 giờ được kiểm riêng ở apps/seller/test/media-gc.test.js (e2e không chờ 48h được).
+  sect('6. Dọn ảnh trưng bày không dùng');
+  const upBanner = async () => (await (await fetch(`${SELLER}/shops/${A.shopId}/banner-image`, {
+    method: 'POST', headers: { 'content-type': 'image/png', origin: OS, cookie: `__Host-session=${A.cookie}` }, body: PNG,
+  })).json()).key;
+  const keptKey = await upBanner();      // sẽ được GẮN vào layout → phải giữ
+  const orphanKey = await upBanner();    // không gắn vào đâu → được xoá
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/theme`, {
+    cookie: A.cookie, origin: OS,
+    body: { tokens: {}, layout: [{ section: 'hero', props: { slides: [{ image_key: keptKey, headline: 'X' }] } }, { section: 'footer', props: {} }] },
+  });
+  const unused = async () => (await rq(SELLER, 'GET', `/shops/${A.shopId}/media/unused`, { cookie: A.cookie })).json;
+  let u = await unused();
+  const keys = (u?.items ?? []).map((i) => i.key);
+  (keys.includes(orphanKey) && !keys.includes(keptKey))
+    ? ok('liệt kê ĐÚNG: ảnh mồ côi có tên, ảnh đang dùng trong layout thì KHÔNG')
+    : bad('liệt kê sai', `kept=${keys.includes(keptKey)} orphan=${keys.includes(orphanKey)}`);
+
+  // Ảnh SẢN PHẨM (không tiền tố) không bao giờ vào diện dọn, dù có gắn vào đâu hay không.
+  const prodKeys = (await sget(A.shopId, A.cookie, `/products/${pid}/media`)).json.media.map((m) => m.url.split('/media-public/')[1]);
+  prodKeys.length && !prodKeys.some((k) => keys.includes(k))
+    ? ok('ảnh sản phẩm KHÔNG nằm trong diện dọn (vòng đời của bảng media)') : bad('ảnh sản phẩm lọt vào diện xoá');
+
+  // Gửi lên key của ảnh ĐANG DÙNG: server tính lại, không được xoá theo lời client.
+  let d = await rq(SELLER, 'POST', `/shops/${A.shopId}/media/unused/delete`, { cookie: A.cookie, origin: OS, body: { keys: [keptKey] } });
+  const stillThere = await fetch(`http://minio:9000/media-public/${keptKey}`).then((x) => x.status).catch(() => 0);
+  (d.status === 200 && d.json.deleted === 0 && stillThere === 200)
+    ? ok('client đòi xoá ảnh ĐANG DÙNG → server tính lại và từ chối (deleted 0)')
+    : bad('xoá theo lời client', `deleted=${d.json?.deleted} http=${stillThere}`);
+
+  // Xoá thật ảnh mồ côi.
+  d = await rq(SELLER, 'POST', `/shops/${A.shopId}/media/unused/delete`, { cookie: A.cookie, origin: OS, body: {} });
+  const orphanGone = await fetch(`http://minio:9000/media-public/${orphanKey}`).then((x) => x.status).catch(() => 0);
+  const keptAlive = await fetch(`http://minio:9000/media-public/${keptKey}`).then((x) => x.status).catch(() => 0);
+  (d.status === 200 && d.json.deleted >= 1 && orphanGone === 404 && keptAlive === 200)
+    ? ok('xoá → ảnh mồ côi biến mất khỏi kho, ảnh đang dùng còn nguyên')
+    : bad('xoá sai', `deleted=${d.json?.deleted} orphan=${orphanGone} kept=${keptAlive}`);
+
+  u = await unused();
+  u?.total === 0 ? ok('dọn xong → danh sách rỗng') : bad('còn sót', JSON.stringify(u?.total));
+
+  // Cô lập chéo shop. seller trả 404 chứ không 403 — CÓ CHỦ Ý (server.js: "không xác
+  // nhận tồn tại"), nên ca này kiểm 404. Bản đầu tôi kỳ vọng 403 và báo đỏ oan.
+  const cross = await rq(SELLER, 'GET', `/shops/${Bo.shopId}/media/unused`, { cookie: A.cookie });
+  cross.status === 404 ? ok('chủ shop A xem kho ảnh shop B → 404 (không xác nhận tồn tại)') : bad('rò kho ảnh chéo shop', String(cross.status));
+
+  // ── 7. Màn hình dọn ảnh: HAI BƯỚC, không cho xoá mù ────────────────────────
+  // Nút xoá KHÔNG được phép có mặt trước khi người dùng đã nhìn thấy danh sách. Đây là
+  // ràng buộc về cách trình bày nhưng nó bảo vệ dữ liệu, nên phải có ca giữ.
+  sect('7. Màn hình dọn ảnh (2 bước)');
+  await upBanner(); // dựng lại một ảnh mồ côi để có gì mà dọn
+  const SET = `/shops/${A.shopId}/settings`;
+  r = await adm('GET', SET, { cookie: A.cookie });
+  (r.status === 200 && r.body.includes('Kiểm tra ảnh không dùng') && !/Xoá \d+ ảnh này/.test(r.body))
+    ? ok('vào trang: chỉ có nút "Kiểm tra", CHƯA có nút xoá') : bad('nút xoá hiện quá sớm', String(r.status));
+  r = await adm('POST', `${SET}/unused-images`, { cookie: A.cookie, origin: OADM, form: {} });
+  (r.status === 200 && /ảnh không còn được dùng/.test(r.body) && /Xoá \d+ ảnh này/.test(r.body))
+    ? ok('bấm Kiểm tra → hiện số lượng + ảnh + nút xoá') : bad('kiểm tra không ra danh sách', r.body.slice(0, 200));
+  r = await adm('POST', `${SET}/unused-images/delete`, { cookie: A.cookie, origin: OADM, form: {} });
+  (r.status === 200 && /Đã xoá \d+ ảnh/.test(r.body))
+    ? ok('bấm Xoá → báo đã xoá bao nhiêu, giải phóng bao nhiêu') : bad('xoá qua UI lỗi', r.body.slice(0, 200));
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

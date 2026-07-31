@@ -21,8 +21,12 @@ import { Client as MinioClient } from 'minio';
 import sharp from 'sharp';
 import { send } from './http.js';
 import { withTenant, audit } from './db.js';
+import { DISPLAY_KEY_RE, pickCollectable, referencedFrom } from './media-gc.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
+// Bản KHÔNG bắt nhóm — dùng cho regex khoá ảnh (UUID ở trên có ngoặc bắt nhóm, nhét
+// vào regex nhiều lần sẽ làm lệch chỉ số nhóm và khiến matchAll trả về nhầm phần tử).
+const U36 = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const MAX_UPLOAD = 10 * 1024 * 1024; // 10MB
 // Bucket private + client MinIO dùng lại cho export (A4) — CHỈ một nguồn cấu hình.
 export const BUCKET_PRIVATE = process.env.MEDIA_BUCKET_PRIVATE ?? 'media-private';
@@ -299,6 +303,92 @@ async function deleteCategoryImage(res, ctx, _body, params) {
   return send(res, 200, { ok: true });
 }
 
+// ── Dọn ảnh TRƯNG BÀY không còn dùng ─────────────────────────────────────────
+//
+// Ảnh sản phẩm có dòng trong bảng `media` nên có vòng đời rõ ràng: xoá dòng thì
+// worker xoá object. Ảnh TRƯNG BÀY (banner, logo, ảnh nội dung, ảnh danh mục) thì
+// KHÔNG có dòng nào — key chỉ nằm trong JSON layout, trong cột image_key, hoặc trong
+// thân bài blog. Thay banner một lần là ảnh cũ nằm lại MinIO vĩnh viễn, không ai biết.
+//
+// BA LỚP AN TOÀN, vì đây là thao tác XOÁ dữ liệu người dùng:
+//
+//  1. CHỈ đụng key có một trong bốn tiền tố trưng bày. Ảnh sản phẩm là
+//     `<shop>/<uuid>.webp` KHÔNG tiền tố → không bao giờ lọt vào diện xoá, kể cả khi
+//     nó không được tham chiếu (nó thuộc vòng đời của bảng media, không phải của đây).
+//  2. TẬP THAM CHIẾU quét bằng REGEX trên TEXT của mọi cột có thể chứa key, thay vì đi
+//     theo tên trường đã biết. Quét thừa thì chỉ GIỮ LẠI thừa; đi theo tên trường mà
+//     sót một chỗ là XOÁ NHẦM ảnh đang hiển thị. Thiên vị phải nghiêng về giữ.
+//  3. THỜI GIAN ÂN HẠN 48 giờ. Ảnh vừa tải lên mà người dùng còn đang điền form (hoặc
+//     để dành cho bài nháp) chưa được tham chiếu ở đâu cả — xoá ngay là cướp trên tay.
+//
+// Và không tự động chạy nền: người bán bấm mới dọn, sau khi ĐÃ NHÌN danh sách.
+// Mốc ân hạn chỉnh được qua env CHỈ để e2e chạy được nhánh xoá thật (đặt 0 ở dev).
+// Mặc định 48 giờ; giá trị lạ/âm rơi về mặc định — một biến môi trường gõ nhầm không
+// được phép biến việc dọn rác thành xoá-ngay-lập-tức.
+const GC_GRACE_MS = (() => {
+  const h = Number(process.env.MEDIA_GC_GRACE_HOURS);
+  return Number.isFinite(h) && h >= 0 ? h * 3600000 : 48 * 3600000;
+})();
+const GC_MAX_DELETE = 200;
+
+/** Mọi key ĐANG được nhắc tới ở bất kỳ đâu của shop. Quét text, cố tình quét thừa. */
+async function referencedKeys(shopId) {
+  const chunks = await withTenant(shopId, async (c) => {
+    const q = await c.query(`
+      SELECT coalesce(logo_key,'') AS t FROM shops WHERE id = current_shop_id()
+      UNION ALL SELECT coalesce(image_key,'') FROM categories
+      UNION ALL SELECT coalesce(cover_image_key,'') || ' ' || coalesce(body,'') FROM blog_posts
+      UNION ALL SELECT coalesce(blocks::text,'') FROM page_revisions
+      UNION ALL SELECT coalesce(layout::text,'') || ' ' || coalesce(tokens::text,'') FROM themes
+      UNION ALL SELECT coalesce(public_key,'') FROM media`);
+    return q.rows.map((r) => r.t);
+  });
+  return referencedFrom(chunks);
+}
+
+/** Object trong bucket public thuộc shop, có tiền tố trưng bày. */
+async function listDisplayObjects(shopId) {
+  const out = [];
+  await new Promise((resolve, reject) => {
+    const stream = minio.listObjectsV2(BUCKET_PUBLIC, `${shopId}/`, true);
+    stream.on('data', (o) => { if (o.name && DISPLAY_KEY_RE.test(o.name)) out.push(o); });
+    stream.on('end', resolve);
+    stream.on('error', reject);
+  });
+  return out;
+}
+
+async function unusedSet(shopId) {
+  const [objs, refs] = await Promise.all([listDisplayObjects(shopId), referencedKeys(shopId)]);
+  return pickCollectable(objs, refs, Date.now() - GC_GRACE_MS);
+}
+
+async function listUnusedImages(res, ctx) {
+  let items;
+  try { items = await unusedSet(ctx.shopId); } catch { return send(res, 503, { error: 'không đọc được kho ảnh' }); }
+  return send(res, 200, {
+    items: items.slice(0, 500).map((o) => ({ key: o.name, size_bytes: o.size ?? 0, last_modified: o.lastModified, url: mediaPublicUrl(o.name) })),
+    total: items.length,
+    total_bytes: items.reduce((s, o) => s + (o.size ?? 0), 0),
+    grace_hours: GC_GRACE_MS / 3600000,
+  });
+}
+
+async function deleteUnusedImages(res, ctx, body) {
+  // TÍNH LẠI tập không-dùng ở server. Danh sách client gửi lên chỉ dùng để THU HẸP,
+  // không bao giờ để mở rộng — nếu tin nó thì một request nắn tay xoá được ảnh đang dùng.
+  let items;
+  try { items = await unusedSet(ctx.shopId); } catch { return send(res, 503, { error: 'không đọc được kho ảnh' }); }
+  const want = Array.isArray(body?.keys) && body.keys.length ? new Set(body.keys.map(String)) : null;
+  const targets = items.filter((o) => !want || want.has(o.name)).slice(0, GC_MAX_DELETE);
+  let n = 0, bytes = 0;
+  for (const o of targets) {
+    try { await minio.removeObject(BUCKET_PUBLIC, o.name); n++; bytes += o.size ?? 0; } catch { /* vòng sau thử lại */ }
+  }
+  await withTenant(ctx.shopId, (c) => audit(c, 'shop.unused_images_deleted', { actorId: ctx.user.id, ip: ctx.ip, metadata: { n, bytes } })).catch(() => {});
+  return send(res, 200, { deleted: n, bytes, remaining: Math.max(0, items.length - n) });
+}
+
 async function listMedia(res, ctx, _body, params) {
   const productId = params[1];
   const rows = await withTenant(ctx.shopId, async (c) => {
@@ -384,6 +474,11 @@ export const MEDIA_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/media/${UUID}/variant$`), perm: 'catalog.write', fn: (res, ctx, b, p) => assignVariant(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/logo$`), perm: 'shop.write', raw: true, fn: (res, ctx, b) => uploadLogo(res, ctx, b) },
   { m: 'GET',  re: new RegExp(`^/shops/${UUID}/media$`), perm: 'content.read', fn: (res, ctx) => listShopMedia(res, ctx) },
+  // Dọn ảnh trưng bày không dùng. shop.write (owner/admin) vì đây là thao tác XOÁ.
+  // Không đụng route /media/:uuid ở trên: "unused" không khớp mẫu hex nên thứ tự
+  // đăng ký ở đây không quyết định gì.
+  { m: 'GET',  re: new RegExp(`^/shops/${UUID}/media/unused$`), perm: 'shop.write', fn: (res, ctx) => listUnusedImages(res, ctx) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/media/unused/delete$`), perm: 'shop.write', fn: (res, ctx, b) => deleteUnusedImages(res, ctx, b) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/content-image$`), perm: 'content.write', raw: true, fn: (res, ctx, b) => uploadContentImage(res, ctx, b) },
   // Ảnh đại diện danh mục (0118). catalog.write vì đây là dữ liệu danh mục, không phải giao diện.
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/categories/${UUID}/image$`), perm: 'catalog.write', raw: true, fn: (res, ctx, b, p) => uploadCategoryImage(res, ctx, b, p) },

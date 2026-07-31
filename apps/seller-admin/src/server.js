@@ -2673,12 +2673,29 @@ async function markPaidQrStepUp(req, res, me, cookie, shopId, oid) {
 }
 
 // ── Cài đặt / Hồ sơ cửa hàng (shop.write = owner/admin) ──────────────────────
-async function settingsPage(res, me, cookie, shopId, notice, err) {
+async function settingsPage(res, me, cookie, shopId, notice, err, unused) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'settings');
   const r = await sellerApi('GET', `/shops/${shopId}`, { cookie });
   const shop = r.status === 200 ? r.json : {};
-  return sendHtml(res, err ? 400 : 200, V.renderShopSettings(ctx, shopId, shop, notice, err));
+  return sendHtml(res, err ? 400 : 200, V.renderShopSettings(ctx, shopId, shop, notice, err, unused));
+}
+// Dọn ảnh trưng bày không dùng. HAI BƯỚC CỐ Ý: bấm "Kiểm tra" chỉ ĐẾM và bày ảnh ra,
+// nút xoá chỉ hiện SAU khi đã có danh sách. Xoá tệp của người dùng mà không cho họ
+// nhìn trước là kiểu thao tác tôi đã làm hỏng một lần ở DB dev — không lặp lại.
+async function unusedImagesScan(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('GET', `/shops/${shopId}/media/unused`, { cookie });
+  if (r.status !== 200) return settingsPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không kiểm tra được kho ảnh.');
+  return settingsPage(res, me, cookie, shopId, null, null, r.json);
+}
+async function unusedImagesDelete(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/media/unused/delete`, { cookie, body: {} });
+  if (r.status !== 200) return settingsPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không xoá được.');
+  const mb = ((r.json?.bytes ?? 0) / 1048576).toFixed(1);
+  const more = r.json?.remaining ? ` Còn ${r.json.remaining} ảnh — bấm lại để dọn tiếp.` : '';
+  return settingsPage(res, me, cookie, shopId, `Đã xoá ${r.json?.deleted ?? 0} ảnh, giải phóng ${mb} MB.${more}`, null);
 }
 async function logoUpload(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -3130,6 +3147,8 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/settings$`).exec(p)) && req.method === 'GET') return settingsPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/settings$`).exec(p)) && req.method === 'POST') return settingsSave(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/settings/require-mfa$`).exec(p)) && req.method === 'POST') return requireMfaSave(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/settings/unused-images$`).exec(p)) && req.method === 'POST') return unusedImagesScan(res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/settings/unused-images/delete$`).exec(p)) && req.method === 'POST') return unusedImagesDelete(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/logo$`).exec(p)) && req.method === 'POST') return logoUpload(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/logo/remove$`).exec(p)) && req.method === 'POST') return logoRemove(res, me, cookie, m[1]);
 

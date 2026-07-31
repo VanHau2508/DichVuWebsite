@@ -928,7 +928,34 @@ export function renderPresetConfirm(ctx, slug, preset) {
 }
 
 // Cài đặt / Hồ sơ cửa hàng (shop.write = owner/admin). Tên + liên hệ + địa chỉ.
-export function renderShopSettings(ctx, shopId, shop, notice, err) {
+/**
+ * Dọn ảnh trưng bày không dùng — HAI BƯỚC, không gộp thành một nút.
+ *
+ * Ảnh banner/logo/ảnh nội dung/ảnh danh mục không có dòng nào trong DB nên khi bị thay
+ * thì object cũ nằm lại kho vĩnh viễn. Cần dọn, nhưng dọn là XOÁ TỆP CỦA NGƯỜI KHÁC:
+ * bấm "Kiểm tra" chỉ đếm và BÀY ẢNH RA; nút xoá chỉ hiện sau khi đã có danh sách để
+ * nhìn. Chưa xem mà đã xoá là kiểu thao tác đã làm hỏng dữ liệu một lần rồi.
+ *
+ * Chỉ tính ảnh cũ hơn 48 giờ — ảnh vừa tải mà form còn đang mở thì chưa gắn vào đâu cả.
+ */
+function unusedImagesCard(base, unused) {
+  const mb = (n) => (Number(n ?? 0) / 1048576).toFixed(1);
+  const body = !unused
+    ? `<p class="muted" style="margin-top:0">Ảnh banner, logo cũ, ảnh trong bài viết và ảnh danh mục <strong>đã bị thay</strong> vẫn nằm trong kho và tính vào dung lượng. Bấm để xem có bao nhiêu — <strong>chưa xoá gì cả</strong>.</p>
+       <form method="POST" action="${base}/settings/unused-images"><button class="btn alt" type="submit">Kiểm tra ảnh không dùng</button></form>`
+    : (unused.total === 0
+      ? '<p class="muted" style="margin-top:0">Không có ảnh thừa nào. Kho ảnh sạch.</p>'
+      : `<p style="margin-top:0">Có <strong>${esc(unused.total)}</strong> ảnh không còn được dùng ở đâu, chiếm <strong>${esc(mb(unused.total_bytes))} MB</strong>. Chỉ tính ảnh cũ hơn ${esc(unused.grace_hours ?? 48)} giờ.</p>
+         <div class="covgrid" style="max-height:220px">${(unused.items ?? []).slice(0, 40).map((i) => `<div class="covpick" style="cursor:default"><img src="${esc(i.url)}" alt="" loading="lazy"><span class="covlab">${esc(mb(i.size_bytes))} MB</span></div>`).join('')}</div>
+         ${unused.total > 40 ? `<p class="muted" style="font-size:.83rem">(hiện 40 ảnh đầu)</p>` : ''}
+         <form method="POST" action="${base}/settings/unused-images/delete" style="margin-top:10px">
+           <button class="btn warn" type="submit">Xoá ${esc(Math.min(unused.total, 200))} ảnh này</button>
+         </form>
+         <p class="muted" style="font-size:.82rem;margin-bottom:0">Xoá là <strong>không lấy lại được</strong>. Ảnh đang hiển thị ở bất kỳ đâu (trang chủ, bài viết, danh mục, kể cả bản đăng cũ của trang nội dung) đều KHÔNG nằm trong danh sách này.</p>`);
+  return `<div class="card"><h2 style="margin-top:0">Dọn ảnh không dùng</h2>${body}</div>`;
+}
+
+export function renderShopSettings(ctx, shopId, shop, notice, err, unused) {
   const base = `/shops/${esc(shopId)}`;
   if (!CONTENT_ROLES.has(ctx.role)) {
     return layout('Cài đặt', ctx, `<h1>Cài đặt cửa hàng</h1><div class="card"><p class="muted">Chỉ <strong>chủ cửa hàng</strong> hoặc <strong>quản trị</strong> mới sửa hồ sơ.</p></div>`);
@@ -951,6 +978,7 @@ export function renderShopSettings(ctx, shopId, shop, notice, err) {
       </form>
       ${s.logo_url ? `<form method="POST" action="${base}/logo/remove" style="margin-top:8px"><button class="btn alt sm" type="submit">Gỡ logo</button></form>` : ''}
     </div>
+    ${unusedImagesCard(base, unused)}
     <div class="card">
       <p class="muted" style="margin-top:0">Thông tin liên hệ hiển thị ở <strong>chân trang cửa hàng</strong> để khách tin tưởng và liên hệ.</p>
       <form method="POST" action="${base}/settings">

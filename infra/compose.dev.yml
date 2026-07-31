@@ -214,6 +214,9 @@ services:
       # Máy chủ ảnh giả của bộ test chạy trong container dbtest, mà mọi IP trong stack đều
       # nội bộ nên không mở đúng tên này thì KHÔNG kiểm được đường-thành-công.
       IMPORT_IMG_ALLOW_HOSTS: dbtest
+      # Ân hạn dọn ảnh = 0 giờ CHỈ ở dev: e2e phải chạy được nhánh XOÁ thật, mà không
+      # thể chờ 48 giờ. Prod bỏ biến này → về mặc định 48h trong mã.
+      MEDIA_GC_GRACE_HOURS: "0"
       AUTH_URL: http://auth:3020
       ALLOWED_ORIGINS: https://admin.nentang.vn,https://seller.localtest
       PORT: "3040"

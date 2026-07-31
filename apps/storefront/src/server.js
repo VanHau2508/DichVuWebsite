@@ -510,12 +510,17 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       // category_bar (thanh danh mục ảnh tròn kiểu MM). Shop khác KHÔNG tốn subquery này.
       // Ảnh gộp cả con (0095): danh mục CHA thường không gán SP trực tiếp (SP nằm ở con) →
       // lấy ảnh SP mới nhất của chính nó HOẶC bất kỳ danh mục con nào.
-      const catImg = (Array.isArray(theme?.layout) && theme.layout.some((s) => s && s.section === 'category_bar'))
-        ? `, (SELECT m.public_key FROM product_categories pc JOIN products p ON p.id = pc.product_id
+      // Ảnh TỰ ĐẶT của danh mục (0118) thắng ảnh suy từ SP: shop đã bỏ công chọn thì
+      // đừng để một SP mới đăng đổi mất ảnh danh mục sau lưng họ. COALESCE, không phải
+      // hai cột — phía render chỉ cần biết "có ảnh hay không".
+      // Nạp ảnh khi layout có category_bar HOẶC collections — cả hai đều bày danh mục
+      // ra trang chủ. Bố cục khác không dính subquery này.
+      const catImg = (Array.isArray(theme?.layout) && theme.layout.some((s) => s && (s.section === 'category_bar' || s.section === 'collections')))
+        ? `, COALESCE(c.image_key, (SELECT m.public_key FROM product_categories pc JOIN products p ON p.id = pc.product_id
               JOIN media m ON m.product_id = p.id
              WHERE pc.category_id IN (SELECT ch.id FROM categories ch WHERE ch.deleted_at IS NULL AND (ch.id = c.id OR ch.parent_id = c.id))
                AND p.status = 'active' AND p.deleted_at IS NULL
-             ORDER BY p.created_at DESC, m.position LIMIT 1) AS image_key` : '';
+             ORDER BY p.created_at DESC, m.position LIMIT 1)) AS image_key` : '';
       // Nạp cả cây (2 cấp, 0095): parent_id để dựng cha→con ở dropdown/sidebar. Danh mục con
       // của cha đã ẩn (soft-delete) sẽ có parent_id treo → coi như cấp-1 (xử lý ở buildCatTree).
       const catRows = (await c.query(`SELECT c.id, c.slug, c.name, c.parent_id${catImg} FROM categories c ORDER BY c.position, c.name LIMIT 100`)).rows;

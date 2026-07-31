@@ -201,20 +201,32 @@ async function deleteLogo(res, ctx) {
 // layout JSON (hero.props.slides), nên trả { key, url } để seller-admin lắp vào slide.
 // Không giữ bản gốc (banner chỉ trưng bày). Tiền tố key banner- để phân biệt logo-/ảnh SP.
 // Perm 'theme.write' (owner/admin) — khai ở route. Cùng shop namespace nên RLS cô lập.
-async function uploadBanner(res, ctx, body) {
-  const buf = body;
-  if (!Buffer.isBuffer(buf) || buf.length === 0) return send(res, 400, { error: 'thiếu dữ liệu ảnh' });
-  if (!sniffImage(buf)) return send(res, 400, { error: 'không phải ảnh hợp lệ (JPEG/PNG/WebP/GIF)' });
-  const publicKey = `${ctx.shopId}/banner-${crypto.randomUUID()}.webp`;
+/**
+ * Đường xử lý ảnh CHUNG cho mọi ảnh trưng bày (banner, ảnh nội dung, ảnh danh mục):
+ * sniff magic byte → re-encode WebP (bỏ mọi payload nhúng + EXIF) → đẩy bucket PUBLIC.
+ * Trả `null` khi đã tự gửi lỗi cho client, hoặc `{ key }` khi xong.
+ *
+ * Tách ra vì đã có ba chỗ dùng: chép ba lần thì đến lần thứ tư sẽ có một bản quên
+ * sniff — và đó đúng là bản cho phép tải lên tệp không phải ảnh.
+ */
+async function putDisplayImage(res, buf, publicKey, w, h) {
+  if (!Buffer.isBuffer(buf) || buf.length === 0) { send(res, 400, { error: 'thiếu dữ liệu ảnh' }); return null; }
+  if (!sniffImage(buf)) { send(res, 400, { error: 'không phải ảnh hợp lệ (JPEG/PNG/WebP/GIF)' }); return null; }
   try {
-    // Banner phủ rộng → cho phép tới 2000×1200; vẫn re-encode WebP (strip payload nhúng).
     const { data } = await sharp(buf).rotate()
-      .resize({ width: 2000, height: 1200, fit: 'inside', withoutEnlargement: true })
+      .resize({ width: w, height: h, fit: 'inside', withoutEnlargement: true })
       .webp({ quality: 82 }).toBuffer({ resolveWithObject: true });
     await minio.putObject(BUCKET_PUBLIC, publicKey, data, data.length, { 'Content-Type': 'image/webp' });
-  } catch { return send(res, 422, { error: 'xử lý ảnh thất bại' }); }
+  } catch { send(res, 422, { error: 'xử lý ảnh thất bại' }); return null; }
+  return { key: publicKey };
+}
+
+async function uploadBanner(res, ctx, body) {
+  // Banner phủ rộng → cho phép tới 2000×1200.
+  const r = await putDisplayImage(res, body, `${ctx.shopId}/banner-${crypto.randomUUID()}.webp`, 2000, 1200);
+  if (!r) return undefined;
   await withTenant(ctx.shopId, (c) => audit(c, 'shop.banner_uploaded', { actorId: ctx.user.id, ip: ctx.ip, metadata: {} })).catch(() => {});
-  return send(res, 200, { key: publicKey, url: mediaPublicUrl(publicKey) });
+  return send(res, 200, { key: r.key, url: mediaPublicUrl(r.key) });
 }
 
 /**
@@ -245,6 +257,37 @@ async function listShopMedia(res, ctx) {
  */
 async function uploadContentImage(res, ctx, body) {
   return uploadBanner(res, ctx, body);
+}
+
+/**
+ * Ảnh đại diện DANH MỤC: tải lên rồi GẮN LUÔN vào categories.image_key trong một lần
+ * gọi. Tách thành hai bước (tải → PATCH key) sẽ đẻ ra object mồ côi mỗi lần người
+ * dùng bỏ dở giữa chừng, mà chẳng đổi lấy được gì.
+ *
+ * Trước đây ảnh danh mục suy từ SP mới nhất trong danh mục. Shop mới chưa có SP (hoặc
+ * SP chưa có ảnh) thì ô danh mục rỗng — đúng thứ chủ shop phàn nàn. Giờ đặt được tay,
+ * để trống vẫn giữ nguyên cách suy cũ.
+ */
+async function uploadCategoryImage(res, ctx, body, params) {
+  const catId = params[1];
+  // Ảnh danh mục hiện ở ô nhỏ (vòng tròn ~64px hoặc thẻ ~300px) → 1200 là quá đủ.
+  const r = await putDisplayImage(res, body, `${ctx.shopId}/cat-${crypto.randomUUID()}.webp`, 1200, 1200);
+  if (!r) return undefined; // putDisplayImage đã trả lỗi cho client
+  const n = await withTenant(ctx.shopId, async (c) => {
+    const u = await c.query(`UPDATE categories SET image_key = $2 WHERE id = $1 AND deleted_at IS NULL`, [catId, r.key]);
+    if (u.rowCount) await audit(c, 'category.image_set', { actorId: ctx.user.id, ip: ctx.ip, metadata: { catId } });
+    return u.rowCount;
+  });
+  if (!n) return send(res, 404, { error: 'không tìm thấy danh mục' });
+  return send(res, 200, { key: r.key, url: mediaPublicUrl(r.key) });
+}
+
+/** Gỡ ảnh danh mục → quay lại suy ảnh từ sản phẩm. Object cũ để worker dọn. */
+async function deleteCategoryImage(res, ctx, _body, params) {
+  const n = await withTenant(ctx.shopId, async (c) => (await c.query(
+    `UPDATE categories SET image_key = NULL WHERE id = $1 AND deleted_at IS NULL`, [params[1]])).rowCount);
+  if (!n) return send(res, 404, { error: 'không tìm thấy danh mục' });
+  return send(res, 200, { ok: true });
 }
 
 async function listMedia(res, ctx, _body, params) {
@@ -333,6 +376,9 @@ export const MEDIA_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/logo$`), perm: 'shop.write', raw: true, fn: (res, ctx, b) => uploadLogo(res, ctx, b) },
   { m: 'GET',  re: new RegExp(`^/shops/${UUID}/media$`), perm: 'content.read', fn: (res, ctx) => listShopMedia(res, ctx) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/content-image$`), perm: 'content.write', raw: true, fn: (res, ctx, b) => uploadContentImage(res, ctx, b) },
+  // Ảnh đại diện danh mục (0118). catalog.write vì đây là dữ liệu danh mục, không phải giao diện.
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/categories/${UUID}/image$`), perm: 'catalog.write', raw: true, fn: (res, ctx, b, p) => uploadCategoryImage(res, ctx, b, p) },
+  { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/categories/${UUID}/image$`), perm: 'catalog.write', fn: (res, ctx, b, p) => deleteCategoryImage(res, ctx, b, p) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/logo$`), perm: 'shop.write', fn: (res, ctx) => deleteLogo(res, ctx) },
   // Banner trang chủ (Phase 5): upload ảnh riêng cho carousel hero. theme.write (owner/admin).
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/banner-image$`), perm: 'theme.write', raw: true, fn: (res, ctx, b) => uploadBanner(res, ctx, b) },

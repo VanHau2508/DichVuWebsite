@@ -637,6 +637,45 @@ async function main() {
     ? ok('overlay: headline + sub + nút (link nội bộ)') : bad('overlay banner thiếu field');
   !r.body.includes('phu-tu-dong')
     ? ok('có banner → KHÔNG render hero tự động (subtitle cũ biến mất)') : bad('hero tự động vẫn render cùng banner');
+  // ── Ảnh danh mục (0118): tự đặt THẮNG ảnh suy từ SP; không có ảnh → chữ cái đầu ──
+  // Chủ shop báo "ô danh mục trống, xấu": dải danh mục lấy ảnh SP mới nhất trong danh
+  // mục, shop chưa có SP thì mọi ô là một icon lưới xám giống hệt nhau.
+  sect('Ảnh danh mục: tự đặt thắng ảnh SP + chữ cái đầu khi trống');
+  const barSlug = `nuoc-${uniq()}`;
+  const barCat = (await rq(SELLER, 'POST', `/shops/${A.shopId}/categories`, { body: { slug: barSlug, name: 'Đồ uống' }, cookie: A.cookie, origin: OS })).json.id;
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/theme`, { cookie: A.cookie, origin: OS, body: { tokens: {}, layout: [
+    { section: 'header', props: {} }, { section: 'category_bar', props: { title: 'Danh mục' } },
+    { section: 'product_grid', props: {} }, { section: 'footer', props: {} },
+  ] } });
+  r = await sf(A.host, '/');
+  // "Đồ uống" chưa có SP nào → phải là chữ Đ, không phải icon lưới dùng chung.
+  /class="catbar-mono"[^>]*>Đ</.test(r.body)
+    ? ok('danh mục chưa có ảnh → chữ cái đầu (Đ), không phải icon lưới') : bad('không có chữ cái đầu', r.body.match(/catbar-ic">[^<]*<[^>]*/)?.[0]);
+  // Cho danh mục này MỘT sản phẩm CÓ ẢNH: từ đây trở đi ảnh SP là "đối thủ" thật của
+  // ảnh tự đặt. Không có bước này thì ca "tự đặt thắng" chẳng so với gì cả.
+  const barPid = (await mkProduct(A.shopId, A.cookie, { title: 'Trà sữa', slug: `trasua-${uniq()}`, price_vnd: 35000, status: 'active', variants: [{ sku: `TS-${uniq()}`, price_vnd: 35000 }] })).json.id;
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/products/${barPid}/categories`, { body: { category_ids: [barCat] }, cookie: A.cookie, origin: OS });
+  const prodImgKey = `${A.shopId}/anh-sp-${uniq()}.webp`;
+  await owner.query(`INSERT INTO media (shop_id, product_id, status, original_key, public_key, position) VALUES ($1,$2,'ready',$3,$3,0)`, [A.shopId, barPid, prodImgKey]);
+  // CHỈ soi trong dải danh mục. Bản đầu soi cả trang và ca "ảnh tự đặt thắng" báo đỏ
+  // oan: ảnh SP cũng nằm ở THẺ SẢN PHẨM dưới lưới, nên !includes(prodImgKey) không bao
+  // giờ đúng dù dải danh mục đã đổi sang ảnh tự đặt.
+  const catbar = (body) => { const i = body.indexOf('class="catbar-row"'); return i < 0 ? '' : body.slice(i, body.indexOf('</section>', i)); };
+  r = await sf(A.host, '/');
+  catbar(r.body).includes(`/media-public/${prodImgKey}`)
+    ? ok('chưa tự đặt ảnh → suy từ ảnh SP trong danh mục (như cũ)') : bad('không suy được ảnh từ SP');
+  // Giờ mới gắn ảnh riêng: phải THẮNG ảnh SP ở trên.
+  const upCat = await fetch(`${SELLER}/shops/${A.shopId}/categories/${barCat}/image`, { method: 'POST', headers: { 'content-type': 'image/png', origin: OS, cookie: `__Host-session=${A.cookie}` }, body: PNG_1x1 });
+  const catKey = (await upCat.json().catch(() => null))?.key;
+  r = await sf(A.host, '/');
+  (catKey && catbar(r.body).includes(`/media-public/${catKey}`) && !catbar(r.body).includes(`/media-public/${prodImgKey}`))
+    ? ok('ảnh tự đặt THẮNG ảnh suy từ SP') : bad('ảnh tự đặt không thắng', String(catKey));
+  // Gỡ ảnh → rơi về ảnh SP, không phải chữ cái đầu (danh mục này giờ đã có SP có ảnh).
+  await rq(SELLER, 'DELETE', `/shops/${A.shopId}/categories/${barCat}/image`, { cookie: A.cookie, origin: OS });
+  r = await sf(A.host, '/');
+  (!catbar(r.body).includes(`/media-public/${catKey}`) && catbar(r.body).includes(`/media-public/${prodImgKey}`))
+    ? ok('gỡ ảnh → rơi về ảnh SP') : bad('gỡ ảnh không có tác dụng');
+
   // Link javascript: phải bị chặn ở render (đề phòng) — nút về '#'.
   await rq(SELLER, 'PUT', `/shops/${A.shopId}/theme`, { cookie: A.cookie, origin: OS, body: { tokens: {}, layout: [
     { section: 'hero', props: { slides: [{ image_key: bnKey, headline: 'X', button_label: 'Bấm', button_link: '/an/toan' }] } },

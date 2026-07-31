@@ -1090,6 +1090,24 @@ async function categoryDelete(res, me, cookie, shopId, cid) {
   const r = await sellerApi('DELETE', `/shops/${shopId}/categories/${cid}`, { cookie });
   return categoriesPage(res, me, cookie, shopId, r.status === 200 ? 'Đã xoá danh mục.' : null, r.status === 200 ? null : (r.json?.error ?? 'Không xoá được danh mục.'));
 }
+// Ảnh đại diện danh mục (0118). Tick "Xoá ảnh" → gỡ về suy-từ-sản-phẩm; ngược lại tải
+// tệp đã chọn. Seller lo sniff + re-encode + gắn key trong MỘT lần gọi.
+async function categoryImage(req, res, me, cookie, shopId, cid) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  let files = [], fields = {};
+  try { ({ files, fields } = await readMultipartAll(req)); } catch (e) {
+    if (e.statusCode === 413) return categoriesPage(res, me, cookie, shopId, null, 'Ảnh quá lớn.');
+    return categoriesPage(res, me, cookie, shopId, null, 'Không đọc được tệp tải lên.');
+  }
+  if (fields.remove) {
+    const d = await sellerApi('DELETE', `/shops/${shopId}/categories/${cid}/image`, { cookie });
+    return categoriesPage(res, me, cookie, shopId, d.status === 200 ? 'Đã gỡ ảnh danh mục.' : null, d.status === 200 ? null : (d.json?.error ?? 'Không gỡ được ảnh.'));
+  }
+  const f = files.find((x) => x.bytes?.length);
+  if (!f) return categoriesPage(res, me, cookie, shopId, null, 'Chưa chọn ảnh.');
+  const up = await sellerUpload(`/shops/${shopId}/categories/${cid}/image`, { cookie, bytes: f.bytes });
+  return categoriesPage(res, me, cookie, shopId, up.status === 200 ? 'Đã đặt ảnh danh mục.' : null, up.status === 200 ? null : (up.json?.error ?? 'Tải ảnh thất bại.'));
+}
 
 // ── Khuyến mãi (mã giảm giá; catalog.write) ──────────────────────────────────
 async function couponsPage(res, me, cookie, shopId, notice, err) {
@@ -2908,6 +2926,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/categories$`).exec(p)) && req.method === 'GET') return categoriesPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/categories$`).exec(p)) && req.method === 'POST') return categoryCreate(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/categories/${UUID}/delete$`).exec(p)) && req.method === 'POST') return categoryDelete(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/categories/${UUID}/image$`).exec(p)) && req.method === 'POST') return categoryImage(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/categories/${UUID}$`).exec(p)) && req.method === 'POST') return categoryUpdate(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/coupons$`).exec(p)) && req.method === 'GET') return couponsPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/coupons$`).exec(p)) && req.method === 'POST') return couponCreate(req, res, me, cookie, m[1]);

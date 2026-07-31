@@ -14,6 +14,7 @@ import { base32Decode } from '../../../packages/auth/src/base32.js';
 const AUTH = process.env.AUTH_URL ?? 'http://auth:3020';
 const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
 const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
+const ADMIN = process.env.ADMIN_URL ?? 'http://seller-admin:3001';
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 3 });
 // Token lời mời KHÔNG còn trong API response (email hoá, 0073) — lấy từ outbox qua owner SQL (ADR-006: cùng tx với INSERT invitations nên đọc được ngay).
@@ -202,6 +203,53 @@ async function main() {
   const titles = r.json.products.map((p) => p.title);
   r.status === 200 && titles.includes('Cùng SKU khác shop') && !titles.includes('Quần jeans 0')
     ? ok('shop B chỉ thấy sản phẩm của shop B (RLS)') : bad('rò sản phẩm chéo shop', r.raw);
+
+  // ── 11. Ảnh đại diện danh mục (0118) ───────────────────────────────────────
+  // Trước 0118 ảnh danh mục suy từ SP mới nhất trong danh mục — shop mới chưa có SP
+  // thì ô danh mục rỗng. Giờ đặt được tay. Đi qua ĐÚNG đường xử lý ảnh của banner
+  // (sniff magic byte + re-encode WebP) nên ca đầu tiên phải là tệp rác giả ảnh.
+  sect('11. Ảnh đại diện danh mục');
+  const upCatImg = (shopId, cookie, catId, bytes, ct) => fetch(
+    `${SELLER}/shops/${shopId}/categories/${catId}/image`,
+    { method: 'POST', headers: { 'content-type': ct, origin: OS, cookie: `__Host-session=${cookie}` }, body: bytes },
+  ).then(async (x) => ({ status: x.status, json: await x.json().catch(() => null) }));
+  const PNG_1x1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC', 'base64');
+
+  let ci = await upCatImg(A.shopId, A.cookie, catA, Buffer.from('MZ\x90\x00 không phải ảnh'), 'image/png');
+  ci.status === 400 ? ok('tệp rác giả ảnh → 400 (sniff magic byte)') : bad('tệp rác lọt', JSON.stringify(ci));
+
+  ci = await upCatImg(A.shopId, A.cookie, catA, PNG_1x1, 'image/png');
+  const catKeyRe = new RegExp(`^${A.shopId}/cat-[0-9a-f]{8}-`);
+  const dbKey = (await owner.query('SELECT image_key FROM categories WHERE id=$1', [catA])).rows[0]?.image_key;
+  (ci.status === 200 && catKeyRe.test(ci.json?.key ?? '') && dbKey === ci.json.key)
+    ? ok('PNG thật → key cat- đúng namespace shop VÀ đã gắn vào categories.image_key')
+    : bad('tải ảnh danh mục lỗi', `${ci.status} key=${ci.json?.key} db=${dbKey}`);
+
+  // Danh mục của shop KHÁC: RLS + kiểm rowCount → 404, không âm thầm tạo object mồ côi
+  // rồi báo thành công.
+  ci = await upCatImg(A.shopId, A.cookie, catB, PNG_1x1, 'image/png');
+  ci.status === 404 ? ok('gắn ảnh vào danh mục shop khác → 404') : bad('gắn được ảnh chéo shop', JSON.stringify(ci));
+
+  const delCi = await a.del(`/categories/${catA}/image`);
+  const afterDel = (await owner.query('SELECT image_key FROM categories WHERE id=$1', [catA])).rows[0]?.image_key;
+  (delCi.status === 200 && afterDel === null) ? ok('gỡ ảnh → image_key về NULL (quay lại suy từ SP)') : bad('gỡ ảnh lỗi', `${delCi.status} ${afterDel}`);
+
+  // listCategories phải TRẢ image_key, không thì trang admin không biết đường xem trước.
+  await upCatImg(A.shopId, A.cookie, catA, PNG_1x1, 'image/png');
+  const lst = await a.get('/categories');
+  (lst.json?.categories ?? []).find((c) => c.id === catA)?.image_key
+    ? ok('GET /categories trả image_key (admin xem trước được)') : bad('list thiếu image_key');
+
+  // Trang Danh mục của seller-admin phải BÀY được ô tải ảnh, và ô file phải nằm TRONG
+  // form của chính nó — ô nằm ngoài form thì trình duyệt lặng lẽ không gửi, người dùng
+  // bấm Lưu thấy "thành công" mà chẳng có gì đổi. Đã bị đúng lớp lỗi này với form="pall".
+  const admPage = await fetch(`${ADMIN}/shops/${A.shopId}/categories`, { headers: { cookie: `__Host-session=${A.cookie}` } });
+  const admHtml = await admPage.text();
+  const iF = admHtml.indexOf(`/categories/${catA}/image`);
+  const iFile = admHtml.indexOf('name="image"', iF);
+  const between = iF > 0 && iFile > iF ? admHtml.slice(iF, iFile) : 'x</form>';
+  (admPage.status === 200 && iF > 0 && iFile > iF && !between.includes('</form>'))
+    ? ok('trang Danh mục (admin) có form ảnh + ô file nằm trong form') : bad('form ảnh danh mục thiếu/ô ngoài form', `${admPage.status} iF=${iF} iFile=${iFile}`);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

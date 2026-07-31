@@ -2578,6 +2578,16 @@ export function renderCategories(ctx, shopId, data, notice, err) {
   // <option> danh mục cha = các danh mục CẤP-1 (trừ chính nó, chống tự làm cha). '' = cấp trên cùng.
   const parentOpts = (selId, exclId) => `<option value="">— Cấp trên cùng —</option>` +
     roots.filter((r) => r.id !== exclId).map((r) => `<option value="${esc(r.id)}"${r.id === selId ? ' selected' : ''}>${esc(r.name)}</option>`).join('');
+  // Ô ảnh danh mục (0118). Form RIÊNG cho mỗi danh mục vì multipart không trộn được với
+  // form "Lưu tên/thứ tự" bên cạnh (khác enctype). Có ảnh → xem trước + tick gỡ.
+  const catImgCell = (c) => `<form method="POST" action="${base}/categories/${esc(c.id)}/image" enctype="multipart/form-data" style="display:flex;gap:8px;align-items:center;margin:0;flex-wrap:wrap">
+      ${c.image_key
+    ? `<img src="/media-public/${esc(c.image_key)}" alt="" style="width:44px;height:44px;object-fit:cover;border-radius:8px;border:1px solid #eceef1;background:#fff">`
+    : '<span class="muted" style="font-size:.78rem;white-space:nowrap">chưa có</span>'}
+      <input type="file" name="image" accept="image/*" style="max-width:150px;font-size:.8rem">
+      <button class="btn alt sm" type="submit">Lưu ảnh</button>
+      ${c.image_key ? `<label class="muted" style="font-size:.78rem;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" name="remove" value="1" style="width:auto"> Gỡ</label>` : ''}
+    </form>`;
   const row = (c, child) => {
     // Danh mục ĐANG có con phải ở cấp-1 → không cho chọn cha (ẩn select, hiện nhãn "danh mục cha").
     const parentCell = hasKids(c)
@@ -2592,6 +2602,7 @@ export function renderCategories(ctx, shopId, data, notice, err) {
         <button class="btn alt sm" type="submit">Lưu</button>
       </form></td>
       <td class="muted"><code>${esc(c.slug)}</code></td>
+      <td>${catImgCell(c)}</td>
       <td style="text-align:right"><form method="POST" action="${base}/categories/${esc(c.id)}/delete" style="display:inline;margin:0"><button class="btn warn sm" type="submit">Xoá</button></form></td>
     </tr>`;
   };
@@ -2613,8 +2624,9 @@ export function renderCategories(ctx, shopId, data, notice, err) {
       <p class="muted" style="font-size:.82rem;margin-bottom:0">Slug là đường dẫn trên storefront: <code>/products?cat=&lt;slug&gt;</code>. Chỉ chữ thường, số, gạch ngang. Chỉ hỗ trợ 2 cấp (cha → con).</p>
     </div>
     <div class="card">${cats.length
-      ? `<table><thead><tr><th>Tên · thứ tự · danh mục cha</th><th>Slug</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-         <p class="muted" style="margin-top:10px;font-size:.85rem">Gán sản phẩm vào danh mục (nên gán vào danh mục <strong>con</strong>) ở <strong>trang chi tiết từng sản phẩm</strong> (mục "Danh mục").</p>`
+      ? `<table><thead><tr><th>Tên · thứ tự · danh mục cha</th><th>Slug</th><th>Ảnh đại diện</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+         <p class="muted" style="margin-top:10px;font-size:.85rem">Gán sản phẩm vào danh mục (nên gán vào danh mục <strong>con</strong>) ở <strong>trang chi tiết từng sản phẩm</strong> (mục "Danh mục").</p>
+         <p class="muted" style="font-size:.85rem;margin-bottom:0"><strong>Ảnh đại diện</strong> hiện ở dải danh mục trang chủ. Bỏ trống thì hệ thống tự lấy ảnh sản phẩm mới nhất trong danh mục — nhưng danh mục chưa có sản phẩm (hoặc sản phẩm chưa có ảnh) sẽ trông trống, nên nên tự đặt. Ảnh <strong>vuông</strong> đẹp nhất.</p>`
       : '<p class="muted">Chưa có danh mục. Thêm ở trên để nhóm sản phẩm + hiện trên storefront.</p>'}</div>`);
 }
 

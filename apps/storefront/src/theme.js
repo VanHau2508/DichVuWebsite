@@ -315,6 +315,18 @@ function heroSplit(mainSlides, sideSlides) {
   </div></div></section>`;
 }
 
+/**
+ * Ô danh mục KHÔNG có ảnh: chữ cái đầu của tên thay cho icon lưới xám dùng chung.
+ * Icon giống hệt nhau ở mọi ô làm cả dải trông như ảnh chưa tải xong — đúng cái chủ
+ * shop gọi là "ô trống, xấu". Chữ cái thì khác nhau giữa các ô nên đọc ra là CỐ Ý.
+ * [...name] chứ không name[0]: tiếng Việt có ký tự ngoài BMP thì name[0] cắt đôi cặp
+ * surrogate và ra ô vuông hỏng.
+ */
+function catMono(name) {
+  const ch = [...String(name ?? '').trim()][0] ?? '?';
+  return `<span class="catbar-mono" aria-hidden="true">${esc(ch.toUpperCase())}</span>`;
+}
+
 // ── Kênh bán & mạng xã hội (footer + nút nổi) ────────────────────────────────
 // Chỉ nhận `kind` trong BẢNG NÀY. Đây là điểm mấu chốt về an toàn: người bán không
 // nhập được markup, icon, màu hay tên — chỉ chọn một khoá có sẵn, hệ thống tự dựng.
@@ -549,7 +561,7 @@ const SECTIONS = {
       <div class="section-h">
         <div class="section-h-l"><p class="section-eyebrow">${esc(props.eyebrow || 'Danh mục nổi bật')}</p><h2>${esc(props.title || 'Mua theo bộ sưu tập')}</h2></div>
       </div>
-      <div class="coll-grid${isCards ? ' coll-cards' : ''}">${cats.map((c) => `<a class="coll-tile" href="/products?cat=${esc(c.slug)}"><span class="coll-name">${esc(c.name)}</span><span class="coll-go">Xem ngay →</span></a>`).join('')}</div>
+      <div class="coll-grid${isCards ? ' coll-cards' : ''}">${cats.map((c) => `<a class="coll-tile${c.image ? ' has-img' : ''}" href="/products?cat=${esc(c.slug)}">${c.image ? `<img class="coll-img" src="${esc(c.image)}" alt="${esc(c.name)}" loading="lazy">` : ''}<span class="coll-name">${esc(c.name)}</span><span class="coll-go">Xem ngay →</span></a>`).join('')}</div>
     </div></section>`;
   },
 
@@ -598,7 +610,7 @@ const SECTIONS = {
     const ic = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>';
     return `<section class="section catbar"><div class="wrap">
       ${props.title ? `<div class="section-h"><div class="section-h-l"><h2>${esc(props.title)}</h2></div></div>` : ''}
-      <div class="catbar-row">${cats.map((c) => `<a class="catbar-item" href="/products?cat=${esc(c.slug)}"><span class="catbar-ic">${c.image ? `<img src="${esc(c.image)}" alt="${esc(c.name)}" loading="lazy">` : ic}</span><span class="catbar-name">${esc(c.name)}</span></a>`).join('')}</div>
+      <div class="catbar-row">${cats.map((c) => `<a class="catbar-item" href="/products?cat=${esc(c.slug)}"><span class="catbar-ic">${c.image ? `<img src="${esc(c.image)}" alt="${esc(c.name)}" loading="lazy">` : catMono(c.name)}</span><span class="catbar-name">${esc(c.name)}</span></a>`).join('')}</div>
     </div></section>`;
   },
 
@@ -1252,6 +1264,8 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .catbar-ic{width:74px;height:74px;border-radius:var(--cat-radius,50%);overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--color-hero-bg);color:var(--color-primary);border:1px solid var(--color-border);flex:0 0 auto;transition:border-color .15s,box-shadow .15s}
 .catbar-ic img{width:100%;height:100%;object-fit:cover;display:block}
 .catbar-ic svg{width:30px;height:30px}
+/* Không ảnh → chữ cái đầu, không phải icon lưới dùng chung (xem catMono). */
+.catbar-mono{font-family:var(--font-heading);font-size:1.7rem;font-weight:800;line-height:1;color:var(--color-primary);letter-spacing:-.02em}
 .catbar-name{font-size:.82rem;font-weight:600;line-height:1.32;color:var(--color-text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .catrow-scroll{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(172px,200px);gap:16px;overflow-x:auto;overflow-y:hidden;padding-bottom:10px;-webkit-overflow-scrolling:touch;scroll-snap-type:x proximity}
 .catrow-scroll > .card{scroll-snap-align:start}
@@ -1305,6 +1319,15 @@ a:focus-visible,.btn:focus-visible,summary:focus-visible,button:focus-visible,.t
 .coll-tile{position:relative;display:flex;flex-direction:column;justify-content:flex-end;gap:6px;min-height:168px;padding:22px 24px;border-radius:var(--r-lg);background:linear-gradient(150deg,var(--color-hero-bg),color-mix(in srgb,var(--color-hero-bg) 40%,var(--color-bg)));border:1px solid var(--color-border);overflow:hidden;transition:transform .25s cubic-bezier(.2,.7,.2,1),box-shadow .25s,border-color .25s}
 .coll-tile::after{content:"";position:absolute;top:-30px;right:-30px;width:120px;height:120px;border-radius:50%;background:color-mix(in srgb,var(--color-primary) 9%,transparent);transition:transform .35s}
 .coll-tile:hover{transform:translateY(-4px);border-color:color-mix(in srgb,var(--color-primary) 42%,var(--color-border));box-shadow:var(--sh)}
+/* Có ảnh danh mục → ảnh phủ kín làm nền, phủ lớp tối để chữ luôn đọc được trên mọi
+   ảnh (ảnh sáng + chữ đậm vẫn mất nét). Không ảnh thì giữ nguyên nền gradient cũ. */
+.coll-tile.has-img{border-color:transparent}
+.coll-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0}
+.coll-tile.has-img::before{content:"";position:absolute;inset:0;z-index:1;background:linear-gradient(to top,rgba(0,0,0,.66),rgba(0,0,0,.14) 58%,rgba(0,0,0,.06))}
+.coll-tile.has-img::after{display:none}
+.coll-tile.has-img .coll-name,.coll-tile.has-img .coll-go{position:relative;z-index:2;color:#fff}
+.coll-tile.has-img:hover .coll-img{transform:scale(1.04)}
+.coll-img{transition:transform .35s cubic-bezier(.2,.7,.2,1)}
 .coll-tile:hover::after{transform:scale(1.35)}
 .coll-name{position:relative;font-family:var(--font-heading);font-weight:800;font-size:1.1rem;letter-spacing:-.01em;color:var(--color-text);line-height:1.25}
 .coll-go{position:relative;font-size:.82rem;font-weight:700;color:var(--color-accent);transition:transform .2s}

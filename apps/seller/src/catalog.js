@@ -744,7 +744,7 @@ async function setProductSpecs(res, ctx, body, params) {
 async function listCategories(res, ctx) {
   const rows = await withTenant(ctx.shopId, async (c) => {
     const r = await c.query(
-      `SELECT id, slug, name, position, parent_id FROM categories WHERE deleted_at IS NULL ORDER BY position, name`,
+      `SELECT id, slug, name, position, parent_id, image_key FROM categories WHERE deleted_at IS NULL ORDER BY position, name`,
     );
     return r.rows;
   });

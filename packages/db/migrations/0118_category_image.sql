@@ -1,0 +1,17 @@
+-- 0118: ảnh riêng cho danh mục.
+--
+-- Hiện thanh danh mục (category_bar) lấy ảnh SP MỚI NHẤT trong danh mục làm ảnh đại
+-- diện. Nghe hợp lý nhưng hỏng đúng lúc quan trọng nhất: shop mới chưa có SP, hoặc SP
+-- chưa kịp có ảnh → ô danh mục rỗng, chỉ còn icon lưới xám. Chủ shop nhìn thấy đúng
+-- cái đó và nói "danh mục xấu, ô trống". Không có cách nào sửa bằng CSS: thiếu ảnh
+-- thật thì phải cho họ TỰ đặt ảnh.
+--
+-- image_key trỏ tới object đã qua đường xử lý ảnh của seller (sniff magic byte →
+-- re-encode WebP → MinIO), y hệt banner: '<shop_id>/<uuid>.webp'. NULL = như cũ
+-- (suy ảnh từ sản phẩm), nên mọi shop đang chạy không đổi gì.
+--
+-- KHÔNG cần GRANT: categories cấp quyền ở MỨC BẢNG cho app_rw (INSERT/SELECT/UPDATE/
+-- DELETE) và app_store (SELECT), nên cột mới tự nằm trong quyền. (Đã kiểm bằng
+-- information_schema.table_privileges trước khi viết migration này — với bảng cấp
+-- quyền theo CỘT thì thiếu GRANT ở đây là lỗi 'permission denied' lúc chạy.)
+ALTER TABLE categories ADD COLUMN image_key text;

@@ -14,14 +14,24 @@ name: CI
 #   - lịch chạy MỖI ĐÊM, mỗi lần ~1h15m  ⇒ ~3.500 phút/tháng — MỘT MÌNH nó đã gấp 1,75
 #     lần cả quota, trước khi tính bất kỳ lần push nào;
 #   - mỗi push chạy trọn 80 bộ e2e ~45 phút (trước khi đổi sang glob chỉ 19 phút).
-# Cấu hình mới, ước tính ~1.100 phút/tháng:
-#   - push  → CHỈ job `unit` (~2 phút, không cần docker). Rẻ mà vẫn bắt được đúng thứ
-#     đã lọt suốt nhiều ngày: CVE trong dependency + unit test vỡ;
-#   - thứ 2/4/6 → e2e đầy đủ (45' × 13 ≈ 585 phút);
-#   - chủ nhật → mutation (75' × 4 ≈ 300 phút);
-#   - bấm tay bất cứ lúc nào — VÀ ĐÂY LÀ ĐIỀU BẮT BUỘC TRƯỚC MỖI LẦN DEPLOY.
-# Không mất gì ở máy: `bash scripts/ci-local.sh` chạy ĐÚNG chừng đó, miễn phí, không
-# tốn phút nào. CI giữ vai trò riêng của nó — kiểm trên MÁY SẠCH.
+# Cấu hình cũ (28/07 → 01/08), ước tính ~1.100 phút/tháng:
+#   - push → CHỈ job `unit`; thứ 2/4/6 → e2e; chủ nhật → mutation.
+# Nó rẻ, nhưng trả giá bằng một lỗ NGUY HIỂM ÍT AI ĐỂ Ý: push xong thấy dấu ✓ xanh mà
+# 86 bộ e2e CHƯA HỀ CHẠY. "Xanh" đó không có nghĩa gì ngoài "unit test qua" — đúng loại
+# tín hiệu giả mà cả file test-manifest.sh sinh ra để chống.
+#
+# ── Cấu hình từ 2026-08-01 ────────────────────────────────────────────────────
+#   - push/PR → unit + E2E ĐẦY ĐỦ. Push xong xanh nghĩa là 86 bộ đã chạy trên máy sạch.
+#   - BỎ lịch e2e thứ 2/4/6: mỗi push đã chạy e2e thì lịch đó chỉ chạy lại đúng commit
+#     cuối cùng — tốn ~585 phút/tháng để biết một điều đã biết.
+#   - chủ nhật → mutation (75' × 4 ≈ 300 phút) — giữ, vì nó kiểm thứ e2e không kiểm được.
+# Ước tính: 20 push/tháng × ~30' = 600 + 300 (mutation) ≈ 900 phút. Vẫn dưới 2.000.
+#
+# LƯU Ý VỀ QUOTA: 2.000 phút/tháng chỉ áp cho repo PRIVATE. Repo public thì Actions
+# trên runner tiêu chuẩn KHÔNG tính phút. Nếu đổi private↔public thì đọc lại phép tính
+# trên — nó chỉ đúng cho private.
+# Máy vẫn chạy được y hệt: `bash scripts/ci-local.sh`, miễn phí, không tốn phút nào.
+# CI giữ vai trò riêng — kiểm trên MÁY SẠCH, DB rỗng, thứ máy dev không tái hiện được.
 on:
   push:
     branches: [main]
@@ -34,7 +44,9 @@ on:
         default: e2e
         options: [e2e, mutation]
   schedule:
-    - cron: "0 18 * * 1,3,5"   # 01:00 giờ VN thứ 2/4/6 — e2e đầy đủ
+    # Bỏ lịch e2e thứ 2/4/6 (01/08): mỗi push đã chạy e2e nên lịch đó chỉ lặp lại commit
+    # cuối. Giữ mutation — nó kiểm thứ khác hẳn: gỡ từng lớp phòng thủ để xem e2e CÓ
+    # chuyển đỏ không, tức kiểm chính bộ test chứ không kiểm mã.
     - cron: "0 19 * * 0"       # 02:00 giờ VN chủ nhật — mutation
 
 concurrency:
@@ -70,11 +82,12 @@ jobs:
 
   e2e:
     name: E2E (docker stack)
-    # KHÔNG chạy ở mỗi push nữa (xem ngân sách phút ở đầu file). Chạy thứ 2/4/6 và mỗi
-    # khi bấm tay. TRƯỚC KHI DEPLOY phải bấm tay một lần và chờ xanh.
+    # CHẠY Ở MỖI PUSH/PR. Trước đây job này bị chặn để tiết kiệm phút, hệ quả là push
+    # xong thấy ✓ xanh trong khi 86 bộ e2e chưa chạy — một dấu xanh không có nghĩa.
+    # Loại trừ lịch mutation chủ nhật: hôm đó chỉ cần mutation, không cần e2e lần nữa.
     if: >-
-      (github.event_name == 'workflow_dispatch' && inputs.scope == 'e2e') ||
-      (github.event_name == 'schedule' && github.event.schedule == '0 18 * * 1,3,5')
+      github.event_name == 'push' || github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && inputs.scope == 'e2e')
     runs-on: ubuntu-latest
     # 45' là trần của thời danh-sách-tay 30 bộ. Glob chạy 80 bộ (mỗi bộ còn flushall
     # Redis trước khi chạy) nên phải nới, không thì CI chết vì hết giờ chứ không vì lỗi.

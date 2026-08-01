@@ -305,7 +305,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
 // Thiếu secret/khoá thì bot KHÔNG im lặng chạy sai: chữ ký luôn trượt → mọi webhook 403,
 // mà 403 hàng loạt không kèm lời giải thích là ca hỗ trợ tốn cả buổi.
 if (!APP_SECRET) log('error', 'messenger_app_secret_missing', { note: 'MỌI webhook sẽ bị từ chối cho tới khi đặt MESSENGER_APP_SECRET' });
-if (!/^[0-9a-f]{64}$/i.test(ENC_KEY)) log('error', 'messenger_enc_key_missing', { note: 'không giải mã được token Trang — đặt MESSENGER_ENC_KEY (64 hex)' });
+if (!/^[0-9a-f]{64}$/i.test(ENC_KEY)) log('error', 'messenger_enc_key_missing', { note: 'không mở được khoá Trang Facebook — đặt MESSENGER_ENC_KEY (64 hex)' });
 
 server.listen(PORT, '0.0.0.0', () => log('info', 'listening', { port: PORT }));
 for (const sig of ['SIGTERM', 'SIGINT']) {

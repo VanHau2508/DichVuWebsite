@@ -467,12 +467,55 @@ async function seedShopBanners(payload, outboxId) {
   }
 
   const bySlot = { hero: made.hero, hero_side: made.side, promo_banners: made.promo };
-  for (const s of row.layout) {
-    if (s && bySlot[s.section]) s.props = { ...s.props, slides: bySlot[s.section] };
+
+  // GHI CÓ ĐIỀU KIỆN — chống mất-cập-nhật.
+  //
+  // Trước đây đây là đọc–sửa–ghi trần: layout đọc ở đầu hàm, rồi ĐÈ nguyên mảng ở
+  // cuối. Khoảng giữa hai mốc đó có việc vẽ ảnh + upload MinIO cho từng banner, tức
+  // hàng giây tới hàng chục giây. Chủ shop bấm Lưu trong trang Giao diện đúng khoảng
+  // đó là thay đổi của HỌ bị đè mất, im lặng, không ai biết. Và đây đúng là lúc dễ
+  // trùng nhất: banner-seed chạy ngay khi cấp phát shop, còn chủ shop mới thì hay
+  // vào nghịch giao diện ngay phút đầu.
+  //
+  // Cách vá: đọc LẠI layout ngay trước khi ghi, và chỉ ghi khi nó CÒN NGUYÊN như lúc
+  // đọc (`AND layout = $3::jsonb` — so sánh jsonb là so sánh ngữ nghĩa, không phụ
+  // thuộc thứ tự khoá). Ai đó chen vào giữa thì rowCount = 0 → đọc lại, đắp slides
+  // lên bản MỚI của họ rồi ghi lại. Ảnh đã upload nên vòng lặp KHÔNG vẽ lại gì.
+  //
+  // Không dùng cột `version` vì app_worker chỉ được cấp SELECT/UPDATE trên `layout`
+  // (0114); dùng version sẽ phải mở thêm quyền cho một việc dọn dẹp — so sánh chính
+  // giá trị sắp bị đè đã đủ chặt mà không nới quyền.
+  let n = 0;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const cur = (await db.query('SELECT layout FROM themes WHERE shop_id = $1', [shopId])).rows[0];
+    if (!cur || !Array.isArray(cur.layout)) { log('warn', 'banner_seed_no_theme', { outboxId }); return; }
+    // Người thật đã tự tải banner trong lúc ta đang vẽ → nhường. Cùng luật idempotent
+    // ở đầu hàm, nhưng kiểm LẠI trên bản mới nhất chứ không trên bản đọc lúc đầu.
+    const h = cur.layout.find((s) => s && s.section === 'hero');
+    if (Array.isArray(h?.props?.slides) && h.props.slides.length) {
+      log('info', 'banner_seed_skip_existing', { outboxId, attempt });
+      return;
+    }
+    const before = JSON.stringify(cur.layout);
+    for (const s of cur.layout) {
+      if (s && bySlot[s.section]) s.props = { ...s.props, slides: bySlot[s.section] };
+    }
+    // layout là MẢNG → JSON.stringify, không thì node-pg ép thành array-literal.
+    const r = await db.query(
+      'UPDATE themes SET layout = $2 WHERE shop_id = $1 AND layout = $3::jsonb',
+      [shopId, JSON.stringify(cur.layout), before],
+    );
+    if (r.rowCount) { n = attempt; break; }
+    // Có người ghi chen. Ghi log mức warn: im lặng thử lại thì một xung đột THẬT SỰ
+    // hay xảy ra sẽ không bao giờ lộ ra.
+    log('warn', 'banner_seed_conflict_retry', { outboxId, attempt });
+    if (attempt === 4) {
+      // Bỏ cuộc còn hơn đè: banner mặc định chỉ là mồi, cấu hình của chủ shop thì không.
+      log('error', 'banner_seed_gave_up', { outboxId, why: 'layout bị ghi đè liên tục bởi người khác' });
+      return;
+    }
   }
-  // layout là MẢNG → JSON.stringify, không thì node-pg ép thành array-literal.
-  await db.query('UPDATE themes SET layout = $2 WHERE shop_id = $1', [shopId, JSON.stringify(row.layout)]);
-  log('info', 'banner_seed_done', { outboxId, n: made.hero.length + made.side.length + made.promo.length });
+  log('info', 'banner_seed_done', { outboxId, n: made.hero.length + made.side.length + made.promo.length, attempts: n });
 }
 
 // ── consumer: queue → email ──────────────────────────────────────────────────

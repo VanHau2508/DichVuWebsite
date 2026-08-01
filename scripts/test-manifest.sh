@@ -48,7 +48,7 @@ MANIFEST_UNIT_FILES=(
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
 MANIFEST_UNIT_COUNT=15
-MANIFEST_E2E_COUNT=85
+MANIFEST_E2E_COUNT=86
 
 manifest_unit_files() {
   shopt -s nullglob

@@ -322,8 +322,14 @@ Vướng ở đâu cứ trả lời email này, chúng tôi hỗ trợ.`,
     const d = (iso) => new Date(iso).toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
     const plan = p.plan_name || p.plan_code || '';
     const who = p.shop_name ? `cửa hàng ${p.shop_name}` : 'cửa hàng của bạn';
-    const contact = `\n\nĐể gia hạn, vui lòng liên hệ ${PLATFORM_BRAND}: ${BILLING_CONTACT}.`;
-    const contactHtml = par(`Để gia hạn, vui lòng liên hệ ${escHtml(PLATFORM_BRAND)}: <strong>${escHtml(BILLING_CONTACT)}</strong>.`);
+    // TỰ GIA HẠN đứng TRƯỚC (0124-0128). Bản cũ chỉ nói "liên hệ nền tảng" — từ khi có
+    // trang Gói dịch vụ thì câu đó bắt người ta chờ mình trả lời để được TRẢ TIỀN cho mình.
+    // Vẫn giữ email liên hệ làm lối phụ cho ai gặp trục trặc.
+    const payUrl = ADMIN_URL && p.shop_id ? `${ADMIN_URL}/shops/${p.shop_id}/billing` : null;
+    const contact = (payUrl ? `\n\nGia hạn ngay (quét mã, hệ thống tự vào hạn): ${payUrl}` : '')
+      + `\n\nCần hỗ trợ? Liên hệ ${PLATFORM_BRAND}: ${BILLING_CONTACT}.`;
+    const contactHtml = (payUrl ? par(`<a href="${escHtml(payUrl)}"><strong>Gia hạn ngay</strong></a> — quét mã chuyển khoản, hệ thống tự vào hạn trong vài phút.`) : '')
+      + par(`Cần hỗ trợ? Liên hệ ${escHtml(PLATFORM_BRAND)}: <strong>${escHtml(BILLING_CONTACT)}</strong>.`);
     if (p.milestone === 'past_due') {
       return {
         subject: `⚠ Thuê bao ${who} ĐÃ QUÁ HẠN — còn ${p.grace_days_left} ngày trước khi website tạm ngưng`,
@@ -977,6 +983,8 @@ async function remindSubscriptionBatch(subs) {
           shop_name: s.shop_name, plan_code: s.plan_code, plan_name: s.plan_name,
           sub_status: s.status, milestone, days_left: daysLeft, grace_days_left: graceDaysLeft,
           period_end: s.current_period_end,
+          // shop_id để email dựng link TỰ GIA HẠN thẳng tới trang Gói dịch vụ (0124-0128).
+          shop_id: s.shop_id,
         };
         if (s.contact_email) payload.to = s.contact_email;
         await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'subscription.reminder', $2)`, [s.shop_id, payload]);

@@ -123,6 +123,27 @@ async function platformShops(res, me, cookie, sp) {
   if (r.status !== 200) return platDenied(res, me);
   return sendHtml(res, 200, V.renderPlatformShops(platCtx(me), r.json ?? {}, mr.status === 200 ? mr.json : null, filters));
 }
+// Console: cấu hình thu tiền thuê bao (0124-0128). Hai nửa phải khớp mới thu được tiền —
+// token SePay (DB) + số tài khoản (env) — nên màn này hiện CẢ HAI để đối chiếu.
+async function platformBillingPage(res, me, cookie, ok, err) {
+  const r = await platformApi('GET', '/ops/billing-config', { cookie });
+  if (isDenied(r.status)) return platDenied(res, me);
+  return sendHtml(res, err ? 400 : 200, V.renderPlatformBilling(platCtx(me), r.json ?? {}, err, ok));
+}
+async function platformBillingSave(req, res, me, cookie) {
+  const f = await readForm(req);
+  const r = await platformApi('PUT', '/ops/billing-config', {
+    cookie, body: { sepay_token: String(f.sepay_token ?? '').trim(), enabled: f.enabled === '1' },
+  });
+  if (isDenied(r.status)) return platDenied(res, me);
+  // step_up_required nói RÕ ra: đây là thao tác chạm đường tiền, nuốt thành "không lưu
+  // được" thì người dùng bấm lại mãi mà không hiểu thiếu gì.
+  return platformBillingPage(res, me, cookie,
+    r.status === 200 ? 'Đã lưu cấu hình thu tiền.' : null,
+    r.status === 200 ? null
+      : (r.json?.step_up_required ? 'Cần xác thực lại mật khẩu (thao tác chạm đường tiền).' : (r.json?.error ?? 'Không lưu được.')));
+}
+
 async function platformShopNew(res, me, cookie, err, form) {
   // Select gói render từ DB qua /ops/plans (đã giết giá hardcode trong pages.js).
   const pr = await platformApi('GET', '/ops/plans', { cookie });
@@ -777,6 +798,27 @@ async function apiKeysPage(res, me, cookie, shopId, ok, err, freshToken, verifyT
   const mess = mr?.status === 200 ? { ...mr.json, webhook_url: MESSENGER_WEBHOOK_URL } : null;
   return sendHtmlJs(res, err ? 400 : 200, (nonce) =>
     V.renderApiKeys({ ...ctx, nonce }, shopId, { ...r.json, ingest_url: INGEST_URL }, err, ok, freshToken, mess, verifyToken));
+}
+
+// ── Gói dịch vụ: chủ shop xem hạn + tự trả tiền (0124-0128) ─────────────────
+async function billingPage(res, me, cookie, shopId, ok, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'billing');
+  const r = await sellerApi('GET', `/shops/${shopId}/billing`, { cookie });
+  if (r.status !== 200) return sendHtml(res, 502, V.renderError(ctx, r.json?.error ?? 'Không tải được thông tin gói dịch vụ.'));
+  // QR là SVG NỘI TUYẾN do seller dựng — cần sendHtmlJs để có nonce cho khối JS chung,
+  // nhưng bản thân SVG không cần script nào.
+  return sendHtmlJs(res, err ? 400 : 200, (nonce) => V.renderBilling({ ...ctx, nonce }, shopId, r.json, err, ok));
+}
+async function billingCharge(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await sellerApi('POST', `/shops/${shopId}/billing/charge`, {
+    cookie, body: { months: Number(f.months), plan_code: String(f.plan_code ?? '').trim() },
+  });
+  return billingPage(res, me, cookie, shopId,
+    r.status === 201 ? 'Đã tạo mã thanh toán — chuyển khoản theo đúng nội dung bên dưới.' : null,
+    r.status === 201 ? null : (r.json?.error ?? 'Không tạo được mã thanh toán.'));
 }
 
 // ── Kết nối Trang Facebook (0122) ───────────────────────────────────────────
@@ -2997,6 +3039,8 @@ async function handle(req, res, url, p) {
     if (p === '/platform' && req.method === 'GET') return platformShops(res, me, cookie, url.searchParams);
     if (p === '/platform/new' && req.method === 'GET') return platformShopNew(res, me, cookie, null, {});
     if (p === '/platform/support' && req.method === 'GET') return platformSupport(res, me, cookie, url.searchParams);
+    if (p === '/platform/billing' && req.method === 'GET') return platformBillingPage(res, me, cookie, null, null);
+    if (p === '/platform/billing' && req.method === 'POST') return platformBillingSave(req, res, me, cookie);
     if ((pm = new RegExp(`^/platform/support/${UUID}/(resolve|reopen)$`).exec(p)) && req.method === 'POST') return platformSupportAction(req, res, me, cookie, pm[1], pm[2]);
     if (p === '/platform' && req.method === 'POST') return platformCreate(req, res, me, cookie);
     if ((pm = new RegExp(`^/platform/shops/${UUID}$`).exec(p)) && req.method === 'GET') return platformShopDetail(res, me, cookie, pm[1]);
@@ -3249,6 +3293,8 @@ async function handle(req, res, url, p) {
 
     // Vận chuyển hãng (shop.write = owner/admin + step-up ở seller).
     if ((m = new RegExp(`^/shops/${UUID}/api-keys$`).exec(p)) && req.method === 'GET') return apiKeysPage(res, me, cookie, m[1], null, null, null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/billing$`).exec(p)) && req.method === 'GET') return billingPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/billing/charge$`).exec(p)) && req.method === 'POST') return billingCharge(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/messenger$`).exec(p)) && req.method === 'POST') return messengerConnect(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/messenger/step-up$`).exec(p)) && req.method === 'POST') return messengerStepUp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/messenger/disconnect$`).exec(p)) && req.method === 'POST') return messengerDisconnect(res, me, cookie, m[1]);

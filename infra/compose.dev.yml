@@ -179,6 +179,9 @@ services:
       context: ../apps/platform
     restart: unless-stopped
     environment:
+      PLATFORM_BANK_BIN: "970436"
+      PLATFORM_BANK_ACCOUNT: "0123456789"
+      PLATFORM_BANK_NAME: NEN TANG DEV
       DATABASE_URL: postgres://app_platform:devpassword@postgres:5432/app
       AUTH_URL: http://auth:3020
       PLATFORM_DOMAIN: nentang.vn

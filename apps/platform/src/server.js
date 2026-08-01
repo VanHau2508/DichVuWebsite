@@ -293,6 +293,41 @@ async function listPlans(req, res) {
   return send(res, 200, { plans: rows });
 }
 
+// ── Cấu hình THU TIỀN THUÊ BAO của nền tảng (0124-0128) ─────────────────────
+// Chỉ còn MỘT thứ cần cấu hình trong DB: token SePay để webhook khớp tiền shop trả về.
+// Số tài khoản nằm ở env (PLATFORM_BANK_*, xem 0128) — cấp cho vai tenant quyền đọc bảng
+// này vi phạm bất biến schema, và số tài khoản vốn là cấu hình triển khai.
+async function getBillingConfig(req, res) {
+  const { rows } = await db.query(`SELECT enabled, sepay_token_hash IS NOT NULL AS has_token, updated_at FROM platform_billing_config LIMIT 1`);
+  return send(res, 200, {
+    ...(rows[0] ?? { enabled: false, has_token: false }),
+    // Số tài khoản đọc từ env để chủ nền tảng ĐỐI CHIẾU ngay trên màn hình: cấu hình đúng
+    // ở DB mà env chưa cắm thì shop vẫn không thấy nút trả tiền, và không ai biết vì sao.
+    bank_bin: process.env.PLATFORM_BANK_BIN || null,
+    bank_account: process.env.PLATFORM_BANK_ACCOUNT || null,
+    bank_name: process.env.PLATFORM_BANK_NAME || null,
+  });
+}
+async function setBillingConfig(req, res, body, session, ip) {
+  const token = String(body?.sepay_token ?? '').trim();
+  const enabled = body?.enabled !== false;
+  if (token && token.length < 12) return send(res, 400, { error: 'token SePay quá ngắn' });
+  // Token trống = chỉ bật/tắt, GIỮ token cũ. Nếu không, mỗi lần tắt-bật là mất token và
+  // tiền shop chuyển về không khớp được nữa — hỏng im lặng, đúng loại tệ nhất.
+  await db.query(
+    token
+      ? `UPDATE platform_billing_config SET sepay_token_hash = encode(sha256($1::bytea), 'hex'), enabled = $2, updated_at = now()`
+      : `UPDATE platform_billing_config SET enabled = $2, updated_at = now()`,
+    token ? [Buffer.from(token, 'utf8'), enabled] : [null, enabled],
+  );
+  await db.query(
+    `INSERT INTO audit_logs (shop_id, actor_type, actor_id, action, ip, metadata)
+     VALUES (NULL, 'platform_staff', $1, 'platform.billing_config_set', $2, $3)`,
+    [session.userId, ip, { enabled, token_changed: !!token }],
+  );
+  return send(res, 200, { ok: true });
+}
+
 // Số liệu điều hành cho trang chủ Console — CHỈ đọc các bảng quản lý app_platform
 // đã có quyền (plans/subscriptions/shops/platform_invoices, 0006/0061). Không đụng
 // dữ liệu khách mua. 6 truy vấn song song, mỗi cái đều nhỏ (bảng quản lý ~trăm dòng).
@@ -767,6 +802,9 @@ const ROUTES = [
   { m: 'GET', re: /^\/ops\/shops$/, fn: (req, res, b, s) => listShops(req, res, s) },
   { m: 'GET', re: /^\/ops\/plans$/, fn: (req, res) => listPlans(req, res) },
   { m: 'GET', re: /^\/ops\/metrics$/, fn: (req, res) => getMetrics(req, res) },
+  { m: 'GET', re: /^\/ops\/billing-config$/, minRole: 'admin', fn: (req, res) => getBillingConfig(req, res) },
+  // Đổi cấu hình THU TIỀN của nền tảng — step-up như mọi thao tác chạm đường tiền.
+  { m: 'PUT', re: /^\/ops\/billing-config$/, minRole: 'admin', stepUp: true, fn: (req, res, b, s, ip) => setBillingConfig(req, res, b, s, ip) },
   { m: 'GET', re: new RegExp(`^/ops/shops/${SHOP_ID}$`), fn: (req, res, b, s, ip, p) => getShop(req, res, p[0], s) },
   { m: 'GET', re: new RegExp(`^/ops/shops/${SHOP_ID}/export$`), minRole: 'admin', fn: (req, res, b, s, ip, p) => exportShop(req, res, p[0]) },
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/invitations$`), minRole: 'admin', fn: (req, res, b, s, ip, p) => inviteOwner(req, res, b, s, p[0], ip) },

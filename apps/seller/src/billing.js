@@ -12,6 +12,7 @@
 import crypto from 'node:crypto';
 import { send } from './http.js';
 import { withTenant, audit } from './db.js';
+import QRCode from 'qrcode';
 import { buildVietQR } from './vietqr.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
@@ -60,7 +61,7 @@ async function getBilling(res, ctx) {
     suspended_for_nonpayment: !!data.sub?.suspended_at,
     plans: data.plans.map((p) => ({ ...p, price_vnd_month: Number(p.price_vnd_month) })),
     invoices: data.invoices.map((i) => ({ ...i, amount_vnd: Number(i.amount_vnd) })),
-    pending: data.pending ? { ...data.pending, amount_vnd: Number(data.pending.amount_vnd), ...qrOf(cfg, data.pending) } : null,
+    pending: data.pending ? { ...data.pending, amount_vnd: Number(data.pending.amount_vnd), ...(await qrOf(cfg, data.pending)) } : null,
   });
 }
 
@@ -82,12 +83,19 @@ function platformBank() {
   return { bank_bin: bankBin, account_number: account, account_name: process.env.PLATFORM_BANK_NAME ?? null, enabled: true };
 }
 
-function qrOf(cfg, charge) {
+/**
+ * Trả CẢ chuỗi VietQR lẫn ảnh SVG. Vẽ ở đây chứ không ở seller-admin: chuỗi QR do chính
+ * hàm này dựng, nên vẽ cùng chỗ thì không có khe nào để hai bên hiểu khác nhau về nội dung
+ * chuyển khoản. SVG nội tuyến (không tải ảnh ngoài) nên hợp CSP nghiêm của admin.
+ */
+async function qrOf(cfg, charge) {
   if (!cfg?.bank_bin || !cfg?.account_number) return {};
-  return {
-    qr_string: buildVietQR({ bankBin: cfg.bank_bin, accountNumber: cfg.account_number, amountVnd: Number(charge.amount_vnd), content: charge.pay_ref }),
-    bank_account: cfg.account_number, bank_name: cfg.account_name ?? null,
-  };
+  const qr = buildVietQR({ bankBin: cfg.bank_bin, accountNumber: cfg.account_number, amountVnd: Number(charge.amount_vnd), content: charge.pay_ref });
+  let svg = '';
+  // QR hỏng KHÔNG được làm sập trang: người bán vẫn chuyển khoản tay được nhờ số tài
+  // khoản + nội dung hiển thị bên cạnh.
+  try { svg = await QRCode.toString(qr, { type: 'svg', margin: 1, width: 220 }); } catch {}
+  return { qr_string: qr, qr_svg: svg, bank_account: cfg.account_number, bank_name: cfg.account_name ?? null };
 }
 
 /** POST /shops/:id/billing/charge {months, plan_code?} — tạo yêu cầu trả tiền + QR. */
@@ -125,8 +133,12 @@ async function createCharge(res, ctx, body) {
       [planCode, months, price * months, newPayRef(), String(CHARGE_TTL_HOURS)],
     )).rows[0];
     await audit(c, 'billing.charge_created', { actorId: ctx.user.id, ip: ctx.ip, metadata: { months, plan_code: planCode, amount_vnd: price * months } });
-    return { code: 201, body: { ...row, amount_vnd: Number(row.amount_vnd), ...qrOf(cfg, row) } };
+    return { code: 201, body: { ...row, amount_vnd: Number(row.amount_vnd), qr: row } };
   });
+  if (out.code === 201) {
+    const { qr, ...rest } = out.body;
+    return send(res, 201, { ...rest, ...(await qrOf(cfg, qr)) });
+  }
   return send(res, out.code, out.body);
 }
 

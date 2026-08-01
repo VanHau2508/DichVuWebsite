@@ -16,6 +16,8 @@ const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
 const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
 const PAYMENT = process.env.PAYMENT_URL ?? 'http://payment:3070';
 const WORKER = process.env.WORKER_URL ?? 'http://worker:3080';
+const ADMIN = process.env.ADMIN_URL ?? 'http://seller-admin:3001';
+const OADM = process.env.ADMIN_ORIGIN ?? 'https://admin.localtest';
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 4 });
 const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
@@ -176,6 +178,38 @@ async function main() {
   await billSweep();
   (await shopOf(A.shopId)).status === 'suspended'
     ? ok('khoá do nền tảng KHÔNG bị tiền mở ra (cưỡng chế vẫn có nghĩa)') : bad('trả tiền mở được cả shop bị nền tảng khoá!');
+
+  sect('8. MÀN HÌNH: chủ shop BẤM THẬT trên trang Gói dịch vụ');
+  // Bài học cũ: nút "có mặt" không nói gì về việc bấm vào có chạy. Ở đây gửi form thật.
+  const adm = async (method, path, form) => {
+    const h = { cookie: `__Host-session=${A.cookie}` };
+    if (form) { h['content-type'] = 'application/x-www-form-urlencoded'; h.origin = OADM; }
+    const rr = await fetch(ADMIN + path, { method, headers: h, redirect: 'manual', body: form ? new URLSearchParams(form).toString() : undefined });
+    return { status: rr.status, body: await rr.text() };
+  };
+  let pg = await adm('GET', `/shops/${A.shopId}/billing`);
+  pg.status === 200 && /Gói dịch vụ/.test(pg.body) ? ok('trang Gói dịch vụ mở được') : bad(`trang lỗi (${pg.status})`, pg.body.slice(0, 200));
+  /(Còn \d+ ngày|quá hạn|Hết hạn hôm nay|ĐANG BỊ KHOÁ)/.test(pg.body)
+    ? ok('hiện tình trạng hạn bằng câu người thường đọc được') : bad('không thấy tình trạng hạn', pg.body.slice(0, 300));
+  const home = await adm('GET', `/shops/${A.shopId}/orders`);
+  home.body.includes(`/shops/${A.shopId}/billing`) ? ok('menu trái có mục Gói dịch vụ') : bad('menu thiếu lối vào');
+  pg = await adm('POST', `/shops/${A.shopId}/billing/charge`, { months: '6', plan_code: '' });
+  const uiRef = /SUB[0-9A-F]{10}/.exec(pg.body)?.[0];
+  pg.status === 200 && uiRef ? ok(`bấm "Tạo mã thanh toán" → trang hiện mã ${uiRef}`) : bad('bấm nút không ra mã', pg.body.slice(0, 300));
+  /<svg/.test(pg.body) ? ok('có ảnh QR nội tuyến (khách quét được ngay)') : bad('không vẽ được QR');
+  const dbCh = uiRef ? (await owner.query(`SELECT amount_vnd, months FROM billing_charges WHERE pay_ref=$1`, [uiRef])).rows[0] : null;
+  // Màn hình lệch DB nghĩa là người bán chuyển số tiền khác số hệ thống chờ → không khớp.
+  Number(dbCh?.months) === 6 && pg.body.includes(new Intl.NumberFormat('vi-VN').format(Number(dbCh.amount_vnd)))
+    ? ok('số tiền + số tháng trên màn hình khớp DB') : bad(`màn hình lệch DB: ${JSON.stringify(dbCh)}`);
+
+  sect('9. Console nền tảng: màn cấu hình thu tiền');
+  const cons = await fetch(`${ADMIN}/platform/billing`, { headers: { cookie: `__Host-session=${staff}` }, redirect: 'manual' });
+  const stBody = await cons.text();
+  cons.status === 200 && /Thu tiền thuê bao/.test(stBody) ? ok('chủ nền tảng mở được màn cấu hình') : bad(`console billing lỗi (${cons.status})`, stBody.slice(0, 200));
+  // Màn này phải cho thấy CẢ HAI nửa (token ở DB + số tài khoản ở env) — cấu hình đúng một
+  // nửa mà tưởng xong là shop không thấy nút trả tiền, còn mình không biết vì sao.
+  /PLATFORM_BANK_ACCOUNT/.test(stBody) && /Token SePay/.test(stBody)
+    ? ok('hiện cả token (DB) lẫn số tài khoản (env) để đối chiếu') : bad('màn cấu hình thiếu một nửa', stBody.slice(0, 300));
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

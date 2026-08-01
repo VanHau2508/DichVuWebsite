@@ -503,7 +503,10 @@ function sideNav(ctx) {
           + it(`${base}/settings`, 'Cài đặt', IC_GEAR, ctx.active === 'settings', CONTENT_ROLES.has(ctx.role))
           // Trợ giúp hiện cho MỌI vai: bắt phải có quyền cấu hình mới kêu cứu được là chặn
           // đúng người đang cần giúp — nhân viên gặp lỗi lúc 9 giờ tối là người duy nhất có mặt.
-          + it(`${base}/help`, 'Trợ giúp', IC_LOG, ctx.active === 'help', true);
+          + it(`${base}/help`, 'Trợ giúp', IC_LOG, ctx.active === 'help', true)
+          // Gói dịch vụ hiện cho MỌI vai: nhân viên thấy "còn 3 ngày" mới nhắc được chủ,
+          // và shop bị khoá vì không ai để ý hạn là mất tiền thật cho cả hai bên.
+          + it(`${base}/billing`, 'Gói dịch vụ', IC_CARD, ctx.active === 'billing', true);
   return `<nav class="side-nav">${t}</nav>`;
 }
 
@@ -1161,6 +1164,43 @@ function platformOverview(m) {
 // filters = {q, sub_status, page} đã parse ở BFF. Tìm/lọc/phân trang thuần GET (no-JS).
 // staff_role='operator' → ẨN nút tạo shop (gate THẬT là minRole 403 phía platform —
 // đây chỉ là đỡ bấm nhầm, không phải hàng rào bảo mật).
+// ── Console: cấu hình THU TIỀN THUÊ BAO của nền tảng (0124-0128) ────────────
+// Hai nửa phải khớp nhau mới thu được tiền, và trước đây cả hai đều phải sửa tay:
+// token SePay (DB) + số tài khoản (env). Màn này cho thấy CẢ HAI cùng lúc — cấu hình
+// đúng một nửa mà tưởng xong là shop không thấy nút trả tiền, còn mình không biết vì sao.
+export function renderPlatformBilling(ctx, d, err, ok) {
+  const okmark = (v) => (v ? '<span style="color:#166534">✓</span>' : '<span style="color:#991b1b">✗</span>');
+  const ready = d?.has_token && d?.bank_bin && d?.bank_account && d?.enabled;
+  return layout('Thu tiền thuê bao', ctx, `<h1>Thu tiền thuê bao</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${ok ? `<div class="card" style="border-color:#86efac;background:#f0fdf4">${esc(ok)}</div>` : ''}
+    <div class="card" style="background:${ready ? '#f0fdf4' : '#fffbeb'};border-color:${ready ? '#86efac' : '#fcd34d'}">
+      <h2 style="margin-top:0">${ready ? '✓ Shop tự gia hạn được' : '⚠ Chưa thu tiền tự động được'}</h2>
+      <p style="margin:0">${ready
+        ? 'Shop thấy nút gia hạn + mã QR trong trang Gói dịch vụ; tiền về là hệ thống tự cộng hạn.'
+        : 'Thiếu một trong các mục dưới — shop sẽ KHÔNG thấy nút trả tiền và bạn vẫn phải thu tay.'}</p>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Tình trạng cấu hình</h2>
+      <table><tbody>
+        <tr><td>${okmark(d?.bank_bin)} Mã ngân hàng (BIN)</td><td><code>${esc(d?.bank_bin ?? '(chưa đặt)')}</code></td><td class="muted">env PLATFORM_BANK_BIN</td></tr>
+        <tr><td>${okmark(d?.bank_account)} Số tài khoản</td><td><code>${esc(d?.bank_account ?? '(chưa đặt)')}</code></td><td class="muted">env PLATFORM_BANK_ACCOUNT</td></tr>
+        <tr><td>${okmark(d?.bank_name)} Tên tài khoản</td><td><code>${esc(d?.bank_name ?? '(chưa đặt)')}</code></td><td class="muted">env PLATFORM_BANK_NAME</td></tr>
+        <tr><td>${okmark(d?.has_token)} Token SePay</td><td>${d?.has_token ? 'đã lưu (chỉ giữ mã băm)' : '(chưa đặt)'}</td><td class="muted">đặt bên dưới</td></tr>
+        <tr><td>${okmark(d?.enabled)} Đang bật</td><td>${d?.enabled ? 'bật' : 'tắt'}</td><td class="muted"></td></tr>
+      </tbody></table>
+      <p class="muted" style="margin:10px 0 0;font-size:.85rem">Ba dòng env sửa ở file cấu hình triển khai rồi khởi động lại — cố ý không cho sửa qua web: đổi nhầm số tài khoản trên giao diện là tiền của shop chảy đi chỗ khác.</p>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Token SePay của nền tảng</h2>
+      <p class="muted" style="margin-top:0">Token này để webhook nhận ra <strong>tiền shop trả cho bạn</strong> — khác hoàn toàn token per-shop (tiền khách trả cho shop). Chỉ lưu mã băm, không đọc lại được.</p>
+      <form method="POST" action="/platform/billing">
+        <label>Token SePay mới</label><input name="sepay_token" placeholder="để trống = giữ token cũ, chỉ đổi bật/tắt">
+        <label style="display:flex;align-items:center;gap:8px;margin-top:10px">
+          <input type="checkbox" name="enabled" value="1"${d?.enabled ? ' checked' : ''} style="width:auto"> Bật thu tiền tự động</label>
+        <button class="btn" type="submit" style="margin-top:12px">Lưu</button>
+      </form>
+    </div>`);
+}
+
 export function renderPlatformShops(ctx, data, metrics = null, filters = {}) {
   const shops = data?.shops ?? [];
   const isOperator = data?.staff_role === 'operator';
@@ -1201,6 +1241,7 @@ export function renderPlatformShops(ctx, data, metrics = null, filters = {}) {
     <div class="toolbar"><h1 style="margin:0">Console nền tảng</h1>
       <div class="actions" style="gap:8px;flex-wrap:wrap">
         <a class="btn alt" href="/platform/support">Phiếu hỗ trợ${Number(metrics?.open_tickets) > 0 ? ` (${esc(metrics.open_tickets)})` : ''}</a>
+        <a class="btn alt" href="/platform/billing">Thu tiền thuê bao</a>
         ${isOperator ? '<span class="muted" style="align-self:center">Vai trò: operator (chỉ xem)</span>' : '<a class="btn" href="/platform/new">+ Tạo cửa hàng</a>'}
       </div></div>
     ${platformOverview(metrics)}
@@ -4865,6 +4906,66 @@ export function renderApiKeys(ctx, shopId, data, err, ok, freshToken, mess, veri
         <li><code>source</code>: <code>facebook</code> · <code>zalo</code> · <code>tiktok</code> · <code>other</code> — để trang Đơn hàng lọc được theo kênh.</li>
         <li>Hết hàng / thiếu trường → trả mã lỗi kèm câu tiếng Việt, đơn <strong>không</strong> được tạo nửa vời.</li>
       </ul>
+    </div>`);
+}
+
+// ── GÓI DỊCH VỤ: chủ shop xem hạn + TỰ TRẢ TIỀN (0124-0128) ─────────────────
+// Người đọc là chủ shop, không phải kế toán. Thứ họ cần biết trong 2 giây: "còn mấy ngày"
+// và "trả tiền ở đâu". Mọi thứ khác xếp sau.
+export function renderBilling(ctx, shopId, d, err, ok) {
+  const base = `/shops/${esc(shopId)}/billing`;
+  const dt = (v) => (v ? new Date(v).toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : '—');
+  const left = d?.days_left;
+  // Màu theo mức KHẨN, không phải theo trạng thái kỹ thuật: hết hạn rồi mà hiện xám thì
+  // người bán lướt qua và mất shop.
+  const tone = d?.suspended_for_nonpayment ? { bg: '#fef2f2', bd: '#fca5a5', fg: '#991b1b' }
+    : left == null ? { bg: 'var(--surface,#f6f7f8)', bd: '#e5e7eb', fg: 'inherit' }
+    : left < 0 ? { bg: '#fef2f2', bd: '#fca5a5', fg: '#991b1b' }
+    : left <= 7 ? { bg: '#fffbeb', bd: '#fcd34d', fg: '#92400e' }
+    : { bg: '#f0fdf4', bd: '#86efac', fg: '#166534' };
+  const headline = d?.suspended_for_nonpayment ? 'Cửa hàng ĐANG BỊ KHOÁ vì chưa thanh toán'
+    : left == null ? 'Chưa có thông tin hạn dịch vụ'
+    : left < 0 ? `Đã quá hạn ${Math.abs(left)} ngày`
+    : left === 0 ? 'Hết hạn hôm nay'
+    : `Còn ${left} ngày sử dụng`;
+  const p = d?.pending;
+  return layout('Gói dịch vụ', { ...ctx, active: 'billing' }, `<h1>Gói dịch vụ</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${ok ? `<div class="card" style="border-color:#86efac;background:#f0fdf4">${esc(ok)}</div>` : ''}
+    <div class="card" style="background:${tone.bg};border-color:${tone.bd};color:${tone.fg}">
+      <h2 style="margin:0 0 6px">${esc(headline)}</h2>
+      <p style="margin:0">Gói <strong>${esc(d?.plan_name ?? d?.plan_code ?? '—')}</strong>${
+        d?.price_vnd_month != null ? ` · ${esc(money(d.price_vnd_month))}/tháng` : ''} · hạn đến <strong>${dt(d?.current_period_end)}</strong></p>
+      ${d?.suspended_for_nonpayment ? '<p style="margin:8px 0 0"><strong>Khách vào website sẽ thấy trang "tạm ngưng".</strong> Thanh toán xong cửa hàng mở lại ngay, không mất dữ liệu gì.</p>' : ''}
+    </div>
+    ${d?.available === false ? '<div class="card"><p class="muted" style="margin:0">Nền tảng chưa mở kênh thanh toán tự động. Liên hệ hỗ trợ để gia hạn.</p></div>' : `
+    ${p ? `<div class="card" style="border-color:#f59e0b">
+      <h2 style="margin-top:0">Chuyển khoản để gia hạn ${esc(p.months)} tháng</h2>
+      <div class="grid2" style="align-items:center">
+        <div>${p.qr_svg ? `<div style="max-width:220px">${p.qr_svg}</div>` : '<p class="muted">Không dựng được mã QR — chuyển khoản tay theo thông tin bên cạnh.</p>'}</div>
+        <div>
+          <p style="margin:0 0 4px">Số tiền: <strong style="font-size:1.3rem">${esc(money(p.amount_vnd))}</strong></p>
+          <p style="margin:0 0 4px">Số tài khoản: <strong>${esc(p.bank_account ?? '')}</strong>${p.bank_name ? ` (${esc(p.bank_name)})` : ''}</p>
+          <p style="margin:0 0 4px">Nội dung chuyển khoản <strong>BẮT BUỘC</strong>:</p>
+          <p style="margin:0"><code style="font-size:1.25rem;font-weight:700">${esc(p.pay_ref)}</code></p>
+          <p class="muted" style="margin:10px 0 0;font-size:.85rem">Ghi sai nội dung thì hệ thống không tự nhận ra tiền của bạn, phải xử lý tay và chậm hơn nhiều. Mã có hiệu lực tới ${dt(p.expires_at)}.</p>
+        </div>
+      </div>
+      <p class="muted" style="margin:12px 0 0;font-size:.88rem">Chuyển xong <strong>không cần báo ai</strong> — hệ thống tự nhận trong vài phút rồi cộng hạn. Tải lại trang để xem.</p>
+    </div>` : ''}
+    <div class="card"><h2 style="margin-top:0">${p ? 'Đổi số tháng / đổi gói' : 'Gia hạn'}</h2>
+      ${p ? '<p class="muted" style="margin-top:0">Tạo mã mới sẽ <strong>huỷ mã cũ</strong> — chỉ chuyển khoản theo mã mới nhất.</p>' : ''}
+      <form method="POST" action="${base}/charge" class="actions" style="align-items:end;flex-wrap:wrap">
+        <div><label>Số tháng</label><select name="months">${[1, 3, 6, 12].map((m) => `<option value="${m}"${m === 3 ? ' selected' : ''}>${m} tháng</option>`).join('')}</select></div>
+        <div><label>Gói</label><select name="plan_code"><option value="">— Giữ gói hiện tại —</option>${
+          (d?.plans ?? []).filter((x) => x.code !== d?.plan_code).map((x) => `<option value="${esc(x.code)}">${esc(x.name)} — ${esc(money(x.price_vnd_month))}/tháng</option>`).join('')}</select></div>
+        <div><button class="btn" type="submit">Tạo mã thanh toán</button></div>
+      </form>
+    </div>`}
+    <div class="card"><h2 style="margin-top:0">Lịch sử đóng phí</h2>
+      ${(d?.invoices ?? []).length ? `<table data-cards><thead><tr><th>Ngày</th><th>Gói</th><th>Số tháng</th><th style="text-align:right">Số tiền</th><th>Ghi chú</th></tr></thead><tbody>${
+        d.invoices.map((i) => `<tr><td class="muted">${dt(i.created_at)}</td><td>${esc(i.plan_code)}</td><td>${esc(i.months)}</td><td style="text-align:right"><strong>${esc(money(i.amount_vnd))}</strong></td><td class="muted">${esc(i.note ?? '')}</td></tr>`).join('')}</tbody></table>`
+        : '<p class="muted">Chưa có khoản đóng phí nào.</p>'}
     </div>`);
 }
 

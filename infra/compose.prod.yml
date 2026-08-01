@@ -164,6 +164,10 @@ services:
     restart: unless-stopped
     <<: *logging
     environment:
+      # Đối chiếu cấu hình thu tiền trên màn hình console (0128) — số tài khoản ở env.
+      PLATFORM_BANK_BIN: ${PLATFORM_BANK_BIN:-}
+      PLATFORM_BANK_ACCOUNT: ${PLATFORM_BANK_ACCOUNT:-}
+      PLATFORM_BANK_NAME: ${PLATFORM_BANK_NAME:-}
       APP_ENV: production
       DATABASE_URL: postgres://app_platform:${APP_PLATFORM_PASSWORD:?}@postgres:5432/app
       AUTH_URL: http://auth:3020

@@ -85,8 +85,26 @@ async function main() {
   await owner.query(`INSERT INTO shops (slug,name,status) VALUES ($1,'S','active')`, [takenSlug]);
   r = await req('POST', '/signup', { form: goodForm({ slug: takenSlug }), xff: '203.0.113.17' });
   r.status === 400 && /đã có người dùng/.test(r.body) ? ok('slug trùng shop → surface "đã có người dùng"') : bad('slug taken không chặn', r.status);
-  r = await req('POST', '/signup', { form: goodForm({ slug: 'UP_case!' }), xff: '203.0.113.18' });
-  r.status === 400 && /chữ thường/.test(r.body) ? ok('slug sai định dạng → surface') : bad('format không chặn', r.status);
+  // ĐỔI HÀNH VI (đợt onboarding): địa chỉ nay được CHUẨN HOÁ chứ không bác thẳng. Người
+  // Việt gõ đúng tên shop của mình ("Quán Cà Phê Sớm Mai") thì phải ra được địa chỉ, chứ
+  // không phải bị chặn rồi tự đi nghĩ "quan-ca-phe-som-mai" — ô khó nhất của form này.
+  const upSlug = `UP_case Đá ${uniq()}`;
+  r = await req('POST', '/signup', { form: goodForm({ slug: upSlug }), xff: '203.0.113.18' });
+  const upNorm = upSlug.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/gi, 'd').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-+|-+$)/g, '');
+  r.status === 200 && (await draftCount(upNorm)) === 1
+    ? ok(`slug có dấu/hoa/ký tự lạ → chuẩn hoá thành "${upNorm}", KHÔNG bắt gõ lại`)
+    : bad('không chuẩn hoá slug', `${r.status} mong ${upNorm}`);
+  // Bỏ TRỐNG ô địa chỉ → lấy theo TÊN cửa hàng (đường đi mặc định của người thật).
+  const vnName = `Quán Cà Phê Sớm Mai ${uniq()}`;
+  r = await req('POST', '/signup', { form: goodForm({ name: vnName, slug: '' }), xff: '203.0.113.19' });
+  const vnSlug = vnName.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40).replace(/(^-+|-+$)/g, '');
+  r.status === 200 && (await draftCount(vnSlug)) === 1
+    ? ok(`bỏ trống địa chỉ → tự lấy từ tên: "${vnSlug}"`)
+    : bad('không tự sinh slug từ tên', `${r.status} mong ${vnSlug}`);
+  // Chuẩn hoá xong VẪN rỗng (emoji/ký hiệu) → mới báo lỗi. Nếu không còn ca nào 400 thì
+  // hàng rào định dạng đã bị gỡ mất chứ không phải được nới.
+  r = await req('POST', '/signup', { form: goodForm({ name: '😀😀', slug: '!!!' }), xff: '203.0.113.20' });
+  r.status === 400 && /chữ thường/.test(r.body) ? ok('tên+địa chỉ toàn ký tự lạ → vẫn surface lỗi') : bad('format không chặn', r.status);
 
   sect('6. check-slug NHỊ PHÂN (gộp mọi lý do bận)');
   r = await req('GET', `/signup/check-slug?slug=${takenSlug}`);

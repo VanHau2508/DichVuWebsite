@@ -48,6 +48,16 @@ h3{font-size:16px;font-weight:600;margin:0 0 8px;letter-spacing:0;line-height:24
 .side-nav{padding:6px 12px 12px;display:flex;flex-direction:column;gap:2px;flex:1;overflow-y:auto}
 .side-nav a{position:relative;display:flex;align-items:center;gap:12px;min-height:40px;padding:8px 12px;border-radius:var(--r-sm);color:var(--ink);font-size:14px;line-height:20px;font-weight:400;transition:background .12s,color .12s}.side-nav a svg{width:20px;height:20px;flex:0 0 auto;color:var(--ink);transition:color .12s}
 .side-nav a:hover{background:var(--surf);color:var(--ink);text-decoration:none}
+.nav-grp{display:flex;flex-direction:column;gap:2px}
+.nav-grp+.nav-grp{margin-top:6px;padding-top:6px;border-top:1px solid var(--line)}
+.side-nav summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;
+  min-height:34px;padding:6px 12px;border-radius:var(--r-sm);color:var(--muted);font-size:12px;font-weight:700;
+  letter-spacing:.03em;text-transform:uppercase}
+.side-nav summary::-webkit-details-marker{display:none}
+.side-nav summary:hover{background:var(--surf);color:var(--ink)}
+.side-nav summary::after{content:"▸";font-size:11px;transition:transform .12s}
+.side-nav details[open]>summary::after{transform:rotate(90deg)}
+.nav-foot{margin-top:auto}
 .side-nav a.on{background:var(--navon);color:var(--ink);font-weight:600}.side-nav a.on svg{color:var(--pri)}
 .side-user{border-top:1px solid var(--bd);padding:12px 16px}.side-user .email{color:var(--mut);font-size:.82rem;display:block;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .side-user button{background:var(--card);border:1px solid var(--bd);border-radius:var(--r-sm);padding:8px 12px;font:inherit;font-size:.85rem;cursor:pointer;color:var(--ink);width:100%;transition:background .15s,border-color .15s}.side-user button:hover{background:var(--surf);border-color:color-mix(in srgb,var(--pri) 30%,var(--bd))}
@@ -471,43 +481,78 @@ export function renderHelp(ctx, shopId, tickets, notice, err, form = {}) {
 }
 
 
+// Sidebar GOM NHÓM. Trước đây là 28 mục phẳng — với shop mới 0 đơn 0 sản phẩm thì Đối
+// soát COD, Kiểm kê, Điểm thưởng, Nhật ký… nằm ngang hàng với Đơn hàng, và người mới không
+// biết bắt đầu từ đâu. Nay: nhóm "Bán hàng" luôn mở (việc hằng ngày), phần còn lại nằm
+// trong <details> gập sẵn — HTML thuần, KHÔNG cần JS.
+//
+// Nhóm chứa trang ĐANG XEM luôn bung ra: gập cả nhóm đang đứng thì người dùng mất dấu
+// mình đang ở đâu. Không có JS/cookie nên trạng thái gập không nhớ qua các trang — chấp
+// nhận được, vì mở lại đúng nhóm đang dùng là hành vi đủ đúng.
+//
+// MỌI mục vẫn nằm trong HTML (details chỉ ẩn bằng CSS của trình duyệt) — link không biến
+// mất, tìm bằng Ctrl+F vẫn ra, và e2e cũ bám theo href vẫn khớp.
 function sideNav(ctx) {
   if (!ctx.shopId) return '';
   const base = `/shops/${esc(ctx.shopId)}`;
-  const it = (href, label, icon, on, show) => (show ? `<a href="${href}"${on ? ' class="on"' : ''}>${icon}<span>${label}</span></a>` : '');
-  const t = it(`${base}/overview`, 'Tổng quan', IC_CHART, ctx.active === 'overview', ORDER_ROLES.has(ctx.role))
-          + it(`${base}/reports`, 'Báo cáo', IC_TREND, ctx.active === 'reports', REPORT_ROLES.has(ctx.role))
-          + it(`${base}/orders`, 'Đơn hàng', IC_ORDER, ctx.active === 'orders', ORDER_ROLES.has(ctx.role))
-          + it(`${base}/customers`, 'Khách hàng', IC_HEART, ctx.active === 'customers', ORDER_ROLES.has(ctx.role))
-          + it(`${base}/cod`, 'Đối soát COD', IC_COIN, ctx.active === 'cod', ORDER_ROLES.has(ctx.role))
-          + it(`${base}/products`, 'Sản phẩm', IC_BOX, ctx.active === 'products', CATALOG_ROLES.has(ctx.role))
-          + it(`${base}/categories`, 'Danh mục', IC_TAG, ctx.active === 'categories', CATALOG_ROLES.has(ctx.role))
-          + it(`${base}/purchasing`, 'Nhập hàng', IC_WAREHOUSE, ctx.active === 'purchasing', INVENTORY_ROLES.has(ctx.role))
-          + it(`${base}/stocktakes`, 'Kiểm kê', IC_CLIP, ctx.active === 'stocktakes', INVENTORY_ROLES.has(ctx.role))
-          + it(`${base}/promotions`, 'Flash sale', IC_TREND, ctx.active === 'promotions', CATALOG_ROLES.has(ctx.role))
-          + it(`${base}/coupons`, 'Mã giảm giá', IC_TICKET, ctx.active === 'coupons', CATALOG_ROLES.has(ctx.role))
-          + it(`${base}/loyalty`, 'Điểm thưởng', IC_GIFT, ctx.active === 'loyalty', LOYALTY_ROLES.has(ctx.role))
-          + it(`${base}/reviews`, 'Đánh giá', IC_STAR, ctx.active === 'reviews', CONTENT_ROLES.has(ctx.role))
-          + it(`${base}/questions`, 'Hỏi đáp', IC_LOG, ctx.active === 'questions', CONTENT_ROLES.has(ctx.role))
-          + it(`${base}/pages`, 'Trang nội dung', IC_FILE, ctx.active === 'pages', CONTENT_ROLES.has(ctx.role))
-          + it(`${base}/blog`, 'Blog', IC_NEWS, ctx.active === 'blog', CONTENT_ROLES.has(ctx.role))
-          + it(`${base}/members`, 'Nhân sự', IC_USERS, ctx.active === 'members', MEMBER_READ_ROLES.has(ctx.role))
-          + it(`${base}/audit-log`, 'Nhật ký', IC_LOG, ctx.active === 'audit', AUDIT_ROLES.has(ctx.role))
-          + it(`${base}/domains`, 'Tên miền', IC_GLOBE, ctx.active === 'domains', DOMAIN_ROLES.has(ctx.role))
-          + it(`${base}/payment`, 'Thanh toán', IC_CARD, ctx.active === 'payment', PAYMENT_ROLES.has(ctx.role))
-          + it(`${base}/shipping`, 'Vận chuyển', IC_TRUCK, ctx.active === 'shipping', SHIPPING_ROLES.has(ctx.role))
-          + it(`${base}/notify`, 'Thông báo', IC_BELL, ctx.active === 'notify', SHIPPING_ROLES.has(ctx.role))
-          + it(`${base}/api-keys`, 'Kết nối', IC_PLUG, ctx.active === 'apikeys', SHIPPING_ROLES.has(ctx.role))
-          + it(`${base}/export`, 'Xuất dữ liệu', IC_DOWN, ctx.active === 'export', EXPORT_ROLES.has(ctx.role))
-          + it(`${base}/theme`, 'Giao diện', IC_PALETTE, ctx.active === 'theme', CONTENT_ROLES.has(ctx.role))
-          + it(`${base}/settings`, 'Cài đặt', IC_GEAR, ctx.active === 'settings', CONTENT_ROLES.has(ctx.role))
-          // Trợ giúp hiện cho MỌI vai: bắt phải có quyền cấu hình mới kêu cứu được là chặn
-          // đúng người đang cần giúp — nhân viên gặp lỗi lúc 9 giờ tối là người duy nhất có mặt.
-          + it(`${base}/help`, 'Trợ giúp', IC_LOG, ctx.active === 'help', true)
-          // Gói dịch vụ hiện cho MỌI vai: nhân viên thấy "còn 3 ngày" mới nhắc được chủ,
-          // và shop bị khoá vì không ai để ý hạn là mất tiền thật cho cả hai bên.
-          + it(`${base}/billing`, 'Gói dịch vụ', IC_CARD, ctx.active === 'billing', true);
-  return `<nav class="side-nav">${t}</nav>`;
+  const R = ctx.role;
+  // [href, nhãn, icon, khoá-active, được-xem]
+  const GROUPS = [
+    ['Bán hàng', [
+      [`${base}/overview`, 'Tổng quan', IC_CHART, 'overview', ORDER_ROLES.has(R)],
+      [`${base}/orders`, 'Đơn hàng', IC_ORDER, 'orders', ORDER_ROLES.has(R)],
+      [`${base}/products`, 'Sản phẩm', IC_BOX, 'products', CATALOG_ROLES.has(R)],
+      [`${base}/customers`, 'Khách hàng', IC_HEART, 'customers', ORDER_ROLES.has(R)],
+      [`${base}/reports`, 'Báo cáo', IC_TREND, 'reports', REPORT_ROLES.has(R)],
+    ]],
+    ['Kho & nhập hàng', [
+      [`${base}/categories`, 'Danh mục', IC_TAG, 'categories', CATALOG_ROLES.has(R)],
+      [`${base}/purchasing`, 'Nhập hàng', IC_WAREHOUSE, 'purchasing', INVENTORY_ROLES.has(R)],
+      [`${base}/stocktakes`, 'Kiểm kê', IC_CLIP, 'stocktakes', INVENTORY_ROLES.has(R)],
+      [`${base}/cod`, 'Đối soát COD', IC_COIN, 'cod', ORDER_ROLES.has(R)],
+    ]],
+    ['Khuyến mãi & khách', [
+      [`${base}/promotions`, 'Flash sale', IC_TREND, 'promotions', CATALOG_ROLES.has(R)],
+      [`${base}/coupons`, 'Mã giảm giá', IC_TICKET, 'coupons', CATALOG_ROLES.has(R)],
+      [`${base}/loyalty`, 'Điểm thưởng', IC_GIFT, 'loyalty', LOYALTY_ROLES.has(R)],
+      [`${base}/reviews`, 'Đánh giá', IC_STAR, 'reviews', CONTENT_ROLES.has(R)],
+      [`${base}/questions`, 'Hỏi đáp', IC_LOG, 'questions', CONTENT_ROLES.has(R)],
+    ]],
+    ['Giao diện & nội dung', [
+      [`${base}/theme`, 'Giao diện', IC_PALETTE, 'theme', CONTENT_ROLES.has(R)],
+      [`${base}/pages`, 'Trang nội dung', IC_FILE, 'pages', CONTENT_ROLES.has(R)],
+      [`${base}/blog`, 'Blog', IC_NEWS, 'blog', CONTENT_ROLES.has(R)],
+    ]],
+    ['Thiết lập cửa hàng', [
+      [`${base}/payment`, 'Thanh toán', IC_CARD, 'payment', PAYMENT_ROLES.has(R)],
+      [`${base}/shipping`, 'Vận chuyển', IC_TRUCK, 'shipping', SHIPPING_ROLES.has(R)],
+      [`${base}/notify`, 'Thông báo', IC_BELL, 'notify', SHIPPING_ROLES.has(R)],
+      [`${base}/domains`, 'Tên miền', IC_GLOBE, 'domains', DOMAIN_ROLES.has(R)],
+      [`${base}/api-keys`, 'Kết nối', IC_PLUG, 'apikeys', SHIPPING_ROLES.has(R)],
+      [`${base}/settings`, 'Cài đặt', IC_GEAR, 'settings', CONTENT_ROLES.has(R)],
+      [`${base}/members`, 'Nhân sự', IC_USERS, 'members', MEMBER_READ_ROLES.has(R)],
+      [`${base}/export`, 'Xuất dữ liệu', IC_DOWN, 'export', EXPORT_ROLES.has(R)],
+      [`${base}/audit-log`, 'Nhật ký', IC_LOG, 'audit', AUDIT_ROLES.has(R)],
+    ]],
+  ];
+  const link = ([href, label, icon, key, show]) =>
+    (show ? `<a href="${href}"${ctx.active === key ? ' class="on"' : ''}>${icon}<span>${label}</span></a>` : '');
+  let out = '';
+  for (const [i, [title, items]] of GROUPS.entries()) {
+    const links = items.map(link).join('');
+    if (!links) continue;                                   // cả nhóm ngoài quyền → bỏ hẳn tiêu đề
+    if (i === 0) { out += `<div class="nav-grp">${links}</div>`; continue; }
+    const here = items.some(([, , , key, show]) => show && ctx.active === key);
+    out += `<details class="nav-grp"${here ? ' open' : ''}><summary>${esc(title)}</summary>${links}</details>`;
+  }
+  // Trợ giúp hiện cho MỌI vai: bắt phải có quyền cấu hình mới kêu cứu được là chặn đúng
+  // người đang cần giúp — nhân viên gặp lỗi lúc 9 giờ tối là người duy nhất có mặt.
+  // Gói dịch vụ cũng vậy: nhân viên thấy "còn 3 ngày" mới nhắc được chủ, và shop bị khoá
+  // vì không ai để ý hạn là mất tiền thật cho cả hai bên. Hai mục này KHÔNG gập.
+  out += `<div class="nav-grp nav-foot">
+    ${link([`${base}/help`, 'Trợ giúp', IC_LOG, 'help', true])}
+    ${link([`${base}/billing`, 'Gói dịch vụ', IC_CARD, 'billing', true])}</div>`;
+  return `<nav class="side-nav">${out}</nav>`;
 }
 
 // Khối JS DUY NHẤT của seller-admin (ADR-011 ràng buộc #3). Điều khiển hoàn toàn bằng
@@ -1515,12 +1560,16 @@ export function renderPlatformShopDetail(ctx, shop, { notice = null, err = null,
     ${offboardCard}`);
 }
 
-export function renderLogin(err) {
+// `email` điền sẵn khi tới từ luồng tự-đăng-ký (?email=…). Vừa kích hoạt shop xong mà bắt
+// gõ lại email vừa đăng ký 2 phút trước là bước thừa ở đúng lúc người ta hào hứng nhất.
+// KHÔNG tự cấp phiên: link kích hoạt nằm trong hộp thư, ai đọc được mail sẽ vào thẳng được
+// admin mà không cần biết mật khẩu — đây vẫn phải là hai lớp riêng.
+export function renderLogin(err, email) {
   return layout('Đăng nhập', {}, `<div class="center"><div class="card"><h1>Đăng nhập quản trị</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <form method="POST" action="/login">
-      <label>Email</label><input name="email" type="email" required autocomplete="username">
-      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <label>Email</label><input name="email" type="email" required autocomplete="username" value="${esc(email ?? '')}"${email ? '' : ' autofocus'}>
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password"${email ? ' autofocus' : ''}>
       <button class="btn" type="submit" style="width:100%;margin-top:14px">Đăng nhập</button>
     </form>
     <p class="muted" style="font-size:.82rem;margin-top:12px"><a href="/forgot">Quên mật khẩu?</a></p></div></div>`);
@@ -1601,7 +1650,7 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   if (setup) {
     const items = [
       { key: 'payment', icon: '💳', label: 'Gắn ngân hàng nhận tiền', hint: 'Bật QR + tài khoản để nhận chuyển khoản. Chưa có thì khách chỉ trả khi nhận (COD).', href: '/payment', cta: 'Cấu hình', manage: true },
-      { key: 'products', icon: '📦', label: 'Thêm sản phẩm đầu tiên', hint: 'Có sản phẩm khách mới mua được — thêm ảnh, giá, tồn kho.', href: '/products/new', cta: 'Thêm', manage: false },
+      { key: 'products', icon: '📦', label: 'Có sản phẩm bán được', hint: 'Cần sản phẩm ĐANG BÁN và CÒN TỒN — tồn 0 thì khách vào chỉ thấy “Hết hàng”.', href: '/products/new', cta: 'Thêm', manage: false },
       { key: 'branding', icon: '🎨', label: 'Logo & giao diện', hint: 'Tải logo cửa hàng. Giao diện đã có sẵn nếu bạn chọn ngành lúc đăng ký.', href: '/settings', cta: 'Cài đặt', manage: true },
       { key: 'shipping', icon: '🚚', label: 'Phí vận chuyển', hint: 'Đặt phí ship theo vùng hoặc theo km. Chưa đặt thì dùng phí mặc định nền tảng.', href: '/settings', cta: 'Cấu hình', manage: true },
     ];
@@ -1649,6 +1698,11 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
     { n: Number(td.low_stock ?? 0), label: 'Sắp hết hàng', href: `${base}/products?stock=low`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '⚠' },
   ];
   const openWork = TODO.reduce((a, x) => a + x.n, 0);
+  // "Không còn việc tồn đọng — cửa hàng đang chạy êm" là câu ĐÚNG cho shop đang chạy, và
+  // là lời nói dối cho shop vừa mở: 0 việc vì 0 khách, mà 0 khách vì chưa có gì để bán.
+  // Câu đầu tiên chủ shop mới đọc phải nói đúng tình trạng, không phải trấn an.
+  // setup chỉ khác null khi shop còn 'onboarding'; setup.products = có SP đang bán + còn tồn.
+  const notSellable = !!setup && !setup.products;
   const todoCells = TODO.map((x) => {
     const on = x.n > 0;
     return `<a class="todo-cell${on ? ' on' : ''}" href="${x.href}"
@@ -1660,8 +1714,9 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   const todoCard = `<div class="card">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
       <h2 style="margin:0">Việc cần làm</h2>
-      ${openWork === 0 ? '<span class="muted" style="font-size:.88rem">✓ Không còn việc tồn đọng</span>'
-        : `<span class="muted" style="font-size:.88rem">${esc(openWork)} việc đang chờ bạn</span>`}
+      ${openWork > 0 ? `<span class="muted" style="font-size:.88rem">${esc(openWork)} việc đang chờ bạn</span>`
+        : notSellable ? '<span class="muted" style="font-size:.88rem">Chưa có đơn — cửa hàng chưa bán được</span>'
+        : '<span class="muted" style="font-size:.88rem">✓ Không còn việc tồn đọng</span>'}
     </div>
     <div class="todo-grid">${todoCells}</div></div>`;
 
@@ -1684,8 +1739,9 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
     <span aria-hidden="true">${dots}</span>
     <div class="hb-in">
       <h1 id="hb-shop" class="hb-shop">${esc(ctx.shopName || 'Cửa hàng của bạn')}</h1>
-      <p class="hb-line">${openWork === 0 ? 'Không còn việc tồn đọng — cửa hàng đang chạy êm.'
-        : `Bạn có <strong>${esc(openWork)}</strong> việc đang chờ xử lý.`}</p>
+      <p class="hb-line">${openWork > 0 ? `Bạn có <strong>${esc(openWork)}</strong> việc đang chờ xử lý.`
+        : notSellable ? 'Khách chưa mua được gì — cần ít nhất một sản phẩm <strong>đang bán và còn hàng</strong>.'
+        : 'Không còn việc tồn đọng — cửa hàng đang chạy êm.'}</p>
       <a class="hb-cta" href="${cta.href}">${esc(cta.label)}</a>
     </div></section>`;
 
@@ -3204,23 +3260,26 @@ export function renderProductNew(ctx, shopId, err, f = {}) {
     <a class="muted" href="/shops/${esc(shopId)}/products">← Danh sách sản phẩm</a>
     <h1>Thêm sản phẩm</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
-    <form method="POST" action="/shops/${esc(shopId)}/products">
+    <form method="POST" action="/shops/${esc(shopId)}/products" enctype="multipart/form-data">
       <div class="card"><h2 style="margin-top:0">Thông tin</h2>
-        <label>Tên sản phẩm *</label><input name="title" required maxlength="200" value="${esc(f.title ?? '')}">
-        <label>Đường dẫn (slug) *</label><input name="slug" required pattern="[a-z0-9][a-z0-9-]*" maxlength="60" value="${esc(f.slug ?? '')}" placeholder="ghe-sofa-3-cho">
+        <label>Tên sản phẩm *</label><input name="title" required maxlength="200" value="${esc(f.title ?? '')}" placeholder="Cà phê sữa đá">
         <div class="grid2">
           <div><label>Giá (VND) *</label><input name="price_vnd" type="number" min="0" step="1000" required value="${esc(f.price_vnd ?? '')}"></div>
-          <div><label>Trạng thái</label><select name="status"><option value="draft"${f.status !== 'active' ? ' selected' : ''}>Nháp</option><option value="active"${f.status === 'active' ? ' selected' : ''}>Đăng bán ngay</option></select></div>
+          <div><label>Tồn kho ban đầu</label><input name="stock" type="number" min="0" step="1" value="${esc(f.stock ?? '0')}"></div>
         </div>
+        <p class="muted" style="margin:-6px 0 12px">Để tồn 0 thì khách vào thấy “Hết hàng” — sửa lại bất cứ lúc nào ở trang sản phẩm.</p>
+        <label>Trạng thái</label><select name="status"><option value="draft"${f.status !== 'active' ? ' selected' : ''}>Nháp</option><option value="active"${f.status === 'active' ? ' selected' : ''}>Đăng bán ngay</option></select>
         <label>Mô tả</label><textarea name="description" maxlength="5000">${esc(f.description ?? '')}</textarea>
+        <label>Ảnh sản phẩm</label>
+        <input type="file" name="image" accept="image/jpeg,image/png,image/webp,image/gif" multiple>
+        <p class="muted" style="margin:5px 0 0">Chọn được nhiều ảnh. Ảnh đầu tiên là ảnh bìa. JPEG/PNG/WebP/GIF,
+          mỗi ảnh tối đa 10MB — hệ thống tự nén sang WebP.</p>
       </div>
-      <div class="card"><h2 style="margin-top:0">Biến thể đầu tiên</h2>
-        <p class="muted">Mỗi sản phẩm cần ít nhất 1 biến thể. Thêm biến thể khác sau khi tạo.</p>
-        <div class="grid2">
-          <div><label>Mã SKU *</label><input name="sku" required maxlength="64" value="${esc(f.sku ?? '')}" placeholder="GHE-SOFA-01"></div>
-          <div><label>Giá biến thể (VND) *</label><input name="variant_price_vnd" type="number" min="0" step="1000" required value="${esc(f.variant_price_vnd ?? f.price_vnd ?? '')}"></div>
-        </div>
-      </div>
+      <details class="card"${f.slug || f.sku ? ' open' : ''}><summary style="cursor:pointer;font-weight:600">Tuỳ chọn nâng cao</summary>
+        <p class="muted">Bỏ trống cũng được — hệ thống tự điền.</p>
+        <label>Đường dẫn (slug)</label><input name="slug" pattern="[a-z0-9][a-z0-9-]*" maxlength="60" value="${esc(f.slug ?? '')}" placeholder="tự tạo từ tên sản phẩm">
+        <label>Mã SKU</label><input name="sku" maxlength="64" value="${esc(f.sku ?? '')}" placeholder="tự tạo từ đường dẫn">
+      </details>
       <button class="btn" type="submit">Tạo sản phẩm</button>
     </form>`);
 }

@@ -238,6 +238,54 @@ async function main() {
   (r.status === 200 && /Đã xoá \d+ ảnh/.test(r.body))
     ? ok('bấm Xoá → báo đã xoá bao nhiêu, giải phóng bao nhiêu') : bad('xoá qua UI lỗi', r.body.slice(0, 200));
 
+  sect('8. Tạo sản phẩm KÈM ẢNH ngay lần đầu (không phải bước riêng)');
+  // Form thêm SP trước đây không có ô ảnh: chủ shop tạo xong mới phát hiện phải vào trang
+  // chi tiết tải ảnh — một sản phẩm không ảnh thì khách không bấm vào. Nay form là
+  // multipart và ảnh đi cùng lượt tạo.
+  let newP = await fetch(`${ADMIN}/shops/${A.shopId}/products/new`, { headers: { cookie: `__Host-session=${A.cookie}` } });
+  const newHtml = await newP.text();
+  // Ô file PHẢI nằm TRONG form và form phải có enctype — thiếu enctype thì trình duyệt gửi
+  // đúng TÊN TỆP dưới dạng text, không có byte nào, và mọi thứ vẫn "thành công".
+  const iForm = newHtml.indexOf('enctype="multipart/form-data"');
+  const iFile = newHtml.indexOf('name="image"', iForm);
+  const between = iForm > 0 && iFile > iForm ? newHtml.slice(iForm, iFile) : 'x</form>';
+  (iForm > 0 && iFile > iForm && !between.includes('</form>'))
+    ? ok('form thêm SP có enctype multipart + ô ảnh nằm trong form') : bad('form thêm SP thiếu enctype/ô ảnh ngoài form', `iForm=${iForm} iFile=${iFile}`);
+
+  const fd = new FormData();
+  fd.append('title', 'Trà đào cam sả');
+  fd.append('price_vnd', '45000');
+  fd.append('stock', '12');
+  fd.append('status', 'active');
+  fd.append('image', new Blob([PNG], { type: 'image/png' }), 'a.png');
+  fd.append('image', new Blob([PNG], { type: 'image/png' }), 'b.png');
+  const cr = await fetch(`${ADMIN}/shops/${A.shopId}/products`, {
+    method: 'POST', headers: { cookie: `__Host-session=${A.cookie}`, origin: OADM }, body: fd, redirect: 'manual',
+  });
+  const newPid = pidFrom(cr.headers.get('location'));
+  cr.status === 303 && newPid ? ok('tạo SP kèm 2 ảnh trong MỘT lượt gửi → 303') : bad('tạo SP kèm ảnh lỗi', `${cr.status} ${cr.headers.get('location')}`);
+  const mNew = (await sget(A.shopId, A.cookie, `/products/${newPid}/media`)).json?.media ?? [];
+  mNew.length === 2 && mNew.every((x) => x.status === 'ready')
+    ? ok('2 ảnh đã vào kho ảnh của SP, status ready') : bad('ảnh không vào theo SP', JSON.stringify(mNew));
+  const st = (await owner.query(
+    `SELECT COALESCE(il.on_hand,0) n FROM variants v LEFT JOIN inventory_levels il ON il.variant_id=v.id WHERE v.product_id=$1`, [newPid])).rows[0];
+  Number(st?.n) === 12 ? ok('tồn ban đầu 12 vẫn ghi đúng khi form là multipart') : bad('multipart làm rơi trường tồn', JSON.stringify(st));
+
+  // Ảnh HỎNG không được huỷ sản phẩm: mất cả công gõ vì một tệp sai là phạt quá nặng.
+  const fd2 = new FormData();
+  fd2.append('title', 'Sinh tố bơ');
+  fd2.append('price_vnd', '40000');
+  fd2.append('image', new Blob([Buffer.from('khong phai anh')], { type: 'image/png' }), 'gia.png');
+  const cr2 = await fetch(`${ADMIN}/shops/${A.shopId}/products`, {
+    method: 'POST', headers: { cookie: `__Host-session=${A.cookie}`, origin: OADM }, body: fd2, redirect: 'manual',
+  });
+  const body2 = await cr2.text();
+  const madeIt = (await owner.query(`SELECT id FROM products WHERE shop_id=$1 AND title='Sinh tố bơ'`, [A.shopId])).rows[0];
+  // 409 là mã productDetail dùng cho MỌI thông báo lỗi trên trang chi tiết — điều quan
+  // trọng ở đây là SẢN PHẨM VẪN CÒN và người dùng được dẫn tới đúng trang có ô tải lại.
+  cr2.status === 409 && madeIt && /chỉ tải được 0\/1 ảnh/.test(body2)
+    ? ok('ảnh hỏng → SP VẪN được tạo, mở trang chi tiết báo rõ ảnh không vào') : bad('ảnh hỏng làm mất sản phẩm', `${cr2.status} sp=${!!madeIt}`);
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

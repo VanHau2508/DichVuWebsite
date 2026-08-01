@@ -251,6 +251,33 @@ async function main() {
   (admPage.status === 200 && iF > 0 && iFile > iF && !between.includes('</form>'))
     ? ok('trang Danh mục (admin) có form ảnh + ô file nằm trong form') : bad('form ảnh danh mục thiếu/ô ngoài form', `${admPage.status} iF=${iF} iFile=${iFile}`);
 
+  // ── 12. Bỏ trống slug/SKU + tồn ban đầu (đợt onboarding) ───────────────────
+  // ĐỂ CUỐI CÙNG: mục này tạo thêm sản phẩm, mà mục 6 khẳng định total=4 cứng.
+  sect('12. Bỏ trống slug/SKU → tự sinh; tồn ban đầu vào kho');
+  const vnTitle = `Cà phê sữa đá ${uniq()}`;
+  // đ/Đ là CHỮ CÁI riêng, không phải tổ hợp dấu — NFD không tách được, phải ánh xạ tay.
+  // (Bản đầu của test này quên, ra "ca-phe-sua-a" rồi đổ oan cho code.)
+  const expect = vnTitle.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'd')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  r = await a.post('/products', { title: vnTitle, price_vnd: 25000, status: 'active', variants: [{ price_vnd: 25000, stock: 7 }] });
+  r.status === 201 && r.json.slug === expect
+    ? ok(`không gửi slug/SKU → tự sinh bỏ dấu "${expect}"`) : bad('không tự sinh slug', r.raw);
+  const lvl = (await owner.query(
+    `SELECT il.on_hand, v.sku FROM inventory_levels il JOIN variants v ON v.id=il.variant_id WHERE v.product_id=$1`, [r.json?.id])).rows[0];
+  Number(lvl?.on_hand) === 7 && lvl?.sku === expect
+    ? ok('tồn ban đầu 7 vào inventory_levels + SKU tự sinh theo slug') : bad('tồn/SKU tự sinh sai', JSON.stringify(lvl));
+  // Trùng: slug TỰ SINH thì nối "-2" (người dùng không gõ ô đó, báo 409 là vô nghĩa với họ).
+  // SKU tự sinh phải né theo slug ĐÃ CHỐT — sinh trước lúc né thì SP thứ hai đụng SKU (đã vấp).
+  r = await a.post('/products', { title: vnTitle, price_vnd: 25000, variants: [{ price_vnd: 25000 }] });
+  r.status === 201 && r.json.slug === `${expect}-2`
+    ? ok('tên trùng, slug tự sinh → tự nối "-2" (SKU cũng né theo)') : bad('không né được slug trùng khi tự sinh', r.raw);
+  // …còn slug GÕ TAY vẫn 409: đổi ngầm địa chỉ mà người ta cố ý chọn là sai.
+  r = await a.post('/products', { title: 'Gõ tay trùng', slug: expect, price_vnd: 1, variants: [{ price_vnd: 1 }] });
+  r.status === 409 ? ok('slug GÕ TAY trùng → vẫn 409 (không đổi ngầm sau lưng)') : bad('slug gõ tay bị đổi ngầm', r.raw);
+  // Tồn âm phải bị chặn ở API, không chỉ ở ô number của trình duyệt.
+  r = await a.post('/products', { title: `Tồn xấu ${uniq()}`, price_vnd: 1, variants: [{ price_vnd: 1, stock: -5 }] });
+  r.status === 400 ? ok('tồn ban đầu âm → 400') : bad('tồn âm lọt', r.raw);
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

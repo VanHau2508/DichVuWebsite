@@ -92,6 +92,21 @@ export async function planMaxProducts(c) {
 }
 export const catalogCount = async (c) => (await c.query(`SELECT count(*)::int n FROM products WHERE deleted_at IS NULL`)).rows[0].n;
 
+// Sản phẩm KHÁCH THẬT SỰ MUA ĐƯỢC = đang bán + còn hàng bán. Khác hẳn catalogCount:
+// checklist onboarding từng tick ✓ "đã thêm sản phẩm" chỉ vì có 1 dòng products, trong khi
+// tồn = 0 nên storefront hiện "Hết hàng". Khen dối làm chủ shop tưởng xong rồi.
+export const sellableCount = async (c) => (await c.query(
+  // `variants` KHÔNG có deleted_at (xoá cứng) — chỉ `products` xoá mềm. Bản đầu lọc
+  // v.deleted_at IS NULL: câu lệnh ném lỗi → endpoint 500 → overview NUỐT lỗi thành
+  // "mục chưa xong", im lặng hoàn toàn. e2e bắt được, đọc code thì không.
+  `SELECT count(DISTINCT p.id)::int n
+     FROM products p
+     JOIN variants v ON v.product_id = p.id
+     JOIN inventory_levels il ON il.variant_id = v.id
+    WHERE p.deleted_at IS NULL AND p.status = 'active'
+      AND il.on_hand - il.reserved > 0`,
+)).rows[0].n;
+
 // Đồng bộ giá "TỪ" của sản phẩm = min(giá biến thể) — thẻ lưới/sort/lọc storefront đọc
 // products.price_vnd (0093). Gọi trong CÙNG transaction ở MỌI điểm ghi làm đổi giá hoặc
 // tập biến thể (tạo SP, thêm/sửa/xoá biến thể, sinh ma trận) — sót một điểm là giá thẻ
@@ -116,7 +131,7 @@ const syncProductPrice = async (c, productId) => {
 
 async function createProduct(res, ctx, body) {
   const title = String(body.title ?? '').trim();
-  const slug = String(body.slug ?? '').toLowerCase().trim();
+  const typedSlug = String(body.slug ?? '').toLowerCase().trim();
   const description = body.description != null ? String(body.description) : null;
   const status = body.status === 'active' ? 'active' : 'draft';
   const priceVnd = body.price_vnd;
@@ -124,18 +139,34 @@ async function createProduct(res, ctx, body) {
   const categoryIds = Array.isArray(body.category_ids) ? body.category_ids : [];
 
   if (!validTitle(title)) return send(res, 400, { error: 'tiêu đề không hợp lệ' });
+  // Slug BỎ TRỐNG → tự sinh từ tên (bỏ dấu). Chủ shop gõ "Cà phê sữa đá" không phải tự
+  // nghĩ ra "ca-phe-sua-da" — ô khó nhất form, và là ô duy nhất bắt hiểu luật kỹ thuật.
+  // Tên toàn ký tự lạ (emoji…) slugify ra rỗng → 'sp' + hậu tố, để không chặn người dùng.
+  const derived = !typedSlug;
+  const slug = derived ? (slugify(title) || `sp-${crypto.randomBytes(3).toString('hex')}`) : typedSlug;
   if (!validSlug(slug)) return send(res, 400, { error: 'slug không hợp lệ (a-z, 0-9, gạch ngang)' });
   if (!validPrice(priceVnd)) return send(res, 400, { error: 'giá không hợp lệ' });
   if (variants.length < 1 || variants.length > 100) return send(res, 400, { error: 'cần 1–100 biến thể' });
-  for (const v of variants) {
-    if (!validSku(v.sku)) return send(res, 400, { error: 'SKU biến thể không hợp lệ' });
+  // SKU BỎ TRỐNG → tự sinh. Quán cà phê bán 1 món không có khái niệm SKU; bắt buộc ô này
+  // là chặn thẳng người mới. CHỈ ĐÁNH DẤU ở đây, điền THẬT trong transaction — SKU lấy gốc
+  // từ slug, mà slug tự sinh có thể bị nối "-2" khi trùng; sinh sớm thì hai sản phẩm cùng
+  // tên đụng SKU nhau (đã vấp thật: SP thứ hai trả 409 "SKU đã tồn tại").
+  const autoSku = variants.map((v) => !v || v.sku == null || String(v.sku).trim() === '');
+  for (const [i, v] of variants.entries()) {
+    if (!autoSku[i] && !validSku(v.sku)) return send(res, 400, { error: 'SKU biến thể không hợp lệ' });
     if (!validPrice(v.price_vnd)) return send(res, 400, { error: 'giá biến thể không hợp lệ' });
     if (v.weight_gram !== undefined && !validWeight(v.weight_gram)) return send(res, 400, { error: 'khối lượng biến thể không hợp lệ (1–50000g)' });
     if (v.compare_at_vnd !== undefined && !validCompareAt(v.compare_at_vnd)) return send(res, 400, { error: 'giá gạch biến thể không hợp lệ' });
     if (v.compare_at_vnd != null && v.compare_at_vnd <= v.price_vnd) return send(res, 400, { error: 'giá gạch phải lớn hơn giá bán' });
+    // Tồn ban đầu ngay lúc tạo. Trước đây tồn LUÔN = 0 → shop mới thêm SP, chọn "Đăng bán
+    // ngay", mở storefront ra thấy "Hết hàng" mà không hiểu vì sao. Tuỳ chọn (bỏ qua = 0).
+    if (v.stock !== undefined && v.stock !== null && !(Number.isInteger(v.stock) && v.stock >= 0 && v.stock <= 1_000_000)) {
+      return send(res, 400, { error: 'tồn kho ban đầu không hợp lệ (0–1000000)' });
+    }
   }
   // SKU trùng nhau NGAY trong payload → chặn sớm (DB cũng chặn nhưng báo rõ hơn).
-  const skus = variants.map((v) => v.sku.trim());
+  // Chỉ soi SKU NGƯỜI GÕ: cái tự sinh chưa tồn tại ở bước này và được đảm bảo duy nhất dưới.
+  const skus = variants.filter((_, i) => !autoSku[i]).map((v) => v.sku.trim());
   if (new Set(skus).size !== skus.length) return send(res, 400, { error: 'SKU trùng trong danh sách biến thể' });
 
   try {
@@ -143,20 +174,55 @@ async function createProduct(res, ctx, body) {
       // Ép giới hạn gói: đã đạt max_products → chặn (nâng gói để thêm).
       const max = await planMaxProducts(c);
       if (max != null && (await catalogCount(c)) >= max) return { over: max };
+      // Slug TỰ SINH mà trùng → tự nối "-2", "-3"… Người dùng không gõ ô đó thì báo lỗi
+      // "slug đã tồn tại" là vô nghĩa với họ. Slug họ GÕ TAY vẫn báo lỗi như cũ (409) —
+      // họ chọn địa chỉ đó có chủ đích, đổi ngầm sau lưng là sai.
+      // (UNIQUE chỉ tính hàng còn sống — 0116 — nên lọc deleted_at IS NULL cho khớp.)
+      let finalSlug = slug;
+      if (derived) {
+        for (let n = 2; n <= 50; n++) {
+          const taken = await c.query(`SELECT 1 FROM products WHERE slug = $1 AND deleted_at IS NULL LIMIT 1`, [finalSlug]);
+          if (taken.rowCount === 0) break;
+          finalSlug = `${slug.slice(0, 56)}-${n}`;
+        }
+      }
+      // SKU tự sinh: gốc là slug ĐÃ CHỐT (sau khi né trùng), rồi tự né tiếp nếu SKU đó đã
+      // có. SKU của SP xoá-mềm VẪN nằm trong bảng variants nên vẫn đụng được.
+      for (let i = 0; i < variants.length; i++) {
+        if (!autoSku[i]) continue;
+        const base = variants.length > 1 ? `${finalSlug.slice(0, 52)}-${i + 1}` : finalSlug.slice(0, 58);
+        let s = base;
+        for (let n = 2; n <= 50; n++) {
+          const taken = await c.query(`SELECT 1 FROM variants WHERE sku = $1 LIMIT 1`, [s]);
+          if (taken.rowCount === 0) break;
+          s = `${base.slice(0, 55)}-${n}`;
+        }
+        variants[i].sku = s;
+      }
       const p = await c.query(
         `INSERT INTO products (shop_id, slug, title, description, price_vnd, status)
          VALUES (current_shop_id(), $1, $2, $3, $4, $5) RETURNING id`,
-        [slug, title, description, priceVnd, status],
+        [finalSlug, title, description, priceVnd, status],
       );
       const productId = p.rows[0].id;
 
       for (let i = 0; i < variants.length; i++) {
         const v = variants[i];
-        await c.query(
+        const vid = (await c.query(
           `INSERT INTO variants (shop_id, product_id, title, sku, price_vnd, position, weight_gram, compare_at_vnd)
-           VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6, $7)`,
+           VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6, $7) RETURNING id`,
           [productId, v.title != null ? String(v.title) : null, v.sku.trim(), v.price_vnd, i, v.weight_gram ?? null, v.compare_at_vnd ?? null],
-        );
+        )).rows[0].id;
+        // Tồn ban đầu — CÙNG transaction (cùng lối import.js): giữ bất biến tổng delta
+        // sổ cái == on_hand. Bỏ qua khi 0 để không đẻ dòng sổ cái rỗng.
+        if (v.stock > 0) {
+          await c.query(`INSERT INTO inventory_levels (shop_id, variant_id, on_hand) VALUES (current_shop_id(), $1, $2)`, [vid, v.stock]);
+          await c.query(
+            `INSERT INTO inventory_ledger (shop_id, variant_id, delta, kind, reason, actor_id)
+             VALUES (current_shop_id(), $1, $2, 'receive', 'tồn ban đầu khi tạo sản phẩm', $3)`,
+            [vid, v.stock, ctx.user.id],
+          );
+        }
       }
 
       for (const catId of categoryIds) {
@@ -171,11 +237,11 @@ async function createProduct(res, ctx, body) {
       // Giá "từ" của SP = min giá biến thể (0093) — payload có thể gửi price_vnd lệch min.
       await syncProductPrice(c, productId);
 
-      await audit(c, 'product.created', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, slug } });
-      return { productId };
+      await audit(c, 'product.created', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId, slug: finalSlug } });
+      return { productId, slug: finalSlug };
     });
     if (out.over != null) return send(res, 403, { error: `đã đạt giới hạn gói (${out.over} sản phẩm). Nâng gói để thêm sản phẩm.` });
-    return send(res, 201, { id: out.productId, slug, status });
+    return send(res, 201, { id: out.productId, slug: out.slug, status });
   } catch (err) {
     if (err.code === '23505') return send(res, 409, { error: conflictMessage(err) });
     if (err.code === '23503') return send(res, 400, { error: 'danh mục không hợp lệ' });
@@ -269,6 +335,7 @@ async function listProducts(res, ctx, _body, _params, query) {
       total: total.rows[0].n, products,
       counts: { '': n(cnt.all_n), active: n(cnt.active), draft: n(cnt.draft), archived: n(cnt.archived) },
       catalog_count: await catalogCount(c), max_products: await planMaxProducts(c),
+      sellable_count: await sellableCount(c),
     };
   });
   return send(res, 200, { ...data, limit, offset });

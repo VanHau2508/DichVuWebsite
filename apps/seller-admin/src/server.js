@@ -31,6 +31,8 @@ const shopNameOf = async (shopId, cookie) => { try { return (await sellerApi('GE
 const shopCtx = (me, shopId, shopName, active) => ({ user: me, shopName, shopId, role: roleFor(me, shopId), active });
 // VND từ form: '' → null (backend báo 400), còn lại → số (âm cũng để backend chặn).
 const parseVnd = (s) => { const t = String(s ?? '').replace(/[^\d-]/g, ''); return t === '' ? null : Number(t); };
+// Tồn kho ban đầu: bỏ trống = 0 (không phải null) — seller chỉ ghi sổ kho khi > 0.
+const parseStock = (s) => { const t = String(s ?? '').replace(/[^\d]/g, ''); return t === '' ? 0 : Number(t); };
 // Parser CSV tối giản (RFC-4180): ô có ngoặc kép, phẩy/xuống-dòng trong ô, "" thoát,
 // CRLF/LF, bỏ BOM. Trả mảng object theo hàng tiêu đề (tên cột chuẩn hoá thường).
 function parseCsv(text) {
@@ -85,14 +87,21 @@ async function handleLogout(req, res, cookie) {
 
 // ── authed handlers ───────────────────────────────────────────────────────────
 async function dashboard(res, me, cookie) {
-  const shops = [];
-  for (const mem of me.memberships ?? []) {
-    const r = await sellerApi('GET', `/shops/${mem.shop_id}`, { cookie });
-    shops.push({ shop_id: mem.shop_id, role: mem.role, name: r.json?.name, status: r.json?.status });
-  }
+  const mems = me.memberships ?? [];
   // Phát hiện nhân viên nền tảng: platform requireStaff trả 403 cho người thường (rẻ),
   // 200 cho staff → hiện link Console. Một lượt gọi nội bộ/lần vào dashboard.
   const staff = await platformApi('GET', '/ops/shops', { cookie }).catch(() => ({ status: 0 }));
+  // ĐÚNG MỘT cửa hàng → vào thẳng. Bắt "chọn một cửa hàng" trong danh sách một-phần-tử là
+  // bước thừa mà chủ shop phải bấm MỌI lần đăng nhập.
+  // TRỪ nhân viên nền tảng: link vào Console CHỈ có ở màn hình này, chuyển hướng họ đi là
+  // giấu mất đường vào console của chính người vận hành nền tảng.
+  // Không gọi API lấy tên shop trước khi chuyển — chuyển rồi thì tên đó không dùng tới.
+  if (mems.length === 1 && staff.status !== 200) return redirect(res, `/shops/${mems[0].shop_id}/overview`);
+  const shops = [];
+  for (const mem of mems) {
+    const r = await sellerApi('GET', `/shops/${mem.shop_id}`, { cookie });
+    shops.push({ shop_id: mem.shop_id, role: mem.role, name: r.json?.name, status: r.json?.status });
+  }
   return sendHtml(res, 200, V.renderDashboard({ user: me }, shops, staff.status === 200));
 }
 
@@ -295,7 +304,10 @@ async function overviewPage(res, me, cookie, shopId, live) {
     const pay = payR.status === 200 && payR.json ? payR.json : {};
     setup = {
       payment: !!(pay.qr_enabled && pay.bank_bin && pay.account_number),
-      products: prodR.status === 200 && Number(prodR.json?.catalog_count ?? 0) > 0,
+      // "Đang bán + CÒN HÀNG", không phải "có dòng trong bảng products". Đếm theo
+      // catalog_count thì SP nháp hoặc tồn 0 vẫn tick ✓ trong khi khách vào thấy
+      // "Hết hàng" — chủ shop tưởng xong nên không sửa. (sellable_count, seller catalog.js)
+      products: prodR.status === 200 && Number(prodR.json?.sellable_count ?? 0) > 0,
       branding: !!shop.logo_url,                                    // logo_key → logo_url (seller build)
       shipping: shop.ship_fee_vnd != null || shop.ship_mode === 'distance',
       canManage: ctx.role === 'owner' || ctx.role === 'admin',     // shop.write (mở bán / cấu hình)
@@ -1040,18 +1052,38 @@ async function productNew(res, me, cookie, shopId, err, form) {
 
 async function productCreate(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
-  const f = await readForm(req);
+  // Form NAY là multipart (có ô ảnh). Vẫn nhận urlencoded để không phá script/e2e cũ và
+  // bất kỳ ai POST thẳng vào BFF — đây là cùng một endpoint, chỉ thêm khả năng.
+  let f, images = [], tooBig = false;
+  if (/multipart\/form-data/i.test(req.headers['content-type'] || '')) {
+    try { const p = await readMultipartAll(req, 40 * 1024 * 1024); f = p.fields; images = p.files.filter((x) => x.field === 'image' && x.bytes?.length); }
+    catch (e) { tooBig = e.statusCode === 413; f = {}; }
+  } else { f = await readForm(req); }
+  if (tooBig) return productNew(res, me, cookie, shopId, 'Ảnh quá lớn (tổng tối đa 40MB).', {});
   const body = {
     title: String(f.title ?? '').trim(),
     slug: String(f.slug ?? '').trim().toLowerCase(),
     price_vnd: parseVnd(f.price_vnd),
     status: f.status === 'active' ? 'active' : 'draft',
     description: String(f.description ?? '').trim() || null,
-    variants: [{ sku: String(f.sku ?? '').trim(), price_vnd: parseVnd(f.variant_price_vnd) }],
+    // slug/SKU bỏ trống → seller tự sinh (bỏ dấu tên SP). Giá biến thể đầu = giá SP: bắt gõ
+    // giá HAI LẦN vào hai ô không giải thích là chỗ vấp thật của người mới, không phải tính năng.
+    variants: [{ sku: String(f.sku ?? '').trim(), price_vnd: parseVnd(f.price_vnd), stock: parseStock(f.stock) }],
   };
   const r = await sellerApi('POST', `/shops/${shopId}/products`, { cookie, body });
-  if (r.status === 201) return redirect(res, `/shops/${shopId}/products/${r.json.id}`);
-  return productNew(res, me, cookie, shopId, r.json?.error ?? 'Không tạo được sản phẩm.', f);
+  if (r.status !== 201) return productNew(res, me, cookie, shopId, r.json?.error ?? 'Không tạo được sản phẩm.', f);
+  const pid = r.json.id;
+  // Ảnh tải SAU khi có sản phẩm (endpoint media cần product_id). Ảnh hỏng KHÔNG được huỷ
+  // sản phẩm vừa tạo — đưa họ vào trang chi tiết kèm lời báo, ở đó có sẵn ô tải lại.
+  let okN = 0, lastErr = null;
+  for (const img of images) {
+    const up = await sellerUpload(`/shops/${shopId}/products/${pid}/media`, { cookie, bytes: img.bytes });
+    if (up.status === 201) okN++; else lastErr = up.json?.error ?? 'Tải ảnh thất bại.';
+  }
+  if (images.length && okN < images.length) {
+    return productDetail(res, me, cookie, shopId, pid, `Đã tạo sản phẩm nhưng chỉ tải được ${okN}/${images.length} ảnh. ${lastErr ?? ''}`.trim());
+  }
+  return redirect(res, `/shops/${shopId}/products/${pid}`);
 }
 
 // Nhập sản phẩm hàng loạt từ CSV: đọc file (multipart) → parse → forward mảng rows tới
@@ -3012,7 +3044,13 @@ async function handle(req, res, url, p) {
     const cookie = parseCookies(req)[SESSION_COOKIE];
 
     // Trang công khai (auth).
-    if (p === '/login' && req.method === 'GET') return (await loadSession(cookie)).state === 'ok' ? redirect(res, '/') : sendHtml(res, 200, V.renderLogin());
+    // ?email= chỉ để ĐIỀN SẴN ô email (từ luồng tự-đăng-ký). Cắt 254 ký tự và render qua
+    // esc() như mọi giá trị khác — đây là dữ liệu người lạ đưa vào qua URL, không phải danh tính.
+    if (p === '/login' && req.method === 'GET') {
+      return (await loadSession(cookie)).state === 'ok'
+        ? redirect(res, '/')
+        : sendHtml(res, 200, V.renderLogin(null, String(url.searchParams.get('email') ?? '').slice(0, 254) || null));
+    }
     if (p === '/login' && req.method === 'POST') return handleLogin(req, res);
     if (p === '/mfa' && req.method === 'GET') return sendHtml(res, 200, V.renderMfa());
     if (p === '/mfa' && req.method === 'POST') return handleMfa(req, res, cookie);

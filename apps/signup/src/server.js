@@ -48,6 +48,21 @@ const log = (level, event, extra = {}) => console.log(JSON.stringify({ ts: new D
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const ipHash = (ip) => crypto.createHmac('sha256', IP_PEPPER).update('sip:' + (ip ?? '')).digest('hex');
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/; // dns-safe, ≤ 40 (khớp platform)
+
+// Tên tiếng Việt → địa chỉ dns-safe. CỐ Ý chép về đây thay vì dùng chung với
+// apps/seller/src/catalog.js: hai nơi khác luật độ dài (subdomain ≤40 vs slug SP ≤58) và
+// signup là service cô lập least-priv, Dockerfile chỉ COPY đúng packages nó cần — dựng cả
+// một package chung cho 8 dòng thì phải sửa Dockerfile + volume của mọi service.
+// CẮT trước rồi mới bỏ gạch thừa: cắt ở giữa cụm dễ để lại gạch ở đuôi → SLUG_RE trượt.
+function slugify(s) {
+  return String(s ?? '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/đ/g, 'd').replace(/Đ/g, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .slice(0, 40)
+    .replace(/(^-+|-+$)/g, '');
+}
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 // Hash "mồi" để timing đều (song song apps/account). Không dùng trực tiếp nhưng giữ threadpool nóng.
@@ -93,8 +108,12 @@ async function doSignup(req, res) {
   const f = await readForm(req);
   const email = String(f.email ?? '').trim().toLowerCase();
   const password = String(f.password ?? '');
-  const slug = String(f.slug ?? '').trim().toLowerCase();
   const name = String(f.name ?? '').trim().slice(0, 200);
+  // Ô KHÓ NHẤT của form này. Trước đây chỉ .toLowerCase(): người gõ đúng tên shop của mình
+  // ("Quán Cà Phê Sớm Mai") thành "quán cà phê sớm mai" → vẫn dấu, vẫn khoảng trắng → LỖI,
+  // và họ phải tự nghĩ ra "quan-ca-phe-som-mai". Nay: bỏ trống thì lấy từ tên; gõ gì cũng
+  // chuẩn hoá bỏ dấu. Chỉ báo lỗi khi chuẩn hoá xong VẪN không ra được địa chỉ hợp lệ.
+  const slug = slugify(String(f.slug ?? '').trim() || name);
   const planCode = String(f.plan_code ?? '').trim();
   // Ngành hàng ENUM-SAFE: hợp lệ KHI VÀ CHỈ KHI có preset (nguồn chân lý = packages/presets).
   // Giá trị lạ / rỗng / 'other' → null → KHÔNG seed theme → storefront về DEFAULT_LAYOUT (không lỗi).
@@ -106,8 +125,10 @@ async function doSignup(req, res) {
   const reForm = (msg, status = 400) => sendHtml(res, status, V.renderSignupForm(plans, { error: msg, f: keep, ct: issueFormTs(), domain: PLATFORM_DOMAIN, adminUrl: ADMIN_LOGIN_URL }));
 
   // Lỗi CLIENT-DERIVABLE (surface — về CHÍNH input người dùng, không rò gì riêng tư).
-  if (!SLUG_RE.test(slug)) return reForm('Địa chỉ cửa hàng chỉ gồm chữ thường, số, gạch ngang (2–40 ký tự).');
+  // Tên TRƯỚC slug: slug lấy từ tên, tên rỗng thì slug cũng rỗng — báo "địa chỉ sai" khi
+  // người ta chỉ quên điền TÊN là chỉ sai chỗ.
   if (name.length < 1) return reForm('Vui lòng nhập tên cửa hàng.');
+  if (!SLUG_RE.test(slug)) return reForm('Địa chỉ cửa hàng chỉ gồm chữ thường, số, gạch ngang (2–40 ký tự).');
   if (!EMAIL_RE.test(email)) return reForm('Email không hợp lệ.');
   const pwErr = passwordError(password, { shopName: name });
   if (pwErr) return reForm(pwErr[0].toUpperCase() + pwErr.slice(1) + '.');
@@ -267,7 +288,7 @@ async function doVerify(req, res) {
       await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES (NULL, 'shop.banners_seed', $1)`,
         [{ shop_id: shopId, industry: themeSlug }]);
       await c.query(`UPDATE shop_signups SET provisioned_shop_id=$1 WHERE id=$2`, [shopId, d.id]);
-      return { kind: 'ok', name: d.name, slug: d.slug };
+      return { kind: 'ok', name: d.name, slug: d.slug, email: d.email };
     });
   } catch (e) {
     if (e && e.code === 'LOGIN_REQUIRED') return sendHtml(res, 200, V.renderVerifyLoginRequired(PLATFORM_DOMAIN, ADMIN_LOGIN_URL));
@@ -276,7 +297,7 @@ async function doVerify(req, res) {
   }
   if (out.kind === 'invalid') return sendHtml(res, 200, V.renderVerifyInvalid(PLATFORM_DOMAIN));
   log('info', 'shop_provisioned', {}); // KHÔNG log slug/email (PII). KHÔNG auto-login (parity).
-  return sendHtml(res, 200, V.renderVerifyDone(out.name, out.slug, PLATFORM_DOMAIN, ADMIN_LOGIN_URL));
+  return sendHtml(res, 200, V.renderVerifyDone(out.name, out.slug, PLATFORM_DOMAIN, ADMIN_LOGIN_URL, out.email));
 }
 
 // ── router ───────────────────────────────────────────────────────────────────

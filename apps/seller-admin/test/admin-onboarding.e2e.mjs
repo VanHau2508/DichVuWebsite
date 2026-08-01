@@ -81,7 +81,7 @@ async function main() {
   sect('1. Shop mới: checklist hiện, 0/4, có nút Mở bán, no-JS');
   let r = await adm('GET', OV, { cookie: A.cookie });
   r.status === 200 && /Hoàn tất thiết lập cửa hàng/.test(r.body) && /0\/4 xong/.test(r.body)
-    && /Gắn ngân hàng nhận tiền/.test(r.body) && /Thêm sản phẩm/.test(r.body) && /Mở bán chính thức/.test(r.body) && !r.body.includes('<script')
+    && /Gắn ngân hàng nhận tiền/.test(r.body) && /Có sản phẩm bán được/.test(r.body) && /Mở bán chính thức/.test(r.body) && !r.body.includes('<script')
     ? ok('checklist 0/4 + 4 mục + nút Mở bán, no-JS') : bad('checklist sai', r.body.slice(0, 200));
   // docs/44 §4.11: khối gợi ý KHÔNG được đứng cạnh checklist thiết lập. Hai khối cùng bảo
   // người bán "hãy làm cái này" ở một màn hình là nhiễu, và checklist mới là thứ có thứ tự
@@ -92,19 +92,70 @@ async function main() {
     ? ok('shop onboarding: KHÔNG hiện khối gợi ý (checklist đang giữ vai trò dẫn dắt)')
     : bad('khối gợi ý đứng cạnh checklist');
 
-  sect('2. Thêm sản phẩm + gắn ngân hàng nhận tiền → mục ✓, tiến độ tăng');
-  await adm('POST', `/shops/${A.shopId}/products`, { cookie: A.cookie, origin: OADM, form: { title: 'SP demo', slug: `sp-${uniq()}`, price_vnd: '100000', status: 'draft', sku: `SKU-${uniq()}`, variant_price_vnd: '100000' } });
+  sect('1b. Sidebar gom nhóm + câu mở đầu nói đúng tình trạng');
+  // 28 mục phẳng: Đối soát COD, Kiểm kê, Điểm thưởng, Nhật ký… ngang hàng Đơn hàng, người
+  // mới không biết bắt đầu từ đâu. Nhóm "Bán hàng" phải KHÔNG gập (việc hằng ngày).
+  const grpTitles = [...r.body.matchAll(/<details class="nav-grp"[^>]*><summary>([^<]+)</g)].map((m) => m[1]);
+  grpTitles.length >= 3 && !grpTitles.includes('Bán hàng') && /class="nav-grp">\s*<a href="[^"]*\/overview"/.test(r.body)
+    ? ok(`sidebar gom ${grpTitles.length} nhóm gập + nhóm "Bán hàng" luôn mở`) : bad('sidebar chưa gom nhóm', JSON.stringify(grpTitles));
+  // Mọi link CŨ vẫn còn trong HTML — details chỉ ẩn bằng CSS, không được làm mất đường đi.
+  const stillThere = ['/cod', '/stocktakes', '/loyalty', '/audit-log', '/billing', '/help']
+    .filter((h) => r.body.includes(`href="/shops/${A.shopId}${h}"`));
+  stillThere.length === 6 ? ok('gom nhóm KHÔNG làm mất link nào (6/6 mục ít dùng vẫn có)') : bad('gom nhóm nuốt mất link', JSON.stringify(stillThere));
+  // Nhóm chứa trang ĐANG XEM phải bung: gập cả nhóm đang đứng thì mất dấu mình ở đâu.
+  const rSet = await adm('GET', `/shops/${A.shopId}/settings`, { cookie: A.cookie });
+  rSet.body.includes('<details class="nav-grp" open><summary>Thiết lập cửa hàng</summary>')
+    ? ok('đang ở Cài đặt → nhóm "Thiết lập cửa hàng" tự bung') : bad('nhóm chứa trang hiện tại không bung');
+  // "Không còn việc tồn đọng — cửa hàng đang chạy êm" là lời nói dối với shop chưa bán được:
+  // 0 việc vì 0 khách, 0 khách vì chưa có gì để bán.
+  !/cửa hàng đang chạy êm/.test(r.body) && /Khách chưa mua được gì/.test(r.body)
+    ? ok('shop chưa bán được → nói thẳng, KHÔNG khen "đang chạy êm"') : bad('vẫn khen dối trên shop chưa bán được');
+
+  sect('1c. Có ĐÚNG 1 cửa hàng → vào thẳng, không bắt chọn trong danh sách 1 phần tử');
+  const home = await adm('GET', '/', { cookie: A.cookie });
+  home.status === 303 && home.location === `/shops/${A.shopId}/overview`
+    ? ok('chủ shop 1 cửa hàng: GET / → 303 thẳng vào overview') : bad('vẫn bắt qua màn hình chọn shop', `${home.status} ${home.location}`);
+  // Nhân viên nền tảng KHÔNG được chuyển: link vào Console chỉ có ở màn hình này.
+  const homeStaff = await adm('GET', '/', { cookie: staff });
+  homeStaff.status === 200 && homeStaff.body.includes('href="/platform"')
+    ? ok('nhân viên nền tảng vẫn thấy màn hình có link Console') : bad('chuyển hướng làm mất đường vào Console', `${homeStaff.status}`);
+
+  sect('2. SP nháp / tồn 0 KHÔNG được tick — khách vào chỉ thấy "Hết hàng"');
+  // Mục này từng đếm catalog_count: có 1 dòng trong bảng products là ✓, bất kể nháp hay
+  // tồn 0. Chủ shop mới thấy "xong rồi" nên không sửa, trong khi storefront ghi "Hết hàng"
+  // — lời khen dối đúng ở bước quyết định. Nay đếm sellable_count (đang bán + còn hàng).
+  await adm('POST', `/shops/${A.shopId}/products`, { cookie: A.cookie, origin: OADM, form: { title: 'SP nháp', price_vnd: '100000', status: 'draft', stock: '10' } });
+  await adm('POST', `/shops/${A.shopId}/products`, { cookie: A.cookie, origin: OADM, form: { title: 'SP hết hàng', price_vnd: '100000', status: 'active', stock: '0' } });
+  r = await adm('GET', OV, { cookie: A.cookie });
+  const prog0 = r.body.match(/(\d)\/4 xong/)?.[1];
+  prog0 === '0' ? ok('2 SP (nháp / tồn 0) → vẫn 0/4, KHÔNG tick nhầm') : bad('tick nhầm SP chưa bán được', `prog=${prog0}`);
+
+  sect('3. SP đang bán + còn tồn + gắn ngân hàng → mục ✓, tiến độ tăng');
+  // KHÔNG gửi slug/sku: bỏ trống thì seller tự sinh (bỏ dấu tên SP). Test đi đúng đường
+  // người thật đi — có gửi thì không bao giờ phát hiện đường tự-sinh vỡ.
+  r = await adm('POST', `/shops/${A.shopId}/products`, { cookie: A.cookie, origin: OADM, form: { title: 'Cà phê sữa đá', price_vnd: '25000', status: 'active', stock: '20' } });
+  r.status === 303 ? ok('tạo SP không cần gõ slug/SKU') : bad('tạo SP tối giản lỗi', String(r.status));
   await owner.query(`INSERT INTO shop_payment_config (shop_id, bank_bin, account_number, account_name, qr_enabled) VALUES ($1,'970436','0123456789','SHOP TEST',true) ON CONFLICT (shop_id) DO UPDATE SET qr_enabled=true, bank_bin=EXCLUDED.bank_bin, account_number=EXCLUDED.account_number`, [A.shopId]);
   r = await adm('GET', OV, { cookie: A.cookie });
   const prog = r.body.match(/(\d)\/4 xong/)?.[1];
-  Number(prog) >= 2 && /Đã xong/.test(r.body) ? ok(`gắn bank + thêm SP → ${prog}/4 xong, mục ✓`) : bad('tín hiệu không phản ánh', `prog=${prog}`);
+  // Khi hỏng, in RA MỤC NÀO chưa ✓ — "prog=1" một mình không nói được sai ở bước nào.
+  const doneLabels = [...r.body.matchAll(/>(✓|○)<\/span>[\s\S]{0,240}?font-size:\.95rem">([^<]+)</g)]
+    .map((m) => `${m[1]} ${m[2].trim()}`);
+  Number(prog) >= 2 && /Đã xong/.test(r.body)
+    ? ok(`gắn bank + SP bán được → ${prog}/4 xong, mục ✓`)
+    : bad('tín hiệu không phản ánh', `prog=${prog} · đã ✓: ${JSON.stringify(doneLabels)}`);
+  // Tồn PHẢI vào kho thật, không phải chỉ hiện trên form.
+  const onHand = (await owner.query(
+    `SELECT il.on_hand FROM inventory_levels il JOIN variants v ON v.id=il.variant_id
+      JOIN products p ON p.id=v.product_id WHERE p.shop_id=$1 AND p.title='Cà phê sữa đá'`, [A.shopId])).rows[0]?.on_hand;
+  Number(onHand) === 20 ? ok('tồn ban đầu 20 đã ghi vào inventory_levels') : bad('tồn ban đầu không vào kho', `on_hand=${onHand}`);
 
-  sect('3. Mở bán: onboarding → active + redirect live=1');
+  sect('4. Mở bán: onboarding → active + redirect live=1');
   r = await adm('POST', `/shops/${A.shopId}/activate`, { cookie: A.cookie, origin: OADM });
   const st = await statusOf(A.shopId);
   r.status === 303 && /live=1/.test(r.location ?? '') && st === 'active' ? ok('mở bán → status=active, redirect live=1') : bad('mở bán lỗi', `${r.status} ${r.location} st=${st}`);
 
-  sect('4. Shop active: checklist ẩn + banner chúc mừng');
+  sect('5. Shop active: checklist ẩn + banner chúc mừng');
   r = await adm('GET', `${OV}?live=1`, { cookie: A.cookie });
   // Mở bán xong thì checklist biến mất — nếu không có gì thay thế, người bán mất luôn
   // đường dẫn tới các tính năng chưa dùng. Đây chính là chỗ khối gợi ý lấp vào.
@@ -125,21 +176,21 @@ async function main() {
   r.status === 200 && !/Hoàn tất thiết lập cửa hàng/.test(r.body) && /mở bán chính thức/i.test(r.body) && !r.body.includes('<script')
     ? ok('active: checklist ẩn + banner chúc mừng') : bad('sau mở bán sai', r.body.slice(0, 160));
 
-  sect('5. Idempotent: mở bán lại shop đã active → vẫn active');
+  sect('6. Idempotent: mở bán lại shop đã active → vẫn active');
   r = await adm('POST', `/shops/${A.shopId}/activate`, { cookie: A.cookie, origin: OADM });
   (await statusOf(A.shopId)) === 'active' ? ok('mở bán lại → vẫn active (không đổi)') : bad('idempotent sai');
 
-  sect('6. Cô lập chéo shop: A mở bán shop B → chặn, B vẫn onboarding');
+  sect('7. Cô lập chéo shop: A mở bán shop B → chặn, B vẫn onboarding');
   r = await adm('POST', `/shops/${Bo.shopId}/activate`, { cookie: A.cookie, origin: OADM });
   const stB = await statusOf(Bo.shopId);
   r.status === 403 && stB === 'onboarding' ? ok('A mở bán B → 403, B vẫn onboarding') : bad('cô lập chéo shop hỏng', `${r.status} stB=${stB}`);
 
-  sect('7. CSRF: POST activate KHÔNG Origin → 403, không đổi');
+  sect('8. CSRF: POST activate KHÔNG Origin → 403, không đổi');
   r = await adm('POST', `/shops/${Bo.shopId}/activate`, { cookie: Bo.cookie });
   const stB2 = await statusOf(Bo.shopId);
   r.status === 403 && stB2 === 'onboarding' ? ok('activate không Origin → 403, B vẫn onboarding') : bad('CSRF activate không chặn', `${r.status} stB=${stB2}`);
 
-  sect('8. Shop bị khoá: KHÔNG quảng bá tính năng "đã nằm trong gói"');
+  sect('9. Shop bị khoá: KHÔNG quảng bá tính năng "đã nằm trong gói"');
   // Cổng của khối gợi ý là shopStatus === 'active', KHÔNG phải "vắng checklist". Nếu ai đó
   // sau này rút gọn về !setup thì shop suspended/terminated rơi vào nhánh HIỆN — tức mời
   // người đang bị cắt dịch vụ dùng thêm tính năng họ "đã trả tiền". Test này khoá điều đó.

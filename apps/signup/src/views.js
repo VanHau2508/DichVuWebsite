@@ -55,13 +55,14 @@ export function renderSignupForm(plans, { error, f = {}, ct = '', domain = 'nent
         <label for="name">Tên cửa hàng</label>
         <input id="name" name="name" type="text" required maxlength="200" value="${esc(f.name ?? '')}" placeholder="Nhà Xinh Décor">
 
-        <label for="slug">Địa chỉ cửa hàng</label>
+        <label for="slug">Địa chỉ cửa hàng <span class="muted" style="font-weight:400">— không bắt buộc</span></label>
         <div class="slug-row">
-          <input id="slug" name="slug" type="text" required maxlength="40" value="${esc(f.slug ?? '')}"
-            inputmode="url" placeholder="nha-xinh" pattern="[a-z0-9][a-z0-9-]*[a-z0-9]">
+          <input id="slug" name="slug" type="text" maxlength="60" value="${esc(f.slug ?? '')}"
+            inputmode="url" placeholder="tự tạo từ tên cửa hàng">
           <span class="slug-suffix">.${esc(domain)}</span>
         </div>
-        <p class="muted" style="margin:5px 0 0">Chỉ chữ thường, số và gạch ngang. Đây là đường link khách vào shop.</p>
+        <p class="muted" style="margin:5px 0 0">Đây là đường link khách vào shop. Bỏ trống thì lấy theo tên
+          (“Quán Cà Phê Sớm Mai” → <code>quan-ca-phe-som-mai</code>). Gõ có dấu cũng được — sẽ tự bỏ dấu.</p>
 
         <label for="email">Email</label>
         <input id="email" name="email" type="email" required maxlength="254" autocomplete="email" value="${esc(f.email ?? '')}" placeholder="ban@email.com">
@@ -146,16 +147,19 @@ export function renderVerifyConfirm(name, slug, token, ct, domain = 'nentang.vn'
 }
 
 // Provision xong — KHÔNG auto-login (parity): mời đăng nhập ở admin.
-export function renderVerifyDone(name, slug, domain = 'nentang.vn', adminUrl) {
+export function renderVerifyDone(name, slug, domain = 'nentang.vn', adminUrl, email) {
   const admin = adminUrl || `https://admin.${domain}`;
+  // Trỏ thẳng /login kèm ?email= để ô email điền sẵn — người vừa đăng ký xong không phải nhớ
+  // lại mình dùng email nào. (Trỏ vào "/" thì redirect sang /login sẽ ĐÁNH RƠI query.)
+  const to = `${admin}/login${email ? `?email=${encodeURIComponent(email)}` : ''}`;
   return layout('Cửa hàng đã sẵn sàng', `
     <div class="card ok-hero">
       <div class="big">🎉</div>
       <h1>Cửa hàng đã sẵn sàng!</h1>
       <p class="lede"><strong>${esc(name)}</strong> đã được tạo tại
         <a href="https://${esc(slug)}.${esc(domain)}">${esc(slug)}.${esc(domain)}</a>.</p>
-      <a class="btn" href="${esc(admin)}/">Đăng nhập để bắt đầu bán hàng</a>
-      <p class="muted" style="margin-top:14px">Dùng email + mật khẩu vừa đăng ký.</p>
+      <a class="btn" href="${esc(to)}">Đăng nhập để bắt đầu bán hàng</a>
+      <p class="muted" style="margin-top:14px">Chỉ cần nhập mật khẩu bạn vừa đặt lúc đăng ký.</p>
     </div>`);
 }
 

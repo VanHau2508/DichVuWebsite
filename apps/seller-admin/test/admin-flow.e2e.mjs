@@ -162,8 +162,14 @@ async function main() {
   const cookieA = ck(r.sc);
   r.status === 303 && r.location === '/' && cookieA ? ok('đăng nhập đúng → 303 / + set cookie phiên') : bad('đăng nhập lỗi', `${r.status} ${r.location} ${!!cookieA}`);
 
+  // ĐỔI HÀNH VI (đợt onboarding): owner có ĐÚNG 1 shop thì GET / vào thẳng shop đó, không
+  // bắt chọn trong danh sách một-phần-tử. Vẫn kiểm điều quan trọng như cũ: phiên hợp lệ và
+  // đích đến là ĐÚNG shop của họ (đi tiếp một bước để chắc chắn không phải 303 vào hư không).
   r = await adm('GET', '/', { cookie: cookieA });
-  r.status === 200 && r.body.includes(A.name) ? ok('dashboard hiện cửa hàng của owner') : bad('dashboard thiếu shop', r.body.slice(0, 200));
+  const land = r.status === 303 && r.location === `/shops/${A.shopId}/overview`;
+  const ov = land ? await adm('GET', r.location, { cookie: cookieA }) : { status: 0, body: '' };
+  land && ov.status === 200 && ov.body.includes(A.name)
+    ? ok('owner 1 shop: GET / → thẳng vào overview đúng shop') : bad('vào thẳng shop lỗi', `${r.status} ${r.location} ov=${ov.status}`);
 
   r = await adm('POST', '/login', { form: { email: A.email, password: A.password } }); // KHÔNG Origin
   r.status === 403 ? ok('POST /login không Origin → 403 (CSRF)') : bad('login thiếu Origin không bị chặn', String(r.status));
@@ -236,7 +242,9 @@ async function main() {
   r.status === 303 && r.location === '/' ? ok('mã MFA đúng → 303 / (phiên đầy đủ)') : bad('verify MFA lỗi', `${r.status} ${r.location}`);
 
   r = await adm('GET', '/', { cookie: stepped });
-  r.status === 200 && r.body.includes(A.name) ? ok('sau MFA: vào được dashboard') : bad('sau MFA vẫn không vào được', String(r.status));
+  const ovAfter = r.status === 303 ? await adm('GET', r.location, { cookie: stepped }) : { status: 0, body: '' };
+  ovAfter.status === 200 && ovAfter.body.includes(A.name)
+    ? ok('sau MFA: phiên đủ quyền, vào thẳng shop của mình') : bad('sau MFA vẫn không vào được', `${r.status} → ${r.location} → ${ovAfter.status}`);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

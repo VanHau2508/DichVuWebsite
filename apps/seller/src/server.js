@@ -45,7 +45,8 @@ import { NOTIFY_ROUTES } from './notify.js';
 import { AUDIT_ROUTES } from './audit-log.js';
 import { PURCHASING_ROUTES } from './purchasing.js';
 import { LOYALTY_CONFIG_ROUTES } from './loyalty-config.js';
-import { API_KEY_ROUTES, ingestOrder } from './api-keys.js';
+import { API_KEY_ROUTES, handleIngest } from './api-keys.js';
+import { MESSENGER_ROUTES } from './messenger-config.js';
 import { isProvince } from './provinces.js';
 import { runReq, makeLog, health } from './obs.js';
 
@@ -370,6 +371,7 @@ const ROUTES = [
   ...PURCHASING_ROUTES,
   ...LOYALTY_CONFIG_ROUTES,
   ...API_KEY_ROUTES,
+  ...MESSENGER_ROUTES,
 ];
 
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -380,7 +382,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   // Origin ở mọi POST để chống CSRF trình duyệt, mà máy-gọi-máy thì không gửi Origin.
   // Miễn được vì đường này xác thực bằng Bearer chứ không bằng cookie: trình duyệt của
   // nạn nhân không thể tự đính kèm chứng chỉ, nên không có CSRF để chống.
-  const isIngest = req.method === 'POST' && url.pathname === '/ingest/orders';
+  const isIngest = url.pathname.startsWith('/ingest/');
   if (!isIngest && !originAllowed(req, ALLOWED_ORIGINS)) return send(res, 403, { error: 'origin không được phép' });
 
   try {
@@ -389,7 +391,10 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     // idempotency đều thành 500 và tích hợp không hiểu gì.
     // Đường dẫn không bắt đầu bằng /shops/ nên không route session nào lọt qua ngả này.
     if (isIngest) {
-      return await ingestOrder(req, res, { ip: clientIp(req), readJson: (r) => readJson(r, 64 * 1024) });
+      return await handleIngest(req, res, {
+        pathname: url.pathname, query: url.searchParams,
+        ip: clientIp(req), readJson: (r) => readJson(r, 64 * 1024),
+      });
     }
 
     const user = await introspect(req.headers.cookie);

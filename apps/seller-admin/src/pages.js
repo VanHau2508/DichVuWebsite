@@ -4774,8 +4774,9 @@ export function renderLoyaltyStepUp(ctx, shopId, fields, err) {
 // việc-của-họ ("đơn chốt trong chat Facebook chạy thẳng về đây"), còn phần kỹ thuật
 // gói vào một khối để đưa cho ai dựng tích hợp. Token hiện ĐÚNG một lần — nói thẳng
 // điều đó ngay cạnh nó, chứ không giấu trong một dòng ghi chú nhạt màu.
-export function renderApiKeys(ctx, shopId, data, err, ok, freshToken) {
+export function renderApiKeys(ctx, shopId, data, err, ok, freshToken, mess, verifyToken) {
   const base = `/shops/${esc(shopId)}/api-keys`;
+  const mbase = `/shops/${esc(shopId)}/messenger`;
   const keys = data?.keys ?? [];
   const url = data?.ingest_url ?? '';
   const dt = (v) => (v ? new Date(v).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : '—');
@@ -4797,8 +4798,40 @@ export function renderApiKeys(ctx, shopId, data, err, ok, freshToken) {
       <textarea readonly rows="2" style="width:100%;font-family:ui-monospace,monospace;font-size:.9rem">${esc(freshToken)}</textarea>
       <p class="muted" style="margin:8px 0 0;font-size:.85rem">Dán vào phần mềm chat/tự-động-hoá của bạn. Lỡ mất thì quay lại đây thu hồi và tạo khoá mới.</p>
     </div>` : ''}
+    ${verifyToken ? `<div class="card" style="border-color:#f59e0b;background:#fffbeb">
+      <h2 style="margin-top:0">Còn 1 bước — dán mã này sang Meta</h2>
+      <p style="margin:0 0 8px">Vào <strong>developers.facebook.com</strong> → app của bạn → <strong>Messenger → Cài đặt → Webhooks → Chỉnh sửa</strong>, rồi điền:</p>
+      <p style="margin:0 0 4px"><strong>URL callback:</strong> <code>${esc(mess?.webhook_url ?? '')}</code></p>
+      <p style="margin:0 0 8px"><strong>Verify token:</strong></p>
+      <textarea readonly rows="2" style="width:100%;font-family:ui-monospace,monospace">${esc(verifyToken)}</textarea>
+      <p class="muted" style="margin:8px 0 0;font-size:.85rem">Mã này chỉ hiện <strong>một lần</strong>. Mất thì bấm "Kết nối lại" ở dưới để sinh mã mới. Nhớ tick sự kiện <code>messages</code> và <code>messaging_postbacks</code>.</p>
+    </div>` : ''}
     <div class="card">
-      <p style="margin-top:0">Chốt đơn trong <strong>chat Facebook / Zalo</strong> bằng phần mềm khác (Pancake, Botcake, n8n, Zapier…)? Tạo một khoá ở đây, dán sang bên đó — <strong>đơn chốt trong chat sẽ chạy thẳng về cửa hàng này</strong>: trừ kho, vào sổ doanh thu, in được vận đơn, y như đơn đặt trên website.</p>
+      <h2 style="margin-top:0">Bán hàng qua chat Facebook (Messenger)</h2>
+      ${mess?.available === false ? '<p class="muted">Nền tảng chưa bật kênh này. Liên hệ quản trị nền tảng.</p>' : mess?.connected ? `
+        <div style="border-left:3px solid #22c55e;padding-left:12px">
+          <p style="margin:0"><strong>✓ Đã kết nối Trang</strong> ${esc(mess.config?.page_name || mess.config?.page_id || '')}</p>
+          <p class="muted" style="margin:6px 0 0;font-size:.88rem">Khách nhắn tin Trang này sẽ được bot dẫn chọn hàng và <strong>chốt đơn ngay trong chat</strong>. Đơn về thẳng trang Đơn hàng, nguồn <strong>Facebook</strong>.</p>
+        </div>
+        <form method="POST" action="${mbase}/disconnect" style="margin-top:12px"
+              data-confirm="Ngắt kết nối Trang? Bot sẽ ngừng trả lời khách ngay, và mọi hội thoại đang dở (kèm SĐT/địa chỉ khách đã nhập) sẽ bị xoá.">
+          <button class="btn warn sm" type="submit">Ngắt kết nối</button></form>` : `
+        <p class="muted" style="margin-top:0">Khách bấm quảng cáo → nhắn tin → bot đưa sản phẩm, khách bấm <strong>Mua ngay</strong> rồi nhập địa chỉ là xong đơn. Không cần rời Messenger.</p>`}
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer"><strong>${mess?.connected ? 'Kết nối lại / đổi Trang' : 'Kết nối Trang Facebook'}</strong></summary>
+        <p class="muted" style="font-size:.85rem">Lấy <strong>ID Trang</strong> ở Trang → Giới thiệu. Lấy <strong>Page Access Token</strong> ở developers.facebook.com → app → Messenger → Cài đặt → Tạo token cho Trang.</p>
+        <form method="POST" action="${mbase}">
+          <div class="grid2">
+            <div><label>ID Trang *</label><input name="page_id" required inputmode="numeric" placeholder="1246183341910660"></div>
+            <div><label>Tên Trang (tuỳ chọn)</label><input name="page_name" maxlength="120" placeholder="TikFlash - Máy Chốt Đơn"></div>
+          </div>
+          <label>Page Access Token *</label><input name="page_token" required placeholder="EAAG…">
+          <button class="btn" type="submit" style="margin-top:10px">Kết nối Trang</button>
+        </form>
+      </details>
+    </div>
+    <div class="card">
+      <p style="margin-top:0">Đang chốt đơn bằng <strong>phần mềm khác</strong> bằng phần mềm khác (Pancake, Botcake, n8n, Zapier…)? Tạo một khoá ở đây, dán sang bên đó — <strong>đơn chốt trong chat sẽ chạy thẳng về cửa hàng này</strong>: trừ kho, vào sổ doanh thu, in được vận đơn, y như đơn đặt trên website.</p>
       <p class="muted" style="margin-bottom:0">Mỗi phần mềm nên một khoá riêng, đặt tên theo phần mềm đó. Nghi lộ khoá nào thì thu hồi đúng khoá đó, những cái còn lại vẫn chạy.</p>
     </div>
     <div class="card"><h2 style="margin-top:0">Tạo khoá mới</h2>

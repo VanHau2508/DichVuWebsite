@@ -198,6 +198,26 @@ async function main() {
   r.status === 200 && /(^|,)source(,|\r?\n)/.test(String(r.raw).split(/\r?\n/)[0] ?? '')
     ? ok('CSV có cột source') : bad('CSV thiếu cột source', String(r.raw).slice(0, 200));
 
+  sect('7b. FLASH SALE: đơn qua khoá ăn giá sale, đơn nhân viên gõ tay thì KHÔNG');
+  // Đây là quy tắc TIỀN, không phải mỹ quan: bot vừa báo giá sale trong chat thì đơn phải
+  // thu đúng giá đó. Trước khi vá, /ingest dùng giá gốc → bot nói 70k mà hệ thống thu 100k.
+  const pad = (n) => String(n).padStart(2, '0');
+  const dt = (ms) => { const d = new Date(Date.now() + ms + 7 * 3600_000); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };
+  r = await a.post('/promotions', { title: 'Sale bot', kind: 'percent', value: 50, scope: 'all', starts_at: dt(-3600_000), ends_at: dt(30 * 86400_000) });
+  if (r.status !== 201) bad('không tạo được flash sale để kiểm', r.raw);
+  else {
+    const viaKey = await ingest(token, { idempotency_key: `sale-${uniq()}` });
+    const viaStaff = await a.post('/orders', { lines: [{ variant_id: vidA, qty: 1 }], customer: CUST, payment_method: 'cod', idempotency_key: `staff-${uniq()}` });
+    const unitOf = async (oid) => Number((await owner.query('SELECT unit_price_vnd FROM order_lines WHERE order_id=$1 LIMIT 1', [oid])).rows[0]?.unit_price_vnd);
+    const uKey = viaKey.status === 201 ? await unitOf(viaKey.json.id) : null;
+    const uStaff = viaStaff.status === 201 ? await unitOf(viaStaff.json.id) : null;
+    uKey === 75000 ? ok('đơn qua KHOÁ tính giá sale (150k → 75k)') : bad(`đơn qua khoá KHÔNG ăn sale: ${uKey}`, viaKey.raw);
+    uStaff === 150000 ? ok('đơn NHÂN VIÊN gõ tay giữ giá gốc 150k (không bị sale đè)') : bad(`đơn tay bị đổi giá: ${uStaff}`);
+    const cat = await rq(SELLER, 'GET', '/ingest/catalog', { bearer: token });
+    const prod = (cat.json?.products ?? []).find((x) => x.title && Number(x.price_vnd) === 75000);
+    prod ? ok('/ingest/catalog báo ĐÚNG giá sale (bot báo sao thu vậy)') : bad('catalog báo giá khác giá thu!', cat.raw?.slice(0, 200));
+  }
+
   sect('8. Thu hồi khoá — ngừng nhận đơn ngay');
   r = await a.post(`/api-keys/${keyId}/revoke`);
   r.status === 200 ? ok('thu hồi 200') : bad('thu hồi lỗi', r.raw);

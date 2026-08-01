@@ -1,9 +1,9 @@
 # 47 — Đơn chốt trong chat Facebook/Zalo chảy về nền tảng
 
-**Trạng thái:** chặng 1 xong (migration 0119 + 0120 + 0121) = **NỬA DƯỚI** của luồng
-(nhận đơn → kho → tiền → vận đơn → thông báo). **Mắt xích "chốt đơn ngay trong chat" CHƯA
-làm** — luồng đầu-cuối vì thế chưa chạy. Xem "Ba đường" bên dưới để chọn ai chạy cuộc
-hội thoại.
+**Trạng thái:** chặng 1 (0119+0120+0121) = nửa dưới · **chặng 2 XONG** (0122, bot Messenger
+của chính nền tảng) → luồng đầu-cuối ĐÃ chạy: khách chat → chốt đơn trong chat → đơn về kho,
+tiền, vận đơn. Chi tiết bot: [docs/48](48-bot-messenger.md). Bảng "Ba đường" bên dưới vẫn
+đúng — đường B là đường đã chọn và đã làm.
 
 ## Bài toán
 

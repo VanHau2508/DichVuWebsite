@@ -741,8 +741,10 @@ export async function createManualOrder(res, ctx, body) {
     const lines = [];
     for (const [vid, qty] of [...byVid.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
       const v = (await c.query(
-        `SELECT v.id, v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title
+        `SELECT v.id, v.price_vnd, v.title AS variant_title, v.sku, p.title AS product_title,
+                pe.price_vnd AS sale_price_vnd
            FROM variants v JOIN products p ON p.id = v.product_id AND p.status = 'active' AND p.deleted_at IS NULL
+           LEFT JOIN LATERAL promo_effective(p.id, v.price_vnd, now()) pe ON true
           WHERE v.id = $1 AND ${VARIANT_NOT_ORPHAN_SQL}`, [vid],
       )).rows[0];
       if (!v) fail(422, 'sản phẩm không tồn tại hoặc ngừng bán');
@@ -750,7 +752,13 @@ export async function createManualOrder(res, ctx, body) {
       const available = lvl ? lvl.on_hand - lvl.reserved : 0;
       if (qty > available) fail(422, `hết hàng: ${v.product_title} (còn ${Math.max(0, available)})`);
       await c.query(`UPDATE inventory_levels SET reserved = reserved + $2, updated_at = now() WHERE variant_id = $1`, [vid, qty]);
-      const unit = Number(v.price_vnd);
+      // GIÁ: đơn qua KHOÁ KẾT NỐI ăn flash sale giống hệt website; đơn NHÂN VIÊN GÕ TAY thì không.
+      //
+      // Không phải tuỳ tiện — khác nhau ở chỗ AI chọn giá. Bot/tích hợp là khách tự phục vụ:
+      // nó vừa báo giá sale cho khách trong chat thì đơn phải tính đúng giá đó, nếu không là
+      // tính sai tiền khách (bot nói 70k, hệ thống thu 100k). Nhân viên gõ tay là người, có
+      // thể đang chốt giá riêng đã thoả thuận — áp sale đè lên là ghi đè quyết định của họ.
+      const unit = ctx.apiKeyId && v.sale_price_vnd != null ? Number(v.sale_price_vnd) : Number(v.price_vnd);
       subtotal += unit * qty;
       lines.push({ variant_id: vid, title: v.product_title + (v.variant_title ? ` - ${v.variant_title}` : ''), sku: v.sku, unit, qty });
     }

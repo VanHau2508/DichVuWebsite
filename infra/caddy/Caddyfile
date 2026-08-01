@@ -72,6 +72,12 @@ hooks.nentang.vn {
 	}
 	import security_headers
 	header Cache-Control "no-store"
+	# Webhook Messenger (0122) — ĐẶT TRƯỚC @hooks vì @hooks nuốt cả /webhooks/*.
+	# Caddy xét handle theo THỨ TỰ trong block, nên cụ thể phải đứng trên tổng quát.
+	@fbhook path /webhooks/messenger
+	handle @fbhook {
+		reverse_proxy messenger:3072
+	}
 	@hooks path /webhooks/*
 	handle @hooks {
 		reverse_proxy payment:3070
@@ -81,7 +87,7 @@ hooks.nentang.vn {
 	# host máy-gọi-máy, không cookie, không giao diện. Chỉ ĐÚNG đường dẫn này tới
 	# seller; mọi thứ khác trong block vẫn rơi xuống 404 bên dưới, nên API seller
 	# không vì thế mà lộ ra Internet.
-	@ingest path /ingest/orders
+	@ingest path /ingest/*
 	handle @ingest {
 		reverse_proxy seller:3040
 	}

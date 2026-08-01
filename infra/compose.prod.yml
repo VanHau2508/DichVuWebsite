@@ -208,6 +208,8 @@ services:
       # Vận chuyển hãng (GHN/GHTK): khoá mã hoá token per-shop (BẮT BUỘC nếu dùng);
       # API base mặc định trỏ hãng THẬT — không đặt lại trừ khi test.
       SHIPPING_ENC_KEY: ${SHIPPING_ENC_KEY:?}
+      # Mã hoá Page Access Token khi chủ shop kết nối Trang Facebook (0122).
+      MESSENGER_ENC_KEY: ${MESSENGER_ENC_KEY:?}
       # Telegram bot username (công khai) để dựng deep-link kết nối per-shop.
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
     deploy: { resources: { limits: { memory: 384m } } }   # sharp re-encode ảnh
@@ -261,6 +263,28 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
+
+  # Bot Messenger (0122): khách chốt đơn ngay trong chat Facebook. Vai app_messenger
+  # least-priv — CHỈ 2 bảng của riêng nó; tạo đơn đi qua HTTP /ingest/orders của seller.
+  messenger:
+    build: { context: ../apps/messenger }
+    restart: unless-stopped
+    <<: *logging
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgres://app_messenger:${APP_MESSENGER_PASSWORD:?}@postgres:5432/app
+      # App Secret của Meta App do NỀN TẢNG sở hữu (một app cho mọi shop). Thiếu → mọi
+      # webhook bị 403, có log cảnh báo lúc khởi động chứ không im lặng.
+      MESSENGER_APP_SECRET: ${MESSENGER_APP_SECRET:?}
+      # PHẢI khớp MESSENGER_ENC_KEY của service seller — nếu không, token Trang mà seller
+      # mã hoá thì messenger không mở được, và lỗi chỉ lộ ra lúc khách nhắn tin thật.
+      MESSENGER_ENC_KEY: ${MESSENGER_ENC_KEY:?}
+      SELLER_URL: http://seller:3040
+      SHOP_LOOKUP_BASE: ${SHOP_LOOKUP_BASE:-}
+      PORT: "3072"
+    deploy: { resources: { limits: { memory: 200m } } }
+    depends_on:
+      postgres: { condition: service_healthy }
 
   # Self-serve signup (0091): tự đăng ký shop công khai (nentang.vn/signup*). Vai app_signup least-priv.
   # Build context = repo root (Dockerfile COPY packages/auth/src) → KHÔNG cần mount như checkout/payment.

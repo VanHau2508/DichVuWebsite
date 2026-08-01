@@ -19,6 +19,7 @@ import crypto from 'node:crypto';
 import { send } from './http.js';
 import { withTenant, audit, resolveApiKey } from './db.js';
 import { createManualOrder } from './orders.js';
+import { routeIngestCatalog } from './ingest-catalog.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -38,7 +39,7 @@ async function listApiKeys(res, ctx) {
       `SELECT k.id, k.name, k.token_prefix, k.scope, k.created_at, k.last_used_at, k.revoked_at,
               (SELECT count(*)::int FROM orders o WHERE o.api_key_id = k.id) AS orders_count
          FROM shop_api_keys k
-        WHERE k.shop_id = current_shop_id()
+        WHERE k.shop_id = current_shop_id() AND NOT k.system_owned
         ORDER BY k.revoked_at NULLS FIRST, k.created_at DESC`,
     )).rows);
   return send(res, 200, { keys: rows });
@@ -50,7 +51,8 @@ async function createApiKey(res, ctx, body) {
   const token = newToken();
   const out = await withTenant(ctx.shopId, async (c) => {
     const live = Number((await c.query(
-      `SELECT count(*)::int AS n FROM shop_api_keys WHERE shop_id = current_shop_id() AND revoked_at IS NULL`,
+      `SELECT count(*)::int AS n FROM shop_api_keys
+        WHERE shop_id = current_shop_id() AND revoked_at IS NULL AND NOT system_owned`,
     )).rows[0].n);
     if (live >= MAX_KEYS_PER_SHOP) {
       return { code: 400, body: { error: `tối đa ${MAX_KEYS_PER_SHOP} khoá đang hoạt động — thu hồi bớt khoá không dùng` } };
@@ -72,7 +74,7 @@ async function revokeApiKey(res, ctx, params) {
   const out = await withTenant(ctx.shopId, async (c) => {
     const r = await c.query(
       `UPDATE shop_api_keys SET revoked_at = now()
-        WHERE id = $1 AND shop_id = current_shop_id() AND revoked_at IS NULL
+        WHERE id = $1 AND shop_id = current_shop_id() AND revoked_at IS NULL AND NOT system_owned
         RETURNING name`, [keyId],
     );
     if (!r.rowCount) return { code: 404, body: { error: 'không tìm thấy khoá (hoặc đã thu hồi)' } };
@@ -117,23 +119,33 @@ function bearerOf(req) {
 }
 
 /**
- * POST /ingest/orders — tạo đơn thay cho shop cầm khoá.
+ * Điều hướng MỌI đường /ingest/*. Xác thực MỘT lần ở đây rồi mới phân nhánh.
  *
- * Thân request GIỐNG HỆT POST /shops/:id/orders (lines/customer/payment_method/
- * ship_fee_vnd/note/source/source_ref/idempotency_key) — chủ ý: tài liệu một chỗ, và
- * bot Messenger chặng 2 gửi đúng thân đó.
+ *   POST /ingest/orders                     — tạo đơn (thân GIỐNG HỆT POST /shops/:id/orders,
+ *                                             chủ ý: tài liệu một chỗ, bot gửi đúng thân đó)
+ *   GET  /ingest/catalog                    — danh mục + sản phẩm (bot dựng nút chọn hàng)
+ *   GET  /ingest/catalog/products/:id       — biến thể + tồn
+ *
+ * Đọc catalog nằm CÙNG khoá, không cần scope mới: nó chỉ trả thứ storefront vốn đã công
+ * khai với cả Internet. Thêm scope cho dữ liệu công khai là thêm nút thắt mà không thêm
+ * an toàn nào.
  */
-export async function ingestOrder(req, res, { ip, readJson }) {
+export async function handleIngest(req, res, { pathname, query, ip, readJson }) {
   if (overIngestLimit(ip ?? 'unknown')) return send(res, 429, { error: 'quá nhiều yêu cầu, thử lại sau một phút' });
   const token = bearerOf(req);
   // Cùng một câu trả lời cho "thiếu header" và "token sai": không xác nhận khoá nào tồn tại.
   if (!token) return send(res, 401, { error: 'thiếu hoặc sai khoá kết nối' });
   const key = await resolveApiKey(sha256(token));
   if (!key || key.scope !== 'orders.ingest') return send(res, 401, { error: 'thiếu hoặc sai khoá kết nối' });
-  const body = await readJson(req);
-  // Không có người thật đứng sau → ctx.user rỗng; audit ghi actor_type 'system' + id khoá.
-  const ctx = { user: null, role: null, shopId: key.shop_id, ip, apiKeyId: key.id };
-  return createManualOrder(res, ctx, body);
+
+  if (req.method === 'POST' && pathname === '/ingest/orders') {
+    const body = await readJson(req);
+    // Không có người thật đứng sau → ctx.user rỗng; audit ghi actor_type 'system' + id khoá.
+    const ctx = { user: null, role: null, shopId: key.shop_id, ip, apiKeyId: key.id };
+    return createManualOrder(res, ctx, body);
+  }
+  if (req.method === 'GET' && await routeIngestCatalog(res, key.shop_id, pathname, query)) return undefined;
+  return send(res, 404, { error: 'không tìm thấy' });
 }
 
 export const API_KEY_ROUTES = [

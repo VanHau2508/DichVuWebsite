@@ -70,9 +70,14 @@ hooks.localtest {
 	tls internal
 	import security_headers
 	header Cache-Control "no-store"
-	# Nhận đơn từ phần mềm ngoài (0120) — mirror prod: chỉ ĐÚNG /ingest/orders tới
+	# Webhook Messenger (0122) — ĐẶT TRƯỚC handle tổng quát của payment.
+	@fbhook path /webhooks/messenger
+	handle @fbhook {
+		reverse_proxy messenger:3072
+	}
+	# Nhận đơn từ phần mềm ngoài (0120) — mirror prod: chỉ ĐÚNG /ingest/* tới
 	# seller, phần còn lại vẫn là payment như trước.
-	@ingest path /ingest/orders
+	@ingest path /ingest/*
 	handle @ingest {
 		reverse_proxy seller:3040
 	}

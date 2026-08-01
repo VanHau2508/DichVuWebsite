@@ -764,20 +764,71 @@ async function shippingStepUp(req, res, me, cookie, shopId) {
 // (hooks.*) đúng như SePay. Đặt sai biến này thì chủ shop dán nhầm địa chỉ và tích
 // hợp im lặng không chạy — nên mặc định là địa chỉ prod thật, không phải localhost.
 const INGEST_URL = process.env.INGEST_URL ?? 'https://hooks.nentang.vn/ingest/orders';
-async function apiKeysPage(res, me, cookie, shopId, ok, err, freshToken) {
+// URL webhook mà chủ shop phải dán sang Meta. Cùng host webhook như SePay/ingest.
+const MESSENGER_WEBHOOK_URL = process.env.MESSENGER_WEBHOOK_URL
+  ?? INGEST_URL.replace(/\/ingest\/orders$/, '/webhooks/messenger');
+async function apiKeysPage(res, me, cookie, shopId, ok, err, freshToken, verifyToken) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'apikeys');
   const r = await sellerApi('GET', `/shops/${shopId}/api-keys`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status === 403 ? 403 : 502, V.renderError(ctx, r.json?.error ?? 'Không tải được danh sách khoá.'));
+  // Lỗi tải cấu hình Messenger KHÔNG được làm sập cả trang Kết nối — nuốt, coi như chưa kết nối.
+  const mr = await sellerApi('GET', `/shops/${shopId}/messenger`, { cookie }).catch(() => null);
+  const mess = mr?.status === 200 ? { ...mr.json, webhook_url: MESSENGER_WEBHOOK_URL } : null;
   return sendHtmlJs(res, err ? 400 : 200, (nonce) =>
-    V.renderApiKeys({ ...ctx, nonce }, shopId, { ...r.json, ingest_url: INGEST_URL }, err, ok, freshToken));
+    V.renderApiKeys({ ...ctx, nonce }, shopId, { ...r.json, ingest_url: INGEST_URL }, err, ok, freshToken, mess, verifyToken));
+}
+
+// ── Kết nối Trang Facebook (0122) ───────────────────────────────────────────
+const messengerForm = (f) => ({
+  page_id: String(f.page_id ?? '').trim(),
+  page_name: String(f.page_name ?? '').trim(),
+  page_token: String(f.page_token ?? '').trim(),
+});
+async function doMessengerConnect(res, me, cookie, shopId, form) {
+  const r = await sellerApi('PUT', `/shops/${shopId}/messenger`, { cookie, body: form });
+  if (r.status !== 200) return apiKeysPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không kết nối được Trang.', null, null);
+  // verify_token đi thẳng vào HTML lần này rồi thôi — KHÔNG redirect kèm nó trên URL.
+  return apiKeysPage(res, me, cookie, shopId, 'Đã kết nối Trang Facebook.', null, null, r.json.verify_token);
+}
+async function messengerConnect(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const form = messengerForm(await readForm(req));
+  if (steppedUp(me)) return doMessengerConnect(res, me, cookie, shopId, form);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'apikeys');
+  return sendHtml(res, 200, V.renderReportsStepUp(ctx, shopId, form, null, {
+    section: 'messenger',
+    action: `/shops/${shopId}/messenger/step-up`,
+    submitLabel: 'Xác nhận & kết nối Trang',
+    why: 'Kết nối Trang cho phép nền tảng nhắn tin thay Trang của bạn và tạo đơn — nhập mật khẩu để tiếp tục.',
+  }));
+}
+async function messengerStepUp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const form = messengerForm(f);
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'apikeys');
+    return sendHtml(res, 401, V.renderReportsStepUp(ctx, shopId, form, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.', {
+      section: 'messenger', action: `/shops/${shopId}/messenger/step-up`, submitLabel: 'Xác nhận & kết nối Trang',
+    }));
+  }
+  return doMessengerConnect(res, me, cookie, shopId, form);
+}
+async function messengerDisconnect(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('DELETE', `/shops/${shopId}/messenger`, { cookie });
+  return apiKeysPage(res, me, cookie, shopId,
+    r.status === 200 ? 'Đã ngắt kết nối Trang. Bot ngừng trả lời khách.' : null,
+    r.status === 200 ? null : (r.json?.error ?? 'Không ngắt được kết nối.'), null, null);
 }
 async function doApiKeyCreate(res, me, cookie, shopId, form) {
   const r = await sellerApi('POST', `/shops/${shopId}/api-keys`, { cookie, body: { name: form.name } });
-  if (r.status !== 201) return apiKeysPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không tạo được khoá.', null);
+  if (r.status !== 201) return apiKeysPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không tạo được khoá.', null, null);
   // Token đi thẳng vào HTML lần này rồi thôi — KHÔNG redirect kèm token trên URL:
   // URL nằm lại trong lịch sử trình duyệt, log proxy và Referer của trang kế tiếp.
-  return apiKeysPage(res, me, cookie, shopId, `Đã tạo khoá "${form.name}".`, null, r.json.token);
+  return apiKeysPage(res, me, cookie, shopId, `Đã tạo khoá "${form.name}".`, null, r.json.token, null);
 }
 async function apiKeyCreate(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -812,7 +863,7 @@ async function apiKeyRevoke(res, me, cookie, shopId, keyId) {
   const r = await sellerApi('POST', `/shops/${shopId}/api-keys/${keyId}/revoke`, { cookie });
   return apiKeysPage(res, me, cookie, shopId,
     r.status === 200 ? 'Đã thu hồi khoá. Phần mềm dùng khoá đó sẽ không đẩy đơn về được nữa.' : null,
-    r.status === 200 ? null : (r.json?.error ?? 'Không thu hồi được khoá.'), null);
+    r.status === 200 ? null : (r.json?.error ?? 'Không thu hồi được khoá.'), null, null);
 }
 
 // Xác nhận HÀNG LOẠT: forward danh sách id (checkbox) → seller (thành công một phần).
@@ -3197,7 +3248,10 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/notify/unlink$`).exec(p)) && req.method === 'POST') return notifyUnlink(res, me, cookie, m[1]);
 
     // Vận chuyển hãng (shop.write = owner/admin + step-up ở seller).
-    if ((m = new RegExp(`^/shops/${UUID}/api-keys$`).exec(p)) && req.method === 'GET') return apiKeysPage(res, me, cookie, m[1], null, null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/api-keys$`).exec(p)) && req.method === 'GET') return apiKeysPage(res, me, cookie, m[1], null, null, null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/messenger$`).exec(p)) && req.method === 'POST') return messengerConnect(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/messenger/step-up$`).exec(p)) && req.method === 'POST') return messengerStepUp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/messenger/disconnect$`).exec(p)) && req.method === 'POST') return messengerDisconnect(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/api-keys$`).exec(p)) && req.method === 'POST') return apiKeyCreate(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/api-keys/step-up$`).exec(p)) && req.method === 'POST') return apiKeyStepUp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/api-keys/${UUID}/revoke$`).exec(p)) && req.method === 'POST') return apiKeyRevoke(res, me, cookie, m[1], m[2]);

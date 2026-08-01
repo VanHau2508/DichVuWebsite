@@ -591,6 +591,35 @@ async function sweepExpired() {
   } finally { if (c) c.release(); }
 }
 
+// ── sweep: dọn phiên hội thoại Messenger nguội (PII, 0123) ────────────────────
+// Phiên giữ tên/SĐT/địa chỉ lần mua trước — thứ khiến khách mua lần hai chỉ còn 2 chạm.
+// Đổi lại là dữ liệu cá nhân: hết mục đích thì phải xoá (tinh thần 0064). Không ai dọn thì
+// bảng phình mãi và mang theo SĐT của mọi người từng nhắn tin cho mọi shop.
+//
+// KHÔNG có bẫy "đói quét" (xem sweepSubscriptions): điều kiện lọc CHÍNH LÀ điều kiện xoá,
+// nên mỗi nhịp luôn lấy đúng dòng còn việc — hết dòng cũ thì trả 0, không có shop nào bị
+// kẹt ngoài lô vĩnh viễn.
+const MESSENGER_SESSION_TTL_DAYS = Number(process.env.MESSENGER_SESSION_TTL_DAYS ?? 90);
+async function sweepMessengerSessions(batch = 500) {
+  if (!expiryDb) return 0;
+  let c;
+  try {
+    c = await expiryDb.connect(); // connect() TRONG try — DB sập không làm crash worker
+    const r = await c.query(
+      `DELETE FROM messenger_sessions
+        WHERE ctid IN (SELECT ctid FROM messenger_sessions
+                        WHERE updated_at < now() - ($1 || ' days')::interval
+                        ORDER BY updated_at LIMIT $2)`,
+      [String(MESSENGER_SESSION_TTL_DAYS), batch],
+    );
+    if (r.rowCount) log('info', 'messenger_sessions_gc', { deleted: r.rowCount, ttl_days: MESSENGER_SESSION_TTL_DAYS });
+    return r.rowCount;
+  } catch (err) {
+    log('error', 'messenger_sessions_gc_failed', { message: err.message });
+    return 0;
+  } finally { c?.release(); }
+}
+
 // ── sweep: xác minh custom domain qua DNS TXT (A5) ────────────────────────────
 // Khách thêm TXT `_nentang-verify.<host>` = verification_token. Tra DNS NGOÀI transaction
 // (chậm/ngoại vi — không giữ khoá); khớp thì UPDATE verified_at CÓ GUARD (idempotent, an
@@ -1929,6 +1958,9 @@ const domainTimer = domainDb ? setInterval(sweepDomainVerify, DOMAINVERIFY_SWEEP
 const billingTimer = billingDb ? setInterval(sweepSubscriptions, SUBSCRIPTION_SWEEP_MS) : null;
 const trackingTimer = (expiryDb && TRACKING_ON) ? setInterval(sweepTracking, TRACKING_SWEEP_MS) : null;
 const piiTimer = expiryDb ? setInterval(sweepPiiRetention, PII_SWEEP_MS) : null;
+// Dọn phiên Messenger đi cùng nhịp với quét PII — cùng loại việc (xoá dữ liệu cá nhân
+// hết mục đích), không cần thêm một nhịp riêng cho vài trăm dòng mỗi ngày.
+const messengerGcTimer = expiryDb ? setInterval(sweepMessengerSessions, PII_SWEEP_MS) : null;
 const staleTimer = (expiryDb && TELEGRAM_ON) ? setInterval(sweepStaleOrders, STALE_SWEEP_MS) : null;
 const loyaltyEarnTimer = loyaltyDb ? setInterval(sweepLoyaltyEarn, LOYALTY_SWEEP_MS) : null;
 const loyaltyClawTimer = loyaltyDb ? setInterval(sweepLoyaltyClawback, LOYALTY_SWEEP_MS) : null;
@@ -1980,6 +2012,13 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const n = await sweepExpired();
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ expired: n }));
+  }
+  // Dọn phiên Messenger nguội ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/messenger-gc' && req.method === 'POST') {
+    const nb = parseInt(url.searchParams.get('batch') ?? '', 10);
+    const n = await sweepMessengerSessions(Number.isInteger(nb) ? Math.min(Math.max(nb, 1), 500) : undefined);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({ deleted: n }));
   }
   // Kích hoạt quét xác minh domain ngay (nội bộ — cho cron + e2e xác định).
   if (url.pathname === '/internal/verify-sweep' && req.method === 'POST') {
@@ -2122,6 +2161,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (prodViewTimer) clearInterval(prodViewTimer);
     if (revImgTimer) clearInterval(revImgTimer);
     if (piiTimer) clearInterval(piiTimer);
+    if (messengerGcTimer) clearInterval(messengerGcTimer);
     if (staleTimer) clearInterval(staleTimer);
     if (loyaltyEarnTimer) clearInterval(loyaltyEarnTimer);
     if (loyaltyClawTimer) clearInterval(loyaltyClawTimer);

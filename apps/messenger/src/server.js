@@ -21,7 +21,7 @@ import crypto from 'node:crypto';
 import pg from 'pg';
 import { health, makeLog, runReq } from './obs.js';
 import { open as unseal } from './secretbox.js';
-import { step, orderPlacedMessages, orderFailedMessages } from './flow.js';
+import { step, summaryMessages, subtotalOf, orderPlacedMessages, orderFailedMessages } from './flow.js';
 
 const PORT = Number(process.env.PORT ?? 3072);
 const APP_SECRET = process.env.MESSENGER_APP_SECRET ?? '';
@@ -194,6 +194,14 @@ async function handleEvent(cfg, psid, ev) {
     const pid = ev.payload?.slice(5) ?? ev.ref.slice(3);
     const r = await shopApi(apiToken, `/ingest/catalog/products/${pid}`);
     data.product = r.status === 200 ? r.json : null;
+  } else if (ev.payload?.startsWith('QTYP:')) {
+    // Tăng số lượng phải hỏi lại TỒN THẬT — số bot nhớ từ lúc khách chọn có thể đã cũ.
+    const vid = ev.payload.slice(5);
+    const pid = (state.cart ?? []).find((it) => it.variant_id === vid)?.product_id;
+    if (pid) {
+      const r = await shopApi(apiToken, `/ingest/catalog/products/${pid}`);
+      data.product = r.status === 200 ? r.json : null;
+    }
   } else if (ev.payload?.startsWith('VAR:')) {
     const r = await shopApi(apiToken, `/ingest/catalog/products/${state.pickProduct}`);
     data.product = r.status === 200 ? r.json : null;
@@ -238,6 +246,16 @@ async function handleEvent(cfg, psid, ev) {
     } else {
       out = { state: { ...state, step: 'confirm' }, messages: orderFailedMessages(r.json?.error ?? 'thử lại giúp shop nhé') };
     }
+  }
+
+  // Tóm tắt cần phí ship THẬT. Hỏi đúng endpoint mà lúc tạo đơn dùng chung một hàm, nên
+  // con số khách thấy = con số sẽ thu. Quote lỗi → vẫn hiện tóm tắt, chỉ ghi "shop báo lại"
+  // thay vì bịa số hoặc chặn khách giữa chừng.
+  if (out.effect?.type === 'summary') {
+    const sub = subtotalOf(out.state.cart);
+    const q = await shopApi(apiToken, `/ingest/shipping-quote?subtotal=${sub}`);
+    const fee = q.status === 200 ? Number(q.json.shipping_vnd) : null;
+    out = { ...out, messages: [...out.messages, ...summaryMessages(out.state, fee)] };
   }
 
   const handoffUntil = out.effect?.type === 'handoff' ? new Date(Date.now() + 6 * 3600_000) : null;

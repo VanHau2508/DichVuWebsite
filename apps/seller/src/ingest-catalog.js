@@ -14,6 +14,7 @@
  */
 import { send } from './http.js';
 import { withTenant } from './db.js';
+import { shopShipFee } from './orders.js';
 
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 const imgUrl = (k) => (k ? `${MEDIA_PUBLIC_BASE}/${k}` : null);
@@ -122,9 +123,23 @@ async function getCatalogProduct(res, shopId, productId) {
   });
 }
 
+/**
+ * GET /ingest/shipping-quote?subtotal=<vnd> — phí ship cho giá trị hàng này.
+ *
+ * Bot phải BÁO TRƯỚC tổng tiền trong tóm tắt, mà phí ship lại tính lúc tạo đơn. Endpoint
+ * này gọi ĐÚNG hàm mà createManualOrder gọi (shopShipFee), nên con số bot hứa và con số
+ * hệ thống thu là MỘT. Tự tính lại ở phía bot là tự chuốc lấy sai lệch.
+ */
+async function shippingQuote(res, shopId, query) {
+  const subtotal = Math.max(0, Math.min(Number(query.get('subtotal') ?? 0) || 0, 100_000_000_000));
+  const fee = await withTenant(shopId, (c) => shopShipFee(c, subtotal));
+  return send(res, 200, { subtotal_vnd: subtotal, shipping_vnd: Number(fee), total_vnd: subtotal + Number(fee) });
+}
+
 /** Điều hướng các route ĐỌC của /ingest. Trả false nếu không khớp → nơi gọi trả 404. */
 export async function routeIngestCatalog(res, shopId, pathname, query) {
   if (pathname === '/ingest/catalog') { await listCatalog(res, shopId, query); return true; }
+  if (pathname === '/ingest/shipping-quote') { await shippingQuote(res, shopId, query); return true; }
   const m = /^\/ingest\/catalog\/products\/([0-9a-f-]{36})$/.exec(pathname);
   if (m) { await getCatalogProduct(res, shopId, m[1]); return true; }
   return false;

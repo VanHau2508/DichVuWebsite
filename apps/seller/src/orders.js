@@ -676,6 +676,20 @@ async function listSellableVariants(res, ctx, query) {
   });
 }
 
+/**
+ * Phí ship theo cấu hình shop (phẳng + ngưỡng free-ship) — NGUỒN DUY NHẤT của quy tắc này.
+ *
+ * Tách ra vì bot Messenger phải BÁO TRƯỚC phí ship trong tóm tắt, còn đơn thì tính lúc tạo.
+ * Hai chỗ tính bằng hai đoạn mã chép tay chắc chắn sẽ lệch — và lệch ở phí ship nghĩa là
+ * bot hứa một con số rồi thu con số khác. Gọi TRONG withTenant (dùng current_shop_id()).
+ */
+export async function shopShipFee(c, subtotal) {
+  const s = (await c.query(`SELECT ship_fee_vnd, free_ship_threshold_vnd FROM shops WHERE id = current_shop_id()`)).rows[0] ?? {};
+  const fee = s.ship_fee_vnd != null ? Number(s.ship_fee_vnd) : SHIP_FEE;
+  const threshold = s.free_ship_threshold_vnd != null ? Number(s.free_ship_threshold_vnd) : null;
+  return (threshold != null && subtotal >= threshold) ? 0 : fee;
+}
+
 export async function createManualOrder(res, ctx, body) {
   // ── validate đầu vào (giá/total client gửi bị BỎ QUA — như checkout) ──
   const rawLines = Array.isArray(body?.lines) ? body.lines : [];
@@ -765,12 +779,7 @@ export async function createManualOrder(res, ctx, body) {
 
     // Phí ship: ghi đè tay ?? cấu hình shop (mirror checkout computeShipping, phẳng+ngưỡng).
     let shipping = shipOverride;
-    if (shipping == null) {
-      const s = (await c.query(`SELECT ship_fee_vnd, free_ship_threshold_vnd FROM shops WHERE id = current_shop_id()`)).rows[0] ?? {};
-      const fee = s.ship_fee_vnd != null ? Number(s.ship_fee_vnd) : SHIP_FEE;
-      const threshold = s.free_ship_threshold_vnd != null ? Number(s.free_ship_threshold_vnd) : null;
-      shipping = (threshold != null && subtotal >= threshold) ? 0 : fee;
-    }
+    if (shipping == null) shipping = await shopShipFee(c, subtotal);
     const total = subtotal + shipping;
 
     // QR: cần shop đã bật; payment_ref để webhook SePay tự khớp. KHÔNG cần dựng qr_string —

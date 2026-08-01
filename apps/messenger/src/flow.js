@@ -57,23 +57,42 @@ function categoryReplies(categories) {
   return [...categories.slice(0, MAX_QR - 1).map((c) => qr(c.name, `CAT:${c.id}`)), QR_HUMAN];
 }
 
-/** Tóm tắt giỏ + tiền. Đây là màn hình cuối trước khi mất tiền — phải ĐỦ và RÕ. */
-function summary(state, shipFee) {
-  const lines = state.cart.map((it) => `• ${it.title} × ${it.qty} — ${money(it.unit * it.qty)}`);
-  const sub = state.cart.reduce((s, it) => s + it.unit * it.qty, 0);
-  return [
+export const subtotalOf = (cart) => (cart ?? []).reduce((s, it) => s + it.unit * it.qty, 0);
+
+/**
+ * Nút ở màn tóm tắt. Giỏ ĐÚNG MỘT món thì đặt thẳng +/− vào đây — đổi số lượng chỉ tốn
+ * 1 chạm, và đó là trường hợp gần như luôn xảy ra khi chốt đơn qua chat. Nhiều món thì đi
+ * qua bước chọn món, vì Messenger chỉ cho 11 quick reply, không nhét hết cặp +/− được.
+ */
+function confirmReplies(state) {
+  const cart = state.cart ?? [];
+  const qtyBtns = cart.length === 1
+    ? [qr(`➕ Thêm 1 (đang ${cart[0].qty})`, `QTYP:${cart[0].variant_id}`),
+      ...(cart[0].qty > 1 ? [qr('➖ Bớt 1', `QTYM:${cart[0].variant_id}`)] : [])]
+    : (cart.length > 1 ? [qr('✏ Sửa số lượng', 'EDITQTY')] : []);
+  return [qr('✅ Đặt hàng', 'PLACE'), ...qtyBtns, qr('+ Mua thêm', 'BROWSE'), qr('❌ Huỷ', 'CANCEL'), QR_HUMAN];
+}
+
+/**
+ * Màn hình CUỐI trước khi mất tiền — phải ĐỦ và RÕ, nên phí ship là số THẬT chứ không phải
+ * "tính sau". Nơi gọi hỏi /ingest/shipping-quote (đúng hàm mà lúc tạo đơn dùng) rồi truyền
+ * vào đây; flow.js thuần nên không tự gọi mạng được, và chính điều đó khiến nó test được.
+ */
+export function summaryMessages(state, shipFee) {
+  const cart = state.cart ?? [];
+  const sub = subtotalOf(cart);
+  const body = [
     'Đơn của bạn:',
-    ...lines,
+    ...cart.map((it) => `• ${it.title} × ${it.qty} — ${money(it.unit * it.qty)}`),
     `Tiền hàng: ${money(sub)}`,
-    shipFee != null ? `Phí giao: ${money(shipFee)}` : 'Phí giao: tính khi xác nhận',
+    shipFee != null ? `Phí giao: ${shipFee === 0 ? 'MIỄN PHÍ' : money(shipFee)}` : 'Phí giao: shop báo lại khi xác nhận',
     shipFee != null ? `TỔNG: ${money(sub + shipFee)}` : '',
     '',
     `Người nhận: ${state.customer?.name ?? ''} · ${state.customer?.phone ?? ''}`,
     `Giao tới: ${state.customer?.address_line ?? ''}`,
   ].filter(Boolean).join('\n');
+  return [text(body, confirmReplies(state))];
 }
-
-const CONFIRM_QR = [qr('✅ Đặt hàng', 'PLACE'), qr('+ Mua thêm', 'BROWSE'), qr('❌ Huỷ', 'CANCEL'), QR_HUMAN];
 
 /** Thiếu gì hỏi nấy — thứ tự cố định, và BỎ QUA thứ đã biết (đó là chỗ tiết kiệm thao tác). */
 function askNext(state) {
@@ -91,7 +110,9 @@ function askNext(state) {
   if (!c.address_line) {
     return { state: { ...state, step: 'ask_address' }, messages: [text('Địa chỉ nhận hàng của bạn? (số nhà, đường, phường/xã, tỉnh/thành)', [QR_HUMAN])] };
   }
-  return { state: { ...state, step: 'confirm' }, messages: [text(summary(state, state.shipFee ?? null), CONFIRM_QR)] };
+  // KHÔNG tự dựng tóm tắt ở đây: nó cần phí ship THẬT, mà số đó phải hỏi hệ thống. Phát
+  // hiệu ứng để nơi gọi hỏi rồi gọi summaryMessages() — giữ flow.js sạch I/O.
+  return { state: { ...state, step: 'confirm' }, messages: [], effect: { type: 'summary' } };
 }
 
 /**
@@ -170,7 +191,9 @@ export function step(state, ev, data = {}) {
     const found = cart.find((it) => it.variant_id === vid);
     // Bấm lại đúng món = tăng số lượng. Khách hay bấm hai lần vì tưởng máy chưa nhận.
     if (found) found.qty = Math.min(found.qty + 1, v.available);
-    else cart.push({ variant_id: vid, title, unit: v.price_vnd, qty: 1 });
+    // product_id lưu theo dòng hàng để nút +/− sau này TRA LẠI ĐƯỢC tồn kho. Không có nó
+    // thì tăng số lượng phải đoán mò, và khách chỉ biết mình vượt tồn ở bước cuối cùng.
+    else cart.push({ variant_id: vid, product_id: p.id, title, unit: v.price_vnd, qty: 1 });
     const next = { ...s, cart, step: 'in_cart' };
     // Tên lấy từ hồ sơ Messenger; SĐT/địa chỉ lấy lại từ lần mua trước nếu có.
     // `||` chứ KHÔNG `??`: hồ sơ thiếu tên thì join ra CHUỖI RỖNG, mà '' không phải null nên
@@ -187,6 +210,46 @@ export function step(state, ev, data = {}) {
     const added = text(`Đã thêm: ${title} × ${found ? found.qty : 1} — ${money(v.price_vnd)}`);
     const ask = askNext(next);
     return { state: ask.state, messages: [added, ...ask.messages] };
+  }
+
+  // ── Sửa số lượng ở màn tóm tắt ────────────────────────────────────────────
+  if (ev.payload === 'EDITQTY') {
+    if (!s.cart.length) return askNext(s);
+    return {
+      state: { ...s, step: 'edit_qty' },
+      messages: [text('Bạn muốn đổi số lượng món nào ạ?', [
+        ...s.cart.slice(0, MAX_QR - 2).map((it) => qr(`${it.title} (${it.qty})`, `QTYP:${it.variant_id}`)),
+        qr('↩ Quay lại', 'SUMMARY'), QR_HUMAN,
+      ])],
+    };
+  }
+  if (ev.payload === 'SUMMARY') return askNext(s);
+  if (ev.payload?.startsWith('QTYP:') || ev.payload?.startsWith('QTYM:')) {
+    const up = ev.payload.startsWith('QTYP:');
+    const vid = ev.payload.slice(5);
+    const cart = s.cart.map((it) => ({ ...it }));
+    const it = cart.find((x) => x.variant_id === vid);
+    if (!it) return askNext(s);
+    if (up) {
+      // Trần là TỒN THẬT vừa hỏi lại, không phải con số bot nhớ từ lúc khách chọn.
+      const avail = data.product?.variants?.find((v) => v.id === vid)?.available;
+      if (avail != null && it.qty + 1 > avail) {
+        const back = askNext({ ...s, cart });
+        return { ...back, messages: [text(`Món "${it.title}" chỉ còn ${avail} cái ạ.`), ...back.messages] };
+      }
+      it.qty += 1;
+    } else {
+      it.qty -= 1;
+      // Bớt về 0 = bỏ món. Không bắt khách tìm nút "xoá" riêng cho một việc hiển nhiên.
+      if (it.qty <= 0) {
+        const rest = cart.filter((x) => x.variant_id !== vid);
+        if (!rest.length) {
+          return { state: { ...s, cart: [], step: 'start' }, messages: [text('Giỏ trống rồi ạ. Bạn xem thêm món nào nhé?', [qr('🛍 Xem sản phẩm', 'BROWSE'), QR_HUMAN])] };
+        }
+        return askNext({ ...s, cart: rest });
+      }
+    }
+    return askNext({ ...s, cart });
   }
 
   // ── Trả lời câu hỏi ───────────────────────────────────────────────────────

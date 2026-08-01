@@ -178,6 +178,36 @@ async function main() {
   out = drain();
   out.flat.includes('Đặt hàng') && out.flat.includes('199') ? ok('tóm tắt có tiền + nút Đặt hàng') : bad('tóm tắt sai', out.flat.slice(0, 400));
 
+  sect('6b. Phí ship THẬT trong tóm tắt + đổi số lượng ngay tại đó');
+  // Phí ship phải là SỐ, không phải "tính sau": đây là màn hình cuối trước khi mất tiền.
+  // Và nó phải bằng đúng số hệ thống sẽ thu — khẳng định chéo ở mục 7.
+  out.flat.includes('Phí giao') && /229/.test(out.flat)
+    ? ok('tóm tắt hiện phí ship thật + TỔNG 229.000₫ (199k hàng + 30k ship)') : bad('tóm tắt thiếu phí ship thật', out.flat.slice(0, 400));
+  out.flat.includes('Thêm 1') ? ok('có nút ➕ Thêm 1 ngay ở tóm tắt (1 chạm)') : bad('thiếu nút tăng số lượng', out.flat.slice(0, 300));
+  const qrOf = (flat, re) => re.exec(flat)?.[1];
+  const plusPayload = qrOf(out.flat, /"payload":"(QTYP:[^"]+)"/);
+  plusPayload ? ok('nút tăng mang đúng biến thể') : bad('không thấy payload QTYP');
+  await webhook(pageId, evQuick(plusPayload));
+  await sleep(700);
+  out = drain();
+  out.flat.includes('× 2') && /398/.test(out.flat)
+    ? ok('➕ → ×2, tiền hàng 398.000₫ (tính lại đúng)') : bad('tăng số lượng sai', out.flat.slice(0, 400));
+  out.flat.includes('Bớt 1') ? ok('có nút ➖ Bớt 1 khi SL > 1') : bad('thiếu nút giảm');
+  const minusPayload = qrOf(out.flat, /"payload":"(QTYM:[^"]+)"/);
+  await webhook(pageId, evQuick(minusPayload));
+  await sleep(700);
+  out = drain();
+  out.flat.includes('× 1') && /229/.test(out.flat)
+    ? ok('➖ → về ×1, TỔNG 229.000₫') : bad('giảm số lượng sai', out.flat.slice(0, 400));
+  // Vượt tồn phải chặn NGAY tại chỗ, không để khách bấm sướng tay rồi ăn lỗi ở bước cuối.
+  for (let i = 0; i < 12; i++) { await webhook(pageId, evQuick(plusPayload)); await sleep(220); }
+  out = drain();
+  /chỉ còn 10/.test(out.flat) ? ok('bấm quá tồn → báo "chỉ còn 10 cái" tại chỗ') : bad('không chặn vượt tồn', out.flat.slice(-400));
+  // Đưa về lại 1 để mục 7 kiểm đúng reserve +1.
+  for (let i = 0; i < 9; i++) { await webhook(pageId, evQuick(minusPayload)); await sleep(220); }
+  out = drain();
+  out.flat.includes('× 1') ? ok('bớt về ×1, giỏ không bị xoá nhầm') : bad('giảm về 1 sai', out.flat.slice(-300));
+
   sect('7. Bấm Đặt hàng → ĐƠN THẬT');
   const invBefore = (await owner.query('SELECT reserved FROM inventory_levels WHERE variant_id=$1', [p1.variantId])).rows[0];
   const placeEv = evQuick('PLACE');
@@ -193,6 +223,10 @@ async function main() {
   Number(invAfter.reserved) === Number(invBefore.reserved) + 1 ? ok('trừ tồn (reserve +1)') : bad(`tồn sai: ${invBefore.reserved}→${invAfter.reserved}`);
   out.flat.includes('thành công') && out.flat.includes(String(ordRows[0].order_number))
     ? ok('bot báo khách mã đơn') : bad('không báo mã đơn cho khách', out.flat.slice(0, 300));
+  // KHẲNG ĐỊNH CHÉO quan trọng nhất của mục phí ship: con số bot HỨA ở tóm tắt (229.000₫)
+  // phải bằng đúng con số hệ thống THU. Hai chỗ tính riêng là hai chỗ để lệch.
+  Number(ordRows[0]?.total_vnd) === 229000
+    ? ok('tổng tiền trên ĐƠN = tổng bot đã hứa (229.000₫)') : bad(`bot hứa 229.000₫ nhưng đơn thu ${ordRows[0]?.total_vnd}`);
 
   sect('8. Meta gửi LẠI cùng webhook → KHÔNG đẻ đơn thứ hai');
   await webhook(pageId, placeEv);
@@ -209,6 +243,23 @@ async function main() {
   await webhook(pageId, evText('còn màu khác không shop'));
   await sleep(500);
   drain().count === 0 ? ok('sau handoff, bot KHÔNG chen vào nữa') : bad('bot vẫn trả lời dù đã giao cho nhân viên!');
+
+  sect('9b. Worker dọn phiên nguội (PII không nằm lại mãi)');
+  // Phiên giữ SĐT + địa chỉ khách. Đẩy updated_at về quá khứ rồi gọi sweep: dòng CŨ phải
+  // biến mất, dòng ĐANG DÙNG phải còn — quét mà cuốn cả phiên sống là cắt ngang khách.
+  const oldPsid = 'psid-old-' + uniq();
+  await owner.query(
+    `INSERT INTO messenger_sessions (shop_id, psid, state, last_customer, updated_at)
+     VALUES ($1, $2, '{}'::jsonb, '{"phone":"0900000001"}'::jsonb, now() - interval '200 days')`,
+    [A.shopId, oldPsid],
+  );
+  const gc = await fetch(`${process.env.WORKER_URL ?? 'http://worker:3080'}/internal/messenger-gc`, { method: 'POST' });
+  const gcJson = gc.ok ? await gc.json() : null;
+  const oldLeft = (await owner.query('SELECT count(*)::int n FROM messenger_sessions WHERE psid=$1', [oldPsid])).rows[0].n;
+  const liveLeft = (await owner.query('SELECT count(*)::int n FROM messenger_sessions WHERE psid=$1', [PSID])).rows[0].n;
+  gc.ok && Number(gcJson?.deleted) >= 1 && oldLeft === 0
+    ? ok(`worker xoá phiên nguội (${gcJson.deleted} dòng)`) : bad('phiên 200 ngày tuổi VẪN còn', JSON.stringify(gcJson));
+  liveLeft === 1 ? ok('phiên đang dùng KHÔNG bị cuốn theo') : bad('quét xoá nhầm phiên đang hoạt động!');
 
   sect('10. Trang lạ + ngắt kết nối');
   drain();

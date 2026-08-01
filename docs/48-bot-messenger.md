@@ -98,9 +98,29 @@ tay = người, có thể đang chốt giá riêng đã thoả thuận → giữ
   Trang lạ im lặng · ngắt kết nối dọn cả phiên + thu hồi khoá bot.
 * `apps/seller/test/api-keys.e2e.mjs` (35) — thêm mục 7b: giá sale hai đường.
 
+## Ba việc bổ sung (đã làm)
+
+**Phí ship THẬT trong tóm tắt.** Quy tắc phí ship (phẳng + ngưỡng free-ship) tách thành
+`shopShipFee()` — **nguồn duy nhất**, dùng chung bởi `createManualOrder` và endpoint mới
+`GET /ingest/shipping-quote`. Hai đoạn mã chép tay chắc chắn sẽ lệch, mà lệch ở phí ship
+nghĩa là bot hứa một con số rồi thu con số khác. Test khẳng định CHÉO: tổng bot hứa ở tóm
+tắt (229.000₫) == `orders.total_vnd`.
+
+**Đổi số lượng ngay ở tóm tắt.** Giỏ một món → `➕ Thêm 1` / `➖ Bớt 1` đặt thẳng vào màn
+tóm tắt (**1 chạm**) — đó là trường hợp gần như luôn xảy ra khi chốt qua chat. Nhiều món →
+`✏ Sửa số lượng` rồi chọn món, vì Messenger chỉ cho 11 quick reply. Bớt về 0 = bỏ món (không
+bắt tìm nút "xoá" riêng cho việc hiển nhiên). Tăng thì **hỏi lại tồn thật** — chặn ngay tại
+chỗ ("chỉ còn 10 cái") thay vì để khách bấm sướng tay rồi ăn lỗi ở bước cuối. Dòng hàng vì
+thế lưu thêm `product_id`, nếu không thì tra tồn phải đoán mò.
+
+**Worker dọn phiên nguội** (0123). Phiên giữ tên/SĐT/địa chỉ lần trước — chính thứ khiến
+khách mua lần hai chỉ còn 2 chạm — nên nó là PII và phải có hạn (`MESSENGER_SESSION_TTL_DAYS`,
+mặc định 90). Giao cho `app_expiry`, vai quét dọn xuyên shop vốn đã làm việc này cho đơn hết
+hạn: không đẻ vai mới cho một câu DELETE, và `app_messenger` thì khoá theo shop nên không quét
+xuyên shop được. Chạy cùng nhịp `PII_SWEEP_MS` (24h). Không dính bẫy "đói quét": điều kiện
+lọc CHÍNH LÀ điều kiện xoá.
+
 ## Còn nợ
 
-* Đổi **số lượng** ở bước tóm tắt (hiện mặc định 1, bấm lại món để tăng).
-* **Phí ship** chưa hiện trong tóm tắt (ghi "tính khi xác nhận") — cần gọi thêm API tính phí.
-* Worker **dọn phiên nguội** (PII) — bảng đã có index `updated_at`, chưa có sweep.
 * Nút **[Tra đơn của tôi]** trong bot.
+* Bot chưa báo khi shop **đổi trạng thái đơn** (đang giao / đã giao) — hiện chỉ có email.

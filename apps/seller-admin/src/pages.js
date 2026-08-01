@@ -367,6 +367,14 @@ export const CHANNEL_OPTIONS = [
 
 // Icon nội tuyến (markup → hợp CSP, không tải resource ngoài).
 const ic = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+// Nguồn đơn (0119) — PHẢI khớp ORDER_SOURCES ở apps/seller/src/orders.js và CHECK của
+// cột orders.source. 'web' không có trong ô chọn của form tạo đơn tay: đơn gõ tay theo
+// định nghĩa không đi qua trang thanh toán, để đó chỉ tạo cơ hội ghi sai.
+export const ORDER_SOURCE_LABEL = {
+  web: 'Website', manual: 'Nhân viên nhập', facebook: 'Facebook',
+  zalo: 'Zalo', tiktok: 'TikTok', other: 'Khác',
+};
+export const ORDER_SOURCE_PICK = ['manual', 'facebook', 'zalo', 'tiktok', 'other'];
 const PAYMENT_LABEL = { unpaid: 'Chưa thu tiền', pending: 'Chờ đối soát', paid: 'Đã thu tiền', refunded: 'Đã hoàn tiền' };
 const IC_HOME = ic('<path d="M3 9l1-5h16l1 5"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/><path d="M3 9h18"/>');
 const IC_ORDER = ic('<path d="M5 4h14v16l-3-2-2 2-2-2-2 2-3-2z"/><path d="M9 9h6"/><path d="M9 13h6"/>');
@@ -392,6 +400,7 @@ const IC_LOG = ic('<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 
 const IC_COIN = ic('<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6"/>');
 const IC_WAREHOUSE = ic('<path d="M3 21V8l9-5 9 5v13"/><path d="M3 21h18"/><rect x="7" y="13" width="10" height="8"/><path d="M7 17h10"/>');
 const IC_CLIP = ic('<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4a1.5 1.5 0 0 1 3 0h0a1.5 1.5 0 0 1-3 0z" fill="currentColor"/><path d="M9 11h6M9 15h6"/>');
+const IC_PLUG = ic('<path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-12 0z"/><path d="M12 18v3"/>');
 const IC_GIFT = ic('<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M5 12v9h14v-9"/><path d="M12 8v13"/><path d="M12 8S10.5 4 8.5 4 6 6 6 6s1 2 3 2M12 8s1.5-4 3.5-4S18 6 18 6s-1 2-3 2"/>');
 
 // Điều hướng dọc trong 1 shop (sidebar) — chỉ hiện mục vai trò được phép.
@@ -488,6 +497,7 @@ function sideNav(ctx) {
           + it(`${base}/payment`, 'Thanh toán', IC_CARD, ctx.active === 'payment', PAYMENT_ROLES.has(ctx.role))
           + it(`${base}/shipping`, 'Vận chuyển', IC_TRUCK, ctx.active === 'shipping', SHIPPING_ROLES.has(ctx.role))
           + it(`${base}/notify`, 'Thông báo', IC_BELL, ctx.active === 'notify', SHIPPING_ROLES.has(ctx.role))
+          + it(`${base}/api-keys`, 'Kết nối', IC_PLUG, ctx.active === 'apikeys', SHIPPING_ROLES.has(ctx.role))
           + it(`${base}/export`, 'Xuất dữ liệu', IC_DOWN, ctx.active === 'export', EXPORT_ROLES.has(ctx.role))
           + it(`${base}/theme`, 'Giao diện', IC_PALETTE, ctx.active === 'theme', CONTENT_ROLES.has(ctx.role))
           + it(`${base}/settings`, 'Cài đặt', IC_GEAR, ctx.active === 'settings', CONTENT_ROLES.has(ctx.role))
@@ -1870,16 +1880,20 @@ export function renderReportsStepUp(ctx, shopId, fields, err, opts = {}) {
   const section = opts.section ?? 'reports';
   const why = opts.why ?? 'Xuất báo cáo là thao tác nhạy cảm — nhập mật khẩu của bạn để tiếp tục.';
   const base = `/shops/${esc(shopId)}/${esc(section)}`;
+  // action/nhãn nút mở ra tham số để trang khác (Kết nối 0120) dùng CHUNG màn xác nhận
+  // này. Mặc định giữ nguyên đường xuất CSV nên mọi nơi gọi cũ không đổi hành vi.
+  const action = opts.action ?? `${base}/export/step-up`;
+  const submitLabel = opts.submitLabel ?? 'Xác nhận & tải CSV';
   const keep = Object.entries(fields ?? {}).filter(([k, v]) => v != null && k !== 'password')
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('');
   return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
     <h1>Xác nhận mật khẩu</h1>
     <p class="muted">${esc(why)}</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
-    <form method="POST" action="${base}/export/step-up">
+    <form method="POST" action="${esc(action)}">
       ${keep}
       <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
-      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận &amp; tải CSV</button>
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">${esc(submitLabel)}</button>
     </form>
     <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
   </div></div>`);
@@ -1961,6 +1975,13 @@ export function renderOrderNew(ctx, shopId, variants, idem, err, form, picker) {
         <label>Tỉnh / Thành (tuỳ chọn — cần đúng để tạo vận đơn hãng)</label>
         <select name="province"><option value="">— Không ghi —</option>${PROVINCES.map((p) => `<option value="${esc(p)}"${form?.province === p ? ' selected' : ''}>${esc(p)}</option>`).join('')}</select>
       </div>
+      <div class="card"><h2 style="margin-top:0">Đơn này đến từ đâu</h2>
+        <p class="muted" style="font-size:.85rem;margin-top:0">Ghi đúng nguồn thì trang Đơn hàng lọc được và báo cáo trả lời được câu "tháng này Facebook mang về bao nhiêu đơn". Dán thêm link đoạn chat để sau mở đơn là bấm về đúng cuộc hội thoại.</p>
+        <div class="grid2">
+          <div><label>Nguồn đơn</label><select name="source">${ORDER_SOURCE_PICK.map((k) => `<option value="${esc(k)}"${(form?.source ?? 'manual') === k ? ' selected' : ''}>${esc(ORDER_SOURCE_LABEL[k])}</option>`).join('')}</select></div>
+          <div><label>Link / mã hội thoại (tuỳ chọn)</label><input name="source_ref" maxlength="200" placeholder="vd m.me/pagecuaban hoặc SĐT Zalo" value="${v('source_ref')}"></div>
+        </div>
+      </div>
       <div class="card"><h2 style="margin-top:0">Thanh toán & phí</h2>
         <label style="display:flex;gap:8px;align-items:center;font-weight:500"><input type="radio" name="payment_method" value="cod"${form?.payment_method === 'qr' ? '' : ' checked'} style="width:auto"> COD — thu khi giao</label>
         <label style="display:flex;gap:8px;align-items:center;font-weight:500"><input type="radio" name="payment_method" value="qr"${form?.payment_method === 'qr' ? ' checked' : ''} style="width:auto"> Chuyển khoản QR (tự đối soát theo mã đơn)</label>
@@ -1988,19 +2009,21 @@ export function renderOrders(ctx, shopId, data, filter) {
     <td>${badge(o.status, STATUS[o.status] ?? o.status)}</td>
     <td>${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} <span class="muted">${esc(o.payment_method?.toUpperCase() ?? '')}</span></td>
     <td>${esc(o.customer_name)}${susp ? ` <span class="badge cancelled" title="Cùng nguồn mạng với ${esc(o.same_ip_phones)} SĐT khác nhau đang chờ xử lý — kiểm tra kẻo đơn ảo">⚠ ${esc(o.same_ip_phones)} SĐT cùng nguồn</span>` : ''}</td>
+    <td>${o.source ? `<span class="badge">${esc(ORDER_SOURCE_LABEL[o.source] ?? o.source)}</span>`
+      : (o.is_migrated ? '<span class="muted">Nhập từ sàn cũ</span>' : '<span class="muted">—</span>')}</td>
     <td class="muted">${dt(o.created_at)}</td>
     <td style="text-align:right"><strong>${money(o.total_vnd)}</strong></td></tr>`;
   }).join('');
   const total = data.total ?? orders.length;
   const off = filter.offset, lim = filter.limit;
   const qenc = encodeURIComponent(filter.q ?? '');
-  const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&offset=${o}`;
+  const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&offset=${o}`;
   // TAB trạng thái kèm SỐ ĐẾM (thay <select> cũ) — mẫu quen thuộc của TikTok Shop/Shopee:
   // nhìn là biết "còn 12 đơn chờ xác nhận", bấm 1 phát là lọc. Số đếm tôn trọng ô tìm kiếm
   // + khoảng ngày đang áp (nhưng không tính chính mệnh đề trạng thái) nên luôn khớp kết quả.
   // Giữ nguyên q/from/to khi đổi tab để không mất bộ lọc người dùng đang xem.
   const cnts = data.counts ?? {};
-  const keep = `&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}`;
+  const keep = `&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}`;
   const statusTabs = `<div class="stabs" role="tablist" aria-label="Lọc theo trạng thái">${
     STATUSES.map((s) => {
       const on = (filter.status ?? '') === s;
@@ -2016,6 +2039,7 @@ export function renderOrders(ctx, shopId, data, filter) {
         <input type="hidden" name="q" value="${esc(filter.q ?? '')}">
         <input type="hidden" name="from" value="${esc(filter.from ?? '')}">
         <input type="hidden" name="to" value="${esc(filter.to ?? '')}">
+        <input type="hidden" name="source" value="${esc(filter.source ?? '')}">
         <button class="btn alt" type="submit">⬇ Xuất CSV</button></form>` : '';
   return layout('Đơn hàng', ctx, `<div class="toolbar"><h1 style="margin:0">Đơn hàng</h1>
       <span class="actions">${exportBtn}<a class="btn" href="/shops/${esc(shopId)}/orders/new">+ Tạo đơn</a></span></div>
@@ -2026,6 +2050,8 @@ export function renderOrders(ctx, shopId, data, filter) {
       <div style="flex:1 1 200px"><label>Tìm (mã đơn / tên / SĐT)</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="123, Nguyễn…, 09…"></div>
       <div><label>Từ ngày</label><input type="date" name="from" value="${esc(filter.from ?? '')}"></div>
       <div><label>Đến ngày</label><input type="date" name="to" value="${esc(filter.to ?? '')}"></div>
+      <div><label>Nguồn</label><select name="source"><option value="">— Tất cả —</option>${
+        Object.entries(ORDER_SOURCE_LABEL).map(([k, lbl]) => `<option value="${esc(k)}"${(filter.source ?? '') === k ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}</select></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
     <div class="card">
@@ -2039,7 +2065,7 @@ export function renderOrders(ctx, shopId, data, filter) {
         <button class="btn alt sm" type="submit" formaction="/shops/${esc(shopId)}/orders/print-batch" formmethod="get" formtarget="_blank">🖨 In các đơn đã chọn</button>
         <span class="muted" style="font-size:.82rem">Tích chọn ở cột đầu (xác nhận: chỉ đơn "Chờ xử lý"; nhận tiền: chỉ đơn COD chưa thu; đơn khác tự bỏ qua).</span>
       </form>
-      <table data-cards><thead><tr><th></th><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Khách</th><th>Thời gian</th><th style="text-align:right">Tổng</th></tr></thead><tbody>${rows}</tbody></table>
+      <table data-cards><thead><tr><th></th><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Khách</th><th>Nguồn</th><th>Thời gian</th><th style="text-align:right">Tổng</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="muted" style="margin-top:12px">${total} đơn ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
@@ -2257,6 +2283,10 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     <div class="card"><h2>Khách hàng</h2>
       <p>${esc(o.customer_name)} · ${esc(o.customer_phone ?? '')}${o.customer_email ? ` · ${esc(o.customer_email)}` : ''}</p>
       ${o.note ? `<p class="muted">📝 Ghi chú nội bộ: ${esc(o.note)}</p>` : ''}
+      ${o.source || o.source_ref ? `<p class="muted">Nguồn đơn: <strong>${esc(ORDER_SOURCE_LABEL[o.source] ?? o.source ?? 'không rõ')}</strong>${
+        o.source_ref ? ` · ${/^https?:\/\//i.test(o.source_ref)
+          ? `<a href="${esc(o.source_ref)}" target="_blank" rel="noopener noreferrer">mở hội thoại ↗</a>`
+          : esc(o.source_ref)}` : ''}</p>` : ''}
       ${o.shipping_address ? `<p class="muted">${esc(typeof o.shipping_address === 'object' ? [o.shipping_address.line, o.shipping_address.province].filter(Boolean).join(', ') || JSON.stringify(o.shipping_address) : o.shipping_address)}</p>` : ''}
       <p class="muted">Tạo: ${dt(o.created_at)}</p></div>`);
 }
@@ -4737,6 +4767,72 @@ export function renderLoyaltyStepUp(ctx, shopId, fields, err) {
     </form>
     <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
   </div></div>`);
+}
+
+// ── KẾT NỐI: khoá cho phần mềm ngoài đẩy đơn vào (0120) ──────────────────────
+// Người đọc trang này là chủ shop, không phải lập trình viên. Nên trang nói bằng
+// việc-của-họ ("đơn chốt trong chat Facebook chạy thẳng về đây"), còn phần kỹ thuật
+// gói vào một khối để đưa cho ai dựng tích hợp. Token hiện ĐÚNG một lần — nói thẳng
+// điều đó ngay cạnh nó, chứ không giấu trong một dòng ghi chú nhạt màu.
+export function renderApiKeys(ctx, shopId, data, err, ok, freshToken) {
+  const base = `/shops/${esc(shopId)}/api-keys`;
+  const keys = data?.keys ?? [];
+  const url = data?.ingest_url ?? '';
+  const dt = (v) => (v ? new Date(v).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : '—');
+  const rows = keys.map((k) => `<tr${k.revoked_at ? ' style="opacity:.55"' : ''}>
+    <td><strong>${esc(k.name)}</strong><br><code class="muted" style="font-size:.8rem">${esc(k.token_prefix)}…</code></td>
+    <td class="muted">${dt(k.created_at)}</td>
+    <td class="muted">${k.last_used_at ? dt(k.last_used_at) : '<em>chưa dùng lần nào</em>'}</td>
+    <td style="text-align:right">${esc(k.orders_count ?? 0)}</td>
+    <td>${k.revoked_at
+      ? `<span class="badge cancelled">Đã thu hồi</span>`
+      : `<form method="POST" action="${base}/${esc(k.id)}/revoke" data-confirm="Thu hồi khoá &quot;${esc(k.name)}&quot;? Phần mềm đang dùng khoá này sẽ NGỪNG đẩy đơn về ngay lập tức.">
+           <button class="btn warn sm" type="submit">Thu hồi</button></form>`}</td></tr>`).join('');
+  return layout('Kết nối', { ...ctx, active: 'apikeys' }, `<h1>Kết nối phần mềm ngoài</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${ok ? `<div class="card" style="border-color:#86efac;background:#f0fdf4">${esc(ok)}</div>` : ''}
+    ${freshToken ? `<div class="card" style="border-color:#f59e0b;background:#fffbeb">
+      <h2 style="margin-top:0">Khoá mới — CHÉP NGAY BÂY GIỜ</h2>
+      <p style="margin:0 0 8px">Đây là lần <strong>duy nhất</strong> khoá này hiện ra. Rời trang là không xem lại được nữa (chúng tôi không lưu bản đọc được — làm vậy thì khoá của bạn rò theo mọi ảnh chụp màn hình).</p>
+      <textarea readonly rows="2" style="width:100%;font-family:ui-monospace,monospace;font-size:.9rem">${esc(freshToken)}</textarea>
+      <p class="muted" style="margin:8px 0 0;font-size:.85rem">Dán vào phần mềm chat/tự-động-hoá của bạn. Lỡ mất thì quay lại đây thu hồi và tạo khoá mới.</p>
+    </div>` : ''}
+    <div class="card">
+      <p style="margin-top:0">Chốt đơn trong <strong>chat Facebook / Zalo</strong> bằng phần mềm khác (Pancake, Botcake, n8n, Zapier…)? Tạo một khoá ở đây, dán sang bên đó — <strong>đơn chốt trong chat sẽ chạy thẳng về cửa hàng này</strong>: trừ kho, vào sổ doanh thu, in được vận đơn, y như đơn đặt trên website.</p>
+      <p class="muted" style="margin-bottom:0">Mỗi phần mềm nên một khoá riêng, đặt tên theo phần mềm đó. Nghi lộ khoá nào thì thu hồi đúng khoá đó, những cái còn lại vẫn chạy.</p>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Tạo khoá mới</h2>
+      <form method="POST" action="${base}" class="actions" style="align-items:end;flex-wrap:wrap">
+        <div style="flex:1 1 220px"><label>Đặt tên khoá</label><input name="name" maxlength="80" required placeholder="VD: Pancake, n8n, bot Messenger"></div>
+        <div><button class="btn" type="submit">Tạo khoá</button></div>
+      </form>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Khoá của cửa hàng</h2>
+      ${keys.length ? `<table data-cards><thead><tr><th>Tên</th><th>Tạo lúc</th><th>Dùng lần cuối</th><th style="text-align:right">Đơn đã nhận</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+        : '<p class="muted">Chưa có khoá nào.</p>'}
+    </div>
+    <div class="card"><h2 style="margin-top:0">Đưa phần này cho người dựng tích hợp</h2>
+      <p class="muted" style="margin-top:0">Gửi đơn bằng <code>POST</code> tới địa chỉ dưới đây, kèm khoá ở header <code>Authorization</code>.</p>
+      <p><strong>Địa chỉ:</strong> <code>${esc(url)}</code></p>
+      <pre style="overflow-x:auto;background:var(--surface,#f6f7f8);padding:12px;border-radius:6px;font-size:.82rem"><code>${esc(`curl -X POST ${url} \\
+  -H "Authorization: Bearer ntk_KHOA_CUA_BAN" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "lines": [{ "variant_id": "<id biến thể>", "qty": 1 }],
+    "customer": { "name": "Nguyễn Văn A", "phone": "0901234567",
+                  "address_line": "12 Lê Lợi", "province": "TP Hồ Chí Minh" },
+    "payment_method": "cod",
+    "source": "facebook",
+    "source_ref": "m.me/trang-cua-ban",
+    "idempotency_key": "id-doan-chat-hoac-ma-don-ben-kia"
+  }'`)}</code></pre>
+      <ul class="muted" style="font-size:.85rem;line-height:1.8">
+        <li><code>idempotency_key</code> <strong>bắt buộc</strong> — gửi lại cùng một key thì KHÔNG tạo đơn thứ hai. Dùng mã đơn bên phần mềm kia là chuẩn nhất.</li>
+        <li><code>variant_id</code> lấy ở trang Sản phẩm (mỗi biến thể một mã). Giá và tồn kho <strong>lấy theo cửa hàng này</strong>, không lấy theo số bên kia gửi sang.</li>
+        <li><code>source</code>: <code>facebook</code> · <code>zalo</code> · <code>tiktok</code> · <code>other</code> — để trang Đơn hàng lọc được theo kênh.</li>
+        <li>Hết hàng / thiếu trường → trả mã lỗi kèm câu tiếng Việt, đơn <strong>không</strong> được tạo nửa vời.</li>
+      </ul>
+    </div>`);
 }
 
 export function renderError(ctx, msg) {

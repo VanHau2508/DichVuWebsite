@@ -531,6 +531,8 @@ services:
       AUTH_URL: http://auth:3020
       SELLER_URL: http://seller:3040
       PLATFORM_URL: http://platform:3030
+      # Địa chỉ NHẬN ĐƠN từ phần mềm ngoài (0120) — dev dùng host hooks nội bộ.
+      INGEST_URL: https://hooks.localtest/ingest/orders
       # Origin gắn vào request nội bộ: PHẢI thuộc ALLOWED_ORIGINS của auth/seller/platform.
       ADMIN_ORIGIN: https://admin.nentang.vn
       # CSRF của chính admin: nhận POST từ Origin admin (prod + host dev).

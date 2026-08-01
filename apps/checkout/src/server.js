@@ -943,8 +943,11 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       `INSERT INTO orders (shop_id, order_number, status, payment_status, payment_method,
          customer_name, customer_phone, customer_email, shipping_address,
          subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, lookup_token_hash, payment_ref, qr_account, coupon_code, client_ip_hash, customer_id,
-         points_redeemed, points_discount_vnd)
-       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id`,
+         points_redeemed, points_discount_vnd,
+         -- Nguồn đơn (0119): đơn qua trang thanh toán LUÔN là 'web'. Ghi ngay tại đây
+         -- chứ không suy ra sau, vì "suy ra" nghĩa là mỗi chỗ đọc lại đoán một kiểu.
+         source)
+       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'web') RETURNING id`,
       [num, paymentMethod, name, phoneCanon ?? phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount, couponCode, ipHash, ctx.customerId ?? null, pointsRedeemed, pointsDiscount],
     )).rows[0];
     // Sổ điểm ĐỔI (0086): ghi SAU khi có order.id → UNIQUE loyalty_ledger_redeem_once(shop,order)

@@ -417,6 +417,9 @@ services:
       AUTH_URL: http://auth:3020
       SELLER_URL: http://seller:3040
       PLATFORM_URL: http://platform:3030
+      # Địa chỉ NHẬN ĐƠN từ phần mềm ngoài (0120) hiện trên trang Kết nối. Host webhook
+      # riêng như SePay, không suy ra từ host admin.
+      INGEST_URL: https://${HOOKS_DOMAIN:-hooks.nentang.vn}/ingest/orders
       # Origin admin gắn vào request nội bộ (backend originAllowed đòi Origin allowlist).
       ADMIN_ORIGIN: https://${ADMIN_DOMAIN:-admin.nentang.vn}
       # CSRF của chính admin: chỉ nhận POST từ Origin của mình.

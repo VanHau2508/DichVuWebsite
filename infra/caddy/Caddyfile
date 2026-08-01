@@ -76,6 +76,15 @@ hooks.nentang.vn {
 	handle @hooks {
 		reverse_proxy payment:3070
 	}
+	# Nhận đơn từ phần mềm ngoài (0120) — Pancake/n8n/Zapier POST kèm Bearer khoá
+	# kết nối của shop. Ở CHUNG host webhook chứ không phải admin.nentang.vn: đây là
+	# host máy-gọi-máy, không cookie, không giao diện. Chỉ ĐÚNG đường dẫn này tới
+	# seller; mọi thứ khác trong block vẫn rơi xuống 404 bên dưới, nên API seller
+	# không vì thế mà lộ ra Internet.
+	@ingest path /ingest/orders
+	handle @ingest {
+		reverse_proxy seller:3040
+	}
 	handle {
 		respond 404
 	}

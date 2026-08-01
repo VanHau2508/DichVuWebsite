@@ -43,6 +43,16 @@ c=$(code admin.localtest /webhooks/sepay -X POST -H 'content-type: application/j
 [ "$c" = "403" ] && ok "admin/webhooks/sepay → 403 (seller-admin CSRF, KHÔNG rò sang payment 401)" \
                  || bad "webhook rò qua host admin?" "http=$c (mong 403 của seller-admin)"
 
+# Nhận đơn từ phần mềm ngoài (0120): ĐÚNG một đường dẫn được đưa sang seller. Phần còn
+# lại của host hooks vẫn là payment, và API seller KHÔNG vì thế mà lộ ra Internet.
+c=$(code hooks.localtest /ingest/orders -X POST -H 'content-type: application/json' -d '{}')
+[ "$c" = "401" ] && ok "hooks/ingest/orders (không token) → 401 = TỚI seller (không phải 404 route thiếu)" \
+                 || bad "ingest không tới seller qua edge" "http=$c (mong 401)"
+# Cái gì cũng được MIỄN không phải 401 — 401 nghĩa là seller đang nhận cả những đường khác.
+c=$(code hooks.localtest /shops)
+[ "$c" != "401" ] && ok "hooks/shops → $c (API seller KHÔNG lộ qua host webhook)" \
+                  || bad "API seller LỘ qua host webhook!" "http=$c"
+
 sect "2. Admin qua edge (admin → seller-admin)"
 c=$(code admin.localtest /login)
 b=$(ci admin.localtest /login)

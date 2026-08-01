@@ -302,7 +302,9 @@ async function ordersList(res, me, cookie, shopId, q) {
   const limit = 20, offset = Math.max(0, parseInt(q.get('offset') ?? '0', 10) || 0);
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   const payment = ['unpaid', 'pending', 'paid', 'refunded'].includes(q.get('payment')) ? q.get('payment') : '';
+  const source = ['web', 'manual', 'facebook', 'zalo', 'tiktok', 'other'].includes(q.get('source')) ? q.get('source') : '';
   if (status) qs.set('status', status);
+  if (source) qs.set('source', source);
   if (payment) qs.set('payment', payment);
   if (search) qs.set('q', search);
   if (from) qs.set('from', from);
@@ -310,7 +312,7 @@ async function ordersList(res, me, cookie, shopId, q) {
   const r = await sellerApi('GET', `/shops/${shopId}/orders?${qs}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được đơn hàng.'));
-  return sendHtmlJs(res, 200, (nonce) => V.renderOrders({ ...ctx, nonce }, shopId, r.json, { status, payment, q: search, from, to, limit, offset }));
+  return sendHtmlJs(res, 200, (nonce) => V.renderOrders({ ...ctx, nonce }, shopId, r.json, { status, payment, source, q: search, from, to, limit, offset }));
 }
 
 // ── Tạo đơn thủ công (nhân viên chốt đơn Facebook/Zalo rồi gõ vào) ─────────────
@@ -344,13 +346,15 @@ async function orderNewSubmit(req, res, me, cookie, shopId) {
     payment_method: f.get('payment_method') === 'qr' ? 'qr' : 'cod',
     ship_fee_vnd: (f.get('ship_fee_vnd') ?? '').trim(),
     note: (f.get('note') ?? '').trim(),
+    source: (f.get('source') ?? '').trim(),
+    source_ref: (f.get('source_ref') ?? '').trim(),
     idempotency_key: String(f.get('idem') ?? ''),
   };
   const r = await sellerApi('POST', `/shops/${shopId}/orders`, { cookie, body });
   if (r.status === 201) return redirect(res, `/shops/${shopId}/orders/${r.json.id}`);
   // Lỗi → render lại form GIỮ giá trị đã gõ (idem mới — claim cũ đã rollback). Giữ cả
   // ?q= (hidden input) để picker vẫn lọc như lúc nhân viên đang chọn.
-  const form = { ...Object.fromEntries(['name', 'phone', 'email', 'address_line', 'province', 'ship_fee_vnd', 'note'].map((k) => [k, f.get(k) ?? ''])), payment_method: body.payment_method, lines };
+  const form = { ...Object.fromEntries(['name', 'phone', 'email', 'address_line', 'province', 'ship_fee_vnd', 'note', 'source', 'source_ref'].map((k) => [k, f.get(k) ?? ''])), payment_method: body.payment_method, lines };
   return orderNewPage(res, me, cookie, shopId, r.json?.error ?? 'Không tạo được đơn.', form, f.get('picker_q') ?? '');
 }
 
@@ -753,6 +757,62 @@ async function shippingStepUp(req, res, me, cookie, shopId) {
     return sendHtml(res, 401, V.renderShippingStepUp(ctx, shopId, form, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.'));
   }
   return doShippingOp(res, me, cookie, shopId, form);
+}
+
+// ── KẾT NỐI: khoá cho phần mềm ngoài đẩy đơn vào (0120) ──────────────────────
+// Địa chỉ nhận đơn KHÔNG suy ra từ host của admin: host webhook là host riêng
+// (hooks.*) đúng như SePay. Đặt sai biến này thì chủ shop dán nhầm địa chỉ và tích
+// hợp im lặng không chạy — nên mặc định là địa chỉ prod thật, không phải localhost.
+const INGEST_URL = process.env.INGEST_URL ?? 'https://hooks.nentang.vn/ingest/orders';
+async function apiKeysPage(res, me, cookie, shopId, ok, err, freshToken) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'apikeys');
+  const r = await sellerApi('GET', `/shops/${shopId}/api-keys`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status === 403 ? 403 : 502, V.renderError(ctx, r.json?.error ?? 'Không tải được danh sách khoá.'));
+  return sendHtmlJs(res, err ? 400 : 200, (nonce) =>
+    V.renderApiKeys({ ...ctx, nonce }, shopId, { ...r.json, ingest_url: INGEST_URL }, err, ok, freshToken));
+}
+async function doApiKeyCreate(res, me, cookie, shopId, form) {
+  const r = await sellerApi('POST', `/shops/${shopId}/api-keys`, { cookie, body: { name: form.name } });
+  if (r.status !== 201) return apiKeysPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không tạo được khoá.', null);
+  // Token đi thẳng vào HTML lần này rồi thôi — KHÔNG redirect kèm token trên URL:
+  // URL nằm lại trong lịch sử trình duyệt, log proxy và Referer của trang kế tiếp.
+  return apiKeysPage(res, me, cookie, shopId, `Đã tạo khoá "${form.name}".`, null, r.json.token);
+}
+async function apiKeyCreate(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const form = { name: String(f.name ?? '').trim().slice(0, 80) };
+  if (steppedUp(me)) return doApiKeyCreate(res, me, cookie, shopId, form);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'apikeys');
+  return sendHtml(res, 200, V.renderReportsStepUp(ctx, shopId, form, null, {
+    section: 'api-keys',
+    action: `/shops/${shopId}/api-keys/step-up`,
+    submitLabel: 'Xác nhận & tạo khoá',
+    why: 'Khoá này cho phép phần mềm ngoài tạo đơn thay cửa hàng — nhập mật khẩu của bạn để tiếp tục.',
+  }));
+}
+async function apiKeyStepUp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const form = { name: String(f.name ?? '').trim().slice(0, 80) };
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'apikeys');
+    return sendHtml(res, 401, V.renderReportsStepUp(ctx, shopId, form, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.', {
+      section: 'api-keys',
+      action: `/shops/${shopId}/api-keys/step-up`,
+      submitLabel: 'Xác nhận & tạo khoá',
+    }));
+  }
+  return doApiKeyCreate(res, me, cookie, shopId, form);
+}
+async function apiKeyRevoke(res, me, cookie, shopId, keyId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/api-keys/${keyId}/revoke`, { cookie });
+  return apiKeysPage(res, me, cookie, shopId,
+    r.status === 200 ? 'Đã thu hồi khoá. Phần mềm dùng khoá đó sẽ không đẩy đơn về được nữa.' : null,
+    r.status === 200 ? null : (r.json?.error ?? 'Không thu hồi được khoá.'), null);
 }
 
 // Xác nhận HÀNG LOẠT: forward danh sách id (checkbox) → seller (thành công một phần).
@@ -1964,6 +2024,7 @@ function ordersExportFields(f) {
     q: String(f.q ?? '').trim().slice(0, 100),
     from: DATE_RE.test(String(f.from ?? '').trim()) ? String(f.from).trim() : '',
     to: DATE_RE.test(String(f.to ?? '').trim()) ? String(f.to).trim() : '',
+    source: ['web', 'manual', 'facebook', 'zalo', 'tiktok', 'other'].includes(f.source) ? f.source : '',
   };
 }
 async function doOrdersExport(res, me, cookie, shopId, fields) {
@@ -3136,6 +3197,10 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/notify/unlink$`).exec(p)) && req.method === 'POST') return notifyUnlink(res, me, cookie, m[1]);
 
     // Vận chuyển hãng (shop.write = owner/admin + step-up ở seller).
+    if ((m = new RegExp(`^/shops/${UUID}/api-keys$`).exec(p)) && req.method === 'GET') return apiKeysPage(res, me, cookie, m[1], null, null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/api-keys$`).exec(p)) && req.method === 'POST') return apiKeyCreate(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/api-keys/step-up$`).exec(p)) && req.method === 'POST') return apiKeyStepUp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/api-keys/${UUID}/revoke$`).exec(p)) && req.method === 'POST') return apiKeyRevoke(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/shipping$`).exec(p)) && req.method === 'GET') return shippingPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/shipping/test$`).exec(p)) && req.method === 'GET') return shippingTest(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/shipping$`).exec(p)) && req.method === 'POST') return shippingOp(req, res, me, cookie, m[1]);

@@ -17,6 +17,10 @@ const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 const SHIP_FEE = (() => { const r = process.env.SHIP_FEE_VND; return (r != null && r !== '' && Number.isFinite(Number(r))) ? Number(r) : 30000; })();
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
+// Nguồn đơn hợp lệ — PHẢI khớp CHECK của cột orders.source (migration 0119). Thêm kênh
+// mới thì sửa cả hai nơi trong cùng commit; lệch nhau thì DB từ chối và người bán thấy
+// lỗi 500 thay vì thông báo tử tế.
+const ORDER_SOURCES = new Set(['web', 'manual', 'facebook', 'zalo', 'tiktok', 'other']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 // Chuẩn hoá SĐT (mirror checkout canonPhone): chỉ số, +84→0, tối thiểu 8 số.
@@ -85,6 +89,10 @@ function buildOrderFilter(query) {
   const to = (query.get('to') ?? '').trim();
   if (DATE_RE.test(from)) { args.push(from); where.push(`created_at >= $${args.length}::date`); }
   if (DATE_RE.test(to)) { args.push(to); where.push(`created_at < ($${args.length}::date + 1)`); }
+  // Lọc theo NGUỒN đơn (0119). Giá trị lạ bị BỎ QUA (không lọc) chứ không lỗi: đây là
+  // tham số trên URL, người dùng sửa tay hoặc link cũ không được làm vỡ trang danh sách.
+  const src = (query.get('source') ?? '').trim();
+  if (ORDER_SOURCES.has(src)) { args.push(src); where.push(`source = $${args.length}`); }
   // Lọc theo TÌNH TRẠNG THANH TOÁN. Ô "Đơn chưa thu tiền" ở Tổng quan bấm vào đây —
   // docs/44 §7: bấm vào con số phải ra ĐÚNG danh sách đã lọc, không phải danh sách đầy đủ.
   // Ô báo "3 đơn chưa thu" mà mở ra 400 đơn thì tệ hơn không có link: người bán mất niềm
@@ -125,7 +133,7 @@ async function listOrders(res, ctx, _b, _p, query) {
              count(*) FILTER (WHERE status = 'returned')  AS returned
         FROM orders ${whereNoStatusSql}`, countArgs)).rows[0];
     const rows = (await c.query(
-      `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.total_vnd, o.customer_name, o.created_at,
+      `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.total_vnd, o.customer_name, o.created_at, o.source, o.is_migrated,
               (SELECT count(DISTINCT o2.customer_phone)::int FROM orders o2
                  WHERE o2.shop_id = current_shop_id() AND o2.client_ip_hash = o.client_ip_hash
                    AND o2.client_ip_hash IS NOT NULL AND o2.status = 'pending') AS same_ip_phones
@@ -146,7 +154,7 @@ async function getOrder(res, ctx, _b, params) {
     const o = (await c.query(
       `SELECT id, order_number, status, payment_status, payment_method, fulfillment_status, subtotal_vnd, shipping_vnd, total_vnd,
               customer_name, customer_phone, customer_email, shipping_address, note, created_at, paid_at, shipped_at, delivered_at,
-              cancelled_at, cancel_reason
+              cancelled_at, cancel_reason, source, source_ref
          FROM orders WHERE id = $1`, [orderId],
     )).rows[0];
     if (!o) return null;
@@ -668,7 +676,7 @@ async function listSellableVariants(res, ctx, query) {
   });
 }
 
-async function createManualOrder(res, ctx, body) {
+export async function createManualOrder(res, ctx, body) {
   // ── validate đầu vào (giá/total client gửi bị BỎ QUA — như checkout) ──
   const rawLines = Array.isArray(body?.lines) ? body.lines : [];
   const lines0 = rawLines.filter((l) => l && UUID_RE.test(String(l.variant_id ?? '')) && Number.isInteger(Number(l.qty)) && Number(l.qty) >= 1 && Number(l.qty) <= 1000)
@@ -687,6 +695,14 @@ async function createManualOrder(res, ctx, body) {
   if (province && !isProvince(province)) return send(res, 400, { error: 'tỉnh/thành không hợp lệ (chọn theo danh sách 34 tỉnh thành)' });
   const paymentMethod = body?.payment_method === 'qr' ? 'qr' : 'cod';
   const note = String(body?.note ?? '').trim().slice(0, 500) || null;
+  // NGUỒN ĐƠN (0119). Mặc định 'manual' — người gõ form là nhân viên. Bot Messenger ở
+  // chặng 2 gửi 'facebook' qua CHÍNH đường này, không cần endpoint riêng.
+  // Kiểm theo whitelist chứ không nhận text tự do: cột này để ĐẾM, mà 'fb' lẫn
+  // 'facebook' là hỏng báo cáo âm thầm. Giá trị lạ → 400 chứ không lặng lẽ về mặc định,
+  // vì lặng lẽ nghĩa là bot gửi sai tên kênh suốt nhiều tuần mà không ai biết.
+  const source = body?.source == null || body.source === '' ? 'manual' : String(body.source);
+  if (!ORDER_SOURCES.has(source)) return send(res, 400, { error: `nguồn đơn không hợp lệ (${[...ORDER_SOURCES].join('/')})` });
+  const sourceRef = String(body?.source_ref ?? '').trim().slice(0, 200) || null;
   // Phí ship: nhân viên ghi đè (>=0), không ghi → tính theo cấu hình shop (phẳng + ngưỡng).
   const shipOverride = body?.ship_fee_vnd != null && body.ship_fee_vnd !== ''
     ? Number(body.ship_fee_vnd) : null;
@@ -768,9 +784,10 @@ async function createManualOrder(res, ctx, body) {
     const order = (await c.query(
       `INSERT INTO orders (shop_id, order_number, status, payment_status, payment_method,
          customer_name, customer_phone, customer_email, shipping_address,
-         subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, lookup_token_hash, payment_ref, qr_account, client_ip_hash, note)
-       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, $11, $12, NULL, $13) RETURNING id`,
-      [num, paymentMethod, name, phone, email, address, subtotal, shipping, total, hashToken(lookupToken), paymentRef, qrAccount, note],
+         subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, lookup_token_hash, payment_ref, qr_account, client_ip_hash, note,
+         source, source_ref, api_key_id)
+       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, $11, $12, NULL, $13, $14, $15, $16) RETURNING id`,
+      [num, paymentMethod, name, phone, email, address, subtotal, shipping, total, hashToken(lookupToken), paymentRef, qrAccount, note, source, sourceRef, ctx.apiKeyId ?? null],
     )).rows[0];
     for (const ln of lines) {
       // unit_cost_vnd (0081): snapshot giá vốn hiện hành lúc tạo đơn — mirror checkout.
@@ -792,9 +809,14 @@ async function createManualOrder(res, ctx, body) {
     }
     await c.query(
       `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.created', $1)`,
-      [{ ...(email ? { to: email } : {}), order_number: Number(num), total_vnd: total, customer_name: name, payment_method: paymentMethod, source: 'manual', ...(link ? { link } : {}) }],
+      [{ ...(email ? { to: email } : {}), order_number: Number(num), total_vnd: total, customer_name: name, payment_method: paymentMethod, source, ...(link ? { link } : {}) }],
     );
-    await audit(c, 'order.created_manual', { actorId: ctx.user.id, ip: ctx.ip, metadata: { order_number: Number(num), total_vnd: total, lines: lines.length } });
+    await audit(c, 'order.created_manual', {
+      actorType: ctx.apiKeyId ? 'system' : 'user',
+      actorId: ctx.user?.id ?? null,
+      ip: ctx.ip,
+      metadata: { order_number: Number(num), total_vnd: total, lines: lines.length, source, ...(ctx.apiKeyId ? { api_key_id: ctx.apiKeyId } : {}) },
+    });
 
     const response = { id: order.id, order_number: Number(num), subtotal_vnd: subtotal, shipping_vnd: shipping, total_vnd: total, status: 'pending', payment_method: paymentMethod, ...(paymentRef ? { payment_ref: paymentRef } : {}) };
     await c.query(`UPDATE idempotency_keys SET status = 'completed', response_code = 201, response_body = $2 WHERE key = $1`, [idemKey, response]);
@@ -1138,7 +1160,8 @@ async function exportOrders(res, ctx, _b, _p, query) {
               customer_name, customer_phone, customer_email, shipping_address,
               subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, amount_paid_vnd,
               coupon_code, points_redeemed, points_discount_vnd, payment_ref, note,
-              paid_at, shipped_at, delivered_at, cancelled_at, returned_at, anonymized_at
+              paid_at, shipped_at, delivered_at, cancelled_at, returned_at, anonymized_at,
+              source, source_ref
          FROM orders ${F.whereSql} ORDER BY order_number DESC`, F.args)).rows };
   });
   if (out.tooMany) {
@@ -1156,7 +1179,8 @@ async function exportOrders(res, ctx, _b, _p, query) {
       'customer_name', 'customer_phone', 'customer_email', 'shipping_address',
       'subtotal_vnd', 'shipping_vnd', 'discount_vnd', 'total_vnd', 'amount_paid_vnd',
       'coupon_code', 'points_redeemed', 'points_discount_vnd', 'payment_ref', 'note',
-      'paid_at', 'shipped_at', 'delivered_at', 'cancelled_at', 'returned_at', 'anonymized_at'],
+      'paid_at', 'shipped_at', 'delivered_at', 'cancelled_at', 'returned_at', 'anonymized_at',
+      'source', 'source_ref'],
     out.rows);
   // Xuất PII hàng loạt PHẢI để lại dấu vết. KHÔNG ghi `q` vào nhật ký — người bán hay tìm
   // bằng SĐT khách, ghi lại là bơm PII vào audit log.

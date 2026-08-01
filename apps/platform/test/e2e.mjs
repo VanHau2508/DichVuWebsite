@@ -415,9 +415,19 @@ async function main() {
            has_table_privilege('app_rw','platform_invoices','INSERT') AS ins,
            has_table_privilege('app_rw','platform_invoices','UPDATE') AS upd,
            has_table_privilege('app_rw','platform_invoices','DELETE') AS del`);
-  !rw.rows[0].sel && !rw.rows[0].ins && !rw.rows[0].upd && !rw.rows[0].del
-    ? ok('app_rw KHÔNG quyền nào trên platform_invoices (REVOKE default-privileges ăn)')
-    : bad('app_rw còn quyền trên platform_invoices', JSON.stringify(rw.rows[0]));
+  // ĐỔI KỲ VỌNG (0124): app_rw NAY được SELECT — chủ shop xem lịch sử đóng phí của chính
+  // mình trên trang Gói dịch vụ, và RLS (tenant_isolation) siết về đúng shop đó. Chính 0061
+  // đã chừa sẵn đường này ("v2 muốn cho seller xem… chỉ cần GRANT SELECT").
+  //
+  // Thứ PHẢI giữ nguyên là cấm GHI: platform_invoices là sổ THU append-only, chứng từ doanh
+  // thu. Shop tự ghi được dòng vào đó nghĩa là tự tuyên bố đã đóng tiền — hỏng cả sổ tiền
+  // lẫn báo cáo MRR mà không ai thấy sai. Nên khẳng định siết vào ĐÚNG chỗ đó thay vì bỏ.
+  !rw.rows[0].ins && !rw.rows[0].upd && !rw.rows[0].del
+    ? ok('app_rw KHÔNG ghi được platform_invoices (sổ thu append-only, chỉ đọc)')
+    : bad('app_rw GHI được sổ thu — shop tự tuyên bố đã đóng tiền!', JSON.stringify(rw.rows[0]));
+  rw.rows[0].sel
+    ? ok('app_rw đọc được platform_invoices (RLS siết về shop của chính họ)')
+    : bad('app_rw không đọc được → trang Gói dịch vụ mất lịch sử đóng phí');
 
   // ── 5c. Metrics điều hành (/ops/metrics) ───────────────────────────────────
   sect('5c. Metrics điều hành (/ops/metrics)');

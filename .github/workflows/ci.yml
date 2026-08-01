@@ -59,8 +59,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # @v5: bản @v4 chạy trên Node 20 mà GitHub đã tuyên bố hết hạn — runner đang ÉP
+      # chúng sang Node 24 kèm cảnh báo. Khi GitHub gỡ hẳn Node 20 thì hai action này
+      # ngừng chạy và CI đỏ TOÀN BỘ vì lý do không liên quan gì tới mã. Nâng trước.
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
       # Mọi module test này chỉ dùng node builtins → không cần npm install.
@@ -95,7 +98,7 @@ jobs:
     env:
       C: "docker compose -f infra/compose.dev.yml"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # up -d tôn trọng depends_on (service_healthy + migrate completed) nên khi
       # lệnh trả về là stack đã sẵn sàng; bước chờ bên dưới là phòng thủ thêm.
@@ -193,7 +196,7 @@ jobs:
     env:
       C: "docker compose -f infra/compose.dev.yml"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build & khởi động stack
         run: $C up -d --build

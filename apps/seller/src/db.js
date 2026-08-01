@@ -28,8 +28,12 @@ export async function withTenant(shopId, fn) {
  * Tra KHOÁ KẾT NỐI (0120): token thô đã băm → shop nào, quyền gì.
  *
  * Ta CHƯA biết shop cho tới khi tra xong, mà RLS thì lọc theo shop. Đặt GUC
- * app.api_token_hash → policy resolve_by_token mở ĐÚNG một dòng khớp hash. Không có
- * token thì GUC rỗng → không dòng nào hiện.
+ * app.api_token_hash → ngả thứ hai trong USING của policy tenant_isolation mở ĐÚNG một
+ * dòng khớp hash. Không có token thì GUC rỗng → không dòng nào hiện.
+ *
+ * Đóng dấu last_used_at PHẢI đợi tới khi đã đặt app.shop_id: ngả token chỉ có trong
+ * USING (đọc), còn WITH CHECK (ghi) chỉ nhận ngả tenant — xem 0121. Nghĩa là mọi thao
+ * tác GHI trên bảng khoá đều đi qua đúng một quy tắc, dù đến từ chủ shop hay từ token.
  *
  * Chỉ resolve, KHÔNG bọc luôn việc tạo đơn: createManualOrder tự mở transaction của
  * nó (withTenant), lồng vào đây là lồng transaction. Đổi lại đường tạo đơn dùng LẠI
@@ -48,7 +52,10 @@ export async function resolveApiKey(tokenHash) {
     const key = (await client.query(
       `SELECT id, shop_id, scope FROM shop_api_keys WHERE revoked_at IS NULL`,
     )).rows[0];
-    if (key) await client.query(`UPDATE shop_api_keys SET last_used_at = now() WHERE id = $1`, [key.id]);
+    if (key) {
+      await client.query(`SELECT set_config('app.shop_id', $1, true)`, [key.shop_id]);
+      await client.query(`UPDATE shop_api_keys SET last_used_at = now() WHERE id = $1`, [key.id]);
+    }
     await client.query('COMMIT');
     return key ?? null;
   } catch (e) {

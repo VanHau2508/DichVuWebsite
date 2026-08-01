@@ -150,6 +150,19 @@ async function main() {
   r.status !== 201 ? ok(`khoá shop A đặt biến thể shop B → ${r.status} (từ chối)`) : bad('CÔ LẬP VỠ: khoá A tạo được đơn với hàng shop B!', r.raw);
   const bOrders = (await owner.query('SELECT count(*)::int n FROM orders WHERE shop_id=$1', [Bs.shopId])).rows[0].n;
   bOrders === 0 ? ok('shop B vẫn 0 đơn') : bad(`shop B có ${bOrders} đơn lạ!`);
+  // FK composite (0121) — kiểm bằng vai OWNER, tức là BỎ QUA RLS: chứng minh chính DB
+  // từ chối, không phải "RLS che nên không ai với tới". Đây là khác biệt giữa một hàng
+  // rào và một sự may mắn.
+  const kB = (await owner.query(
+    `INSERT INTO shop_api_keys (shop_id, name, token_hash, token_prefix)
+     VALUES ($1, 'khoa-B', $2, 'ntk_test') RETURNING id`, [Bs.shopId, `hash-${uniq()}${uniq()}`],
+  )).rows[0].id;
+  let fkBlocked = false;
+  try {
+    await owner.query('UPDATE orders SET api_key_id = $1 WHERE id = $2', [kB, o1.id]);
+  } catch { fkBlocked = true; }
+  fkBlocked ? ok('DB chặn đơn shop A trỏ sang khoá shop B (FK composite)')
+    : bad('FK cho phép đơn trỏ sang khoá shop KHÁC!');
 
   sect('5. Idempotency — đẩy trùng không đẻ đơn thứ hai');
   const idem = `dup-${uniq()}`;

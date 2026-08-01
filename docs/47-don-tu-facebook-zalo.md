@@ -1,7 +1,9 @@
 # 47 — Đơn chốt trong chat Facebook/Zalo chảy về nền tảng
 
-**Trạng thái:** chặng 1 xong (migration 0119 + 0120). Chặng 2 (bot Messenger của chính
-nền tảng) chờ Page + duyệt app của Meta.
+**Trạng thái:** chặng 1 xong (migration 0119 + 0120 + 0121) = **NỬA DƯỚI** của luồng
+(nhận đơn → kho → tiền → vận đơn → thông báo). **Mắt xích "chốt đơn ngay trong chat" CHƯA
+làm** — luồng đầu-cuối vì thế chưa chạy. Xem "Ba đường" bên dưới để chọn ai chạy cuộc
+hội thoại.
 
 ## Bài toán
 
@@ -16,20 +18,47 @@ chạy quảng cáo → khách nhắn tin → nhân viên/bot trả lời → CH
 mang về bao nhiêu đơn". Đó không phải thiếu tính năng nhỏ — đó là cả một kênh bán nằm
 ngoài hệ thống.
 
-## Điều Meta KHÔNG cho
+## Meta cho gì, không cho gì
 
-Đã kiểm trước khi thiết kế, vì nếu tưởng có mà thực ra không có thì cả hướng đi sai:
+> **ĐÍNH CHÍNH 2026-08-01.** Bản đầu của tài liệu này viết "Meta AI là hộp đen, không có
+> API cho bên thứ ba" và để người đọc hiểu thành *bài toán không giải được, phải chờ Meta*.
+> Sai — sai vì lẫn hai CHIỀU ngược nhau. Giữ nguyên đoạn sai ở đây vì nó là lý do cả
+> chặng 1 được đóng gói như bên dưới.
 
-* **Meta AI / trợ lý AI trong Messenger là hộp đen.** Nút "Tạo đơn đặt hàng" của nó tạo
-  đơn *bên trong* Meta. Không có API cho bên thứ ba lấy đơn đó ra. Không xây dựng gì trên
-  giả định này được.
-* Ba thứ mang tên "API sản phẩm của Meta" là ba thứ khác nhau, dễ nhầm:
-  **CAPI** (gửi sự kiện chuyển đổi *lên* Meta cho quảng cáo) · **Catalog/Product Feed**
-  (đồng bộ sản phẩm) · **Messenger Platform** (gửi/nhận tin nhắn). Chỉ cái thứ ba liên
-  quan tới việc nhận đơn, và nó chỉ cho *tin nhắn*, không cho *đơn hàng*.
+Phân biệt hai chiều, vì chỉ một chiều bị chặn:
 
-Kết luận: muốn đơn từ chat về hệ thống thì **phía mình phải là bên tạo đơn**, không thể
-chờ Meta đưa đơn sang.
+* **KÉO đơn RA khỏi Meta: không.** Đơn do trợ lý AI của Meta tạo nằm *bên trong* Meta;
+  không có API để bên thứ ba đọc danh sách đơn đó về. Chỗ này bản đầu nói đúng.
+* **ĐẨY từ Meta VÀO hệ thống mình: CÓ.** Meta Business Agent (ra toàn cầu 03/06/2026,
+  chạy trên **cả Messenger** chứ không riêng WhatsApp) có **Connectors API**: khai báo một
+  API bên ngoài để agent GỌI, kèm webhook. Tức là agent chốt đơn xong thì tự gọi
+  `/ingest/orders` của mình. Đó đúng là luồng "chốt đơn trong chat → website nhận đơn".
+
+Ba thứ mang tên "API sản phẩm của Meta" vẫn là ba thứ khác nhau, dễ nhầm: **CAPI** (gửi
+sự kiện chuyển đổi *lên* Meta cho quảng cáo) · **Catalog/Product Feed** (đồng bộ sản
+phẩm) · **Messenger Platform** (gửi/nhận tin nhắn). Không cái nào trong ba cái này là
+đường nhận đơn — đường nhận đơn là **Connectors API** của Business Agent, hoặc bot của
+chính mình dựng trên Messenger Platform.
+
+Kết luận đúng: **phía mình luôn là bên TẠO đơn**; câu hỏi thật là *ai chạy cuộc hội thoại*
+và ai gọi vào cổng nhận đơn.
+
+## Ba đường, cùng đổ vào một cổng
+
+Cả ba đều gọi `/ingest/orders` (chặng 1) — nên chặng 1 là điều kiện CẦN của mọi đường,
+nhưng tự nó KHÔNG đủ: nó là nửa dưới, mắt xích "chốt đơn trong chat" nằm ở nửa trên.
+
+| | Ai chạy cuộc chat | Cần gì ở Meta | Sẵn sàng |
+|---|---|---|---|
+| **A** | phần mềm chat bên thứ ba (Pancake/Botcake/n8n) | không | ngay |
+| **B** | bot của chính nền tảng (Messenger Platform) | App Review `pages_messaging` (~5–10 ngày làm việc) | ~1,5 ngày code + chờ duyệt |
+| **C** | **Meta Business Agent** + custom connector | bật agent + khai connector | chủ yếu cấu hình |
+
+**Ba ẩn số của đường C — phải THỬ mới biết, đọc tài liệu không ra:**
+1. Connectors API đã phủ **Messenger** chưa, hay tài liệu get-started mới chỉ có nhánh
+   WhatsApp (WABA + `whatsapp_business_messaging`).
+2. **Việt Nam** có trong danh sách nước/ngành được bật chưa (pilot: Ấn Độ, Mexico, Brazil).
+3. Chất lượng **tiếng Việt** của agent khi bán hàng thật.
 
 ## Chặng 1 — hai mảnh, dùng được ngay
 

@@ -33,15 +33,31 @@ chốt QUY TẮC GHI NHẬN — mọi thay đổi số liệu phải đối chi�
    snapshot `return_lines.unit_cost_vnd`. Hoàn tiền thường có tick "nhập kho" KHÔNG
    đảo COGS (tiền không ánh xạ được sang số lượng) — thiên lệch AN TOÀN (lãi ghi thấp
    hơn thực); muốn đúng hãy dùng luồng **Đổi-trả**.
-5. **Phí hãng** = `carrier_fee_vnd` (**báo giá** lúc tạo vận đơn, không phải số thực
-   trừ trong phiếu COD) theo ngày tạo vận đơn; giao tay không phí. Đối chiếu phí thực
-   để v2.
+5. **Phí hãng** = `carrier_fee_vnd` (**báo giá** lúc tạo vận đơn) theo ngày tạo vận
+   đơn; giao tay không phí. Phần thực-tế-khác-báo-giá nằm ở quy tắc 9.
 6. **Múi giờ VN** cho mọi mốc ngày; kỳ tối đa 366 ngày; >92 ngày tự gộp theo tháng.
 7. **Dashboard Tổng quan dùng CÙNG quy tắc** (đồng bộ cùng đợt — có test chéo từng
    đồng). Số kỳ cũ **có thể thay đổi** khi sửa đơn đã trả (restatement — vết ở audit
    `order.edited`).
 8. Đơn đã thu tiền bị **huỷ không kèm phiếu hoàn** vẫn nằm trong doanh thu (tiền
    shop còn giữ thật) — ghi phiếu hoàn nếu đã trả lại khách.
+9. **HOÀ GIẢI ĐỐI SOÁT COD** — `settlement_variance = Σ(amount_vnd − expected_vnd)`
+   của `cod_remittances`, tại **`remitted_at`** (ngày trên sao kê hãng), **cộng** vào
+   lãi vận hành. Quy tắc 5 đã trừ phí **báo giá**, còn `expected_vnd` = Σ(tổng đơn −
+   phí báo giá); nên chênh này đúng bằng phần thực-tế-lệch-báo-giá — **cộng là đúng,
+   không trừ đúp**. Thường **âm**: hãng trừ thêm phí hoàn hàng/bảo hiểm/thu hộ.
+
+   Trước đợt này báo cáo **không hề đọc** `cod_remittances` dù bảng đó đã có và trang
+   Đối soát COD đã hiện chênh lệch → P&L vĩnh viễn tin vào báo giá và **báo lãi cao
+   hơn thật**. Đây là loại sai đắt nhất: người bán định giá dựa trên con số đó.
+
+   `remitted_at` kiểu **DATE**, không phải timestamptz — dùng `bucketSql`/`rangeSql`
+   của cột timestamptz cho nó là SAI (Postgres ép date→timestamp rồi `AT TIME ZONE`
+   dịch 7 giờ, phiếu nhảy sang ngày khác). Có `bucketDateSql`/`rangeDateSql` riêng.
+10. **Hãng còn giữ tiền** (`cod_outstanding`: đơn COD đã giao qua hãng, `cod_settled_at`
+    NULL) là **MEMO tại thời điểm xem**, KHÔNG theo kỳ và **KHÔNG trừ vào lãi** — đó là
+    khoản *phải thu*, tiền vẫn của shop. Nhưng phải hiện cạnh lãi: "lãi 50 triệu" mà 30
+    triệu đang nằm ở hãng là hai tình cảnh rất khác nhau.
 
 ## Phân quyền
 
@@ -55,4 +71,4 @@ chốt QUY TẮC GHI NHẬN — mọi thay đổi số liệu phải đối chi�
 
 Lãi per-đơn trong chi tiết đơn · nhập cost hàng loạt (bulk/CSV) · báo cáo theo
 kênh/nhân viên/tỉnh · so sánh kỳ trước · phân bổ discount pro-rata vào bảng theo SP ·
-đối chiếu phí hãng thực (phiếu COD) · gửi báo cáo định kỳ qua email.
+ gửi báo cáo định kỳ qua email.

@@ -113,6 +113,14 @@ const bucketSql = (col, group) => group === 'month'
   : `to_char((${col} AT TIME ZONE '${TZ}')::date, 'YYYY-MM-DD')`;
 // Điều kiện khoảng sargable: $i=from, $i+1=to (date). [00:00 from VN, 00:00 to+1 VN).
 const rangeSql = (col, i) => `${col} >= ($${i}::date::timestamp AT TIME ZONE '${TZ}') AND ${col} < (($${i + 1}::date + 1)::timestamp AT TIME ZONE '${TZ}')`;
+// `cod_remittances.remitted_at` là kiểu DATE (ngày ghi trên sao kê hãng), KHÔNG phải
+// timestamptz. Dùng bucketSql/rangeSql của cột timestamptz cho nó là SAI: Postgres ép
+// date → timestamp rồi AT TIME ZONE dịch đi 7 giờ, đẩy phiếu sang ngày khác — tiền nhảy
+// kỳ. Ngày dương lịch không có múi giờ để quy đổi, nên so thẳng.
+const bucketDateSql = (col, group) => (group === 'month'
+  ? `to_char(date_trunc('month', ${col}), 'YYYY-MM')`
+  : `to_char(${col}, 'YYYY-MM-DD')`);
+const rangeDateSql = (col, i) => `${col} >= $${i}::date AND ${col} <= $${i + 1}::date`;
 // COGS: loại đơn đã huỷ/hoàn mà hàng CHƯA BAO GIỜ xuất kho (quy tắc 4).
 const COGS_ORDER_GUARD = `NOT (o.status IN ('cancelled','refunded') AND o.fulfillment_status = 'unfulfilled')`;
 // Đơn DI CƯ (0104) KHÔNG vào bất kỳ con số nào của báo cáo lãi — chủ nền tảng đã chốt:
@@ -197,15 +205,37 @@ async function computeSales(shopId, { from, to, group, sort }) {
           WHERE ${rangeSql('o.paid_at', 1)} AND ${COGS_ORDER_GUARD} AND ${NOT_MIGRATED}
           GROUP BY 1, 2
        ) t ORDER BY ${SORT_SQL[sort]} LIMIT 101`, [from, to])).rows;
-    return { q1, q2, q3, q4, q5, q6 };
-  }).then(({ q1, q2, q3, q4, q5, q6 }) => {
+    // (7) HOÀ GIẢI ĐỐI SOÁT COD (quy tắc 9) — chênh giữa tiền hãng THỰC chuyển về
+    //     (amount_vnd) và số KỲ VỌNG (expected_vnd = Σ tổng đơn − phí hãng BÁO GIÁ).
+    //     q5 đã trừ phí BÁO GIÁ; chênh này là phần thực-tế-khác-báo-giá, nên CỘNG thêm
+    //     là đúng, KHÔNG trừ đúp. Thường ÂM: hãng trừ thêm phí hoàn hàng/bảo hiểm/thu hộ.
+    //     Bỏ bảng này ra ngoài thì P&L vĩnh viễn tin vào báo giá và luôn báo lãi CAO HƠN THẬT.
+    const q7 = (await c.query(
+      `SELECT ${bucketDateSql('cr.remitted_at', group)} AS bucket,
+              sum(cr.amount_vnd - cr.expected_vnd)::bigint AS settlement_variance
+         FROM cod_remittances cr WHERE ${rangeDateSql('cr.remitted_at', 1)} GROUP BY 1`, [from, to])).rows;
+    // (8) MEMO tại thời điểm xem: hãng đã giao mà CHƯA chuyển tiền về. KHÔNG trừ vào lãi
+    //     (đây là khoản PHẢI THU, tiền vẫn của shop) — nhưng chủ shop cần thấy con số này
+    //     cạnh lãi, vì "lãi 50 triệu" mà 30 triệu đang nằm ở hãng là hai tình cảnh khác nhau.
+    const q8 = (await c.query(
+      `SELECT coalesce(sum(o.total_vnd - coalesce(sh.carrier_fee_vnd, 0)), 0)::bigint AS outstanding,
+              count(*)::int AS orders
+         FROM orders o
+         JOIN LATERAL (SELECT carrier_fee_vnd FROM shipments s
+                        WHERE s.order_id = o.id AND s.provider IS NOT NULL
+                        ORDER BY s.created_at DESC LIMIT 1) sh ON true
+        WHERE o.payment_method = 'cod' AND o.status = 'delivered'
+          AND o.cod_settled_at IS NULL AND NOT o.is_migrated`)).rows[0];
+    return { q1, q2, q3, q4, q5, q6, q7, q8 };
+  }).then(({ q1, q2, q3, q4, q5, q6, q7, q8 }) => {
     const idx = (rows) => new Map(rows.map((r) => [r.bucket, r]));
-    const m1 = idx(q1), m2 = idx(q2), m3 = idx(q3), m4 = idx(q4), m5 = idx(q5);
+    const m1 = idx(q1), m2 = idx(q2), m3 = idx(q3), m4 = idx(q4), m5 = idx(q5), m7 = idx(q7);
     const series = bucketList(from, to, group).map((b) => {
-      const a = m1.get(b), g = m2.get(b), r = m3.get(b), v = m4.get(b), s = m5.get(b);
+      const a = m1.get(b), g = m2.get(b), r = m3.get(b), v = m4.get(b), s = m5.get(b), w = m7.get(b);
       const revenue_goods = n(a?.revenue_goods), refunds = n(r?.refunds);
       const cogs = n(g?.cogs), reversal = n(v?.cogs_reversal);
       const shipping = n(a?.shipping_income), fee = n(s?.carrier_fee);
+      const variance = n(w?.settlement_variance);
       const net = revenue_goods - refunds;
       const gross = net - cogs + reversal;
       return {
@@ -213,7 +243,8 @@ async function computeSales(shopId, { from, to, group, sort }) {
         revenue_goods_vnd: revenue_goods, refunds_vnd: refunds, net_revenue_vnd: net,
         cogs_vnd: cogs, cogs_reversal_vnd: reversal, gross_profit_vnd: gross,
         shipping_income_vnd: shipping, carrier_fee_vnd: fee,
-        operating_profit_vnd: gross + shipping - fee,
+        settlement_variance_vnd: variance,
+        operating_profit_vnd: gross + shipping - fee + variance,
       };
     });
     const T = (k) => series.reduce((s, r) => s + r[k], 0);
@@ -225,7 +256,10 @@ async function computeSales(shopId, { from, to, group, sort }) {
       revenue_goods_vnd: T('revenue_goods_vnd'), refunds_vnd: T('refunds_vnd'), net_revenue_vnd: T('net_revenue_vnd'),
       cogs_vnd: T('cogs_vnd'), cogs_reversal_vnd: T('cogs_reversal_vnd'), gross_profit_vnd: T('gross_profit_vnd'),
       shipping_income_vnd: T('shipping_income_vnd'), carrier_fee_vnd: T('carrier_fee_vnd'),
+      settlement_variance_vnd: T('settlement_variance_vnd'),
       operating_profit_vnd: T('operating_profit_vnd'),
+      // Phải-thu tại THỜI ĐIỂM XEM, không theo kỳ → cố ý để ngoài mọi phép cộng ở trên.
+      cod_outstanding: { amount_vnd: n(q8?.outstanding), orders: n(q8?.orders) },
       cost_coverage: {
         revenue_with_cost_vnd: withC, revenue_missing_cost_vnd: missC, lines_missing_cost: linesMiss,
         pct: (withC + missC) > 0 ? Math.round((withC / (withC + missC)) * 100) : 100, // kỳ 0 doanh thu → 100 (không 0/0)
@@ -283,9 +317,12 @@ async function exportReport(res, ctx, _b, _p, query) {
     );
   } else {
     csv = toCsv(
+      // Cột PHẢI khớp trang Báo cáo. Xuất thiếu settlement_variance thì kế toán cộng tay
+      // các cột trong CSV sẽ KHÔNG ra operating_profit — người ta sẽ tin cột nào?
       ['bucket', 'orders_paid', 'revenue_goods_vnd', 'refunds_vnd', 'net_revenue_vnd', 'cogs_vnd',
-       'cogs_reversal_vnd', 'gross_profit_vnd', 'shipping_income_vnd', 'carrier_fee_vnd', 'operating_profit_vnd'],
-      [...data.series, { bucket: 'TOTAL', orders_paid: data.totals.orders_paid, revenue_goods_vnd: data.totals.revenue_goods_vnd, refunds_vnd: data.totals.refunds_vnd, net_revenue_vnd: data.totals.net_revenue_vnd, cogs_vnd: data.totals.cogs_vnd, cogs_reversal_vnd: data.totals.cogs_reversal_vnd, gross_profit_vnd: data.totals.gross_profit_vnd, shipping_income_vnd: data.totals.shipping_income_vnd, carrier_fee_vnd: data.totals.carrier_fee_vnd, operating_profit_vnd: data.totals.operating_profit_vnd }],
+       'cogs_reversal_vnd', 'gross_profit_vnd', 'shipping_income_vnd', 'carrier_fee_vnd',
+       'settlement_variance_vnd', 'operating_profit_vnd'],
+      [...data.series, { bucket: 'TOTAL', orders_paid: data.totals.orders_paid, revenue_goods_vnd: data.totals.revenue_goods_vnd, refunds_vnd: data.totals.refunds_vnd, net_revenue_vnd: data.totals.net_revenue_vnd, cogs_vnd: data.totals.cogs_vnd, cogs_reversal_vnd: data.totals.cogs_reversal_vnd, gross_profit_vnd: data.totals.gross_profit_vnd, shipping_income_vnd: data.totals.shipping_income_vnd, carrier_fee_vnd: data.totals.carrier_fee_vnd, settlement_variance_vnd: data.totals.settlement_variance_vnd, operating_profit_vnd: data.totals.operating_profit_vnd }],
     );
   }
   await withTenant(ctx.shopId, (c) =>

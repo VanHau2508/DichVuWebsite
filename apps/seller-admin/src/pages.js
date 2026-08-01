@@ -1905,6 +1905,13 @@ export function renderReports(ctx, shopId, d, f) {
   const covBadge = cc.pct < 100 ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb;margin-top:10px">
       <p style="margin:0" class="muted">⚠ Giá vốn mới phủ <strong>${esc(cc.pct)}%</strong> doanh thu hàng — còn <strong>${esc(cc.lines_missing_cost)}</strong> dòng đơn chưa có giá vốn
       (${money(cc.revenue_missing_cost_vnd)} doanh thu chưa tính lãi). Nhập thêm ở trang <a href="/shops/${esc(shopId)}/products">Sản phẩm</a> → từng biến thể.</p></div>` : '';
+  // PHẢI THU, không phải lỗ — cố ý ĐỨNG NGOÀI bảng P&L. "Lãi 50 triệu" mà 30 triệu đang
+  // nằm ở hãng chưa chuyển về là hai tình cảnh rất khác nhau, chủ shop phải thấy cả hai.
+  const co = d.totals?.cod_outstanding;
+  const outstandingNote = co && co.amount_vnd > 0 ? `<div class="card" style="border-color:#bfdbfe;background:#eff6ff;margin-top:10px">
+      <p style="margin:0" class="muted">🚚 Hãng đang giữ <strong>${money(co.amount_vnd)}</strong> của <strong>${esc(co.orders)}</strong> đơn đã giao nhưng
+      chưa chuyển tiền về. Khoản này <strong>không</strong> trừ vào lãi (tiền vẫn của bạn) — đối chiếu ở trang
+      <a href="/shops/${esc(shopId)}/cod">Đối soát COD</a>.</p></div>` : '';
   const sortLink = (k, label) => sort === k ? `<strong>${label}</strong>` : `<a href="${base}?${qs({ from, to, group, sort: k })}">${label}</a>`;
   const prodRows = (d.by_product ?? []).map((p) => `<tr>
       <td>${esc(p.title)} <span class="muted">${esc(p.sku ?? '')}</span></td>
@@ -1955,9 +1962,11 @@ export function renderReports(ctx, shopId, d, f) {
         ${pnlRow(`LÃI GỘP${provisional}`, t.gross_profit_vnd, { bold: true })}
         ${pnlRow('Thu phí ship của khách', t.shipping_income_vnd, { sign: '+' })}
         ${pnlRow('Phí hãng vận chuyển <span class="muted" style="font-weight:400;font-size:.82rem">(báo giá lúc tạo vận đơn)</span>', -t.carrier_fee_vnd, { sign: '−' })}
+        ${pnlRow('Chênh lệch đối soát hãng <span class="muted" style="font-weight:400;font-size:.82rem">(tiền hãng THỰC chuyển so với kỳ vọng)</span>', t.settlement_variance_vnd, { sign: t.settlement_variance_vnd < 0 ? '−' : '+' })}
         ${pnlRow(`Lãi vận hành${provisional}`, t.operating_profit_vnd, { bold: true })}
       </tbody></table>
       ${covBadge}
+      ${outstandingNote}
       ${exportBtns}
     </div>
     <div class="card"><h2 style="margin-top:0">Lãi theo sản phẩm${d.products_truncated ? ' <span class="muted" style="font-size:.82rem">(top 100)</span>' : ''}</h2>

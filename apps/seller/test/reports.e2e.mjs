@@ -257,6 +257,51 @@ async function main() {
              WHERE r.shop_id=$1 AND r.kind <> 'edit_adjustment') AS v`, [shopId])).rows[0].v;
   stAll === N(dbAll) ? ok(`stats.revenue.all=${stAll} khớp sổ cái ever-paid − phiếu(≠edit)`) : bad('stats.all lệch sổ cái', `${stAll} kv ${dbAll}`);
 
+  sect('11. HOÀ GIẢI ĐỐI SOÁT: tiền hãng THỰC chuyển kéo lãi vận hành về đúng');
+  // Trước đợt này P&L chỉ trừ phí hãng BÁO GIÁ (shipments.carrier_fee_vnd) và KHÔNG bao giờ
+  // đọc cod_remittances — hãng trừ thêm phí hoàn hàng/bảo hiểm thì shop vẫn thấy lãi cao hơn
+  // thật. Đây là loại sai đắt nhất: người bán ra quyết định giá dựa trên con số đó.
+  const opBefore = N((await sales()).json.totals.operating_profit_vnd);
+  const today = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+  // Phiếu chuyển tiền: hãng KỲ VỌNG trả 500.000 nhưng THỰC chuyển 470.000 → hụt 30.000.
+  await owner.query(
+    `INSERT INTO cod_remittances (shop_id, carrier, amount_vnd, expected_vnd, order_count, remitted_at)
+     VALUES ($1, 'ghtk', 470000, 500000, 1, $2::date)`, [shopId, today]);
+  const tAfter = (await sales()).json.totals;
+  N(tAfter.settlement_variance_vnd) === -30000
+    ? ok('chênh đối soát = −30.000 (thực 470k so với kỳ vọng 500k)') : bad('chênh đối soát sai', tAfter.settlement_variance_vnd);
+  N(tAfter.operating_profit_vnd) === opBefore - 30000
+    ? ok(`lãi vận hành GIẢM đúng 30.000 (${opBefore} → ${tAfter.operating_profit_vnd})`)
+    : bad('lãi vận hành không phản ánh đối soát', `${opBefore} → ${tAfter.operating_profit_vnd}`);
+  // Lãi GỘP không được đụng: đối soát là chuyện vận chuyển, không phải giá vốn hàng.
+  N(tAfter.gross_profit_vnd) === N((await sales()).json.totals.gross_profit_vnd)
+    ? ok('lãi gộp KHÔNG đổi (đối soát chỉ nằm ở tầng vận hành)') : bad('đối soát rò vào lãi gộp');
+
+  // BẪY NGÀY: remitted_at là DATE, không phải timestamptz. Nếu ai đó dùng bucketSql của cột
+  // timestamptz cho nó, Postgres dịch 7 giờ và phiếu rơi sang ngày khác — tiền nhảy kỳ.
+  const yday = new Date(Date.parse(today + 'T00:00:00Z') - 86400e3).toISOString().slice(0, 10);
+  await owner.query(
+    `INSERT INTO cod_remittances (shop_id, carrier, amount_vnd, expected_vnd, order_count, remitted_at)
+     VALUES ($1, 'ghn', 100000, 90000, 1, $2::date)`, [shopId, yday]);
+  const two = (await sales(`?from=${yday}&to=${today}`)).json.series;
+  const bY = two.find((s) => s.bucket === yday), bT = two.find((s) => s.bucket === today);
+  N(bY?.settlement_variance_vnd) === 10000 && N(bT?.settlement_variance_vnd) === -30000
+    ? ok('phiếu rơi ĐÚNG ngày ghi trên sao kê (+10k hôm qua, −30k hôm nay)')
+    : bad('phiếu lệch ngày — nghi dịch múi giờ trên cột DATE', JSON.stringify({ [yday]: bY?.settlement_variance_vnd, [today]: bT?.settlement_variance_vnd }));
+  // Chỉ hỏi ngày HÔM QUA thì phiếu hôm nay phải nằm ngoài — chặn lỗi lọc bao trùm.
+  N((await sales(`?from=${yday}&to=${yday}`)).json.totals.settlement_variance_vnd) === 10000
+    ? ok('lọc kỳ 1 ngày: chỉ lấy phiếu của đúng ngày đó') : bad('lọc kỳ đối soát bao trùm sai');
+
+  sect('12. Hãng còn giữ tiền: hiện thành MEMO, KHÔNG trừ vào lãi');
+  const codMemo = (await sales()).json.totals.cod_outstanding;
+  codMemo && typeof codMemo.amount_vnd === 'number' && typeof codMemo.orders === 'number'
+    ? ok(`memo phải-thu có mặt (${codMemo.amount_vnd}đ / ${codMemo.orders} đơn)`) : bad('thiếu memo phải-thu', JSON.stringify(codMemo));
+  // Cột CSV phải khớp trang: thiếu một cột thì kế toán cộng tay KHÔNG ra lãi vận hành.
+  HOST = A.host;
+  const csvR = await rq(SELLER, 'GET', `/shops/${shopId}/reports/export?type=pnl&from=${today}&to=${today}`, { cookie: oc });
+  /settlement_variance_vnd/.test(String(csvR.raw ?? ''))
+    ? ok('CSV theo kỳ có cột settlement_variance_vnd') : bad('CSV thiếu cột chênh đối soát — hai màn hình hai số');
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

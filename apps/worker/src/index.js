@@ -518,6 +518,126 @@ async function seedShopBanners(payload, outboxId) {
   log('info', 'banner_seed_done', { outboxId, n: made.hero.length + made.side.length + made.promo.length, attempts: n });
 }
 
+// ── Đường tiền NỀN TẢNG: áp dụng khoản đã trả + cưỡng chế hết hạn (0124) ─────
+// TÁCH đôi có chủ ý: payment service (vai hẹp, ăn dữ liệu từ Internet) CHỈ đánh dấu
+// billing_charges đã trả; worker mới cộng hạn + mở khoá + ghi sổ thu. Nếu để payment làm
+// hết thì vai xử lý webhook phải có quyền sửa subscriptions và shops — đúng thứ không nên
+// trao cho endpoint công khai.
+//
+// applied_at NULL = còn việc → sweep nhặt. Máy chết giữa chừng thì nhịp sau làm lại; cộng
+// hạn hai lần bị chặn bởi chính applied_at (đặt trong CÙNG transaction với cộng hạn).
+const BILLING_GRACE_DAYS = Number(process.env.BILLING_GRACE_DAYS ?? 7);
+async function sweepBillingApply(batch = 100) {
+  if (!billingDb) return 0;
+  let c, n = 0;
+  try {
+    c = await billingDb.connect();
+    await c.query('BEGIN');
+    const rows = (await c.query(
+      `SELECT id, shop_id, plan_code, months, amount_vnd FROM billing_charges
+        WHERE status = 'paid' AND applied_at IS NULL
+        ORDER BY paid_at LIMIT $1 FOR UPDATE SKIP LOCKED`, [batch],
+    )).rows;
+    for (const ch of rows) {
+      // Cộng hạn từ MỐC LỚN HƠN giữa "hạn cũ" và "bây giờ": trả sớm thì cộng nối tiếp
+      // (không mất ngày đã mua), trả muộn thì tính từ hôm nay (không tặng ngày đã lỡ).
+      await c.query(
+        `UPDATE subscriptions
+            SET status = 'active',
+                plan_code = $2,
+                current_period_end = GREATEST(COALESCE(current_period_end, now()), now()) + ($3 || ' months')::interval
+          WHERE shop_id = $1`,
+        [ch.shop_id, ch.plan_code, String(ch.months)],
+      );
+      // MỞ KHOÁ + XOÁ CỜ trong MỘT câu lệnh.
+      //
+      // Bản trước tách làm hai (đọc cờ → mở khoá → xoá cờ) và e2e bắt được đúng cái nó sinh
+      // ra để bắt: có lúc hạn được cộng mà shop vẫn khoá — nghĩa là khách TRẢ TIỀN RỒI VẪN
+      // KHÔNG BÁN ĐƯỢC, kết cục tệ nhất có thể. Nguyên nhân là phụ thuộc thứ tự: cờ bị xoá
+      // trước khi kịp dùng (và hai lần quét chạy song song thì càng chắc trượt).
+      // Gộp vào một statement thì không còn khe nào để trượt.
+      //
+      // suspended_at IS NOT NULL = "CHÍNH TA khoá vì chưa trả tiền". Shop bị nhân viên nền
+      // tảng khoá (vi phạm) không có cờ này → trả tiền KHÔNG mở được, cưỡng chế giữ nguyên ý
+      // nghĩa. Trả về suspended_from = đúng trạng thái cũ, không ép 'active' (0126).
+      await c.query(
+        `WITH unlocked AS (
+           UPDATE shops sh SET status = COALESCE(s.suspended_from, 'active')
+             FROM subscriptions s
+            WHERE sh.id = $1 AND s.shop_id = $1
+              AND sh.status = 'suspended' AND s.suspended_at IS NOT NULL
+           RETURNING sh.id
+         )
+         UPDATE subscriptions SET suspended_at = NULL, suspended_from = NULL
+          WHERE shop_id = $1 AND EXISTS (SELECT 1 FROM unlocked)`,
+        [ch.shop_id],
+      );
+      // Sổ THU append-only (0061) — chứng từ doanh thu, ghi SAU KHI tiền đã về.
+      await c.query(
+        `INSERT INTO platform_invoices (shop_id, plan_code, months, amount_vnd, note)
+         VALUES ($1, $2, $3, $4, 'shop tự thanh toán (chuyển khoản)')`,
+        [ch.shop_id, ch.plan_code, ch.months, ch.amount_vnd],
+      );
+      await c.query(`UPDATE billing_charges SET applied_at = now() WHERE id = $1`, [ch.id]);
+      n += 1;
+    }
+    await c.query('COMMIT');
+    if (n) log('info', 'billing_applied', { n });
+    return n;
+  } catch (err) {
+    if (c) await c.query('ROLLBACK').catch(() => {});
+    log('error', 'billing_apply_failed', { message: err.message });
+    return 0;
+  } finally { c?.release(); }
+}
+
+/** Quá hạn + hết ân hạn → KHOÁ BÁN. Storefront đã sẵn kiểm shops.status='suspended'. */
+async function sweepBillingEnforce(batch = 200) {
+  if (!billingDb) return 0;
+  let c;
+  try {
+    c = await billingDb.connect();
+    await c.query('BEGIN');
+    // Lọc CHÍNH LÀ điều kiện xử lý (suspended_at IS NULL) → không có "đói quét": shop đã
+    // khoá rồi thì rơi khỏi tập, lô sau lấy shop kế tiếp.
+    // Lấy LUÔN trạng thái shop hiện tại: cần nó để nhớ "khoá từ đâu" (0126), và đọc sau
+    // khi UPDATE thì chỉ thấy 'suspended'. FOR UPDATE OF s — chỉ khoá dòng subscriptions,
+    // không khoá shops (tránh đụng độ với thao tác khác đang sửa shop).
+    const rows = (await c.query(
+      `SELECT s.shop_id, sh.status AS prev_status FROM subscriptions s
+         JOIN shops sh ON sh.id = s.shop_id
+        WHERE s.status IN ('past_due', 'cancelled') AND s.suspended_at IS NULL
+          AND s.current_period_end IS NOT NULL
+          AND s.current_period_end < now() - ($1 || ' days')::interval
+        ORDER BY s.current_period_end LIMIT $2 FOR UPDATE OF s SKIP LOCKED`,
+      [String(BILLING_GRACE_DAYS), batch],
+    )).rows;
+    for (const r of rows) {
+      // 'onboarding' CŨNG phải khoá: shop ở trạng thái đó VẪN bán được (0006 + nút "Mở
+      // bán"), nên bỏ sót nó là để cả một nhóm shop dùng mãi không trả tiền mà vẫn hợp lệ.
+      //
+      // prev_status lấy từ truy vấn chọn ở trên (0126). Shop đang ở trạng thái khác (đã bị
+      // nền tảng khoá, đã terminated) → rowCount = 0 → KHÔNG ghi suspended_from, để việc
+      // trả tiền sau này không mở nhầm một shop bị khoá vì lý do khác.
+      const locked = await c.query(
+        `UPDATE shops SET status = 'suspended' WHERE id = $1 AND status IN ('active', 'onboarding')`,
+        [r.shop_id],
+      );
+      await c.query(
+        `UPDATE subscriptions SET suspended_at = now(), suspended_from = $2 WHERE shop_id = $1`,
+        [r.shop_id, locked.rowCount ? r.prev_status : null],
+      );
+      log('warn', 'shop_suspended_nonpayment', { shop_id: r.shop_id, grace_days: BILLING_GRACE_DAYS, locked: locked.rowCount > 0 });
+    }
+    await c.query('COMMIT');
+    return rows.length;
+  } catch (err) {
+    if (c) await c.query('ROLLBACK').catch(() => {});
+    log('error', 'billing_enforce_failed', { message: err.message });
+    return 0;
+  } finally { c?.release(); }
+}
+
 // ── Báo khách qua Messenger khi đơn đổi trạng thái (0122) ────────────────────
 // Khách chốt đơn trong chat Facebook thường KHÔNG có email (bot không hỏi — thêm một bước
 // là thêm một chỗ để họ bỏ giữa chừng). Nếu chỉ báo bằng email thì với đúng nhóm khách này
@@ -1990,6 +2110,10 @@ const alertTimer = setInterval(sweepMoneyAlerts, ALERT_SWEEP_MS);
 const tgLinkTimer = (TELEGRAM_ON && expiryDb) ? setInterval(sweepTelegramLink, TELEGRAM_LINK_SWEEP_MS) : null;
 const domainTimer = domainDb ? setInterval(sweepDomainVerify, DOMAINVERIFY_SWEEP_MS) : null;
 const billingTimer = billingDb ? setInterval(sweepSubscriptions, SUBSCRIPTION_SWEEP_MS) : null;
+// Áp dụng tiền đã về chạy NHANH hơn nhịp vòng đời thuê bao: shop vừa chuyển khoản xong
+// mà phải chờ tới nhịp sau mới mở lại là một ca hỗ trợ ('tôi trả rồi mà vẫn khoá').
+const billingApplyTimer = billingDb ? setInterval(sweepBillingApply, Number(process.env.BILLING_APPLY_MS ?? 30000)) : null;
+const billingEnforceTimer = billingDb ? setInterval(sweepBillingEnforce, SUBSCRIPTION_SWEEP_MS) : null;
 const trackingTimer = (expiryDb && TRACKING_ON) ? setInterval(sweepTracking, TRACKING_SWEEP_MS) : null;
 const piiTimer = expiryDb ? setInterval(sweepPiiRetention, PII_SWEEP_MS) : null;
 // Dọn phiên Messenger đi cùng nhịp với quét PII — cùng loại việc (xoá dữ liệu cá nhân
@@ -2046,6 +2170,13 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const n = await sweepExpired();
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ expired: n }));
+  }
+  // Áp dụng tiền thuê bao đã về + cưỡng chế hết hạn ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/billing-sweep' && req.method === 'POST') {
+    const applied = await sweepBillingApply();
+    const suspended = await sweepBillingEnforce();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({ applied, suspended }));
   }
   // Dọn phiên Messenger nguội ngay (nội bộ — cho cron + e2e xác định).
   if (url.pathname === '/internal/messenger-gc' && req.method === 'POST') {
@@ -2196,6 +2327,8 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (revImgTimer) clearInterval(revImgTimer);
     if (piiTimer) clearInterval(piiTimer);
     if (messengerGcTimer) clearInterval(messengerGcTimer);
+    if (billingApplyTimer) clearInterval(billingApplyTimer);
+    if (billingEnforceTimer) clearInterval(billingEnforceTimer);
     if (staleTimer) clearInterval(staleTimer);
     if (loyaltyEarnTimer) clearInterval(loyaltyEarnTimer);
     if (loyaltyClawTimer) clearInterval(loyaltyClawTimer);

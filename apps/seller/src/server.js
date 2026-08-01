@@ -47,6 +47,7 @@ import { PURCHASING_ROUTES } from './purchasing.js';
 import { LOYALTY_CONFIG_ROUTES } from './loyalty-config.js';
 import { API_KEY_ROUTES, handleIngest } from './api-keys.js';
 import { MESSENGER_ROUTES } from './messenger-config.js';
+import { BILLING_ROUTES } from './billing.js';
 import { isProvince } from './provinces.js';
 import { runReq, makeLog, health } from './obs.js';
 
@@ -372,6 +373,7 @@ const ROUTES = [
   ...LOYALTY_CONFIG_ROUTES,
   ...API_KEY_ROUTES,
   ...MESSENGER_ROUTES,
+  ...BILLING_ROUTES,
 ];
 
 const server = http.createServer((req, res) => runReq(req, res, async () => {

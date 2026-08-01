@@ -232,6 +232,42 @@ async function sepayWebhook(req, res, body) {
   const isGlobal = timingSafeEq(key, SEPAY_KEY);
 
   const result = await withTxn(async (c) => {
+    // ── Tiền SHOP TRẢ CHO NỀN TẢNG (0124) — luồng KHÁC hẳn tiền khách trả cho shop ──
+    // Token riêng, bảng riêng, và tuyệt đối không đụng tới orders. Trộn hai luồng là ghi
+    // nhầm sổ tiền, mà sổ tiền ghi nhầm thì không có cách nào phát hiện muộn.
+    if (!isGlobal) {
+      const bill = (await c.query(
+        `SELECT 1 FROM platform_billing_config WHERE sepay_token_hash = $1 AND enabled`, [sha256(key)],
+      )).rows[0];
+      if (bill) {
+        const ev = parseEvent(body);
+        if (!ev.ok && !ev.skip) return { badRequest: ev };
+        if (ev.skip) return { matched: false, reason: ev.skip };
+        // Mã hoá đơn NỀN TẢNG có định dạng RIÊNG (SUB…), khác mã đơn hàng (NTG…). Dò
+        // bằng regex riêng ở đây thay vì nới REF_RE dùng chung: nới regex của đường tiền
+        // ĐƠN HÀNG để phục vụ một luồng khác là mở rộng bề mặt sai ở chỗ đắt nhất.
+        const bref = /SUB[0-9A-F]{10}/.exec(ev.content ?? '')?.[0] ?? null;
+        if (!bref) { log('warn', 'billing_unmatched', { reason: 'no_ref', eventId: ev.eventId }); return { matched: false, reason: 'no_ref' }; }
+        const ch = (await c.query(
+          `SELECT id, shop_id, amount_vnd, status FROM billing_charges WHERE pay_ref = $1 FOR UPDATE`, [bref],
+        )).rows[0];
+        if (!ch) { log('warn', 'billing_unmatched', { reason: 'charge_not_found', ref: bref, amount: ev.amount }); return { matched: false, reason: 'charge_not_found' }; }
+        // Trả TRÙNG (SePay gửi lại, hoặc shop chuyển hai lần): đã paid thì thôi, không
+        // đánh dấu lại. Việc cộng hạn nằm ở worker và cũng chỉ chạy một lần (applied_at).
+        if (ch.status === 'paid') return { matched: true, already: true, charge_id: ch.id };
+        if (ch.status !== 'pending') { log('warn', 'billing_unmatched', { reason: 'charge_' + ch.status, ref: bref }); return { matched: false, reason: 'charge_' + ch.status }; }
+        // TRẢ THIẾU thì KHÔNG cộng hạn. Hoá đơn giữ nguyên pending để shop thấy chưa xong,
+        // và log để người vận hành liên hệ — cộng hạn theo số tiền thiếu là tự mất tiền.
+        if (Number(ev.amount) < Number(ch.amount_vnd)) {
+          log('warn', 'billing_amount_short', { ref: bref, got: ev.amount, want: Number(ch.amount_vnd), shop_id: ch.shop_id });
+          return { matched: false, reason: 'amount_short' };
+        }
+        await c.query(`UPDATE billing_charges SET status = 'paid', paid_at = now() WHERE id = $1`, [ch.id]);
+        log('info', 'billing_charge_paid', { charge_id: ch.id, shop_id: ch.shop_id, amount: ev.amount });
+        return { matched: true, charge_id: ch.id };
+      }
+    }
+
     let scoped = false; // per-shop: context = shop của token (dùng cho hàng đợi + cô lập đơn)
     if (!isGlobal) {
       const cfg = (await c.query(`SELECT shop_id FROM shop_payment_config WHERE sepay_token_hash = $1 AND sepay_enabled`, [sha256(key)])).rows[0];

@@ -518,6 +518,37 @@ async function seedShopBanners(payload, outboxId) {
   log('info', 'banner_seed_done', { outboxId, n: made.hero.length + made.side.length + made.promo.length, attempts: n });
 }
 
+// ── Báo khách qua Messenger khi đơn đổi trạng thái (0122) ────────────────────
+// Khách chốt đơn trong chat Facebook thường KHÔNG có email (bot không hỏi — thêm một bước
+// là thêm một chỗ để họ bỏ giữa chừng). Nếu chỉ báo bằng email thì với đúng nhóm khách này
+// ta không báo gì cả: họ đặt xong rồi im lặng cho tới lúc shipper gọi.
+//
+// Kỷ luật giống deliverTelegram: ĐỘC LẬP email, idempotent theo outboxId, và TUYỆT ĐỐI
+// không throw — báo tin hỏng không được kéo email của khách xuống theo.
+const MESSENGER_URL = process.env.MESSENGER_URL ?? '';
+async function deliverMessenger(topic, p, shopId, outboxId) {
+  if (!MESSENGER_URL || topic !== 'order.status_changed' || !p?.messenger_psid) return;
+  const rc = outboxId ? await queue.client : null;
+  if (rc && (await rc.get(`fbsent:${outboxId}`))) return;
+  const label = { confirmed: 'đã được xác nhận ✅', shipped: 'đang trên đường giao 🚚', delivered: 'đã giao thành công 🎉',
+    cancelled: 'đã bị huỷ ❌', refunded: 'đã được hoàn tiền', returned: 'đã hoàn về cửa hàng' }[p.status];
+  if (!label) return;   // trạng thái không đáng làm phiền khách thì im lặng
+  const extra = p.status === 'shipped' && p.tracking_number ? `
+Mã vận đơn: ${p.tracking_number}`
+    : p.status === 'cancelled' && p.cancel_reason ? `
+Lý do: ${p.cancel_reason}` : '';
+  try {
+    const r = await fetch(`${MESSENGER_URL}/internal/notify`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ shop_id: shopId, psid: p.messenger_psid, text: `Đơn #${p.order_number} ${label}.${extra}` }),
+    });
+    if (r.ok && rc) await rc.set(`fbsent:${outboxId}`, '1', 'EX', 86400);
+    if (!r.ok) log('warn', 'messenger_notify_failed', { status: r.status, order: p.order_number });
+  } catch (e) {
+    log('warn', 'messenger_notify_error', { message: e.message, order: p.order_number });
+  }
+}
+
 // ── consumer: queue → email ──────────────────────────────────────────────────
 const worker = new Worker('email', async (job) => {
   const { topic, payload, shopId, outboxId } = job.data;
@@ -532,6 +563,9 @@ const worker = new Worker('email', async (job) => {
   // throw → retry → dead-letter), chủ shop VẪN nhận "đơn mới". Idempotent theo outboxId +
   // tự nuốt lỗi (không throw) → không làm fail/nuốt email.
   await deliverTelegram(topic, payload, shopId, outboxId);
+  // Messenger cũng chạy TRƯỚC + ĐỘC LẬP email, cùng lý do: khách chốt đơn trong chat có
+  // thể KHÔNG có email, nên đây là kênh báo duy nhất tới họ.
+  await deliverMessenger(topic, payload, shopId, outboxId);
   // Cờ test: email bounce vĩnh viễn → để kiểm dead-letter (chỉ dev/test).
   if (payload?.to === 'bounce@test.invalid') throw new Error('simulated permanent bounce');
   await deliverNotification(topic, payload, outboxId);

@@ -39,15 +39,26 @@ const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
 async function statusEvent(c, order, extra = {}) {
-  if (!order.customer_email) return;
+  // NGUỒN đơn quyết định có kênh báo nào ngoài email không (0122). Đơn chốt trong chat
+  // Facebook KHÔNG có email — bot không hỏi email, và bắt khách gõ email trong chat là
+  // thêm một bước để họ bỏ giữa chừng. Trước đây hàm này `return` ngay khi thiếu email,
+  // nghĩa là đơn từ bot sẽ KHÔNG phát sự kiện nào — khách đặt xong rồi im lặng mãi mãi.
+  const src = (await c.query(
+    `SELECT source, source_ref FROM orders WHERE id = $1 AND shop_id = current_shop_id()`, [order.id],
+  )).rows[0] ?? {};
+  const psid = /[?&]psid=([^&\s]+)$/.exec(src.source_ref ?? '')?.[1] ?? null;
+  const canMessenger = src.source === 'facebook' && !!psid;
+  if (!order.customer_email && !canMessenger) return;
   // shop_name → email báo trạng thái hiện ĐÚNG brand cửa hàng (trước đây thiếu → rơi về 'nentang.vn');
   // customer_name → cá nhân hoá "Chào <tên>". Email builder (worker compose) đã dùng 2 field này +
   // tracking_number (shipped truyền qua extra) — chỉ thiếu ở payload nên bổ sung tại đây.
   const shopName = (await c.query(`SELECT name FROM shops WHERE id = current_shop_id()`)).rows[0]?.name ?? null;
   await c.query(
     `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.status_changed', $1)`,
-    [{ to: order.customer_email, order_number: Number(order.order_number), status: order.status,
-       shop_name: shopName, customer_name: order.customer_name ?? null, ...extra }],
+    // `to` để null khi không có email — deliverNotification tự bỏ qua, không gửi tới địa chỉ ma.
+    [{ to: order.customer_email ?? null, order_number: Number(order.order_number), status: order.status,
+       shop_name: shopName, customer_name: order.customer_name ?? null,
+       ...(canMessenger ? { messenger_psid: psid } : {}), ...extra }],
   );
 }
 

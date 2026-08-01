@@ -136,10 +136,39 @@ async function shippingQuote(res, shopId, query) {
   return send(res, 200, { subtotal_vnd: subtotal, shipping_vnd: Number(fee), total_vnd: subtotal + Number(fee) });
 }
 
+/**
+ * GET /ingest/orders/lookup?psid=<psid>&limit=5 — đơn GẦN ĐÂY của đúng người chat này.
+ *
+ * "Đơn tôi tới đâu rồi?" là câu shop phải trả lời nhiều nhất. Để bot tự trả là bớt việc
+ * thật cho nhân viên, và khách không phải chờ.
+ *
+ * LỌC THEO PSID, không phải trả cả sổ đơn: khoá kết nối vốn đọc được mọi đơn của shop, nên
+ * nếu ở đây lỡ trả nhầm người thì bot sẽ đưa SĐT/địa chỉ khách A cho khách B. Khớp CUỐI
+ * chuỗi source_ref (`…?psid=<psid>`) và escape ký tự đại diện của LIKE.
+ */
+async function lookupOrders(res, shopId, query) {
+  const psid = String(query.get('psid') ?? '').trim().slice(0, 80);
+  if (!psid) return send(res, 400, { error: 'thiếu psid' });
+  const limit = Math.min(Math.max(parseInt(query.get('limit') ?? '5', 10) || 5, 1), 10);
+  const like = '%psid=' + psid.replace(/[%_\\]/g, '\\$&');
+  const rows = await withTenant(shopId, async (c) =>
+    (await c.query(
+      `SELECT o.order_number, o.status, o.payment_status, o.total_vnd, o.created_at,
+              (SELECT s.tracking_number FROM shipments s
+                WHERE s.order_id = o.id AND s.tracking_number IS NOT NULL
+                ORDER BY s.created_at DESC LIMIT 1) AS tracking_number
+         FROM orders o
+        WHERE o.source = 'facebook' AND o.source_ref LIKE $1
+        ORDER BY o.order_number DESC LIMIT ${limit}`, [like],
+    )).rows);
+  return send(res, 200, { orders: rows.map((r) => ({ ...r, total_vnd: Number(r.total_vnd) })) });
+}
+
 /** Điều hướng các route ĐỌC của /ingest. Trả false nếu không khớp → nơi gọi trả 404. */
 export async function routeIngestCatalog(res, shopId, pathname, query) {
   if (pathname === '/ingest/catalog') { await listCatalog(res, shopId, query); return true; }
   if (pathname === '/ingest/shipping-quote') { await shippingQuote(res, shopId, query); return true; }
+  if (pathname === '/ingest/orders/lookup') { await lookupOrders(res, shopId, query); return true; }
   const m = /^\/ingest\/catalog\/products\/([0-9a-f-]{36})$/.exec(pathname);
   if (m) { await getCatalogProduct(res, shopId, m[1]); return true; }
   return false;

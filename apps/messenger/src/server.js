@@ -148,12 +148,23 @@ function toMetaMessage(m) {
   return out;
 }
 
-async function sendMessages(pageToken, psid, messages) {
+/**
+ * @param {string} [tag]  Nhãn tin nhắn của Meta. Mặc định RESPONSE = trả lời trong cửa sổ
+ *   24h kể từ tin cuối của khách. Báo trạng thái đơn thường rơi RA NGOÀI cửa sổ đó (khách
+ *   đặt hôm nay, shop giao ngày mai) nên phải gắn POST_PURCHASE_UPDATE — đúng mục đích Meta
+ *   định ra cho nhãn này. Không gắn thì Meta lặng lẽ từ chối và khách không bao giờ biết
+ *   đơn đã đi.
+ */
+async function sendMessages(pageToken, psid, messages, tag) {
   for (const m of messages) {
     const r = await fetch(`${GRAPH}/me/messages?access_token=${encodeURIComponent(pageToken)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ recipient: { id: psid }, messaging_type: 'RESPONSE', message: toMetaMessage(m) }),
+      body: JSON.stringify({
+        recipient: { id: psid },
+        ...(tag ? { messaging_type: 'MESSAGE_TAG', tag } : { messaging_type: 'RESPONSE' }),
+        message: toMetaMessage(m),
+      }),
     }).catch((e) => ({ ok: false, status: 0, _err: e.message }));
     if (!r.ok) log('warn', 'send_failed', { status: r.status, error: r._err ?? (await r.text?.().catch(() => null)) });
   }
@@ -194,6 +205,11 @@ async function handleEvent(cfg, psid, ev) {
     const pid = ev.payload?.slice(5) ?? ev.ref.slice(3);
     const r = await shopApi(apiToken, `/ingest/catalog/products/${pid}`);
     data.product = r.status === 200 ? r.json : null;
+  } else if (ev.payload === 'MYORDERS') {
+    // Tra ĐÚNG đơn của người đang chat (lọc theo PSID phía seller) — khoá kết nối đọc được
+    // mọi đơn của shop, nên lọc sai ở đây là đưa SĐT/địa chỉ khách A cho khách B.
+    const r = await shopApi(apiToken, `/ingest/orders/lookup?psid=${encodeURIComponent(psid)}`);
+    data.myOrders = r.status === 200 ? r.json.orders : [];
   } else if (ev.payload?.startsWith('QTYP:')) {
     // Tăng số lượng phải hỏi lại TỒN THẬT — số bot nhớ từ lúc khách chọn có thể đã cũ.
     const vid = ev.payload.slice(5);
@@ -282,6 +298,26 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     }
     res.writeHead(403, { 'content-type': 'text/plain' });
     return res.end('forbidden');
+  }
+
+  // Báo tin cho khách khi đơn đổi trạng thái (0122). Worker gọi — KHÔNG route qua Caddy
+  // (edge chỉ đưa /webhooks/messenger sang đây), nên biên giới là mạng nội bộ, y như các
+  // endpoint /internal/* của worker. Token Trang nằm ở service này chứ không phải worker:
+  // chép logic gửi + giải mã token sang worker là nhân đôi chỗ có thể sai.
+  if (req.method === 'POST' && url.pathname === '/internal/notify') {
+    const raw = await readRaw(req);
+    let b = null; try { b = JSON.parse(raw.toString('utf8')); } catch {}
+    const shopId = String(b?.shop_id ?? ''), psid = String(b?.psid ?? ''), body = String(b?.text ?? '');
+    if (!shopId || !psid || !body) { res.writeHead(400, { 'content-type': 'application/json' }); return res.end('{"error":"thiếu shop_id/psid/text"}'); }
+    const cfg = (await db.query(
+      `SELECT page_token_enc FROM shop_messenger_config WHERE shop_id = $1 AND enabled`, [shopId],
+    )).rows[0];
+    // Shop đã ngắt kết nối → không còn kênh này nữa. Trả 200 "sent:false" chứ không lỗi:
+    // worker retry một việc không bao giờ thành công chỉ tạo dead-letter vô nghĩa.
+    if (!cfg) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"sent":false,"reason":"chưa kết nối Trang"}'); }
+    await sendMessages(openMsg(cfg.page_token_enc), psid, [{ kind: 'text', text: body }], 'POST_PURCHASE_UPDATE');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end('{"sent":true}');
   }
 
   if (req.method === 'POST' && url.pathname === '/webhooks/messenger') {

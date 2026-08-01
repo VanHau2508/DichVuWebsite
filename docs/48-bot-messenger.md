@@ -120,7 +120,31 @@ hạn: không đẻ vai mới cho một câu DELETE, và `app_messenger` thì kh
 xuyên shop được. Chạy cùng nhịp `PII_SWEEP_MS` (24h). Không dính bẫy "đói quét": điều kiện
 lọc CHÍNH LÀ điều kiện xoá.
 
+## Hai việc cuối (đã làm)
+
+**[Tra đơn của tôi].** "Đơn tôi tới đâu rồi?" là câu shop phải trả lời nhiều nhất — bot tự
+trả là bớt việc thật cho nhân viên, và khách không phải chờ tới giờ hành chính. Endpoint
+`GET /ingest/orders/lookup?psid=` lọc **theo PSID**, không trả cả sổ đơn: khoá kết nối vốn
+đọc được mọi đơn của shop, nên lọc sai ở đây là đưa SĐT/địa chỉ khách A cho khách B (có test
+riêng cho đúng điều đó). Trạng thái dịch sang tiếng Việt — khách thấy `shipped` thì không
+hiểu, thấy "đang giao" thì hiểu ngay và bớt một tin nhắn hỏi shop.
+
+**Bot báo khi đơn đổi trạng thái.** Đây là chỗ lộ ra một lỗ có sẵn: `statusEvent()` **thoát
+ngay khi đơn không có email** — mà đơn chốt trong chat thì không có email (bot không hỏi;
+bắt gõ email trong chat là thêm một bước để khách bỏ giữa chừng). Nghĩa là nhóm khách này
+đặt xong rồi **im lặng mãi mãi**. Nay sự kiện vẫn phát khi có `messenger_psid`, `to` để null
+và đường email tự bỏ qua.
+
+Worker gọi `POST /internal/notify` của service messenger thay vì tự gửi: token Trang và
+logic gửi nằm ở đó, chép sang worker là nhân đôi chỗ có thể sai. Kỷ luật y như
+`deliverTelegram` — độc lập email, idempotent theo `outboxId`, không bao giờ throw.
+
+Tin báo gắn **`POST_PURCHASE_UPDATE`**: khách đặt hôm nay, shop giao ngày mai — tin rơi ra
+ngoài cửa sổ 24h của Meta. Không gắn nhãn thì Meta lặng lẽ từ chối và khách không bao giờ
+biết đơn đã đi. Nhãn này Meta định ra đúng cho mục đích đó.
+
 ## Còn nợ
 
-* Nút **[Tra đơn của tôi]** trong bot.
-* Bot chưa báo khi shop **đổi trạng thái đơn** (đang giao / đã giao) — hiện chỉ có email.
+* Khách **huỷ đơn** ngay trong chat (hiện phải nhắn nhân viên).
+* Bot chưa hỏi **email** nên đơn từ chat không có hoá đơn qua email — chấp nhận đánh đổi để
+  giữ 3 chạm; nếu sau này cần thì hỏi SAU khi đặt xong, không phải trước.

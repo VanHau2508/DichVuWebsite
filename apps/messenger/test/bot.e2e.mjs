@@ -235,6 +235,42 @@ async function main() {
   const n2 = (await owner.query('SELECT count(*)::int n FROM orders WHERE shop_id=$1', [A.shopId])).rows[0].n;
   n2 === 1 ? ok('vẫn đúng 1 đơn (idempotency chặn)') : bad(`gửi lại đẻ thêm đơn: tổng ${n2}`);
 
+  sect('8b. [Tra đơn của tôi] — bot tự trả lời "đơn tới đâu rồi"');
+  await webhook(pageId, evQuick('MYORDERS'));
+  await sleep(700);
+  out = drain();
+  out.flat.includes(`#${ordRows[0].order_number}`) && /chờ shop xác nhận/.test(out.flat)
+    ? ok('bot liệt kê đơn + trạng thái BẰNG TIẾNG VIỆT (không phải "pending")') : bad('tra đơn sai', out.flat.slice(0, 400));
+  // Lọc theo PSID phải đúng: khoá kết nối đọc được MỌI đơn của shop, sai một chút là
+  // đưa SĐT/địa chỉ khách này cho khách khác.
+  const otherOrder = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders`, {
+    body: { lines: [{ variant_id: p1.variantId, qty: 1 }], customer: { name: 'Khách Khác', phone: '0977000111', address_line: '9 Bà Triệu' }, payment_method: 'cod', idempotency_key: `other-${uniq()}` },
+    cookie: A.cookie, origin: OS,
+  });
+  await webhook(pageId, evQuick('MYORDERS'));
+  await sleep(700);
+  out = drain();
+  otherOrder.status === 201 && !out.flat.includes(`#${otherOrder.json.order_number}`)
+    ? ok('KHÔNG lộ đơn của người khác (lọc đúng PSID)') : bad('LỘ đơn khách khác trong chat!', out.flat.slice(0, 400));
+
+  sect('8c. Đơn đổi trạng thái → bot nhắn báo khách');
+  // Đơn từ chat KHÔNG có email; nếu chỉ báo bằng email thì nhóm khách này không nhận gì.
+  drain();
+  const conf = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${ordRows[0].id}/confirm`, { cookie: A.cookie, origin: OS });
+  const shipped = conf.status === 200
+    ? await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${ordRows[0].id}/ship`, { body: { tracking_number: 'GHN123456' }, cookie: A.cookie, origin: OS })
+    : { status: 0 };
+  // outbox → worker poll → queue → deliverMessenger. Cho vài giây.
+  for (let i = 0; i < 12 && !sent.length; i++) await sleep(1000);
+  out = drain();
+  conf.status === 200 ? ok('shop xác nhận đơn') : bad('không xác nhận được đơn', conf.raw);
+  out.flat.includes(`#${ordRows[0].order_number}`) && /(xác nhận|giao)/.test(out.flat)
+    ? ok('bot NHẮN cho khách khi đơn đổi trạng thái') : bad('khách không nhận được tin báo nào', out.flat.slice(0, 400) || '(không có tin)');
+  /MESSAGE_TAG|POST_PURCHASE_UPDATE/.test(JSON.stringify(out.all))
+    ? ok('gắn nhãn POST_PURCHASE_UPDATE (gửi được ngoài cửa sổ 24h)') : bad('thiếu message tag → Meta sẽ từ chối tin ngoài 24h', JSON.stringify(out.all).slice(0, 300));
+  shipped.status === 200 && out.flat.includes('GHN123456')
+    ? ok('tin báo kèm MÃ VẬN ĐƠN') : bad('không thấy mã vận đơn trong tin báo', String(shipped.status));
+
   sect('9. Gặp nhân viên → bot IM');
   await webhook(pageId, evQuick('HUMAN'));
   await sleep(500);

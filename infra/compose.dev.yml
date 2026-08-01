@@ -450,6 +450,8 @@ services:
       MEDIAFETCH_SWEEP_MS: "2000"
       DATABASE_URL: postgres://app_worker:devpassword@postgres:5432/app
       # Pool riêng, role hẹp: hết hạn đơn QR + release reserve (0022).
+      # Báo khách qua Messenger khi đơn đổi trạng thái (0122). Trống = tắt kênh này.
+      MESSENGER_URL: http://messenger:3072
       DATABASE_URL_EXPIRY: postgres://app_expiry:devpassword@postgres:5432/app
       ORDER_EXPIRY_MINUTES: "30"
       EXPIRY_SWEEP_MS: "60000"

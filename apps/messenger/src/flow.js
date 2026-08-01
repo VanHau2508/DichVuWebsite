@@ -33,6 +33,14 @@ const qr = (title, payload) => ({ title: btnTitle(title), payload });
 
 /** Nút "gặp người thật" — có ở MỌI bước. Bot không có lối thoát = bẫy = mất khách. */
 const QR_HUMAN = qr('💬 Gặp nhân viên', 'HUMAN');
+const QR_MYORDERS = qr('📦 Tra đơn của tôi', 'MYORDERS');
+
+// Nhãn trạng thái cho KHÁCH đọc — không phải chuỗi kỹ thuật. Khách thấy 'shipped' thì không
+// hiểu; thấy 'đang giao' thì hiểu ngay và bớt được một tin nhắn hỏi shop.
+const ORDER_STATUS_VI = {
+  pending: 'chờ shop xác nhận', confirmed: 'đã xác nhận', shipped: 'đang giao',
+  delivered: 'đã giao xong', cancelled: 'đã huỷ', refunded: 'đã hoàn tiền', returned: 'đã hoàn về shop',
+};
 
 const priceLine = (p) => (p.orig_price_vnd != null
   ? `${money(p.price_vnd)} (giá gốc ${money(p.orig_price_vnd)})`
@@ -148,10 +156,11 @@ export function step(state, ev, data = {}) {
     const greet = s.cart.length ? 'Bạn chọn thêm món nào ạ?' : `Chào ${data.profile?.first_name ?? 'bạn'} 👋 Shop có thể giúp gì ạ?`;
     // Ít hàng thì hiện thẳng sản phẩm — bắt duyệt danh mục khi chỉ có 5 món là thừa một chạm.
     if (cat.products.length && (cat.products.length <= MAX_DIRECT || !cat.categories.length)) {
-      return { state: { ...s, step: 'browse' }, messages: [text(greet), productCards(cat.products), text('Chọn món bạn thích nhé 👆', [QR_HUMAN])] };
+      return { state: { ...s, step: 'browse' }, messages: [text(greet), productCards(cat.products), text('Chọn món bạn thích nhé 👆', [QR_MYORDERS, QR_HUMAN])] };
     }
     if (cat.categories.length) {
-      return { state: { ...s, step: 'browse' }, messages: [text(`${greet}\nBạn muốn xem loại nào?`, categoryReplies(cat.categories))] };
+      return { state: { ...s, step: 'browse' }, messages: [text(`${greet}\nBạn muốn xem loại nào?`,
+        [...categoryReplies(cat.categories).slice(0, MAX_QR - 2), QR_MYORDERS, QR_HUMAN])] };
     }
     return { state: { ...s, step: 'browse' }, messages: [text('Shop chưa có sản phẩm nào đang bán. Bạn nhắn lại sau nhé!')] };
   }
@@ -210,6 +219,22 @@ export function step(state, ev, data = {}) {
     const added = text(`Đã thêm: ${title} × ${found ? found.qty : 1} — ${money(v.price_vnd)}`);
     const ask = askNext(next);
     return { state: ask.state, messages: [added, ...ask.messages] };
+  }
+
+  // ── Tra đơn của tôi ───────────────────────────────────────────────────────
+  // "Đơn tôi tới đâu rồi?" là câu shop phải trả lời nhiều nhất. Bot tự trả = bớt việc thật
+  // cho nhân viên, và khách không phải chờ tới giờ hành chính.
+  if (ev.payload === 'MYORDERS') {
+    const orders = data.myOrders ?? [];
+    if (!orders.length) {
+      return { state: s, messages: [text('Mình chưa thấy đơn nào bạn đặt qua đây ạ. Nếu bạn đặt bằng cách khác, nhắn giúp shop mã đơn nhé!', [qr('🛍 Xem sản phẩm', 'BROWSE'), QR_HUMAN])] };
+    }
+    const lines = orders.map((o) => {
+      const st = ORDER_STATUS_VI[o.status] ?? o.status;
+      const trk = o.tracking_number ? `\n   Mã vận đơn: ${o.tracking_number}` : '';
+      return `#${o.order_number} — ${st} — ${money(o.total_vnd)}${trk}`;
+    });
+    return { state: s, messages: [text(['Đơn gần đây của bạn:', ...lines].join('\n'), [qr('🛍 Mua thêm', 'BROWSE'), QR_HUMAN])] };
   }
 
   // ── Sửa số lượng ở màn tóm tắt ────────────────────────────────────────────
@@ -287,7 +312,9 @@ export function step(state, ev, data = {}) {
 /** Tin nhắn sau khi đơn đã tạo THÀNH CÔNG — có mã đơn để khách tra cứu. */
 export function orderPlacedMessages(order, lookupUrl) {
   return [
-    text(`✅ Đặt hàng thành công!\nMã đơn: #${order.order_number}\nTổng tiền: ${money(order.total_vnd)}\nShop sẽ liên hệ xác nhận sớm nhất ạ. Cảm ơn bạn! 🎉`),
+    // Nút tra đơn đặt NGAY tại đây: đó chính là lúc khách nghĩ tới việc theo dõi đơn.
+    text(`✅ Đặt hàng thành công!\nMã đơn: #${order.order_number}\nTổng tiền: ${money(order.total_vnd)}\nShop sẽ liên hệ xác nhận sớm nhất ạ. Cảm ơn bạn! 🎉`,
+      [QR_MYORDERS, qr('🛍 Mua thêm', 'BROWSE'), QR_HUMAN]),
     ...(lookupUrl ? [text(`Theo dõi đơn tại: ${lookupUrl}`)] : []),
   ];
 }

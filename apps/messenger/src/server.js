@@ -293,7 +293,11 @@ async function handleEvent(cfg, psid, ev) {
   // thay vì bịa số hoặc chặn khách giữa chừng.
   if (out.effect?.type === 'summary') {
     const sub = subtotalOf(out.state.cart);
-    const q = await shopApi(apiToken, `/ingest/shipping-quote?subtotal=${sub}`);
+    // Gửi kèm GIỎ HÀNG: phí ship có phụ phí theo cân, mà cân thì chỉ suy ra được từ giỏ.
+    // Thiếu tham số này thì báo giá rơi về phí phẳng còn lúc tạo đơn lại tính đủ → bot hứa
+    // một con số rồi thu con số khác, đúng thứ endpoint quote sinh ra để tránh.
+    const items = (out.state.cart ?? []).map((it) => `${it.variant_id}:${it.qty}`).join(',');
+    const q = await shopApi(apiToken, `/ingest/shipping-quote?subtotal=${sub}&items=${encodeURIComponent(items)}`);
     const fee = q.status === 200 ? Number(q.json.shipping_vnd) : null;
     out = { ...out, messages: [...out.messages, ...summaryMessages(out.state, fee)] };
   }

@@ -178,14 +178,44 @@ không có nghĩa hàng đã về kho; hàng về thì dùng "Đánh dấu hoàn
 > gộp cả hai nguyên nhân (gửi hàng đã trừ 2, lệnh hoàn trừ 1) và báo đỏ oan. Mốc phải lấy
 > **sau khi gửi** thì mới cô lập được tác động của lệnh hoàn.
 
-## Còn nợ (đã tìm ra, CHƯA kiểm chứng, CHƯA vá)
+## Nghi vấn cuối — phí ship đơn không-qua-web: **tách làm hai, vá một, để lại một có lý do**
 
-| Mảng | Vị trí | Nội dung |
+Agent nói đơn từ bot tính ship bằng công thức phẳng, bỏ cả phí liên miền lẫn phụ phí cân.
+Đúng cả hai vế, nhưng **hai vế đó không cùng bản chất**:
+
+| Phần | Cần gì để tính đúng | Xử lý |
 |---|---|---|
-| khuyến mãi | `apps/seller/src/orders.js:717` | đơn từ bot Messenger tính ship bằng công thức phẳng, bỏ phí liên miền + phụ phí cân mà checkout web đang thu |
+| **Phụ phí cân** (`ship_extra_per_500g_vnd`) | chỉ cần GIỎ HÀNG | **ĐÃ VÁ** |
+| **Bậc vùng** (`ship_fee_far_vnd`) và **theo km** | cần TỈNH/THÀNH người nhận | **để lại** — xem dưới |
 
-Mức độ: **thu thiếu phí ship trên một kênh phụ** — nhẹ hơn hẳn 8 lỗ đã vá (không mất tiền
-hàng, không kẹt kho, không chặn nghiệp vụ). Để lại có chủ ý, không phải bỏ quên.
+### Đã vá: phụ phí cân
+
+`shopShipFee` giờ đọc thêm `ship_extra_per_500g_vnd` + `default_weight_gram`, nhận thêm
+tham số `lines`, và tính `ceil(max(0, tổng_gam − 500) / 500) × phụ_phí` — y công thức
+`weightSurcharge` của checkout. Free-ship vẫn **thắng** phụ phí (mirror checkout).
+
+Hai nơi gọi đều truyền giỏ hàng: `createManualOrder` truyền `lines`, và
+`GET /ingest/shipping-quote` nhận thêm `&items=<vid>:<qty>,…` do bot gửi. Nhờ vậy **báo giá
+bot == số thu** — bất biến mà chú thích của endpoint quote vốn đã đặt ra. Tham số `items`
+là TUỲ CHỌN nên bot bản cũ không vỡ, chỉ rơi về phí phẳng như trước.
+
+Dựng lại (`a13`): shop phí phẳng 30.000 + 10.000/500g, cân mặc định 600g; đơn 3 món =
+1800g ⇒ **60.000**. Trước khi vá thu **30.000** — thiếu 30.000 mỗi đơn.
+Đột biến (tắt nhánh phụ phí) → thu lại về 30.000, test đỏ.
+
+### Để lại có lý do: bậc vùng / theo km
+
+Bot hỏi địa chỉ bằng **một ô chữ tự do** ("số nhà, đường, phường/xã, tỉnh/thành" —
+`flow.js askNext`) và không lưu `province` có cấu trúc. Vậy nên:
+
+- Đoán tỉnh từ chuỗi tự do **để tính tiền** là đoán đúng chỗ không được phép đoán.
+- Tính "liên miền" cho mọi đơn không rõ tỉnh thì **thu oan** khách gần.
+- Còn nếu báo giá dùng một giả định và chốt đơn dùng giả định khác thì **bot hứa một con số
+  rồi thu con số khác** — đúng thứ mà cả `shopShipFee` lẫn endpoint quote sinh ra để chặn.
+
+Cho bot tính đúng bậc vùng **đòi thêm một bước hỏi tỉnh trong hội thoại**. Đó là **đổi trải
+nghiệm sản phẩm**, không phải vá lỗi, nên cần chủ dự án quyết. Đã ghi rõ trong chú thích của
+`shopShipFee` để người sửa sau không tưởng là bỏ sót.
 
 ## Hàng rào manifest đã bắt được chính đợt này
 

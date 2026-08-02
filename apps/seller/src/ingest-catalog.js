@@ -124,15 +124,28 @@ async function getCatalogProduct(res, shopId, productId) {
 }
 
 /**
- * GET /ingest/shipping-quote?subtotal=<vnd> — phí ship cho giá trị hàng này.
+ * GET /ingest/shipping-quote?subtotal=<vnd>&items=<vid>:<qty>,<vid>:<qty>
  *
  * Bot phải BÁO TRƯỚC tổng tiền trong tóm tắt, mà phí ship lại tính lúc tạo đơn. Endpoint
  * này gọi ĐÚNG hàm mà createManualOrder gọi (shopShipFee), nên con số bot hứa và con số
  * hệ thống thu là MỘT. Tự tính lại ở phía bot là tự chuốc lấy sai lệch.
+ *
+ * `items` là TUỲ CHỌN và chỉ dùng để tính PHỤ PHÍ CÂN. Thiếu nó thì hàm rơi về phí phẳng —
+ * đúng như hành vi cũ, nên bot bản cũ không vỡ; nhưng bot bản mới gửi giỏ hàng thì báo giá
+ * và số thu vẫn là MỘT vì cả hai đi qua cùng một hàm với cùng dữ liệu.
  */
+function parseQuoteItems(raw) {
+  return String(raw ?? '').split(',').map((s) => {
+    const [vid, q] = s.split(':');
+    const qty = Number(q);
+    return UUID_RE.test(String(vid ?? '')) && Number.isInteger(qty) && qty >= 1 && qty <= 1000
+      ? { variant_id: vid, qty } : null;
+  }).filter(Boolean).slice(0, 50);
+}
 async function shippingQuote(res, shopId, query) {
   const subtotal = Math.max(0, Math.min(Number(query.get('subtotal') ?? 0) || 0, 100_000_000_000));
-  const fee = await withTenant(shopId, (c) => shopShipFee(c, subtotal));
+  const items = parseQuoteItems(query.get('items'));
+  const fee = await withTenant(shopId, (c) => shopShipFee(c, subtotal, items));
   return send(res, 200, { subtotal_vnd: subtotal, shipping_vnd: Number(fee), total_vnd: subtotal + Number(fee) });
 }
 

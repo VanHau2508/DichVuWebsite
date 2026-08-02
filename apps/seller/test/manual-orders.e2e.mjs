@@ -168,6 +168,33 @@ async function main() {
   const rBv = await rq(SELLER, 'GET', `/shops/${Bs.shopId}/sellable-variants`, { cookie: Bs.cookie });
   (rBv.json?.variants ?? []).some((v) => v.id === vid) ? bad('shop B THẤY biến thể shop A!') : ok('sellable-variants shop B không thấy hàng shop A');
 
+  // ── PHỤ PHÍ CÂN: đơn KHÔNG QUA WEB phải thu như checkout web ────────────────
+  // shopShipFee từng chỉ đọc ship_fee_vnd + ngưỡng free-ship, bỏ ship_extra_per_500g_vnd mà
+  // checkout web đang thu → shop thu THIẾU đúng phần phụ phí trên MỌI đơn bot/gõ tay.
+  // Dựng lại: a13 (3 món × 600g → 3 bậc × 10.000 = 30.000 bị bỏ sót mỗi đơn).
+  // Báo giá bot (/ingest/shipping-quote) đi qua CÙNG hàm này nên hai số luôn bằng nhau.
+  sect('Phụ phí cân theo giỏ hàng (mirror phí ship của checkout web)');
+  {
+    await owner.query(
+      `UPDATE shops SET ship_fee_vnd=30000, ship_extra_per_500g_vnd=10000, default_weight_gram=600,
+              free_ship_threshold_vnd=NULL WHERE id=$1`, [A.shopId]);
+    await owner.query(`UPDATE variants SET weight_gram=NULL WHERE id=$1`, [vid]);
+    const rW = await a.post('/orders', mkBody({ lines: [{ variant_id: vid, qty: 3 }] }));
+    // 3×600g = 1800g → vượt 500g đầu 1300g → ceil(1300/500)=3 bậc × 10.000 = 30.000
+    rW.status === 201 && rW.json.shipping_vnd === 60000
+      ? ok('3 món × 600g → ship 60.000 = 30.000 phẳng + 30.000 phụ phí cân')
+      : bad('THU THIẾU phụ phí cân trên đơn không-qua-web', `http=${rW.status} ship=${rW.json?.shipping_vnd}`);
+
+    // Ngưỡng free-ship phải THẮNG cả phụ phí cân (mirror checkout: freeship = 0đ).
+    await owner.query(`UPDATE shops SET free_ship_threshold_vnd=1 WHERE id=$1`, [A.shopId]);
+    const rF = await a.post('/orders', mkBody({ lines: [{ variant_id: vid, qty: 1 }] }));
+    rF.status === 201 && rF.json.shipping_vnd === 0
+      ? ok('đạt ngưỡng free-ship → 0đ, phụ phí cân KHÔNG cộng thêm')
+      : bad('freeship không thắng phụ phí cân', `ship=${rF.json?.shipping_vnd}`);
+    await owner.query(
+      `UPDATE shops SET ship_extra_per_500g_vnd=NULL, default_weight_gram=500, free_ship_threshold_vnd=NULL WHERE id=$1`, [A.shopId]);
+  }
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

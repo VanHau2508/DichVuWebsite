@@ -718,17 +718,40 @@ async function listSellableVariants(res, ctx, query) {
 }
 
 /**
- * Phí ship theo cấu hình shop (phẳng + ngưỡng free-ship) — NGUỒN DUY NHẤT của quy tắc này.
+ * Phí ship theo cấu hình shop cho đơn KHÔNG QUA WEB (nhân viên gõ tay + bot Messenger).
+ * NGUỒN DUY NHẤT của quy tắc này — bot phải BÁO TRƯỚC phí trong tóm tắt còn đơn thì tính
+ * lúc tạo; hai đoạn mã chép tay chắc chắn sẽ lệch, mà lệch ở đây nghĩa là bot hứa một con
+ * số rồi thu con số khác. Gọi TRONG withTenant (dùng current_shop_id()).
  *
- * Tách ra vì bot Messenger phải BÁO TRƯỚC phí ship trong tóm tắt, còn đơn thì tính lúc tạo.
- * Hai chỗ tính bằng hai đoạn mã chép tay chắc chắn sẽ lệch — và lệch ở phí ship nghĩa là
- * bot hứa một con số rồi thu con số khác. Gọi TRONG withTenant (dùng current_shop_id()).
+ * TÍNH: phí phẳng + PHỤ PHÍ CÂN (mỗi 500g vượt 500g đầu) − ngưỡng free-ship.
+ *
+ * ⚠ CỐ Ý KHÔNG có bậc VÙNG (nội miền / liên miền) và không có chế độ theo km, dù checkout
+ * web có cả ba. Lý do: cả hai thứ đó cần TỈNH/THÀNH của người nhận, mà bot chỉ hỏi địa chỉ
+ * bằng MỘT ô chữ tự do (flow.js askNext) nên `customer.province` rỗng. Đoán tỉnh từ chuỗi
+ * tự do để tính tiền là đoán ở đúng chỗ không được phép đoán; còn tính "liên miền" cho mọi
+ * đơn không rõ tỉnh thì thu oan của khách gần. Cho bot tính đúng bậc vùng ĐÒI thêm một bước
+ * hỏi tỉnh trong hội thoại — đó là đổi trải nghiệm sản phẩm, không phải vá lỗi. Xem docs/53.
+ *
+ * PHỤ PHÍ CÂN thì KHÔNG cần tỉnh (chỉ phụ thuộc giỏ hàng) nên tính được ngay, và tính ở
+ * ĐÂY thì cả báo-giá lẫn chốt-đơn dùng chung một hàm → lời hứa vẫn bằng số thu.
  */
-export async function shopShipFee(c, subtotal) {
-  const s = (await c.query(`SELECT ship_fee_vnd, free_ship_threshold_vnd FROM shops WHERE id = current_shop_id()`)).rows[0] ?? {};
+export async function shopShipFee(c, subtotal, lines = []) {
+  const s = (await c.query(
+    `SELECT ship_fee_vnd, free_ship_threshold_vnd, ship_extra_per_500g_vnd, default_weight_gram
+       FROM shops WHERE id = current_shop_id()`)).rows[0] ?? {};
   const fee = s.ship_fee_vnd != null ? Number(s.ship_fee_vnd) : SHIP_FEE;
   const threshold = s.free_ship_threshold_vnd != null ? Number(s.free_ship_threshold_vnd) : null;
-  return (threshold != null && subtotal >= threshold) ? 0 : fee;
+  if (threshold != null && subtotal >= threshold) return 0;   // freeship thắng cả phụ phí cân (mirror checkout)
+  const per500 = s.ship_extra_per_500g_vnd != null ? Number(s.ship_extra_per_500g_vnd) : 0;
+  if (!(per500 > 0) || lines.length === 0) return fee;
+  // Cân từng dòng: cân của biến thể, thiếu thì lấy cân mặc định của shop (mirror checkout).
+  const defG = Number(s.default_weight_gram ?? 500);
+  const ids = [...new Set(lines.map((l) => String(l.variant_id)))];
+  const wRows = (await c.query(
+    `SELECT id, weight_gram FROM variants WHERE id = ANY($1::uuid[])`, [ids])).rows;
+  const wOf = new Map(wRows.map((r) => [r.id, r.weight_gram == null ? defG : Number(r.weight_gram)]));
+  const grams = lines.reduce((sum, l) => sum + Number(l.qty) * (wOf.get(String(l.variant_id)) ?? defG), 0);
+  return fee + Math.ceil(Math.max(0, grams - 500) / 500) * per500;
 }
 
 export async function createManualOrder(res, ctx, body) {
@@ -818,9 +841,11 @@ export async function createManualOrder(res, ctx, body) {
       lines.push({ variant_id: vid, title: v.product_title + (v.variant_title ? ` - ${v.variant_title}` : ''), sku: v.sku, unit, qty });
     }
 
-    // Phí ship: ghi đè tay ?? cấu hình shop (mirror checkout computeShipping, phẳng+ngưỡng).
+    // Phí ship: ghi đè tay ?? cấu hình shop (phẳng + phụ phí cân + ngưỡng free-ship).
+    // TRUYỀN `lines` để tính phụ phí cân — thiếu nó thì hàm rơi về phí phẳng và shop thu
+    // thiếu đúng phần phụ phí trên MỌI đơn bot/gõ-tay.
     let shipping = shipOverride;
-    if (shipping == null) shipping = await shopShipFee(c, subtotal);
+    if (shipping == null) shipping = await shopShipFee(c, subtotal, lines);
     const total = subtotal + shipping;
 
     // QR: cần shop đã bật; payment_ref để webhook SePay tự khớp. KHÔNG cần dựng qr_string —

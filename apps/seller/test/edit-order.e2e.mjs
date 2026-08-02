@@ -156,6 +156,38 @@ async function main() {
   r = await rq(SELLER, 'POST', `/shops/${s2.json.id}/orders/${ordId}/edit`, { body: { lines: [{ variant_id: A, qty: 1 }], customer: cust }, cookie: oc3, origin: OS });
   r.status === 404 ? ok('shop khác sửa đơn shop A → 404 (RLS/membership)') : bad('cross-shop sửa được!', `${r.status}`);
 
+  sect('Đơn ĐỔI ĐIỂM THƯỞNG: sửa đơn KHÔNG được xoá phần giảm giá điểm');
+  // Ca thật: khách đổi điểm lúc đặt (checkout: total = subtotal − discount − points + ship),
+  // rồi shop sửa địa chỉ. reconcileEditLines từng tính total = subtotal + ship − discount,
+  // BỎ points_discount_vnd → mỗi lần sửa, tổng nhảy lên đúng số điểm khách đã tiêu, mà sổ
+  // điểm vẫn ghi đã trừ. Đơn ở đây GIỮ NGUYÊN dòng hàng nên tổng phải KHÔNG đổi.
+  const cart3 = (await co('POST', '/cart/items', { json: { variant_id: B, qty: 2 } })).cartCookie;
+  await co('POST', '/checkout', { json: { customer: { name: 'P', phone: '0912000333', email: 'p@x.vn' }, address: { line: 'y', province: 'Hà Nội' }, payment_method: 'cod' }, cartCookie: cart3, idem: `p-${uniq()}` });
+  const ptRow = (await owner.query(`SELECT id, total_vnd FROM orders WHERE shop_id=$1 AND customer_phone='0912000333' ORDER BY created_at DESC LIMIT 1`, [shopId])).rows[0];
+  if (!ptRow) { bad('không tạo được đơn để test điểm thưởng'); }
+  else {
+    const DIEM = 20000;
+    await owner.query(
+      `UPDATE orders SET points_redeemed=$2::int, points_discount_vnd=$2::bigint, total_vnd=total_vnd-$2::bigint WHERE id=$1`, [ptRow.id, DIEM]);
+    const truoc = Number((await owner.query(`SELECT total_vnd FROM orders WHERE id=$1`, [ptRow.id])).rows[0].total_vnd);
+    r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${ptRow.id}/edit`,
+      { body: { lines: [{ variant_id: B, qty: 2 }], customer: { name: 'P', phone: '0912000333' } }, cookie: oc, origin: OS });
+    const sau = Number((await owner.query(`SELECT total_vnd FROM orders WHERE id=$1`, [ptRow.id])).rows[0].total_vnd);
+    r.status === 200 && sau === truoc
+      ? ok(`sửa đơn có đổi ${DIEM}đ điểm → tổng GIỮ ${sau}đ (không đòi lại phần đã tiêu điểm)`)
+      : bad('sửa đơn xoá giảm giá điểm', `http=${r.status} ${truoc} → ${sau}`);
+    // Và khi ĐỔI số lượng, tổng mới vẫn phải trừ điểm.
+    const donGia = Number((await owner.query(`SELECT unit_price_vnd FROM order_lines WHERE order_id=$1 AND variant_id=$2`, [ptRow.id, B])).rows[0].unit_price_vnd);
+    const ship = Number((await owner.query(`SELECT shipping_vnd FROM orders WHERE id=$1`, [ptRow.id])).rows[0].shipping_vnd);
+    r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${ptRow.id}/edit`,
+      { body: { lines: [{ variant_id: B, qty: 3 }], customer: { name: 'P', phone: '0912000333' } }, cookie: oc, origin: OS });
+    const sau3 = Number((await owner.query(`SELECT total_vnd FROM orders WHERE id=$1`, [ptRow.id])).rows[0].total_vnd);
+    const kyVong = donGia * 3 + ship - DIEM;
+    r.status === 200 && sau3 === kyVong
+      ? ok(`đổi số lượng → tổng ${sau3}đ = 3×${donGia} + ${ship} − ${DIEM} điểm`)
+      : bad('tổng sau khi đổi số lượng không trừ điểm', `http=${r.status} thực=${sau3} kỳ vọng=${kyVong}`);
+  }
+
   sect('Audit: order.edited ghi diff from→to');
   const ae = (await owner.query(`SELECT metadata FROM audit_logs WHERE shop_id=$1 AND action='order.edited' ORDER BY id DESC LIMIT 1`, [shopId])).rows[0];
   ae && ae.metadata?.changed && (ae.metadata.changed.total_vnd || ae.metadata.lines) ? ok('audit order.edited có changed/lines diff') : bad('audit thiếu diff', JSON.stringify(ae?.metadata));

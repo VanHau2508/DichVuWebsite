@@ -282,6 +282,36 @@ async function main() {
   q = await owner.query(`SELECT reason FROM unmatched_transfers WHERE shop_id=$1 AND provider_event_id=$2`, [A.shopId, deadId]);
   q.rows[0]?.reason === 'order_not_live' ? ok('giao dịch vào đơn huỷ GHI vào hàng đợi (order_not_live)') : bad('order_not_live không ghi hàng đợi');
 
+  // #2: đơn ĐÃ XÁC NHẬN (chủ shop bấm "Xác nhận đơn" trước khi tiền về) VẪN nhận được tiền.
+  // Đây là ca thật nhất của QR: shop duyệt đơn mới mỗi sáng, khách chuyển khoản buổi trưa.
+  // Trước đây guard là `status !== 'pending'` nên confirmed bị coi như đơn chết → tiền rơi
+  // vào hàng đợi, đơn kẹt unpaid vĩnh viễn. KHÁC ca huỷ ở trên: huỷ = tồn đã trả, phải chặn.
+  const oConf = await placeQrOrder(A, vid);
+  await owner.query(`UPDATE orders SET status='confirmed' WHERE payment_ref=$1`, [oConf.ref]);
+  r = await webhookPerShop(tokenA, { id: `evt-conf-${uniq()}`, transferType: 'in', transferAmount: oConf.total, content: `ck ${oConf.ref}` });
+  r.status === 200 && r.json.paid === true ? ok('tiền vào đơn ĐÃ XÁC NHẬN → vẫn ghi nhận paid (không nuốt tiền)') : bad('đơn confirmed bị từ chối tiền — MẤT TIỀN', r.raw);
+  r = await orderStatus(A.host, oConf.orderNum, oConf.lookupToken);
+  r.json?.payment_status === 'paid' && r.json?.status === 'confirmed' ? ok('đơn confirmed + paid, KHÔNG bị đẩy lùi trạng thái') : bad('trạng thái đơn sai sau khi trả', r.raw);
+
+  // #3: đơn ĐANG GIAO cũng nhận được tiền, và status KHÔNG bị kéo lùi về confirmed.
+  const oShip = await placeQrOrder(A, vid);
+  await owner.query(`UPDATE orders SET status='shipped' WHERE payment_ref=$1`, [oShip.ref]);
+  r = await webhookPerShop(tokenA, { id: `evt-ship-${uniq()}`, transferType: 'in', transferAmount: oShip.total, content: `ck ${oShip.ref}` });
+  q = await owner.query(`SELECT status, payment_status, amount_paid_vnd FROM orders WHERE payment_ref=$1`, [oShip.ref]);
+  q.rows[0]?.payment_status === 'paid' && q.rows[0]?.status === 'shipped'
+    ? ok('đơn đang GIAO nhận tiền → paid, status GIỮ shipped (không đi lùi)') : bad('status bị kéo lùi hoặc không paid', JSON.stringify(q.rows[0]));
+
+  // #4: amount_paid_vnd ghi SỐ THẬT đã nhận, không suy đoán từ total. Khách chuyển 2 lần,
+  // lần cuối THỪA → cột phải là tổng thực nhận, vì mọi phép tính hoàn tiền đọc cột này.
+  const oOver = await placeQrOrder(A, vid);
+  const nua = Math.floor(oOver.total / 2);
+  await webhookPerShop(tokenA, { id: `evt-ov1-${uniq()}`, transferType: 'in', transferAmount: nua, content: `ck ${oOver.ref}` });
+  await webhookPerShop(tokenA, { id: `evt-ov2-${uniq()}`, transferType: 'in', transferAmount: oOver.total, content: `ck ${oOver.ref}` });
+  q = await owner.query(`SELECT payment_status, amount_paid_vnd, total_vnd FROM orders WHERE payment_ref=$1`, [oOver.ref]);
+  Number(q.rows[0]?.amount_paid_vnd) === nua + oOver.total && Number(q.rows[0]?.amount_paid_vnd) > Number(q.rows[0]?.total_vnd)
+    ? ok(`amount_paid_vnd = tiền THỰC nhận ${nua + oOver.total}đ (thừa so với tổng ${oOver.total}đ), không phải total`)
+    : bad('amount_paid_vnd không ghi số thực nhận', JSON.stringify(q.rows[0]));
+
   // Tắt SePay → token cũ bị thu hồi (401).
   await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
   await rq(SELLER, 'POST', `/shops/${A.shopId}/payment/sepay/disable`, { cookie: A.cookie, origin: OS });

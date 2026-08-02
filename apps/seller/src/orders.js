@@ -262,7 +262,7 @@ async function bulkMarkPaid(res, ctx, body) {
         )).rows[0];
         if (!o || o.payment_method !== 'cod' || ['cancelled', 'refunded', 'returned'].includes(o.status)) return false;
         const upd = await c.query(
-          `UPDATE orders SET payment_status = 'paid', paid_at = now()
+          `UPDATE orders SET payment_status = 'paid', paid_at = now(), amount_paid_vnd = total_vnd
             WHERE id = $1 AND payment_status <> 'paid'`, [orderId],
         );
         if (upd.rowCount !== 1) return false;
@@ -521,8 +521,10 @@ async function markPaid(res, ctx, _body, params) {
     // 'refunded'/'cancelled' là TERMINAL: không cho đánh dấu đã-trả (khớp markPaidQr) — nếu
     // không, mark-paid (perm orders.write, không step-up) có thể ĐẢO NGƯỢC một lệnh hoàn tiền.
     if (['cancelled', 'refunded', 'returned'].includes(o.status)) return { code: 409, msg: 'đơn đã huỷ/hoàn/trả, không thể đánh dấu đã nhận tiền' };
+    // GHI amount_paid_vnd = total: bấm nút này nghĩa là "đã thu ĐỦ". Bỏ trống thì mọi nơi
+    // tính tiền hoàn phải SUY ĐOÁN từ total_vnd — đúng cho tới lúc đơn bị sửa, rồi sai.
     const upd = await c.query(
-      `UPDATE orders SET payment_status = 'paid', paid_at = now()
+      `UPDATE orders SET payment_status = 'paid', paid_at = now(), amount_paid_vnd = total_vnd
         WHERE id = $1 AND payment_status <> 'paid'`, [orderId],
     );
     if (upd.rowCount !== 1) return { code: 409, msg: 'đơn đã thanh toán' };
@@ -556,7 +558,7 @@ async function markPaidQr(res, ctx, _body, params) {
     if (o.payment_method !== 'qr') return { code: 409, msg: 'chỉ đơn QR mới xác nhận tay tại đây' };
     if (['cancelled', 'refunded', 'returned'].includes(o.status)) return { code: 409, msg: 'đơn đã huỷ/hoàn/trả, không thể xác nhận thanh toán' };
     const upd = await c.query(
-      `UPDATE orders SET payment_status = 'paid', paid_at = now()
+      `UPDATE orders SET payment_status = 'paid', paid_at = now(), amount_paid_vnd = total_vnd
         WHERE id = $1 AND payment_status <> 'paid'`, [orderId],
     );
     if (upd.rowCount !== 1) return { code: 409, msg: 'đơn đã thanh toán' };
@@ -959,9 +961,18 @@ async function reconcileEditLines(c, o, P, fail) {
   let subtotal = 0;
   for (const t of targetLines) subtotal += t.unit * t.qty;
   const discount = Number(o.discount_vnd);
+  // GIẢM GIÁ ĐIỂM là khoản trừ RIÊNG, không nằm trong discount_vnd (checkout: total =
+  // subtotal − discount − points_discount + shipping). Quên nó ở đây thì mỗi lần sửa đơn,
+  // tổng tự nhảy lên ĐÚNG bằng số điểm khách đã đổi — khách bị đòi lại phần đã tiêu điểm,
+  // mà sổ điểm thì vẫn ghi đã trừ. Đã dựng lại được ở a6 (776.000 → 826.000).
+  // ĐỌC THẲNG TỪ DB, không nhận qua `o`: hai nơi gọi (v1/v2) có SELECT riêng, để cột này
+  // phụ thuộc caller nhớ chọn là dựng lại đúng cái bẫy vừa vá — quên một bên thì `?? 0`
+  // nuốt im lặng và tiền lại sai. Đơn đã khoá FOR UPDATE nên đọc thêm vẫn nhất quán.
+  const pointsDiscount = Number((await c.query(
+    `SELECT coalesce(points_discount_vnd, 0)::bigint AS d FROM orders WHERE id = $1`, [o.id])).rows[0].d);
   const shipping = P.shipOverride != null ? P.shipOverride : Number(o.shipping_vnd);
-  const total = subtotal + shipping - discount;
-  if (total < 0) fail(422, 'tổng đơn âm (giảm giá vượt tiền hàng + ship) — điều chỉnh lại');
+  const total = subtotal + shipping - discount - pointsDiscount;
+  if (total < 0) fail(422, 'tổng đơn âm (giảm giá + điểm thưởng vượt tiền hàng + ship) — điều chỉnh lại');
 
   await c.query(`DELETE FROM order_lines WHERE order_id = $1`, [o.id]);
   for (const t of targetLines) {

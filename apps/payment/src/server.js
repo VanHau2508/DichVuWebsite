@@ -167,6 +167,17 @@ function parseEvent(body) {
   return { ok: true, eventId, amount, content, rcvAccount, ref: m ? m[0] : null };
 }
 
+// Đơn CHẾT = tồn kho đã trả về, đơn đã đóng sổ. Tiền vào những đơn này KHÔNG được tự
+// đánh dấu paid (sống lại sẽ oversell + gửi email nhầm) → đẩy vào hàng đợi đối soát.
+//
+// pending/confirmed/shipped/delivered đều là đơn SỐNG: tiền về là tiền HỢP LỆ của đơn đó.
+// Trước đây điều kiện là `status !== 'pending'`, tức chỉ đơn CHƯA ai đụng mới nhận được
+// tiền — nhưng chủ shop được (và UI chủ động mời) bấm "Xác nhận đơn"/xác nhận hàng loạt
+// ngay khi thấy đơn mới, TRƯỚC lúc khách kịp chuyển khoản. Khách chuyển tiền thật → webhook
+// trả order_not_live → đơn kẹt unpaid vĩnh viễn, phải đối soát tay. Đã dựng lại được ở a6.
+const DEAD_STATUSES = new Set(['cancelled', 'refunded', 'returned']);
+const LIVE_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered'];
+
 // Ghi sổ giao dịch + cộng dồn + đánh dấu paid. GIẢ ĐỊNH: context shop đã set, order đã
 // tìm thấy trong shop, tài khoản đã khớp. UNIQUE(provider,event_id) chặn replay.
 async function creditOrder(c, order, { eventId, amount, content, rcvAccount, body }) {
@@ -182,7 +193,7 @@ async function creditOrder(c, order, { eventId, amount, content, rcvAccount, bod
   // Đơn KHÔNG còn "sống" (đã huỷ/hết hạn/hoàn) → KHÔNG tự xác nhận lại: tồn kho đã trả, sống
   // lại sẽ oversell + gửi email nhầm. Vẫn ghi giao dịch (tiền đã vào) + đẩy vào hàng đợi đối
   // soát để owner hoàn tiền / xử lý tay.
-  if (order.status !== 'pending') {
+  if (DEAD_STATUSES.has(order.status)) {
     await persistUnmatched(c, { eventId, amount, content, rcvAccount, reason: 'order_not_live', body });
     log('warn', 'payment_on_dead_order', { ref: order.payment_ref ?? '(n/a)', order_status: order.status, amount });
     return { matched: true, paid: false, reason: 'order_not_live', order_id: order.id };
@@ -192,9 +203,14 @@ async function creditOrder(c, order, { eventId, amount, content, rcvAccount, bod
   const enough = cumulative >= Number(order.total_vnd);
   let paid = false;
   if (enough && order.payment_status !== 'paid') {
+    // status: CHỈ đẩy pending → confirmed. Đơn đang shipped/delivered mà hạ về confirmed
+    // là đi lùi máy trạng thái (mất mốc đã giao, worker chốt đơn hiểu sai).
+    // amount_paid_vnd = SỐ TIỀN THẬT đã nhận, không phải total: khách chuyển thừa/thiếu thì
+    // sổ phải ghi đúng cái đã vào tài khoản. Sửa đơn/hoàn tiền đọc cột này để tính hoàn.
     const upd = await c.query(
-      `UPDATE orders SET payment_status = 'paid', paid_at = now(), status = 'confirmed'
-        WHERE id = $1 AND payment_status <> 'paid' AND status = 'pending'`, [order.id],
+      `UPDATE orders SET payment_status = 'paid', paid_at = now(), amount_paid_vnd = $2,
+              status = CASE WHEN status = 'pending' THEN 'confirmed' ELSE status END
+        WHERE id = $1 AND payment_status <> 'paid' AND status = ANY($3)`, [order.id, cumulative, LIVE_STATUSES],
     );
     paid = upd.rowCount === 1;
     if (paid && order.customer_email) {

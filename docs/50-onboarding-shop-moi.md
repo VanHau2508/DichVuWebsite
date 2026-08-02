@@ -217,3 +217,55 @@ người bán gõ lại từ đầu là chỗ họ bỏ cuộc.
   mục menu nêu thẳng "Bán qua Facebook".
 - `apps/storefront/test/e2e.mjs` — `/bao-mat`, `/lien-he` vào `companyPaths()` nên có trong
   sitemap và được quét cùng các trang công ty khác.
+
+---
+
+## Đợt 4 — NHÌN bằng trình duyệt thật (2026-08-02)
+
+Ba đợt trước đọc HTML bằng chuỗi. Đợt này chạy trong engine trình duyệt thật ở **375×812**
+(cỡ iPhone) và **1280×720**, đo bằng `getBoundingClientRect` + `elementFromPoint` — không
+đoán, không nhìn ước lượng.
+
+### Sạch (đã kiểm, KHÔNG phải lỗi)
+
+- **Không tràn ngang** ở cả desktop lẫn mobile: `document.scrollWidth === innerWidth` (375 = 375).
+  Đây là thứ giết giao diện điện thoại nhiều nhất và nó sạch.
+- **Chữ không bị cắt** ở đâu cả: `textClip` rỗng. Cái tràn ra khỏi ô promo/hero là **ảnh nền
+  blur-fill** — cố ý, bị `overflow:hidden` cắt đúng như thiết kế.
+- **90/90 ảnh có thuộc tính `alt`** (44 cái `alt=""` — đúng chuẩn cho ảnh trang trí: bản nền
+  mờ và ảnh-đổi-khi-rê-chuột). Không thiếu alt cái nào.
+- Nhãn `.vh` ("Tìm kiếm"/"Giỏ hàng") rộng 1px là **screen-reader-only**, đúng ý đồ.
+- `.tabbar` cố định cao 55px, `body{padding-bottom:56px}` → **không che footer**. Đúng cách.
+- Thanh mua ở trang SP là `position:sticky` (không phải `fixed`) → không đè nội dung.
+
+### Lỗi THẬT: vùng bấm quá nhỏ trên điện thoại
+
+Đo được, không phải cảm tính. Ngón tay người lớn ~9mm ≈ 44px:
+
+| Chỗ | Trước | Sau |
+|---|---|---|
+| Chấm carousel | **8×8** | 28×44 (vùng bấm trong suốt) |
+| "Xem tất cả →" / "Xem thêm →" | 92×**22** | 92×**44** |
+| Link chân trang | 159×**30** | 159×**44** |
+| Nút mở menu ☰ | 40×**31** | **44×44** |
+| Ô lọc "Còn hàng" | nhãn ×24, ô tick **17×17** | nhãn ×**44**, ô tick **22×22** |
+| `<summary>` Viết đánh giá / Đặt câu hỏi | 335×**26** | 335×**44** |
+| Tên shop (về trang chủ) | 171×**27** | 171×**44** |
+| Danh mục con trong menu ngăn kéo | ×**18** | ×**40** |
+
+Chỉ nới **vùng bấm**, không phóng to phần nhìn thấy → bố cục giữ nguyên (`headerH` vẫn 57px
+trước và sau).
+
+### Bẫy: BẢN VÁ ĐẦU TIÊN TỰ SINH LỖI NẶNG HƠN
+
+Vùng bấm chấm carousel đặt rộng **36px** trong khi khoảng cách tâm-tới-tâm chỉ **16px**
+(chấm 8 + gap 8) ⇒ vùng bấm hai chấm **đè lên nhau**, bấm chấm 2 lại nhảy sang chấm bên
+cạnh. **Sai đích còn tệ hơn đích nhỏ.** Chỉ lộ ra vì kiểm bằng `elementFromPoint` chứ không
+tin vào con số kích thước. Đã sửa: gap 20 → cách nhau 28, vùng bấm đúng 28 rộng.
+
+**Quy tắc rút ra:** khi nới vùng bấm cho một nhóm phần tử sát nhau, bề rộng vùng bấm PHẢI
+≤ khoảng cách tâm-tới-tâm, và phải kiểm bằng `elementFromPoint` chứ không chỉ đo kích thước.
+
+### Kiểm chứng
+
+`storefront/e2e` 160 · `preview` 23 · `blocks` 25 · `banner` 14 · `admin-preset` 10 — xanh.

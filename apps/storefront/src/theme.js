@@ -1665,6 +1665,42 @@ ${Array.from({ length: 8 }, (_, i) => `#gsel-${i}:checked~.main .stack .s-${i}{d
 .opt .chip.sel{border-color:var(--color-primary);background:var(--color-hero-bg);color:color-mix(in srgb,var(--color-primary) 82%,#000);font-weight:700;box-shadow:0 0 0 3px color-mix(in srgb,var(--color-primary) 16%,transparent)}
 .opt .chip.out{color:var(--color-muted);text-decoration:line-through}
 .opt .chip.disabled{color:#c4c8cf;background:var(--color-surface);border-style:dashed;cursor:not-allowed;text-decoration:line-through}
+/* ── VÙNG BẤM trên điện thoại ────────────────────────────────────────────────
+   Đo bằng chính engine trình duyệt ở 375×812 (đợt kiểm toán 2026-08-02), KHÔNG phải đoán:
+   chấm carousel 8×8, "Xem tất cả →" 92×22, link chân trang 159×30, ô lọc "Còn hàng" 17×17,
+   <summary> đánh giá 335×26. Ngón tay người lớn ~9mm ≈ 44px — dưới ngưỡng đó là bấm trượt,
+   mà bấm trượt trên trang bán hàng thì khách bỏ đi chứ không báo lỗi cho ai.
+   Cách làm: nới VÙNG BẤM, KHÔNG phóng to phần nhìn thấy — bố cục giữ nguyên y như cũ. */
+@media(max-width:820px){
+  /* Chấm carousel: giữ chấm 8px, phủ vùng bấm trong suốt quanh nó.
+     BỀ RỘNG vùng bấm PHẢI ≤ khoảng cách tâm-tới-tâm, nếu không vùng bấm hai chấm ĐÈ nhau và
+     bấm chấm này lại nhảy sang chấm kia — sai đích còn tệ hơn đích nhỏ. Đã đo thấy đúng lỗi
+     đó khi để 36px trong khi khoảng cách chỉ 8+8=16. Nới gap lên 20 → cách nhau 28, đặt vùng
+     bấm đúng 28 rộng × 44 cao: không đè, vẫn trên ngưỡng tối thiểu WCAG (24). */
+  .hero-dots{gap:20px}
+  .hero-dots .dot{position:relative}
+  .hero-dots .dot::after{content:'';position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:28px;height:44px}
+  /* Link "Xem tất cả →" / "Xem thêm →": cao 22px → 44px, chữ vẫn canh giữa như cũ. */
+  .section-all,.fs-all{display:inline-flex;align-items:center;min-height:44px}
+  /* Link chân trang xếp dọc sát nhau nhất → dễ bấm nhầm sang dòng bên cạnh. */
+  .ftr-col a{display:flex;align-items:center;min-height:44px}
+  /* Nút mở menu: 40×31 → vuông 44, đúng cỡ ngón cái ở góc trên trái. */
+  .navburger{min-width:44px;min-height:44px;align-items:center;justify-content:center;padding:0}
+  /* Tên shop = nút "về trang chủ", bấm nhiều nhất trên mobile mà chỉ cao 27px.
+     Chỉ nới CHIỀU CAO: .brand đã là inline-flex, cắt-đuôi nằm ở .brand-name nên không đụng. */
+  .brand{min-height:44px}
+  /* Ô lọc "Còn hàng": nhãn cao 24px và ô tick 17px — nhỏ hơn cả chấm carousel. */
+  .pf-chk{min-height:44px}
+  .pf-chk input{width:22px;height:22px}
+  /* <summary> "Viết đánh giá" / "Đặt câu hỏi": 26px, mà đây là chỗ khách góp nội dung. */
+  .pd-qa summary,.pd-rv summary,details>summary{min-height:44px;display:flex;align-items:center}
+  /* Danh mục con trong menu ngăn kéo: 18px, sát nhau, mà đây là đường DUYỆT HÀNG chính
+     trên điện thoại. Lấy 40px chứ không 44 — danh sách này dài, thêm 26px mỗi dòng là
+     phải cuộn gấp đôi mới hết danh mục; 40 vẫn trên ngưỡng tối thiểu WCAG (24). */
+  .mega-subs a{display:flex;align-items:center;min-height:40px}
+}
+
 /* ── Thanh tab ĐÁY mobile (kiểu sàn TMĐT) ────────────────────────────────────
    Desktop KHÔNG hiện (header đã đủ). Mobile: cố định đáy, 4 tab đều nhau, nền mờ. */
 .tabbar{display:none}

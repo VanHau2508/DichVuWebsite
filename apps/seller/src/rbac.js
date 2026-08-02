@@ -41,6 +41,15 @@ const ROLE_PERMS = {
 };
 
 // Thao tác nhạy cảm cần step-up (xác thực lại gần đây).
+//
+// ⚠ ĐÂY LÀ TÀI LIỆU, KHÔNG PHẢI CƯỠNG CHẾ. Việc chặn nằm ở cờ `stepUp: true` đặt trên
+// TỪNG route (server.js kiểm `route.stepUp`, không hề gọi needsStepUp). Danh sách này từng
+// khai `affiliate.manage` trong khi KHÔNG route CTV nào bật cờ — kể cả chốt phiếu chi tiền,
+// một bút toán không hoàn tác được. Ai đọc file này sẽ tưởng đã được bảo vệ.
+//
+// Bất biến giữ hai bên khớp nhau: MONEY_OUT_ROUTES ở apps/seller/test/rbac-stepup.e2e.mjs
+// liệt kê từng route ghi-sổ-không-hoàn-tác và khẳng định nó trả 403 step_up_required.
+// Thêm route sinh tiền-ra mới thì thêm vào đó, đừng chỉ thêm quyền vào Set này.
 export const STEP_UP_PERMS = new Set(['members.write', 'domain.write', 'payment.write', 'export', 'refund', 'privacy.erase', 'loyalty.write', 'affiliate.manage']);
 
 export const ROLES = Object.keys(ROLE_PERMS);

@@ -183,7 +183,18 @@ async function main() {
     ? ok('đơn MỚI ăn mức mới 50%') : bad('đơn mới không theo mức mới');
   await api('PUT', '/affiliates/config', { enabled: true, rate_kind: 'percent', rate_value: 10, hold_days: 7, cookie_days: 30 });
 
-  sect('8. Chốt phiếu chi: gom mọi dòng đủ điều kiện, số tiền do DB cộng');
+  sect('8. Chốt phiếu chi: ĐÒI STEP-UP (bút toán không hoàn tác), rồi gom mọi dòng đủ điều kiện');
+  // Chốt phiếu đánh dấu hoa hồng ĐÃ TRẢ trên sổ append-only (0129 REVOKE UPDATE/DELETE):
+  // không sửa, không xoá. Cùng hạng refund → phải xác thực lại mật khẩu trước.
+  // Phiên MỚI để kiểm CỔNG thật: bộ này đã step-up một lần ở đầu (dòng ~103), dùng lại
+  // phiên đó thì cổng mở sẵn và khẳng định dưới đây xanh giả. stepped_up_at nằm trên
+  // SESSIONS (0007) nên đăng nhập lại là có phiên sạch — không cần đụng DB.
+  const ocMoi = await login(A.oe, op);
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/affiliates/${affId}/payouts`, { body: { method: 'bank' }, cookie: ocMoi, origin: OS });
+  r.status === 403 && r.json?.step_up_required
+    ? ok('chưa xác thực lại → 403 step_up_required (không chi lọt)')
+    : bad('CHỐT PHIẾU CHI TIỀN KHÔNG CẦN XÁC THỰC LẠI', `${r.status} ${(r.raw ?? '').slice(0, 120)}`);
+  await stepUp();
   let d = await rq(SELLER, 'GET', `/shops/${shopId}/affiliates/${affId}`, { cookie: oc });
   const eligibleBefore = N(d.json?.totals?.eligible_vnd);
   eligibleBefore > 0 ? ok(`trước khi chi: ${eligibleBefore}đ đủ điều kiện`) : bad('không có gì để chi', JSON.stringify(d.json?.totals));

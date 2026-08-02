@@ -104,6 +104,10 @@ async function main() {
   expO1 === 315000 ? ok('kỳ vọng đơn = total − phí hãng (330k−15k=315k)') : bad('kỳ vọng sai', expO1);
 
   sect('Ghi phiếu: nhận 520k từ GHN cho 2 đơn (kỳ vọng 525k → thiếu 5k)');
+  // Ghi phiếu đối soát nay ĐÒI STEP-UP (bút toán không hoàn tác). Xác thực lại trước mỗi
+  // lần gọi: cửa sổ 5 phút thừa sức, nhưng gọi tường minh thì test không phụ thuộc thời gian.
+  const su = (ck2 = oc, pw = op) => rq(AUTH, 'POST', '/auth/step-up', { body: { password: pw }, cookie: ck2, origin: OA });
+  await su(oc, op);
   r = await rq(SELLER, 'POST', `/shops/${shopId}/cod/remittances`, { body: { carrier: 'ghn', amount_vnd: 520000, order_ids: [o1, o2], note: 'sao kê GHN 18/07' }, cookie: oc, origin: OS });
   r.status === 200 && r.json.expected_vnd === 525000 && r.json.amount_vnd === 520000 && r.json.discrepancy_vnd === -5000 && r.json.order_count === 2
     ? ok('phiếu: kỳ vọng 525k, nhận 520k, chênh −5k (hãng nợ), 2 đơn') : bad('ghi phiếu sai', JSON.stringify(r.json));
@@ -115,10 +119,12 @@ async function main() {
     ? ok('chờ đối soát rỗng; lịch sử 1 phiếu chênh −5k') : bad('sau đối soát sai', `n=${g.outstanding.length} rem=${g.remittances.length}`);
 
   sect('Đối soát LẠI đơn đã đối soát → 409');
+  await su(oc, op);
   r = await rq(SELLER, 'POST', `/shops/${shopId}/cod/remittances`, { body: { carrier: 'ghn', amount_vnd: 100000, order_ids: [o1] }, cookie: oc, origin: OS });
   r.status === 409 && /đã đối soát/.test(r.json?.error ?? '') ? ok('đối soát lại → 409') : bad('đối soát 2 lần lọt', `${r.status} ${r.json?.error}`);
 
   sect('Đơn giao TAY → 422 (không cần đối soát)');
+  await su(oc, op);
   r = await rq(SELLER, 'POST', `/shops/${shopId}/cod/remittances`, { body: { amount_vnd: 100000, order_ids: [oManual] }, cookie: oc, origin: OS });
   r.status === 422 && /giao tay/.test(r.json?.error ?? '') ? ok('đơn giao tay → 422') : bad('giao tay lọt', `${r.status} ${r.json?.error}`);
 
@@ -126,11 +132,13 @@ async function main() {
   const cart = (await co('POST', '/cart/items', { json: { variant_id: vid, qty: 1 } })).cartCookie;
   await co('POST', '/checkout', { json: { customer: { name: 'P', phone: '0912000333' }, address: { line: 'x', province: 'Hà Nội' }, payment_method: 'cod' }, cartCookie: cart, idem: `p-${uniq()}` });
   const pending = (await owner.query(`SELECT id FROM orders WHERE shop_id=$1 AND customer_phone='0912000333' ORDER BY created_at DESC LIMIT 1`, [shopId])).rows[0].id;
+  await su(oc, op);
   r = await rq(SELLER, 'POST', `/shops/${shopId}/cod/remittances`, { body: { amount_vnd: 100000, order_ids: [pending] }, cookie: oc, origin: OS });
   r.status === 422 && /chưa giao/.test(r.json?.error ?? '') ? ok('đơn chưa giao → 422') : bad('chưa giao lọt', `${r.status} ${r.json?.error}`);
 
   sect('Sai hãng: đơn qua ghn nhưng khai ghtk → 422');
   const o3 = await mkCodViaCarrier(1, 10000);
+  await su(oc, op);
   r = await rq(SELLER, 'POST', `/shops/${shopId}/cod/remittances`, { body: { carrier: 'ghtk', amount_vnd: 120000, order_ids: [o3] }, cookie: oc, origin: OS });
   r.status === 422 && /không phải ghtk|qua ghn/.test(r.json?.error ?? '') ? ok('khai sai hãng → 422') : bad('sai hãng lọt', `${r.status} ${r.json?.error}`);
 
@@ -139,6 +147,7 @@ async function main() {
   const iv = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email: oe2, role: 'order_manager' }, cookie: staff, origin: OO });
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(oe2), password: op2 }, origin: OA });
   const mc = await login(oe2, op2);
+  await su(mc, op2);
   r = await rq(SELLER, 'POST', `/shops/${shopId}/cod/remittances`, { body: { amount_vnd: 100000, order_ids: [o3] }, cookie: mc, origin: OS });
   r.status === 403 ? ok('order_manager ghi phiếu → 403 (cần payment.write)') : bad('role thấp ghi được', `${r.status}`);
 
@@ -148,6 +157,7 @@ async function main() {
   const iv3 = await rq(PLATFORM, 'POST', `/ops/shops/${s2.json.id}/invitations`, { body: { email: oe3, role: 'owner' }, cookie: staff, origin: OO });
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(oe3), password: op3 }, origin: OA });
   const oc3 = await login(oe3, op3);
+  await su(oc3, op3);
   r = await rq(SELLER, 'POST', `/shops/${s2.json.id}/cod/remittances`, { body: { amount_vnd: 100000, order_ids: [o3] }, cookie: oc3, origin: OS });
   r.status === 422 ? ok('shop khác đối soát đơn shop A → 422 (RLS che đơn)') : bad('cross-shop lọt', `${r.status}`);
 
@@ -174,6 +184,7 @@ async function main() {
     (await chosSo(idR)) ? ok('đơn đã HOÀN TIỀN vẫn trong sổ') : bad('đơn hoàn tiền RƠI khỏi sổ đối soát');
     // Và phải ghi được phiếu chuyển tiền cho chính đơn đó (không ngõ cụt 422).
     await rq(AUTH, 'POST', '/auth/step-up', { body: { password: op }, cookie: oc, origin: OA });
+    await su(oc, op);
     const rrem = await rq(SELLER, 'POST', `/shops/${shopId}/cod/remittances`,
       { body: { carrier: 'ghn', amount_vnd: 50000, order_ids: [idR] }, cookie: oc, origin: OS });
     rrem.status === 200

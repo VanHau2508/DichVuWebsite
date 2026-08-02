@@ -106,6 +106,42 @@ là màn Đối soát COD và Báo cáo nói hai số khác nhau mà không ai b
 
 Test `cod-reconcile` +4 khẳng định; đột biến (trả lại `status='delivered'`) → **3 FAIL**.
 
+## Hai nghi vấn phân quyền — đúng, và rộng hơn báo cáo
+
+Agent nói `affiliate.manage` được khai là cần step-up nhưng không route nào bật cờ, và
+`POST /cod/remittances` là route `payment.write` duy nhất thiếu. Quét toàn bộ bảng route
+xác nhận, và cho thấy vấn đề **có hệ thống** chứ không phải hai chỗ lẻ:
+
+| Quyền | Route | Có step-up |
+|---|---:|---:|
+| `members.write` · `domain.write` · `refund` · `privacy.erase` · `loyalty.write` | | đủ |
+| `payment.write` | 6 | **5/6** |
+| `affiliate.manage` | 7 | **0/7** |
+
+**Gốc rễ:** cưỡng chế đi theo cờ `stepUp: true` đặt trên TỪNG route (`server.js:441`), còn
+`STEP_UP_PERMS` ở `rbac.js` **chỉ là danh sách khai báo** — `needsStepUp()` không được gọi ở
+đâu cả. Mã nói một đằng làm một nẻo. Bằng chứng nó gây hiểu nhầm thật: `affiliates.e2e.mjs`
+có sẵn dòng `await stepUp()` kèm chú thích *"affiliate.manage có step-up (tiền rời khỏi
+shop)"* — người viết test **đã tin là có**.
+
+**Chọn gì.** Cửa sổ step-up là **5 phút**, không phải mỗi-thao-tác-một-lần. Bật cho hai
+**bút toán không hoàn tác được** — chốt phiếu chi CTV (`affiliate_payouts` REVOKE UPDATE/
+DELETE) và ghi phiếu đối soát COD (đóng vĩnh viễn tới 500 đơn) — tốn đúng **một lần gõ mật
+khẩu cho cả buổi**, vì cả hai đều là việc làm theo đợt. Các route ĐỌC và `PUT
+/affiliates/config` (sửa lại được) giữ nguyên. `GET /export/download` cũng giữ nguyên: token
+chính là năng lực, step-up đã làm lúc tạo.
+
+**Giao diện phải theo, nếu không là ship lỗi.** Bật cổng mà màn hình không biết hỏi mật khẩu
+thì chủ shop bấm sẽ thấy "Không ghi được phiếu" — tưởng lỗi nghiệp vụ. Thêm
+`renderStepUpGate` dùng chung: mang TOÀN BỘ ô đã nhập/tick sang màn mật khẩu bằng hidden
+input và gửi lại nguyên vẹn. Bắt tick lại 50 đơn là cách chắc chắn nhất để người ta bỏ luôn
+việc đối soát. Sai mật khẩu → 401 nhưng dữ liệu vẫn còn.
+
+**Chặn tái diễn:** bộ mới `apps/seller/test/rbac-stepup.e2e.mjs` đi từ ngoài vào qua HTTP:
+mỗi bút toán tiền-ra phải 403 `step_up_required` khi chưa xác thực, và **không** còn 403 sau
+khi xác thực (chốt hai đầu — cổng luôn-403 cũng là hỏng). Kèm một khẳng định về TRẢI NGHIỆM:
+thao tác thứ hai trong cùng cửa sổ không được hỏi lại mật khẩu.
+
 ## Còn nợ (đã tìm ra, CHƯA kiểm chứng, CHƯA vá)
 
 Năm nghi vấn còn lại — **chưa cái nào được dựng lại**:
@@ -115,5 +151,3 @@ Năm nghi vấn còn lại — **chưa cái nào được dựng lại**:
 | kho | `apps/seller/src/catalog.js:750` | tái dùng biến thể: tồn cũ "sống lại" khi đơn giữ chỗ huỷ |
 | giao hàng | `apps/seller/src/orders.js:650` | hoàn tiền đơn giao một phần không nhả reserve |
 | khuyến mãi | `apps/seller/src/orders.js:717` | đơn từ bot Messenger tính ship bằng công thức phẳng |
-| phân quyền | `apps/seller/src/affiliates.js:234` | `affiliate.manage` khai báo cần step-up nhưng không route nào bật cờ |
-| phân quyền | `apps/seller/src/cod.js:119` | ghi phiếu chuyển tiền COD là route `payment.write` duy nhất không step-up |

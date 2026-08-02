@@ -231,5 +231,9 @@ export const AFFILIATE_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/affiliates$`), perm: 'affiliate.manage', fn: (res, ctx, b) => createAffiliate(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/affiliates/${UUID}$`), perm: 'affiliate.manage', fn: (res, ctx, b, p) => affiliateDetail(res, ctx, b, p) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/affiliates/${UUID}$`), perm: 'affiliate.manage', fn: (res, ctx, b, p) => updateAffiliate(res, ctx, b, p) },
-  { m: 'POST', re: new RegExp(`^/shops/${UUID}/affiliates/${UUID}/payouts$`), perm: 'affiliate.manage', fn: (res, ctx, b, p) => createPayout(res, ctx, b, p) },
+  // STEP-UP chỉ ở đây, KHÔNG ở các route trên: chốt phiếu chi là bút toán KHÔNG HOÀN TÁC
+  // ĐƯỢC (0129 REVOKE UPDATE, DELETE trên affiliate_payouts) và lật hoa hồng sang 'paid'.
+  // Xem/sửa cấu hình thì sửa lại được, bắt gõ mật khẩu để XEM danh sách CTV là phiền vô ích.
+  // Cửa sổ step-up 5 phút → chi cả loạt phiếu trong một lượt chỉ gõ mật khẩu MỘT lần.
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/affiliates/${UUID}/payouts$`), perm: 'affiliate.manage', stepUp: true, fn: (res, ctx, b, p) => createPayout(res, ctx, b, p) },
 ];

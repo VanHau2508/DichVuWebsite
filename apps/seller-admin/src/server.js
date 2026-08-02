@@ -694,12 +694,65 @@ async function codRemittanceSubmit(req, res, me, cookie, shopId) {
   if (remittedAt) body.remitted_at = remittedAt;
   const note = String(f.get('note') ?? '').trim();
   if (note) body.note = note.slice(0, 500);
+  // Ghi phiếu là bút toán KHÔNG HOÀN TÁC (đóng vĩnh viễn các đơn khỏi sổ chờ đối soát) →
+  // seller đòi step-up. Mang TOÀN BỘ ô đã tick sang cổng mật khẩu: bắt tick lại 50 đơn là
+  // cách chắc chắn nhất để người ta bỏ luôn việc đối soát.
+  return doCodRemittance(req, res, me, cookie, shopId, body);
+}
+const codHidden = (body) => [
+  ...body.order_ids.map((id) => ['order_ids', id]),
+  ['amount_vnd', body.amount_vnd], ['carrier', body.carrier ?? ''],
+  ['remitted_at', body.remitted_at ?? ''], ['note', body.note ?? ''],
+];
+async function doCodRemittance(req, res, me, cookie, shopId, body) {
+  // Chưa xác thực lại → hỏi mật khẩu TRƯỚC, khỏi gọi API rồi hỏng nửa chừng.
+  if (!steppedUp(me)) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'cod');
+    return sendHtml(res, 200, V.renderStepUpGate(ctx, {
+      title: 'Xác nhận mật khẩu', action: `/shops/${shopId}/cod/remittances/step-up`,
+      huyUrl: `/shops/${shopId}/cod`, hidden: codHidden(body),
+      giaiThich: `Ghi phiếu chuyển tiền sẽ đóng ${body.order_ids.length} đơn khỏi sổ chờ đối soát và KHÔNG sửa lại được.`,
+    }));
+  }
   const r = await sellerApi('POST', `/shops/${shopId}/cod/remittances`, { cookie, body });
   if (r.status === 200) {
     const q = new URLSearchParams({ done: '1', expected: String(r.json.expected_vnd), received: String(r.json.amount_vnd), disc: String(r.json.discrepancy_vnd), count: String(r.json.order_count) });
     return redirect(res, `/shops/${shopId}/cod?${q.toString()}`);
   }
+  // Cửa sổ 5 phút hết ngay giữa chừng → hỏi lại, vẫn giữ nguyên các ô đã tick.
+  if (r.json?.step_up_required) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'cod');
+    return sendHtml(res, 200, V.renderStepUpGate(ctx, {
+      title: 'Xác nhận mật khẩu', action: `/shops/${shopId}/cod/remittances/step-up`,
+      huyUrl: `/shops/${shopId}/cod`, hidden: codHidden(body),
+      giaiThich: 'Phiên xác thực đã hết hạn. Nhập lại mật khẩu để ghi phiếu.',
+    }));
+  }
   return codPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không ghi được phiếu chuyển tiền.');
+}
+// Nhận mật khẩu từ cổng → step-up → ghi phiếu với ĐÚNG dữ liệu đã mang sang.
+async function codRemittanceStepUp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req);
+  const body = {
+    amount_vnd: parseVnd(f.get('amount_vnd')),
+    order_ids: f.getAll('order_ids').filter((x) => /^[0-9a-f-]{36}$/.test(x)),
+  };
+  for (const k of ['carrier', 'remitted_at', 'note']) {
+    const v = String(f.get(k) ?? '').trim();
+    if (v) body[k] = k === 'note' ? v.slice(0, 500) : v;
+  }
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.get('password') ?? '') } });
+  if (r.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'cod');
+    return sendHtml(res, 401, V.renderStepUpGate(ctx, {
+      title: 'Xác nhận mật khẩu', action: `/shops/${shopId}/cod/remittances/step-up`,
+      huyUrl: `/shops/${shopId}/cod`, hidden: codHidden(body),
+      giaiThich: 'Ghi phiếu chuyển tiền cần xác thực lại.',
+      err: r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.',
+    }));
+  }
+  return doCodRemittance(req, res, { ...me, stepped_up_at: new Date().toISOString() }, cookie, shopId, body);
 }
 
 // Phục hồi vận đơn finalize_failed (đã tạo trên hãng nhưng chốt hỏng).
@@ -865,14 +918,41 @@ async function affiliateCreate(req, res, me, cookie, shopId) {
   return redirect(res, `/shops/${shopId}/affiliates?ok=${encodeURIComponent(`Đã thêm CTV ${r.json.code}. Link giới thiệu: thêm ?ref=${r.json.code} vào địa chỉ shop.`)}`);
 }
 
+// Chốt phiếu chi CTV — bút toán KHÔNG HOÀN TÁC (0129 append-only) → seller đòi step-up.
+const payoutGate = async (res, me, cookie, shopId, affId, body, err, giaiThich) => sendHtml(res, err ? 401 : 200,
+  V.renderStepUpGate(shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'affiliates'), {
+    title: 'Xác nhận mật khẩu', action: `/shops/${shopId}/affiliates/${affId}/payouts/step-up`,
+    huyUrl: `/shops/${shopId}/affiliates/${affId}`, err,
+    hidden: [['method', body.method ?? ''], ['note', body.note ?? ''], ['paid_at', body.paid_at ?? '']],
+    giaiThich,
+  }));
+async function doAffiliatePayout(res, me, cookie, shopId, affId, body) {
+  if (!steppedUp(me)) {
+    return payoutGate(res, me, cookie, shopId, affId, body, null,
+      'Chốt phiếu chi sẽ đánh dấu các dòng hoa hồng là ĐÃ TRẢ và không sửa lại được.');
+  }
+  const r = await sellerApi('POST', `/shops/${shopId}/affiliates/${affId}/payouts`, {
+    cookie, body: { method: body.method, note: body.note, paid_at: body.paid_at },
+  });
+  if (r.status === 201) return redirect(res, `/shops/${shopId}/affiliates/${affId}?ok=${encodeURIComponent(`Đã ghi phiếu chi ${r.json.amount_vnd.toLocaleString('vi-VN')}đ cho ${r.json.item_count} dòng hoa hồng.`)}`);
+  if (r.json?.step_up_required) return payoutGate(res, me, cookie, shopId, affId, body, null, 'Phiên xác thực đã hết hạn. Nhập lại mật khẩu để chốt phiếu.');
+  return affiliateDetailPage(res, me, cookie, shopId, affId, null, r.json?.error ?? 'Không chốt được phiếu chi.');
+}
 async function affiliatePayout(req, res, me, cookie, shopId, affId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
-  const r = await sellerApi('POST', `/shops/${shopId}/affiliates/${affId}/payouts`, {
-    cookie, body: { method: f.method, note: f.note, paid_at: f.paid_at },
-  });
-  if (r.status !== 201) return affiliateDetailPage(res, me, cookie, shopId, affId, null, r.json?.error ?? 'Không chốt được phiếu chi.');
-  return redirect(res, `/shops/${shopId}/affiliates/${affId}?ok=${encodeURIComponent(`Đã ghi phiếu chi ${r.json.amount_vnd.toLocaleString('vi-VN')}đ cho ${r.json.item_count} dòng hoa hồng.`)}`);
+  return doAffiliatePayout(res, me, cookie, shopId, affId, { method: f.method, note: f.note, paid_at: f.paid_at });
+}
+async function affiliatePayoutStepUp(req, res, me, cookie, shopId, affId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const body = { method: f.method, note: f.note, paid_at: f.paid_at };
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) {
+    return payoutGate(res, me, cookie, shopId, affId, body,
+      r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.', 'Chốt phiếu chi cần xác thực lại.');
+  }
+  return doAffiliatePayout(res, { ...me, stepped_up_at: new Date().toISOString() }, cookie, shopId, affId, body);
 }
 
 // ── Gói dịch vụ: chủ shop xem hạn + tự trả tiền (0124-0128) ─────────────────
@@ -3431,6 +3511,7 @@ async function handle(req, res, url, p) {
       return codPage(res, me, cookie, m[1], done, null);
     }
     if ((m = new RegExp(`^/shops/${UUID}/cod/remittances$`).exec(p)) && req.method === 'POST') return codRemittanceSubmit(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/cod/remittances/step-up$`).exec(p)) && req.method === 'POST') return codRemittanceStepUp(req, res, me, cookie, m[1]);
 
     // Thông báo Telegram (shop.write = owner/admin ở seller).
     if ((m = new RegExp(`^/shops/${UUID}/notify$`).exec(p)) && req.method === 'GET') return notifyPage(res, me, cookie, m[1], null, null);
@@ -3443,6 +3524,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/affiliates/config$`).exec(p)) && req.method === 'POST') return affiliateConfigSave(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/affiliates/${UUID}$`).exec(p)) && req.method === 'GET') return affiliateDetailPage(res, me, cookie, m[1], m[2], url.searchParams.get('ok'), null);
     if ((m = new RegExp(`^/shops/${UUID}/affiliates/${UUID}/payouts$`).exec(p)) && req.method === 'POST') return affiliatePayout(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/affiliates/${UUID}/payouts/step-up$`).exec(p)) && req.method === 'POST') return affiliatePayoutStepUp(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/api-keys$`).exec(p)) && req.method === 'GET') return apiKeysPage(res, me, cookie, m[1], null, null, null, null);
     if ((m = new RegExp(`^/shops/${UUID}/billing$`).exec(p)) && req.method === 'GET') return billingPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/billing/charge$`).exec(p)) && req.method === 'POST') return billingCharge(req, res, me, cookie, m[1]);

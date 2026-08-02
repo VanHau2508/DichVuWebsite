@@ -126,5 +126,8 @@ async function recordRemittance(res, ctx, body) {
 
 export const COD_ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/cod/reconciliation$`), perm: 'orders.read', fn: (res, ctx) => reconciliation(res, ctx) },
-  { m: 'POST', re: new RegExp(`^/shops/${UUID}/cod/remittances$`), perm: 'payment.write', fn: (res, ctx, b) => recordRemittance(res, ctx, b) },
+  // STEP-UP: ghi phiếu là bút toán KHÔNG HOÀN TÁC ĐƯỢC — đóng vĩnh viễn tới 500 đơn khỏi sổ
+  // chờ đối soát (cod_settled_at). Đây từng là route 'payment.write' DUY NHẤT thiếu cờ này.
+  // Cửa sổ step-up 5 phút: đối soát cả sao kê trong một lượt chỉ gõ mật khẩu MỘT lần.
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/cod/remittances$`), perm: 'payment.write', stepUp: true, fn: (res, ctx, b) => recordRemittance(res, ctx, b) },
 ];

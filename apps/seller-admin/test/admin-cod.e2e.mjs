@@ -135,8 +135,24 @@ async function main() {
   r = await adm('POST', `${base}/remittances`, { cookie: cookieMgr, origin: OADM, form: [['order_ids', o1.id], ['amount_vnd', '315000']] });
   r.status === 403 ? ok('order_manager ghi phiếu → 403') : bad('order_manager ghi được phiếu', r.status);
 
+  sect('Chưa xác thực lại → CỔNG MẬT KHẨU, và các ô đã tick được mang sang nguyên vẹn');
+  // Ghi phiếu là bút toán không hoàn tác → seller đòi step-up. Giao diện KHÔNG được để
+  // người dùng ăn lỗi "không ghi được phiếu": phải hỏi mật khẩu, và mang theo TOÀN BỘ đơn
+  // đã tick — bắt tick lại 50 đơn là cách chắc chắn nhất để người ta bỏ luôn việc đối soát.
+  const donTick = [['order_ids', o1.id], ['order_ids', o2.id], ['carrier', 'ghn'], ['amount_vnd', '520000'], ['note', 'sao ke GHN 18/07']];
+  r = await adm('POST', `${base}/remittances`, { cookie: cookieOwner, origin: OADM, form: donTick });
+  const giuLai = r.body.includes(o1.id) && r.body.includes(o2.id) && /name="amount_vnd" value="520000"/.test(r.body);
+  r.status === 200 && /Xác nhận mật khẩu/.test(r.body) && /name="password"/.test(r.body) && giuLai
+    ? ok('hiện cổng mật khẩu, giữ nguyên 2 đơn đã tick + số tiền đã nhập')
+    : bad('cổng step-up sai/mất dữ liệu đã nhập', `st=${r.status} giuLai=${giuLai}`);
+
+  sect('Sai mật khẩu → 401, VẪN giữ dữ liệu (không bắt làm lại từ đầu)');
+  r = await adm('POST', `${base}/remittances/step-up`, { cookie: cookieOwner, origin: OADM, form: [...donTick, ['password', 'sai-mat-khau-roi']] });
+  r.status === 401 && r.body.includes(o1.id) && /Mật khẩu không đúng/.test(r.body)
+    ? ok('sai mật khẩu → 401 + vẫn giữ đơn đã tick') : bad('sai mật khẩu làm mất dữ liệu', `st=${r.status}`);
+
   sect('Chủ shop tick 2 đơn, nhận 520k → redirect done=1 + chênh −5k, 2 đơn');
-  r = await adm('POST', `${base}/remittances`, { cookie: cookieOwner, origin: OADM, form: [['order_ids', o1.id], ['order_ids', o2.id], ['carrier', 'ghn'], ['amount_vnd', '520000'], ['note', 'sao ke GHN 18/07']] });
+  r = await adm('POST', `${base}/remittances/step-up`, { cookie: cookieOwner, origin: OADM, form: [...donTick, ['password', 'owner passphrase strong']] });
   const loc = r.location ?? '';
   r.status === 303 && /done=1/.test(loc) && /expected=525000/.test(loc) && /received=520000/.test(loc) && /disc=-5000/.test(loc) && /count=2/.test(loc)
     ? ok('ghi phiếu → 303 done=1&expected=525000&received=520000&disc=-5000&count=2') : bad('ghi phiếu qua UI sai', `st=${r.status} loc=${loc}`);

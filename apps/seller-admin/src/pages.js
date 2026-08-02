@@ -2563,6 +2563,26 @@ export function renderOrderEdit(ctx, shopId, o, variants, err, form, picker) {
 // Interstitial step-up cho SỬA ĐƠN ĐÃ TRẢ (v2): mang TOÀN BỘ body sửa (dòng + khách + phí +
 // ghi chú) qua màn xác nhận mật khẩu bằng hidden input → sau step-up retry KHÔNG mất dữ liệu
 // người dùng đã nhập (mirror renderRefundStepUp/platform renew, nhưng body phức tạp hơn).
+// Cổng xác nhận mật khẩu DÙNG CHUNG cho các thao tác money-out no-JS.
+// `hidden` là mảng [name, value] — mọi ô người dùng đã nhập/tick được mang sang màn này
+// rồi gửi lại nguyên vẹn sau khi xác thực. KHÔNG mang theo là bắt họ tick lại 50 đơn.
+// Tên trùng nhau lặp lại được (order_ids ×N) vì đây là mảng, không phải object.
+export function renderStepUpGate(ctx, { title, giaiThich, action, huyUrl, hidden = [], err }) {
+  const hid = ([n, v]) => `<input type="hidden" name="${esc(n)}" value="${esc(v ?? '')}">`;
+  return layout(title, ctx, `<div class="center"><div class="card">
+    <h1>${esc(title)}</h1>
+    <p class="muted">${esc(giaiThich)}</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="${esc(action)}">
+      ${hidden.map(hid).join('')}
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận &amp; tiếp tục</button>
+    </form>
+    <p class="muted" style="font-size:13px;margin:10px 0 0">Xác nhận một lần dùng được trong 5 phút — làm cả loạt không phải gõ lại.</p>
+    <a class="muted" href="${esc(huyUrl)}" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
+}
+
 export function renderEditPaidStepUp(ctx, shopId, oid, err, body) {
   const base = `/shops/${esc(shopId)}`;
   const hid = (name, val) => `<input type="hidden" name="${esc(name)}" value="${esc(val ?? '')}">`;

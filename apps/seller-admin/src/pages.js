@@ -38,6 +38,16 @@ h1{font-size:28px;font-weight:700;letter-spacing:0;line-height:1.35;text-wrap:ba
 h2{font-size:20px;margin:0 0 12px;font-weight:600;letter-spacing:0;line-height:1.4;text-wrap:balance}
 h3{font-size:16px;font-weight:600;margin:0 0 8px;letter-spacing:0;line-height:1.5}
 @media(max-width:767px){h1{font-size:22px}}
+/* Bộ lọc đơn: máy tính LUÔN mở (đủ chỗ, mở/gập chỉ tổ phiền); điện thoại gập mặc định. */
+.filt-sum{cursor:pointer;font-weight:600;list-style:none}
+.filt-sum::-webkit-details-marker{display:none}
+.filt-sum::before{content:"▸ ";color:var(--soft)}
+details[open]>.filt-sum::before{content:"▾ "}
+@media(min-width:768px){
+  .filt-wrap>.filt-sum{display:none}
+  .filt-wrap{display:block}
+  .filt-wrap>.filters{display:flex}
+}
 .authwrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:radial-gradient(52% 42% at 12% 6%,color-mix(in srgb,var(--brand) 11%,transparent),transparent 64%),radial-gradient(46% 40% at 90% 16%,color-mix(in srgb,var(--brand2) 11%,transparent),transparent 62%),var(--surf)}
 .center{width:100%;max-width:428px;margin:40px auto}
 .authwrap .center{margin:0}
@@ -333,7 +343,10 @@ a.metric:hover{transform:translateY(-3px);box-shadow:var(--sh);border-color:colo
 .empty-state .ic{width:56px;height:56px;margin:0 auto 14px;border-radius:16px;background:var(--wash);color:var(--pri);display:grid;place-items:center}
 a:focus-visible,.btn:focus-visible,.shop-card:focus-visible,.metric:focus-visible,summary:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid var(--pri);outline-offset:2px;border-radius:8px}
 .admtoggle{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
-.admburger{display:none;cursor:pointer;font-size:1.5rem;line-height:1;margin-right:10px;user-select:none;color:var(--ink)}
+/* ☰ là CỬA VÀO toàn bộ điều hướng trên điện thoại, mà đo được chỉ 22×24px. Ngón tay cần
+   ~44px; trượt nút này là người bán không mở nổi menu và tưởng app không có gì khác. */
+.admburger{display:none;cursor:pointer;font-size:1.5rem;line-height:1;margin-right:10px;user-select:none;color:var(--ink);
+  min-width:44px;min-height:44px;align-items:center;justify-content:center;margin-left:-10px}
 .admtoggle:focus-visible+.side .side-brand{outline:2.5px solid var(--pri);outline-offset:2px}
 /* Mobile: gom sidebar (25 mục) vào nút ☰ trên topbar (no-JS checkbox). tbar lên trên, side hiện khi ☰. */
 @media(max-width:760px){.shell{flex-direction:column}.main{order:0}.side{order:1;width:100%;flex:none;height:auto;position:static;display:none}.admtoggle:checked~.side{display:flex}.admburger{display:inline-flex}.side-nav{flex-direction:column}.side-nav a.on::before{display:none}.content{padding:18px 16px}.tbar{padding:12px 16px}.center .card{padding:26px 22px}}
@@ -2168,7 +2181,13 @@ export function renderOrders(ctx, shopId, data, filter) {
       <span class="actions">${exportBtn}<a class="btn" href="/shops/${esc(shopId)}/orders/new">+ Tạo đơn</a></span></div>
     ${flagged ? `<div class="card" style="background:#fef3c7;border-color:#fcd34d;color:#92400e"><strong>⚠ ${flagged} đơn nghi ngờ (đơn ảo?)</strong> — một nguồn mạng có nhiều SĐT khác nhau đang chờ xử lý. Kiểm tra kỹ trước khi giao; <strong>huỷ đơn ảo để trả lại tồn kho</strong>. (Đơn COD không xác nhận sẽ tự huỷ sau ${esc(7)} ngày.)</div>` : ''}
     ${statusTabs}
-    <div class="card"><form method="GET" class="filters">
+    <!-- Bộ lọc GẬP trên điện thoại. Đo ở 375×812: bộ lọc cao 408px + thẻ nút hàng loạt đẩy
+         ĐƠN ĐẦU TIÊN xuống y=938, tức DƯỚI mép màn hình (812) — chủ shop mở "Đơn hàng" trên
+         điện thoại thấy đúng một rừng ô lọc và KHÔNG thấy đơn nào. Thứ họ vào để xem bị đẩy
+         khỏi tầm mắt. <details> thuần CSS: máy tính mở sẵn (đủ chỗ), điện thoại gập lại. -->
+    <details class="card filt-wrap"${(filter.q || filter.from || filter.to || filter.source) ? ' open' : ''}>
+      <summary class="filt-sum">Lọc &amp; tìm đơn${(filter.q || filter.from || filter.to || filter.source) ? ' <strong>(đang lọc)</strong>' : ''}</summary>
+      <form method="GET" class="filters">
       <input type="hidden" name="status" value="${esc(filter.status ?? '')}">
       <div style="flex:1 1 200px"><label>Tìm (mã đơn / tên / SĐT)</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="123, Nguyễn…, 09…"></div>
       <div><label>Từ ngày</label><input type="date" name="from" value="${esc(filter.from ?? '')}"></div>
@@ -2176,7 +2195,7 @@ export function renderOrders(ctx, shopId, data, filter) {
       <div><label>Nguồn</label><select name="source"><option value="">— Tất cả —</option>${
         Object.entries(ORDER_SOURCE_LABEL).map(([k, lbl]) => `<option value="${esc(k)}"${(filter.source ?? '') === k ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}</select></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
-    </form></div>
+    </form></details>
     <div class="card">
       <!-- Chip "đang lọc" nằm NGOÀI nhánh có-dòng: lọc ra 0 kết quả mà không nói đang lọc gì
            thì người bán thấy trang trống và không hiểu vì sao, cũng không có lối quay ra. -->

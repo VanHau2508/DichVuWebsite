@@ -310,6 +310,21 @@ async function main() {
     sock.once('data', (d) => { sock.end(); resolve(String(d)); });
     sock.once('error', reject);
   });
+  // DỌN MỌI swallow:* TRƯỚC. Bộ này từng giả định nó là NGƯỜI DUY NHẤT ghi tiền tố đó, nên
+  // đặt 18+7 rồi kỳ vọng tổng đúng 25. Nhưng bộ signup chạy trước (thứ tự glob: signup <
+  // worker) và để lại counter thật (`gui_qua_nhanh`, `email_dung_mot_lan`, TTL 1 giờ) →
+  // tổng thành 28, và xoá đúng hai khoá của mình xong vẫn còn ≠ 0 nên ca "cảnh báo TẮT"
+  // cũng đỏ. Sản phẩm KHÔNG sai: gom mọi lý do đúng là việc của cảnh báo này.
+  // Chỉ đỏ trong lượt CHẠY ĐỦ, chạy riêng thì xanh — đúng loại đỏ khó truy nhất.
+  const swallowKeys = async () => {
+    const raw = await redisCmd('KEYS swallow:*');
+    return [...String(raw).matchAll(/\r\n(swallow:[^\r\n]+)/g)].map((m) => m[1]);
+  };
+  const clearSwallow = async () => {
+    const ks = await swallowKeys();
+    if (ks.length) await redisCmd(`DEL ${ks.join(' ')}`);
+  };
+  await clearSwallow();
   await redisCmd('SET swallow:honeypot 18 EX 3600');
   await redisCmd('SET swallow:tran_ip_gio 7 EX 3600');
   const sw = await (await fetch(`${WORKER}/internal/alert-sweep`, { method: 'POST' })).json();
@@ -321,7 +336,7 @@ async function main() {
   /honeypot ×18/.test(swMsg) && /tran_ip_gio ×7/.test(swMsg)
     ? ok('cảnh báo ghi rõ TỪNG LÝ DO kèm số (phân biệt bot với hàng rào chặn nhầm)')
     : bad('cảnh báo không tách theo lý do', swMsg || '(không có cảnh báo nuốt)');
-  await redisCmd('DEL swallow:honeypot swallow:tran_ip_gio');
+  await clearSwallow();   // xoá SẠCH, không chỉ hai khoá của mình — xem chú thích ở trên
   const sw0 = await (await fetch(`${WORKER}/internal/alert-sweep`, { method: 'POST' })).json();
   sw0.metrics.swallow_total === 0 && !(sw0.breach_list ?? []).some((b) => /ĐĂNG KÝ bị chặn/.test(b))
     ? ok('xoá counter → cảnh báo nuốt TẮT (không kẹt báo động giả)')

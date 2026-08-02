@@ -182,4 +182,18 @@ không có nghĩa hàng đã về kho; hàng về thì dùng "Đánh dấu hoàn
 
 | Mảng | Vị trí | Nội dung |
 |---|---|---|
-| khuyến mãi | `apps/seller/src/orders.js:717` | đơn từ bot Messenger tính ship bằng công thức phẳng |
+| khuyến mãi | `apps/seller/src/orders.js:717` | đơn từ bot Messenger tính ship bằng công thức phẳng, bỏ phí liên miền + phụ phí cân mà checkout web đang thu |
+
+Mức độ: **thu thiếu phí ship trên một kênh phụ** — nhẹ hơn hẳn 8 lỗ đã vá (không mất tiền
+hàng, không kẹt kho, không chặn nghiệp vụ). Để lại có chủ ý, không phải bỏ quên.
+
+## Hàng rào manifest đã bắt được chính đợt này
+
+`git push` bị chặn: thêm `apps/seller/test/rbac-stepup.e2e.mjs` mà quên khai
+`MANIFEST_E2E_COUNT` → `ci-local --fast` thấy 92 file, khai 91 → ĐỎ. Mọi mục khác xanh
+(security-scan · 88 bất biến DB · 3 smoke).
+
+Đáng ghi vì nó đính chính một hiểu nhầm: manifest **có** chặn được test mới nằm trong glob
+`apps/*/test/*.e2e.mjs` (nhờ so **BẰNG** chứ không so sàn). Cái nó không chặn được chỉ là
+test đặt ở **thư mục hoàn toàn mới**, ngoài mọi glob — như `packages/presets/test/` từng lọt.
+Quy tắc gọn: **file mới trong thư mục cũ → CI bắt; thư mục mới → phải tự nhớ.**

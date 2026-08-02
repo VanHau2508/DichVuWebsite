@@ -44,10 +44,13 @@ MANIFEST_UNIT_FILES=(
   # Quy tắc XOÁ ảnh trưng bày. Phần rủi ro nhất của đường dọn rác (xoá nhầm ảnh đang
   # hiển thị) — e2e không dựng nổi ca biên "ảnh vừa tải 5 phút trước", unit dựng được.
   apps/seller/test/media-gc.test.js
+  # isApex: chọn hiện hướng dẫn CNAME (tên miền con) hay A+TXT (tên miền gốc). Bẫy là
+  # đuôi nhiều nhãn kiểu `com.vn` — e2e không dựng nổi đủ biến thể, unit thì dựng được.
+  apps/seller/test/hostname-apex.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=15
+MANIFEST_UNIT_COUNT=16
 MANIFEST_E2E_COUNT=91
 
 manifest_unit_files() {

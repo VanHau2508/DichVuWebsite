@@ -14,7 +14,7 @@ import crypto from 'node:crypto';
 import { Resolver, lookup as dnsLookup } from 'node:dns/promises';
 import { send } from './http.js';
 import { withTenant, audit } from './db.js';
-import { normalizeHostname, isReserved } from './hostname.js';
+import { normalizeHostname, isReserved, isApex } from './hostname.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN ?? 'nentang.vn';
@@ -28,33 +28,52 @@ const PLATFORM_IP = process.env.PLATFORM_IP ?? '';
 const primaryLock = (c) => c.query(`SELECT pg_advisory_xact_lock(hashtext('domain-primary'), hashtext(current_shop_id()::text))`);
 const genToken = () => crypto.randomBytes(32).toString('base64url');
 
-// View cho client: KHÔNG lộ token khi đã verified (không còn cần); challenge = bản ghi TXT phải thêm.
-const domainView = (d) => ({
+// View cho client: KHÔNG lộ token khi đã verified (không còn cần).
+// challenge có HAI đường, khách chọn một:
+//   cname — MỘT bản ghi CNAME → subdomain nền tảng của shop (tên miền con, khuyên dùng)
+//   type/name/value — bản ghi TXT (kèm bản ghi A), bắt buộc với tên miền GỐC vì apex không
+//   đặt được CNAME (ADR-004). Giữ nguyên hình dạng cũ để client cũ không vỡ.
+const domainView = (d, cnameTarget = null) => ({
   id: d.id,
   hostname: d.hostname,
   verified: d.verified_at !== null,
   is_primary: d.is_primary,
   created_at: d.created_at,
+  apex: isApex(d.hostname),
   challenge: d.verified_at === null
-    ? { type: 'TXT', name: `${VERIFY_PREFIX}.${d.hostname}`, value: d.verification_token }
+    ? {
+      type: 'TXT', name: `${VERIFY_PREFIX}.${d.hostname}`, value: d.verification_token,
+      cname: cnameTarget ? { type: 'CNAME', name: d.hostname, value: cnameTarget } : null,
+    }
     : null,
 });
 
 const SELECT_COLS = 'id, hostname, verification_token, verified_at, is_primary, created_at';
+// Đích CNAME = subdomain nền tảng CỦA CHÍNH shop (`<slug>.nentang.vn`, tạo sẵn lúc mở shop).
+// Lấy từ chính bảng `domains` bằng ĐÚNG câu worker dùng — chẩn đoán và xác minh phải nói
+// cùng một thứ, lệch nhau là khách sửa theo màn hình mà mãi không verified. RLS đã cắt theo
+// tenant nên không cần điều kiện shop_id ở đây.
+const cnameTargetOf = async (c) => (await c.query(
+  `SELECT hostname FROM domains WHERE hostname LIKE '%.' || $1 ORDER BY created_at LIMIT 1`,
+  [PLATFORM_DOMAIN])).rows[0]?.hostname ?? null;
 
 async function listDomains(res, ctx) {
-  const rows = await withTenant(ctx.shopId, async (c) =>
-    (await c.query(`SELECT ${SELECT_COLS} FROM domains ORDER BY is_primary DESC, created_at`)).rows);
+  const { rows, target } = await withTenant(ctx.shopId, async (c) => ({
+    rows: (await c.query(`SELECT ${SELECT_COLS} FROM domains ORDER BY is_primary DESC, created_at`)).rows,
+    target: await cnameTargetOf(c),
+  }));
   // platform_ip đi kèm danh sách để màn hình hiện được BẢN GHI A cụ thể. Không có nó thì
   // câu "trỏ về IP nền tảng" là hướng dẫn không làm theo được.
-  return send(res, 200, { domains: rows.map(domainView), platform_ip: PLATFORM_IP || null });
+  return send(res, 200, { domains: rows.map((d) => domainView(d, target)), platform_ip: PLATFORM_IP || null });
 }
 
 async function getDomain(res, ctx, _b, params) {
-  const d = await withTenant(ctx.shopId, async (c) =>
-    (await c.query(`SELECT ${SELECT_COLS} FROM domains WHERE id = $1`, [params[1]])).rows[0]);
-  if (!d) return send(res, 404, { error: 'không tìm thấy tên miền' });
-  return send(res, 200, { domain: domainView(d) });
+  const out = await withTenant(ctx.shopId, async (c) => ({
+    d: (await c.query(`SELECT ${SELECT_COLS} FROM domains WHERE id = $1`, [params[1]])).rows[0],
+    target: await cnameTargetOf(c),
+  }));
+  if (!out.d) return send(res, 404, { error: 'không tìm thấy tên miền' });
+  return send(res, 200, { domain: domainView(out.d, out.target) });
 }
 
 async function addDomain(res, ctx, body) {
@@ -73,9 +92,9 @@ async function addDomain(res, ctx, body) {
          VALUES (current_shop_id(), $1, $2, NULL, false)
          RETURNING ${SELECT_COLS}`, [host, genToken()]);
       await audit(c, 'domain.added', { actorId: ctx.user.id, ip: ctx.ip, metadata: { hostname: host } });
-      return r.rows[0];
+      return { row: r.rows[0], target: await cnameTargetOf(c) };
     });
-    return send(res, 201, { domain: domainView(d) });
+    return send(res, 201, { domain: domainView(d.row, d.target) });
   } catch (e) {
     if (e.statusCode) return send(res, e.statusCode, { error: e.message });
     // hostname UNIQUE toàn cục — RLS giấu domain shop khác nên pre-check SELECT không thấy;
@@ -154,10 +173,28 @@ function overCheckLimit(shopId) {
 
 async function checkDomain(res, ctx, _b, params) {
   if (overCheckLimit(ctx.shopId)) return send(res, 429, { error: 'kiểm tra quá nhiều lần, đợi một phút rồi thử lại' });
-  const d = await withTenant(ctx.shopId, async (c) =>
-    (await c.query(`SELECT ${SELECT_COLS} FROM domains WHERE id = $1`, [params[1]])).rows[0]);
+  const out = await withTenant(ctx.shopId, async (c) => ({
+    d: (await c.query(`SELECT ${SELECT_COLS} FROM domains WHERE id = $1`, [params[1]])).rows[0],
+    target: await cnameTargetOf(c),
+  }));
+  const d = out.d;
   if (!d) return send(res, 404, { error: 'không tìm thấy tên miền' });
-  if (d.verified_at) return send(res, 200, { verified: true, a: { ok: true }, txt: { ok: true }, message: 'Tên miền đã xác minh và đang hoạt động.' });
+  if (d.verified_at) return send(res, 200, { verified: true, cname: { ok: true }, a: { ok: true }, txt: { ok: true }, message: 'Tên miền đã xác minh và đang hoạt động.' });
+
+  // ── Cách 1: bản ghi CNAME (một bản ghi, chỉ tên miền con) ──────────────────
+  // Kiểm TRƯỚC vì đây là đường ta khuyên: đúng cái này thì hai bản ghi kia không cần nữa.
+  let cname = { ok: false, found: [], reason: out.target ? 'unknown' : 'no_target' };
+  if (out.target) {
+    const want = out.target.toLowerCase();
+    try {
+      const names = (await dnsResolver.resolveCname(d.hostname)).map((n) => String(n).replace(/\.$/, '').toLowerCase());
+      cname.found = names;
+      cname.ok = names.includes(want);
+      cname.reason = cname.ok ? 'ok' : 'wrong_target';
+    } catch (e) {
+      cname.reason = (e.code === 'ENOTFOUND' || e.code === 'ENODATA') ? 'missing' : 'dns_error';
+    }
+  }
 
   // ── Bản ghi A ──────────────────────────────────────────────────────────────
   // Nói RA con số đang thấy, không chỉ "sai". "Đang trỏ về 103.1.2.3, cần 14.5.6.7" là
@@ -203,13 +240,28 @@ async function checkDomain(res, ctx, _b, params) {
     dns_error: 'Chưa tra được bản ghi TXT (có thể nhà cung cấp đang cập nhật). Thử lại sau vài phút.',
     unknown: 'Chưa kiểm tra được bản ghi TXT.',
   };
+  // Lời nhắn TIẾNG VIỆT, đúng một câu nói được phải làm gì tiếp. Thứ tự có chủ ý:
+  //   1. CNAME đúng → xong, đừng bắt khách nhìn tiếp hai bản ghi họ không cần.
+  //   2. CNAME SAI đích → họ rõ ràng đang đi đường CNAME, nói đúng đường đó.
+  //   3. còn lại → hướng dẫn A + TXT (bắt buộc với tên miền gốc).
   const steps = [MSG_A[a.reason], MSG_TXT[txt.reason]].filter(Boolean);
-  const message = (a.ok && txt.ok)
-    // Cả hai đúng nhưng chưa verified: worker sẽ lật cờ ở nhịp sau (≤60s). Nói rõ để khách
+  // Tên miền GỐC không đặt được CNAME (ADR-004) → đừng gợi ý thứ họ không làm được.
+  const cnameHint = (!isApex(d.hostname) && out.target && cname.reason === 'missing')
+    ? ` Cách nhanh hơn cho tên miền con: bỏ cả hai bản ghi trên, chỉ đặt MỘT bản ghi CNAME ${d.hostname} → ${out.target}.`
+    : '';
+  let message;
+  if (cname.ok || (a.ok && txt.ok)) {
+    // Đúng rồi nhưng chưa verified: worker sẽ lật cờ ở nhịp sau (≤60s). Nói rõ để khách
     // không bấm lại liên tục tưởng hỏng.
-    ? 'Hai bản ghi đều đúng. Hệ thống sẽ kích hoạt tên miền trong vòng 1 phút.'
-    : steps.join(' ');
-  return send(res, 200, { verified: false, a, txt, message });
+    message = cname.ok
+      ? 'Bản ghi CNAME đã đúng. Hệ thống sẽ kích hoạt tên miền trong vòng 1 phút.'
+      : 'Hai bản ghi đều đúng. Hệ thống sẽ kích hoạt tên miền trong vòng 1 phút.';
+  } else if (cname.reason === 'wrong_target') {
+    message = `Bản ghi CNAME đang trỏ về ${cname.found.join(', ')} — cần trỏ về ${out.target}.`;
+  } else {
+    message = steps.join(' ') + cnameHint;
+  }
+  return send(res, 200, { verified: false, cname, a, txt, cname_target: out.target, message });
 }
 
 export const DOMAIN_ROUTES = [

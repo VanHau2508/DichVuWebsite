@@ -2,8 +2,8 @@
  * DNS stub — CHỈ dev/e2e. Trả bản ghi TXT theo yêu cầu để test xác minh custom domain (A5)
  * một cách XÁC ĐỊNH (không phụ thuộc DNS thật). KHÔNG có trong prod.
  *
- *   - UDP :5353  — máy chủ DNS tối giản, chỉ trả TXT cho tên đã đăng ký (else NXDOMAIN).
- *   - HTTP :8600 — kênh điều khiển: POST /set {name, txt} đăng ký; POST /clear xoá hết.
+ *   - UDP :5353  — máy chủ DNS tối giản: TXT / A / CNAME cho tên đã đăng ký (else NXDOMAIN).
+ *   - HTTP :8600 — kênh điều khiển: POST /set {name, txt?, a?, cname?}; POST /clear xoá hết.
  *
  * e2e: thêm domain → lấy verification_token → POST /set {_nentang-verify.<host>, token} →
  * trỏ resolver của worker vào stub → POST worker /internal/verify-sweep → verified_at bật.
@@ -16,6 +16,15 @@ const records = new Map(); // tên (lowercase) → chuỗi TXT
 // nó chẩn đoán CẢ bản ghi A lẫn TXT, nên e2e phải dựng được cả hai — nếu không thì nhánh
 // "đang trỏ sai IP" không bao giờ được kiểm và ta chỉ đang test một nửa.
 const aRecords = new Map();
+// Bản ghi CNAME (tên → tên đích). Đây là đường xác minh CHÍNH cho tên miền con: một bản ghi
+// trỏ về `<slug>.nentang.vn`. Không dựng được ở stub thì cả nhánh đó không được kiểm.
+const cnameRecords = new Map();
+
+// Ghi một tên miền ở dạng wire: mỗi nhãn [len][bytes], kết thúc bằng 0.
+const encodeName = (n) => Buffer.concat([
+  ...n.split('.').filter(Boolean).map((l) => Buffer.concat([Buffer.from([l.length]), Buffer.from(l, 'latin1')])),
+  Buffer.from([0]),
+]);
 
 // Đọc QNAME (chuỗi nhãn [len][bytes]... kết thúc bằng 0) từ offset.
 function parseName(buf, offset) {
@@ -64,6 +73,17 @@ udp.on('message', (msg, rinfo) => {
       ans.writeUInt32BE(30, 6);
       ans.writeUInt16BE(rdata.length, 10);
       parts.push(ans, rdata);
+    } else if (qtype === 5 && cnameRecords.get(name.toLowerCase())) {
+      header.writeUInt16BE(0x8180, 2);
+      header.writeUInt16BE(1, 6);
+      const rdata = encodeName(cnameRecords.get(name.toLowerCase())); // CNAME: tên ở dạng wire
+      const ans = Buffer.alloc(12);
+      ans.writeUInt16BE(0xC00C, 0);
+      ans.writeUInt16BE(5, 2);                       // TYPE = CNAME
+      ans.writeUInt16BE(1, 4);                       // CLASS = IN
+      ans.writeUInt32BE(30, 6);
+      ans.writeUInt16BE(rdata.length, 10);
+      parts.push(ans, rdata);
     } else {
       header.writeUInt16BE(0x8183, 2);               // QR=1, RD=1, RA=1, RCODE=3 (NXDOMAIN)
     }
@@ -76,16 +96,17 @@ http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/set') {
     let b = ''; req.on('data', (d) => { b += d; }); req.on('end', () => {
       try {
-        const { name, txt, a } = JSON.parse(b);
+        const { name, txt, a, cname } = JSON.parse(b);
         const key = String(name).toLowerCase();
         if (txt !== undefined) records.set(key, String(txt));
         if (a !== undefined) aRecords.set(key, String(a));
+        if (cname !== undefined) cnameRecords.set(key, String(cname).toLowerCase());
         res.writeHead(200); res.end('{"ok":true}');
       } catch { res.writeHead(400); res.end('{"error":"bad json"}'); }
     });
     return;
   }
-  if (req.method === 'POST' && req.url === '/clear') { records.clear(); aRecords.clear(); res.writeHead(200); res.end('{"ok":true}'); return; }
+  if (req.method === 'POST' && req.url === '/clear') { records.clear(); aRecords.clear(); cnameRecords.clear(); res.writeHead(200); res.end('{"ok":true}'); return; }
   if (req.url === '/healthz') { res.writeHead(200); res.end('{"ok":true}'); return; }
   res.writeHead(404); res.end();
 }).listen(8600, () => console.log('dns-stub: HTTP 8600'));

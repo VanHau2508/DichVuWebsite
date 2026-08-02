@@ -49,3 +49,29 @@ export function isReserved(hostname, platformDomain) {
   const p = platformDomain.toLowerCase();
   return hostname === p || hostname.endsWith('.' + p);
 }
+
+// Đuôi công khai NHIỀU nhãn hay gặp ở VN — `cuahang.com.vn` là tên miền GỐC chứ không
+// phải tên miền con của `com.vn`. Danh sách ngắn có chủ ý: đây KHÔNG phải Public Suffix
+// List đầy đủ, và nó chỉ dùng để chọn HIỂN THỊ hướng dẫn nào trước.
+const MULTI_LABEL_SUFFIX = new Set([
+  'com.vn', 'net.vn', 'org.vn', 'edu.vn', 'gov.vn', 'int.vn', 'ac.vn', 'biz.vn',
+  'info.vn', 'name.vn', 'pro.vn', 'health.vn', 'co.uk', 'com.au', 'co.jp', 'com.cn',
+]);
+
+/**
+ * Tên miền GỐC (apex) hay tên miền CON?
+ *
+ * Chỉ để chọn hướng dẫn: apex KHÔNG đặt được CNAME (ADR-004) nên phải dùng A + TXT;
+ * tên miền con thì một bản ghi CNAME là đủ. **KHÔNG BAO GIỜ dùng cho quyết định bảo
+ * mật** — đoán sai đuôi chỉ làm hiện nhầm hướng dẫn, còn xác minh thì vẫn phải khớp
+ * DNS thật (xem docs/30 §3c).
+ *
+ * @param {string} hostname  đã chuẩn hoá
+ */
+export function isApex(hostname) {
+  const parts = hostname.split('.');
+  if (parts.length < 2) return true;
+  const last2 = parts.slice(-2).join('.');
+  const suffixLen = MULTI_LABEL_SUFFIX.has(last2) ? 2 : 1;
+  return parts.length - suffixLen <= 1;
+}

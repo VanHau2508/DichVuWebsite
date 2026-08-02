@@ -844,6 +844,23 @@ async function sweepMessengerSessions(batch = 500) {
 // toàn khi hai lần quét trùng). Bỏ domain quá 24h chưa xong (challenge chết). DB/DNS lỗi →
 // chỉ bỏ nhịp (try/catch), không unhandledRejection → không crash-loop.
 const DOMAINVERIFY_BATCH = 100;
+const DOMAINVERIFY_PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN ?? 'nentang.vn';
+/**
+ * Hostname có CNAME trỏ ĐÚNG subdomain nền tảng của shop đó không?
+ *
+ * Vì sao đủ để thay TXT: đích CNAME mang slug RIÊNG của shop, nên chỉ người sửa được DNS
+ * của hostname mới đặt nổi. Bản ghi A wildcard (`*.cuahang.vn → IP nền tảng`) KHÔNG sinh ra
+ * CNAME này, nên shop khác không thể mượn wildcard của người ta để chiếm tên miền con.
+ * So khớp không phân biệt hoa/thường và bỏ dấu chấm cuối (resolver có thể trả FQDN).
+ */
+async function cnameMatches(hostname, target) {
+  if (!target) return false;
+  const want = target.replace(/\.$/, '').toLowerCase();
+  try {
+    const names = await dnsResolver.resolveCname(hostname);
+    return names.some((n) => String(n).replace(/\.$/, '').toLowerCase() === want);
+  } catch { return false; } // ENOTFOUND/ENODATA = chưa đặt CNAME (hoặc là apex) → thử đường TXT
+}
 async function sweepDomainVerify(batch = DOMAINVERIFY_BATCH) {
   if (!domainDb) return 0;
   // DỌN challenge chết: xoá dòng CHƯA verify quá hạn → giải phóng hostname (UNIQUE toàn cục) để
@@ -863,11 +880,18 @@ async function sweepDomainVerify(batch = DOMAINVERIFY_BATCH) {
   // NULLS FIRST: domain vừa thêm luôn được ưu tiên → vẫn verify gần như tức thì.
   let rows;
   try {
+    // cname_target = subdomain nền tảng CỦA CHÍNH shop đó (`<slug>.nentang.vn`, tạo sẵn lúc
+    // mở shop). Lấy từ chính bảng `domains` chứ không JOIN `shops`: vai app_domainverify cố ý
+    // KHÔNG có quyền trên `shops`, và nới nó ra chỉ để đọc một cái slug là mất nhiều hơn được.
     rows = (await domainDb.query(
-      `SELECT id, hostname, verification_token FROM domains
-        WHERE verified_at IS NULL AND created_at > now() - ($2 || ' hours')::interval
-        ORDER BY last_checked_at NULLS FIRST, created_at DESC LIMIT $1`,
-      [batch, String(DOMAINVERIFY_GIVEUP_HOURS)])).rows;
+      `SELECT d.id, d.hostname, d.verification_token,
+              (SELECT p.hostname FROM domains p
+                WHERE p.shop_id = d.shop_id AND p.hostname LIKE '%.' || $3
+                ORDER BY p.created_at LIMIT 1) AS cname_target
+         FROM domains d
+        WHERE d.verified_at IS NULL AND d.created_at > now() - ($2 || ' hours')::interval
+        ORDER BY d.last_checked_at NULLS FIRST, d.created_at DESC LIMIT $1`,
+      [batch, String(DOMAINVERIFY_GIVEUP_HOURS), DOMAINVERIFY_PLATFORM_DOMAIN])).rows;
   } catch (e) { log('error', 'domainverify_query_error', { message: e.message }); return 0; }
   // Đóng dấu TRƯỚC khi tra DNS, một câu cho cả lô: tra DNS treo/worker chết giữa chừng thì
   // lô này vẫn xoay xuống cuối hàng đợi ở nhịp sau. Bỏ lỡ một vòng chỉ là chậm một nhịp;
@@ -881,12 +905,21 @@ async function sweepDomainVerify(batch = DOMAINVERIFY_BATCH) {
 
   let verified = 0;
   for (const d of rows) {
-    let txts;
-    try {
-      txts = await dnsResolver.resolveTxt(`${DOMAINVERIFY_PREFIX}.${d.hostname}`);
-    } catch { continue; } // ENOTFOUND/ENODATA = chưa thêm TXT → bỏ qua, thử nhịp sau
-    // resolveTxt trả string[][] (mỗi record là mảng chunk 255-byte) → nối rồi so khớp CHÍNH XÁC.
-    if (!txts.some((chunks) => chunks.join('') === d.verification_token)) continue;
+    // Hai đường chứng minh, chấp nhận đường NÀO ĐÚNG trước:
+    //   1. CNAME → `<slug>.nentang.vn` (tên miền con): MỘT bản ghi, khách làm một lần.
+    //   2. A + TXT (tên miền gốc — apex không đặt CNAME được, ADR-004).
+    // Cả hai đều chứng minh "người này điều khiển DNS của hostname", KHÔNG phải chỉ
+    // "hostname phân giải về nền tảng" — xem docs/30 §3c về lỗ wildcard.
+    let proved = await cnameMatches(d.hostname, d.cname_target);
+    if (!proved) {
+      let txts;
+      try {
+        txts = await dnsResolver.resolveTxt(`${DOMAINVERIFY_PREFIX}.${d.hostname}`);
+      } catch { continue; } // ENOTFOUND/ENODATA = chưa thêm TXT → bỏ qua, thử nhịp sau
+      // resolveTxt trả string[][] (mỗi record là mảng chunk 255-byte) → nối rồi so khớp CHÍNH XÁC.
+      proved = txts.some((chunks) => chunks.join('') === d.verification_token);
+    }
+    if (!proved) continue;
     try {
       const upd = await domainDb.query(
         `UPDATE domains SET verified_at = now() WHERE id = $1 AND verified_at IS NULL`, [d.id]);

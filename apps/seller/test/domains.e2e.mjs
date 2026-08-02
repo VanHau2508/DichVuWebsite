@@ -239,7 +239,8 @@ async function main() {
   r.status === 409 && /trần/.test(r.json?.error ?? '') ? ok('đạt trần 20 tên miền/shop → 409') : bad('trần không chặn', r.raw);
 
   // Dọn domain của shop test — không để dồn dòng chưa-verify làm nghẽn candidate LIMIT 100.
-  await owner.query('DELETE FROM domains WHERE shop_id IN ($1, $2)', [A.shopId, Bo.shopId]);
+  // GIỮ subdomain nền tảng: nó là ĐÍCH của bản ghi CNAME (§11), và shop thật luôn có nó.
+  await owner.query(`DELETE FROM domains WHERE shop_id IN ($1, $2) AND hostname NOT LIKE '%.nentang.vn'`, [A.shopId, Bo.shopId]);
 
   sect('10. "Kiểm tra ngay" — nói RÕ đang sai chỗ nào, và hiện IP để khách trỏ về');
   await stepUp(A.cookie, A.password);
@@ -292,6 +293,64 @@ async function main() {
   const rOther = await addDomain(Bo, `other-${uniq()}.example.com`);
   const rB = await rq(SELLER, 'POST', `/shops/${A.shopId}/domains/${rOther.json.domain.id}/check`, { body: {}, cookie: A.cookie, origin: OS });
   rB.status === 404 ? ok('kiểm tra tên miền của shop khác → 404') : bad('rò tên miền chéo shop', rB.status);
+
+  // ── 11. Xác minh bằng MỘT bản ghi CNAME ────────────────────────────────────
+  // Tên miền con chỉ cần CNAME → `<slug>.nentang.vn`. Đích mang slug RIÊNG của shop nên
+  // vẫn chứng minh "người này điều khiển DNS", không phải chỉ "tên này về tới nền tảng".
+  sect('11. Xác minh bằng MỘT bản ghi CNAME (tên miền con)');
+  const targetA = `${A.slug}.nentang.vn`;
+  await stepUp(A.cookie, A.password);
+  const hCn = `cn-${uniq()}.example.com`;
+  const rCn = await addDomain(A, hCn);
+  const dCn = rCn.json.domain;
+  dCn.challenge?.cname?.type === 'CNAME' && dCn.challenge.cname.value === targetA && dCn.apex === false
+    ? ok(`challenge có đường CNAME → ${targetA}, và biết đây KHÔNG phải tên miền gốc`)
+    : bad('thiếu đường CNAME trong challenge', JSON.stringify(dCn.challenge?.cname) + ' apex=' + dCn.apex);
+
+  await setDns(hCn, { cname: targetA });
+  let cc = await rq(SELLER, 'POST', `/shops/${A.shopId}/domains/${dCn.id}/check`, { body: {}, cookie: A.cookie, origin: OS });
+  cc.json.cname?.ok === true && /CNAME đã đúng/.test(cc.json.message)
+    ? ok('chẩn đoán: CNAME đúng → báo sẽ kích hoạt (không bắt xem tiếp A/TXT)') : bad('không nhận CNAME đúng', JSON.stringify(cc.json.cname));
+  await verifySweep();
+  (await owner.query('SELECT verified_at FROM domains WHERE hostname=$1', [hCn])).rows[0].verified_at !== null
+    ? ok('worker verify bằng CNAME — KHÔNG cần bản ghi TXT nào') : bad('CNAME đúng mà vẫn không verify', hCn);
+  (await tlsAuthorize(hCn)) === 200 ? ok('verify qua CNAME → tls cấp cert như thường') : bad('CNAME verify nhưng không được cấp cert');
+
+  // ── 11b. LỖ WILDCARD: đây là lý do KHÔNG bỏ hẳn chứng minh sở hữu ───────────
+  // Cảnh: shop A trỏ `*.cuahang.vn` (wildcard A) về IP nền tảng. Shop B đăng ký
+  // `khuyenmai.cuahang.vn` — tên đó CÓ phân giải về IP của ta nhờ wildcard của A, dù B
+  // không sửa được DNS gì. Nếu xác minh chỉ nhìn bản ghi A thì B chiếm được tên miền con
+  // của A. CNAME bịt lỗ này vì đích mang slug của B, mà wildcard của A không sinh ra nó.
+  sect('11b. Lỗ wildcard: trỏ A đúng IP mà KHÔNG có sở hữu → phải TỪ CHỐI');
+  const hWild = `khuyenmai-${uniq()}.cuahang-nan-nhan.vn`;
+  const rWild = await addDomain(A, hWild);
+  await setDns(hWild, { a: PIP }); // giả lập wildcard của nạn nhân: A trỏ ĐÚNG IP nền tảng
+  await verifySweep();
+  (await owner.query('SELECT verified_at FROM domains WHERE hostname=$1', [hWild])).rows[0].verified_at === null
+    ? ok('A trỏ đúng IP nhưng không có CNAME/TXT → KHÔNG verify (không chiếm được tên miền con người khác)')
+    : bad('CHỈ bản ghi A đã verify — LỖ HỔNG chiếm tên miền con qua wildcard', hWild);
+
+  // CNAME trỏ về subdomain của shop KHÁC → cũng phải từ chối (đích phải là slug của CHÍNH shop).
+  await setDns(hWild, { cname: `${Bo.slug}.nentang.vn` });
+  await verifySweep();
+  (await owner.query('SELECT verified_at FROM domains WHERE hostname=$1', [hWild])).rows[0].verified_at === null
+    ? ok('CNAME trỏ về subdomain shop KHÁC → không verify (đích phải đúng slug của mình)')
+    : bad('verify bằng CNAME của shop khác — LỖ HỔNG', hWild);
+  cc = await rq(SELLER, 'POST', `/shops/${A.shopId}/domains/${rWild.json.domain.id}/check`, { body: {}, cookie: A.cookie, origin: OS });
+  cc.json.cname?.reason === 'wrong_target' && cc.json.message.includes(targetA)
+    ? ok('chẩn đoán nói RÕ "CNAME đang trỏ về X — cần trỏ về <slug>.nentang.vn"') : bad('không chỉ ra CNAME sai đích', cc.json.message);
+
+  // ── 11c. Tên miền GỐC: không CNAME được → vẫn phải đi đường A + TXT ─────────
+  sect('11c. Tên miền gốc vẫn dùng A + TXT');
+  const hApex = `apex-${uniq()}.vn`;
+  const rApex = await addDomain(A, hApex);
+  rApex.json.domain.apex === true ? ok(`nhận diện ${hApex} là tên miền GỐC (hiện hướng dẫn A+TXT)`) : bad('nhận nhầm apex', String(rApex.json.domain.apex));
+  const rApex2 = await addDomain(A, `con-${uniq()}.${hApex}`);
+  rApex2.json.domain.apex === false ? ok('tên miền con của cùng gốc → apex=false') : bad('nhận nhầm tên miền con', String(rApex2.json.domain.apex));
+  await setTxt(rApex.json.domain.challenge.name, rApex.json.domain.challenge.value);
+  await verifySweep();
+  (await owner.query('SELECT verified_at FROM domains WHERE hostname=$1', [hApex])).rows[0].verified_at !== null
+    ? ok('đường TXT cũ vẫn chạy nguyên vẹn (không phá tên miền đã dùng cách cũ)') : bad('đường TXT vỡ sau khi thêm CNAME', hApex);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

@@ -5,7 +5,8 @@
 #   bash scripts/verify-domains.sh [tên...]
 #
 # Bất biến: thêm domain = owner (domain.write) + step-up; đặt chính chỉ khi verified; không
-# gỡ tên miền chính; worker CHỈ verify khi TXT khớp (chống mint cert cho domain không sở hữu).
+# gỡ tên miền chính; worker CHỈ verify khi TXT khớp HOẶC CNAME khớp ĐÚNG đích của shop
+# (chống mint cert cho domain không sở hữu — xem lỗ wildcard, docs/30 §3c).
 # seller mount src → restart; worker build image → rebuild (chậm hơn).
 
 set -uo pipefail
@@ -67,7 +68,12 @@ mutate revokeprimary seller "cho GỠ tên miền chính" \
   "sed -i \"s@if (d.is_primary) return { code: 409, msg: 'không thể gỡ tên miền chính — đặt tên miền khác làm chính trước' };@if (false) return { code: 409 };@\" $SEL"
 
 mutate txtcheck worker "worker verify KHÔNG kiểm TXT (mint cert bừa)" \
-  "sed -i \"s@if (!txts.some((chunks) => chunks.join('') === d.verification_token)) continue;@if (false) continue;@\" $WRK"
+  "sed -i \"s@proved = txts.some((chunks) => chunks.join('') === d.verification_token);@proved = true;@\" $WRK"
+
+# CNAME chỉ an toàn khi so khớp ĐÍCH. Bỏ so khớp = chấp nhận CNAME trỏ đi đâu cũng được →
+# quay lại đúng lỗ "chỉ cần tên này về tới nền tảng" mà cả đợt này sinh ra để bịt (docs/30 §3c).
+mutate cnametarget worker "worker nhận CNAME mà KHÔNG khớp đích (chiếm tên miền con)" \
+  "sed -i \"s@return names.some((n) => String(n).replace(/\\\\\\\\.\\\$/, '').toLowerCase() === want);@return names.length > 0;@\" $WRK"
 
 sect "2. Trạng thái sau khi hoàn nguyên"
 restore; reload_seller; reload_worker

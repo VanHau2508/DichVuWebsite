@@ -52,6 +52,7 @@ const login = async (email, password) => ck((await rq(AUTH, 'POST', '/auth/login
 const uidOf = async (email) => (await owner.query('SELECT id FROM users WHERE email=$1', [email])).rows[0]?.id ?? null;
 const setTxt = (name, txt) => fetch(`${DNS_STUB}/set`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, txt }) });
 const setA = (name, a) => fetch(`${DNS_STUB}/set`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, a }) });
+const setCname = (name, cname) => fetch(`${DNS_STUB}/set`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, cname }) });
 const PIP = process.env.PLATFORM_IP_EXPECT ?? '127.0.0.1';
 const verifySweep = () => fetch(`${WORKER}/internal/verify-sweep`, { method: 'POST' });
 
@@ -138,6 +139,28 @@ async function main() {
     ? ok('đặt đúng cả hai → trang báo sẽ tự kích hoạt trong 1 phút') : bad('không xác nhận khi đã đúng', r.body.slice(0, 300));
   r = await adm('POST', `/shops/${A.shopId}/domains/${dom.id}/check`, { cookie: A.cookie }); // KHÔNG Origin
   r.status === 403 ? ok('kiểm tra không Origin → 403 (CSRF)') : bad('CSRF không chặn nút kiểm tra', String(r.status));
+
+  // ── 2c. Tên miền CON: hướng dẫn MỘT bản ghi CNAME, A+TXT lùi vào <details> ──
+  // Đây là điểm của cả đợt: khách dùng tên miền con chỉ phải làm MỘT việc, ở MỘT chỗ.
+  sect('2c. Tên miền con → hướng dẫn 1 bản ghi CNAME');
+  const hSub = `sub-${uniq()}.example.com`;
+  await adm('POST', `/shops/${A.shopId}/domains/step-up`, { cookie: A.cookie, origin: OADM, form: { __action: 'add', hostname: hSub, password: A.password } });
+  r = await adm('GET', `/shops/${A.shopId}/domains`, { cookie: A.cookie });
+  const target = `${A.slug}.nentang.vn`;
+  r.body.includes(`<code>CNAME</code>`) && r.body.includes(target)
+    ? ok(`hiện bản ghi CNAME → ${target}`) : bad('không hiện hướng dẫn CNAME', r.body.slice(0, 300));
+  /Thêm <strong>một<\/strong> bản ghi/.test(r.body) && /<details/.test(r.body)
+    ? ok('nói "MỘT bản ghi", cách A+TXT lùi vào mục mở-ra-xem') : bad('vẫn bắt khách làm 2 bản ghi', r.body.slice(0, 300));
+
+  const subId = (await owner.query('SELECT id FROM domains WHERE hostname=$1', [hSub])).rows[0].id;
+  await setCname(hSub, target);
+  r = await adm('POST', `/shops/${A.shopId}/domains/${subId}/check`, { cookie: A.cookie, origin: OADM });
+  /✓ Bản ghi CNAME/.test(r.body) && /CNAME đã đúng/.test(r.body)
+    ? ok('bấm kiểm tra → "✓ Bản ghi CNAME", báo sẽ kích hoạt') : bad('không nhận CNAME đúng trên UI', r.body.slice(0, 400));
+  await verifySweep();
+  r = await adm('GET', `/shops/${A.shopId}/domains`, { cookie: A.cookie });
+  new RegExp(`${hSub}</strong>[^<]*<span[^>]*>Đã xác minh`).test(r.body.replace(/\s+/g, ' '))
+    ? ok('sau sweep: tên miền con "Đã xác minh" — không cần bản ghi TXT nào') : bad('CNAME không dẫn tới verified trên UI', r.body.slice(0, 400));
 
   // ── 3. Xác minh → trạng thái "Đã xác minh" ─────────────────────────────────
   sect('3. Xác minh DNS');

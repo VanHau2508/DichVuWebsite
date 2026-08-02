@@ -3886,24 +3886,44 @@ export function renderDomains(ctx, shopId, domains, notice, err, platformIp, che
     const status = d.verified ? badge('active', 'Đã xác minh') : badge('pending', 'Chờ xác minh DNS');
     const primary = d.is_primary ? ` ${badge('confirmed', 'Tên miền chính')}` : '';
     // Kết quả "Kiểm tra ngay" chỉ hiện ở ĐÚNG tên miền vừa bấm.
-    const ck = (check && check.id === d.id) ? `<div class="card" style="margin:8px 0 0;border-color:${check.verified || (check.a?.ok && check.txt?.ok) ? '#a7f3d0' : '#fcd34d'};background:${check.verified || (check.a?.ok && check.txt?.ok) ? '#ecfdf5' : '#fffbeb'}">
-        <p style="margin:0"><strong>${check.a?.ok ? '✓' : '✗'} Bản ghi A</strong> · <strong>${check.txt?.ok ? '✓' : '✗'} Bản ghi TXT</strong></p>
+    const goodCk = check && (check.verified || check.cname?.ok || (check.a?.ok && check.txt?.ok));
+    const ck = (check && check.id === d.id) ? `<div class="card" style="margin:8px 0 0;border-color:${goodCk ? '#a7f3d0' : '#fcd34d'};background:${goodCk ? '#ecfdf5' : '#fffbeb'}">
+        <p style="margin:0"><strong>Cách 1:</strong> ${check.cname?.ok ? '✓' : '✗'} Bản ghi CNAME
+          &nbsp;·&nbsp; <strong>Cách 2:</strong> <strong>${check.a?.ok ? '✓' : '✗'} Bản ghi A</strong> + <strong>${check.txt?.ok ? '✓' : '✗'} Bản ghi TXT</strong></p>
         <p style="margin:6px 0 0">${esc(check.message ?? '')}</p></div>` : '';
-    const challenge = (!d.verified && d.challenge) ? `<div class="card" style="background:#fffbeb;border-color:#fcd34d;margin:8px 0 0">
-        <p class="muted" style="margin:0 0 6px">Thêm <strong>hai</strong> bản ghi DNS này tại nơi bạn mua tên miền, rồi chờ ~1 phút (hệ thống tự kiểm):</p>
-        <table><tbody>
+    // HAI đường, khách chỉ làm MỘT. Tên miền con → CNAME một bản ghi (khuyên dùng, và cũng
+    // là đường an toàn hơn: đích mang slug riêng của shop nên wildcard của người khác không
+    // mượn được). Tên miền GỐC không đặt CNAME được (ADR-004) → bắt buộc A + TXT.
+    const cn = d.challenge?.cname ?? null;
+    const rowsATxt = `<table><tbody>
           <tr><td class="muted">Loại</td><td><code>A</code></td><td class="muted">trỏ tên miền về máy chủ</td></tr>
           <tr><td class="muted">Tên/Host</td><td><code style="word-break:break-all">${esc(d.hostname)}</code></td><td></td></tr>
           <tr><td class="muted">Giá trị</td><td>${ipCell}</td><td></td></tr>
           <tr><td colspan="3" style="border:0;height:8px"></td></tr>
           <tr><td class="muted">Loại</td><td><code>TXT</code></td><td class="muted">chứng minh tên miền là của bạn</td></tr>
-          <tr><td class="muted">Tên/Host</td><td><code style="word-break:break-all">${esc(d.challenge.name)}</code></td><td></td></tr>
-          <tr><td class="muted">Giá trị</td><td><code style="word-break:break-all">${esc(d.challenge.value)}</code></td><td></td></tr>
-        </tbody></table>
-        <form method="POST" action="${base}/domains/${esc(d.id)}/check" style="margin:10px 0 0">
+          <tr><td class="muted">Tên/Host</td><td><code style="word-break:break-all">${esc(d.challenge?.name ?? '')}</code></td><td></td></tr>
+          <tr><td class="muted">Giá trị</td><td><code style="word-break:break-all">${esc(d.challenge?.value ?? '')}</code></td><td></td></tr>
+        </tbody></table>`;
+    const rowsCname = cn ? `<table><tbody>
+          <tr><td class="muted">Loại</td><td><code>CNAME</code></td><td class="muted">trỏ tên miền về cửa hàng của bạn</td></tr>
+          <tr><td class="muted">Tên/Host</td><td><code style="word-break:break-all">${esc(cn.name)}</code></td><td></td></tr>
+          <tr><td class="muted">Giá trị</td><td><code style="word-break:break-all">${esc(cn.value)}</code></td><td></td></tr>
+        </tbody></table>` : '';
+    const checkForm = `<form method="POST" action="${base}/domains/${esc(d.id)}/check" style="margin:10px 0 0">
           <button class="btn alt sm" type="submit">Kiểm tra ngay</button>
           <span class="muted" style="font-size:.82rem;margin-left:8px">Xem đã đặt DNS đúng chưa, không phải ngồi đoán.</span>
-        </form></div>` : '';
+        </form>`;
+    const guide = (cn && !d.apex)
+      ? `<p class="muted" style="margin:0 0 6px">Thêm <strong>một</strong> bản ghi DNS này tại nơi bạn mua tên miền, rồi chờ ~1 phút (hệ thống tự kiểm):</p>
+         ${rowsCname}
+         <details style="margin:10px 0 0"><summary class="muted" style="cursor:pointer">Nhà cung cấp không cho đặt CNAME? Dùng cách 2 (hai bản ghi)</summary>
+           <div style="margin-top:8px">${rowsATxt}</div></details>`
+      : `<p class="muted" style="margin:0 0 6px">Đây là <strong>tên miền gốc</strong> — theo chuẩn DNS không đặt được CNAME, nên cần
+           <strong>hai</strong> bản ghi. Thêm tại nơi bạn mua tên miền rồi chờ ~1 phút (hệ thống tự kiểm):</p>
+         ${rowsATxt}
+         ${cn ? `<p class="muted" style="margin:8px 0 0;font-size:.85rem">Nếu bạn dùng tên miền con (vd <code>shop.${esc(d.hostname)}</code>) thì chỉ cần MỘT bản ghi CNAME → <code>${esc(cn.value)}</code>.</p>` : ''}`;
+    const challenge = (!d.verified && d.challenge)
+      ? `<div class="card" style="background:#fffbeb;border-color:#fcd34d;margin:8px 0 0">${guide}${checkForm}</div>` : '';
     const setPrimary = (d.verified && !d.is_primary) ? `<form method="POST" action="${base}/domains/${esc(d.id)}/primary" style="display:inline"><button class="btn sm" type="submit">Đặt làm chính</button></form>` : '';
     const revoke = (!d.is_primary && !isPlatform(d.hostname)) ? `<form method="POST" action="${base}/domains/${esc(d.id)}/revoke" style="display:inline"><button class="btn warn sm" type="submit">Gỡ</button></form>` : '';
     return `<div class="card">

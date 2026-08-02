@@ -1,24 +1,31 @@
 # Custom domain tự phục vụ (A5)
 
-> **Kiểm chứng được:** `apps/seller/test/domains.e2e.mjs` (36/36 — add→challenge→DNS→verify→
-> tls cấp cert→primary→revoke→chết + guard + chẩn đoán "Kiểm tra ngay"),
-> `apps/seller-admin/test/admin-domains.e2e.mjs` (16/16 BFF), `scripts/verify-domains.sh`
-> mutation 5/5. Đã vào CI.
+> **Kiểm chứng được:** `apps/seller/test/domains.e2e.mjs` (46/46 — add→challenge→DNS→verify→
+> tls cấp cert→primary→revoke→chết + guard + chẩn đoán "Kiểm tra ngay" + CNAME một-bản-ghi +
+> lỗ wildcard), `apps/seller-admin/test/admin-domains.e2e.mjs` (20/20 BFF),
+> `apps/seller/test/hostname-apex.test.js` (unit 4/4), `scripts/verify-domains.sh` mutation 6/6
+> (thêm `cnametarget`: bỏ so khớp đích CNAME → e2e phải đỏ). Đã vào CI.
 
 ## 1. Luồng
 
 1. Owner (perm `domain.write` + step-up) thêm tên miền riêng ở admin (tab **Tên miền**).
-2. Hệ trả **challenge**: thêm bản ghi `TXT _nentang-verify.<hostname> = <verification_token>`.
-3. Owner tạo bản ghi DNS đó + trỏ A record về IP nền tảng (floating IP).
-4. **Worker** (poller mỗi 60s, role `app_domainverify`) tra DNS TXT; KHỚP token → `verified_at=now()`.
+2. Hệ trả **challenge** với HAI đường, khách chỉ làm MỘT (xem §3c):
+   - **tên miền con** → một bản ghi `CNAME <hostname> = <slug>.nentang.vn`
+   - **tên miền gốc** → `A <hostname> = PLATFORM_IP` + `TXT _nentang-verify.<hostname> = <token>`
+3. Owner tạo bản ghi DNS đó ở nơi mua tên miền.
+4. **Worker** (poller mỗi 60s, role `app_domainverify`) tra DNS: CNAME đúng đích **hoặc**
+   TXT khớp token → `verified_at=now()`.
 5. `verified_at` bật → **tls-authorize** cấp cert (Caddy on-demand) + storefront/checkout phục vụ.
 6. Đặt **tên miền chính** (chỉ khi verified) → host phụ **301** về chính (tránh trùng nội dung).
 7. **Gỡ** (DELETE) → storefront/checkout ngừng phục vụ NGAY (đọc `verified_at` không cache).
 
 ## 2. Bảo mật
 
-- **Sở hữu qua DNS TXT**: chỉ ai điều khiển DNS mới verify được → chống mint cert cho domain
-  người khác. Worker so khớp `verification_token` CHÍNH XÁC (mutation `txtcheck` chứng minh).
+- **Sở hữu qua DNS (TXT hoặc CNAME)**: chỉ ai điều khiển DNS mới verify được → chống mint cert
+  cho domain người khác. Worker so khớp `verification_token` CHÍNH XÁC (mutation `txtcheck`
+  chứng minh), hoặc CNAME khớp CHÍNH XÁC `<slug>.nentang.vn` của **chính shop đó**.
+- **KHÔNG BAO GIỜ verify chỉ bằng bản ghi A.** Bản ghi A chứng minh "tên này về tới nền tảng",
+  KHÔNG chứng minh "shop vừa bấm nút là người điều khiển DNS" — xem lỗ wildcard ở §3c.
 - **isReserved**: chặn khách chiếm apex/subdomain nền tảng (`*.nentang.vn`) — cả ở seller (add)
   lẫn tls-authorize (defense-in-depth).
 - **hostname UNIQUE toàn cục**: domain đã đăng ký (kể cả shop khác) → 409 (chỉ lộ "đã đăng ký").
@@ -53,6 +60,40 @@ ngồi đoán. Cả hai đều dẫn về một chỗ: nhắn cho shop, shop nh�
   `ERR_INVALID_ARG_TYPE` chứ không tra DNS — rơi vào `catch` và MỌI lần kiểm tra đều báo "chưa
   tra được DNS". Phải là `node:dns/promises` (worker vốn đã đúng). e2e mới bắt được; `node --check`
   và mắt thường thì không.
+
+## 3c. Một bản ghi CNAME cho tên miền con — và vì sao KHÔNG bỏ hẳn chứng minh sở hữu
+
+Hai bản ghi (A + TXT) là hai chỗ để đặt sai. Câu hỏi đúng không phải "1 hay 2 bản ghi" mà là
+**bản ghi nào chứng minh được cả hai thứ cùng lúc**.
+
+**Đường mới (mặc định cho tên miền con):** `CNAME <hostname> → <slug>.nentang.vn`. Subdomain
+nền tảng này đã tạo sẵn lúc mở shop (platform-ops và self-serve đều INSERT), nên không phải
+dựng thêm gì. Đích mang **slug riêng của shop**, nên chỉ người sửa được DNS của hostname mới
+đặt nổi → vừa "traffic về tới nền tảng" vừa "đúng tenant nào". Đây là cách Shopify /
+Cloudflare-for-SaaS làm.
+
+**Vì sao KHÔNG chấp nhận "chỉ cần bản ghi A trỏ đúng IP":** bản ghi A chỉ chứng minh vế đầu.
+Hai kịch bản thật:
+
+1. **Wildcard.** Shop A trỏ `*.cuahang.vn → PLATFORM_IP` (rất thường). Shop B đăng ký
+   `khuyenmai.cuahang.vn`; tên đó CÓ phân giải về IP nền tảng nhờ wildcard của A, dù B không
+   sửa được DNS gì. Chỉ-kiểm-A ⇒ B verify được và chạy cửa hàng của B dưới tên miền của A.
+2. **Bản ghi cũ bỏ quên.** Một công ty từng trỏ `shop.thuonghieucu.com` về ta rồi nghỉ, bản ghi
+   còn nguyên → ai đăng ký lại cũng verify được ngay (subdomain takeover kinh điển).
+
+CNAME bịt cả hai: wildcard A không sinh ra CNAME, và CNAME cũ trỏ về slug shop khác thì không
+khớp. e2e dựng đúng hai cảnh này (`domains.e2e.mjs` §11b).
+
+**Tên miền GỐC vẫn phải A + TXT** — apex không đặt CNAME được (ADR-004). `isApex()`
+(`apps/seller/src/hostname.js`) chỉ dùng để chọn HIỂN THỊ hướng dẫn nào, **không dùng cho
+quyết định bảo mật**; xác minh luôn khớp DNS thật. Nó có danh sách đuôi nhiều nhãn kiểu VN
+(`com.vn`, `edu.vn`, …) — không phải Public Suffix List đầy đủ, đoán sai chỉ làm hiện nhầm
+hướng dẫn (unit `apps/seller/test/hostname-apex.test.js`).
+
+**Rủi ro còn lại (đã ghi nhận):** nếu một shop bị **xoá cứng** và slug được cấp lại cho shop
+khác, mọi CNAME cũ trỏ về slug đó sẽ khớp với chủ mới. Hôm nay shop chỉ đổi `status`
+(`suspended`/`terminated`), không xoá cứng, nên chưa mở ra; đừng thêm đường xoá-cứng-shop mà
+không tính lại chỗ này.
 
 ## 4. Ranh giới revoke (đã ghi nhận)
 

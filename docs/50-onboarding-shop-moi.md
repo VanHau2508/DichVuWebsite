@@ -101,6 +101,44 @@ vụ** ghim đáy. Đo trên trình duyệt thật: **7 link hiển thị** thay
 Trạng thái gập không nhớ qua các trang (không JS/cookie) — chấp nhận được, vì mở đúng
 nhóm đang dùng đã là hành vi đủ đúng.
 
+> **Cập nhật (Đợt 7) — đã thay bằng danh mục 2 cấp kiểu sàn.** Xem mục 5b bên dưới.
+
+### 5b. Đợt 7 — danh mục 2 cấp kiểu TikTok Seller Center
+
+Bản gom nhóm ở mục 5 vẫn còn hai chỗ chưa ổn, phát hiện khi soi cạnh giao diện TikTok:
+
+1. **Tiêu đề nhóm trông không giống thứ bấm được.** `<summary>` được tạo dáng chữ IN HOA
+   12px xám — đó là dáng của *nhãn phân đoạn*, không phải của *mục điều hướng*. Mắt lướt
+   qua không nhận ra bấm được.
+2. **Mở được nhiều nhóm cùng lúc.** Bung 3 nhóm là danh sách lại dài đúng như trước khi gom.
+
+Nay mỗi **danh mục lớn** là một hàng ngang cấp với mục thường (icon + tên, mũi tên bên
+phải); bấm sổ ra **danh mục con** (không icon, thụt vào **thẳng hàng với chữ của mục cha**);
+bấm danh mục khác thì cái đang mở **tự đóng**.
+
+Mười hàng khi gập hết: Tổng quan · **Đơn hàng** · **Sản phẩm** · **Kho vận** ·
+**Marketing** · Khách hàng · Báo cáo · **Kênh bán** · **Giao diện** · **Cài đặt**, cộng
+Trợ giúp + Gói dịch vụ ghim đáy.
+
+**Đóng-cái-khác không cần JS:** thuộc tính `name=` trên `<details>` biến cả cụm thành
+accordion loại trừ ngay trong trình duyệt (giống radio). Đã đo trên Chrome trong khung
+Browser: mở nhóm 2 thì nhóm 1 `open` về `false`, luôn đúng 1 nhóm mở.
+
+Trình duyệt cũ chưa hiểu `name` sẽ bỏ qua nó và các nhóm mở độc lập — **đúng bằng hành vi
+bản trước**, không ai mất đường đi. Đây cũng là lý do **không** dùng radio + `:checked`:
+radio đã chọn thì không bỏ chọn được, tức mở rồi không đóng lại được, mà đó lại chính là
+thao tác người dùng mong đợi khi bấm lần hai.
+
+Ba chi tiết đo bằng engine chứ không nhìn:
+- Chữ mục con **thẳng hàng** với chữ mục cha (`x=54` cả hai) — thẳng hàng là thứ khiến mắt
+  đọc ra "cái này thuộc cái kia".
+- Mũi tên **chỉ** có ở nhóm (`::after` rộng 7px), mục đứng riêng không có.
+- Vùng bấm trên điện thoại **44px**, và bấm mép trên / giữa / mép dưới đều `elementsFromPoint`
+  trả về đúng link đó — cao đủ nhưng chồng lấn hàng bên cạnh thì vẫn bấm trượt.
+
+Vài mục **đứng riêng** (Tổng quan, Khách hàng, Báo cáo): nhét một mục vào một "danh mục
+lớn" chỉ để cho đều là bắt người dùng bấm hai lần cho một trang.
+
 ### 6. Câu mở đầu thôi trấn an sai
 
 "Không còn việc tồn đọng — cửa hàng đang chạy êm" đúng với shop đang chạy, **sai với shop

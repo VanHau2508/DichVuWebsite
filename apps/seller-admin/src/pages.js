@@ -60,20 +60,37 @@ details[open]>.filt-sum::before{content:"▾ "}
 .side{width:240px;flex:0 0 240px;background:var(--card);border-right:1px solid var(--row);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
 .side-brand{padding:0 16px;height:56px;font-weight:600;font-size:1rem;letter-spacing:0;color:var(--ink);border-bottom:1px solid var(--row);display:flex;align-items:center;gap:10px;flex:0 0 auto}.side-brand svg{width:20px;height:20px;color:var(--pri)}
 .side-shop{padding:14px 16px 6px;font-size:13px;line-height:20px;letter-spacing:0;font-weight:400;color:var(--mut);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.side-nav{padding:6px 12px 12px;display:flex;flex-direction:column;gap:2px;flex:1;overflow-y:auto}
+.side-nav{padding:6px 10px 12px;display:flex;flex-direction:column;gap:1px;flex:1;overflow-y:auto}
 .side-nav a{position:relative;display:flex;align-items:center;gap:12px;min-height:40px;padding:8px 12px;border-radius:var(--r-sm);color:var(--ink);font-size:14px;line-height:20px;font-weight:400;transition:background .12s,color .12s}.side-nav a svg{width:20px;height:20px;flex:0 0 auto;color:var(--ink);transition:color .12s}
 .side-nav a:hover{background:var(--surf);color:var(--ink);text-decoration:none}
-.nav-grp{display:flex;flex-direction:column;gap:2px}
-.nav-grp+.nav-grp{margin-top:6px;padding-top:6px;border-top:1px solid var(--line)}
-.side-nav summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;
-  min-height:34px;padding:6px 12px;border-radius:var(--r-sm);color:var(--muted);font-size:12px;font-weight:700;
-  letter-spacing:.03em;text-transform:uppercase}
-.side-nav summary::-webkit-details-marker{display:none}
-.side-nav summary:hover{background:var(--surf);color:var(--ink)}
-.side-nav summary::after{content:"▸";font-size:11px;transition:transform .12s}
-.side-nav details[open]>summary::after{transform:rotate(90deg)}
-.nav-foot{margin-top:auto}
-.side-nav a.on{background:var(--navon);color:var(--ink);font-weight:600}.side-nav a.on svg{color:var(--pri)}
+.nav-grp{display:flex;flex-direction:column;gap:1px}
+.nav-grp+.nav-grp{margin-top:1px}
+/* Hàng DANH MỤC LỚN: <a> đứng riêng và <summary> của nhóm trông y hệt nhau — cùng cấp thì
+   phải cùng dáng, khác nhau chỉ ở chỗ có mũi tên hay không. */
+.side-nav .nav-top{list-style:none;cursor:pointer;display:flex;align-items:center;gap:12px;
+  min-height:42px;padding:9px 12px;border-radius:var(--r-sm);color:var(--ink);font-size:14px;
+  line-height:20px;font-weight:500;transition:background .12s,color .12s}
+.side-nav .nav-top svg{width:20px;height:20px;flex:0 0 auto;color:var(--mut);transition:color .12s}
+.side-nav .nav-top span{flex:1;min-width:0}
+.side-nav .nav-top::-webkit-details-marker{display:none}
+.side-nav .nav-top:hover{background:var(--surf);color:var(--ink)}
+.side-nav .nav-top:hover svg{color:var(--pri)}
+/* Mũi tên CHỈ ở summary (nhóm có con) — mục đứng riêng không có gì để sổ. */
+.side-nav summary.nav-top::after{content:"";width:7px;height:7px;flex:0 0 auto;margin-left:4px;
+  border-right:1.8px solid var(--mut);border-bottom:1.8px solid var(--mut);
+  transform:rotate(-45deg);transition:transform .15s}
+.side-nav details[open]>summary.nav-top::after{transform:rotate(45deg)}
+.side-nav .nav-top.on,.side-nav .nav-top.has-on{background:var(--navon);font-weight:600}
+.side-nav .nav-top.on svg,.side-nav .nav-top.has-on svg{color:var(--pri)}
+/* Danh mục CON: không icon, thụt vào thẳng hàng với chữ của mục cha (12 padding + 20 icon
+   + 12 gap = 44). Thẳng hàng là thứ khiến mắt đọc ra "cái này thuộc cái kia". */
+.nav-subs{display:flex;flex-direction:column;gap:1px;padding:2px 0 4px}
+.side-nav a.nav-sub{min-height:36px;padding:7px 12px 7px 44px;font-size:13.5px;color:var(--mut);font-weight:400}
+.side-nav a.nav-sub:hover{background:var(--surf);color:var(--ink)}
+.side-nav a.nav-sub.on{background:transparent;color:var(--pri);font-weight:600}
+.side-nav a.nav-sub.on::before{content:"";position:absolute;left:24px;top:50%;transform:translateY(-50%);
+  width:3px;height:16px;border-radius:2px;background:var(--pri)}
+.nav-foot{margin-top:auto;padding-top:6px;border-top:1px solid var(--line)}
 .side-user{border-top:1px solid var(--bd);padding:12px 16px}.side-user .email{color:var(--mut);font-size:.82rem;display:block;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .side-user button{background:var(--card);border:1px solid var(--bd);border-radius:var(--r-sm);padding:8px 12px;font:inherit;font-size:.85rem;cursor:pointer;color:var(--ink);width:100%;transition:background .15s,border-color .15s}.side-user button:hover{background:var(--surf);border-color:color-mix(in srgb,var(--pri) 30%,var(--bd))}
 .main{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -349,7 +366,12 @@ a:focus-visible,.btn:focus-visible,.shop-card:focus-visible,.metric:focus-visibl
   min-width:44px;min-height:44px;align-items:center;justify-content:center;margin-left:-10px}
 .admtoggle:focus-visible+.side .side-brand{outline:2.5px solid var(--pri);outline-offset:2px}
 /* Mobile: gom sidebar (25 mục) vào nút ☰ trên topbar (no-JS checkbox). tbar lên trên, side hiện khi ☰. */
-@media(max-width:760px){.shell{flex-direction:column}.main{order:0}.side{order:1;width:100%;flex:none;height:auto;position:static;display:none}.admtoggle:checked~.side{display:flex}.admburger{display:inline-flex}.side-nav{flex-direction:column}.side-nav a.on::before{display:none}.content{padding:18px 16px}.tbar{padding:12px 16px}.center .card{padding:26px 22px}}
+@media(max-width:760px){.shell{flex-direction:column}.main{order:0}.side{order:1;width:100%;flex:none;height:auto;position:static;display:none}.admtoggle:checked~.side{display:flex}.admburger{display:inline-flex}.side-nav{flex-direction:column}
+  /* Ngón tay cần ≥44px. Trên desktop mục con 36px là đủ cho chuột, nhưng menu này mở
+     bằng nút ☰ trên điện thoại — ở đó 36px là bấm trượt sang mục bên cạnh. */
+  .side-nav a.nav-sub{min-height:44px;padding-top:11px;padding-bottom:11px}
+  .side-nav .nav-top{min-height:46px}
+  .content{padding:18px 16px}.tbar{padding:12px 16px}.center .card{padding:26px 22px}}
 @media(prefers-color-scheme:dark){.card[style*="#ecfdf5"],.card[style*="#eff6ff"],.card[style*="#fffbeb"],.card[style*="#fef3c7"],.card[style*="#fef2f2"]{color:#0d1526}.card[style*="#ecfdf5"] .muted,.card[style*="#eff6ff"] .muted,.card[style*="#fffbeb"] .muted,.card[style*="#fef3c7"] .muted,.card[style*="#fef2f2"] .muted,.card[style*="#ecfdf5"] th,.card[style*="#eff6ff"] th,.card[style*="#fffbeb"] th,.card[style*="#fef3c7"] th,.card[style*="#fef2f2"] th{color:#3f4d66}.card[style*="#ecfdf5"] a,.card[style*="#eff6ff"] a,.card[style*="#fffbeb"] a,.card[style*="#fef3c7"] a,.card[style*="#fef2f2"] a{color:#1b48c0}.card[style*="#ecfdf5"] code,.card[style*="#eff6ff"] code,.card[style*="#fffbeb"] code,.card[style*="#fef3c7"] code,.card[style*="#fef2f2"] code{background:rgba(13,21,38,.08);color:#12306b}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}html{scroll-behavior:auto}}`;
 
@@ -408,28 +430,18 @@ const IC_HOME = ic('<path d="M3 9l1-5h16l1 5"/><path d="M4 9v10a1 1 0 0 0 1 1h14
 const IC_ORDER = ic('<path d="M5 4h14v16l-3-2-2 2-2-2-2 2-3-2z"/><path d="M9 9h6"/><path d="M9 13h6"/>');
 const IC_BOX = ic('<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/>');
 const IC_IMG = ic('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-5-5L5 20"/>');
-const IC_TAG = ic('<path d="M3 7v5.6a2 2 0 0 0 .6 1.4l7 7a2 2 0 0 0 2.8 0l5.6-5.6a2 2 0 0 0 0-2.8l-7-7A2 2 0 0 0 12.6 5H7a4 4 0 0 0-4 4z"/><circle cx="7.5" cy="9.5" r="1.3"/>');
-const IC_NEWS = ic('<path d="M4 5h11a2 2 0 0 1 2 2v11a2 2 0 0 0 2-2V9"/><path d="M4 5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h13"/><path d="M7 9h6M7 12h6M7 15h4"/>');
-const IC_FILE = ic('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9 12h6"/><path d="M9 16h6"/>');
-const IC_USERS = ic('<circle cx="9" cy="8" r="3"/><path d="M4 20v-1a5 5 0 0 1 10 0v1"/><path d="M17 8a3 3 0 0 1 0 6"/><path d="M20 20v-1a4 4 0 0 0-3-3.8"/>');
-const IC_GLOBE = ic('<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18"/>');
-const IC_DOWN = ic('<path d="M12 4v10"/><path d="M8 12l4 4 4-4"/><path d="M5 20h14"/>');
 const IC_TREND = ic('<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>');
 const IC_PALETTE = ic('<circle cx="13.5" cy="6.5" r="1.2"/><circle cx="17" cy="10" r="1.2"/><circle cx="8.5" cy="7" r="1.2"/><circle cx="6.5" cy="11.5" r="1.2"/><path d="M12 3a9 9 0 1 0 0 18 1.8 1.8 0 0 0 1.8-1.8 1.8 1.8 0 0 1 1.8-1.8H17a4 4 0 0 0 4-4 9 9 0 0 0-9-8.4z"/>');
 const IC_CARD = ic('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18"/><path d="M7 15h4"/>');
 const IC_CHART = ic('<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7" y="12" width="3" height="5"/><rect x="12" y="8" width="3" height="9"/><rect x="17" y="5" width="3" height="12"/>');
 const IC_GEAR = ic('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>');
-const IC_TICKET = ic('<path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2 2 2 0 0 0 0 4 2 2 0 0 1-2 2H5a2 2 0 0 1-2-2 2 2 0 0 0 0-4z"/><path d="M13 6v2M13 12v2M13 16v2"/>');
-const IC_TRUCK = ic('<path d="M2 6h12v10H2z"/><path d="M14 9h4l3 3v4h-7z"/><circle cx="6" cy="18" r="1.8"/><circle cx="17" cy="18" r="1.8"/>');
-const IC_BELL = ic('<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 20a2 2 0 0 0 4 0"/>');
-const IC_STAR = ic('<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/>');
 const IC_HEART = ic('<circle cx="12" cy="8" r="3.5"/><path d="M5 20v-1.5a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6V20"/>');
-const IC_LOG = ic('<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 11h7M9 15h7M9 19h4"/>');
-const IC_COIN = ic('<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6"/>');
 const IC_WAREHOUSE = ic('<path d="M3 21V8l9-5 9 5v13"/><path d="M3 21h18"/><rect x="7" y="13" width="10" height="8"/><path d="M7 17h10"/>');
-const IC_CLIP = ic('<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4a1.5 1.5 0 0 1 3 0h0a1.5 1.5 0 0 1-3 0z" fill="currentColor"/><path d="M9 11h6M9 15h6"/>');
 const IC_PLUG = ic('<path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-12 0z"/><path d="M12 18v3"/>');
-const IC_GIFT = ic('<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M5 12v9h14v-9"/><path d="M12 8v13"/><path d="M12 8S10.5 4 8.5 4 6 6 6 6s1 2 3 2M12 8s1.5-4 3.5-4S18 6 18 6s-1 2-3 2"/>');
+// Báo cáo dùng icon KHÁC Tổng quan: hai mục này giờ đứng cạnh nhau ở cấp cao nhất, cùng
+// hình cột thì mắt lướt qua sẽ đọc nhầm là một.
+const IC_CHART2 = ic('<path d="M4 20V4"/><path d="M4 20h16"/><path d="M7 15l4-5 3 3 5-7"/>');
+const IC_LIFE = ic('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.6"/><path d="M5.6 5.6l3.8 3.8M14.6 14.6l3.8 3.8M18.4 5.6l-3.8 3.8M9.4 14.6l-3.8 3.8"/>');
 
 // Điều hướng dọc trong 1 shop (sidebar) — chỉ hiện mục vai trò được phép.
 
@@ -499,14 +511,25 @@ export function renderHelp(ctx, shopId, tickets, notice, err, form = {}) {
 }
 
 
-// Sidebar GOM NHÓM. Trước đây là 28 mục phẳng — với shop mới 0 đơn 0 sản phẩm thì Đối
-// soát COD, Kiểm kê, Điểm thưởng, Nhật ký… nằm ngang hàng với Đơn hàng, và người mới không
-// biết bắt đầu từ đâu. Nay: nhóm "Bán hàng" luôn mở (việc hằng ngày), phần còn lại nằm
-// trong <details> gập sẵn — HTML thuần, KHÔNG cần JS.
+// Sidebar kiểu SÀN TMĐT (mẫu: TikTok Seller Center). Trước đây là 28 mục phẳng, rồi tới
+// bản gom nhóm dùng <details> có tiêu đề IN HOA nhỏ — đọc như "nhãn phân đoạn" chứ không
+// như mục bấm được, và mở nhiều nhóm cùng lúc thì danh sách lại dài y như cũ.
 //
-// Nhóm chứa trang ĐANG XEM luôn bung ra: gập cả nhóm đang đứng thì người dùng mất dấu
-// mình đang ở đâu. Không có JS/cookie nên trạng thái gập không nhớ qua các trang — chấp
-// nhận được, vì mở lại đúng nhóm đang dùng là hành vi đủ đúng.
+// Nay: mỗi DANH MỤC LỚN là một hàng bấm được (icon + tên, mũi tên bên phải); bấm thì sổ
+// danh mục con; bấm danh mục khác thì cái đang mở TỰ ĐÓNG.
+//
+// ĐÓNG-CÁI-KHÁC KHÔNG CẦN JS: thuộc tính `name=` trên <details> biến cả cụm thành accordion
+// loại trừ ngay trong trình duyệt (giống radio). Trình duyệt cũ chưa hiểu `name` thì bỏ qua
+// nó và các nhóm mở độc lập — đúng bằng hành vi bản trước, không ai mất đường đi. Đây là
+// lý do KHÔNG dùng radio+:checked: radio đã chọn thì không bỏ chọn được, tức mở rồi không
+// đóng lại được, mà đó lại chính là thao tác người dùng mong đợi khi bấm lần hai.
+//
+// Vài mục ĐỨNG RIÊNG, không nhóm (Tổng quan, Khách hàng, Báo cáo): nhét một mục vào một
+// "danh mục lớn" chỉ để cho đều là bắt người dùng bấm hai lần cho một trang.
+//
+// Nhóm chứa trang ĐANG XEM luôn bung: gập cả nhóm đang đứng thì mất dấu mình đang ở đâu.
+// Không JS/cookie nên trạng thái gập không nhớ qua các trang — chấp nhận được, vì mở lại
+// đúng nhóm đang dùng là hành vi đủ đúng.
 //
 // MỌI mục vẫn nằm trong HTML (details chỉ ẩn bằng CSS của trình duyệt) — link không biến
 // mất, tìm bằng Ctrl+F vẫn ra, và e2e cũ bám theo href vẫn khớp.
@@ -514,66 +537,76 @@ function sideNav(ctx) {
   if (!ctx.shopId) return '';
   const base = `/shops/${esc(ctx.shopId)}`;
   const R = ctx.role;
-  // [href, nhãn, icon, khoá-active, được-xem]
-  const GROUPS = [
-    ['Bán hàng', [
-      [`${base}/overview`, 'Tổng quan', IC_CHART, 'overview', ORDER_ROLES.has(R)],
-      [`${base}/orders`, 'Đơn hàng', IC_ORDER, 'orders', ORDER_ROLES.has(R)],
-      [`${base}/products`, 'Sản phẩm', IC_BOX, 'products', CATALOG_ROLES.has(R)],
-      [`${base}/customers`, 'Khách hàng', IC_HEART, 'customers', ORDER_ROLES.has(R)],
-      [`${base}/reports`, 'Báo cáo', IC_TREND, 'reports', REPORT_ROLES.has(R)],
-    ]],
-    ['Kho & nhập hàng', [
-      [`${base}/categories`, 'Danh mục', IC_TAG, 'categories', CATALOG_ROLES.has(R)],
-      [`${base}/purchasing`, 'Nhập hàng', IC_WAREHOUSE, 'purchasing', INVENTORY_ROLES.has(R)],
-      [`${base}/stocktakes`, 'Kiểm kê', IC_CLIP, 'stocktakes', INVENTORY_ROLES.has(R)],
-      [`${base}/cod`, 'Đối soát COD', IC_COIN, 'cod', ORDER_ROLES.has(R)],
-    ]],
-    ['Khuyến mãi & khách', [
-      [`${base}/promotions`, 'Flash sale', IC_TREND, 'promotions', CATALOG_ROLES.has(R)],
-      [`${base}/coupons`, 'Mã giảm giá', IC_TICKET, 'coupons', CATALOG_ROLES.has(R)],
-      [`${base}/loyalty`, 'Điểm thưởng', IC_GIFT, 'loyalty', LOYALTY_ROLES.has(R)],
-      [`${base}/affiliates`, 'Cộng tác viên', IC_USERS, 'affiliates', LOYALTY_ROLES.has(R)],
-      [`${base}/reviews`, 'Đánh giá', IC_STAR, 'reviews', CONTENT_ROLES.has(R)],
-      [`${base}/questions`, 'Hỏi đáp', IC_LOG, 'questions', CONTENT_ROLES.has(R)],
-    ]],
-    ['Giao diện & nội dung', [
-      [`${base}/theme`, 'Giao diện', IC_PALETTE, 'theme', CONTENT_ROLES.has(R)],
-      [`${base}/pages`, 'Trang nội dung', IC_FILE, 'pages', CONTENT_ROLES.has(R)],
-      [`${base}/blog`, 'Blog', IC_NEWS, 'blog', CONTENT_ROLES.has(R)],
-    ]],
-    ['Thiết lập cửa hàng', [
-      [`${base}/payment`, 'Thanh toán', IC_CARD, 'payment', PAYMENT_ROLES.has(R)],
+  // Mục con: [href, nhãn, khoá-active, được-xem]. Nhóm: [tên, icon, [mục con…]].
+  // Mục đứng riêng: [href, nhãn, icon, khoá-active, được-xem] — có icon vì nó ngang hàng
+  // với tên danh mục lớn.
+  const NAV = [
+    { solo: [`${base}/overview`, 'Tổng quan', IC_CHART, 'overview', ORDER_ROLES.has(R)] },
+    { title: 'Đơn hàng', icon: IC_ORDER, items: [
+      [`${base}/orders`, 'Quản lý đơn hàng', 'orders', ORDER_ROLES.has(R)],
+      [`${base}/cod`, 'Đối soát COD', 'cod', ORDER_ROLES.has(R)],
+      [`${base}/export`, 'Xuất dữ liệu', 'export', EXPORT_ROLES.has(R)],
+    ] },
+    { title: 'Sản phẩm', icon: IC_BOX, items: [
+      [`${base}/products`, 'Quản lý sản phẩm', 'products', CATALOG_ROLES.has(R)],
+      [`${base}/categories`, 'Danh mục', 'categories', CATALOG_ROLES.has(R)],
+      [`${base}/reviews`, 'Đánh giá', 'reviews', CONTENT_ROLES.has(R)],
+      [`${base}/questions`, 'Hỏi đáp', 'questions', CONTENT_ROLES.has(R)],
+    ] },
+    { title: 'Kho vận', icon: IC_WAREHOUSE, items: [
+      [`${base}/purchasing`, 'Nhập hàng', 'purchasing', INVENTORY_ROLES.has(R)],
+      [`${base}/stocktakes`, 'Kiểm kê', 'stocktakes', INVENTORY_ROLES.has(R)],
       // Tên phải khớp NỘI DUNG: trang này CHỈ nối tài khoản GHN/GHTK. Phí giao hàng nằm ở
       // Cài đặt. Gọi nó là "Vận chuyển" thì người bán đi tìm phí ship sẽ bấm vào đây, không
       // thấy gì, rồi kết luận nền tảng không đặt được phí ship (đo được ở đợt kiểm toán).
-      [`${base}/shipping`, 'Hãng vận chuyển', IC_TRUCK, 'shipping', SHIPPING_ROLES.has(R)],
-      [`${base}/notify`, 'Thông báo', IC_BELL, 'notify', SHIPPING_ROLES.has(R)],
-      [`${base}/domains`, 'Tên miền', IC_GLOBE, 'domains', DOMAIN_ROLES.has(R)],
-      [`${base}/api-keys`, 'Bán qua Facebook', IC_PLUG, 'apikeys', SHIPPING_ROLES.has(R)],
-      [`${base}/settings`, 'Cài đặt', IC_GEAR, 'settings', CONTENT_ROLES.has(R)],
-      [`${base}/members`, 'Nhân sự', IC_USERS, 'members', MEMBER_READ_ROLES.has(R)],
-      [`${base}/export`, 'Xuất dữ liệu', IC_DOWN, 'export', EXPORT_ROLES.has(R)],
-      [`${base}/audit-log`, 'Nhật ký', IC_LOG, 'audit', AUDIT_ROLES.has(R)],
-    ]],
+      [`${base}/shipping`, 'Hãng vận chuyển', 'shipping', SHIPPING_ROLES.has(R)],
+    ] },
+    { title: 'Marketing', icon: IC_TREND, items: [
+      [`${base}/promotions`, 'Flash sale', 'promotions', CATALOG_ROLES.has(R)],
+      [`${base}/coupons`, 'Mã giảm giá', 'coupons', CATALOG_ROLES.has(R)],
+      [`${base}/loyalty`, 'Điểm thưởng', 'loyalty', LOYALTY_ROLES.has(R)],
+      [`${base}/affiliates`, 'Cộng tác viên', 'affiliates', LOYALTY_ROLES.has(R)],
+    ] },
+    { solo: [`${base}/customers`, 'Khách hàng', IC_HEART, 'customers', ORDER_ROLES.has(R)] },
+    { solo: [`${base}/reports`, 'Báo cáo', IC_CHART2, 'reports', REPORT_ROLES.has(R)] },
+    { title: 'Kênh bán', icon: IC_PLUG, items: [
+      [`${base}/api-keys`, 'Bán qua Facebook', 'apikeys', SHIPPING_ROLES.has(R)],
+      [`${base}/domains`, 'Tên miền riêng', 'domains', DOMAIN_ROLES.has(R)],
+    ] },
+    { title: 'Giao diện', icon: IC_PALETTE, items: [
+      [`${base}/theme`, 'Giao diện cửa hàng', 'theme', CONTENT_ROLES.has(R)],
+      [`${base}/pages`, 'Trang nội dung', 'pages', CONTENT_ROLES.has(R)],
+      [`${base}/blog`, 'Blog', 'blog', CONTENT_ROLES.has(R)],
+    ] },
+    { title: 'Cài đặt', icon: IC_GEAR, items: [
+      [`${base}/payment`, 'Nhận tiền', 'payment', PAYMENT_ROLES.has(R)],
+      [`${base}/settings`, 'Thông tin & phí ship', 'settings', CONTENT_ROLES.has(R)],
+      [`${base}/notify`, 'Thông báo', 'notify', SHIPPING_ROLES.has(R)],
+      [`${base}/members`, 'Nhân sự', 'members', MEMBER_READ_ROLES.has(R)],
+      [`${base}/audit-log`, 'Nhật ký', 'audit', AUDIT_ROLES.has(R)],
+    ] },
   ];
-  const link = ([href, label, icon, key, show]) =>
-    (show ? `<a href="${href}"${ctx.active === key ? ' class="on"' : ''}>${icon}<span>${label}</span></a>` : '');
+  const solo = ([href, label, icon, key, show]) =>
+    (show ? `<a href="${href}" class="nav-top${ctx.active === key ? ' on' : ''}">${icon}<span>${label}</span></a>` : '');
+  const sub = ([href, label, key, show]) =>
+    (show ? `<a href="${href}" class="nav-sub${ctx.active === key ? ' on' : ''}"><span>${label}</span></a>` : '');
   let out = '';
-  for (const [i, [title, items]] of GROUPS.entries()) {
-    const links = items.map(link).join('');
+  for (const g of NAV) {
+    if (g.solo) { out += `<div class="nav-grp">${solo(g.solo)}</div>`; continue; }
+    const links = g.items.map(sub).join('');
     if (!links) continue;                                   // cả nhóm ngoài quyền → bỏ hẳn tiêu đề
-    if (i === 0) { out += `<div class="nav-grp">${links}</div>`; continue; }
-    const here = items.some(([, , , key, show]) => show && ctx.active === key);
-    out += `<details class="nav-grp"${here ? ' open' : ''}><summary>${esc(title)}</summary>${links}</details>`;
+    const here = g.items.some(([, , key, show]) => show && ctx.active === key);
+    out += `<details class="nav-grp" name="admnav"${here ? ' open' : ''}>`
+      + `<summary class="nav-top${here ? ' has-on' : ''}">${g.icon}<span>${esc(g.title)}</span></summary>`
+      + `<div class="nav-subs">${links}</div></details>`;
   }
   // Trợ giúp hiện cho MỌI vai: bắt phải có quyền cấu hình mới kêu cứu được là chặn đúng
   // người đang cần giúp — nhân viên gặp lỗi lúc 9 giờ tối là người duy nhất có mặt.
   // Gói dịch vụ cũng vậy: nhân viên thấy "còn 3 ngày" mới nhắc được chủ, và shop bị khoá
   // vì không ai để ý hạn là mất tiền thật cho cả hai bên. Hai mục này KHÔNG gập.
   out += `<div class="nav-grp nav-foot">
-    ${link([`${base}/help`, 'Trợ giúp', IC_LOG, 'help', true])}
-    ${link([`${base}/billing`, 'Gói dịch vụ', IC_CARD, 'billing', true])}</div>`;
+    ${solo([`${base}/help`, 'Trợ giúp', IC_LIFE, 'help', true])}
+    ${solo([`${base}/billing`, 'Gói dịch vụ', IC_CARD, 'billing', true])}</div>`;
   return `<nav class="side-nav">${out}</nav>`;
 }
 

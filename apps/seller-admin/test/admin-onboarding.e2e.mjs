@@ -92,20 +92,30 @@ async function main() {
     ? ok('shop onboarding: KHÔNG hiện khối gợi ý (checklist đang giữ vai trò dẫn dắt)')
     : bad('khối gợi ý đứng cạnh checklist');
 
-  sect('1b. Sidebar gom nhóm + câu mở đầu nói đúng tình trạng');
+  sect('1b. Sidebar danh mục 2 cấp kiểu sàn + câu mở đầu nói đúng tình trạng');
   // 28 mục phẳng: Đối soát COD, Kiểm kê, Điểm thưởng, Nhật ký… ngang hàng Đơn hàng, người
-  // mới không biết bắt đầu từ đâu. Nhóm "Bán hàng" phải KHÔNG gập (việc hằng ngày).
-  const grpTitles = [...r.body.matchAll(/<details class="nav-grp"[^>]*><summary>([^<]+)</g)].map((m) => m[1]);
-  grpTitles.length >= 3 && !grpTitles.includes('Bán hàng') && /class="nav-grp">\s*<a href="[^"]*\/overview"/.test(r.body)
-    ? ok(`sidebar gom ${grpTitles.length} nhóm gập + nhóm "Bán hàng" luôn mở`) : bad('sidebar chưa gom nhóm', JSON.stringify(grpTitles));
+  // mới không biết bắt đầu từ đâu. Nay: danh mục lớn bấm sổ ra danh mục con.
+  const grpTitles = [...r.body.matchAll(/<details class="nav-grp" name="admnav"[^>]*><summary class="nav-top[^"]*">.*?<span>([^<]+)<\/span>/g)].map((m) => m[1]);
+  grpTitles.length >= 5 && grpTitles.includes('Đơn hàng') && grpTitles.includes('Sản phẩm')
+    ? ok(`sidebar có ${grpTitles.length} danh mục lớn sổ được: ${grpTitles.join(' · ')}`) : bad('sidebar chưa phân danh mục 2 cấp', JSON.stringify(grpTitles));
+  // ĐÓNG-CÁI-ĐANG-MỞ khi bấm cái khác: thuộc tính name= biến cả cụm thành accordion loại
+  // trừ ngay trong trình duyệt. Thiếu name → mở được nhiều nhóm cùng lúc, đúng thứ vừa bỏ.
+  const nNamed = (r.body.match(/<details class="nav-grp" name="admnav"/g) ?? []).length;
+  nNamed === grpTitles.length && nNamed > 0
+    ? ok(`cả ${nNamed} nhóm cùng name="admnav" → mở cái này TỰ ĐÓNG cái kia (không cần JS)`)
+    : bad('nhóm thiếu name= → accordion không loại trừ', `${nNamed}/${grpTitles.length}`);
+  // Mục đứng riêng (Tổng quan) KHÔNG được nhét vào nhóm — một trang mà bắt bấm hai lần.
+  /<div class="nav-grp"><a href="[^"]*\/overview" class="nav-top/.test(r.body)
+    ? ok('Tổng quan đứng riêng ở cấp cao nhất (không phải bấm 2 lần)') : bad('Tổng quan bị nhét vào nhóm');
   // Mọi link CŨ vẫn còn trong HTML — details chỉ ẩn bằng CSS, không được làm mất đường đi.
   const stillThere = ['/cod', '/stocktakes', '/loyalty', '/audit-log', '/billing', '/help']
     .filter((h) => r.body.includes(`href="/shops/${A.shopId}${h}"`));
-  stillThere.length === 6 ? ok('gom nhóm KHÔNG làm mất link nào (6/6 mục ít dùng vẫn có)') : bad('gom nhóm nuốt mất link', JSON.stringify(stillThere));
+  stillThere.length === 6 ? ok('phân danh mục KHÔNG làm mất link nào (6/6 mục ít dùng vẫn có)') : bad('phân danh mục nuốt mất link', JSON.stringify(stillThere));
   // Nhóm chứa trang ĐANG XEM phải bung: gập cả nhóm đang đứng thì mất dấu mình ở đâu.
   const rSet = await adm('GET', `/shops/${A.shopId}/settings`, { cookie: A.cookie });
-  rSet.body.includes('<details class="nav-grp" open><summary>Thiết lập cửa hàng</summary>')
-    ? ok('đang ở Cài đặt → nhóm "Thiết lập cửa hàng" tự bung') : bad('nhóm chứa trang hiện tại không bung');
+  /<details class="nav-grp" name="admnav" open><summary class="nav-top has-on">.*?<span>Cài đặt<\/span>/.test(rSet.body)
+    && /href="[^"]*\/settings" class="nav-sub on"/.test(rSet.body)
+    ? ok('đang ở Cài đặt → danh mục "Cài đặt" tự bung, mục con được tô sáng') : bad('nhóm chứa trang hiện tại không bung');
   // "Không còn việc tồn đọng — cửa hàng đang chạy êm" là lời nói dối với shop chưa bán được:
   // 0 việc vì 0 khách, 0 khách vì chưa có gì để bán.
   !/cửa hàng đang chạy êm/.test(r.body) && /Khách chưa mua được gì/.test(r.body)

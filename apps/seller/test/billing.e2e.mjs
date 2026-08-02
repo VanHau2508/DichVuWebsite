@@ -179,6 +179,29 @@ async function main() {
   (await shopOf(A.shopId)).status === 'suspended'
     ? ok('khoá do nền tảng KHÔNG bị tiền mở ra (cưỡng chế vẫn có nghĩa)') : bad('trả tiền mở được cả shop bị nền tảng khoá!');
 
+  sect('7b. Shop bị SWEEP THUÊ BAO khoá (không phải sweep tiền) vẫn mở lại được khi trả tiền');
+  // HAI sweep cùng khoá shop: sweepBillingEnforce (đóng dấu suspended_at) và
+  // sweepSubscriptions (trước đây KHÔNG đóng dấu). Đường mở khoá chỉ nhìn suspended_at, mà
+  // sau khi trả tiền thì sub thành 'active' nên enforce KHÔNG BAO GIỜ chọn lại để đóng dấu
+  // bù → shop kẹt 'suspended' VĨNH VIỄN dù đã trả tiền. Hai sweep là hai setInterval riêng
+  // còn apply chạy mỗi 30s, nên cửa sổ này có thật ở cấu hình mặc định. Dựng lại: a8.
+  await owner.query(`UPDATE shops SET status='active' WHERE id=$1`, [A.shopId]);
+  await owner.query(
+    `UPDATE subscriptions SET status='past_due', current_period_end = now() - interval '30 days',
+            suspended_at = NULL, suspended_from = NULL WHERE shop_id=$1`, [A.shopId]);
+  await fetch(`${WORKER}/internal/subscription-sweep`, { method: 'POST' }).then((x) => x.json()).catch(() => null);
+  const sh7b = await shopOf(A.shopId), sub7b = await subOf(A.shopId);
+  sh7b.status === 'suspended' && sub7b.suspended_at
+    ? ok('sweep thuê bao khoá shop VÀ đóng dấu suspended_at (đường mở khoá cần dấu này)')
+    : bad('sweep thuê bao khoá mà không đóng dấu → trả tiền cũng không mở được', `shop=${sh7b.status} dấu=${sub7b.suspended_at}`);
+  const pay7b = await a.post('/billing/charge', { months: 1 });
+  await sepay(PLAT_TOKEN, { ref: pay7b.json.pay_ref, amount: Number(pay7b.json.amount_vnd), account: ACC });
+  await billSweep();
+  const un7b = await shopOf(A.shopId);
+  un7b.status !== 'suspended'
+    ? ok(`trả tiền → mở lại được (về '${un7b.status}') dù kẻ khoá là sweep thuê bao`)
+    : bad('TRẢ TIỀN RỒI VẪN BỊ KHOÁ VĨNH VIỄN', `shop=${un7b.status}`);
+
   sect('8. MÀN HÌNH: chủ shop BẤM THẬT trên trang Gói dịch vụ');
   // Bài học cũ: nút "có mặt" không nói gì về việc bấm vào có chạy. Ở đây gửi form thật.
   const adm = async (method, path, form) => {

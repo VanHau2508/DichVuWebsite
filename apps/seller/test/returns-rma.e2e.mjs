@@ -169,6 +169,40 @@ async function main() {
       : bad('NHẬN TRẢ HÀNG CHO ĐƠN CHƯA TRẢ TIỀN', `http=${ru.status} refunds=${refBefore}→${refAfter} amount_paid=${paidAfter}`);
   }
 
+  // ── Đơn CÓ GIẢM GIÁ: hoàn phải PHÂN BỔ coupon/điểm về hàng trả ───────────────
+  // order_lines.unit_price_vnd là giá TRƯỚC giảm; coupon và điểm nằm ở HEADER đơn. Hoàn
+  // thẳng Σ giá dòng là hoàn cả phần khách CHƯA HỀ TRẢ. Trước khi vá: trả 1/2 món của đơn
+  // giảm 50% thì hoàn GẤP ĐÔI mức đúng, còn trả CẢ ĐƠN thì 422 — tức đơn dùng coupon KHÔNG
+  // nhận trả hàng được. Mọi ca cũ trong bộ này đều dựng đơn KHÔNG giảm giá nên Σ dòng luôn
+  // bằng số đã thu, sai lệch không bao giờ lộ ra.
+  sect('Đơn CÓ COUPON: hoàn phân bổ giảm giá, và trả TOÀN BỘ vẫn nhận được');
+  {
+    const idD = await mkDelivered();
+    const od = await owner.query(`SELECT subtotal_vnd, shipping_vnd FROM orders WHERE id=$1`, [idD]);
+    const sub = N(od.rows[0].subtotal_vnd), ship = N(od.rows[0].shipping_vnd);
+    const giam = Math.round(sub / 2);                       // coupon 50% tiền hàng
+    await owner.query(
+      `UPDATE orders SET discount_vnd=$2::bigint, coupon_code='GIAM50', total_vnd=$3::bigint, amount_paid_vnd=$3::bigint WHERE id=$1`,
+      [idD, giam, sub - giam + ship]);
+    const unitA = N((await owner.query(`SELECT unit_price_vnd FROM order_lines WHERE order_id=$1 AND variant_id=$2`, [idD, A])).rows[0].unit_price_vnd);
+
+    await rq(AUTH, 'POST', '/auth/step-up', { body: { password: op }, cookie: oc, origin: OA });
+    const r1 = await rq(SELLER, 'POST', rurl(idD), { body: { lines: [{ variant_id: A, qty: 1 }], restock: false }, cookie: oc, origin: OS });
+    const ref1 = await refundsOf(idD);
+    const dung1 = Math.round((unitA * (sub - giam)) / sub);
+    r1.status === 200 && ref1 === dung1
+      ? ok(`trả 1 món đơn giảm 50% → hoàn ${ref1}đ (phân bổ đúng, không phải ${unitA}đ nguyên giá)`)
+      : bad('hoàn không phân bổ giảm giá', `http=${r1.status} hoàn=${ref1} kỳ vọng=${dung1} (nguyên giá=${unitA})`);
+
+    // Trả nốt TOÀN BỘ phần còn lại: phải nhận được, và tổng hoàn = ĐÚNG tiền hàng đã trả.
+    await rq(AUTH, 'POST', '/auth/step-up', { body: { password: op }, cookie: oc, origin: OA });
+    const r2 = await rq(SELLER, 'POST', rurl(idD), { body: { lines: [{ variant_id: A, qty: 2 }, { variant_id: B, qty: 2 }], restock: false }, cookie: oc, origin: OS });
+    const ref2 = await refundsOf(idD);
+    r2.status === 200 && ref2 === sub - giam
+      ? ok(`trả nốt cả đơn → tổng hoàn ${ref2}đ = đúng tiền hàng đã trả (phí ship ${ship}đ không hoàn)`)
+      : bad('đơn có coupon KHÔNG trả hết hàng được', `http=${r2.status} ${r2.json?.error ?? ''} tổng hoàn=${ref2} kỳ vọng=${sub - giam}`);
+  }
+
   sect('getOrder trả lịch sử returns + returned_qty mỗi dòng');
   const g = (await rq(SELLER, 'GET', `/shops/${shopId}/orders/${id}`, { cookie: oc })).json;
   const lineA = (g.lines ?? []).find((l) => l.variant_id === A);

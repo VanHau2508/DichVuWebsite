@@ -173,7 +173,6 @@ async function main() {
   r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${uid}/cancel`, { body: {}, cookie: oc, origin: OS });
   r.status === 200 ? ok('đơn CHƯA trả → huỷ không cần lý do') : bad('bắt lý do cả đơn chưa trả', String(r.status));
 
-  console.log(`\n${pass} pass, ${fail} fail`);
   // ── SỬA ĐƠN ĐÃ TRẢ rồi HOÀN NỐT: không được TRỪ ĐÚP phần chênh đã hoàn ─────
   // editPaidOrder vừa ghi phiếu kind='edit_adjustment' VỪA hạ orders.total_vnd. Khoản đó đã
   // được trừ MỘT LẦN ở total_vnd; refundOrder đếm nó lần nữa trong `already` là trừ đúp.
@@ -197,6 +196,11 @@ async function main() {
       : bad('TRỪ ĐÚP khi hoàn nốt đơn đã sửa', `edit=${re.status} refund=${rr.status} hoanThem=${hoanThem} (ky vong ${conNo}) shopGiuLai=${shopGiu}`);
   }
 
+  // Dòng tổng kết phải là dòng CUỐI. Trước đây nó nằm giữa file (trên khối hoàn-nốt), nên
+  // khối cuối chạy nhưng KHÔNG được đếm — bộ chạy hàng loạt đọc con số này để báo cáo, và
+  // một con số thiếu là cách coverage mục ruỗng mà không ai thấy. Mã thoát vẫn đúng, nhưng
+  // "đúng ở mã thoát, sai ở con số in ra" là kiểu sai khó phát hiện nhất.
+  console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);
 }

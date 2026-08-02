@@ -1110,7 +1110,8 @@ async function createReturn(res, ctx, body, params) {
   try {
     const out = await withTenant(ctx.shopId, async (c) => {
       const o = (await c.query(
-        `SELECT id, order_number, status, payment_status, total_vnd, amount_paid_vnd, customer_email
+        `SELECT id, order_number, status, payment_status, total_vnd, amount_paid_vnd, customer_email,
+                subtotal_vnd, discount_vnd, coalesce(points_discount_vnd, 0) AS points_discount_vnd
            FROM orders WHERE id = $1 FOR UPDATE`, [orderId],
       )).rows[0];
       if (!o) fail(404, 'không tìm thấy đơn');
@@ -1133,15 +1134,41 @@ async function createReturn(res, ctx, body, params) {
       const want = new Map();
       for (const l of lines0) want.set(l.variant_id, (want.get(l.variant_id) ?? 0) + l.qty);
 
-      let refund = 0;
+      let gross = 0;                       // Σ giá dòng × qty — giá TRƯỚC mọi giảm giá
       const retLines = [];
       for (const [vid, qty] of want) {
         const line = orderByVid.get(vid);
         if (!line) fail(422, 'có dòng không thuộc đơn này');
         const remaining = line.qty - (prevRet.get(vid) ?? 0);
         if (qty > remaining) fail(422, `trả quá số đã mua: biến thể chỉ còn ${Math.max(0, remaining)} có thể trả`);
-        refund += line.unit * qty;
+        gross += line.unit * qty;
         retLines.push({ variant_id: vid, qty, unit: line.unit, cost: line.cost });
+      }
+
+      // PHÂN BỔ GIẢM GIÁ VỀ HÀNG TRẢ. order_lines.unit_price_vnd là giá TRƯỚC coupon và
+      // TRƯỚC điểm thưởng — hai khoản đó nằm ở HEADER đơn (checkout: total = subtotal −
+      // discount − points + ship). Hoàn thẳng Σ giá dòng là hoàn cả phần khách CHƯA HỀ TRẢ.
+      // Đã dựng lại được (a9): đơn 2 món 170.000, coupon −85.000, khách trả 115.000; trả lại
+      // 1 món thì hệ thống hoàn 85.000 (đúng phải 42.500) → shop mất 42.500 và khách giữ
+      // món còn lại gần như miễn phí. Trả CẢ ĐƠN còn tệ hơn: 170.000 > 115.000 đã thu → 422,
+      // tức đơn dùng coupon KHÔNG nhận trả hàng được, không có đường vòng nào trong giao diện.
+      //
+      // Phí ship KHÔNG hoàn (giữ nguyên hành vi cũ: chỉ hoàn theo dòng hàng).
+      const subtotal = Number(o.subtotal_vnd);
+      const giamHeader = Number(o.discount_vnd) + Number(o.points_discount_vnd);
+      const tienHangDaTra = Math.max(0, subtotal - giamHeader);
+      let refund = gross;
+      if (giamHeader > 0 && subtotal > 0) {
+        refund = Math.round((gross * tienHangDaTra) / subtotal);
+        // Lần trả CUỐI (sau lượt này không còn dòng nào chưa trả) đóng ĐÚNG phần còn lại:
+        // làm tròn từng lượt có thể để sót vài đồng, mà vài đồng kẹt thì đơn không bao giờ
+        // khớp "đã hoàn = đã thu" và người bán không có cách nào gõ nốt.
+        const traHet = ol.every((l) => (prevRet.get(l.variant_id) ?? 0) + (want.get(l.variant_id) ?? 0) >= l.qty);
+        if (traHet) {
+          const daHoanRma = Number((await c.query(
+            `SELECT coalesce(sum(refund_vnd), 0)::bigint AS s FROM returns WHERE order_id = $1`, [orderId])).rows[0].s);
+          refund = Math.max(0, tienHangDaTra - daHoanRma);
+        }
       }
 
       // Trần hoàn = đã thu − đã hoàn (neo amount_paid như v2; lazy: cột 0 → total).

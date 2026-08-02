@@ -952,15 +952,33 @@ async function sweepSubscriptions(reminderBatch) {
           AND current_period_end < now() - ($1 || ' days')::interval
         RETURNING shop_id`, [String(SUBSCRIPTION_GRACE_DAYS)])).rows;
     for (const row of cancelled) {
+      // Đọc trạng thái TRƯỚC khi treo: sau UPDATE chỉ còn thấy 'suspended' (mirror
+      // sweepBillingEnforce). Cần nó để mở khoá trả shop về đúng chỗ cũ.
+      const prev = (await c.query(`SELECT status FROM shops WHERE id = $1`, [row.shop_id])).rows[0]?.status ?? null;
       // Treo shop CHỈ khi (a) đang onboarding/active (guard DƯƠNG như platform suspend — KHÔNG
       // hạ 'terminated'/'suspended' bằng phủ định <>'suspended'), và (b) shop KHÔNG còn sub nào
       // khác đang phục vụ (đa-sub: đừng treo shop có sub mới active/trial/past_due còn hiệu lực).
-      await c.query(
+      const locked = await c.query(
         `UPDATE shops SET status = 'suspended'
           WHERE id = $1 AND status IN ('onboarding','active')
             AND NOT EXISTS (SELECT 1 FROM subscriptions s2 WHERE s2.shop_id = $1 AND s2.status IN ('trial','active','past_due'))`,
         [row.shop_id],
       );
+      // ĐÓNG DẤU khi CHÍNH TA khoá. Thiếu dòng này thì shop TRẢ TIỀN RỒI VẪN BỊ KHOÁ VĨNH VIỄN:
+      // sweepBillingApply chỉ mở khoá khi `suspended_at IS NOT NULL`, mà sweepBillingEnforce —
+      // nơi duy nhất đóng dấu trước đây — chỉ nhìn sub 'past_due'/'cancelled'. Khách trả tiền
+      // xong sub thành 'active' → enforce không bao giờ chọn lại → dấu không bao giờ có → shop
+      // kẹt 'suspended' mãi. Hai sweep là hai setInterval RIÊNG còn apply chạy mỗi 30s, nên cửa
+      // sổ này có thật ngay ở cấu hình mặc định. Đã dựng lại được (a8-khoa-shop-repro ca 2).
+      //
+      // Chỉ đóng dấu khi rowCount=1: shop đang bị nền tảng khoá vì VI PHẠM mà ta đóng dấu hộ
+      // thì nó tự mở lại được bằng cách trả một tháng tiền — mở đúng cái cửa không nên mở.
+      if (locked.rowCount) {
+        await c.query(
+          `UPDATE subscriptions SET suspended_at = now(), suspended_from = $2
+            WHERE shop_id = $1 AND suspended_at IS NULL`, [row.shop_id, prev],
+        );
+      }
     }
     await c.query('COMMIT');
     // Nhắc hạn chạy SAU chuyển trạng thái, CÙNG nhịp: sub vừa lật past_due nhận ngay

@@ -12,6 +12,10 @@ import dgram from 'node:dgram';
 import http from 'node:http';
 
 const records = new Map(); // tên (lowercase) → chuỗi TXT
+// Bản ghi A riêng (tên → IPv4 dạng chuỗi). Cần cho nút "Kiểm tra ngay" của trang Tên miền:
+// nó chẩn đoán CẢ bản ghi A lẫn TXT, nên e2e phải dựng được cả hai — nếu không thì nhánh
+// "đang trỏ sai IP" không bao giờ được kiểm và ta chỉ đang test một nửa.
+const aRecords = new Map();
 
 // Đọc QNAME (chuỗi nhãn [len][bytes]... kết thúc bằng 0) từ offset.
 function parseName(buf, offset) {
@@ -49,6 +53,17 @@ udp.on('message', (msg, rinfo) => {
       ans.writeUInt32BE(30, 6);                      // TTL
       ans.writeUInt16BE(rdata.length, 10);           // RDLENGTH
       parts.push(ans, rdata);
+    } else if (qtype === 1 && aRecords.get(name.toLowerCase())) {
+      header.writeUInt16BE(0x8180, 2);
+      header.writeUInt16BE(1, 6);
+      const rdata = Buffer.from(aRecords.get(name.toLowerCase()).split('.').map(Number)); // A: 4 byte
+      const ans = Buffer.alloc(12);
+      ans.writeUInt16BE(0xC00C, 0);
+      ans.writeUInt16BE(1, 2);                       // TYPE = A
+      ans.writeUInt16BE(1, 4);                       // CLASS = IN
+      ans.writeUInt32BE(30, 6);
+      ans.writeUInt16BE(rdata.length, 10);
+      parts.push(ans, rdata);
     } else {
       header.writeUInt16BE(0x8183, 2);               // QR=1, RD=1, RA=1, RCODE=3 (NXDOMAIN)
     }
@@ -60,12 +75,17 @@ udp.bind(5353, () => console.log('dns-stub: UDP 5353'));
 http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/set') {
     let b = ''; req.on('data', (d) => { b += d; }); req.on('end', () => {
-      try { const { name, txt } = JSON.parse(b); records.set(String(name).toLowerCase(), String(txt)); res.writeHead(200); res.end('{"ok":true}'); }
-      catch { res.writeHead(400); res.end('{"error":"bad json"}'); }
+      try {
+        const { name, txt, a } = JSON.parse(b);
+        const key = String(name).toLowerCase();
+        if (txt !== undefined) records.set(key, String(txt));
+        if (a !== undefined) aRecords.set(key, String(a));
+        res.writeHead(200); res.end('{"ok":true}');
+      } catch { res.writeHead(400); res.end('{"error":"bad json"}'); }
     });
     return;
   }
-  if (req.method === 'POST' && req.url === '/clear') { records.clear(); res.writeHead(200); res.end('{"ok":true}'); return; }
+  if (req.method === 'POST' && req.url === '/clear') { records.clear(); aRecords.clear(); res.writeHead(200); res.end('{"ok":true}'); return; }
   if (req.url === '/healthz') { res.writeHead(200); res.end('{"ok":true}'); return; }
   res.writeHead(404); res.end();
 }).listen(8600, () => console.log('dns-stub: HTTP 8600'));

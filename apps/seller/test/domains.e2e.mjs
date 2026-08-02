@@ -49,6 +49,9 @@ const stepUp = (cookie, password) => rq(AUTH, 'POST', '/auth/step-up', { body: {
 // tls-authorize: Caddy hỏi trước khi cấp cert. 200 = cấp, 403 = từ chối.
 const tlsAuthorize = async (host) => (await fetch(`${TLS}/internal/tls/authorize?domain=${encodeURIComponent(host)}`)).status;
 const setTxt = (name, txt) => fetch(`${DNS_STUB}/set`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, txt }) });
+// Bản ghi A (stub trả qtype 1). Cần cho nút "Kiểm tra ngay": nó chẩn đoán CẢ A lẫn TXT, không
+// dựng được A thì nhánh "đang trỏ sai IP" không bao giờ được kiểm.
+const setDns = (name, rec) => fetch(`${DNS_STUB}/set`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, ...rec }) });
 const verifySweep = async (batch) => (await (await fetch(`${WORKER}/internal/verify-sweep${batch ? `?batch=${batch}` : ''}`, { method: 'POST' })).json());
 
 async function makeStaff() {
@@ -237,6 +240,58 @@ async function main() {
 
   // Dọn domain của shop test — không để dồn dòng chưa-verify làm nghẽn candidate LIMIT 100.
   await owner.query('DELETE FROM domains WHERE shop_id IN ($1, $2)', [A.shopId, Bo.shopId]);
+
+  sect('10. "Kiểm tra ngay" — nói RÕ đang sai chỗ nào, và hiện IP để khách trỏ về');
+  await stepUp(A.cookie, A.password);
+  const PIP = process.env.PLATFORM_IP_EXPECT ?? '127.0.0.1';
+  // (a) IP nền tảng phải đi kèm danh sách. Thiếu nó thì hướng dẫn "trỏ bản ghi A về IP nền
+  //     tảng" là câu KHÔNG LÀM THEO ĐƯỢC — khách buộc phải nhắn hỏi shop.
+  let lr = await rq(SELLER, 'GET', `/shops/${A.shopId}/domains`, { cookie: A.cookie });
+  lr.json?.platform_ip === PIP ? ok(`API trả platform_ip=${PIP} để màn hình hiện cho khách chép`) : bad('thiếu platform_ip', JSON.stringify(lr.json?.platform_ip));
+
+  const hCk = `check-${uniq()}.example.com`;
+  const rCk = await addDomain(A, hCk);
+  const dCk = rCk.json.domain;
+  const check = () => rq(SELLER, 'POST', `/shops/${A.shopId}/domains/${dCk.id}/check`, { body: {}, cookie: A.cookie, origin: OS });
+
+  // (b) Chưa đặt gì → phải nói THIẾU CÁI GÌ, kèm IP cần trỏ về.
+  let c = await check();
+  c.status === 200 && c.json.a.reason === 'missing' && c.json.txt.reason === 'missing' && c.json.message.includes(PIP)
+    ? ok('chưa đặt DNS → báo thiếu CẢ HAI bản ghi, có kèm IP cần trỏ') : bad('chẩn đoán rỗng', JSON.stringify(c.json));
+
+  // (c) Trỏ SAI IP → phải nói ĐANG trỏ về đâu. "Chưa đúng" thì khách chỉ biết mở ticket;
+  //     "đang trỏ về 9.9.9.9, cần 127.0.0.1" thì họ sửa được ngay.
+  await setDns(hCk, { a: '9.9.9.9' });
+  c = await check();
+  c.json.a.reason === 'wrong_ip' && c.json.message.includes('9.9.9.9') && c.json.message.includes(PIP)
+    ? ok('trỏ sai IP → nói RÕ "đang trỏ về 9.9.9.9 — cần 127.0.0.1"') : bad('không nói được đang trỏ đâu', c.json.message);
+
+  // (d) A đúng nhưng TXT sai giá trị → phải phân biệt với "chưa đặt TXT".
+  await setDns(hCk, { a: PIP });
+  await setTxt(dCk.challenge.name, 'gia-tri-sai');
+  c = await check();
+  c.json.a.ok === true && c.json.txt.reason === 'mismatch'
+    ? ok('A đúng + TXT sai giá trị → phân biệt được với "chưa đặt TXT"') : bad('không phân biệt TXT sai vs thiếu', JSON.stringify(c.json.txt));
+
+  // (e) Cả hai đúng → trấn an đúng cách: nói sẽ tự kích hoạt, để khách khỏi bấm lại liên tục.
+  await setTxt(dCk.challenge.name, dCk.challenge.value);
+  c = await check();
+  c.json.a.ok && c.json.txt.ok && /trong vòng 1 phút/.test(c.json.message)
+    ? ok('cả hai đúng → báo sẽ tự kích hoạt trong 1 phút (khách không bấm lại mãi)') : bad('không trấn an khi đã đúng', c.json.message);
+
+  // (f) CHỈ ĐỌC: kiểm tra KHÔNG được tự đóng dấu verified — việc đó vẫn của worker
+  //     (vai app_domainverify least-priv). Cấp cho app_rw quyền ghi verified_at là mất
+  //     nhiều hơn được, nhất là khi sweep chạy mỗi 60 giây.
+  (await owner.query('SELECT verified_at FROM domains WHERE hostname=$1', [hCk])).rows[0].verified_at === null
+    ? ok('nút kiểm tra KHÔNG tự xác minh (giữ least-priv, worker mới lật cờ)') : bad('seller tự đóng dấu verified_at');
+  await verifySweep();
+  (await owner.query('SELECT verified_at FROM domains WHERE hostname=$1', [hCk])).rows[0].verified_at !== null
+    ? ok('sweep chạy → verified thật (chẩn đoán và xác minh nói CÙNG một thứ)') : bad('sweep không verify dù DNS đã đúng');
+
+  // (g) Tên miền của shop KHÁC → 404, không rò gì (RLS tenant_isolation, không phải kiểm ở tay).
+  const rOther = await addDomain(Bo, `other-${uniq()}.example.com`);
+  const rB = await rq(SELLER, 'POST', `/shops/${A.shopId}/domains/${rOther.json.domain.id}/check`, { body: {}, cookie: A.cookie, origin: OS });
+  rB.status === 404 ? ok('kiểm tra tên miền của shop khác → 404') : bad('rò tên miền chéo shop', rB.status);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

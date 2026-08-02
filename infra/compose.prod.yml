@@ -202,6 +202,10 @@ services:
       INVITE_LINK_BASE: https://${ADMIN_DOMAIN:-admin.nentang.vn}/invite/accept
       # Custom domain (A5): chặn khách chiếm subdomain nền tảng.
       PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-nentang.vn}
+      # IP CÔNG KHAI khách trỏ bản ghi A về — PHẢI là floating IP (ADR-004), không phải
+      # IP tạm của máy. Trống thì màn hình Tên miền không hiện được IP và khách buộc
+      # phải hỏi hỗ trợ; nên :? để deploy fail-loud thay vì lặng lẽ thiếu.
+      PLATFORM_IP: ${PLATFORM_IP:?}
       MINIO_ENDPOINT: minio
       MINIO_PORT: "9000"
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?}

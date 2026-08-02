@@ -248,6 +248,12 @@ services:
       # Custom domain (A5): chặn khách chiếm subdomain nền tảng + dựng bản ghi TXT challenge.
       PLATFORM_DOMAIN: nentang.vn
       DOMAINVERIFY_PREFIX: _nentang-verify
+      # IP CÔNG KHAI khách phải trỏ bản ghi A về. Prod = floating IP (ADR-004). Dev để
+      # 127.0.0.1 cho màn hình có gì mà hiện + "Kiểm tra ngay" so được.
+      PLATFORM_IP: 127.0.0.1
+      # Tra DNS cho nút "Kiểm tra ngay" — CÙNG stub với worker, để chẩn đoán và kết quả
+      # xác minh không bao giờ nói hai đằng.
+      DOMAINVERIFY_RESOLVER: dns-stub:5353
       # Media (MinIO). PUBLIC_BASE: prod là cdn.nentang.vn; dev là MinIO nội bộ.
       MINIO_ENDPOINT: minio
       MINIO_PORT: "9000"

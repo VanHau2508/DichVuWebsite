@@ -2514,13 +2514,23 @@ async function loyaltyStepUp(req, res, me, cookie, shopId) {
 }
 
 // ── Tên miền tùy chỉnh (owner + step-up) ─────────────────────────────────────
-async function domainsPage(res, me, cookie, shopId, notice, err) {
+async function domainsPage(res, me, cookie, shopId, notice, err, check) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'domains');
-  if (roleFor(me, shopId) !== 'owner') return sendHtml(res, 200, V.renderDomains(ctx, shopId, [], null, null));
+  if (roleFor(me, shopId) !== 'owner') return sendHtml(res, 200, V.renderDomains(ctx, shopId, [], null, null, null, null));
   const r = await sellerApi('GET', `/shops/${shopId}/domains`, { cookie });
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được tên miền.'));
-  return sendHtml(res, err ? 400 : 200, V.renderDomains(ctx, shopId, r.json?.domains ?? [], notice, err));
+  return sendHtml(res, err ? 400 : 200, V.renderDomains(ctx, shopId, r.json?.domains ?? [], notice, err, r.json?.platform_ip ?? null, check));
+}
+
+// "Kiểm tra ngay" — CHỈ ĐỌC (seller tra DNS), không đổi trạng thái gì. Render lại NGAY
+// trên trang thay vì redirect: người vừa bấm thì muốn thấy câu trả lời tại chỗ, không
+// phải nhìn trang nhấp nháy rồi tự đi tìm kết quả.
+async function domainCheck(res, me, cookie, shopId, domainId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/domains/${domainId}/check`, { cookie, body: {} });
+  if (r.status !== 200) return domainsPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không kiểm tra được DNS.');
+  return domainsPage(res, me, cookie, shopId, null, null, { id: domainId, ...r.json });
 }
 async function doDomainAdd(res, me, cookie, shopId, p) {
   const r = await sellerApi('POST', `/shops/${shopId}/domains`, { cookie, body: { hostname: p.hostname } });
@@ -3352,6 +3362,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/domains$`).exec(p)) && req.method === 'GET') return domainsPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/domains$`).exec(p)) && req.method === 'POST') return domainAdd(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/domains/step-up$`).exec(p)) && req.method === 'POST') return domainStepUp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/domains/${UUID}/check$`).exec(p)) && req.method === 'POST') return domainCheck(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/domains/${UUID}/(primary|revoke)$`).exec(p)) && req.method === 'POST') return domainAction(res, me, cookie, m[1], m[2], m[3]);
 
     // Thanh toán (payment.write = owner + step-up).

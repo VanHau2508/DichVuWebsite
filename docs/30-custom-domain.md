@@ -1,8 +1,9 @@
 # Custom domain tự phục vụ (A5)
 
-> **Kiểm chứng được:** `apps/seller/test/domains.e2e.mjs` (23/23 — add→challenge→DNS→verify→
-> tls cấp cert→primary→revoke→chết + guard), `apps/seller-admin/test/admin-domains.e2e.mjs`
-> (10/10 BFF), `scripts/verify-domains.sh` mutation 5/5. Đã vào CI.
+> **Kiểm chứng được:** `apps/seller/test/domains.e2e.mjs` (36/36 — add→challenge→DNS→verify→
+> tls cấp cert→primary→revoke→chết + guard + chẩn đoán "Kiểm tra ngay"),
+> `apps/seller-admin/test/admin-domains.e2e.mjs` (16/16 BFF), `scripts/verify-domains.sh`
+> mutation 5/5. Đã vào CI.
 
 ## 1. Luồng
 
@@ -30,6 +31,28 @@
 
 `GET /shops/:id/domains` (perm null) · `POST .../domains` (add) · `GET .../domains/:did` ·
 `POST .../domains/:did/primary` · `DELETE .../domains/:did` (revoke) — mutate = `domain.write`+stepUp.
+`POST .../domains/:did/check` (perm null, KHÔNG step-up) — chẩn đoán DNS, xem §3b.
+
+## 3b. Làm cho khách TỰ LÀM ĐƯỢC — `PLATFORM_IP` + "Kiểm tra ngay"
+
+Bước 3 ở §1 ("trỏ A về IP nền tảng") từng là **ngõ cụt**: màn hình chỉ hiện bản ghi TXT, nói
+"trỏ về IP nền tảng" mà KHÔNG chỗ nào trong sản phẩm nói IP đó là số mấy — `PLATFORM_IP` không
+tồn tại trong mã nguồn. Đặt xong rồi thì màn hình im lặng chờ; đặt sai một bản ghi là khách
+ngồi đoán. Cả hai đều dẫn về một chỗ: nhắn cho shop, shop nhắn cho nền tảng.
+
+- **`PLATFORM_IP`** (env của service `seller`) — IP CÔNG KHAI để khách trỏ bản ghi A về. Prod =
+  **floating IP** (ADR-004), vì đổi IP là bắt MỌI khách sửa lại DNS. Bắt buộc ở prod
+  (`${PLATFORM_IP:?}`); thiếu thì trang hạ cấp thành "chưa cấu hình — báo bộ phận hỗ trợ".
+  API `GET .../domains` trả kèm `platform_ip`; màn hình hiện **cả hai** bản ghi A và TXT.
+- **`POST .../domains/:did/check`** — tra DNS **CHỈ ĐỌC**, trả `{a, txt, message}` nói rõ đang
+  sai chỗ nào: *"Tên miền đang trỏ về 103.1.2.3 — cần trỏ về 14.5.6.7"*, phân biệt "chưa có TXT"
+  với "TXT có nhưng sai giá trị". Trần 10 lần/phút/shop (mỗi lần bấm là một truy vấn DNS ra ngoài).
+- **Không tự đóng dấu `verified_at`.** Nút này chẩn đoán, worker mới lật cờ (≤60s). Cấp cho
+  `app_rw` quyền ghi `verified_at` để tiết kiệm một phút chờ là mất nhiều hơn được.
+- **Bẫy đã vấp:** dùng `Resolver` của `node:dns` (API callback) thì `await r.resolve4(h)` ném
+  `ERR_INVALID_ARG_TYPE` chứ không tra DNS — rơi vào `catch` và MỌI lần kiểm tra đều báo "chưa
+  tra được DNS". Phải là `node:dns/promises` (worker vốn đã đúng). e2e mới bắt được; `node --check`
+  và mắt thường thì không.
 
 ## 4. Ranh giới revoke (đã ghi nhận)
 
@@ -39,7 +62,9 @@ khi hết hạn** (~90 ngày) — muốn cắt TLS tức thì phải xoá cert k
 
 ## 5. Test hạ tầng
 
-`apps/dns-stub` (CHỈ dev/e2e, KHÔNG có ở prod): UDP TXT responder + HTTP điều khiển, cho e2e
-xác định (worker trỏ resolver vào stub qua `DOMAINVERIFY_RESOLVER`; prod để trống → DNS hệ thống).
+`apps/dns-stub` (CHỈ dev/e2e, KHÔNG có ở prod): UDP responder **TXT + A** + HTTP điều khiển
+(`POST /set {name, txt?, a?}`), cho e2e xác định (worker VÀ seller trỏ resolver vào stub qua
+`DOMAINVERIFY_RESOLVER`; prod để trống → DNS hệ thống). Bản ghi A thêm vào stub cùng đợt
+"Kiểm tra ngay": không dựng được A thì nhánh "đang trỏ sai IP" không bao giờ được kiểm.
 Prod plumbing: role `app_domainverify` trong provision-db-roles.sh/deploy.sh/.env.example, worker
 `DATABASE_URL_DOMAINVERIFY` trong compose.prod.

@@ -51,6 +51,8 @@ async function adm(method, path, { cookie, origin, form } = {}) {
 const login = async (email, password) => ck((await rq(AUTH, 'POST', '/auth/login', { body: { email, password }, origin: OA })).sc);
 const uidOf = async (email) => (await owner.query('SELECT id FROM users WHERE email=$1', [email])).rows[0]?.id ?? null;
 const setTxt = (name, txt) => fetch(`${DNS_STUB}/set`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, txt }) });
+const setA = (name, a) => fetch(`${DNS_STUB}/set`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, a }) });
+const PIP = process.env.PLATFORM_IP_EXPECT ?? '127.0.0.1';
 const verifySweep = () => fetch(`${WORKER}/internal/verify-sweep`, { method: 'POST' });
 
 async function makeStaff() {
@@ -106,6 +108,36 @@ async function main() {
   r.status === 200 && r.body.includes(host) && /_nentang-verify\./.test(r.body) && /Chờ xác minh/.test(r.body) ? ok('thêm domain → hiện challenge TXT + trạng thái chờ') : bad('không hiện challenge', r.body.slice(0, 240));
   // Lấy token challenge từ DB để đăng ký TXT (BFF không lộ token ra ngoài HTML? có — trong <code>).
   const dom = (await owner.query('SELECT id, verification_token FROM domains WHERE hostname=$1', [host])).rows[0];
+
+  // ── 2b. Hướng dẫn LÀM THEO ĐƯỢC: bản ghi A có IP thật + nút "Kiểm tra ngay" ─
+  // Trước đợt này màn hình bảo "trỏ về IP nền tảng" mà không chỗ nào nói IP đó là gì, rồi
+  // im lặng chờ. Khách đặt sai một bản ghi là ngồi đoán → nhắn hỗ trợ. Đây đúng là chỗ
+  // quyết định "khách tự làm được" hay không, nên kiểm bằng HTML thật chứ không chỉ API.
+  sect('2b. Bản ghi A có IP thật + nút "Kiểm tra ngay"');
+  r = await adm('GET', `/shops/${A.shopId}/domains`, { cookie: A.cookie });
+  r.body.includes(PIP) && /<code>A<\/code>/.test(r.body)
+    ? ok(`trang hiện bản ghi A kèm IP thật (${PIP}) để khách chép`) : bad('không hiện IP nền tảng', r.body.slice(0, 200));
+  new RegExp(`action="/shops/${A.shopId}/domains/${dom.id}/check"`).test(r.body) && /Kiểm tra ngay/.test(r.body)
+    ? ok('có nút "Kiểm tra ngay" trỏ đúng tên miền') : bad('thiếu nút kiểm tra', r.body.slice(0, 200));
+
+  // Chưa đặt DNS → phải nói thiếu gì, ngay trên trang.
+  r = await adm('POST', `/shops/${A.shopId}/domains/${dom.id}/check`, { cookie: A.cookie, origin: OADM });
+  r.status === 200 && /✗ Bản ghi A/.test(r.body) && /✗ Bản ghi TXT/.test(r.body) && r.body.includes(PIP)
+    ? ok('bấm kiểm tra khi chưa đặt DNS → trang nói thiếu CẢ HAI bản ghi') : bad('kết quả kiểm tra rỗng', r.body.slice(0, 300));
+
+  // Trỏ sai IP → trang phải nói ĐANG trỏ về đâu (khách sửa được ngay).
+  await setA(host, '9.9.9.9');
+  r = await adm('POST', `/shops/${A.shopId}/domains/${dom.id}/check`, { cookie: A.cookie, origin: OADM });
+  /đang trỏ về 9\.9\.9\.9/.test(r.body) ? ok('trỏ sai IP → trang nói rõ "đang trỏ về 9.9.9.9"') : bad('không nói đang trỏ đâu', r.body.slice(0, 300));
+
+  // Đặt đúng cả hai → trang xác nhận, khách khỏi bấm lại liên tục.
+  await setA(host, PIP);
+  await setTxt(`_nentang-verify.${host}`, dom.verification_token);
+  r = await adm('POST', `/shops/${A.shopId}/domains/${dom.id}/check`, { cookie: A.cookie, origin: OADM });
+  /✓ Bản ghi A/.test(r.body) && /✓ Bản ghi TXT/.test(r.body) && /trong vòng 1 phút/.test(r.body)
+    ? ok('đặt đúng cả hai → trang báo sẽ tự kích hoạt trong 1 phút') : bad('không xác nhận khi đã đúng', r.body.slice(0, 300));
+  r = await adm('POST', `/shops/${A.shopId}/domains/${dom.id}/check`, { cookie: A.cookie }); // KHÔNG Origin
+  r.status === 403 ? ok('kiểm tra không Origin → 403 (CSRF)') : bad('CSRF không chặn nút kiểm tra', String(r.status));
 
   // ── 3. Xác minh → trạng thái "Đã xác minh" ─────────────────────────────────
   sect('3. Xác minh DNS');

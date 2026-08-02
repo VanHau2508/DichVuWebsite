@@ -3871,29 +3871,46 @@ export function renderExportStepUp(ctx, shopId, err) {
 }
 
 // ── Tên miền tùy chỉnh (owner) ───────────────────────────────────────────────
-export function renderDomains(ctx, shopId, domains, notice, err) {
+export function renderDomains(ctx, shopId, domains, notice, err, platformIp, check) {
   const base = `/shops/${esc(shopId)}`;
   if (ctx.role !== 'owner') {
     return layout('Tên miền', ctx, `<h1>Tên miền</h1><div class="card"><p class="muted">Chỉ <strong>chủ cửa hàng</strong> mới quản lý tên miền.</p></div>`);
   }
   const isPlatform = (h) => h.endsWith('.nentang.vn') || h === 'nentang.vn';
+  // Bản ghi A phải hiện IP CỤ THỂ. "Trỏ về IP nền tảng" mà không nói IP nào thì khách
+  // không làm theo được — họ buộc phải nhắn hỏi shop, đúng thứ trang này sinh ra để tránh.
+  const ipCell = platformIp
+    ? `<code style="word-break:break-all">${esc(platformIp)}</code>`
+    : '<span class="muted">chưa cấu hình — báo bộ phận hỗ trợ</span>';
   const rows = domains.map((d) => {
     const status = d.verified ? badge('active', 'Đã xác minh') : badge('pending', 'Chờ xác minh DNS');
     const primary = d.is_primary ? ` ${badge('confirmed', 'Tên miền chính')}` : '';
+    // Kết quả "Kiểm tra ngay" chỉ hiện ở ĐÚNG tên miền vừa bấm.
+    const ck = (check && check.id === d.id) ? `<div class="card" style="margin:8px 0 0;border-color:${check.verified || (check.a?.ok && check.txt?.ok) ? '#a7f3d0' : '#fcd34d'};background:${check.verified || (check.a?.ok && check.txt?.ok) ? '#ecfdf5' : '#fffbeb'}">
+        <p style="margin:0"><strong>${check.a?.ok ? '✓' : '✗'} Bản ghi A</strong> · <strong>${check.txt?.ok ? '✓' : '✗'} Bản ghi TXT</strong></p>
+        <p style="margin:6px 0 0">${esc(check.message ?? '')}</p></div>` : '';
     const challenge = (!d.verified && d.challenge) ? `<div class="card" style="background:#fffbeb;border-color:#fcd34d;margin:8px 0 0">
-        <p class="muted" style="margin:0 0 6px">Thêm bản ghi DNS TXT này tại nhà cung cấp tên miền, rồi chờ ~1 phút (tự kiểm):</p>
+        <p class="muted" style="margin:0 0 6px">Thêm <strong>hai</strong> bản ghi DNS này tại nơi bạn mua tên miền, rồi chờ ~1 phút (hệ thống tự kiểm):</p>
         <table><tbody>
-          <tr><td class="muted">Loại</td><td><code>TXT</code></td></tr>
-          <tr><td class="muted">Tên/Host</td><td><code style="word-break:break-all">${esc(d.challenge.name)}</code></td></tr>
-          <tr><td class="muted">Giá trị</td><td><code style="word-break:break-all">${esc(d.challenge.value)}</code></td></tr>
-        </tbody></table></div>` : '';
+          <tr><td class="muted">Loại</td><td><code>A</code></td><td class="muted">trỏ tên miền về máy chủ</td></tr>
+          <tr><td class="muted">Tên/Host</td><td><code style="word-break:break-all">${esc(d.hostname)}</code></td><td></td></tr>
+          <tr><td class="muted">Giá trị</td><td>${ipCell}</td><td></td></tr>
+          <tr><td colspan="3" style="border:0;height:8px"></td></tr>
+          <tr><td class="muted">Loại</td><td><code>TXT</code></td><td class="muted">chứng minh tên miền là của bạn</td></tr>
+          <tr><td class="muted">Tên/Host</td><td><code style="word-break:break-all">${esc(d.challenge.name)}</code></td><td></td></tr>
+          <tr><td class="muted">Giá trị</td><td><code style="word-break:break-all">${esc(d.challenge.value)}</code></td><td></td></tr>
+        </tbody></table>
+        <form method="POST" action="${base}/domains/${esc(d.id)}/check" style="margin:10px 0 0">
+          <button class="btn alt sm" type="submit">Kiểm tra ngay</button>
+          <span class="muted" style="font-size:.82rem;margin-left:8px">Xem đã đặt DNS đúng chưa, không phải ngồi đoán.</span>
+        </form></div>` : '';
     const setPrimary = (d.verified && !d.is_primary) ? `<form method="POST" action="${base}/domains/${esc(d.id)}/primary" style="display:inline"><button class="btn sm" type="submit">Đặt làm chính</button></form>` : '';
     const revoke = (!d.is_primary && !isPlatform(d.hostname)) ? `<form method="POST" action="${base}/domains/${esc(d.id)}/revoke" style="display:inline"><button class="btn warn sm" type="submit">Gỡ</button></form>` : '';
     return `<div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div><strong style="word-break:break-all">${esc(d.hostname)}</strong> ${status}${primary}</div>
         <div class="actions">${setPrimary} ${revoke}</div>
-      </div>${challenge}</div>`;
+      </div>${ck}${challenge}</div>`;
   }).join('');
   return layout('Tên miền', ctx, `
     <h1>Tên miền</h1>
@@ -3901,7 +3918,8 @@ export function renderDomains(ctx, shopId, domains, notice, err) {
     ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
     ${rows || '<div class="card"><p class="muted">Chưa có tên miền nào.</p></div>'}
     <div class="card"><h2 style="margin-top:0">Thêm tên miền riêng</h2>
-      <p class="muted" style="font-size:.85rem">Trỏ bản ghi A của tên miền về IP nền tảng, rồi thêm ở đây. Xác minh sở hữu qua DNS TXT.</p>
+      <p class="muted" style="font-size:.85rem">Nhập tên miền bạn đã mua. Thêm xong, màn hình sẽ hiện <strong>chính xác hai bản ghi DNS</strong>
+        cần đặt (kèm ${platformIp ? `IP <code>${esc(platformIp)}</code>` : 'IP máy chủ'}) và nút kiểm tra. Chứng chỉ HTTPS được cấp tự động — bạn không phải làm gì.</p>
       <form method="POST" action="${base}/domains" class="actions" style="align-items:end">
         <div><label>Tên miền (vd shop.cuahang.vn)</label><input name="hostname" required placeholder="shop.cuahang.vn" style="width:260px"></div>
         <button class="btn" type="submit">Thêm tên miền</button>

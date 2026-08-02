@@ -8,6 +8,10 @@
  * điều khiển DNS). Cô lập tenant: withTenant(shopId) → RLS tenant_isolation, chỉ domain shop mình.
  */
 import crypto from 'node:crypto';
+// node:dns/promises — KHÔNG phải node:dns. Resolver của bản callback không trả Promise:
+// `await r.resolve4(h)` ném ERR_INVALID_ARG_TYPE (thiếu callback), rơi vào nhánh catch và
+// mọi lần kiểm tra đều báo "chưa tra được DNS". Worker cũng dùng bản promises.
+import { Resolver, lookup as dnsLookup } from 'node:dns/promises';
 import { send } from './http.js';
 import { withTenant, audit } from './db.js';
 import { normalizeHostname, isReserved } from './hostname.js';
@@ -16,6 +20,10 @@ const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN ?? 'nentang.vn';
 const VERIFY_PREFIX = process.env.DOMAINVERIFY_PREFIX ?? '_nentang-verify';
 const MAX_DOMAINS_PER_SHOP = Number(process.env.MAX_DOMAINS_PER_SHOP ?? 20);
+// IP CÔNG KHAI của nền tảng — thứ khách phải trỏ bản ghi A về. Trước đợt này màn hình
+// bảo 'trỏ về IP nền tảng' mà KHÔNG chỗ nào nói IP đó là gì → khách bắt buộc phải hỏi
+// hỗ trợ. Prod đặt bằng floating IP (ADR-004).
+const PLATFORM_IP = process.env.PLATFORM_IP ?? '';
 // Khoá tuần tự hoá thao tác primary/revoke theo shop (single-primary an toàn khi đua).
 const primaryLock = (c) => c.query(`SELECT pg_advisory_xact_lock(hashtext('domain-primary'), hashtext(current_shop_id()::text))`);
 const genToken = () => crypto.randomBytes(32).toString('base64url');
@@ -37,7 +45,9 @@ const SELECT_COLS = 'id, hostname, verification_token, verified_at, is_primary, 
 async function listDomains(res, ctx) {
   const rows = await withTenant(ctx.shopId, async (c) =>
     (await c.query(`SELECT ${SELECT_COLS} FROM domains ORDER BY is_primary DESC, created_at`)).rows);
-  return send(res, 200, { domains: rows.map(domainView) });
+  // platform_ip đi kèm danh sách để màn hình hiện được BẢN GHI A cụ thể. Không có nó thì
+  // câu "trỏ về IP nền tảng" là hướng dẫn không làm theo được.
+  return send(res, 200, { domains: rows.map(domainView), platform_ip: PLATFORM_IP || null });
 }
 
 async function getDomain(res, ctx, _b, params) {
@@ -111,10 +121,105 @@ async function revokeDomain(res, ctx, _b, params) {
   return send(res, 200, { ok: true });
 }
 
+
+/**
+ * KIỂM TRA NGAY — chẩn đoán DNS cho một tên miền, nói RÕ đang sai chỗ nào.
+ *
+ * Vì sao cần: trước đợt này màn hình chỉ nói "chờ ~1 phút (tự kiểm)" rồi im lặng. Khách
+ * đặt sai một bản ghi thì ngồi chờ mãi mà không biết sai ở đâu — và cuối cùng nhắn cho
+ * shop. Đây đúng là loại việc quyết định "khách tự làm được" hay "phải gọi hỗ trợ".
+ *
+ * CHỈ ĐỌC, KHÔNG đóng dấu verified_at. Việc lật cờ vẫn thuộc worker (vai app_domainverify
+ * least-priv). Sweep chạy mỗi 60 giây nên chẩn đoán tức thì là đủ — đổi lấy việc cấp cho
+ * app_rw quyền ghi verified_at là mất nhiều hơn được.
+ */
+const dnsResolver = new Resolver({ timeout: 3000, tries: 2 });
+if (process.env.DOMAINVERIFY_RESOLVER) {
+  const [rhost, rport] = process.env.DOMAINVERIFY_RESOLVER.split(':');
+  dnsLookup(rhost).then(({ address }) => dnsResolver.setServers([rport ? `${address}:${rport}` : address]))
+    .catch(() => {});
+}
+// Trần thô theo shop, giữ trong tiến trình: mỗi lần bấm là một truy vấn DNS RA NGOÀI.
+// Không phải chống tấn công (đã sau session + RBAC) — chỉ để một người bấm liên tục không
+// biến trang này thành máy bơm truy vấn DNS.
+const checkHits = new Map();
+function overCheckLimit(shopId) {
+  const now = Date.now();
+  const cur = checkHits.get(shopId);
+  if (checkHits.size > 2000) for (const [k, v] of checkHits) if (now - v.t > 60_000) checkHits.delete(k);
+  if (!cur || now - cur.t > 60_000) { checkHits.set(shopId, { t: now, n: 1 }); return false; }
+  cur.n += 1;
+  return cur.n > 10;
+}
+
+async function checkDomain(res, ctx, _b, params) {
+  if (overCheckLimit(ctx.shopId)) return send(res, 429, { error: 'kiểm tra quá nhiều lần, đợi một phút rồi thử lại' });
+  const d = await withTenant(ctx.shopId, async (c) =>
+    (await c.query(`SELECT ${SELECT_COLS} FROM domains WHERE id = $1`, [params[1]])).rows[0]);
+  if (!d) return send(res, 404, { error: 'không tìm thấy tên miền' });
+  if (d.verified_at) return send(res, 200, { verified: true, a: { ok: true }, txt: { ok: true }, message: 'Tên miền đã xác minh và đang hoạt động.' });
+
+  // ── Bản ghi A ──────────────────────────────────────────────────────────────
+  // Nói RA con số đang thấy, không chỉ "sai". "Đang trỏ về 103.1.2.3, cần 14.5.6.7" là
+  // thứ khách sửa được ngay; "chưa đúng" thì họ chỉ biết mở ticket.
+  let a = { ok: false, found: [], reason: 'unknown' };
+  try {
+    const ips = await dnsResolver.resolve4(d.hostname);
+    a.found = ips;
+    if (!PLATFORM_IP) a = { ...a, ok: false, reason: 'platform_ip_missing' };
+    else if (ips.includes(PLATFORM_IP)) a = { ...a, ok: true, reason: 'ok' };
+    else a = { ...a, ok: false, reason: 'wrong_ip' };
+  } catch (e) {
+    // ENOTFOUND/ENODATA = chưa có bản ghi nào. Phân biệt với lỗi mạng để lời nhắn đúng.
+    a.reason = (e.code === 'ENOTFOUND' || e.code === 'ENODATA') ? 'missing' : 'dns_error';
+  }
+
+  // ── Bản ghi TXT (chứng minh sở hữu) ────────────────────────────────────────
+  let txt = { ok: false, found: [], reason: 'unknown' };
+  try {
+    const rows = await dnsResolver.resolveTxt(`${VERIFY_PREFIX}.${d.hostname}`);
+    // resolveTxt trả string[][] (mỗi bản ghi là mảng chunk 255-byte) → nối rồi so khớp.
+    const vals = rows.map((chunks) => chunks.join(''));
+    txt.found = vals.map((v) => (v.length > 12 ? `${v.slice(0, 12)}…` : v)); // đủ để đối chiếu, không đổ nguyên token vào log
+    txt.ok = vals.includes(d.verification_token);
+    txt.reason = txt.ok ? 'ok' : 'mismatch';
+  } catch (e) {
+    txt.reason = (e.code === 'ENOTFOUND' || e.code === 'ENODATA') ? 'missing' : 'dns_error';
+  }
+
+  // Lời nhắn TIẾNG VIỆT, đúng một câu nói được phải làm gì tiếp.
+  const MSG_A = {
+    ok: null,
+    missing: `Chưa thấy bản ghi A cho ${d.hostname}. Thêm bản ghi A trỏ về ${PLATFORM_IP || '(chưa cấu hình IP nền tảng)'} tại nơi bạn mua tên miền.`,
+    wrong_ip: `Tên miền đang trỏ về ${a.found.join(', ')} — cần trỏ về ${PLATFORM_IP}.`,
+    dns_error: 'Chưa tra được DNS (có thể nhà cung cấp đang cập nhật). Thử lại sau vài phút.',
+    platform_ip_missing: 'Nền tảng chưa cấu hình IP công khai — báo giúp bộ phận hỗ trợ.',
+    unknown: 'Chưa kiểm tra được bản ghi A.',
+  };
+  const MSG_TXT = {
+    ok: null,
+    missing: `Chưa thấy bản ghi TXT tại ${VERIFY_PREFIX}.${d.hostname}. Thêm đúng giá trị hiện trên màn hình này.`,
+    mismatch: 'Bản ghi TXT có rồi nhưng giá trị chưa khớp — chép lại đúng chuỗi trên màn hình (không thêm dấu cách).',
+    dns_error: 'Chưa tra được bản ghi TXT (có thể nhà cung cấp đang cập nhật). Thử lại sau vài phút.',
+    unknown: 'Chưa kiểm tra được bản ghi TXT.',
+  };
+  const steps = [MSG_A[a.reason], MSG_TXT[txt.reason]].filter(Boolean);
+  const message = (a.ok && txt.ok)
+    // Cả hai đúng nhưng chưa verified: worker sẽ lật cờ ở nhịp sau (≤60s). Nói rõ để khách
+    // không bấm lại liên tục tưởng hỏng.
+    ? 'Hai bản ghi đều đúng. Hệ thống sẽ kích hoạt tên miền trong vòng 1 phút.'
+    : steps.join(' ');
+  return send(res, 200, { verified: false, a, txt, message });
+}
+
 export const DOMAIN_ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/domains$`), perm: null, fn: (res, ctx) => listDomains(res, ctx) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/domains$`), perm: 'domain.write', stepUp: true, fn: (res, ctx, b) => addDomain(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/domains/${UUID}$`), perm: null, fn: (res, ctx, b, p) => getDomain(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/domains/${UUID}/primary$`), perm: 'domain.write', stepUp: true, fn: (res, ctx, b, p) => setPrimary(res, ctx, b, p) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/domains/${UUID}$`), perm: 'domain.write', stepUp: true, fn: (res, ctx, b, p) => revokeDomain(res, ctx, b, p) },
+  // CHỈ ĐỌC (tra DNS, không ghi gì) → perm null như các route đọc khác, KHÔNG step-up:
+  // bắt xác thực lại chỉ để xem "tôi đặt DNS đúng chưa" là đúng kiểu rào cản khiến người
+  // ta bỏ cuộc và nhắn cho hỗ trợ — đúng thứ nút này sinh ra để tránh.
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/domains/${UUID}/check$`), perm: null, fn: (res, ctx, b, p) => checkDomain(res, ctx, b, p) },
 ];

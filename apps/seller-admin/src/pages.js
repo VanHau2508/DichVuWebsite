@@ -526,10 +526,13 @@ function sideNav(ctx) {
     ]],
     ['Thiết lập cửa hàng', [
       [`${base}/payment`, 'Thanh toán', IC_CARD, 'payment', PAYMENT_ROLES.has(R)],
-      [`${base}/shipping`, 'Vận chuyển', IC_TRUCK, 'shipping', SHIPPING_ROLES.has(R)],
+      // Tên phải khớp NỘI DUNG: trang này CHỈ nối tài khoản GHN/GHTK. Phí giao hàng nằm ở
+      // Cài đặt. Gọi nó là "Vận chuyển" thì người bán đi tìm phí ship sẽ bấm vào đây, không
+      // thấy gì, rồi kết luận nền tảng không đặt được phí ship (đo được ở đợt kiểm toán).
+      [`${base}/shipping`, 'Hãng vận chuyển', IC_TRUCK, 'shipping', SHIPPING_ROLES.has(R)],
       [`${base}/notify`, 'Thông báo', IC_BELL, 'notify', SHIPPING_ROLES.has(R)],
       [`${base}/domains`, 'Tên miền', IC_GLOBE, 'domains', DOMAIN_ROLES.has(R)],
-      [`${base}/api-keys`, 'Kết nối', IC_PLUG, 'apikeys', SHIPPING_ROLES.has(R)],
+      [`${base}/api-keys`, 'Bán qua Facebook', IC_PLUG, 'apikeys', SHIPPING_ROLES.has(R)],
       [`${base}/settings`, 'Cài đặt', IC_GEAR, 'settings', CONTENT_ROLES.has(R)],
       [`${base}/members`, 'Nhân sự', IC_USERS, 'members', MEMBER_READ_ROLES.has(R)],
       [`${base}/export`, 'Xuất dữ liệu', IC_DOWN, 'export', EXPORT_ROLES.has(R)],
@@ -886,6 +889,12 @@ export function renderTheme(ctx, theme, notice, linkTargets = {}) {
   </form>` : '';
   return layout('Giao diện', ctx, `<h1>Giao diện cửa hàng</h1>
     ${notice ? `<div class="card" style="border-color:#93c5fd;background:#eff6ff;color:#1e40af">${esc(notice)}</div>` : ''}
+    <!-- Logo nằm ở Cài đặt (cùng form hồ sơ shop). Người vào "Giao diện" để làm đẹp cửa hàng
+         chắc chắn coi logo là việc của trang này — không có lối sang là họ tưởng chưa làm được. -->
+    <div class="card" style="background:#eff6ff;border-color:#bfdbfe">
+      <p style="margin:0"><strong>Tải logo cửa hàng</strong> ở <a href="/shops/${esc(ctx.shopId)}/settings#logo"><strong>Cài đặt cửa hàng</strong></a>
+        — cùng chỗ với tên shop, số điện thoại và địa chỉ kinh doanh.</p>
+    </div>
     <form method="GET" action="/shops/${esc(ctx.shopId)}/theme/preset">
       <div class="card" style="border-color:#c7d2fe;background:#f5f7ff">
         <h2 style="margin-top:0">Đổi giao diện theo ngành</h2>
@@ -1027,7 +1036,7 @@ export function renderShopSettings(ctx, shopId, shop, notice, err, unused) {
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${notice ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0;color:#065f46">${esc(notice)}</div>` : ''}
     <div class="card">
-      <h2 style="margin-top:0">Logo cửa hàng</h2>
+      <h2 id="logo" style="margin-top:0">Logo cửa hàng</h2>
       ${s.logo_url
         ? `<div style="margin-bottom:10px"><img src="${esc(s.logo_url)}" alt="Logo cửa hàng" style="max-height:64px;max-width:220px;border:1px solid #eceef1;border-radius:8px;padding:6px;background:#fff"></div>`
         : '<p class="muted" style="margin-top:0">Chưa có logo — hiện tên cửa hàng ở đầu trang. Tải ảnh JPEG/PNG/WebP.</p>'}
@@ -1050,8 +1059,9 @@ export function renderShopSettings(ctx, shopId, shop, notice, err, unused) {
         <label>Địa chỉ kinh doanh</label>
         <textarea name="business_address" maxlength="500" rows="2" placeholder="Số 12, Trần Duy Hưng, Cầu Giấy, Hà Nội">${esc(s.business_address ?? '')}</textarea>
 
-        <h2 style="margin:22px 0 4px;font-size:1.05rem">Phí vận chuyển</h2>
-        <p class="muted" style="margin:0 0 10px;font-size:.85rem">Phí ship áp cho mỗi đơn (tính tự động lúc thanh toán). Để trống = dùng mặc định nền tảng.</p>
+        <h2 id="phi-ship" style="margin:22px 0 4px;font-size:1.05rem">Phí vận chuyển</h2>
+        <p class="muted" style="margin:0 0 10px;font-size:.85rem">Phí ship áp cho mỗi đơn (tính tự động lúc thanh toán). Để trống = dùng mặc định nền tảng.
+          Muốn hãng tới lấy hàng và tự theo dõi vận đơn? Nối tài khoản ở <a href="${base}/shipping">Hãng vận chuyển</a>.</p>
         <div class="actions" style="align-items:end;flex-wrap:wrap">
           <div><label>Phí ship nội miền (VND)</label><input name="ship_fee_vnd" value="${esc(s.ship_fee_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="30000" style="width:170px"></div>
           <div><label>Phí ship liên miền (VND)</label><input name="ship_fee_far_vnd" value="${esc(s.ship_fee_far_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="để trống = như nội miền" style="width:200px"></div>
@@ -3286,6 +3296,24 @@ export function renderProductNew(ctx, shopId, err, f = {}) {
         <p class="muted" style="margin:5px 0 0">Chọn được nhiều ảnh. Ảnh đầu tiên là ảnh bìa. JPEG/PNG/WebP/GIF,
           mỗi ảnh tối đa 10MB — hệ thống tự nén sang WebP.</p>
       </div>
+      <!-- Biến thể ngay tại form TẠO. Trước đợt kiểm toán phải tạo SP xong rồi mới vào trang
+           chi tiết mới đặt được size/màu — shop thời trang, giày dép, mỹ phẩm gặp cái này ở
+           ĐÚNG sản phẩm đầu tiên họ đăng (docs/50 đã ghi nợ). Ô trống = SP không có biến thể,
+           hành vi y như cũ. Cùng tên trường (opt_name/opt_values) với trang chi tiết. -->
+      <details class="card"${f.opt_name0 || f.opt_name1 ? ' open' : ''}><summary style="cursor:pointer;font-weight:600">Sản phẩm có nhiều phiên bản? (size, màu…)</summary>
+        <p class="muted" style="margin:6px 0 10px">Bỏ trống nếu chỉ bán một phiên bản. Điền vào đây thì hệ thống
+          <strong>tự sinh đủ tổ hợp</strong> — ví dụ Size <em>S, M, L</em> × Màu <em>Đen, Trắng</em> ra 6 phiên bản.
+          Giá và tồn của từng phiên bản chỉnh ở trang sản phẩm sau khi tạo.</p>
+        <div class="grid2">
+          <div><label>Tên phân loại 1</label><input name="opt_name0" maxlength="40" value="${esc(f.opt_name0 ?? '')}" placeholder="Size"></div>
+          <div><label>Các giá trị (phân cách dấu phẩy)</label><input name="opt_values0" maxlength="600" value="${esc(f.opt_values0 ?? '')}" placeholder="S, M, L, XL"></div>
+        </div>
+        <div class="grid2">
+          <div><label>Tên phân loại 2</label><input name="opt_name1" maxlength="40" value="${esc(f.opt_name1 ?? '')}" placeholder="Màu"></div>
+          <div><label>Các giá trị (phân cách dấu phẩy)</label><input name="opt_values1" maxlength="600" value="${esc(f.opt_values1 ?? '')}" placeholder="Đen, Trắng, Be"></div>
+        </div>
+        <p class="muted" style="font-size:.82rem;margin:6px 0 0">Tối đa 100 tổ hợp. Cần trục thứ ba? Thêm ở trang sản phẩm sau khi tạo.</p>
+      </details>
       <details class="card"${f.slug || f.sku ? ' open' : ''}><summary style="cursor:pointer;font-weight:600">Tuỳ chọn nâng cao</summary>
         <p class="muted">Bỏ trống cũng được — hệ thống tự điền.</p>
         <label>Đường dẫn (slug)</label><input name="slug" pattern="[a-z0-9][a-z0-9-]*" maxlength="60" value="${esc(f.slug ?? '')}" placeholder="tự tạo từ tên sản phẩm">
@@ -4281,9 +4309,15 @@ export function renderShipping(ctx, shopId, cfg, err, ok) {
         </div>
         <p class="muted" style="font-size:.8rem;margin:8px 0 0">"Kiểm tra kết nối" chỉ hỏi phí ship của hãng — KHÔNG tạo đơn, KHÔNG tốn tiền.</p>
       </div>` : '';
-  return layout('Vận chuyển', ctx, `<h1>Vận chuyển</h1>
+  return layout('Hãng vận chuyển', ctx, `<h1>Hãng vận chuyển</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${ok ? `<div class="card" style="border-color:#86efac;background:#f0fdf4">${esc(ok)}</div>` : ''}
+    <div class="card" style="background:#eff6ff;border-color:#bfdbfe">
+      <p style="margin:0"><strong>Tìm phí giao hàng?</strong> Phí ship nội miền / liên miền / miễn phí từ bao nhiêu
+        nằm ở <a href="/shops/${esc(shopId)}/settings#phi-ship"><strong>Cài đặt cửa hàng</strong></a>.</p>
+      <p class="muted" style="margin:6px 0 0;font-size:.86rem">Trang này chỉ để nối <strong>tài khoản GHN/GHTK của bạn</strong> —
+        dùng khi muốn hãng tới lấy hàng và tự theo dõi vận đơn. Không nối vẫn bán được bình thường (tự giao hoặc tự gọi hãng).</p>
+    </div>
     ${status}
     <div class="card"><h2 style="margin-top:0">${connected ? 'Đổi kết nối' : 'Kết nối hãng vận chuyển'}</h2>
       <p class="muted">Dùng <strong>tài khoản GHN / GHTK của chính shop</strong>: lấy API token trong trang quản
@@ -4938,7 +4972,11 @@ export function renderApiKeys(ctx, shopId, data, err, ok, freshToken, mess, veri
       ? `<span class="badge cancelled">Đã thu hồi</span>`
       : `<form method="POST" action="${base}/${esc(k.id)}/revoke" data-confirm="Thu hồi khoá &quot;${esc(k.name)}&quot;? Phần mềm đang dùng khoá này sẽ NGỪNG đẩy đơn về ngay lập tức.">
            <button class="btn warn sm" type="submit">Thu hồi</button></form>`}</td></tr>`).join('');
-  return layout('Kết nối', { ...ctx, active: 'apikeys' }, `<h1>Kết nối phần mềm ngoài</h1>
+  // Tên trang phải nói được rằng ĐÂY là chỗ bán qua Facebook. Trước đợt kiểm toán trang tên
+  // "Kết nối phần mềm ngoài" mà lại chứa kết nối Trang Messenger — không ai đi tìm Facebook
+  // trong mục nghe như dành cho lập trình viên.
+  return layout('Kênh bán & kết nối', { ...ctx, active: 'apikeys' }, `<h1>Kênh bán &amp; kết nối</h1>
+    <p class="muted" style="margin:-6px 0 14px">Bán qua <strong>chat Facebook</strong>, và nối phần mềm ngoài đẩy đơn về đây.</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${ok ? `<div class="card" style="border-color:#86efac;background:#f0fdf4">${esc(ok)}</div>` : ''}
     ${freshToken ? `<div class="card" style="border-color:#f59e0b;background:#fffbeb">
@@ -4955,8 +4993,9 @@ export function renderApiKeys(ctx, shopId, data, err, ok, freshToken, mess, veri
       <textarea readonly rows="2" style="width:100%;font-family:ui-monospace,monospace">${esc(verifyToken)}</textarea>
       <p class="muted" style="margin:8px 0 0;font-size:.85rem">Mã này chỉ hiện <strong>một lần</strong>. Mất thì bấm "Kết nối lại" ở dưới để sinh mã mới. Nhớ tick sự kiện <code>messages</code> và <code>messaging_postbacks</code>.</p>
     </div>` : ''}
+
     <div class="card">
-      <h2 style="margin-top:0">Bán hàng qua chat Facebook (Messenger)</h2>
+      <h2 id="facebook" style="margin-top:0">Bán hàng qua chat Facebook (Messenger)</h2>
       ${mess?.available === false ? '<p class="muted">Nền tảng chưa bật kênh này. Liên hệ quản trị nền tảng.</p>' : mess?.connected ? `
         <div style="border-left:3px solid #22c55e;padding-left:12px">
           <p style="margin:0"><strong>✓ Đã kết nối Trang</strong> ${esc(mess.config?.page_name || mess.config?.page_id || '')}</p>

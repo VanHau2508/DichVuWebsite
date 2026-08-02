@@ -198,10 +198,10 @@ export function siteFooter(brand, contactEmail, contactPhone) {
       </div>
       <div class="ft-col"><h3>Giải pháp</h3><a href="/#tinh-nang">Tính năng</a><a href="/#nganh-hang">Ngành hàng</a><a href="/#bang-gia">Bảng giá</a><a href="${SIGNUP_URL}">Đăng ký dùng thử</a></div>
       <div class="ft-col"><h3>Về chúng tôi</h3><a href="/gioi-thieu">Giới thiệu</a><a href="/blog">Blog</a><a href="${ADMIN_LOGIN_URL}">Đăng nhập quản trị</a></div>
-      <div class="ft-col"><h3>Hỗ trợ</h3><a href="/ho-tro">Trung tâm hỗ trợ</a><a href="${mailtoHref(contactEmail, 'Cần hỗ trợ')}">${I.mail}${esc(contactEmail)}</a>${contactPhone ? `<span>${I.phone}${esc(contactPhone)}</span>` : ''}</div>
-      <div class="ft-col"><h3>Pháp lý</h3><a href="/dieu-khoan">Điều khoản dịch vụ</a></div>
+      <div class="ft-col"><h3>Hỗ trợ</h3><a href="/ho-tro">Trung tâm hỗ trợ</a><a href="/lien-he">Liên hệ</a><a href="${mailtoHref(contactEmail, 'Cần hỗ trợ')}">${I.mail}${esc(contactEmail)}</a>${contactPhone ? `<span>${I.phone}${esc(contactPhone)}</span>` : ''}</div>
+      <div class="ft-col"><h3>Pháp lý</h3><a href="/dieu-khoan">Điều khoản dịch vụ</a><a href="/bao-mat">Chính sách bảo vệ dữ liệu</a></div>
     </div>
-    <div class="ft-bottom"><span>© ${esc(brand)} · Nền tảng bán hàng online cho người Việt.</span><span><a href="/dieu-khoan">Điều khoản</a> · <a href="/ho-tro">Hỗ trợ</a></span></div>
+    <div class="ft-bottom"><span>© ${esc(brand)} · Nền tảng bán hàng online cho người Việt.</span><span><a href="/dieu-khoan">Điều khoản</a> · <a href="/bao-mat">Bảo mật</a> · <a href="/lien-he">Liên hệ</a> · <a href="/ho-tro">Hỗ trợ</a></span></div>
   </div></footer>`;
 }
 

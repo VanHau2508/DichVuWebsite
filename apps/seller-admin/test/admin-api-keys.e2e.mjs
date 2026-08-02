@@ -89,12 +89,19 @@ async function main() {
   const vid = await setupProduct(A, 120000, 30);
   const base = `/shops/${A.shopId}`;
 
-  sect('1. Trang Kết nối mở được, có lối vào từ menu');
+  sect('1. Trang Kênh bán & kết nối mở được, có lối vào từ menu');
   let r = await adm('GET', `${base}/api-keys`, { cookie: A.cookie });
-  r.status === 200 && r.body.includes('Kết nối phần mềm ngoài') ? ok('GET trang Kết nối 200') : bad(`trang Kết nối ${r.status}`, r.body.slice(0, 300));
+  r.status === 200 && r.body.includes('Kênh bán') ? ok('GET trang Kênh bán & kết nối 200') : bad(`trang kênh bán ${r.status}`, r.body.slice(0, 300));
   r.body.includes('/ingest/orders') ? ok('trang hiện địa chỉ nhận đơn') : bad('không thấy địa chỉ ingest trên trang');
+  // Kết nối Trang Facebook SỐNG ở trang này. Trước đây trang tên "Kết nối phần mềm ngoài" —
+  // nghe như dành cho lập trình viên, nên không ai đi tìm Facebook ở đây (đo được khi đóng
+  // vai chủ shop). Nay tên trang + mục menu đều nói thẳng, và khối Facebook nằm TRÊN khoá API.
+  const iFb = r.body.indexOf('Bán hàng qua chat Facebook');
+  const iKey = r.body.indexOf('Khoá của cửa hàng');
+  iFb > 0 && iKey > 0 && iFb < iKey ? ok('khối Facebook nằm TRƯỚC phần khoá API') : bad('thứ tự Facebook/khoá API sai', `fb=${iFb} key=${iKey}`);
   const home = await adm('GET', `${base}/orders`, { cookie: A.cookie });
-  home.body.includes(`${base}/api-keys`) ? ok('menu trái có mục Kết nối') : bad('menu KHÔNG có lối vào trang Kết nối');
+  home.body.includes(`${base}/api-keys`) ? ok('menu trái có lối vào trang') : bad('menu KHÔNG có lối vào trang');
+  /Bán qua Facebook/.test(home.body) ? ok('mục menu gọi thẳng tên "Bán qua Facebook"') : bad('mục menu không nêu Facebook — người bán không tìm ra');
 
   sect('2. Bấm "Tạo khoá" — qua màn xác nhận mật khẩu rồi mới ra token');
   r = await adm('POST', `${base}/api-keys`, { cookie: A.cookie, origin: OADM, form: { name: 'Pancake' } });

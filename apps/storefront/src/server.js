@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import pg from 'pg';
 import { renderHome, renderProducts, renderProduct, renderPage, renderSearch, renderBlogList, renderBlogPost, renderMaintenance, renderNotFound } from './theme.js';
 import { renderLanding } from './landing.js';
-import { renderAbout, renderSupport, renderTerms, renderBlogList as renderCoBlogList, renderBlogPost as renderCoBlogPost, findPost, companyPaths } from './company.js';
+import { renderAbout, renderSupport, renderTerms, renderPrivacy, renderContact, renderBlogList as renderCoBlogList, renderBlogPost as renderCoBlogPost, findPost, companyPaths } from './company.js';
 import { runReq, makeLog, health } from './obs.js';
 // Bộ đếm rate-limit DÙNG CHUNG với auth (atomic Lua, FAIL-OPEN khi Redis lỗi). File
 // gắn vào /app/ratelimit.js qua bind-mount trong compose.dev.yml (không copy, không sửa).
@@ -430,6 +430,10 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       if (url.pathname === '/gioi-thieu') return sendHtml(res, 200, renderAbout(LANDING_CFG), { cache: true });
       if (url.pathname === '/ho-tro') return sendHtml(res, 200, renderSupport(LANDING_CFG), { cache: true });
       if (url.pathname === '/dieu-khoan') return sendHtml(res, 200, renderTerms(LANDING_CFG), { cache: true });
+      // Chính sách bảo vệ dữ liệu cá nhân — Nghị định 13/2023 VÀ điều kiện bắt buộc để
+      // Meta duyệt app (không có URL này thì bot Messenger không dùng được với Trang thật).
+      if (url.pathname === '/bao-mat') return sendHtml(res, 200, renderPrivacy(LANDING_CFG), { cache: true });
+      if (url.pathname === '/lien-he') return sendHtml(res, 200, renderContact(LANDING_CFG), { cache: true });
       if (url.pathname === '/blog') return sendHtml(res, 200, renderCoBlogList(LANDING_CFG), { cache: true });
       if (url.pathname.startsWith('/blog/')) {
         const post = findPost(decodeURIComponent(url.pathname.slice('/blog/'.length)));

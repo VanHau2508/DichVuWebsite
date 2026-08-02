@@ -134,6 +134,84 @@ export function renderTerms(cfg = {}) {
   return sitePage({ title: `Điều khoản dịch vụ — ${esc(brand)}`, description: 'Điều khoản dịch vụ của nền tảng: tài khoản, thanh toán, dữ liệu và trách nhiệm các bên.', active: '', extraCss: COMPANY_CSS, body, ...cfg });
 }
 
+// ── CHÍNH SÁCH BẢO VỆ DỮ LIỆU CÁ NHÂN (bản mẫu — cần rà soát pháp lý) ────────
+//
+// VÌ SAO PHẢI CÓ, không phải "cho đẹp":
+//   1. Nghị định 13/2023/NĐ-CP về bảo vệ dữ liệu cá nhân — ta thu thập họ tên, số điện
+//      thoại, địa chỉ giao hàng, và cả TOẠ ĐỘ GPS (tính phí ship theo km).
+//   2. Meta App Review BẮT BUỘC có URL chính sách quyền riêng tư mới duyệt app. Không có
+//      trang này thì bot Messenger (0122) không bao giờ chạy được với Trang thật —
+//      một tính năng đã xây xong nằm chờ đúng một trang tĩnh.
+// Nội dung phải nói ĐÚNG những gì hệ thống làm thật; đừng chép mẫu chung chung rồi mô tả
+// sai — sai còn tệ hơn không có.
+export function renderPrivacy(cfg = {}) {
+  const { contactEmail = 'lienhe@nentang.vn', brand = 'Nền Tảng' } = cfg;
+  const body = `${pageHero(`${I.shield}Pháp lý`, 'Chính sách bảo vệ dữ liệu cá nhân', 'Cập nhật: Tháng 8, 2026')}
+<section class="sec"><div class="wrap">
+  <div class="note">Đây là <strong>bản mẫu</strong> mô tả đúng cách hệ thống đang hoạt động. Trước khi áp dụng chính thức, hãy rà soát với luật sư và điền thông tin pháp nhân thật (tên công ty, địa chỉ, mã số thuế, người phụ trách bảo vệ dữ liệu).</div>
+  <div class="content" style="margin-top:32px">
+    <h2>1. Chúng tôi là ai</h2>
+    <p>${esc(brand)} cung cấp nền tảng dựng và vận hành website bán hàng. Chính sách này áp dụng cho hai nhóm: <strong>chủ cửa hàng</strong> dùng dịch vụ, và <strong>người mua hàng</strong> ghé các cửa hàng chạy trên nền tảng.</p>
+    <p>Với dữ liệu người mua, chủ cửa hàng là <strong>Bên Kiểm soát dữ liệu</strong> và ${esc(brand)} là <strong>Bên Xử lý dữ liệu</strong> — chúng tôi chỉ xử lý theo yêu cầu vận hành cửa hàng của họ.</p>
+
+    <h2>2. Dữ liệu chúng tôi thu thập</h2>
+    <p><strong>Của chủ cửa hàng:</strong> email, mật khẩu (chỉ lưu dạng băm, không bao giờ lưu bản gốc), tên cửa hàng, số tài khoản nhận tiền, nhật ký thao tác quản trị.</p>
+    <p><strong>Của người mua:</strong> họ tên, số điện thoại, email, địa chỉ giao hàng, nội dung đơn hàng, đánh giá và ảnh đánh giá nếu bạn gửi.</p>
+    <p><strong>Vị trí:</strong> nếu bạn <em>chủ động bấm</em> nút định vị lúc thanh toán, trình duyệt gửi toạ độ để tính phí giao theo khoảng cách. Không bấm thì không thu. Toạ độ được <strong>tự động ẩn danh</strong> sau khi đơn hoàn tất.</p>
+    <p><strong>Kỹ thuật:</strong> địa chỉ IP được <strong>băm một chiều</strong> (không lưu IP gốc) để chống đơn ảo và chặn lạm dụng.</p>
+
+    <h2>3. Dùng để làm gì</h2>
+    <p>Xử lý và giao đơn hàng; gửi email xác nhận và cập nhật trạng thái; tính phí vận chuyển; chống gian lận và đơn ảo; hỗ trợ khi bạn liên hệ. <strong>Chúng tôi không dùng dữ liệu của bạn để quảng cáo và không bán cho bên thứ ba.</strong></p>
+
+    <h2>4. Chia sẻ với ai</h2>
+    <p>Chỉ chia sẻ ở mức tối thiểu cần thiết, với: <strong>đơn vị vận chuyển</strong> (tên, số điện thoại, địa chỉ để giao hàng); <strong>ngân hàng / cổng đối soát</strong> (nội dung chuyển khoản để xác nhận đã trả tiền); <strong>nhà cung cấp email</strong> để gửi thư giao dịch. Tiền khách trả đi <strong>thẳng vào tài khoản của chủ cửa hàng</strong> — chúng tôi không giữ dòng tiền.</p>
+    <p>Ngoài ra chỉ chia sẻ khi có yêu cầu hợp pháp của cơ quan nhà nước có thẩm quyền.</p>
+
+    <h2>5. Lưu bao lâu</h2>
+    <p>Dữ liệu đơn hàng lưu theo thời hạn kế toán và nhu cầu tra soát của cửa hàng. Thông tin cá nhân trong đơn cũ được <strong>tự động ẩn danh</strong> sau thời hạn lưu trữ. Toạ độ vị trí ẩn danh sớm hơn, ngay sau khi đơn hoàn tất.</p>
+
+    <h2>6. Quyền của bạn</h2>
+    <p>Theo Nghị định 13/2023/NĐ-CP, bạn có quyền: được biết, truy cập, chỉnh sửa, xoá, hạn chế xử lý, rút lại sự đồng ý, và khiếu nại. Người mua có <strong>tài khoản khách hàng</strong> để tự xem lịch sử đơn và sổ địa chỉ. Muốn thực hiện quyền khác, gửi yêu cầu tới <a href="${mailtoHref(contactEmail, 'Yêu cầu về dữ liệu cá nhân')}">${esc(contactEmail)}</a> — chúng tôi phản hồi trong 72 giờ làm việc.</p>
+
+    <h2>7. Chúng tôi bảo vệ thế nào</h2>
+    <p>Mật khẩu băm bằng Argon2id. Token của bên thứ ba (vận chuyển, mạng xã hội) mã hoá AES-256-GCM khi lưu. Toàn bộ kết nối chạy HTTPS. Dữ liệu mỗi cửa hàng <strong>cách ly ở tầng cơ sở dữ liệu</strong> — cửa hàng này không đọc được dữ liệu cửa hàng kia. Sao lưu định kỳ có mã hoá.</p>
+
+    <h2>8. Cookie</h2>
+    <p>Chỉ dùng cookie cần thiết cho hoạt động: giữ giỏ hàng, giữ phiên đăng nhập, chống giả mạo biểu mẫu. <strong>Không có cookie quảng cáo hay theo dõi xuyên trang.</strong></p>
+
+    <h2>9. Trẻ em</h2>
+    <p>Dịch vụ không hướng tới người dưới 16 tuổi. Nếu phát hiện đã thu thập dữ liệu của trẻ em mà không có sự đồng ý của người giám hộ, chúng tôi sẽ xoá.</p>
+
+    <h2>10. Thay đổi &amp; liên hệ</h2>
+    <p>Khi có thay đổi quan trọng, chúng tôi cập nhật ngày ở đầu trang và thông báo cho chủ cửa hàng qua email. Mọi câu hỏi về dữ liệu cá nhân: <a href="${mailtoHref(contactEmail, 'Hỏi về chính sách bảo vệ dữ liệu')}">${esc(contactEmail)}</a>.</p>
+  </div>
+</div></section>`;
+  return sitePage({ title: `Chính sách bảo vệ dữ liệu cá nhân — ${esc(brand)}`, description: 'Chúng tôi thu thập dữ liệu gì, dùng làm gì, chia sẻ với ai, lưu bao lâu và bạn có những quyền nào.', active: '', extraCss: COMPANY_CSS, body, ...cfg });
+}
+
+// ── LIÊN HỆ ──────────────────────────────────────────────────────────────────
+// Trước đợt này thông tin liên hệ chỉ nằm lọt trong mục 7 của Điều khoản. Khách doanh
+// nghiệp đi tìm "Liên hệ" sẽ không lục Điều khoản để tìm — họ đóng tab.
+export function renderContact(cfg = {}) {
+  const { contactEmail = 'lienhe@nentang.vn', contactPhone = '', brand = 'Nền Tảng' } = cfg;
+  const body = `${pageHero(`${I.headset}Liên hệ`, 'Nói chuyện với người thật', 'Bạn không phải điền biểu mẫu rồi chờ. Gửi email hoặc gọi, có người trả lời.')}
+<section class="sec"><div class="wrap">
+  <div class="support-grid">
+    <div class="scard"><div class="sic">${I.mail}</div><div>
+      <h3>Email</h3><p><a href="${mailtoHref(contactEmail, 'Liên hệ')}">${esc(contactEmail)}</a><br>Phản hồi trong giờ làm việc, thường trong ngày.</p></div></div>
+    ${contactPhone ? `<div class="scard"><div class="sic">${I.phone}</div><div>
+      <h3>Điện thoại</h3><p>${esc(contactPhone)}<br>Thứ 2 – Thứ 7, 8:00 – 18:00.</p></div></div>` : ''}
+    <div class="scard"><div class="sic">${I.headset}</div><div>
+      <h3>Đang là khách hàng?</h3><p>Gửi yêu cầu ngay trong khu quản trị — mục <strong>Trợ giúp</strong>. Yêu cầu vào thẳng hàng đợi hỗ trợ kèm thông tin cửa hàng, không phải mô tả lại.</p></div></div>
+    <div class="scard"><div class="sic">${I.doc}</div><div>
+      <h3>Tự tra trước</h3><p>Nhiều câu hỏi đã có sẵn lời giải ở <a href="/ho-tro">Trung tâm hỗ trợ</a>.</p></div></div>
+  </div>
+  <div class="note">Thông tin pháp nhân (tên công ty, địa chỉ đăng ký, mã số thuế) sẽ được điền tại đây trước khi phát hành chính thức.</div>
+</div></section>
+${ctaBlock(contactEmail)}`;
+  return sitePage({ title: `Liên hệ — ${esc(brand)}`, description: 'Liên hệ với đội ngũ: email, điện thoại và kênh hỗ trợ dành cho khách hàng đang dùng dịch vụ.', active: '', extraCss: COMPANY_CSS, body, ...cfg });
+}
+
 // ── BLOG CÔNG TY (bài viết tĩnh — thêm bài mới vào mảng POSTS) ────────────────
 const GRAD = ['#2463eb,#7c3aed', '#0d9488,#115e59', '#d97706,#92400e'];
 const P = (t) => ({ p: t });
@@ -223,7 +301,7 @@ ${ctaBlock(contactEmail)}`;
 
 export const findPost = (slug) => POSTS.find((p) => p.slug === slug) ?? null;
 // Danh sách đường dẫn trang công ty (cho sitemap của nentang.vn).
-export const companyPaths = () => ['/gioi-thieu', '/ho-tro', '/dieu-khoan', '/blog', ...POSTS.map((p) => `/blog/${p.slug}`)];
+export const companyPaths = () => ['/gioi-thieu', '/ho-tro', '/lien-he', '/dieu-khoan', '/bao-mat', '/blog', ...POSTS.map((p) => `/blog/${p.slug}`)];
 
 export function renderBlogPost(cfg, post) {
   const { contactEmail = 'lienhe@nentang.vn' } = cfg ?? {};

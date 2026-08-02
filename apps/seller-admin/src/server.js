@@ -1136,6 +1136,22 @@ async function productCreate(req, res, me, cookie, shopId) {
   const r = await sellerApi('POST', `/shops/${shopId}/products`, { cookie, body });
   if (r.status !== 201) return productNew(res, me, cookie, shopId, r.json?.error ?? 'Không tạo được sản phẩm.', f);
   const pid = r.json.id;
+  // Trục biến thể khai NGAY ở form tạo (size/màu) → gọi ĐÚNG endpoint mà trang chi tiết dùng,
+  // không nhân bản logic sinh ma trận. Trục hỏng KHÔNG được huỷ sản phẩm vừa tạo: đưa họ vào
+  // trang chi tiết kèm lời báo, ở đó có sẵn form sửa trục (cùng lối xử lý như ảnh hỏng dưới).
+  const options = [];
+  for (let i = 0; i < 2; i++) {
+    const name = String(f[`opt_name${i}`] ?? '').trim();
+    if (!name) continue;
+    const values = String(f[`opt_values${i}`] ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+    if (values.length) options.push({ name, values });
+  }
+  if (options.length) {
+    const o = await sellerApi('PUT', `/shops/${shopId}/products/${pid}/options`, { cookie, body: { options } });
+    if (o.status !== 200) {
+      return productDetail(res, me, cookie, shopId, pid, `Đã tạo sản phẩm nhưng chưa đặt được phiên bản: ${o.json?.error ?? 'lỗi không rõ'}. Sửa ngay bên dưới.`);
+    }
+  }
   // Ảnh tải SAU khi có sản phẩm (endpoint media cần product_id). Ảnh hỏng KHÔNG được huỷ
   // sản phẩm vừa tạo — đưa họ vào trang chi tiết kèm lời báo, ở đó có sẵn ô tải lại.
   let okN = 0, lastErr = null;

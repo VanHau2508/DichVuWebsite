@@ -156,3 +156,64 @@ tưởng đang đo, không phải cái thật sự hiển thị.
   kèm 2 ảnh một lượt · tồn vẫn đúng khi form là multipart · ảnh hỏng không mất SP.
 - `apps/seller-admin/test/admin-flow.e2e.mjs` — đổi kỳ vọng `GET /` sau đăng nhập/MFA
   sang "vào thẳng shop của mình" (đi tiếp một bước để chắc không phải 303 vào hư không).
+
+---
+
+## Đợt 3 — vá theo kết quả KIỂM TOÁN ĐÓNG VAI (2026-08-02)
+
+Không phải đọc mã rồi đoán: tôi dựng một shop mới tinh trên DB vừa reset và đi hết bốn vai
+bằng HTTP như trình duyệt (chủ shop · khách mua · shop vận hành · quản trị nền tảng).
+Không tìm ra lỗi logic nào — **2.218 khẳng định e2e xanh, 41/41 màn hình quản trị mở được,
+0 trang 500**. Cái tìm ra là một lớp khác: **thứ có thật nhưng người dùng không tìm ra.**
+
+### 1. Chính sách bảo vệ dữ liệu cá nhân (`/bao-mat`) — CHẶN TÍNH NĂNG
+
+Không có trang này thì **Meta App Review không duyệt**, mà không duyệt thì bot Messenger
+(0122, đã xây xong) không bao giờ chạy với Trang thật. Cộng thêm Nghị định 13/2023 — ta thu
+họ tên, SĐT, địa chỉ và **toạ độ GPS** (phí ship theo km). Nội dung viết theo ĐÚNG những gì
+hệ thống làm thật (băm IP, ẩn danh toạ độ sau khi đơn xong, Argon2id, AES-256-GCM, RLS
+cách ly tenant) — chép mẫu chung chung rồi mô tả sai còn tệ hơn không có.
+
+### 2. Trang "Vận chuyển" đổi tên thành "Hãng vận chuyển"
+
+Trang đó CHỈ nối tài khoản GHN/GHTK; phí ship nội miền/liên miền/freeship nằm ở **Cài đặt**.
+Người bán đi tìm phí ship bấm "Vận chuyển", không thấy gì, kết luận nền tảng không đặt được
+phí. Nay tên khớp nội dung, hai trang trỏ qua lại nhau (`#phi-ship`).
+
+### 3. Kết nối Trang Facebook ra khỏi trang nghe-như-cho-lập-trình-viên
+
+Khối kết nối Messenger nằm trong trang "Kết nối phần mềm ngoài", **dưới** phần khoá API.
+Nay: mục menu gọi thẳng **"Bán qua Facebook"**, tiêu đề trang là "Kênh bán & kết nối", và
+khối Facebook nằm **trên** phần khoá API.
+
+### 4. Trang "Giao diện" chỉ đường tới tải logo
+
+Logo nằm ở Cài đặt. Người vào "Giao diện" để làm đẹp cửa hàng chắc chắn coi logo là việc của
+trang đó — không có lối sang là họ tưởng chưa làm được.
+
+### 5. Trang Liên hệ (`/lien-he`)
+
+Trước đó thông tin liên hệ chỉ lọt trong mục 7 của Điều khoản.
+
+### 6. Đặt phân loại (size/màu) NGAY Ở FORM TẠO — trả nợ "Còn thiếu" ở trên
+
+BFF gọi lại **chính** `PUT /products/:id/options` mà trang chi tiết dùng, không nhân bản logic
+sinh ma trận. Trục hỏng **không huỷ** sản phẩm vừa tạo (cùng lối xử lý như ảnh hỏng) — bắt
+người bán gõ lại từ đầu là chỗ họ bỏ cuộc.
+
+### Bẫy ĐO LƯỜNG (bộ kiểm toán tự vấp, ghi lại để đừng lặp)
+
+- `fetch` của Node **ghi đè header Host** → mọi request rơi vào host container, sinh 404/403 giả.
+  Cả hệ định tuyến bằng Host, nên phải dùng `node:http` thô.
+- Thiếu header `Accept` → `/cart` trả JSON thay HTML, suýt kết luận "giỏ không hiện tạm tính".
+- Lấy **form POST đầu tiên** trên trang để bấm "xác nhận" — form đầu ở layout admin là nút
+  **Đăng xuất**. Phiên chết, 8 tính năng liền báo hỏng oan. Phải chọn form theo `action`.
+
+### Test
+
+- `apps/seller-admin/test/admin-products.e2e.mjs` §12 — form tạo có 2 trục · 3 size × 2 màu
+  sinh đủ 6 phiên bản trong MỘT lần tạo · lưu đúng 2 trục · trục vượt trần **giữ** sản phẩm.
+- `apps/seller-admin/test/admin-api-keys.e2e.mjs` §1 — khối Facebook nằm TRƯỚC khoá API ·
+  mục menu nêu thẳng "Bán qua Facebook".
+- `apps/storefront/test/e2e.mjs` — `/bao-mat`, `/lien-he` vào `companyPaths()` nên có trong
+  sitemap và được quét cùng các trang công ty khác.

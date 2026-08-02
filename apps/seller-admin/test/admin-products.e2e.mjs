@@ -514,6 +514,37 @@ async function main() {
     ? ok('nhập thật đơn cũ qua trang admin')
     : bad('nhập thật đơn cũ lỗi', String(or2.status));
 
+  // ── Biến thể NGAY Ở FORM TẠO (size/màu) ────────────────────────────────────
+  // Trước đây phải tạo SP xong rồi mới vào trang chi tiết mới đặt được phân loại — shop thời
+  // trang/giày dép gặp đúng ở sản phẩm ĐẦU TIÊN. BFF gọi lại chính endpoint PUT .../options
+  // của trang chi tiết, nên ở đây khẳng định KẾT QUẢ (đủ ma trận), không phải hình dạng form.
+  sect('12. Tạo sản phẩm kèm phân loại ngay ở form tạo');
+  r = await adm('GET', P('/new'), { cookie: A.cookie });
+  /name="opt_name0"/.test(r.body) && /name="opt_values1"/.test(r.body)
+    ? ok('form tạo có 2 trục phân loại') : bad('form tạo thiếu ô phân loại');
+
+  const tv = `Áo thun ${uniq()}`;
+  r = await adm('POST', P(''), { cookie: A.cookie, origin: OADM, form: {
+    title: tv, price_vnd: '199000', stock: '10', status: 'active',
+    opt_name0: 'Size', opt_values0: 'S, M, L', opt_name1: 'Màu', opt_values1: 'Đen, Trắng' } });
+  const vp = (await owner.query(
+    `SELECT p.id, count(v.id)::int n FROM products p JOIN variants v ON v.product_id = p.id
+      WHERE p.shop_id = $1 AND p.title = $2 GROUP BY p.id`, [A.shopId, tv])).rows[0];
+  vp?.n === 6 ? ok('3 size × 2 màu → sinh đủ 6 phiên bản trong MỘT lần tạo') : bad(`sinh sai số tổ hợp: ${vp?.n ?? 0} (mong 6)`);
+  const axes = (await owner.query(
+    `SELECT count(*)::int n FROM product_options WHERE product_id = $1`, [vp?.id ?? null])).rows[0]?.n;
+  axes === 2 ? ok('lưu đúng 2 trục phân loại') : bad(`số trục sai: ${axes}`);
+
+  // Trục hỏng KHÔNG được huỷ sản phẩm đã tạo — người bán mất công gõ lại từ đầu là chỗ bỏ cuộc.
+  const tbad = `Áo lỗi ${uniq()}`;
+  const manyVals = Array.from({ length: 40 }, (_, i) => `v${i}`).join(', '); // vượt trần 30 giá trị
+  r = await adm('POST', P(''), { cookie: A.cookie, origin: OADM, form: {
+    title: tbad, price_vnd: '99000', stock: '5', status: 'draft', opt_name0: 'Size', opt_values0: manyVals } });
+  const keptBad = (await owner.query('SELECT 1 FROM products WHERE shop_id = $1 AND title = $2', [A.shopId, tbad])).rowCount;
+  keptBad === 1 && /phiên bản|trục/i.test(r.body)
+    ? ok('trục không hợp lệ → GIỮ sản phẩm + báo lỗi để sửa (không bắt gõ lại)')
+    : bad('trục hỏng làm mất sản phẩm vừa tạo', `kept=${keptBad} status=${r.status}`);
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

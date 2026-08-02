@@ -18,7 +18,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import pg from 'pg';
-import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE, BUYNOW_COOKIE, setBuynowCookie, clearBuynowCookie } from './http.js';
+import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE, BUYNOW_COOKIE, REF_COOKIE, setBuynowCookie, clearBuynowCookie } from './http.js';
 import { buildVietQR } from './vietqr.js';
 import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
 import { runReq, makeLog, health } from './obs.js';
@@ -959,6 +959,31 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
          VALUES (current_shop_id(), $1, 'redeem', $2, $3, 'Đổi điểm khi đặt đơn')`,
         [ctx.customerId, -pointsRedeemed, order.id]);
     }
+    // HOA HỒNG CTV (docs/51) — cùng transaction với đơn: đơn rollback thì hoa hồng biến mất
+    // theo, không bao giờ có hoa hồng của một đơn không tồn tại.
+    //
+    // MỘT câu lệnh làm hết mọi kiểm tra, vì mọi điều kiện đều là dữ liệu trong DB:
+    //   · mã có tồn tại + CTV còn bật (a.active)
+    //   · chương trình đang bật (cfg.enabled) — chưa cấu hình thì KHÔNG có dòng cfg → 0 dòng
+    //   · CTV tự mua qua mã của mình (khớp SĐT) → chặn, trừ khi shop cố ý tắt
+    //   · mức riêng của CTV ưu tiên, không có thì lấy mức chung — SNAPSHOT vào dòng
+    //   · tiền do hàm affiliate_commission_amount (0131) tính — KHÔNG nhân tay ở JS
+    //
+    // Căn cứ = subtotal − discount, KHÔNG gồm ship: ship không phải doanh thu của shop.
+    // Mã sai / CTV đã tắt / chương trình tắt → 0 dòng, ĐƠN VẪN ĐI TIẾP. Không bao giờ để
+    // chương trình hoa hồng chặn một đơn hàng thật.
+    if (ctx.refCode) {
+      await c.query(
+        `INSERT INTO affiliate_commissions (shop_id, affiliate_id, order_id, rate_kind, rate_value, base_vnd, amount_vnd)
+         SELECT current_shop_id(), a.id, $1,
+                coalesce(a.rate_kind, cfg.rate_kind), coalesce(a.rate_value, cfg.rate_value), $2::bigint,
+                affiliate_commission_amount($2::bigint, coalesce(a.rate_kind, cfg.rate_kind), coalesce(a.rate_value, cfg.rate_value))
+           FROM affiliates a, shop_affiliate_config cfg
+          WHERE upper(a.code) = upper($3) AND a.active AND cfg.enabled
+            AND (NOT cfg.block_self_referral OR a.phone IS NULL OR a.phone <> $4)
+         ON CONFLICT (shop_id, order_id) DO NOTHING`,
+        [order.id, Math.max(0, subtotal - discount), String(ctx.refCode).slice(0, 24), phoneCanon ?? phone]);
+    }
     for (const ln of lines) {
       // unit_cost_vnd (0081): snapshot GIÁ VỐN qua subquery — cost không bao giờ vào object
       // JS của service công khai (không lọt log/response); chưa khai giá vốn → NULL (không 0).
@@ -1059,7 +1084,7 @@ async function checkout(req, res, body, ctx) {
   if (f.error) return send(res, 400, { error: f.error });
   const token = parseCookies(req)[CART_COOKIE];
   const cust = await resolveCustomer(ctx.shopId, req);
-  const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, customerId: cust?.id ?? null }, token, idemKey, f));
+  const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, customerId: cust?.id ?? null, refCode: parseCookies(req)[REF_COOKIE] ?? null }, token, idemKey, f));
   return send(res, out.code, out.body, out.replay ? { 'idempotency-replayed': 'true' } : {});
 }
 
@@ -1141,7 +1166,7 @@ async function checkoutPlace(req, res, form, ctx) {
 
   const token = parseCookies(req)[bn ? BUYNOW_COOKIE : CART_COOKIE];
   try {
-    const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, customerId: cust?.id ?? null }, token, idemKey, f));
+    const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, customerId: cust?.id ?? null, refCode: parseCookies(req)[REF_COOKIE] ?? null }, token, idemKey, f));
     if (bn) clearBuynowCookie(res); // giỏ mua-ngay đã chốt đơn → xoá cookie (giỏ chính không đụng)
     return redirect(res, `/checkout/success?number=${out.body.order_number}&token=${encodeURIComponent(out.body.lookup_token)}&placed=1`);
   } catch (err) {

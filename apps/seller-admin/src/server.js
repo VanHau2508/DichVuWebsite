@@ -812,6 +812,69 @@ async function apiKeysPage(res, me, cookie, shopId, ok, err, freshToken, verifyT
     V.renderApiKeys({ ...ctx, nonce }, shopId, { ...r.json, ingest_url: INGEST_URL }, err, ok, freshToken, mess, verifyToken));
 }
 
+
+// ── Cộng tác viên (CTV) — docs/51 ────────────────────────────────────────────
+// affiliate.manage có STEP-UP ở seller (tiền rời khỏi shop). BFF không tự nâng quyền —
+// 403 thì đưa người dùng tới màn xác thực lại, giống mọi thao tác nhạy cảm khác.
+async function affiliatesPage(res, me, cookie, shopId, ok, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'affiliates');
+  const [lr, cr] = await Promise.all([
+    sellerApi('GET', `/shops/${shopId}/affiliates`, { cookie }),
+    sellerApi('GET', `/shops/${shopId}/affiliates/config`, { cookie }),
+  ]);
+  if (lr.status === 403 || cr.status === 403) return sendHtml(res, 403, V.renderError(ctx, 'Cần xác thực lại để quản lý cộng tác viên (thao tác chạm đường tiền).'));
+  if (lr.status !== 200 || cr.status !== 200) return sendHtml(res, 502, V.renderError(ctx, lr.json?.error ?? cr.json?.error ?? 'Không tải được dữ liệu cộng tác viên.'));
+  return sendHtmlJs(res, err ? 400 : 200, (nonce) => V.renderAffiliates({ ...ctx, nonce }, shopId, lr.json, cr.json, err, ok));
+}
+
+async function affiliateDetailPage(res, me, cookie, shopId, affId, ok, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'affiliates');
+  const r = await sellerApi('GET', `/shops/${shopId}/affiliates/${affId}`, { cookie });
+  if (r.status === 403) return sendHtml(res, 403, V.renderError(ctx, 'Cần xác thực lại để xem hoa hồng cộng tác viên.'));
+  if (r.status !== 200) return sendHtml(res, r.status === 404 ? 404 : 502, V.renderError(ctx, r.json?.error ?? 'Không tải được cộng tác viên.'));
+  return sendHtmlJs(res, err ? 400 : 200, (nonce) => V.renderAffiliateDetail({ ...ctx, nonce }, shopId, r.json, err, ok));
+}
+
+async function affiliateConfigSave(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await sellerApi('PUT', `/shops/${shopId}/affiliates/config`, {
+    cookie,
+    body: {
+      enabled: f.enabled === 'on', rate_kind: f.rate_kind, rate_value: Number(f.rate_value),
+      hold_days: Number(f.hold_days ?? 7), cookie_days: Number(f.cookie_days ?? 30),
+      // Checkbox KHÔNG gửi gì khi bỏ tick → thiếu ô = tắt. Đọc `!== 'on'` chứ không
+      // `=== 'false'`: trình duyệt không bao giờ gửi 'false' cho checkbox.
+      block_self_referral: f.block_self_referral === 'on',
+    },
+  });
+  if (r.status !== 200) return affiliatesPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không lưu được chương trình.');
+  return redirect(res, `/shops/${shopId}/affiliates?ok=${encodeURIComponent('Đã lưu chương trình cộng tác viên.')}`);
+}
+
+async function affiliateCreate(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await sellerApi('POST', `/shops/${shopId}/affiliates`, {
+    cookie,
+    body: { code: f.code, name: f.name, phone: f.phone, email: f.email, rate_kind: f.rate_kind, rate_value: f.rate_value },
+  });
+  if (r.status !== 201) return affiliatesPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không thêm được cộng tác viên.');
+  return redirect(res, `/shops/${shopId}/affiliates?ok=${encodeURIComponent(`Đã thêm CTV ${r.json.code}. Link giới thiệu: thêm ?ref=${r.json.code} vào địa chỉ shop.`)}`);
+}
+
+async function affiliatePayout(req, res, me, cookie, shopId, affId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const r = await sellerApi('POST', `/shops/${shopId}/affiliates/${affId}/payouts`, {
+    cookie, body: { method: f.method, note: f.note, paid_at: f.paid_at },
+  });
+  if (r.status !== 201) return affiliateDetailPage(res, me, cookie, shopId, affId, null, r.json?.error ?? 'Không chốt được phiếu chi.');
+  return redirect(res, `/shops/${shopId}/affiliates/${affId}?ok=${encodeURIComponent(`Đã ghi phiếu chi ${r.json.amount_vnd.toLocaleString('vi-VN')}đ cho ${r.json.item_count} dòng hoa hồng.`)}`);
+}
+
 // ── Gói dịch vụ: chủ shop xem hạn + tự trả tiền (0124-0128) ─────────────────
 async function billingPage(res, me, cookie, shopId, ok, err) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -3330,6 +3393,11 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/notify/unlink$`).exec(p)) && req.method === 'POST') return notifyUnlink(res, me, cookie, m[1]);
 
     // Vận chuyển hãng (shop.write = owner/admin + step-up ở seller).
+    if ((m = new RegExp(`^/shops/${UUID}/affiliates$`).exec(p)) && req.method === 'GET') return affiliatesPage(res, me, cookie, m[1], url.searchParams.get('ok'), null);
+    if ((m = new RegExp(`^/shops/${UUID}/affiliates$`).exec(p)) && req.method === 'POST') return affiliateCreate(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/affiliates/config$`).exec(p)) && req.method === 'POST') return affiliateConfigSave(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/affiliates/${UUID}$`).exec(p)) && req.method === 'GET') return affiliateDetailPage(res, me, cookie, m[1], m[2], url.searchParams.get('ok'), null);
+    if ((m = new RegExp(`^/shops/${UUID}/affiliates/${UUID}/payouts$`).exec(p)) && req.method === 'POST') return affiliatePayout(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/api-keys$`).exec(p)) && req.method === 'GET') return apiKeysPage(res, me, cookie, m[1], null, null, null, null);
     if ((m = new RegExp(`^/shops/${UUID}/billing$`).exec(p)) && req.method === 'GET') return billingPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/billing/charge$`).exec(p)) && req.method === 'POST') return billingCharge(req, res, me, cookie, m[1]);

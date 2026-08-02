@@ -515,6 +515,7 @@ function sideNav(ctx) {
       [`${base}/promotions`, 'Flash sale', IC_TREND, 'promotions', CATALOG_ROLES.has(R)],
       [`${base}/coupons`, 'Mã giảm giá', IC_TICKET, 'coupons', CATALOG_ROLES.has(R)],
       [`${base}/loyalty`, 'Điểm thưởng', IC_GIFT, 'loyalty', LOYALTY_ROLES.has(R)],
+      [`${base}/affiliates`, 'Cộng tác viên', IC_USERS, 'affiliates', LOYALTY_ROLES.has(R)],
       [`${base}/reviews`, 'Đánh giá', IC_STAR, 'reviews', CONTENT_ROLES.has(R)],
       [`${base}/questions`, 'Hỏi đáp', IC_LOG, 'questions', CONTENT_ROLES.has(R)],
     ]],
@@ -1963,6 +1964,7 @@ export function renderReports(ctx, shopId, d, f) {
         ${pnlRow('Thu phí ship của khách', t.shipping_income_vnd, { sign: '+' })}
         ${pnlRow('Phí hãng vận chuyển <span class="muted" style="font-weight:400;font-size:.82rem">(báo giá lúc tạo vận đơn)</span>', -t.carrier_fee_vnd, { sign: '−' })}
         ${pnlRow('Chênh lệch đối soát hãng <span class="muted" style="font-weight:400;font-size:.82rem">(tiền hãng THỰC chuyển so với kỳ vọng)</span>', t.settlement_variance_vnd, { sign: t.settlement_variance_vnd < 0 ? '−' : '+' })}
+        ${pnlRow('Hoa hồng cộng tác viên <span class="muted" style="font-weight:400;font-size:.82rem">(tại ngày đủ điều kiện — chưa tính khoản còn tạm tính)</span>', -t.affiliate_commission_vnd, { sign: '−' })}
         ${pnlRow(`Lãi vận hành${provisional}`, t.operating_profit_vnd, { bold: true })}
       </tbody></table>
       ${covBadge}
@@ -5039,4 +5041,120 @@ export function renderBilling(ctx, shopId, d, err, ok) {
 
 export function renderError(ctx, msg) {
   return layout('Lỗi', ctx, `<div class="card"><h1>Rất tiếc</h1><p class="err">${esc(msg)}</p><a class="btn alt" href="/">Về bảng điều khiển</a></div>`);
+}
+
+// ── Cộng tác viên (CTV / affiliate) — docs/51 ────────────────────────────────
+// Màn hình phải trả lời đúng ba câu chủ shop hỏi: ai đang bán cho tôi · tôi NỢ ai bao
+// nhiêu · bấm đâu để trả. Mọi thứ khác là phụ.
+export function renderAffiliates(ctx, shopId, data, cfg, err, ok) {
+  const base = `/shops/${esc(shopId)}`;
+  const list = data.affiliates ?? [];
+  const rateOf = (a) => (a.rate_kind == null
+    ? `<span class="muted">chung (${cfg.rate_kind === 'percent' ? `${esc(cfg.rate_value)}%` : money(cfg.rate_value)})</span>`
+    : (a.rate_kind === 'percent' ? `${esc(a.rate_value)}%` : money(a.rate_value)));
+  const rows = list.map((a) => `<tr>
+      <td><a href="${base}/affiliates/${esc(a.id)}"><strong>${esc(a.code)}</strong></a>
+        <div class="muted" style="font-size:.84rem">${esc(a.name)}${a.phone ? ` · ${esc(a.phone)}` : ''}</div></td>
+      <td>${rateOf(a)}</td>
+      <td class="num right">${esc(a.order_count)}</td>
+      <td class="num right muted">${money(a.pending_vnd)}</td>
+      <td class="num right"><strong>${money(a.eligible_vnd)}</strong></td>
+      <td class="num right muted">${money(a.paid_vnd)}</td>
+      <td>${a.active ? 'Đang chạy' : '<span class="muted">Đã tắt</span>'}</td></tr>`).join('');
+  const owed = list.reduce((s, a) => s + Number(a.eligible_vnd || 0), 0);
+  return layout('Cộng tác viên', ctx, `
+    <h1>Cộng tác viên</h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${ok ? `<div class="ok">${esc(ok)}</div>` : ''}
+    <div class="card"><h2 style="margin-top:0">Chương trình hoa hồng</h2>
+      <p class="muted" style="margin-top:0">Hoa hồng chốt khi đơn <strong>đã giao</strong> và qua hạn đổi trả —
+        đơn bị huỷ/hoàn trong hạn thì hoa hồng tự rụng, bạn không phải đi đòi lại tiền đã trả.</p>
+      <form method="POST" action="${base}/affiliates/config">
+        <label><input type="checkbox" name="enabled" value="on"${cfg.enabled ? ' checked' : ''}> Bật chương trình cộng tác viên</label>
+        <div class="grid2">
+          <div><label>Mức hoa hồng chung</label>
+            <select name="rate_kind">
+              <option value="percent"${cfg.rate_kind === 'percent' ? ' selected' : ''}>Phần trăm (%)</option>
+              <option value="fixed"${cfg.rate_kind === 'fixed' ? ' selected' : ''}>Số tiền cố định (đ/đơn)</option>
+            </select></div>
+          <div><label>Giá trị</label><input name="rate_value" type="number" min="1" required value="${esc(cfg.rate_value)}"></div>
+          <div><label>Hạn giữ hoa hồng (ngày sau khi giao)</label><input name="hold_days" type="number" min="0" max="90" value="${esc(cfg.hold_days)}"></div>
+          <div><label>Ghi nhớ mã giới thiệu (ngày)</label><input name="cookie_days" type="number" min="1" max="90" value="${esc(cfg.cookie_days)}"></div>
+        </div>
+        <label><input type="checkbox" name="block_self_referral" value="on"${cfg.block_self_referral ? ' checked' : ''}>
+          Chặn CTV tự mua qua mã của mình (khớp số điện thoại)</label>
+        <button class="btn sm" type="submit" style="margin-top:12px">Lưu chương trình</button>
+      </form>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Thêm cộng tác viên</h2>
+      <form method="POST" action="${base}/affiliates">
+        <div class="grid2">
+          <div><label>Mã giới thiệu *</label><input name="code" required maxlength="24" placeholder="HAU2025"
+            pattern="[A-Za-z0-9][A-Za-z0-9-]{1,23}"></div>
+          <div><label>Tên cộng tác viên *</label><input name="name" required maxlength="120"></div>
+          <div><label>Số điện thoại</label><input name="phone" maxlength="20"></div>
+          <div><label>Email</label><input name="email" type="email" maxlength="254"></div>
+        </div>
+        <p class="muted" style="margin:6px 0 0">Mức riêng — bỏ trống để dùng mức chung ở trên.</p>
+        <div class="grid2">
+          <div><label>Loại</label><select name="rate_kind"><option value="">— dùng mức chung —</option>
+            <option value="percent">Phần trăm (%)</option><option value="fixed">Số tiền cố định</option></select></div>
+          <div><label>Giá trị</label><input name="rate_value" type="number" min="1"></div>
+        </div>
+        <button class="btn" type="submit" style="margin-top:12px">Thêm cộng tác viên</button>
+      </form>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Danh sách${owed > 0 ? ` <span class="muted" style="font-size:.9rem;font-weight:400">— đang nợ ${money(owed)}</span>` : ''}</h2>
+      ${rows ? `<div class="tblscroll"><table data-cards><thead><tr>
+          <th>Mã / tên</th><th>Hoa hồng</th><th class="right">Đơn</th><th class="right">Tạm tính</th>
+          <th class="right">Chờ chi</th><th class="right">Đã trả</th><th>Trạng thái</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<p class="muted" style="margin-bottom:0">Chưa có cộng tác viên nào.</p>'}</div>`);
+}
+
+export function renderAffiliateDetail(ctx, shopId, d, err, ok) {
+  const base = `/shops/${esc(shopId)}`;
+  const a = d.affiliate, t = d.totals, cu = d.cod_unsettled ?? { amount_vnd: 0, orders: 0 };
+  const LABEL = { pending: 'Tạm tính', eligible: 'Chờ chi', void: 'Đã rụng', paid: 'Đã trả' };
+  const rows = (d.commissions ?? []).map((k) => `<tr>
+      <td><a href="${base}/orders/${esc(k.order_id)}">#${esc(k.order_number)}</a>
+        ${k.cod_unsettled ? '<div class="muted" style="font-size:.8rem">🚚 hãng chưa chuyển tiền</div>' : ''}</td>
+      <td class="num right muted">${money(k.base_vnd)}</td>
+      <td class="num right"><strong>${money(k.amount_vnd)}</strong></td>
+      <td>${esc(LABEL[k.status] ?? k.status)}${k.void_reason ? `<div class="muted" style="font-size:.8rem">${esc(k.void_reason)}</div>` : ''}</td></tr>`).join('');
+  const payRows = (d.payouts ?? []).map((p) => `<tr>
+      <td>${esc(String(p.paid_at).slice(0, 10))}</td><td class="num right"><strong>${money(p.amount_vnd)}</strong></td>
+      <td class="num right muted">${esc(p.item_count)}</td><td class="muted">${esc(p.method ?? '')} ${esc(p.note ?? '')}</td></tr>`).join('');
+  return layout(`CTV: ${a.code}`, ctx, `
+    <a class="muted" href="${base}/affiliates">← Cộng tác viên</a>
+    <h1>${esc(a.name)} <span class="muted">${esc(a.code)}</span></h1>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${ok ? `<div class="ok">${esc(ok)}</div>` : ''}
+    <div class="metrics">
+      <div class="metric"><div class="l">Tạm tính</div><div class="v">${money(t.pending_vnd)}</div><div class="l">chờ giao xong</div></div>
+      <div class="metric"><div class="l">Chờ chi</div><div class="v">${money(t.eligible_vnd)}</div><div class="l">đủ điều kiện trả</div></div>
+      <div class="metric"><div class="l">Đã trả</div><div class="v">${money(t.paid_vnd)}</div><div class="l">tổng từ trước tới nay</div></div>
+      <div class="metric"><div class="l">Đã rụng</div><div class="v muted">${money(t.void_vnd)}</div><div class="l">đơn huỷ/hoàn</div></div>
+    </div>
+    <div class="card"><h2 style="margin-top:0">Chi tiền cho cộng tác viên</h2>
+      ${cu.amount_vnd > 0 ? `<div class="card" style="border-color:#bfdbfe;background:#eff6ff;margin:0 0 12px">
+        <p style="margin:0" class="muted">🚚 Trong khoản chờ chi, có <strong>${money(cu.amount_vnd)}</strong> thuộc
+        <strong>${esc(cu.orders)}</strong> đơn COD mà <strong>hãng chưa chuyển tiền về</strong>. Bạn vẫn trả được —
+        chỉ để bạn biết mình đang ứng trước. Đối chiếu ở <a href="${base}/cod">Đối soát COD</a>.</p></div>` : ''}
+      ${t.eligible_vnd > 0 ? `<form method="POST" action="${base}/affiliates/${esc(a.id)}/payouts">
+        <p>Chốt phiếu chi <strong>${money(t.eligible_vnd)}</strong> — gom mọi hoa hồng đang ở trạng thái “chờ chi”.</p>
+        <div class="grid2">
+          <div><label>Hình thức</label><input name="method" maxlength="40" placeholder="chuyển khoản / tiền mặt"></div>
+          <div><label>Ngày chi</label><input name="paid_at" type="date"></div>
+        </div>
+        <label>Ghi chú</label><input name="note" maxlength="500">
+        <button class="btn" type="submit" data-confirm="Xác nhận đã chi ${money(t.eligible_vnd)} cho ${esc(a.name)}? Phiếu chi KHÔNG sửa/xoá được." style="margin-top:12px">Đã chi tiền</button>
+      </form>` : '<p class="muted" style="margin-bottom:0">Chưa có hoa hồng nào đủ điều kiện chi.</p>'}
+    </div>
+    <div class="card"><h2 style="margin-top:0">Hoa hồng theo đơn</h2>
+      ${rows ? `<div class="tblscroll"><table data-cards><thead><tr>
+          <th>Đơn</th><th class="right">Căn cứ</th><th class="right">Hoa hồng</th><th>Trạng thái</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<p class="muted" style="margin-bottom:0">Chưa có đơn nào qua mã này.</p>'}</div>
+    ${payRows ? `<div class="card"><h2 style="margin-top:0">Phiếu đã chi</h2>
+      <div class="tblscroll"><table data-cards><thead><tr><th>Ngày</th><th class="right">Số tiền</th><th class="right">Số dòng</th><th>Ghi chú</th></tr></thead>
+      <tbody>${payRows}</tbody></table></div></div>` : ''}`);
 }

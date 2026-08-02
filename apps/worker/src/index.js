@@ -60,6 +60,10 @@ const billingDb = BILLING_URL ? new pg.Pool({ connectionString: BILLING_URL, max
 // Tích điểm (vesting: chỉ đơn paid ≥ N ngày) + thu-hồi (clawback/reversal đơn terminal).
 const LOYALTY_URL = process.env.DATABASE_URL_LOYALTY;
 const loyaltyDb = LOYALTY_URL ? new pg.Pool({ connectionString: LOYALTY_URL, max: 2 }) : null;
+// Vai app_affiliate (0132): quét vòng đời hoa hồng CTV cross-shop. Hẹp nhất có thể —
+// đọc orders/cấu hình, CHỈ đổi trạng thái hoa hồng; không INSERT, không đụng phiếu chi.
+const AFFILIATE_URL = process.env.DATABASE_URL_AFFILIATE;
+const affiliateDb = AFFILIATE_URL ? new pg.Pool({ connectionString: AFFILIATE_URL, max: 2 }) : null;
 const LOYALTY_SWEEP_MS = Number(process.env.LOYALTY_SWEEP_MS ?? 300000);
 // Self-serve signup (0091): pool app_signup (least-priv — chỉ chạm shop_signups) để GC nháp treo.
 const SIGNUP_URL = process.env.DATABASE_URL_SIGNUP;
@@ -641,6 +645,60 @@ async function sweepBillingEnforce(batch = 200) {
     if (c) await c.query('ROLLBACK').catch(() => {});
     log('error', 'billing_enforce_failed', { message: err.message });
     return 0;
+  } finally { c?.release(); }
+}
+
+// ── Vòng đời hoa hồng CTV (0129, docs/51) ────────────────────────────────────
+// pending → eligible khi đơn ĐÃ GIAO và hết hạn đổi trả (hold_days của shop).
+// pending → void  khi đơn huỷ/hoàn TRƯỚC lúc đủ điều kiện — hoa hồng rụng, KHÔNG phải đi
+// đòi lại tiền đã đưa CTV. Đây chính là lý do chọn "giao thành công" thay vì "đã thanh
+// toán" (Shopee/TikTok cũng vậy).
+//
+// Đơn huỷ/hoàn SAU khi đã 'paid' thì KHÔNG đụng: tiền đã ra khỏi shop, tự trừ ngược vào
+// phiếu chi đã lập là làm sổ chi nói dối. Shop tự xử với CTV.
+async function sweepAffiliateCommissions(batch = 300) {
+  if (!affiliateDb) return { eligible: 0, voided: 0 };
+  let c;
+  try {
+    c = await affiliateDb.connect();
+    await c.query('BEGIN');
+    // ĐÓI QUÉT: điều kiện lọc CHÍNH LÀ điều kiện xử lý (status='pending'), nên dòng vừa xử
+    // rơi khỏi tập ngay — lô sau lấy dòng kế tiếp, không shop nào bị kẹt cuối hàng.
+    // hold_days lấy từ cấu hình CỦA CHÍNH SHOP đó (join theo shop_id), không phải hằng số
+    // toàn cục: mỗi shop có chính sách đổi trả riêng.
+    const rows = (await c.query(
+      `SELECT k.id, o.status AS order_status
+         FROM affiliate_commissions k
+         JOIN orders o ON o.id = k.order_id
+         JOIN shop_affiliate_config cfg ON cfg.shop_id = k.shop_id
+        WHERE k.status = 'pending'
+          AND (
+            -- đủ điều kiện: đã giao + qua hạn giữ
+            (o.status = 'delivered' AND o.delivered_at IS NOT NULL
+             AND o.delivered_at < now() - (cfg.hold_days || ' days')::interval)
+            -- hoặc rụng: đơn kết thúc theo hướng xấu
+            OR o.status IN ('cancelled', 'refunded')
+          )
+        ORDER BY k.created_at LIMIT $1 FOR UPDATE OF k SKIP LOCKED`, [batch])).rows;
+    const dead = rows.filter((r) => r.order_status === 'cancelled' || r.order_status === 'refunded').map((r) => r.id);
+    const live = rows.filter((r) => r.order_status === 'delivered').map((r) => r.id);
+    if (dead.length) {
+      await c.query(
+        `UPDATE affiliate_commissions SET status='void', void_reason='đơn huỷ/hoàn trước khi đủ điều kiện', updated_at=now()
+          WHERE id = ANY($1::uuid[]) AND status='pending'`, [dead]);
+    }
+    if (live.length) {
+      await c.query(
+        `UPDATE affiliate_commissions SET status='eligible', eligible_at=now(), updated_at=now()
+          WHERE id = ANY($1::uuid[]) AND status='pending'`, [live]);
+    }
+    await c.query('COMMIT');
+    if (rows.length) log('info', 'affiliate_sweep', { eligible: live.length, voided: dead.length });
+    return { eligible: live.length, voided: dead.length };
+  } catch (err) {
+    if (c) await c.query('ROLLBACK').catch(() => {});
+    log('error', 'affiliate_sweep_failed', { message: err.message });
+    return { eligible: 0, voided: 0 };
   } finally { c?.release(); }
 }
 
@@ -2123,6 +2181,8 @@ const billingTimer = billingDb ? setInterval(sweepSubscriptions, SUBSCRIPTION_SW
 const billingApplyTimer = billingDb ? setInterval(sweepBillingApply, Number(process.env.BILLING_APPLY_MS ?? 30000)) : null;
 const billingEnforceTimer = billingDb ? setInterval(sweepBillingEnforce, SUBSCRIPTION_SWEEP_MS) : null;
 const trackingTimer = (expiryDb && TRACKING_ON) ? setInterval(sweepTracking, TRACKING_SWEEP_MS) : null;
+// Hoa hồng CTV: nhịp thưa được — hạn giữ tính bằng NGÀY, chậm vài phút không ai thấy.
+const affiliateTimer = affiliateDb ? setInterval(sweepAffiliateCommissions, Number(process.env.AFFILIATE_SWEEP_MS ?? 300000)) : null;
 const piiTimer = expiryDb ? setInterval(sweepPiiRetention, PII_SWEEP_MS) : null;
 // Dọn phiên Messenger đi cùng nhịp với quét PII — cùng loại việc (xoá dữ liệu cá nhân
 // hết mục đích), không cần thêm một nhịp riêng cho vài trăm dòng mỗi ngày.
@@ -2185,6 +2245,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const suspended = await sweepBillingEnforce();
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ applied, suspended }));
+  }
+  // Chốt hoa hồng CTV ngay (nội bộ — cho cron + e2e xác định, khỏi chờ nhịp 5 phút).
+  if (url.pathname === '/internal/affiliate-sweep' && req.method === 'POST') {
+    const r = await sweepAffiliateCommissions();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
   }
   // Dọn phiên Messenger nguội ngay (nội bộ — cho cron + e2e xác định).
   if (url.pathname === '/internal/messenger-gc' && req.method === 'POST') {

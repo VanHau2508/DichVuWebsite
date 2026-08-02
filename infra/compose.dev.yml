@@ -484,6 +484,7 @@ services:
       SUBSCRIPTION_SWEEP_MS: "3600000"
       # Pool riêng, role hẹp: điểm thưởng — tích (vesting) + thu-hồi (clawback/reversal) (0086).
       DATABASE_URL_LOYALTY: postgres://app_loyalty:devpassword@postgres:5432/app
+      DATABASE_URL_AFFILIATE: postgres://app_affiliate:devpassword@postgres:5432/app
       LOYALTY_SWEEP_MS: "300000"
       # Pool riêng, role hẹp app_signup: GC nháp self-serve signup treo → giải phóng slug (0091).
       DATABASE_URL_SIGNUP: postgres://app_signup:devpassword@postgres:5432/app
@@ -637,6 +638,7 @@ services:
       DATABASE_URL_CHECKOUT: postgres://app_checkout:devpassword@postgres:5432/app
       DATABASE_URL_CUSTOMER: postgres://app_customer:devpassword@postgres:5432/app
       DATABASE_URL_LOYALTY: postgres://app_loyalty:devpassword@postgres:5432/app
+      DATABASE_URL_AFFILIATE: postgres://app_affiliate:devpassword@postgres:5432/app
       DATABASE_URL_SIGNUP: postgres://app_signup:devpassword@postgres:5432/app
       ACCOUNT_URL: http://account:3062
       SIGNUP_URL: http://signup:3064

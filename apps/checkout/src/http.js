@@ -89,6 +89,10 @@ export function setCartCookie(res, token, maxAgeSec) {
 // Giỏ "MUA NGAY" RIÊNG (cookie khác) → thanh toán ĐÚNG 1 món, GIỮ NGUYÊN giỏ chính. TTL ngắn (1h,
 // mua-ngay là ý định tức thời). checkout dùng giỏ này khi có ?bn=1 / form bn=1.
 export const BUYNOW_COOKIE = '__Host-buynow';
+// Mã giới thiệu CTV (docs/51): storefront đặt khi khách vào qua ?ref=MA. Last-click, TTL do
+// shop chỉnh (mặc định 30 ngày như Shopee). KHÔNG HttpOnly-only cho vui — vẫn HttpOnly vì
+// chỉ server cần đọc; SameSite=Lax để link CTV từ Facebook/TikTok vẫn mang cookie sang.
+export const REF_COOKIE = '__Host-ref';
 export function setBuynowCookie(res, token) {
   res.setHeader('set-cookie', `${BUYNOW_COOKIE}=${token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=3600`);
 }

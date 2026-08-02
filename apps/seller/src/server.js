@@ -29,6 +29,7 @@ import { THEME_ADMIN_ROUTES } from './theme.js';
 import { PAYMENT_CONFIG_ROUTES } from './payment-config.js';
 import { ORDER_ROUTES } from './orders.js';
 import { COD_ROUTES } from './cod.js';
+import { AFFILIATE_ROUTES } from './affiliates.js';
 import { DASHBOARD_ROUTES } from './dashboard.js';
 import { REPORT_ROUTES } from './reports.js';
 import { CONTENT_ROUTES } from './content.js';
@@ -347,6 +348,7 @@ const ROUTES = [
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/members/${UUID}/role$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b, p) => changeRole(res, ctx, p[1], b) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/members/${UUID}$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b, p) => removeMember(res, ctx, p[1]) },
   ...CATALOG_ROUTES,
+  ...AFFILIATE_ROUTES,
   ...IMPORT_ROUTES,
   ...SUPPORT_ROUTES,
   ...INVENTORY_ROUTES,

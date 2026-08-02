@@ -59,7 +59,7 @@ $C exec -T \
   -e APP_RW_PASSWORD -e APP_TLS_PASSWORD -e APP_AUTH_PASSWORD -e APP_PLATFORM_PASSWORD \
   -e APP_STORE_PASSWORD -e APP_CHECKOUT_PASSWORD -e APP_PAYMENT_PASSWORD \
   -e APP_WORKER_PASSWORD -e APP_EXPIRY_PASSWORD -e APP_DOMAINVERIFY_PASSWORD -e APP_BILLING_PASSWORD \
-  -e APP_CUSTOMER_PASSWORD -e APP_LOYALTY_PASSWORD -e APP_SIGNUP_PASSWORD \
+  -e APP_CUSTOMER_PASSWORD -e APP_LOYALTY_PASSWORD -e APP_SIGNUP_PASSWORD -e APP_AFFILIATE_PASSWORD \
   postgres bash < scripts/provision-db-roles.sh
 
 step "5. Up toàn bộ service + chờ healthy"
@@ -86,7 +86,8 @@ for pair in app_rw:APP_RW_PASSWORD app_auth:APP_AUTH_PASSWORD app_store:APP_STOR
             app_worker:APP_WORKER_PASSWORD app_expiry:APP_EXPIRY_PASSWORD \
             app_domainverify:APP_DOMAINVERIFY_PASSWORD app_billing:APP_BILLING_PASSWORD \
             app_platform:APP_PLATFORM_PASSWORD app_tls:APP_TLS_PASSWORD \
-            app_customer:APP_CUSTOMER_PASSWORD app_loyalty:APP_LOYALTY_PASSWORD app_signup:APP_SIGNUP_PASSWORD; do
+            app_customer:APP_CUSTOMER_PASSWORD app_loyalty:APP_LOYALTY_PASSWORD app_signup:APP_SIGNUP_PASSWORD \
+            app_affiliate:APP_AFFILIATE_PASSWORD; do
   role="${pair%%:*}"; var="${pair#*:}"; export RPW="${!var}"
   $C exec -T -e RPW postgres sh -c 'PGPASSWORD="$RPW" psql -U '"$role"' -h 127.0.0.1 -d app -tAc "select 1"' >/dev/null 2>&1 \
     || { unset RPW; die "role $role KHÔNG đăng nhập được bằng mật khẩu .env — provision chưa đúng / service sẽ hỏng"; }

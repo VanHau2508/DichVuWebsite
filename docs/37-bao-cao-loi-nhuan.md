@@ -54,6 +54,11 @@ chốt QUY TẮC GHI NHẬN — mọi thay đổi số liệu phải đối chi�
    `remitted_at` kiểu **DATE**, không phải timestamptz — dùng `bucketSql`/`rangeSql`
    của cột timestamptz cho nó là SAI (Postgres ép date→timestamp rồi `AT TIME ZONE`
    dịch 7 giờ, phiếu nhảy sang ngày khác). Có `bucketDateSql`/`rangeDateSql` riêng.
+11. **HOA HỒNG CTV** (docs/51) là **chi phí** ở tầng vận hành, tại **`eligible_at`** (ngày
+    hoa hồng đủ điều kiện), KHÔNG phải ngày đặt đơn. Tính `status IN ('eligible','paid')`;
+    **bỏ** `pending` và `void`. Ghi chi phí ở ngày đặt đơn là **ghi khống**: lúc đó khoản
+    đó mới là *tạm tính*, đơn huỷ/hoàn trong hạn đổi trả thì rụng hẳn. Đã chi (`paid`) vẫn
+    là chi phí của kỳ nó **phát sinh**, không phải kỳ trả tiền.
 10. **Hãng còn giữ tiền** (`cod_outstanding`: đơn COD đã giao qua hãng, `cod_settled_at`
     NULL) là **MEMO tại thời điểm xem**, KHÔNG theo kỳ và **KHÔNG trừ vào lãi** — đó là
     khoản *phải thu*, tiền vẫn của shop. Nhưng phải hiện cạnh lãi: "lãi 50 triệu" mà 30

@@ -364,6 +364,7 @@ services:
       DATABASE_URL_SIGNUP: postgres://app_signup:${APP_SIGNUP_PASSWORD:?}@postgres:5432/app
       # Điểm thưởng (0086): worker sweep tích (vesting) + thu-hồi (clawback/reversal). Vai app_loyalty.
       DATABASE_URL_LOYALTY: postgres://app_loyalty:${APP_LOYALTY_PASSWORD:?}@postgres:5432/app
+      DATABASE_URL_AFFILIATE: postgres://app_affiliate:${APP_AFFILIATE_PASSWORD:?}@postgres:5432/app
       LOYALTY_SWEEP_MS: ${LOYALTY_SWEEP_MS:-300000}
       SIGNUP_SWEEP_MS: ${SIGNUP_SWEEP_MS:-300000}
       # Thương hiệu + email liên hệ nền tảng trong email/Telegram NHẮC HẠN thuê bao.

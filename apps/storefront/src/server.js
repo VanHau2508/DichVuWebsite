@@ -447,6 +447,35 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     }
     const shopId = resolved.shopId;
 
+    // ── Mã giới thiệu CTV: ?ref=MA → cookie rồi 302 BỎ tham số (docs/51) ──────────
+    // Vì sao phải bỏ tham số khỏi URL: khách hay copy nguyên thanh địa chỉ gửi bạn bè —
+    // để nguyên thì mã của CTV này lan sang mọi người, và mọi link chia sẻ đều mang một
+    // tham số bẩn vào SEO (trùng nội dung, khác URL).
+    //
+    // KHÔNG tra DB ở đây: đặt cookie là việc rẻ, còn mã có thật hay không thì CHECKOUT
+    // mới quyết (một câu lệnh, cùng transaction đặt đơn). Tra ở đây nghĩa là mỗi lượt vào
+    // trang qua link CTV đều tốn một truy vấn để đổi lấy... đúng thứ checkout sẽ tra lại.
+    // Đây cũng là hàng rào: người lạ dội ?ref= lung tung không làm shop tốn query nào.
+    const ref = url.searchParams.get('ref');
+    if (ref != null && req.method === 'GET') {
+      const code = ref.trim().toUpperCase();
+      const sp = new URLSearchParams(url.search);
+      sp.delete('ref');
+      const to = url.pathname + (sp.toString() ? `?${sp}` : '');
+      const days = Math.min(90, Math.max(1, Number(resolved.affiliateCookieDays) || 30));
+      // Mã rác → vẫn 302 sạch URL nhưng XOÁ cookie: last-click mà click cuối là rác thì
+      // không được để mã CŨ tiếp tục ăn hoa hồng.
+      const okCode = /^[A-Z0-9][A-Z0-9-]{1,23}$/.test(code);
+      res.writeHead(302, {
+        location: to || '/',
+        'cache-control': 'no-store',
+        'set-cookie': okCode
+          ? `__Host-ref=${encodeURIComponent(code)}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${days * 86400}`
+          : '__Host-ref=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0',
+      });
+      return res.end();
+    }
+
     // Trang chủ giờ CHỈ là "nổi bật" (8 SP) — lưới đầy đủ chuyển sang /products. Link cũ
     // /?sort=&page= (bookmark/SEO/dropdown cũ) 301 sang /products GIỮ query → không gãy.
     if (url.pathname === '/' && (url.searchParams.has('sort') || url.searchParams.has('page'))) {

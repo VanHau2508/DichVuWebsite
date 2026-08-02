@@ -25,6 +25,7 @@ export const ALL_PERMS = [
   'reports.read', // báo cáo lợi nhuận + giá vốn (owner + admin — bí mật kinh doanh; KHÔNG step-up: xem hằng ngày)
   'inventory.manage', // nhập hàng + NCC + kiểm kê (owner + admin — bí mật kinh doanh: giá nhập, thông tin NCC)
   'loyalty.write', // cấu hình điểm thưởng (owner + admin — chạm đường tiền: tỉ giá đổi, tặng/trừ điểm)
+  'affiliate.manage', // CTV: mã giới thiệu + mức hoa hồng + phiếu chi (owner + admin — chạm đường tiền)
 ];
 
 // Quyền theo vai trò. Owner = tất cả. Khớp đúng ma trận:
@@ -34,13 +35,13 @@ export const ALL_PERMS = [
 //   - Order Manager: chỉ đơn hàng.
 const ROLE_PERMS = {
   owner: new Set(ALL_PERMS),
-  admin: new Set(['catalog.read', 'catalog.write', 'orders.read', 'orders.write', 'refund', 'theme.write', 'shop.write', 'content.read', 'content.write', 'members.read', 'audit.read', 'reports.read', 'inventory.manage', 'loyalty.write']),
+  admin: new Set(['catalog.read', 'catalog.write', 'orders.read', 'orders.write', 'refund', 'theme.write', 'shop.write', 'content.read', 'content.write', 'members.read', 'audit.read', 'reports.read', 'inventory.manage', 'loyalty.write', 'affiliate.manage']),
   catalog_manager: new Set(['catalog.read', 'catalog.write']),
   order_manager: new Set(['orders.read', 'orders.write']),
 };
 
 // Thao tác nhạy cảm cần step-up (xác thực lại gần đây).
-export const STEP_UP_PERMS = new Set(['members.write', 'domain.write', 'payment.write', 'export', 'refund', 'privacy.erase', 'loyalty.write']);
+export const STEP_UP_PERMS = new Set(['members.write', 'domain.write', 'payment.write', 'export', 'refund', 'privacy.erase', 'loyalty.write', 'affiliate.manage']);
 
 export const ROLES = Object.keys(ROLE_PERMS);
 

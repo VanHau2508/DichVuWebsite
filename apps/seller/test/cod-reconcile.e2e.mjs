@@ -151,6 +151,36 @@ async function main() {
   r = await rq(SELLER, 'POST', `/shops/${s2.json.id}/cod/remittances`, { body: { amount_vnd: 100000, order_ids: [o3] }, cookie: oc3, origin: OS });
   r.status === 422 ? ok('shop khác đối soát đơn shop A → 422 (RLS che đơn)') : bad('cross-shop lọt', `${r.status}`);
 
+  // ── Đơn hoàn tiền / trả hàng VẪN phải đối soát được với hãng ─────────────────
+  // Hãng đã thu tiền của khách xong là món nợ giữa SHOP và HÃNG. Chuyện shop hoàn tiền hay
+  // nhận trả hàng sau đó là giữa SHOP và KHÁCH — hai việc khác nhau. Trước đây sổ lọc theo
+  // status='delivered' nên refundOrder ('refunded') và createReturn ('returned') đẩy đơn ra
+  // khỏi sổ, mà recordRemittance cũng chặn theo status → KHÔNG CÒN đường nào đối soát:
+  // tiền hãng đang giữ mất dấu vĩnh viễn. Dựng lại: a10.
+  sect('Đơn đã HOÀN TIỀN / TRẢ HÀNG vẫn nằm trong sổ đối soát (tiền hãng vẫn đang giữ)');
+  {
+    const chosSo = async (id) => {
+      const rr = await rq(SELLER, 'GET', `/shops/${shopId}/cod/reconciliation`, { cookie: oc });
+      return (rr.json?.outstanding ?? []).some((x) => x.id === id);
+    };
+    const idR = await mkCodViaCarrier(1, 15000);
+    (await chosSo(idR)) ? ok('đơn mới giao: có trong sổ chờ đối soát') : bad('đơn không vào sổ — không dựng được cảnh');
+    // Ép trạng thái hậu-giao như refundOrder/createReturn vẫn làm (delivered_at giữ nguyên).
+    await owner.query(`UPDATE orders SET status='returned', returned_at=now() WHERE id=$1`, [idR]);
+    (await chosSo(idR))
+      ? ok("đơn đã TRẢ HÀNG vẫn trong sổ (lọc theo delivered_at, không theo status)")
+      : bad('đơn trả hàng RƠI khỏi sổ đối soát — tiền hãng giữ mất dấu');
+    await owner.query(`UPDATE orders SET status='refunded' WHERE id=$1`, [idR]);
+    (await chosSo(idR)) ? ok('đơn đã HOÀN TIỀN vẫn trong sổ') : bad('đơn hoàn tiền RƠI khỏi sổ đối soát');
+    // Và phải ghi được phiếu chuyển tiền cho chính đơn đó (không ngõ cụt 422).
+    await rq(AUTH, 'POST', '/auth/step-up', { body: { password: op }, cookie: oc, origin: OA });
+    const rrem = await rq(SELLER, 'POST', `/shops/${shopId}/cod/remittances`,
+      { body: { carrier: 'ghn', amount_vnd: 50000, order_ids: [idR] }, cookie: oc, origin: OS });
+    rrem.status === 200
+      ? ok('ghi được phiếu chuyển tiền cho đơn đã hoàn/trả (còn đường đối soát)')
+      : bad('NGÕ CỤT: không ghi được phiếu cho đơn đã hoàn/trả', `${rrem.status} ${rrem.json?.error ?? ''}`);
+  }
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

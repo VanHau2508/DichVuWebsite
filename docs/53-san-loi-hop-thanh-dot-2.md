@@ -82,13 +82,36 @@ lượt đó không còn dòng nào chưa trả) đóng đúng phần còn lại
 3. Lặp lại mô-típ của `docs/52`: **một quy tắc viết ở hai nơi**. Ở đây là "khoá shop" viết
    trong hai sweep, và "công thức tiền hàng" viết ở checkout nhưng không ở RMA.
 
+## Nghi vấn #1 — đơn COD hoàn/trả rơi khỏi sổ đối soát: **đúng nguyên văn**
+
+Sổ "hãng còn nợ tiền" định nghĩa bằng `o.status = 'delivered'` (`cod.js`), còn `refundOrder`
+đẩy đơn sang `'refunded'` và `createReturn` sang `'returned'`. Hai bên không biết nhau.
+
+Chạy thật (`a10-cod-mat-dau`), đơn COD 185.000đ giao qua GHTK:
+
+```
+A. Khách trả hàng   → ĐƠN RƠI KHỎI SỔ (status=returned, cod_settled_at=NULL)
+                       tổng "hãng còn nợ" tụt 185.000đ
+   ghi phiếu tay?   → NGÕ CỤT 422 "đơn #25 chưa giao xong"
+B. Shop hoàn tiền   → ĐƠN RƠI KHỎI SỔ (status=refunded), tụt 100.000đ
+```
+
+Hãng đã thu tiền của khách xong là món nợ giữa **shop và hãng**; chuyện shop hoàn tiền hay
+nhận trả hàng sau đó là giữa **shop và khách**. Lọc theo `status` trộn hai quan hệ đó.
+
+**Vá.** Điều kiện đổi sang **"đã từng giao"** (`delivered_at IS NOT NULL`) ở cả ba chỗ:
+`OUTSTANDING_SQL`, guard của `recordRemittance`, và **bản sao thứ hai** của cùng bộ lọc
+trong memo "hãng còn nợ" ở `reports.js:237` — hai nơi định nghĩa cùng một con số, lệch nhau
+là màn Đối soát COD và Báo cáo nói hai số khác nhau mà không ai biết cái nào đúng.
+
+Test `cod-reconcile` +4 khẳng định; đột biến (trả lại `status='delivered'`) → **3 FAIL**.
+
 ## Còn nợ (đã tìm ra, CHƯA kiểm chứng, CHƯA vá)
 
-Sáu nghi vấn còn lại, xếp theo mức độ agent gán — **chưa cái nào được dựng lại**:
+Năm nghi vấn còn lại — **chưa cái nào được dựng lại**:
 
 | Mảng | Vị trí | Nội dung |
 |---|---|---|
-| giao hàng | `apps/seller/src/cod.js:26` | đơn COD hoàn tiền/trả hàng → rơi khỏi sổ đối soát vĩnh viễn (nghiêm trọng) |
 | kho | `apps/seller/src/catalog.js:750` | tái dùng biến thể: tồn cũ "sống lại" khi đơn giữ chỗ huỷ |
 | giao hàng | `apps/seller/src/orders.js:650` | hoàn tiền đơn giao một phần không nhả reserve |
 | khuyến mãi | `apps/seller/src/orders.js:717` | đơn từ bot Messenger tính ship bằng công thức phẳng |

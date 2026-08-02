@@ -23,7 +23,15 @@ const OUTSTANDING_SQL = `
     ) sh ON true
    -- Đơn DI CƯ (0104) không bao giờ là đơn chờ đối soát: tiền của chúng do sàn cũ thu, ta
    -- không hề gửi hàng qua hãng nào. Lọt vào đây là người bán đi đòi hãng một khoản không tồn tại.
-   WHERE o.payment_method = 'cod' AND o.status = 'delivered' AND o.cod_settled_at IS NULL
+   --
+   -- ĐIỀU KIỆN LÀ "ĐÃ TỪNG GIAO" (delivered_at), KHÔNG PHẢI "ĐANG Ở TRẠNG THÁI delivered".
+   -- Hãng đã thu tiền của khách xong là món nợ giữa SHOP và HÃNG; chuyện shop hoàn tiền hay
+   -- nhận trả hàng sau đó là giữa SHOP và KHÁCH, hai việc khác nhau. Trước đây lọc theo
+   -- status='delivered' nên refundOrder ('refunded') và createReturn ('returned') đẩy đơn
+   -- ra khỏi sổ — và vì recordRemittance cũng chặn theo status, đơn đó KHÔNG CÒN CÁCH NÀO
+   -- đối soát nữa: tiền hãng đang giữ mất dấu vĩnh viễn. Đã dựng lại được (a10): đơn COD
+   -- 185.000 qua GHTK, khách trả hàng → tổng "hãng còn nợ" tụt 185.000, ghi phiếu tay → 422.
+   WHERE o.payment_method = 'cod' AND o.delivered_at IS NOT NULL AND o.cod_settled_at IS NULL
      AND NOT o.is_migrated`;
 
 async function reconciliation(res, ctx) {
@@ -75,7 +83,7 @@ async function recordRemittance(res, ctx, body) {
       // CHƯA đối soát. Đơn không đủ điều kiện / đã đối soát → 422 (không đối soát nhầm/2 lần).
       const sorted = [...orderIds].sort((a, b) => a.localeCompare(b));
       const rows = (await c.query(
-        `SELECT o.id, o.order_number, o.payment_method, o.status, o.cod_settled_at, o.total_vnd,
+        `SELECT o.id, o.order_number, o.payment_method, o.status, o.delivered_at, o.cod_settled_at, o.total_vnd,
                 sh.provider, coalesce(sh.carrier_fee_vnd, 0) AS fee
            FROM orders o
            LEFT JOIN LATERAL (SELECT provider, carrier_fee_vnd FROM shipments s
@@ -89,7 +97,9 @@ async function recordRemittance(res, ctx, body) {
         const o = found.get(id);
         if (!o) fail(422, 'có đơn không thuộc cửa hàng này');
         if (o.payment_method !== 'cod') fail(422, `đơn #${Number(o.order_number)} không phải COD`);
-        if (o.status !== 'delivered') fail(422, `đơn #${Number(o.order_number)} chưa giao xong`);
+        // "đã từng giao", KHÔNG phải "đang ở trạng thái delivered" — xem chú thích ở
+        // OUTSTANDING_SQL. Chặn theo status khiến đơn đã hoàn/đã trả hết đường đối soát.
+        if (!o.delivered_at) fail(422, `đơn #${Number(o.order_number)} chưa giao xong`);
         if (!o.provider) fail(422, `đơn #${Number(o.order_number)} giao tay (không qua hãng) — không cần đối soát`);
         if (o.cod_settled_at) fail(409, `đơn #${Number(o.order_number)} đã đối soát rồi`);
         if (carrier && o.provider !== carrier) fail(422, `đơn #${Number(o.order_number)} giao qua ${o.provider}, không phải ${carrier}`);

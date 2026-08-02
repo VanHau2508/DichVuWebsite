@@ -234,7 +234,11 @@ async function computeSales(shopId, { from, to, group, sort }) {
          JOIN LATERAL (SELECT carrier_fee_vnd FROM shipments s
                         WHERE s.order_id = o.id AND s.provider IS NOT NULL
                         ORDER BY s.created_at DESC LIMIT 1) sh ON true
-        WHERE o.payment_method = 'cod' AND o.status = 'delivered'
+        -- "ĐÃ TỪNG GIAO" chứ không phải "đang delivered" — PHẢI KHỚP với OUTSTANDING_SQL ở
+        -- apps/seller/src/cod.js. Cùng một định nghĩa "hãng còn nợ bao nhiêu" viết ở hai nơi;
+        -- lệch nhau là màn Đối soát COD và memo trong Báo cáo nói hai con số khác nhau, mà
+        -- không ai biết cái nào đúng. (Lọc theo status làm đơn hoàn/trả rơi khỏi CẢ HAI.)
+        WHERE o.payment_method = 'cod' AND o.delivered_at IS NOT NULL
           AND o.cod_settled_at IS NULL AND NOT o.is_migrated`)).rows[0];
     return { q1, q2, q3, q4, q5, q6, q7, q8, q9 };
   }).then(({ q1, q2, q3, q4, q5, q6, q7, q8, q9 }) => {

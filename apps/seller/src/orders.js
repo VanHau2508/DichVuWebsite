@@ -607,9 +607,23 @@ async function refundOrder(res, ctx, body, params) {
     if (!o) return { code: 404 };
     if (o.payment_status !== 'paid') return { code: 409, msg: 'chỉ hoàn được đơn đã thanh toán' };
     if (o.status === 'refunded') return { code: 409, msg: 'đơn đã hoàn tiền' };
+    // 'returned' cũng là TRẠNG THÁI CUỐI của một lần hoàn (RMA đã hoàn phần hàng trả).
+    // Thiếu nó thì nút Hoàn tiền vẫn hiện trên đơn đã trả hàng, bấm vào là GHI ĐÈ status
+    // thành 'refunded' — đơn biến mất khỏi bộ lọc "Hoàn hàng" và lịch sử trả hàng mất dấu.
+    if (o.status === 'returned') return { code: 409, msg: 'đơn đã trả hàng — xem phiếu trả, không hoàn thêm ở đây' };
     // Đã hoàn luỹ kế (khoá đơn FOR UPDATE ở trên → không ai chen dòng refunds mới của đơn này).
+    // LOẠI 'edit_adjustment' ra khỏi "đã hoàn".
+    //
+    // Vì sao: khi SỬA đơn đã trả tiền, editPaidOrder vừa ghi một phiếu hoàn chênh lệch VỪA
+    // HẠ orders.total_vnd xuống tổng mới. Tức khoản đó đã được trừ MỘT LẦN ở total_vnd rồi.
+    // Đếm nó lần nữa trong `already` là TRỪ ĐÚP: remaining = total(đã hạ) − chênh(đã trừ).
+    //
+    // Đã dựng lại thật: khách trả 1.025.000 → sửa còn 627.000 (hoàn chênh 398.000) → bấm
+    // "hoàn toàn bộ" chỉ hoàn 229.000 thay vì 627.000, đơn khoá 'refunded', hoàn lần nữa
+    // → 409. Shop giữ lại 398.000 của khách và KHÔNG còn đường trả qua giao diện.
     const already = Number((await c.query(
-      `SELECT coalesce(sum(amount_vnd), 0)::bigint AS s FROM refunds WHERE order_id = $1`, [orderId],
+      `SELECT coalesce(sum(amount_vnd), 0)::bigint AS s FROM refunds
+        WHERE order_id = $1 AND kind <> 'edit_adjustment'`, [orderId],
     )).rows[0].s);
     const total = Number(o.total_vnd);
     const remaining = total - already;
@@ -1090,6 +1104,12 @@ async function createReturn(res, ctx, body, params) {
       )).rows[0];
       if (!o) fail(404, 'không tìm thấy đơn');
       if (o.status !== 'delivered') fail(409, 'chỉ nhận trả hàng cho đơn ĐÃ GIAO (khách đã nhận). Đơn chưa giao: huỷ/hoàn thay vì trả.');
+      // Khách CHƯA TRẢ ĐỒNG NÀO thì không có gì để hoàn. Thiếu guard này (refundOrder có,
+      // đây thì không) sinh ra ca đã dựng lại được: đơn COD 627.000 giao xong nhưng chưa
+      // thu tiền → nhận trả hàng vẫn 200, ghi phiếu hoàn 199.000 và đóng đinh
+      // amount_paid_vnd = 627.000 (số BỊA). Người bán làm theo màn hình là chuyển tiền
+      // thật cho người chưa trả gì. Hàng bị bom thì dùng "Đánh dấu hoàn về" (mark-returned).
+      if (o.payment_status !== 'paid') fail(409, 'đơn chưa thu được tiền — không có gì để hoàn. Hàng khách trả/bom: dùng "Đánh dấu hoàn về" để nhập lại kho.');
 
       // Dòng đơn + giá snapshot. Gộp qty trả trùng biến thể.
       const ol = (await c.query(`SELECT variant_id, unit_price_vnd, unit_cost_vnd, qty FROM order_lines WHERE order_id = $1`, [orderId])).rows;

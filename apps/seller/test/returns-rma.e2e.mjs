@@ -150,6 +150,25 @@ async function main() {
   r = await rq(SELLER, 'POST', `/shops/${s2.json.id}/orders/${id}/return`, { body: { lines: [{ variant_id: A, qty: 1 }] }, cookie: oc2, origin: OS });
   r.status === 404 ? ok('shop khác trả đơn shop A → 404') : bad('cross-shop trả được', `${r.status}`);
 
+  // ── ĐƠN CHƯA THU TIỀN thì KHÔNG có gì để hoàn ─────────────────────────────
+  // Dựng lại được thật (2026-08-03): đơn COD 627.000 giao xong nhưng CHƯA bấm "Đã nhận tiền"
+  // → POST /return vẫn 200, ghi phiếu hoàn 199.000 và đóng đinh amount_paid_vnd = 627.000
+  // (số BỊA). Người bán làm theo màn hình là CHUYỂN TIỀN THẬT cho người chưa trả đồng nào.
+  // refundOrder có guard payment_status; createReturn thì không — cùng một bất biến, hai chỗ.
+  sect('Đơn CHƯA THU TIỀN: không được nhận trả hàng (không có gì để hoàn)');
+  {
+    const idU = await mkDelivered();
+    await owner.query(`UPDATE orders SET payment_status='unpaid', paid_at=NULL, amount_paid_vnd=0 WHERE id=$1`, [idU]);
+    const refBefore = await refundsOf(idU);
+    await rq(AUTH, 'POST', '/auth/step-up', { body: { password: op }, cookie: oc, origin: OA });
+    const ru = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${idU}/return`, { body: { lines: [{ variant_id: A, qty: 1 }], restock: true }, cookie: oc, origin: OS });
+    const refAfter = await refundsOf(idU);
+    const paidAfter = N(await col(idU, 'amount_paid_vnd'));
+    ru.status === 409 && refAfter === refBefore && paidAfter === 0
+      ? ok('đơn chưa thu tiền → 409, KHÔNG ghi phiếu hoàn, KHÔNG bịa amount_paid_vnd')
+      : bad('NHẬN TRẢ HÀNG CHO ĐƠN CHƯA TRẢ TIỀN', `http=${ru.status} refunds=${refBefore}→${refAfter} amount_paid=${paidAfter}`);
+  }
+
   sect('getOrder trả lịch sử returns + returned_qty mỗi dòng');
   const g = (await rq(SELLER, 'GET', `/shops/${shopId}/orders/${id}`, { cookie: oc })).json;
   const lineA = (g.lines ?? []).find((l) => l.variant_id === A);

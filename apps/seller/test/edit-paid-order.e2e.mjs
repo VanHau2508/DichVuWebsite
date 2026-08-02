@@ -174,6 +174,29 @@ async function main() {
   r.status === 200 ? ok('đơn CHƯA trả → huỷ không cần lý do') : bad('bắt lý do cả đơn chưa trả', String(r.status));
 
   console.log(`\n${pass} pass, ${fail} fail`);
+  // ── SỬA ĐƠN ĐÃ TRẢ rồi HOÀN NỐT: không được TRỪ ĐÚP phần chênh đã hoàn ─────
+  // editPaidOrder vừa ghi phiếu kind='edit_adjustment' VỪA hạ orders.total_vnd. Khoản đó đã
+  // được trừ MỘT LẦN ở total_vnd; refundOrder đếm nó lần nữa trong `already` là trừ đúp.
+  // Dựng lại thật (2026-08-03): khách trả 1.025.000 → sửa còn 627.000 (hoàn chênh 398.000)
+  // → bấm "hoàn toàn bộ" chỉ hoàn 229.000 thay vì 627.000; đơn khoá 'refunded'; hoàn lần nữa
+  // → 409. Shop giữ 398.000 của khách và HẾT đường trả qua giao diện.
+  sect('Sửa đơn đã trả → hoàn nốt: KHÔNG trừ đúp phần chênh (kind=edit_adjustment)');
+  {
+    const id2 = await mkPaidOrder();
+    const thu = N(await colOf(id2, 'total_vnd'));
+    await rq(AUTH, 'POST', '/auth/step-up', { body: { password: op }, cookie: oc, origin: OA });
+    const re = await rq(SELLER, 'POST', eurl(id2), { body: { customer: cust, lines: [{ variant_id: A, qty: 3 }] }, cookie: oc, origin: OS });
+    const conNo = N(await colOf(id2, 'total_vnd'));
+    const daHoanChenh = await refundsOf(id2);
+    await rq(AUTH, 'POST', '/auth/step-up', { body: { password: op }, cookie: oc, origin: OA });
+    const rr = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${id2}/refund`, { body: {}, cookie: oc, origin: OS });
+    const tongHoan = await refundsOf(id2);
+    const hoanThem = tongHoan - daHoanChenh, shopGiu = thu - tongHoan;
+    re.status === 200 && rr.status === 200 && hoanThem === conNo && shopGiu === 0
+      ? ok(`hoàn nốt đúng ${hoanThem}đ (tổng hoàn ${tongHoan} = đã thu ${thu}) — không trừ đúp`)
+      : bad('TRỪ ĐÚP khi hoàn nốt đơn đã sửa', `edit=${re.status} refund=${rr.status} hoanThem=${hoanThem} (ky vong ${conNo}) shopGiuLai=${shopGiu}`);
+  }
+
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);
 }

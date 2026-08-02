@@ -21,7 +21,7 @@ import crypto from 'node:crypto';
 import pg from 'pg';
 import { health, makeLog, runReq } from './obs.js';
 import { open as unseal } from './secretbox.js';
-import { step, summaryMessages, subtotalOf, orderPlacedMessages, orderFailedMessages } from './flow.js';
+import { step, summaryMessages, subtotalOf, orderPlacedMessages, orderFailedMessages, cancelResultMessages, emailSavedMessages } from './flow.js';
 
 const PORT = Number(process.env.PORT ?? 3072);
 const APP_SECRET = process.env.MESSENGER_APP_SECRET ?? '';
@@ -262,6 +262,30 @@ async function handleEvent(cfg, psid, ev) {
     } else {
       out = { state: { ...state, step: 'confirm' }, messages: orderFailedMessages(r.json?.error ?? 'thử lại giúp shop nhé') };
     }
+  }
+
+  // ── Khách tự huỷ đơn (docs/48) ────────────────────────────────────────────
+  // psid đi kèm trong THÂN, và seller tra đơn theo (số đơn + psid): khách chỉ huỷ được đơn
+  // của chính mình. Không có vế psid thì ai đoán được số đơn cũng huỷ được đơn người khác.
+  if (out.effect?.type === 'cancel_order') {
+    const num = out.effect.order_number;
+    const r = await shopApi(apiToken, '/ingest/orders/cancel', { method: 'POST', body: { psid, order_number: num } });
+    out = {
+      state: { ...out.state, step: 'start' },
+      messages: cancelResultMessages(num, r.status === 200, r.json?.error),
+
+    };
+  }
+
+  // ── Lưu email khách đưa SAU khi đặt (docs/48) ──────────────────────────────
+  if (out.effect?.type === 'save_email') {
+    const { order_number: num, email } = out.effect;
+    const r = await shopApi(apiToken, '/ingest/orders/email', { method: 'POST', body: { psid, order_number: num, email } });
+    out = {
+      state: { ...out.state, step: 'done', emailForOrder: undefined },
+      messages: emailSavedMessages(num, email, r.status === 200, r.json?.error),
+
+    };
   }
 
   // Tóm tắt cần phí ship THẬT. Hỏi đúng endpoint mà lúc tạo đơn dùng chung một hàm, nên

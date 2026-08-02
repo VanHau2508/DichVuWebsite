@@ -143,8 +143,28 @@ Tin báo gắn **`POST_PURCHASE_UPDATE`**: khách đặt hôm nay, shop giao ng�
 ngoài cửa sổ 24h của Meta. Không gắn nhãn thì Meta lặng lẽ từ chối và khách không bao giờ
 biết đơn đã đi. Nhãn này Meta định ra đúng cho mục đích đó.
 
+## Hai việc còn nợ — đã trả
+
+**Khách tự huỷ đơn trong chat.** Nút *Huỷ đơn #N* chỉ hiện cho đơn **còn huỷ được**
+(`pending`/`confirmed`) — hiện nút rồi báo lỗi tệ hơn không có nút: khách bấm, bị từ chối,
+và nghĩ shop bắt chẹt. Bấm xong **hỏi lại một lần** vì huỷ không hoàn tác được; một cú bấm
+nhầm trong dãy quick reply mà mất đơn thì lỗi thuộc về người thiết kế.
+
+Dùng **chung `cancelOrderTx`** với đường admin — nhả tồn giữ chỗ, hoàn lượt coupon, phát sự
+kiện báo khách. Không viết bản thứ hai: hai bản của chuỗi đó sẽ lệch ở đúng lần sửa thứ ba,
+và lệch ở đây nghĩa là tồn kho sai.
+
+**Hàng rào sống-còn:** `/ingest/orders/cancel` tra đơn bằng **(số đơn + `source_ref` khớp
+psid)**, không bằng số đơn đơn thuần. Số đơn là số đếm tăng dần — đoán được trong vài lần
+thử. Thiếu vế psid thì bất kỳ ai nhắn vào Trang cũng huỷ được đơn của người khác. Có test
+đi đúng đường đó (người lạ chat vào cùng Trang, đoán số đơn, bấm huỷ → không ăn).
+
+**Xin email SAU khi đặt.** Nút *Gửi hoá đơn qua email* nằm ở tin "đặt hàng thành công", KHÔNG
+phải trong luồng mua — đơn đã xong rồi nên bấm hay không đều không mất đơn. Email sai định
+dạng thì xin lại chứ không ghi bừa; gõ "thôi" thì dừng. Đơn **đã có** email thì không cho
+ghi đè: đổi email của đơn có sẵn là đường lấy hoá đơn người khác nếu đoán được số đơn (đã
+chặn bằng psid, nhưng giữ hai lớp).
+
 ## Còn nợ
 
-* Khách **huỷ đơn** ngay trong chat (hiện phải nhắn nhân viên).
-* Bot chưa hỏi **email** nên đơn từ chat không có hoá đơn qua email — chấp nhận đánh đổi để
-  giữ 3 chạm; nếu sau này cần thì hỏi SAU khi đặt xong, không phải trước.
+* Bot chưa cho khách **đổi địa chỉ** sau khi đặt (phải nhắn nhân viên).

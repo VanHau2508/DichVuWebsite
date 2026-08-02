@@ -19,7 +19,7 @@ import crypto from 'node:crypto';
 import { send } from './http.js';
 import { withTenant, audit, resolveApiKey } from './db.js';
 import { createManualOrder } from './orders.js';
-import { routeIngestCatalog } from './ingest-catalog.js';
+import { routeIngestCatalog, routeIngestWrite } from './ingest-catalog.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -145,6 +145,9 @@ export async function handleIngest(req, res, { pathname, query, ip, readJson }) 
     return createManualOrder(res, ctx, body);
   }
   if (req.method === 'GET' && await routeIngestCatalog(res, key.shop_id, pathname, query)) return undefined;
+  // Route GHI (khách tự huỷ đơn / đưa email trong chat — docs/48). CÙNG khoá, cùng scope:
+  // chúng chỉ đụng được đơn của ĐÚNG psid gọi tới, nên không nới quyền gì trên thực tế.
+  if (req.method === 'POST' && await routeIngestWrite(res, key.shop_id, pathname, await readJson(req), ip)) return undefined;
   return send(res, 404, { error: 'không tìm thấy' });
 }
 

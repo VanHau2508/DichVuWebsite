@@ -234,7 +234,53 @@ export function step(state, ev, data = {}) {
       const trk = o.tracking_number ? `\n   Mã vận đơn: ${o.tracking_number}` : '';
       return `#${o.order_number} — ${st} — ${money(o.total_vnd)}${trk}`;
     });
-    return { state: s, messages: [text(['Đơn gần đây của bạn:', ...lines].join('\n'), [qr('🛍 Mua thêm', 'BROWSE'), QR_HUMAN])] };
+    // Nút HUỶ chỉ hiện cho đơn CÒN HUỶ ĐƯỢC (chưa gửi hàng) — cùng luật với admin. Hiện
+    // nút rồi báo lỗi là tệ hơn không có nút: khách bấm, bị từ chối, và nghĩ shop bắt chẹt.
+    const cancelable = orders.filter((o) => o.status === 'pending' || o.status === 'confirmed').slice(0, MAX_QR - 2);
+    return {
+      state: s,
+      messages: [text(['Đơn gần đây của bạn:', ...lines].join('\n'), [
+        ...cancelable.map((o) => qr(`✖ Huỷ đơn #${o.order_number}`, `CANCELASK:${o.order_number}`)),
+        qr('🛍 Mua thêm', 'BROWSE'), QR_HUMAN,
+      ])],
+    };
+  }
+
+  // ── Khách tự huỷ đơn trong chat (docs/48) ─────────────────────────────────
+  // HAI chạm, cố ý: huỷ đơn không hoàn tác được. Một cú bấm nhầm trong danh sách quick
+  // reply mà mất đơn thì lỗi thuộc về người thiết kế, không phải khách.
+  if (ev.payload?.startsWith('CANCELASK:')) {
+    const num = ev.payload.slice(10);
+    return {
+      state: s,
+      messages: [text(`Bạn chắc chắn muốn huỷ đơn #${num} ạ? Thao tác này không hoàn tác được.`, [
+        qr('✔ Đúng, huỷ đơn', `CANCELDO:${num}`), qr('↩ Không, giữ đơn', 'MYORDERS'), QR_HUMAN,
+      ])],
+    };
+  }
+  if (ev.payload?.startsWith('CANCELDO:')) {
+    // Gọi seller là việc của caller (server.js) — flow.js thuần, không I/O. Trả effect.
+    return { state: s, effect: { type: 'cancel_order', order_number: Number(ev.payload.slice(9)) }, messages: [] };
+  }
+
+  // ── Xin email SAU khi đặt xong (docs/48) ──────────────────────────────────
+  // CỐ Ý không hỏi trước lúc đặt: thêm một ô bắt gõ giữa luồng mua là thêm một chỗ để
+  // khách bỏ ngang. Hỏi sau thì đơn đã nằm trong sổ — khách không đưa cũng không mất gì.
+  if (ev.payload?.startsWith('WANTMAIL:')) {
+    return {
+      state: { ...s, step: 'ask_email', emailForOrder: Number(ev.payload.slice(9)) },
+      messages: [text('Bạn nhập email để mình gửi hoá đơn nhé (gõ "thôi" nếu không cần).')],
+    };
+  }
+  if (s.step === 'ask_email' && ev.text) {
+    const t = ev.text.trim();
+    if (/^(thôi|thoi|không|khong|no)$/i.test(t)) {
+      return { state: { ...s, step: 'done', emailForOrder: undefined }, messages: [text('Dạ vâng ạ. Cảm ơn bạn!', [qr('🛍 Mua thêm', 'BROWSE'), QR_MYORDERS])] };
+    }
+    if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(t)) {
+      return { state: s, messages: [text('Email chưa đúng định dạng, bạn nhập lại giúp mình nhé (vd ban@gmail.com), hoặc gõ "thôi".')] };
+    }
+    return { state: s, effect: { type: 'save_email', order_number: s.emailForOrder, email: t.toLowerCase() }, messages: [] };
   }
 
   // ── Sửa số lượng ở màn tóm tắt ────────────────────────────────────────────
@@ -313,10 +359,32 @@ export function step(state, ev, data = {}) {
 export function orderPlacedMessages(order, lookupUrl) {
   return [
     // Nút tra đơn đặt NGAY tại đây: đó chính là lúc khách nghĩ tới việc theo dõi đơn.
+    // "Gửi hoá đơn qua email" đặt ở ĐÂY chứ không phải trong luồng mua: đơn đã xong rồi
+    // nên bấm hay không bấm đều không mất đơn. Hỏi trước lúc đặt là thêm một chỗ bỏ ngang.
     text(`✅ Đặt hàng thành công!\nMã đơn: #${order.order_number}\nTổng tiền: ${money(order.total_vnd)}\nShop sẽ liên hệ xác nhận sớm nhất ạ. Cảm ơn bạn! 🎉`,
-      [QR_MYORDERS, qr('🛍 Mua thêm', 'BROWSE'), QR_HUMAN]),
+      [qr('✉ Gửi hoá đơn qua email', `WANTMAIL:${order.order_number}`), QR_MYORDERS, qr('🛍 Mua thêm', 'BROWSE'), QR_HUMAN]),
     ...(lookupUrl ? [text(`Theo dõi đơn tại: ${lookupUrl}`)] : []),
   ];
+}
+
+/**
+ * Kết quả khách tự huỷ đơn / tự đưa email (docs/48).
+ *
+ * Ở ĐÂY chứ không ở server.js: `text`/`qr` là hàm cục bộ của module này (chúng áp trần
+ * 20 ký tự của Messenger cho nhãn nút). Dựng tin nhắn bên ngoài nghĩa là bỏ qua trần đó
+ * — Meta sẽ TỪ CHỐI cả tin, và khách không thấy gì cả.
+ */
+export function cancelResultMessages(orderNumber, ok, reason) {
+  return [text(ok
+    ? `Đã huỷ đơn #${orderNumber} giúp bạn ạ. Nếu cần đặt lại, bạn bấm "Xem sản phẩm" nhé!`
+    : `Xin lỗi, đơn #${orderNumber} không huỷ được: ${reason ?? 'shop sẽ kiểm tra lại giúp bạn'}`,
+  [qr('🛍 Xem sản phẩm', 'BROWSE'), QR_MYORDERS, QR_HUMAN])];
+}
+export function emailSavedMessages(orderNumber, email, ok, reason) {
+  return [text(ok
+    ? `Đã lưu email ${email} cho đơn #${orderNumber}. Shop sẽ gửi hoá đơn và cập nhật đơn qua email này ạ.`
+    : `Mình chưa lưu được email: ${reason ?? 'bạn nhắn lại giúp shop nhé'}`,
+  [qr('🛍 Mua thêm', 'BROWSE'), QR_MYORDERS])];
 }
 
 /** Đơn KHÔNG tạo được — nói RÕ lý do (hết hàng…) chứ không "có lỗi xảy ra". */

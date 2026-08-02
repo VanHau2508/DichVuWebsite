@@ -13,8 +13,8 @@
  * tính cho đơn qua khoá kết nối. Hai chỗ lệch nhau nghĩa là bot báo một đằng thu một nẻo.
  */
 import { send } from './http.js';
-import { withTenant } from './db.js';
-import { shopShipFee } from './orders.js';
+import { withTenant, audit } from './db.js';
+import { shopShipFee, cancelOrderTx } from './orders.js';
 
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 const imgUrl = (k) => (k ? `${MEDIA_PUBLIC_BASE}/${k}` : null);
@@ -171,5 +171,72 @@ export async function routeIngestCatalog(res, shopId, pathname, query) {
   if (pathname === '/ingest/orders/lookup') { await lookupOrders(res, shopId, query); return true; }
   const m = /^\/ingest\/catalog\/products\/([0-9a-f-]{36})$/.exec(pathname);
   if (m) { await getCatalogProduct(res, shopId, m[1]); return true; }
+  return false;
+}
+
+/**
+ * GHI qua /ingest — hai việc khách tự làm được trong chat (docs/48 "còn nợ").
+ *
+ * HÀNG RÀO CHUNG, quan trọng hơn mọi thứ khác ở đây: khoá kết nối đọc/ghi được MỌI đơn của
+ * shop. Khách trong chat chỉ được đụng ĐƠN CỦA CHÍNH HỌ. Nên mọi hàm dưới đây tra đơn bằng
+ * (order_number + source_ref khớp psid), KHÔNG bằng order_number đơn thuần — thiếu vế psid
+ * thì bất kỳ ai đoán được số đơn cũng huỷ được đơn người khác.
+ */
+const psidWhere = (psid) => '%psid=' + String(psid).replace(/[%_\\]/g, '\\$&');
+
+// POST /ingest/orders/cancel — khách tự huỷ đơn trong chat.
+// Dùng CHUNG cancelOrderTx với đường admin: nhả reserve, hoàn lượt coupon, phát sự kiện báo
+// khách. Không viết lại — hai bản của chuỗi đó sẽ lệch, và lệch ở đây là tồn kho sai.
+async function cancelByPsid(res, shopId, body, ip) {
+  const psid = String(body?.psid ?? '').trim().slice(0, 80);
+  const num = parseInt(body?.order_number, 10);
+  if (!psid || !Number.isInteger(num)) return send(res, 400, { error: 'thiếu psid hoặc order_number' });
+  const out = await withTenant(shopId, async (c) => {
+    // Khoá dòng NGAY khi tra: giữa lúc kiểm và lúc huỷ, nhân viên có thể đang chuyển đơn
+    // sang 'shipped'. Không khoá thì khách huỷ được đơn vừa lên xe.
+    const o = (await c.query(
+      `SELECT id FROM orders
+        WHERE order_number = $1 AND source = 'facebook' AND source_ref LIKE $2 FOR UPDATE`,
+      [num, psidWhere(psid)])).rows[0];
+    if (!o) return { code: 404 };
+    // Khách tự huỷ KHÔNG cần nêu lý do khi đơn chưa trả tiền; đơn ĐÃ trả thì cancelOrderTx
+    // bắt buộc có lý do → đặt sẵn lý do nói đúng sự thật ai là người huỷ.
+    return cancelOrderTx(c, o.id, { reason: 'Khách tự huỷ trong chat Messenger', actorId: null, ip, source: 'messenger' });
+  });
+  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy đơn của bạn' });
+  if (out.code === 409) return send(res, 409, { error: `đơn đang ở trạng thái "${out.cur}" nên không huỷ được` });
+  if (out.code === 400) return send(res, 400, { error: out.msg });
+  return send(res, 200, { ok: true, status: 'cancelled' });
+}
+
+// POST /ingest/orders/email — khách đưa email SAU khi đã đặt xong (docs/48).
+// Cố ý KHÔNG hỏi trước lúc đặt: thêm một ô bắt gõ giữa luồng mua là thêm một chỗ để khách
+// bỏ ngang. Hỏi sau thì đơn đã nằm trong sổ rồi, khách không đưa cũng không mất gì.
+async function setEmailByPsid(res, shopId, body) {
+  const psid = String(body?.psid ?? '').trim().slice(0, 80);
+  const num = parseInt(body?.order_number, 10);
+  const email = String(body?.email ?? '').trim().toLowerCase().slice(0, 254);
+  if (!psid || !Number.isInteger(num)) return send(res, 400, { error: 'thiếu psid hoặc order_number' });
+  if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(email)) return send(res, 400, { error: 'email không hợp lệ' });
+  const out = await withTenant(shopId, async (c) => {
+    // CHỈ điền khi đang trống. Đơn đã có email (khách khai lúc khác) thì không cho ghi đè:
+    // đổi email của một đơn đã có nghĩa là chuyển hoá đơn sang hộp thư khác — nếu ai đó
+    // đoán được số đơn thì đó thành đường lấy thông tin. Đã chặn bằng psid, nhưng hai lớp.
+    const r = await c.query(
+      `UPDATE orders SET customer_email = $3
+        WHERE order_number = $1 AND source = 'facebook' AND source_ref LIKE $2
+          AND customer_email IS NULL
+        RETURNING id`, [num, psidWhere(psid), email]);
+    if (r.rowCount) await audit(c, 'order.email_added', { actorId: null, ip: null, metadata: { order_number: num, source: 'messenger' } });
+    return r.rowCount;
+  });
+  if (!out) return send(res, 404, { error: 'không tìm thấy đơn của bạn, hoặc đơn đã có email' });
+  return send(res, 200, { ok: true });
+}
+
+/** Điều hướng route GHI của /ingest (POST). Trả false nếu không khớp. */
+export async function routeIngestWrite(res, shopId, pathname, body, ip) {
+  if (pathname === '/ingest/orders/cancel') { await cancelByPsid(res, shopId, body, ip); return true; }
+  if (pathname === '/ingest/orders/email') { await setEmailByPsid(res, shopId, body); return true; }
   return false;
 }

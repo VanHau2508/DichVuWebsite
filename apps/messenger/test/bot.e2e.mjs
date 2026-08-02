@@ -271,6 +271,78 @@ async function main() {
   shipped.status === 200 && out.flat.includes('GHN123456')
     ? ok('tin báo kèm MÃ VẬN ĐƠN') : bad('không thấy mã vận đơn trong tin báo', String(shipped.status));
 
+  sect('11. Khách tự ĐƯA EMAIL sau khi đặt (docs/48 — hỏi SAU, không chặn luồng mua)');
+  const eNum = ordRows[0].order_number;
+  drain();
+  await webhook(pageId, evQuick(`WANTMAIL:${eNum}`));
+  await sleep(600);
+  /nhập email/i.test(drain().flat) ? ok('bấm "Gửi hoá đơn qua email" → bot hỏi email') : bad('không hỏi email');
+  await webhook(pageId, evText('email-sai-dinh-dang'));
+  await sleep(600);
+  /chưa đúng định dạng/i.test(drain().flat) ? ok('email sai định dạng → bot xin lại, KHÔNG ghi bừa') : bad('nhận email rác');
+  await webhook(pageId, evText('khach@gmail.com'));
+  await sleep(800);
+  const savedMail = (await owner.query(`SELECT customer_email FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, eNum])).rows[0]?.customer_email;
+  savedMail === 'khach@gmail.com' ? ok('email hợp lệ → lưu vào đúng đơn') : bad('không lưu được email', savedMail);
+  // Đơn ĐÃ có email thì không cho ghi đè — đổi email của đơn có sẵn là đường lấy hoá đơn
+  // của người khác nếu ai đó đoán được số đơn (đã chặn bằng psid, nhưng hai lớp).
+  await webhook(pageId, evQuick(`WANTMAIL:${eNum}`));
+  await sleep(500);
+  drain();
+  await webhook(pageId, evText('kedoat@gmail.com'));
+  await sleep(800);
+  (await owner.query(`SELECT customer_email FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, eNum])).rows[0].customer_email === 'khach@gmail.com'
+    ? ok('đơn đã có email → KHÔNG ghi đè') : bad('ghi đè được email của đơn đã có');
+
+  sect('12. Khách tự HUỶ ĐƠN trong chat — hai chạm, và chỉ đơn của CHÍNH MÌNH');
+  // Đơn ở mục trên ĐÃ bị chuyển 'shipped' (mục 8c) nên không huỷ được — đúng luật. Cần một
+  // đơn còn huỷ được, gắn ĐÚNG psid này qua source_ref (đó là thứ seller dùng để xác định
+  // "đơn của chính bạn").
+  const freshOrd = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders`, {
+    body: {
+      lines: [{ variant_id: p1.variantId, qty: 1 }],
+      customer: { name: 'Lan Nguyễn', phone: '0966123456', address_line: '1 Cầu Giấy' },
+      payment_method: 'cod', source: 'facebook', source_ref: `m.me/${pageId}?psid=${PSID}`,
+      idempotency_key: `fresh-${uniq()}`,
+    }, cookie: A.cookie, origin: OS,
+  });
+  const cNum = freshOrd.json?.order_number;
+  freshOrd.status === 201 ? ok(`dựng đơn còn huỷ được #${cNum}`) : bad('không dựng được đơn', freshOrd.raw);
+  drain();
+  await webhook(pageId, evQuick('MYORDERS'));
+  await sleep(700);
+  /Huỷ đơn #/.test(drain().flat) ? ok('đơn chưa gửi hàng → hiện nút Huỷ') : bad('không thấy nút huỷ');
+  await webhook(pageId, evQuick(`CANCELASK:${cNum}`));
+  await sleep(600);
+  const askOut = drain().flat;
+  /chắc chắn muốn huỷ/.test(askOut) && /không hoàn tác/.test(askOut)
+    ? ok('bấm Huỷ → HỎI LẠI (một cú bấm nhầm không được mất đơn)') : bad('huỷ ngay không hỏi lại', askOut.slice(0, 200));
+  const beforeRes = Number((await owner.query(
+    `SELECT coalesce(sum(il.reserved),0)::int r FROM inventory_levels il
+      JOIN order_lines l ON l.variant_id = il.variant_id WHERE l.order_id=(SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2)`,
+    [A.shopId, cNum])).rows[0].r);
+  await webhook(pageId, evQuick(`CANCELDO:${cNum}`));
+  await sleep(900);
+  const st = (await owner.query(`SELECT status FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, cNum])).rows[0].status;
+  st === 'cancelled' && /Đã huỷ đơn/.test(drain().flat) ? ok('xác nhận → đơn thành cancelled, bot báo lại') : bad('huỷ không ăn', st);
+  const afterRes = Number((await owner.query(
+    `SELECT coalesce(sum(il.reserved),0)::int r FROM inventory_levels il
+      JOIN order_lines l ON l.variant_id = il.variant_id WHERE l.order_id=(SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2)`,
+    [A.shopId, cNum])).rows[0].r);
+  afterRes < beforeRes || beforeRes === 0
+    ? ok(`huỷ NHẢ tồn giữ chỗ (${beforeRes} → ${afterRes}) — dùng chung cancelOrderTx với admin`) : bad('tồn giữ chỗ kẹt lại', `${beforeRes} → ${afterRes}`);
+  // CA ÁC NHẤT — kịch bản THẬT: một người lạ nhắn vào CÙNG Trang đó, đoán số đơn của
+  // khách khác rồi bấm huỷ. Đi qua đúng đường bot (không gọi tắt vào seller) vì đó mới là
+  // bề mặt tấn công có thật. Số đơn là số đếm tăng dần — đoán được trong vài lần thử.
+  drain();
+  const EVIL_PSID = 'psid-nguoi-la-9999';
+  await webhook(pageId, [{ sender: { id: EVIL_PSID }, message: { text: 'x', quick_reply: { payload: `CANCELDO:${otherOrder.json.order_number}` } } }]);
+  await sleep(900);
+  const stOther = (await owner.query(`SELECT status FROM orders WHERE id=$1`, [otherOrder.json.id])).rows[0].status;
+  const evilOut = drain().flat;
+  stOther !== 'cancelled' && !/Đã huỷ đơn/.test(evilOut)
+    ? ok('người lạ đoán số đơn rồi huỷ → KHÔNG huỷ được, đơn giữ nguyên') : bad('HUỶ ĐƯỢC ĐƠN NGƯỜI KHÁC!', `${stOther} :: ${evilOut.slice(0, 200)}`);
+
   sect('9. Gặp nhân viên → bot IM');
   await webhook(pageId, evQuick('HUMAN'));
   await sleep(500);

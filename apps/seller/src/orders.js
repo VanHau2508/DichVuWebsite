@@ -412,47 +412,51 @@ async function shipOrder(res, ctx, body, params) {
   }
 }
 
+/**
+ * THÂN GIAO DỊCH của huỷ đơn — DÙNG CHUNG cho hai đường: nhân viên bấm trong admin, và
+ * khách tự huỷ trong chat Messenger (/ingest/orders/cancel).
+ *
+ * Vì sao phải tách thay vì chép: huỷ đơn nhả tồn đã giữ chỗ, hoàn lượt coupon, và phát sự
+ * kiện báo khách. Hai bản của chuỗi đó sẽ lệch nhau ở đúng lần sửa thứ ba — và lệch ở đây
+ * nghĩa là tồn kho sai hoặc khách không được báo.
+ *
+ * `actorId` null = khách tự huỷ (audit ghi actor_type 'system', cùng lối /ingest/orders).
+ * PHẢI gọi trong transaction đã set tenant; caller tự lo khoá và kiểm quyền sở hữu.
+ */
+export async function cancelOrderTx(c, orderId, { reason = null, actorId = null, ip = null, source = 'admin' } = {}) {
+  const o = (await c.query(`SELECT id, status, payment_status, coupon_code, order_number, customer_email, customer_name, total_vnd FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
+  if (!o) return { code: 404 };
+  if (!['pending', 'confirmed'].includes(o.status)) return { code: 409, cur: o.status };
+  if (o.payment_status === 'paid' && !reason) {
+    return { code: 400, msg: 'đơn đã thanh toán: phải nêu lý do huỷ (khách sẽ nhận được lý do này)' };
+  }
+  // RELEASE reserve: trả lại tồn đã giữ chỗ lúc checkout.
+  const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1`, [orderId])).rows;
+  for (const ln of lines) {
+    await c.query(`UPDATE inventory_levels SET reserved = GREATEST(0, reserved - $2), updated_at = now() WHERE variant_id = $1`, [ln.variant_id, ln.qty]);
+  }
+  await c.query(`UPDATE orders SET status = 'cancelled', cancelled_at = now(), cancel_reason = $2 WHERE id = $1`, [orderId, reason]);
+  if (o.coupon_code && o.payment_status !== 'paid') {
+    await c.query(`UPDATE coupons SET used_count = GREATEST(used_count - 1, 0) WHERE shop_id = current_shop_id() AND upper(code) = upper($1)`, [o.coupon_code]);
+  }
+  o.status = 'cancelled';
+  const paid = o.payment_status === 'paid';
+  await audit(c, 'order.cancelled', {
+    actorId, ip,
+    metadata: { orderId, reason, was_paid: paid, refund_due_vnd: paid ? Number(o.total_vnd) : 0, source },
+  });
+  await statusEvent(c, o, { cancel_reason: reason, refund_due_vnd: paid ? Number(o.total_vnd) : 0 });
+  return { code: 200 };
+}
+
 async function cancelOrder(res, ctx, body, params) {
   const orderId = params[1];
   const reason = String(body?.reason ?? '').trim().slice(0, 500) || null;
-  const out = await withTenant(ctx.shopId, async (c) => {
-    const o = (await c.query(`SELECT id, status, payment_status, coupon_code, order_number, customer_email, customer_name, total_vnd FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
-    if (!o) return { code: 404 };
-    if (!['pending', 'confirmed'].includes(o.status)) return { code: 409, cur: o.status };
-    // ĐƠN ĐÃ TRẢ TIỀN: BẮT BUỘC nêu lý do (0117).
-    //
-    // Trước đây nhánh này không hề nhìn payment_status — đơn khách đã chuyển khoản
-    // huỷ được bằng một cú bấm, không lý do, không phiếu hoàn, email báo khách chỉ
-    // nói "đã huỷ". Tiền không mất khỏi sổ, nhưng KHOẢN NỢ KHÁCH biến mất khỏi tầm
-    // mắt: không chỗ nào nói shop còn phải trả lại.
-    //
-    // Không CẤM huỷ (người bán hết hàng vẫn phải huỷ được), nhưng lý do là bắt buộc
-    // và nó đi thẳng vào email cho khách — người mất tiền có quyền biết vì sao.
-    if (o.payment_status === 'paid' && !reason) {
-      return { code: 400, msg: 'đơn đã thanh toán: phải nêu lý do huỷ (khách sẽ nhận được lý do này)' };
-    }
-    // RELEASE reserve: trả lại tồn đã giữ chỗ lúc checkout.
-    const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1`, [orderId])).rows;
-    for (const ln of lines) {
-      await c.query(`UPDATE inventory_levels SET reserved = GREATEST(0, reserved - $2), updated_at = now() WHERE variant_id = $1`, [ln.variant_id, ln.qty]);
-    }
-    await c.query(`UPDATE orders SET status = 'cancelled', cancelled_at = now(), cancel_reason = $2 WHERE id = $1`, [orderId, reason]);
-    // Hoàn lại lượt coupon CHỈ khi đơn CHƯA trả (đơn đã trả = lượt dùng thật).
-    if (o.coupon_code && o.payment_status !== 'paid') {
-      await c.query(`UPDATE coupons SET used_count = GREATEST(used_count - 1, 0) WHERE shop_id = current_shop_id() AND upper(code) = upper($1)`, [o.coupon_code]);
-    }
-    o.status = 'cancelled';
-    // refund_due_vnd: đơn đã trả thì email nói rõ shop sẽ chuyển lại bao nhiêu.
-    // KHÔNG tự tạo phiếu hoàn — tiền ra khỏi tài khoản là việc người bán làm tay,
-    // hệ thống bịa một bút toán "đã hoàn" trong khi tiền chưa đi là nói dối sổ sách.
-    const paid = o.payment_status === 'paid';
-    await audit(c, 'order.cancelled', {
-      actorId: ctx.user.id, ip: ctx.ip,
-      metadata: { orderId, reason, was_paid: paid, refund_due_vnd: paid ? Number(o.total_vnd) : 0 },
-    });
-    await statusEvent(c, o, { cancel_reason: reason, refund_due_vnd: paid ? Number(o.total_vnd) : 0 });
-    return { code: 200 };
-  });
+  // Quy tắc huỷ (nhả reserve · hoàn lượt coupon · bắt buộc lý do khi đã trả tiền · phát sự
+  // kiện báo khách) nằm TRỌN trong cancelOrderTx — dùng chung với đường khách tự huỷ trong
+  // chat Messenger. Đừng viết lại ở đây: hai bản sẽ lệch ở đúng lần sửa thứ ba.
+  const out = await withTenant(ctx.shopId, (c) =>
+    cancelOrderTx(c, orderId, { reason, actorId: ctx.user.id, ip: ctx.ip, source: 'admin' }));
   if (out.code === 404) return send(res, 404, { error: 'không tìm thấy đơn' });
   if (out.code === 400) return send(res, 400, { error: out.msg });
   if (out.code === 409) return send(res, 409, { error: `không thể huỷ từ ${out.cur}` });

@@ -3288,7 +3288,8 @@ export function renderProductNew(ctx, shopId, err, f = {}) {
           <div><label>Giá (VND) *</label><input name="price_vnd" type="number" min="0" step="1000" required value="${esc(f.price_vnd ?? '')}"></div>
           <div><label>Tồn kho ban đầu</label><input name="stock" type="number" min="0" step="1" value="${esc(f.stock ?? '0')}"></div>
         </div>
-        <p class="muted" style="margin:-6px 0 12px">Để tồn 0 thì khách vào thấy “Hết hàng” — sửa lại bất cứ lúc nào ở trang sản phẩm.</p>
+        <p class="muted" style="margin:-6px 0 12px">Để tồn 0 thì khách vào thấy “Hết hàng” — sửa lại bất cứ lúc nào ở trang sản phẩm.
+          Nếu bạn khai size/màu bên dưới, số này áp cho <strong>mỗi phiên bản</strong> (vd 10 với 3 size × 2 màu = mỗi tổ hợp 10 cái).</p>
         <label>Trạng thái</label><select name="status"><option value="draft"${f.status !== 'active' ? ' selected' : ''}>Nháp</option><option value="active"${f.status === 'active' ? ' selected' : ''}>Đăng bán ngay</option></select>
         <label>Mô tả</label><textarea name="description" maxlength="5000">${esc(f.description ?? '')}</textarea>
         <label>Ảnh sản phẩm</label>

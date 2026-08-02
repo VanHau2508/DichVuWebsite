@@ -1151,6 +1151,24 @@ async function productCreate(req, res, me, cookie, shopId) {
     if (o.status !== 200) {
       return productDetail(res, me, cookie, shopId, pid, `Đã tạo sản phẩm nhưng chưa đặt được phiên bản: ${o.json?.error ?? 'lỗi không rõ'}. Sửa ngay bên dưới.`);
     }
+    // RÓT TỒN vào TỪNG phiên bản sau khi sinh ma trận.
+    //
+    // Vì sao bắt buộc: sinh ma trận CỐ Ý reset tồn về 0 (biến thể cũ được tái dùng cho một tổ
+    // hợp KHÁC thì không được kế thừa tồn — nếu không là oversell; xem catalog.js saveProductOptions).
+    // Luật đó đúng ở ngữ cảnh SỬA trục. Nhưng ở luồng TẠO thì hệ quả là: chủ shop gõ "tồn 10",
+    // gõ Size/Màu, bấm Tạo → ra sản phẩm 0 tồn ở MỌI phiên bản, storefront không hiện nổi nút
+    // mua, sản phẩm ĐẦU TIÊN của họ không bán được. Đợt kiểm toán đóng vai bắt đúng ca này:
+    // trang SP 6 phiên bản có 0 form thêm-giỏ.
+    // Con số gõ ở form áp cho MỖI phiên bản (nhãn trên form nói đúng như vậy) — chủ shop
+    // nghĩ theo kiểu "mỗi size mỗi màu tôi có 10 cái", không phải "10 cái chia cho 6 ô".
+    const stockN = Number(String(f.stock ?? '').trim());
+    if (Number.isInteger(stockN) && stockN > 0) {
+      const pr = await sellerApi('GET', `/shops/${shopId}/products/${pid}`, { cookie });
+      for (const v of pr.json?.variants ?? []) {
+        await sellerApi('POST', `/shops/${shopId}/variants/${v.id}/inventory/adjust`,
+          { cookie, body: { delta: stockN, reason: 'tồn ban đầu khi tạo sản phẩm' } });
+      }
+    }
   }
   // Ảnh tải SAU khi có sản phẩm (endpoint media cần product_id). Ảnh hỏng KHÔNG được huỷ
   // sản phẩm vừa tạo — đưa họ vào trang chi tiết kèm lời báo, ở đó có sẵn ô tải lại.

@@ -269,3 +269,40 @@ tin vào con số kích thước. Đã sửa: gap 20 → cách nhau 28, vùng b�
 ### Kiểm chứng
 
 `storefront/e2e` 160 · `preview` 23 · `blocks` 25 · `banner` 14 · `admin-preset` 10 — xanh.
+
+---
+
+## Đợt 5 — sản phẩm có size/màu TẠO XONG KHÔNG BÁN ĐƯỢC (2026-08-02)
+
+Đợt 4 vá "form tạo SP chưa đặt được biến thể" (nợ ghi ở phần Còn thiếu). Vá xong, chạy lại
+vai khách thì **vỡ**: trang sản phẩm 6 phiên bản có **0 form thêm-giỏ**. Khách không mua được.
+
+### Nguyên nhân
+
+| Phiên bản | Giá | Tồn |
+|---|---|---|
+| S / Đen (tái dùng biến thể gốc) | 199.000 ✓ | **0** (gõ 10 lúc tạo) |
+| 5 tổ hợp còn lại | 199.000 ✓ | **KHÔNG CÓ DÒNG KHO** |
+
+`saveProductOptions` **cố ý** reset tồn về 0 khi tái dùng một biến thể cho tổ hợp KHÁC — nếu
+kế thừa tồn thì oversell. **Luật đó đúng** ở ngữ cảnh SỬA trục, không đụng vào.
+
+Sai ở **luồng TẠO**: seller-admin tạo SP kèm tồn → rồi mới áp trục → tồn vừa nhập bị luật
+trên xoá sạch, còn tổ hợp mới thì chưa từng có dòng kho. Chủ shop gõ "tồn 10", gõ Size/Màu,
+bấm Tạo, và nhận về một sản phẩm **0 tồn ở mọi phiên bản**. Sản phẩm ĐẦU TIÊN của shop mới
+mà không bán được chính là chỗ người ta bỏ nền tảng.
+
+### Vá
+
+Sau khi `/options` thành công, seller-admin gọi `POST /variants/:id/inventory/adjust` cho
+**từng** phiên bản với đúng số tồn đã gõ. Con số ở form áp cho **mỗi** phiên bản (nhãn trên
+form nói rõ) — chủ shop nghĩ "mỗi size mỗi màu tôi có 10 cái", không phải "10 cái chia 6 ô".
+
+### Bài học đo lường
+
+Bộ e2e cũ khẳng định "sinh đủ 6 tổ hợp" và **xanh** trong khi sản phẩm không bán được.
+**Đếm số dòng không phải là kiểm chức năng.** Test mới soi tồn TỪNG phiên bản; gỡ bản vá ra
+thì nó báo `0/6 có tồn` và đỏ ngay (đã kiểm bằng mutation).
+
+Kiểm chứng: `admin-products` 63 · `catalog` 42 · `variants` 34 · `inventory` 11 ·
+`admin-inventory-products` 40 — xanh.

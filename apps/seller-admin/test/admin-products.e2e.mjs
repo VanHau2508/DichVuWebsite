@@ -535,6 +535,21 @@ async function main() {
     `SELECT count(*)::int n FROM product_options WHERE product_id = $1`, [vp?.id ?? null])).rows[0]?.n;
   axes === 2 ? ok('lưu đúng 2 trục phân loại') : bad(`số trục sai: ${axes}`);
 
+  // TỒN phải vào ĐỦ MỌI phiên bản, không chỉ đếm đủ tổ hợp là xong.
+  // Ca thật đã xảy ra: sinh ma trận CỐ Ý reset tồn về 0 (chống oversell khi tái dùng biến thể
+  // cho tổ hợp khác — đúng ở ngữ cảnh SỬA trục). Nhưng ở luồng TẠO, hệ quả là chủ shop gõ
+  // "tồn 10" + Size/Màu → ra sản phẩm 0 tồn ở MỌI phiên bản, storefront không hiện nổi nút
+  // mua. Sản phẩm ĐẦU TIÊN của một shop mới mà không bán được là chỗ người ta bỏ nền tảng.
+  // Đếm số tổ hợp KHÔNG bắt được lỗi này — phải soi tồn từng dòng.
+  const lv = (await owner.query(
+    `SELECT count(*)::int total, count(*) FILTER (WHERE coalesce(il.on_hand,0) > 0)::int co_ton,
+            coalesce(min(il.on_hand), 0)::int it_nhat
+       FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
+      WHERE v.product_id = $1`, [vp?.id ?? null])).rows[0];
+  lv?.total === 6 && lv.co_ton === 6 && lv.it_nhat === 10
+    ? ok('tồn 10 vào ĐỦ 6/6 phiên bản (số gõ ở form áp cho MỖI phiên bản)')
+    : bad(`tồn không vào đủ phiên bản: ${lv?.co_ton}/${lv?.total} có tồn, thấp nhất ${lv?.it_nhat} (mong 6/6, 10)`);
+
   // Trục hỏng KHÔNG được huỷ sản phẩm đã tạo — người bán mất công gõ lại từ đầu là chỗ bỏ cuộc.
   const tbad = `Áo lỗi ${uniq()}`;
   const manyVals = Array.from({ length: 40 }, (_, i) => `v${i}`).join(', '); // vượt trần 30 giá trị

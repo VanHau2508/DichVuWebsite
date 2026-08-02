@@ -646,11 +646,21 @@ async function refundOrder(res, ctx, body, params) {
       await audit(c, 'order.refund_partial', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, amount_vnd: amount, refunded_total_vnd: refundedTotal, ...(reason ? { reason } : {}) } });
       return { code: 200, partial: true, status: o.status, refundedTotal, amount };
     }
-    // LUỸ KẾ CHẠM TỔNG → lật refunded (giữ NGUYÊN semantics tồn kho như trước 0070).
-    if (['pending', 'confirmed'].includes(o.status)) {
-      const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1`, [orderId])).rows;
+    // LUỸ KẾ CHẠM TỔNG → lật refunded. NHẢ CHỖ GIỮ cho phần hàng SẼ KHÔNG BAO GIỜ ĐI NỮA:
+    //   - pending/confirmed: chưa gửi gì → nhả toàn bộ qty.
+    //   - shipped: đơn TÁCH VẬN ĐƠN BỎ DỞ (gửi 3/5 rồi thôi) vẫn giữ chỗ phần chưa gửi.
+    //     Đơn thành 'refunded' thì markReturnedBomb — nơi DUY NHẤT biết nhả phần chưa gửi —
+    //     lại đòi status='shipped' → 409. Chỗ giữ kẹt VĨNH VIỄN: hàng nằm trong kho mà
+    //     không bán được, không thao tác nào gỡ ra. Đã dựng lại được (a12): gửi 3/5, hoàn
+    //     toàn bộ → còn giữ 2 suất, "Đánh dấu hoàn về" trả 409.
+    // KHÔNG restock phần ĐÃ gửi: hoàn tiền không có nghĩa hàng đã về kho. Hàng về thì dùng
+    // "Đánh dấu hoàn về" / đổi-trả — hai việc khác nhau, đừng gộp.
+    if (['pending', 'confirmed', 'shipped'].includes(o.status)) {
+      const lines = (await c.query(`SELECT variant_id, qty, shipped_qty FROM order_lines WHERE order_id = $1`, [orderId])).rows;
       for (const ln of lines) {
-        await c.query(`UPDATE inventory_levels SET reserved = GREATEST(0, reserved - $2), updated_at = now() WHERE variant_id = $1`, [ln.variant_id, ln.qty]);
+        const nha = Number(ln.qty) - Number(ln.shipped_qty ?? 0);   // phần chưa rời kho
+        if (nha <= 0) continue;
+        await c.query(`UPDATE inventory_levels SET reserved = GREATEST(0, reserved - $2), updated_at = now() WHERE variant_id = $1`, [ln.variant_id, nha]);
       }
     }
     await c.query(`UPDATE orders SET status = 'refunded', payment_status = 'refunded' WHERE id = $1`, [orderId]);

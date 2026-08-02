@@ -205,6 +205,45 @@ async function main() {
   r = await S(Bs.shopId, Bs.cookie).put(`/products/${pid}/options`, { options: [{ name: 'X', values: ['1'] }] });
   r.status === 404 ? ok('shop B PUT options SP shop A → 404 (cô lập)') : bad('rò chéo shop', r.raw);
 
+  // ── Biến thể ĐANG GIỮ CHỖ cho đơn sống KHÔNG được đem tái dùng cho tổ hợp mới ──
+  // Nhánh tái dùng hạ `on_hand = reserved` — đúng khi đọc riêng (phần bán được về 0, vẫn
+  // giữ chỗ). Nhưng đường nhả chỗ lúc huỷ CHỈ hạ `reserved` → available bật lại thành số
+  // của tổ hợp CŨ, tức tổ hợp mới tự có hàng ma. Chỉ nổ ở lần đổi trục THỨ HAI: pool được
+  // dựng TRƯỚC khi xoá options nên lần đầu biến thể cũ mới chỉ thành mồ côi. Dựng lại: a11.
+  sect('5. Biến thể còn giữ chỗ KHÔNG bị tái dùng (chống tồn "sống lại")');
+  {
+    const pr = await a.post('/products', { title: `Giu cho ${uniq()}`, slug: `gc-${uniq()}`, price_vnd: 100000, status: 'active', variants: [{ price_vnd: 100000 }] });
+    const gid = pr.json.id;
+    await a.put(`/products/${gid}/options`, { options: [{ name: 'Màu', values: ['Đỏ', 'Xanh'] }] });
+    const gv = (await a.get(`/products/${gid}`)).json.variants.find((v) => /Đỏ/.test(v.title ?? ''));
+    await a.post(`/variants/${gv.id}/inventory/adjust`, { delta: 10, reason: 'nhập' });
+    const od = await a.post('/orders', {
+      idempotency_key: `gc-${uniq()}`, payment_method: 'cod',
+      customer: { name: 'K', phone: '0912345678', address_line: 'x', province: 'Hà Nội' },
+      lines: [{ variant_id: gv.id, qty: 3 }] });
+    const gOid = od.json?.id ?? od.json?.order?.id;
+    const lvl = async () => (await owner.query('SELECT on_hand, reserved FROM inventory_levels WHERE variant_id=$1', [gv.id])).rows[0];
+    let L = await lvl();
+    od.status === 201 && Number(L.reserved) === 3 ? ok('dựng cảnh: 10 tồn, đơn giữ chỗ 3') : bad('không dựng được cảnh giữ chỗ', `${od.status} ${JSON.stringify(L)}`);
+
+    await a.put(`/products/${gid}/options`, { options: [{ name: 'Size', values: ['S', 'M'] }] });      // → mồ côi
+    await a.put(`/products/${gid}/options`, { options: [{ name: 'Chất liệu', values: ['Cotton', 'Len'] }] }); // → lần này pool mới đụng tới
+    const soTruc = Number((await owner.query('SELECT count(*)::int n FROM variant_option_values WHERE variant_id=$1', [gv.id])).rows[0].n);
+    soTruc === 0 ? ok('biến thể còn giữ chỗ KHÔNG bị tái dùng (vẫn mồ côi)') : bad('TÁI DÙNG biến thể đang giữ chỗ của đơn sống', `số trục=${soTruc}`);
+
+    await a.post(`/orders/${gOid}/cancel`, {});
+    L = await lvl();
+    const banDuoc = Number(L.on_hand) - Number(L.reserved);
+    // Mồ côi giữ tồn là bình thường; điều KHÔNG được phép là bán ra được.
+    const thu = await a.post('/orders', {
+      idempotency_key: `gc2-${uniq()}`, payment_method: 'cod',
+      customer: { name: 'K2', phone: '0912345678', address_line: 'x', province: 'Hà Nội' },
+      lines: [{ variant_id: gv.id, qty: 1 }] });
+    thu.status !== 201
+      ? ok(`huỷ đơn → mồ côi còn ${banDuoc} tồn nhưng KHÔNG đặt được (HTTP ${thu.status})`)
+      : bad('TỒN SỐNG LẠI: đặt được đơn cho biến thể không thuộc tổ hợp nào', `bán được ${banDuoc}`);
+  }
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

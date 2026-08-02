@@ -142,12 +142,44 @@ mỗi bút toán tiền-ra phải 403 `step_up_required` khi chưa xác thực, 
 khi xác thực (chốt hai đầu — cổng luôn-403 cũng là hỏng). Kèm một khẳng định về TRẢI NGHIỆM:
 thao tác thứ hai trong cùng cửa sổ không được hỏi lại mật khẩu.
 
-## Còn nợ (đã tìm ra, CHƯA kiểm chứng, CHƯA vá)
+## Hai nghi vấn kho — đúng cả hai, nhưng một cái hẹp hơn báo cáo
 
-Năm nghi vấn còn lại — **chưa cái nào được dựng lại**:
+### Tồn "sống lại" khi tái dùng biến thể — **đúng, chỉ nổ ở lần đổi trục THỨ HAI**
+
+Agent nói nhánh tái dùng hạ `on_hand = reserved`, rồi khi đơn giữ chỗ bị huỷ thì đường nhả
+chỉ hạ `reserved` → available bật lại. Lập luận đúng. Nhưng lần dựng đầu của tôi **đo nhầm**:
+biến thể cũ chỉ thành **mồ côi**, chưa hề đi qua đường tái dùng — vì `pool` được dựng ở bước
+(2) **trước** `DELETE FROM product_options` ở bước (3), nên lúc đó chúng vẫn còn
+`variant_option_values`. Đúng như chú thích trong mã: *"gồm mồ côi lần sửa trước"*.
+
+Đổi trục **hai lần** mới dựng lại được (`a11`): nhập 10 màu Đỏ, khách đặt 3, đổi trục hai
+lần → biến thể thành "Cotton" với `on_hand=3`; huỷ đơn → **3 cái "Cotton" ma** bán được.
+
+**Vá:** loại biến thể đang giữ chỗ (`reserved > 0`) khỏi pool. Hai lý do cùng gốc: (a) tồn
+sống lại; (b) `order_lines` trỏ theo `variant_id` — tái dùng chính id đó cho tổ hợp khác
+nghĩa là **kiện hàng khách đang đợi âm thầm thành mặt hàng khác**. Tạo biến thể mới thay vì
+tái dùng là rẻ và không có mặt trái.
+
+> Kiểm luôn cả điều mình đang giả định: mồ côi giữ tồn có **thật sự** không bán được không?
+> Đặt thử đơn thẳng vào nó → **422 "sản phẩm không tồn tại hoặc ngừng bán"**. Có, thật.
+
+### Hoàn tiền đơn giao-một-phần không nhả chỗ giữ — **đúng nguyên văn, kèm ngõ cụt**
+
+`refundOrder` chỉ nhả reserve ở `pending`/`confirmed`. Đơn tách vận đơn bỏ dở nằm ở
+`shipped` và vẫn giữ chỗ phần chưa gửi. Dựng lại (`a12`): gửi 3/5 → hoàn toàn bộ → đơn
+`refunded` mà **vẫn giữ 2 suất**; rồi `markReturnedBomb` — nơi duy nhất biết nhả phần chưa
+gửi — trả **409 "chỉ hoàn-về đơn ĐANG GIAO"**. Chỗ giữ kẹt vĩnh viễn: hàng nằm trong kho mà
+không bán được, không thao tác nào gỡ ra.
+
+**Vá:** nhả `qty − shipped_qty` cho cả `shipped`. **Không** restock phần đã gửi — hoàn tiền
+không có nghĩa hàng đã về kho; hàng về thì dùng "Đánh dấu hoàn về" / đổi-trả.
+
+> Lại một lần tôi đo sai trước khi đo đúng: mốc `reserved` lấy **trước khi gửi** nên phép trừ
+> gộp cả hai nguyên nhân (gửi hàng đã trừ 2, lệnh hoàn trừ 1) và báo đỏ oan. Mốc phải lấy
+> **sau khi gửi** thì mới cô lập được tác động của lệnh hoàn.
+
+## Còn nợ (đã tìm ra, CHƯA kiểm chứng, CHƯA vá)
 
 | Mảng | Vị trí | Nội dung |
 |---|---|---|
-| kho | `apps/seller/src/catalog.js:750` | tái dùng biến thể: tồn cũ "sống lại" khi đơn giữ chỗ huỷ |
-| giao hàng | `apps/seller/src/orders.js:650` | hoàn tiền đơn giao một phần không nhả reserve |
 | khuyến mãi | `apps/seller/src/orders.js:717` | đơn từ bot Messenger tính ship bằng công thức phẳng |

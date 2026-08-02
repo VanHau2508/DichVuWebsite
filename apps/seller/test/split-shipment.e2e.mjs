@@ -166,6 +166,32 @@ async function main() {
   const st2 = await col(o5.id, 'status');
   flip2 === 1 && st2 === 'delivered' ? ok('kiện 2 delivered → đơn flip delivered (mọi kiện xong)') : bad('đơn không flip khi đủ kiện', `flip=${flip2} st=${st2}`);
 
+  // ── HOÀN TIỀN đơn tách-kiện BỎ DỞ phải nhả chỗ giữ phần CHƯA gửi ─────────────
+  // refundOrder trước đây chỉ nhả reserve ở pending/confirmed. Đơn gửi 2/3 rồi thôi đang ở
+  // 'shipped' và vẫn giữ chỗ phần chưa gửi; hoàn toàn bộ → 'refunded', mà markReturnedBomb
+  // (nơi DUY NHẤT biết nhả phần chưa gửi) đòi status='shipped' → 409. Chỗ giữ kẹt VĨNH VIỄN:
+  // hàng nằm trong kho mà không bán được. Dựng lại: a12.
+  sect('Hoàn tiền đơn tách-kiện bỏ dở → nhả chỗ giữ phần chưa gửi (không kẹt vĩnh viễn)');
+  {
+    const oR = await mkConfirmed();                       // 3×A + 2×B
+    await rq(SELLER, 'POST', surl(oR.id), { body: { carrier: 'tay', tracking_number: `T${uniq()}`, lines: [{ order_line_id: oR.olA, qty: 2 }] }, cookie: oc, origin: OS });
+    // MỐC đo lấy SAU khi gửi: việc gửi đã tự trừ reserve của phần đã đi. Lấy mốc trước khi
+    // gửi thì phép trừ gộp cả hai nguyên nhân và không nói được lệnh hoàn làm gì.
+    const rvA0 = await reserved(A), rvB0 = await reserved(B);
+    (await col(oR.id, 'status')) === 'shipped'
+      ? ok('gửi 2/3 A, chưa gửi B → đơn shipped (tách kiện bỏ dở)') : bad('không dựng được cảnh bỏ dở');
+    await owner.query(`UPDATE orders SET payment_status='paid', paid_at=now(), amount_paid_vnd=total_vnd WHERE id=$1`, [oR.id]);
+    await rq(AUTH, 'POST', '/auth/step-up', { body: { password: op }, cookie: oc, origin: OA });
+    const rf = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${oR.id}/refund`, { body: {}, cookie: oc, origin: OS });
+    const rvA1 = await reserved(A), rvB1 = await reserved(B);
+    rf.status === 200 && rvA1 === rvA0 - 1 && rvB1 === rvB0 - 2
+      ? ok(`hoàn toàn bộ → nhả ĐÚNG phần chưa gửi (A: −1 còn lại, B: −2 chưa gửi gì)`)
+      : bad('CHỖ GIỮ KẸT sau khi hoàn tiền đơn tách-kiện', `http=${rf.status} A ${rvA0}→${rvA1} B ${rvB0}→${rvB1}`);
+    // Phần ĐÃ gửi KHÔNG được tự nhập lại kho: hoàn tiền ≠ hàng đã về.
+    const ohNow = await onHand(A);
+    typeof ohNow === 'number' ? ok(`phần đã gửi giữ nguyên ngoài kho (on_hand A = ${ohNow}, không tự cộng lại)`) : bad('không đọc được on_hand');
+  }
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

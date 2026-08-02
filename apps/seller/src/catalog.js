@@ -697,9 +697,20 @@ async function saveProductOptions(res, ctx, body, params) {
         WHERE v.product_id = $1 GROUP BY v.id`, [productId]);
     const byCombo = new Map(cur.rows.map((r) => [r.ckey, r.id]));
     // (2) Pool biến thể CHƯA map (gồm biến thể phẳng gốc) — tái dùng trước khi tạo mới.
+    // LOẠI biến thể ĐANG GIỮ CHỖ cho đơn còn sống (reserved > 0). Hai lý do, cùng một gốc:
+    //  a) TỒN SỐNG LẠI. Nhánh tái dùng hạ `on_hand = reserved` (phần bán được về 0, vẫn giữ
+    //     chỗ — đúng khi đọc riêng). Nhưng đường nhả chỗ lúc huỷ/hết hạn CHỈ hạ `reserved`,
+    //     không đụng `on_hand` → available bật lại thành số cũ. Tổ hợp mới tự nhiên có hàng
+    //     bán được bằng đúng số của tổ hợp CŨ → oversell. Dựng lại được ở a11: nhập 10 màu
+    //     Đỏ, khách đặt 3, đổi trục hai lần → "Cotton" tự có 3 cái bán được.
+    //  b) ĐƠN ĐANG CHỜ BỊ ĐỔI RUỘT. order_lines trỏ theo variant_id; tái dùng chính id đó
+    //     cho tổ hợp khác nghĩa là kiện hàng khách đang đợi âm thầm thành mặt hàng khác.
+    // Tạo biến thể MỚI thay vì tái dùng là rẻ (một dòng) và không có mặt trái nào.
     const pool = (await c.query(
       `SELECT id FROM variants v WHERE v.product_id = $1
-         AND NOT EXISTS (SELECT 1 FROM variant_option_values x WHERE x.variant_id = v.id) ORDER BY position`, [productId])).rows.map((r) => r.id);
+         AND NOT EXISTS (SELECT 1 FROM variant_option_values x WHERE x.variant_id = v.id)
+         AND NOT EXISTS (SELECT 1 FROM inventory_levels il WHERE il.variant_id = v.id AND il.reserved > 0)
+        ORDER BY position`, [productId])).rows.map((r) => r.id);
     // SKU đang dùng trong shop → sinh SKU mới KHÔNG đụng (INSERT lỗi 23505 sẽ hỏng cả tx).
     const skuSet = new Set((await c.query(`SELECT sku FROM variants`)).rows.map((r) => r.sku));
     const genSku = (base) => {
@@ -747,7 +758,9 @@ async function saveProductOptions(res, ctx, body, params) {
         variantId = pool.shift();
         await c.query(`UPDATE variants SET title = $2, position = $3, price_vnd = $4, weight_gram = NULL, compare_at_vnd = NULL WHERE id = $1`, [variantId, title, ci, basePrice]);
         await c.query(`DELETE FROM variant_costs WHERE variant_id = $1`, [variantId]);
-        // Hạ on_hand = reserved (available về 0; GIỮ reserve của đơn đang chờ — CHECK reserved<=on_hand).
+        // Tồn về 0: tổ hợp MỚI chưa có hàng nào. Pool đã loại biến thể còn giữ chỗ (xem (2))
+        // nên reserved ở đây luôn 0 — vẫn viết `on_hand = reserved` để CHECK reserved<=on_hand
+        // không bao giờ vỡ dù pool có đổi luật sau này.
         const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1`, [variantId])).rows[0];
         if (lvl && Number(lvl.on_hand) > Number(lvl.reserved)) {
           await c.query(`UPDATE inventory_levels SET on_hand = reserved, updated_at = now() WHERE variant_id = $1`, [variantId]);

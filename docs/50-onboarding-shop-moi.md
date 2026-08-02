@@ -306,3 +306,58 @@ thì nó báo `0/6 có tồn` và đỏ ngay (đã kiểm bằng mutation).
 
 Kiểm chứng: `admin-products` 63 · `catalog` 42 · `variants` 34 · `inventory` 11 ·
 `admin-inventory-products` 40 — xanh.
+
+---
+
+## Đợt 6 — NHÌN bằng ảnh chụp thật (2026-08-03)
+
+Đợt 4 đo bằng `getBoundingClientRect`/`elementFromPoint` nhưng **chưa từng nhìn một khung hình
+nào**. Đợt này chụp thật ở 375×812. Kết quả: đo và nhìn bắt **hai lớp lỗi khác nhau**.
+
+### 4 lỗi chỉ NHÌN mới thấy
+
+| Lỗi | File | Ghi chú |
+|---|---|---|
+| Tên thương hiệu rớt 2 dòng (`Nền` / `Tảng.`), dấu chấm nhận diện bị tách | `site.js` | Không tràn ngang, không chữ bị cắt ⇒ mọi phép đo đều XANH |
+| "Đăng nhập" 17×17 (≤520px giấu chữ, còn mỗi icon) · 19 link chân trang ×24 | `site.js` | Bản vá vùng bấm đợt 4 nằm ở `theme.js`, KHÔNG với tới site công ty |
+| Tiêu đề Việt xuống 2 dòng **đụng nhau 1px** | `pages.js` admin | Xem gốc rễ dưới |
+| Ô mã giảm giá cắt còn "MÃ G" · nút "Cập nhật" rớt 2 dòng | `pages.js` checkout | Đường tiền |
+
+### Gốc rễ đáng nhớ
+
+**line-height bằng px thì mọi lần ghi đè CỠ CHỮ đều làm tỉ lệ tụt:**
+
+| | cỡ chữ | line-height | tỉ lệ |
+|---|---|---|---|
+| `h1` | 28px | 36px | 1,29 |
+| `h1` mobile | 22px | 30px | 1,36 |
+| `.center h1` | 24px | *kế thừa 30px* | **1,25** |
+| `.dash-hero h1` | 27,2px | *kế thừa 30px* | **1,10** |
+
+Chữ Việt có dấu **chồng** (ị, ệ, ộ, ẩ) cần ~1,35. Đổi sang **không đơn vị** → tỉ lệ tự đúng ở
+mọi chỗ ghi đè, không phải đi vá từng luật.
+
+**Form mã giảm giá dùng lại `class="qty"`** — class đó sinh ra cho ô SỐ LƯỢNG nên ép
+`width:70px` (đúng cho một con số). Ô nhập mã thừa hưởng luôn ⇒ chữ gợi ý bị cắt, khách
+tưởng là ô nhập số.
+
+### 5 lần suýt báo nhầm — ĐO LẠI nên không báo
+
+Nút "Bắt đầu miễn phí" tưởng cắt trái (thật: `24→181`, nằm gọn) · `/lien-he` tưởng thiếu thẻ
+(thật: có ở `y=825`, dưới mép màn hình) · giá trong giỏ tưởng tràn thẻ · icon Đăng nhập tưởng
+dính chữ (thật: cách 10px, `deNhau: không đè`) · nút chọn cách trả tiền tưởng 13×13.
+
+**Bốn cái đầu là ảo giác do ảnh bị THU NHỎ** (chụp 469px cho viewport 375px).
+**Cái thứ năm là đo sai chỗ**: đo `<input>` thay vì `<label>` bọc ngoài (294×52).
+
+### Quy tắc rút ra
+
+> **Ảnh chụp giỏi chỉ CHỖ ĐÁNG NGỜ. Chỉ phép đo mới được KẾT LUẬN.**
+> Ngược lại cũng đúng: phép đo không bao giờ chỉ ra "cái này trông như hỏng".
+> Thiếu một trong hai là mù một nửa.
+
+### Kiểm chứng
+
+Cổng đầy đủ trước khi vá: **97 mục xanh · 91/91 bộ e2e · 2.225 khẳng định · 0 đỏ**.
+Sau khi vá: `storefront` 160 · `checkout` 22 · `buyer-flow` 28 · `promo-checkout` 13 ·
+`admin-flow` 25 · `preview` 23 — xanh.

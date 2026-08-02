@@ -29,10 +29,15 @@ const STYLE = `${FONTFACE}
 *{box-sizing:border-box}html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}body{margin:0;font-family:'Be Vietnam Pro',system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--surf);font-size:14px;line-height:1.45;letter-spacing:0;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 ::selection{background:color-mix(in srgb,var(--pri) 24%,transparent)}
 a{color:var(--pri);text-decoration:none;transition:color .15s}a:hover{color:var(--prid);text-decoration:underline;text-underline-offset:2px}
-h1{font-size:28px;font-weight:700;letter-spacing:0;line-height:36px;text-wrap:balance;margin:0 0 12px}
-h2{font-size:20px;margin:0 0 12px;font-weight:600;letter-spacing:0;line-height:28px;text-wrap:balance}
-h3{font-size:16px;font-weight:600;margin:0 0 8px;letter-spacing:0;line-height:24px}
-@media(max-width:767px){h1{font-size:22px;line-height:30px}}
+/* line-height KHÔNG ĐƠN VỊ, không phải px. Chữ Việt có dấu CHỒNG (ị, ệ, ộ, ẩ) nên cần
+   ~1,35 lần cỡ chữ; dưới ngưỡng đó tiêu đề xuống 2 dòng là dấu nặng dòng trên đâm vào dấu
+   mũ dòng dưới. Dùng px thì mọi luật ghi đè CỠ CHỮ (.center h1 24px, .dash-hero h1 27,2px)
+   vẫn kế thừa line-height cũ ⇒ tỉ lệ tụt còn 1,25 và 1,10. Đo ở trình duyệt thật: hai dòng
+   ĐỤNG NHAU 1px. Không đơn vị thì tỉ lệ tự đúng ở mọi chỗ ghi đè. */
+h1{font-size:28px;font-weight:700;letter-spacing:0;line-height:1.35;text-wrap:balance;margin:0 0 12px}
+h2{font-size:20px;margin:0 0 12px;font-weight:600;letter-spacing:0;line-height:1.4;text-wrap:balance}
+h3{font-size:16px;font-weight:600;margin:0 0 8px;letter-spacing:0;line-height:1.5}
+@media(max-width:767px){h1{font-size:22px}}
 .authwrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:radial-gradient(52% 42% at 12% 6%,color-mix(in srgb,var(--brand) 11%,transparent),transparent 64%),radial-gradient(46% 40% at 90% 16%,color-mix(in srgb,var(--brand2) 11%,transparent),transparent 62%),var(--surf)}
 .center{width:100%;max-width:428px;margin:40px auto}
 .authwrap .center{margin:0}

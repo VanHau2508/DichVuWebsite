@@ -151,6 +151,27 @@ footer{background:var(--surf);border-top:1px solid var(--bd);padding:60px 0 30px
 .ft-bottom a{color:var(--soft)}.ft-bottom a:hover{color:var(--pri)}
 @media(max-width:960px){.ft-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:680px){.sec{padding:56px 0}.ft-grid{grid-template-columns:1fr;gap:26px}.ft-bottom{justify-content:center;text-align:center}}
+
+/* ── VÙNG BẤM trên điện thoại (site công ty) ─────────────────────────────────
+   Cùng lớp lỗi đã vá ở theme.js, nhưng trang GIỚI THIỆU NỀN TẢNG dùng file này nên bản vá
+   kia không với tới — và đây lại là trang ĐẦU TIÊN một chủ shop tiềm năng nhìn thấy.
+   Đo ở 375×812 bằng engine trình duyệt thật: link "Đăng nhập" ở header còn 17×17 (vì ≤520px
+   giấu chữ, chỉ còn icon), 19 link chân trang cao 24px. Ngón tay cần ~44px.
+   Chỉ nới vùng bấm, không phóng to phần nhìn thấy. */
+@media(max-width:820px){
+  .nav-login{min-width:44px;min-height:44px;justify-content:center}
+  .ft-col a,.ft-col span{min-height:44px;margin-bottom:2px}
+  .ft-bottom a{display:inline-flex;align-items:center;min-height:44px;padding:0 6px}
+}
+/* Tên thương hiệu ở header KHÔNG được xuống dòng.
+   Nhìn bằng mắt ở 375px mới thấy: "Nền Tảng." rớt thành hai dòng ("Nền" / "Tảng."), header
+   phình lên 67px và dấu chấm — vốn là nét nhận diện — bị tách ra trông như lỗi hiển thị.
+   Không phép đo nào trong bộ kiểm toán bắt được: không tràn ngang, không chữ bị cắt, vùng
+   bấm vẫn đủ. Chỉ ẢNH CHỤP mới lộ. Cùng lớp bug đã vá cho .brand ở theme.js, khác file. */
+@media(max-width:520px){
+  .nav .logo{white-space:nowrap;font-size:1.14rem;gap:7px;min-width:0}
+  .nav .logo .mk{width:26px;height:26px;flex:none}
+}
 a:focus-visible,.btn:focus-visible,summary:focus-visible,.ind:focus-visible,details:focus-visible{outline:3px solid var(--pri);outline-offset:2px;border-radius:8px}
 .skip{position:absolute;left:12px;top:-70px;z-index:60;background:var(--brand);color:#fff;padding:11px 18px;border-radius:10px;font-weight:600;transition:top .16s}
 .skip:focus{top:12px}

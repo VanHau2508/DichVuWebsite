@@ -83,8 +83,12 @@ h2{font-size:1rem;margin:0 0 .7em;font-weight:700;letter-spacing:-.01em;color:va
 label{display:block;font-size:.88rem;margin:12px 0 5px;font-weight:600;color:var(--soft)}
 input,textarea,select{width:100%;padding:11px 13px;border:1.5px solid var(--bd);border-radius:var(--r);font-size:1rem;font-family:inherit;color:var(--ink);background:var(--card);transition:border-color .15s,box-shadow .15s}
 input:focus,textarea:focus,select:focus{outline:none;border-color:var(--pri);box-shadow:0 0 0 3px color-mix(in srgb,var(--pri) 20%,transparent)}
+/* .qty sinh ra cho ô SỐ LƯỢNG (70px là đúng cho một con số). Form MÃ GIẢM GIÁ dùng lại
+   cùng class nên thừa hưởng luôn 70px ⇒ chữ gợi ý 'Mã giảm giá' bị cắt còn 'MÃ G', khách
+   nhìn tưởng ô nhập số. Tách riêng ô [name=code]: cho nó nở hết chỗ trống, canh trái. */
 .qty{display:flex;gap:8px;align-items:center}.qty input{width:70px;text-align:center}
-.qtybtn{width:auto;padding:9px 14px;border:1.5px solid var(--bd);background:var(--card);border-radius:var(--r);font-size:.9rem;font-weight:600;cursor:pointer;text-decoration:none;text-align:center;color:var(--ink);transition:border-color .15s,color .15s,background .15s}.qtybtn:hover{background:var(--wash);border-color:color-mix(in srgb,var(--pri) 30%,var(--bd))}
+.qty input[name="code"]{width:auto;flex:1 1 auto;min-width:0;text-align:left}
+.qtybtn{width:auto;white-space:nowrap;padding:9px 14px;border:1.5px solid var(--bd);background:var(--card);border-radius:var(--r);font-size:.9rem;font-weight:600;cursor:pointer;text-decoration:none;text-align:center;color:var(--ink);transition:border-color .15s,color .15s,background .15s}.qtybtn:hover{background:var(--wash);border-color:color-mix(in srgb,var(--pri) 30%,var(--bd))}
 .pay label{display:flex;gap:10px;align-items:center;font-weight:500;padding:14px;border:1.5px solid var(--bd);border-radius:var(--r);margin:8px 0;cursor:pointer;background:var(--card);transition:border-color .15s,box-shadow .15s,background .15s}
 .pay label:hover{border-color:color-mix(in srgb,var(--pri) 40%,var(--bd))}
 .pay label:has(input:checked){border-color:var(--pri);background:var(--wash);box-shadow:0 0 0 3px color-mix(in srgb,var(--pri) 15%,transparent)}

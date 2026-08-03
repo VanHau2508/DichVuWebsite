@@ -794,7 +794,19 @@ worker.on('failed', (job, err) => log('warn', 'email_failed', { id: job?.id, att
 const DON_QUA_HAN_SQL = `status = 'pending' AND (
       (payment_method = 'qr'  AND payment_status = 'unpaid' AND created_at < now() - ($1 || ' minutes')::interval)
    OR (payment_method = 'cod' AND payment_status = 'unpaid' AND created_at < now() - ($2 || ' days')::interval)
-    )`;
+    )
+    -- ĐÃ NHẬN ĐỒNG NÀO THÌ KHÔNG TỰ HUỶ (0136).
+    -- 'payment_status='unpaid'' KHÔNG có nghĩa "chưa trả đồng nào": webhook cộng dồn mọi giao
+    -- dịch và CHỈ đụng bảng orders khi ĐỦ tiền (payment/server.js:202-215) — chú thích ở đó
+    -- viết rõ "khách có thể chuyển nhiều lần". Chuyển thiếu/chuyển làm hai lượt thì tiền đã
+    -- vào payment_transactions mà orders vẫn 'unpaid', amount_paid_vnd vẫn 0. Không có mệnh
+    -- đề này thì 30 phút sau ta huỷ đơn + nhả chỗ + gửi email "đã tự huỷ" cho khách TRONG KHI
+    -- tiền của họ đang nằm trong tài khoản shop, và không cảnh báo nào kêu (hàng đợi đối soát
+    -- chỉ nhận giao dịch KHÔNG KHỚP đơn, còn đây là khớp-nhưng-thiếu).
+    -- Đơn đó nay nằm lại danh sách chờ để người bán tự xử. Đánh đổi CHẤP NHẬN: giữ chỗ lâu hơn.
+    -- KHÔNG ảnh hưởng đơn COD: thu tiền mặt không ghi payment_transactions, nên tự-huỷ-7-ngày
+    -- vẫn chạy y như cũ.
+    AND NOT EXISTS (SELECT 1 FROM payment_transactions pt WHERE pt.order_id = orders.id)`;
 
 async function sweepExpired() {
   if (!expiryDb) return 0;

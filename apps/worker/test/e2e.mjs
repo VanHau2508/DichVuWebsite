@@ -267,6 +267,40 @@ async function main() {
   (await reserved(vid)) === resBeforeFresh && (await orderStatus(oidq2)) === 'pending'
     ? ok('đơn QR còn mới KHÔNG bị hết hạn (giữ reserve + pending)') : bad('sweep hết hạn nhầm đơn mới');
 
+  // ── ĐƠN ĐÃ NHẬN MỘT PHẦN TIỀN: KHÔNG được tự huỷ ────────────────────────────
+  // `payment_status='unpaid'` KHÔNG có nghĩa "chưa trả đồng nào": webhook cộng dồn mọi giao
+  // dịch và CHỈ đụng bảng orders khi ĐỦ tiền — hệ thống LƯỜNG TRƯỚC việc khách chuyển làm
+  // nhiều lần. Chuyển thiếu thì tiền đã vào payment_transactions mà orders vẫn 'unpaid'.
+  // Không có chốt chặn, 30 phút sau ta huỷ đơn + nhả chỗ + gửi email "đã tự huỷ" TRONG KHI
+  // tiền của khách đang nằm trong tài khoản shop, và KHÔNG cảnh báo nào kêu. (0136)
+  {
+    const o4 = await placeOrder(A, vid, `part-${uniq()}@kh.vn`, 2);
+    const oid4 = await orderIdOf(A.shopId, o4.orderNum);
+    const tong = Number((await owner.query(`SELECT total_vnd FROM orders WHERE id=$1`, [oid4])).rows[0].total_vnd);
+    await owner.query(`UPDATE orders SET payment_method='qr', payment_status='unpaid', status='pending', created_at = now() - interval '1 hour' WHERE id=$1`, [oid4]);
+    // Khách chuyển THIẾU: ghi giao dịch thật nhưng chưa đủ tiền → orders KHÔNG đổi (đúng như
+    // webhook làm khi cumulative < total).
+    await owner.query(
+      `INSERT INTO payment_transactions (shop_id, order_id, provider, provider_event_id, amount_vnd, status, raw)
+       VALUES ($1, $2, 'sepay', $3, $4, 'underpaid', '{}'::jsonb)`,
+      [A.shopId, oid4, `part-${uniq()}`, Math.floor(tong / 2)]);
+    const resTruoc4 = await reserved(vid);
+    await fetch(`${WORKER}/internal/expire-sweep`, { method: 'POST' });
+    const resSau4 = await reserved(vid), st4 = await orderStatus(oid4);
+    st4 === 'pending' && resSau4 === resTruoc4
+      ? ok(`đơn đã nhận ${Math.floor(tong / 2)}đ (chưa đủ) → KHÔNG tự huỷ, giữ chỗ nguyên (nằm lại cho shop xử)`)
+      : bad('HUỶ ĐƠN ĐÃ NHẬN TIỀN: tiền khách nằm trong tài khoản shop mà đơn biến mất', `status=${st4} reserved ${resTruoc4}→${resSau4}`);
+    // Và đơn KHÔNG có giao dịch nào thì vẫn tự huỷ như cũ — chốt chặn không được làm liệt
+    // toàn bộ cơ chế chống đơn ảo.
+    const o5 = await placeOrder(A, vid, `nopay-${uniq()}@kh.vn`, 1);
+    const oid5 = await orderIdOf(A.shopId, o5.orderNum);
+    await owner.query(`UPDATE orders SET payment_method='qr', payment_status='unpaid', status='pending', created_at = now() - interval '1 hour' WHERE id=$1`, [oid5]);
+    await fetch(`${WORKER}/internal/expire-sweep`, { method: 'POST' });
+    (await orderStatus(oid5)) === 'cancelled'
+      ? ok('đơn CHƯA nhận đồng nào vẫn tự huỷ như cũ (chống đơn ảo còn nguyên)')
+      : bad('chốt chặn làm liệt cả cơ chế tự huỷ');
+  }
+
   // ── HAI LƯỢT QUÉT CHỒNG NHAU: nhả giữ chỗ ĐÚNG MỘT LẦN ──────────────────────
   // Vòng quét giờ commit TỪNG ĐƠN (trước đây gói cả lô trong một transaction, nên một lỗi
   // bất kỳ là 200 đơn không được nhả chỗ). Commit sớm = nhả khoá sớm, nên chốt chặn duy nhất

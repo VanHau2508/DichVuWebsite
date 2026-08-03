@@ -263,20 +263,38 @@ async function sepayWebhook(req, res, body) {
         // bằng regex riêng ở đây thay vì nới REF_RE dùng chung: nới regex của đường tiền
         // ĐƠN HÀNG để phục vụ một luồng khác là mở rộng bề mặt sai ở chỗ đắt nhất.
         const bref = /SUB[0-9A-F]{10}/.exec(ev.content ?? '')?.[0] ?? null;
-        if (!bref) { log('warn', 'billing_unmatched', { reason: 'no_ref', eventId: ev.eventId }); return { matched: false, reason: 'no_ref' }; }
+        // MỌI nhánh trượt bên dưới ĐỀU phải để lại vết: tiền đã nằm trong tài khoản nền
+        // tảng rồi. Trước đây chúng chỉ log warn rồi return — không hàng đợi, không cảnh
+        // báo (sweepMoneyAlerts đếm từ `unmatched_transfers`, bảng của tiền-KHÁCH, mà nhánh
+        // này return trước khi tới persistUnmatched và cũng chưa hề set app.shop_id).
+        // Kết cục: shop chuyển tiền xong vẫn bị khoá sau 7 ngày, không ai biết vì sao. (0135)
+        const nuot = async (reason, extra = {}) => {
+          log('warn', 'billing_unmatched', { reason, ref: bref, amount: ev.amount, ...extra });
+          await c.query(
+            `INSERT INTO platform_unmatched_transfers
+               (provider, provider_event_id, amount_vnd, content, received_account, reason, shop_id, pay_ref, raw)
+             VALUES ('sepay', $1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (provider, provider_event_id) DO NOTHING`,
+            [ev.eventId, ev.amount, ev.content ?? null, ev.rcvAccount || null, reason, extra.shop_id ?? null, bref, body],
+          );
+          return { matched: false, reason };
+        };
+        if (!bref) return nuot('no_ref');
         const ch = (await c.query(
           `SELECT id, shop_id, amount_vnd, status FROM billing_charges WHERE pay_ref = $1 FOR UPDATE`, [bref],
         )).rows[0];
-        if (!ch) { log('warn', 'billing_unmatched', { reason: 'charge_not_found', ref: bref, amount: ev.amount }); return { matched: false, reason: 'charge_not_found' }; }
+        if (!ch) return nuot('charge_not_found');
         // Trả TRÙNG (SePay gửi lại, hoặc shop chuyển hai lần): đã paid thì thôi, không
         // đánh dấu lại. Việc cộng hạn nằm ở worker và cũng chỉ chạy một lần (applied_at).
+        // KHÔNG vào hàng đợi: SePay gửi lại cùng eventId là chuyện thường, không phải tiền lạc.
         if (ch.status === 'paid') return { matched: true, already: true, charge_id: ch.id };
-        if (ch.status !== 'pending') { log('warn', 'billing_unmatched', { reason: 'charge_' + ch.status, ref: bref }); return { matched: false, reason: 'charge_' + ch.status }; }
-        // TRẢ THIẾU thì KHÔNG cộng hạn. Hoá đơn giữ nguyên pending để shop thấy chưa xong,
-        // và log để người vận hành liên hệ — cộng hạn theo số tiền thiếu là tự mất tiền.
+        if (ch.status !== 'pending') return nuot('charge_' + ch.status, { shop_id: ch.shop_id });
+        // TRẢ THIẾU thì KHÔNG cộng hạn. Hoá đơn giữ nguyên pending để shop thấy chưa xong —
+        // cộng hạn theo số tiền thiếu là tự mất tiền. Số tiền THIẾU đó vẫn đã về tài khoản
+        // nền tảng, nên vào hàng đợi để người vận hành liên hệ shop (không có cộng dồn:
+        // chuyển bù cũng sẽ thiếu tiếp — xem docs/55 phần "còn để lại").
         if (Number(ev.amount) < Number(ch.amount_vnd)) {
-          log('warn', 'billing_amount_short', { ref: bref, got: ev.amount, want: Number(ch.amount_vnd), shop_id: ch.shop_id });
-          return { matched: false, reason: 'amount_short' };
+          return nuot('amount_short', { shop_id: ch.shop_id, want: Number(ch.amount_vnd) });
         }
         await c.query(`UPDATE billing_charges SET status = 'paid', paid_at = now() WHERE id = $1`, [ch.id]);
         log('info', 'billing_charge_paid', { charge_id: ch.id, shop_id: ch.shop_id, amount: ev.amount });

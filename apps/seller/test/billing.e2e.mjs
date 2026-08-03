@@ -66,9 +66,11 @@ async function makeShopOwner(staffCookie, slug) {
 }
 
 // SePay gửi gì: payload tối thiểu mà parseEvent của payment chấp nhận.
-const sepay = (token, { ref, amount, account }) => rq(PAYMENT, 'POST', '/webhooks/sepay', {
+// eventId: đặt TÊN cho giao dịch để tra lại đúng dòng trong hàng đợi đối soát, và để dựng
+// được ca "SePay gửi LẠI cùng sự kiện" (idempotency) — mặc định vẫn ngẫu nhiên như cũ.
+const sepay = (token, { ref, amount, account, eventId }) => rq(PAYMENT, 'POST', '/webhooks/sepay', {
   headers: { authorization: `Apikey ${token}` },
-  body: { id: Math.floor(Math.random() * 1e9), gateway: 'VCB', transactionDate: new Date().toISOString().slice(0, 19).replace('T', ' '),
+  body: { id: eventId ?? Math.floor(Math.random() * 1e9), gateway: 'VCB', transactionDate: new Date().toISOString().slice(0, 19).replace('T', ' '),
     accountNumber: account, transferType: 'in', transferAmount: amount, content: `CK ${ref}`, referenceCode: `FT${uniq()}` },
 });
 const billSweep = () => fetch(`${WORKER}/internal/billing-sweep`, { method: 'POST' }).then((r) => r.json()).catch(() => null);
@@ -246,6 +248,51 @@ async function main() {
     ? ok('vẫn nợ → nhịp cưỡng chế sau khoá lại được (không mù vĩnh viễn)')
     : bad('mở lại xong cưỡng chế MÙ với shop này');
 
+  sect('7e. Tiền shop trả nền tảng KHÔNG khớp → vào hàng đợi đối soát, không bốc hơi');
+  // Lỗ: nhánh tiền-thuê-bao của webhook return TRƯỚC persistUnmatched (và cũng chưa set
+  // app.shop_id nên không dùng được bảng của tiền-khách). Mọi lý do trượt chỉ đẻ MỘT DÒNG
+  // LOG; sweepMoneyAlerts đếm từ `unmatched_transfers` nên không bao giờ kêu. Tiền nằm
+  // trong tài khoản nền tảng, DB không vết, 7 ngày sau shop bị khoá vì "chưa trả". (0135)
+  const openQ = async () => Number((await owner.query(
+    `SELECT count(*)::int n FROM platform_unmatched_transfers WHERE resolved_at IS NULL`)).rows[0].n);
+  const rowOf = async (evId) => (await owner.query(
+    `SELECT reason, amount_vnd, shop_id, pay_ref FROM platform_unmatched_transfers WHERE provider_event_id=$1`, [evId])).rows[0];
+  await owner.query(`DELETE FROM platform_unmatched_transfers`);   // bộ khác có thể để lại
+
+  // (a) shop gõ THIẾU nội dung chuyển khoản → không dò ra mã.
+  const ev1 = `noref-${uniq()}`;
+  await sepay(PLAT_TOKEN, { ref: 'CHUYEN TIEN', amount: 299000, account: ACC, eventId: ev1 });
+  const r1 = await rowOf(ev1);
+  r1?.reason === 'no_ref' && Number(r1.amount_vnd) === 299000
+    ? ok('gõ thiếu nội dung CK → ghi hàng đợi (no_ref, 299.000đ)') : bad('no_ref bốc hơi', JSON.stringify(r1));
+
+  // (b) shop bấm "Tạo mã thanh toán" LẦN NỮA sau khi đã chuyển theo mã cũ → mã cũ bị huỷ.
+  const cu = await a.post('/billing/charge', { months: 1 });
+  await a.post('/billing/charge', { months: 3 });                  // huỷ mã cũ (billing.js:128)
+  const ev2 = `cancel-${uniq()}`;
+  await sepay(PLAT_TOKEN, { ref: cu.json.pay_ref, amount: Number(cu.json.amount_vnd), account: ACC, eventId: ev2 });
+  const r2 = await rowOf(ev2);
+  r2?.reason === 'charge_cancelled' && r2.shop_id === A.shopId
+    ? ok('đổi số tháng sau khi đã chuyển tiền → ghi hàng đợi kèm ĐÚNG shop') : bad('tiền theo mã đã huỷ bốc hơi', JSON.stringify(r2));
+
+  // (c) ngân hàng trừ phí → về thiếu vài nghìn.
+  const thieu = await a.post('/billing/charge', { months: 1 });
+  const ev3 = `short-${uniq()}`;
+  await sepay(PLAT_TOKEN, { ref: thieu.json.pay_ref, amount: Number(thieu.json.amount_vnd) - 3000, account: ACC, eventId: ev3 });
+  const r3 = await rowOf(ev3);
+  r3?.reason === 'amount_short' ? ok('về thiếu tiền → ghi hàng đợi (amount_short)') : bad('tiền về thiếu bốc hơi', JSON.stringify(r3));
+
+  // (d) SePay gửi LẠI cùng sự kiện → không đẻ dòng thứ hai.
+  const truocLap = await openQ();
+  await sepay(PLAT_TOKEN, { ref: 'CHUYEN TIEN', amount: 299000, account: ACC, eventId: ev1 });
+  (await openQ()) === truocLap ? ok('gửi lại cùng sự kiện → không nhân đôi dòng') : bad('hàng đợi nhân đôi khi SePay gửi lại');
+
+  // (e) và cảnh báo tiền PHẢI kêu — ngưỡng 1, không chờ 1 tiếng như tiền-khách.
+  const al = await fetch(`${WORKER}/internal/alert-sweep`, { method: 'POST' }).then((x) => x.json()).catch(() => null);
+  Number(al?.metrics?.plat_unmatched_open) >= 3
+    ? ok(`cảnh báo đếm được ${al.metrics.plat_unmatched_open} khoản chưa khớp cấp nền tảng`)
+    : bad('cảnh báo tiền MÙ với đường tiền nền tảng', JSON.stringify(al?.metrics ?? al));
+
   sect('8. MÀN HÌNH: chủ shop BẤM THẬT trên trang Gói dịch vụ');
   // Bài học cũ: nút "có mặt" không nói gì về việc bấm vào có chạy. Ở đây gửi form thật.
   const adm = async (method, path, form) => {
@@ -268,6 +315,29 @@ async function main() {
   // Màn hình lệch DB nghĩa là người bán chuyển số tiền khác số hệ thống chờ → không khớp.
   Number(dbCh?.months) === 6 && pg.body.includes(new Intl.NumberFormat('vi-VN').format(Number(dbCh.amount_vnd)))
     ? ok('số tiền + số tháng trên màn hình khớp DB') : bad(`màn hình lệch DB: ${JSON.stringify(dbCh)}`);
+
+  sect('9b. Console: người vận hành THẤY và ĐÓNG được khoản tiền lạc');
+  // Cảnh báo Telegram chỉ nói CÓ BAO NHIÊU. Không có màn hình thì không ai biết là gì, của
+  // shop nào, và không đóng lại được → cảnh báo kêu mãi rồi bị bỏ qua (tệ hơn không có).
+  const admStaff = async (method, path, form) => {
+    const h = { cookie: `__Host-session=${staff}` };
+    if (form) { h['content-type'] = 'application/x-www-form-urlencoded'; h.origin = OADM; }
+    const rr = await fetch(ADMIN + path, { method, headers: h, redirect: 'manual', body: form ? new URLSearchParams(form).toString() : undefined });
+    return { status: rr.status, body: await rr.text() };
+  };
+  const bp = await admStaff('GET', '/platform/billing');
+  /khoản tiền shop chuyển về CHƯA khớp/.test(bp.body) && /299\.000₫/.test(bp.body)
+    ? ok('màn Thu tiền hiện danh sách tiền lạc kèm số tiền') : bad('màn hình không hiện tiền lạc', bp.body.slice(0, 400));
+  /Nội dung chuyển khoản thiếu mã SUB/.test(bp.body)
+    ? ok('nói RÕ vì sao lạc bằng câu người thường đọc được') : bad('không giải thích lý do lạc');
+  const lacId = (await owner.query(
+    `SELECT id FROM platform_unmatched_transfers WHERE resolved_at IS NULL ORDER BY created_at LIMIT 1`)).rows[0]?.id;
+  const rr9 = await admStaff('POST', `/platform/billing/unmatched/${lacId}/resolve`, {});
+  const conLai = await openQ();
+  rr9.status === 200 && conLai === 2
+    ? ok(`bấm "Đã xử lý" → khoản đó đóng lại, còn ${conLai} khoản`) : bad('không đóng được khoản tiền lạc', `http=${rr9.status} còn=${conLai}`);
+  const lai = await admStaff('POST', `/platform/billing/unmatched/${lacId}/resolve`, {});
+  /đã xử lý rồi/.test(lai.body) ? ok('bấm lại lần nữa → báo đã xử lý rồi (không ghi đè người xử)') : bad('đóng hai lần lọt', lai.body.slice(0, 200));
 
   sect('9. Console nền tảng: màn cấu hình thu tiền');
   const cons = await fetch(`${ADMIN}/platform/billing`, { headers: { cookie: `__Host-session=${staff}` }, redirect: 'manual' });

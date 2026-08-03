@@ -2077,7 +2077,7 @@ async function postAlert(text, metrics, severity) {
 }
 
 async function sweepMoneyAlerts() {
-  const m = { unmatched_open: 0, unmatched_old: 0, outbox_backlog: 0, email_failed: 0 };
+  const m = { unmatched_open: 0, unmatched_old: 0, plat_unmatched_open: 0, outbox_backlog: 0, email_failed: 0 };
   if (expiryDb) {
     try {
       const r = (await expiryDb.query(`SELECT
@@ -2086,6 +2086,14 @@ async function sweepMoneyAlerts() {
         FROM unmatched_transfers`)).rows[0];
       m.unmatched_open = r.open; m.unmatched_old = r.old;
     } catch (e) { log('error', 'alert_unmatched_error', { message: e.message }); }
+    // Tiền SHOP TRẢ CHO NỀN TẢNG không khớp (0135). Đếm RIÊNG vì hậu quả khác hẳn: tiền
+    // khách trả shop lạc thì shop tự đối soát được; tiền này lạc thì shop đã trả rồi vẫn bị
+    // KHOÁ sau 7 ngày ân hạn, và chỉ người vận hành nền tảng gỡ được. NGƯỠNG 1 — một dòng
+    // đã là một shop đang mất tiền oan, không có "mức nhiễu chấp nhận được".
+    try {
+      m.plat_unmatched_open = Number((await expiryDb.query(
+        `SELECT count(*)::int n FROM platform_unmatched_transfers WHERE resolved_at IS NULL`)).rows[0].n);
+    } catch (e) { log('error', 'alert_plat_unmatched_error', { message: e.message }); }
   }
   try {
     m.outbox_backlog = Number((await db.query(
@@ -2112,6 +2120,9 @@ async function sweepMoneyAlerts() {
 
   const breaches = [];
   if (m.unmatched_old >= ALERT_UNMATCHED_MAX) breaches.push(`${m.unmatched_old} giao dịch tiền CHƯA KHỚP quá 1h (tiền về nhưng chưa vào đơn — kiểm hàng đợi đối soát)`);
+  // NGƯỠNG 1, KHÔNG chờ 1 tiếng như tiền-khách: mỗi dòng ở đây là một shop đã chuyển tiền
+  // thuê bao mà hệ thống không ghi nhận — để lâu là shop bị khoá oan sau ân hạn (0135).
+  if (m.plat_unmatched_open >= 1) breaches.push(`${m.plat_unmatched_open} khoản SHOP TRẢ NỀN TẢNG chưa khớp (tiền đã về tài khoản nhưng KHÔNG vào hoá đơn nào — shop sẽ bị khoá oan)`);
   if (m.outbox_backlog >= ALERT_OUTBOX_MAX) breaches.push(`${m.outbox_backlog} email TỒN ĐỌNG >10' (worker gửi mail có thể đang kẹt)`);
   if (m.email_failed >= ALERT_EMAIL_FAIL_MAX) breaches.push(`${m.email_failed} email gửi THẤT BẠI (dead-letter)`);
   if (m.swallow_total >= ALERT_SIGNUP_SWALLOW_MAX) {

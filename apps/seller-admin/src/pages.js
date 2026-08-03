@@ -1275,6 +1275,38 @@ function platformOverview(m) {
 // Hai nửa phải khớp nhau mới thu được tiền, và trước đây cả hai đều phải sửa tay:
 // token SePay (DB) + số tài khoản (env). Màn này cho thấy CẢ HAI cùng lúc — cấu hình
 // đúng một nửa mà tưởng xong là shop không thấy nút trả tiền, còn mình không biết vì sao.
+// TIỀN LẠC của đường tiền NỀN TẢNG (0135): shop đã chuyển tiền nhưng không khớp hoá đơn
+// nào. Cảnh báo Telegram chỉ nói CÓ BAO NHIÊU; màn này nói LÀ GÌ và cho đóng lại.
+// Mỗi dòng ở đây = một shop sắp bị khoá oan sau ân hạn 7 ngày, nên khối này để TRÊN phần
+// cấu hình token: thứ cần hành động hôm nay phải nằm trước thứ cắm một lần rồi thôi.
+const LY_DO_TIEN_LAC = {
+  no_ref: 'Nội dung chuyển khoản thiếu mã SUB… — không biết của hoá đơn nào',
+  charge_not_found: 'Mã SUB… không có trong hệ thống (gõ sai?)',
+  charge_cancelled: 'Shop tạo mã mới sau khi đã chuyển theo mã cũ → mã cũ bị huỷ',
+  charge_paid: 'Hoá đơn đã thu rồi (chuyển hai lần?)',
+  amount_short: 'Về THIẾU so với hoá đơn (ngân hàng trừ phí?) — không có cộng dồn',
+};
+function renderTienLac(rows) {
+  if (!rows.length) return '';
+  const tien = (n) => Number(n).toLocaleString('vi-VN') + '₫';
+  return `<div class="card" style="border-color:#fca5a5;background:#fef2f2">
+    <h2 style="margin-top:0">⚠ ${rows.length} khoản tiền shop chuyển về CHƯA khớp hoá đơn</h2>
+    <p style="margin-top:0">Tiền đã nằm trong tài khoản nhận của bạn nhưng không vào hoá đơn nào.
+      Shop tưởng đã trả xong, còn hệ thống vẫn tính là nợ — <strong>hết 7 ngày ân hạn là khoá nhầm</strong>.
+      Xử lý: đối chiếu rồi vào shop đó bấm <em>Ghi nhận đã thu</em>, xong quay lại đây đánh dấu đã xử lý.</p>
+    <table><thead><tr><th>Lúc</th><th>Số tiền</th><th>Shop</th><th>Nội dung CK</th><th>Vì sao lạc</th><th></th></tr></thead><tbody>
+    ${rows.map((u) => `<tr>
+      <td class="muted">${esc(new Date(u.created_at).toLocaleString('vi-VN'))}</td>
+      <td><strong>${esc(tien(u.amount_vnd))}</strong></td>
+      <td>${u.shop_slug ? esc(u.shop_slug) : '<span class="muted">chưa rõ</span>'}</td>
+      <td><code>${esc(u.content ?? '')}</code></td>
+      <td>${esc(LY_DO_TIEN_LAC[u.reason] ?? u.reason)}</td>
+      <td><form method="POST" action="/platform/billing/unmatched/${esc(u.id)}/resolve" style="margin:0">
+        <button class="btn" type="submit">Đã xử lý</button></form></td>
+    </tr>`).join('')}
+    </tbody></table></div>`;
+}
+
 export function renderPlatformBilling(ctx, d, err, ok) {
   const okmark = (v) => (v ? '<span style="color:#166534">✓</span>' : '<span style="color:#991b1b">✗</span>');
   const ready = d?.has_token && d?.bank_bin && d?.bank_account && d?.enabled;
@@ -1297,6 +1329,7 @@ export function renderPlatformBilling(ctx, d, err, ok) {
       </tbody></table>
       <p class="muted" style="margin:10px 0 0;font-size:.85rem">Ba dòng env sửa ở file cấu hình triển khai rồi khởi động lại — cố ý không cho sửa qua web: đổi nhầm số tài khoản trên giao diện là tiền của shop chảy đi chỗ khác.</p>
     </div>
+    ${renderTienLac(d?.unmatched ?? [])}
     <div class="card"><h2 style="margin-top:0">Token SePay của nền tảng</h2>
       <p class="muted" style="margin-top:0">Token này để webhook nhận ra <strong>tiền shop trả cho bạn</strong> — khác hoàn toàn token per-shop (tiền khách trả cho shop). Chỉ lưu mã băm, không đọc lại được.</p>
       <form method="POST" action="/platform/billing">

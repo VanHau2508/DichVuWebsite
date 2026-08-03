@@ -153,6 +153,15 @@ async function platformBillingSave(req, res, me, cookie) {
       : (r.json?.step_up_required ? 'Cần xác thực lại mật khẩu (thao tác chạm đường tiền).' : (r.json?.error ?? 'Không lưu được.')));
 }
 
+// Đóng một khoản tiền lạc rồi quay lại chính màn đó (PRG) — danh sách tự ngắn đi một dòng.
+async function platformUnmatchedResolve(res, me, cookie, id) {
+  const r = await platformApi('POST', `/ops/billing-unmatched/${id}/resolve`, { cookie, body: {} });
+  if (isDenied(r.status)) return platDenied(res, me);
+  return platformBillingPage(res, me, cookie,
+    r.status === 200 ? 'Đã đánh dấu khoản tiền này là đã xử lý.' : null,
+    r.status === 200 ? null : (r.json?.error ?? 'Không đánh dấu được.'));
+}
+
 async function platformShopNew(res, me, cookie, err, form) {
   // Select gói render từ DB qua /ops/plans (đã giết giá hardcode trong pages.js).
   const pr = await platformApi('GET', '/ops/plans', { cookie });
@@ -3266,6 +3275,7 @@ async function handle(req, res, url, p) {
     if (p === '/platform/support' && req.method === 'GET') return platformSupport(res, me, cookie, url.searchParams);
     if (p === '/platform/billing' && req.method === 'GET') return platformBillingPage(res, me, cookie, null, null);
     if (p === '/platform/billing' && req.method === 'POST') return platformBillingSave(req, res, me, cookie);
+    if ((pm = new RegExp(`^/platform/billing/unmatched/${UUID}/resolve$`).exec(p)) && req.method === 'POST') return platformUnmatchedResolve(res, me, cookie, pm[1]);
     if ((pm = new RegExp(`^/platform/support/${UUID}/(resolve|reopen)$`).exec(p)) && req.method === 'POST') return platformSupportAction(req, res, me, cookie, pm[1], pm[2]);
     if (p === '/platform' && req.method === 'POST') return platformCreate(req, res, me, cookie);
     if ((pm = new RegExp(`^/platform/shops/${UUID}$`).exec(p)) && req.method === 'GET') return platformShopDetail(res, me, cookie, pm[1]);

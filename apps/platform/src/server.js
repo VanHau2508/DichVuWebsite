@@ -299,7 +299,15 @@ async function listPlans(req, res) {
 // này vi phạm bất biến schema, và số tài khoản vốn là cấu hình triển khai.
 async function getBillingConfig(req, res) {
   const { rows } = await db.query(`SELECT enabled, sepay_token_hash IS NOT NULL AS has_token, updated_at FROM platform_billing_config LIMIT 1`);
+  // Tiền shop chuyển về mà KHÔNG khớp hoá đơn nào (0135). Đưa lên chính màn này vì đây là
+  // nơi duy nhất nói về đường tiền nền tảng — cảnh báo Telegram cho biết CÓ, màn này cho
+  // biết LÀ GÌ và xử được. Chỉ khoản CHƯA xử lý; đã xử lý thì rơi khỏi danh sách.
+  const unmatched = (await db.query(
+    `SELECT u.id, u.amount_vnd, u.content, u.reason, u.pay_ref, u.created_at, s.slug AS shop_slug
+       FROM platform_unmatched_transfers u LEFT JOIN shops s ON s.id = u.shop_id
+      WHERE u.resolved_at IS NULL ORDER BY u.created_at DESC LIMIT 100`)).rows;
   return send(res, 200, {
+    unmatched,
     ...(rows[0] ?? { enabled: false, has_token: false }),
     // Số tài khoản đọc từ env để chủ nền tảng ĐỐI CHIẾU ngay trên màn hình: cấu hình đúng
     // ở DB mà env chưa cắm thì shop vẫn không thấy nút trả tiền, và không ai biết vì sao.
@@ -307,6 +315,17 @@ async function getBillingConfig(req, res) {
     bank_account: process.env.PLATFORM_BANK_ACCOUNT || null,
     bank_name: process.env.PLATFORM_BANK_NAME || null,
   });
+}
+// Đánh dấu ĐÃ XỬ LÝ một khoản tiền lạc. KHÔNG xoá dòng (vết của tiền, GRANT không có
+// DELETE) — chỉ đóng nó lại kèm người xử và ghi chú, để cảnh báo thôi kêu.
+async function resolveUnmatched(req, res, id, session, ip, body) {
+  const note = String(body?.note ?? '').trim().slice(0, 500) || null;
+  const r = await db.query(
+    `UPDATE platform_unmatched_transfers SET resolved_at = now(), resolved_by = $2, note = $3
+      WHERE id = $1 AND resolved_at IS NULL`, [id, session.user.id, note]);
+  if (r.rowCount === 0) return send(res, 409, { error: 'khoản này không tồn tại hoặc đã xử lý rồi' });
+  await audit('platform.unmatched_resolved', { actorId: session.user.id, ip, metadata: { id, note } });
+  return send(res, 200, { ok: true });
 }
 async function setBillingConfig(req, res, body, session, ip) {
   const token = String(body?.sepay_token ?? '').trim();
@@ -821,6 +840,9 @@ const ROUTES = [
   { m: 'GET', re: /^\/ops\/billing-config$/, minRole: 'admin', fn: (req, res) => getBillingConfig(req, res) },
   // Đổi cấu hình THU TIỀN của nền tảng — step-up như mọi thao tác chạm đường tiền.
   { m: 'PUT', re: /^\/ops\/billing-config$/, minRole: 'admin', stepUp: true, fn: (req, res, b, s, ip) => setBillingConfig(req, res, b, s, ip) },
+  // Đóng một khoản tiền lạc: admin nhưng KHÔNG step-up — đây là ghi chú vận hành, không
+  // dịch chuyển đồng nào (cộng hạn cho shop vẫn phải đi qua "ghi nhận đã thu" có step-up).
+  { m: 'POST', re: new RegExp(`^/ops/billing-unmatched/${SHOP_ID}/resolve$`), minRole: 'admin', fn: (req, res, b, s, ip, p) => resolveUnmatched(req, res, p[0], s, ip, b) },
   { m: 'GET', re: new RegExp(`^/ops/shops/${SHOP_ID}$`), fn: (req, res, b, s, ip, p) => getShop(req, res, p[0], s) },
   { m: 'GET', re: new RegExp(`^/ops/shops/${SHOP_ID}/export$`), minRole: 'admin', fn: (req, res, b, s, ip, p) => exportShop(req, res, p[0]) },
   { m: 'POST', re: new RegExp(`^/ops/shops/${SHOP_ID}/invitations$`), minRole: 'admin', fn: (req, res, b, s, ip, p) => inviteOwner(req, res, b, s, p[0], ip) },

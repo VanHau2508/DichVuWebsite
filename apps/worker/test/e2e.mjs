@@ -267,6 +267,41 @@ async function main() {
   (await reserved(vid)) === resBeforeFresh && (await orderStatus(oidq2)) === 'pending'
     ? ok('đơn QR còn mới KHÔNG bị hết hạn (giữ reserve + pending)') : bad('sweep hết hạn nhầm đơn mới');
 
+  // ── HAI LƯỢT QUÉT CHỒNG NHAU: nhả giữ chỗ ĐÚNG MỘT LẦN ──────────────────────
+  // Vòng quét giờ commit TỪNG ĐƠN (trước đây gói cả lô trong một transaction, nên một lỗi
+  // bất kỳ là 200 đơn không được nhả chỗ). Commit sớm = nhả khoá sớm, nên chốt chặn duy nhất
+  // chống xử-hai-lần là câu SELECT ... FOR UPDATE có KIỂM LẠI `status='pending'`.
+  // Nếu ai đó bỏ chốt đó đi: giữ chỗ bị trừ hai lần → tồn "âm ảo" → hàng còn mà không bán được,
+  // coupon bị hoàn hai lượt, và khách nhận HAI email huỷ cho cùng một đơn.
+  {
+    const o3 = await placeOrder(A, vid, `dup-${uniq()}@kh.vn`, 3);
+    const oid3 = await orderIdOf(A.shopId, o3.orderNum);
+    await owner.query(`UPDATE orders SET payment_method='qr', payment_status='unpaid', status='pending', created_at = now() - interval '1 hour' WHERE id=$1`, [oid3]);
+    const resTruoc = await reserved(vid);
+    const demMail = async () => Number((await owner.query(
+      `SELECT count(*)::int n FROM outbox WHERE topic='order.status_changed' AND (payload->>'order_number')::int = $1`, [o3.orderNum])).rows[0].n);
+    const mailTruoc = await demMail();
+    // Bắn HAI lượt quét cùng lúc — đúng cảnh hai tiến trình worker (hoặc một lượt tay chồng
+    // lên nhịp tự động) chạm cùng một đơn.
+    await Promise.all([
+      fetch(`${WORKER}/internal/expire-sweep`, { method: 'POST' }).then((r) => r.json()).catch(() => null),
+      fetch(`${WORKER}/internal/expire-sweep`, { method: 'POST' }).then((r) => r.json()).catch(() => null),
+    ]);
+    const resSau = await reserved(vid);
+    resSau === resTruoc - 3
+      ? ok(`hai lượt quét chồng nhau → nhả giữ chỗ ĐÚNG MỘT LẦN (${resTruoc}→${resSau}, không phải ${resTruoc - 6})`)
+      : bad('nhả giữ chỗ SAI SỐ LẦN khi hai lượt chồng nhau', `${resTruoc}→${resSau}, đúng phải là ${resTruoc - 3}`);
+    (await orderStatus(oid3)) === 'cancelled' ? ok('đơn vẫn được huỷ') : bad('đơn không bị huỷ');
+    (await demMail()) - mailTruoc === 1
+      ? ok('khách nhận ĐÚNG MỘT email huỷ (không gửi trùng)')
+      : bad('gửi email huỷ trùng', `thêm ${(await demMail()) - mailTruoc} email`);
+    // Quét lại lần nữa sau khi đơn đã huỷ: phải là no-op tuyệt đối.
+    const resTruocLai = await reserved(vid);
+    await fetch(`${WORKER}/internal/expire-sweep`, { method: 'POST' });
+    (await reserved(vid)) === resTruocLai
+      ? ok('quét lại đơn ĐÃ huỷ → không đụng gì nữa (idempotent)') : bad('quét lại vẫn trừ giữ chỗ');
+  }
+
   // ── Cảnh báo ĐƯỜNG TIỀN (ops): giao dịch chưa khớp tồn đọng → đẩy webhook ─────
   sect('Cảnh báo đường tiền');
   const alerts = [];

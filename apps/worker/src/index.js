@@ -768,58 +768,120 @@ const worker = new Worker('email', async (job) => {
 
 worker.on('failed', (job, err) => log('warn', 'email_failed', { id: job?.id, attempts: job?.attemptsMade, message: err.message }));
 
-// ── sweep: hết hạn đơn QR chưa trả tiền → RELEASE reserve ─────────────────────
-// Đơn QR 'pending'/'unpaid' quá ORDER_EXPIRY_MINUTES: trả lại reserve + huỷ đơn.
-// FOR UPDATE SKIP LOCKED → hai lần quét không xử lý trùng; guard status='pending' =
-// idempotent. Release chỉ giảm reserved (KHÔNG đụng on_hand → không ghi ledger, giống cancel).
+// ── sweep: hết hạn đơn QR/COD chưa trả tiền → RELEASE reserve ────────────────
+// Đơn 'pending'/'unpaid' quá hạn: nhả giữ chỗ + huỷ đơn + hoàn lượt coupon + báo khách.
+// Release chỉ giảm `reserved` (KHÔNG đụng on_hand → không ghi ledger, giống cancelOrderTx).
+//
+// MỖI ĐƠN MỘT GIAO DỊCH — không gói cả lô.
+// Bản trước gói tới 200 đơn trong MỘT transaction, nên MỘT lỗi bất kỳ (deadlock, ràng buộc,
+// mất kết nối giữa chừng) là ROLLBACK cả lô: 200 đơn không được nhả giữ chỗ trong nhịp đó,
+// và dấu vết duy nhất là một dòng log. Hàng tồn bị giam vì một đơn hỏng ở đâu đó trong lô.
+// Tách ra thì một đơn hỏng chỉ mất chính nó; 199 đơn kia vẫn xong.
+//
+// CÁI GIÁ PHẢI TRẢ, và chỗ này là phần dễ làm ẩu nhất:
+// bản cũ giữ `FOR UPDATE SKIP LOCKED` suốt cả lô nên hai lượt quét chồng nhau KHÔNG BAO GIỜ
+// đụng cùng một đơn — chính vì thế lệnh UPDATE cũ KHÔNG cần guard trạng thái. Commit từng đơn
+// là nhả khoá sớm, nên nếu bê nguyên vòng lặp cũ thì hai lượt chồng nhau sẽ nhả giữ chỗ HAI
+// LẦN cho cùng một đơn — tức là tự đẻ ra lỗ tồn-sống-lại để chữa một lỗ khác.
+// Nên chia hai pha: pha 1 chỉ CHỌN ứng viên (không giữ khoá); pha 2 mỗi đơn tự khoá lại và
+// KIỂM LẠI ĐIỀU KIỆN dưới khoá (`status='pending'` + vẫn quá hạn). Đơn đã bị lượt khác xử
+// (hoặc khách vừa trả tiền) thì SELECT không trả dòng nào → bỏ qua, không làm gì.
+// ĐIỀU KIỆN "ĐƠN ĐÃ QUÁ HẠN" — MỘT bản duy nhất, dùng cho CẢ hai pha.
+// Pha 1 (chọn ứng viên) và pha 2 (kiểm lại dưới khoá) phải hỏi ĐÚNG một câu hỏi. Chép tay
+// thành hai bản là tự đẻ ra chỗ trôi lệch: nới pha 1 mà quên pha 2 thì quét bỏ sót; nới pha 2
+// mà quên pha 1 thì chốt chặn chống-xử-hai-lần bị vô hiệu mà không ai thấy. $1 = phút (QR),
+// $2 = ngày (COD) — giữ NGUYÊN vị trí tham số ở cả hai chỗ gọi.
+const DON_QUA_HAN_SQL = `status = 'pending' AND (
+      (payment_method = 'qr'  AND payment_status = 'unpaid' AND created_at < now() - ($1 || ' minutes')::interval)
+   OR (payment_method = 'cod' AND payment_status = 'unpaid' AND created_at < now() - ($2 || ' days')::interval)
+    )`;
+
 async function sweepExpired() {
   if (!expiryDb) return 0;
-  let c;
+  let xong = 0, hong = 0;
+  let ids = [];
+  // PHA 1 — chọn ứng viên. CHỈ ĐỌC id, KHÔNG khoá, và dùng pool.query() nên KHÔNG giữ kết
+  // nối: giữ khoá ở đây là quay lại đúng vấn đề vừa bỏ. Điều kiện thật được kiểm LẠI dưới
+  // khoá ở pha 2, nên danh sách này chỉ là gợi ý.
   try {
-    c = await expiryDb.connect(); // connect() TRONG try — DB sập không làm crash worker
-    await c.query('BEGIN');
-    const orders = (await c.query(
-      `SELECT id, shop_id, coupon_code, order_number, total_vnd, payment_method, customer_email FROM orders
-        WHERE status = 'pending' AND (
-              (payment_method = 'qr'  AND payment_status = 'unpaid' AND created_at < now() - ($1 || ' minutes')::interval)
-           OR (payment_method = 'cod' AND payment_status = 'unpaid' AND created_at < now() - ($2 || ' days')::interval)
-        )
-        ORDER BY id LIMIT 200 FOR UPDATE SKIP LOCKED`,
+    ids = (await expiryDb.query(
+      `SELECT id FROM orders WHERE ${DON_QUA_HAN_SQL} ORDER BY id LIMIT 200`,
       [String(ORDER_EXPIRY_MINUTES), String(COD_EXPIRY_DAYS)],
-    )).rows;
-    for (const o of orders) {
-      // ORDER BY variant_id: thứ tự khoá cố định (mirror cancelOrderTx). Ở ĐÂY quan trọng
-      // hơn cả — vòng quét xử tới 200 đơn trong MỘT giao dịch, nên nó giữ khoá lâu nhất và
-      // đụng nhiều biến thể nhất; deadlock ở đây kéo đổ cả lô, tức 200 đơn không được nhả
-      // giữ chỗ trong nhịp đó.
-      const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1 ORDER BY variant_id`, [o.id])).rows;
-      for (const ln of lines) {
-        await c.query(
-          `UPDATE inventory_levels SET reserved = GREATEST(0, reserved - $3), updated_at = now()
-            WHERE shop_id = $1 AND variant_id = $2`,
-          [o.shop_id, ln.variant_id, ln.qty],
-        );
-      }
-      await c.query(`UPDATE orders SET status = 'cancelled', cancelled_at = now() WHERE id = $1`, [o.id]);
-      // Đơn hết hạn = chưa trả → hoàn lại 1 lượt coupon (đã tăng lúc tạo đơn).
-      if (o.coupon_code) {
-        await c.query(`UPDATE coupons SET used_count = GREATEST(used_count - 1, 0) WHERE shop_id = $1 AND upper(code) = upper($2)`, [o.shop_id, o.coupon_code]);
-      }
-      // Email báo khách đơn TỰ HUỶ (docs/34 §E — hết "huỷ im lặng"). Cùng transaction
-      // với huỷ (ADR-006). reason='expired' → compose() nói rõ lý do + mời đặt lại.
-      if (o.customer_email) {
-        await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.status_changed', $2)`,
-          [o.shop_id, { to: o.customer_email, order_number: Number(o.order_number), status: 'cancelled', reason: 'expired', payment_method: o.payment_method, total_vnd: Number(o.total_vnd) }]);
-      }
-    }
-    await c.query('COMMIT');
-    if (orders.length) log('info', 'orders_expired', { n: orders.length });
-    return orders.length;
+    )).rows.map((r) => r.id);
   } catch (e) {
-    if (c) await c.query('ROLLBACK').catch(() => {});
     log('error', 'expiry_error', { message: e.message });
     return 0;
-  } finally { if (c) c.release(); }
+  }
+
+  // PHA 2 — mỗi đơn một giao dịch độc lập, TRÊN MỘT KẾT NỐI LẤY RIÊNG.
+  //
+  // Vì sao KHÔNG giữ một kết nối suốt lô (dù như thế ít round-trip hơn):
+  //  · Pool `expiryDb` chỉ có max 2, mà 6+ vòng quét khác dùng chung (dọn phiên Messenger,
+  //    đồng bộ vận đơn, thống kê SP, ảnh đánh giá, ẩn danh PII…). Tách giao dịch làm lô CHẠY
+  //    LÂU HƠN (200 lượt BEGIN/COMMIT thay vì một), nên giữ kết nối suốt lô là đổi một vấn đề
+  //    lấy một vấn đề khác: hết deadlock nhưng đói kết nối. Nhả giữa các đơn thì các quét
+  //    khác chen vào được.
+  //  · Và quan trọng hơn: nếu ROLLBACK CŨNG lỗi (kết nối chết giữa chừng) thì client đang
+  //    treo transaction. Giữ nguyên nó để chạy tiếp 199 đơn còn lại là hỏng hết phần còn lại
+  //    của lô. `release(err)` HUỶ kết nối hỏng, lượt sau lấy được cái sạch.
+  for (const id of ids) {
+    const c = await expiryDb.connect().catch(() => null);
+    if (!c) { hong++; log('error', 'expiry_order_error', { order_id: id, message: 'không lấy được kết nối' }); continue; }
+    let ketNoiHong = null;
+    try {
+      {
+        await c.query('BEGIN');
+        // KHOÁ + KIỂM LẠI trong cùng một câu. Đây là chốt chặn chống xử-hai-lần: lượt quét
+        // thứ hai (hoặc lượt sau) sẽ chờ khoá, rồi thấy status đã 'cancelled' → 0 dòng → bỏ qua.
+        // Dùng LẠI cùng một hằng điều kiện với pha 1 (DON_QUA_HAN_SQL) — giữa hai pha khách
+        // có thể vừa trả tiền, nên phải hỏi lại đúng câu hỏi đó dưới khoá.
+        const o = (await c.query(
+          `SELECT id, shop_id, coupon_code, order_number, total_vnd, payment_method, customer_email
+             FROM orders WHERE id = $3 AND ${DON_QUA_HAN_SQL} FOR UPDATE`,
+          [String(ORDER_EXPIRY_MINUTES), String(COD_EXPIRY_DAYS), id],
+        )).rows[0];
+        if (!o) { await c.query('COMMIT'); continue; }
+
+        // ORDER BY variant_id: thứ tự khoá cố định (mirror cancelOrderTx). Đơn từ KHÁCH ghi
+        // dòng theo thứ tự bỏ vào giỏ, nên thiếu nó là hai đơn khoá ngược nhau = deadlock (a15).
+        const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1 ORDER BY variant_id`, [o.id])).rows;
+        for (const ln of lines) {
+          await c.query(
+            `UPDATE inventory_levels SET reserved = GREATEST(0, reserved - $3), updated_at = now()
+              WHERE shop_id = $1 AND variant_id = $2`,
+            [o.shop_id, ln.variant_id, ln.qty],
+          );
+        }
+        // Guard `status='pending'` lặp lại ở đây tuy THỪA (dòng đã khoá + đã kiểm ở trên) —
+        // giữ vì nó nói ra ý định ngay tại lệnh ghi, và vì bản trước KHÔNG có nó chính là
+        // thứ khiến việc tách giao dịch trở nên nguy hiểm.
+        await c.query(`UPDATE orders SET status = 'cancelled', cancelled_at = now() WHERE id = $1 AND status = 'pending'`, [o.id]);
+        // Đơn hết hạn = chưa trả → hoàn lại 1 lượt coupon (đã tăng lúc tạo đơn).
+        if (o.coupon_code) {
+          await c.query(`UPDATE coupons SET used_count = GREATEST(used_count - 1, 0) WHERE shop_id = $1 AND upper(code) = upper($2)`, [o.shop_id, o.coupon_code]);
+        }
+        // Email báo khách đơn TỰ HUỶ (docs/34 §E — hết "huỷ im lặng"). CÙNG transaction với
+        // huỷ (ADR-006) — tách giao dịch theo ĐƠN vẫn giữ nguyên tính chất đó.
+        if (o.customer_email) {
+          await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.status_changed', $2)`,
+            [o.shop_id, { to: o.customer_email, order_number: Number(o.order_number), status: 'cancelled', reason: 'expired', payment_method: o.payment_method, total_vnd: Number(o.total_vnd) }]);
+        }
+        await c.query('COMMIT');
+        xong++;
+      }
+    } catch (e) {
+      hong++;
+      // Log TỪNG đơn hỏng kèm id: bản cũ chỉ có một dòng lỗi cho cả lô nên không cách nào
+      // biết đơn nào kẹt. Nuốt lỗi để đơn sau vẫn được xử.
+      log('error', 'expiry_order_error', { order_id: id, message: e.message });
+      // ROLLBACK hỏng = kết nối không cứu được → đánh dấu để HUỶ nó ở release().
+      try { await c.query('ROLLBACK'); } catch (e2) { ketNoiHong = e2; }
+    } finally {
+      c.release(ketNoiHong ?? undefined);
+    }
+  }
+  if (xong || hong) log('info', 'orders_expired', { n: xong, failed: hong, candidates: ids.length });
+  return xong;
 }
 
 // ── sweep: dọn phiên hội thoại Messenger nguội (PII, 0123) ────────────────────

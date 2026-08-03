@@ -185,6 +185,19 @@ async function resolveShop(hostname) {
   return r ? { shopId: r.shop_id, isPrimary: r.is_primary, primaryHost: r.primary_host } : null;
 }
 
+/** Số ngày ghi nhớ mã CTV của shop (1–90, mặc định 30). Chạy NGOÀI ngữ cảnh tenant nên
+ *  policy là cross-shop; giới hạn thật là quyền CỘT (0137 chỉ cấp shop_id + cookie_days).
+ *  Không có cấu hình / DB hỏng → 30, không bao giờ ném ra ngoài: đây là đường ĐIỀU HƯỚNG,
+ *  hỏng cấu hình mà chặn khách vào trang thì đắt hơn nhiều so với cookie sai hạn. */
+async function docCookieDays(shopId) {
+  const { rows } = await db
+    .query('SELECT cookie_days FROM shop_affiliate_config WHERE shop_id = $1', [shopId])
+    .catch(() => ({ rows: [] }));
+  // Kẹp lại lần nữa dù DB đã CHECK 1..90: cột có thể được nới sau, còn Max-Age thì không
+  // được phép thành NaN/âm — cookie hỏng cú pháp là trình duyệt bỏ luôn, mất quy gán.
+  return Math.min(90, Math.max(1, Number(rows[0]?.cookie_days) || 30));
+}
+
 /** Mở transaction có tenant context = shopId, chạy fn (app_store, RLS cô lập). */
 async function withStore(shopId, fn) {
   const c = await db.connect();
@@ -456,20 +469,27 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     // để nguyên thì mã của CTV này lan sang mọi người, và mọi link chia sẻ đều mang một
     // tham số bẩn vào SEO (trùng nội dung, khác URL).
     //
-    // KHÔNG tra DB ở đây: đặt cookie là việc rẻ, còn mã có thật hay không thì CHECKOUT
-    // mới quyết (một câu lệnh, cùng transaction đặt đơn). Tra ở đây nghĩa là mỗi lượt vào
-    // trang qua link CTV đều tốn một truy vấn để đổi lấy... đúng thứ checkout sẽ tra lại.
-    // Đây cũng là hàng rào: người lạ dội ?ref= lung tung không làm shop tốn query nào.
+    // KHÔNG tra MÃ ở đây: mã có thật hay không thì CHECKOUT mới quyết (một câu lệnh, cùng
+    // transaction đặt đơn). Tra ở đây nghĩa là mỗi lượt vào trang qua link CTV đều tốn một
+    // truy vấn để đổi lấy... đúng thứ checkout sẽ tra lại. Đây cũng là hàng rào: người lạ
+    // dội ?ref= lung tung không làm shop tốn query nào.
     const ref = url.searchParams.get('ref');
     if (ref != null && req.method === 'GET') {
       const code = ref.trim().toUpperCase();
       const sp = new URLSearchParams(url.search);
       sp.delete('ref');
       const to = url.pathname + (sp.toString() ? `?${sp}` : '');
-      const days = Math.min(90, Math.max(1, Number(resolved.affiliateCookieDays) || 30));
       // Mã rác → vẫn 302 sạch URL nhưng XOÁ cookie: last-click mà click cuối là rác thì
       // không được để mã CŨ tiếp tục ăn hoa hồng.
       const okCode = /^[A-Z0-9][A-Z0-9-]{1,23}$/.test(code);
+      // TUỔI THỌ COOKIE = CỬA SỔ QUY GÁN. Checkout không so ngày click ở đâu cả: nó chỉ đọc
+      // cookie còn hay mất. Nên số ngày shop đặt phải tới được ĐÂY, nếu không ô cấu hình chỉ
+      // là đồ trang trí (lỗi đang vá: `resolved.affiliateCookieDays` chưa từng được gán ở
+      // đâu → `Number(undefined) || 30` → mọi shop đều 30 ngày).
+      //
+      // Một truy vấn CHỈ KHI mã đúng định dạng: giữ nguyên hàng rào ở trên — kẻ dội ?ref=
+      // rác vẫn không làm shop tốn query nào. Hỏng DB thì rơi về 30, KHÔNG chặn điều hướng.
+      const days = okCode ? await docCookieDays(shopId) : 30;
       res.writeHead(302, {
         location: to || '/',
         'cache-control': 'no-store',

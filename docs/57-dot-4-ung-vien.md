@@ -1,4 +1,9 @@
-# Đợt 4 săn lỗi — 15 ứng viên CHƯA vá (2026-08-03)
+# Đợt 4 săn lỗi — 15 ứng viên (2026-08-03)
+
+> **Cập nhật cùng ngày:** cụm **hoa hồng CTV** (4 mục dưới) đã vá trọn một lượt — xem
+> docs/51 quy tắc 4/5/6 và migration 0137. Kèm một lỗ THỨ NĂM chỉ lộ ra khi dựng lại ca
+> "trả hết hàng": đơn về `returned` không khớp nhánh nào của vòng quét hoa hồng → dòng kẹt
+> `pending` VĨNH VIỄN, không màn nào dọn được. **11 mục còn lại vẫn CHƯA vá.**
 
 Nguồn: workflow 20 agent quét 5 mảng **chưa từng soi** — storefront công khai · hoa hồng CTV ·
 vận chuyển qua hãng · phiên/MFA/step-up · xuất dữ liệu. Mỗi phát hiện đi qua một lượt phản biện
@@ -21,7 +26,7 @@ liệu ra đọc.
 
 ## Storefront công khai
 
-### [cao] Ô "Ghi nhớ mã giới thiệu (ngày)" của shop KHÔNG có tác dụng — storefront đọc một thuộc tính không tồn tại nên cookie CTV luôn là 30 ngày ✔ ĐÃ TỰ KIỂM CHỨNG
+### ✅ ĐÃ VÁ (0137 + storefront) — [cao] Ô "Ghi nhớ mã giới thiệu (ngày)" của shop KHÔNG có tác dụng — storefront đọc một thuộc tính không tồn tại nên cookie CTV luôn là 30 ngày ✔ ĐÃ TỰ KIỂM CHỨNG
 
 **Điều kiện cần đủ:** Cần đủ: (1) shop BẬT chương trình CTV (shop_affiliate_config.enabled = true — mặc định false, phải tự bật); (2) shop ĐỔI cookie_days khác 30 (mặc định 30 nên shop để nguyên thì không lệch — đây là lý do lỗi sống sót). Không cần điều kiện gì khác: đường ?ref= là mặc định, không có cờ bật/tắt. Sai số tỉ lệ thuận với độ lệch giữa số shop nhập và 30.
 
@@ -42,19 +47,19 @@ liệu ra đọc.
 
 ## Hoa hồng cộng tác viên
 
-### [nghiem-trong] Trả hàng MỘT PHẦN trong hạn giữ: hoa hồng vẫn chốt trên căn cứ GỐC — đúng cái hold_days sinh ra để chặn
+### ✅ ĐÃ VÁ (tinhLaiHoaHongCTV) — [nghiem-trong] Trả hàng MỘT PHẦN trong hạn giữ: hoa hồng vẫn chốt trên căn cứ GỐC — đúng cái hold_days sinh ra để chặn
 
 **Điều kiện cần đủ:** Mặc định, không cần shop bật gì thêm ngoài việc bật chương trình CTV (shop_affiliate_config.enabled=true) và đơn có ?ref= hợp lệ. hold_days>0 (mặc định 7) là điều kiện để có cửa sổ trả hàng — nghịch lý là hold_days càng dài càng dễ dính. Chỉ cần trả/hoàn MỘT PHẦN (không phải toàn bộ): trả hết mọi dòng thì đơn sang 'returned' nên không rơi vào ca này (nhưng lại rơi vào lỗ 'returned' ở phát hiện riêng). Không có test nào phủ: ap
 
 **Đề xuất:** Trong createReturn/refundOrder (và mọi chỗ ghi refunds kind<>'edit_adjustment'), nếu đơn có dòng hoa hồng status='pending' thì tính lại base_vnd = max(0, subtotal − discount − Σ tiền hàng đã hoàn) rồi amount_vnd = affiliate_commission_amount(base mới, rate_kind, rate_value) (hàm 0131 — KHÔNG nhân tay ở JS). Dòng đã 'eligible'/'p
 
-### [cao] docs/51 quy tắc 4 KHÔNG được cài: sửa đơn đổi tiền hàng nhưng hoa hồng pending không tính lại
+### [cao] docs/51 quy tắc 4 KHÔNG được cài  [✅ ĐÃ VÁ — tinhLaiHoaHongCTV]: sửa đơn đổi tiền hàng nhưng hoa hồng pending không tính lại
 
 **Điều kiện cần đủ:** Chỉ cần chương trình CTV bật + đơn có mã giới thiệu + shop dùng chức năng Sửa đơn (v1 đơn chưa trả: perm orders.write; v2 đơn đã trả: perm refund + step-up). Cả hai đều đi qua reconcileEditLines nên đều dính. Xảy ra khi hoa hồng còn 'pending' — tức trước khi giao xong + hết hold_days, mà sửa đơn chỉ cho phép ở trạng thái pending/confirmed (orders.js:1110, 1142) nên hoa hồng CHẮC CHẮN còn pending. Nghĩa là: mọi lần sửa đơn có m
 
 **Đề xuất:** Cuối reconcileEditLines, sau UPDATE orders, thêm: `UPDATE affiliate_commissions SET base_vnd=$2, amount_vnd=affiliate_commission_amount($2, rate_kind, rate_value), updated_at=now() WHERE order_id=$1 AND status='pending'` với $2 = max(0, subtotal − discount) — dùng ĐÚNG biểu thức của checkout (server.js:1015) để hai nơi không trô
 
-### [cao] Chặn CTV tự mua bị vô hiệu hoàn toàn nếu shop lưu SĐT dạng +84 — hai nơi chuẩn hoá SĐT khác nhau
+### ✅ ĐÃ VÁ (canon_phone 0137) — [cao] Chặn CTV tự mua bị vô hiệu hoàn toàn nếu shop lưu SĐT dạng +84 — hai nơi chuẩn hoá SĐT khác nhau
 
 **Điều kiện cần đủ:** Điều kiện DUY NHẤT là SĐT CTV được lưu ở dạng có tiền tố quốc gia ('+84…' hoặc '84…'). Dạng '0…' hoặc có khoảng trắng/chấm/gạch ('0900 001 111') thì vẫn chặn đúng vì cả hai bên đều rút về chuỗi số giống nhau. block_self_referral mặc định true nên shop KHÔNG phải bật gì — họ tin là đang được bảo vệ. Không cần shop làm sai thao tác nào khác.
 

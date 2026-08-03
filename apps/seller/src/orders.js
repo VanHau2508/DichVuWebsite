@@ -991,6 +991,53 @@ async function tranGiamGiaSauSua(c, h, subtotal, fail) {
   return Math.min(cu, tran);
 }
 
+// ── HOA HỒNG CTV: tính lại CĂN CỨ khi đơn đổi giá trị (docs/51 quy tắc 4) ────
+//
+// LỖ ĐANG VÁ. `grep -c affiliate apps/seller/src/orders.js` trước bản vá này = 0: KHÔNG một
+// đường nào của seller đụng tới affiliate_commissions, dù docs/51 quy tắc 4 viết rõ "sửa đơn
+// → hoa hồng pending tính lại theo base mới" và 0131 cấp EXECUTE cho app_rw ĐÚNG vì việc đó.
+// Hai đường rò, cả hai đều một chiều (shop luôn là bên trả dư):
+//   · SỬA ĐƠN hạ giá trị: hoa hồng vẫn ăn theo căn cứ CŨ.
+//   · TRẢ HÀNG MỘT PHẦN: đơn giữ nguyên 'delivered' (đúng), rồi vòng quét lật pending →
+//     eligible với base gốc → shop hoàn tiền hàng cho khách MÀ VẪN trả hoa hồng trọn đơn.
+//   Cả hai đều không có màn nào để người bán sửa tay: bảng hoa hồng chỉ đọc.
+//
+// MỘT công thức cho cả hai đường, đọc thẳng trạng thái DB hiện tại:
+//     base = (subtotal − discount) × (subtotal − hàng đã trả) / subtotal
+// tức "phần tiền hàng KHÁCH THỰC SỰ GIỮ LẠI, sau giảm giá". Không trả gì → rút gọn đúng về
+// quy tắc 1 (subtotal − discount). Chia số nguyên = LÀM TRÒN XUỐNG, cùng chiều thận trọng
+// với affiliate_commission_amount (0131): thà thiếu 1 đồng hơn đẻ đồng không có thật.
+//
+// KHÔNG trừ điểm thưởng: quy tắc 1 chốt căn cứ là subtotal − discount, và checkout ghi dòng
+// đầu tiên đúng như vậy. Trừ ở đây mà không trừ ở kia là làm hai công thức lệch — đúng lớp
+// lỗi đang đi vá.
+//
+// CHỈ đụng dòng 'pending' (quy tắc 4): 'eligible'/'paid' là tiền đã hứa/đã chi, sửa ngược
+// vào đó là làm sổ nói dối. Mức hoa hồng lấy SNAPSHOT trên chính dòng (quy tắc 2), không
+// đọc lại cấu hình — shop đổi mức hôm nay không được làm đổi đơn cũ.
+async function tinhLaiHoaHongCTV(c, orderId) {
+  await c.query(
+    `WITH o AS (
+       SELECT coalesce(subtotal_vnd, 0)::bigint AS sub, coalesce(discount_vnd, 0)::bigint AS disc
+         FROM orders WHERE id = $1
+     ), r AS (
+       SELECT coalesce(sum(rl.qty * rl.unit_price_vnd), 0)::bigint AS gross
+         FROM return_lines rl JOIN returns rt ON rt.id = rl.return_id WHERE rt.order_id = $1
+     ), b AS (
+       SELECT CASE WHEN o.sub <= 0 THEN 0::bigint
+                   ELSE (greatest(o.sub - o.disc, 0) * greatest(o.sub - r.gross, 0)) / o.sub
+              END AS base FROM o, r
+     )
+     UPDATE affiliate_commissions k
+        SET base_vnd = b.base,
+            amount_vnd = affiliate_commission_amount(b.base, k.rate_kind, k.rate_value),
+            updated_at = now()
+       FROM b
+      WHERE k.order_id = $1 AND k.status = 'pending' AND k.base_vnd <> b.base`,
+    [orderId],
+  );
+}
+
 // Đối chiếu dòng hàng + tồn kho + tính tiền — LÕI CHUNG v1/v2. Đơn `o` ĐÃ khoá FOR UPDATE
 // và ĐÃ qua guard trạng thái ở nơi gọi. Khoá biến thể theo THỨ TỰ (chống deadlock), tăng
 // kiểm tồn+reserve / giảm nhả, thay order_lines, cập nhật header (KHÔNG đụng payment_status/
@@ -1075,6 +1122,9 @@ async function reconcileEditLines(c, o, P, fail) {
             subtotal_vnd = $6, shipping_vnd = $7, total_vnd = $8, note = $9, discount_vnd = $10 WHERE id = $1`,
     [o.id, P.name, P.phone, P.email, address, subtotal, shipping, total, note, discount],
   );
+  // Header đã hạ xuống giá trị mới → hoa hồng CTV chờ duyệt phải bám theo (docs/51 quy tắc 4).
+  // Đặt SAU lệnh UPDATE vì hàm đọc lại subtotal/discount từ chính bảng orders.
+  await tinhLaiHoaHongCTV(c, o.id);
   // Audit diff from→to.
   const changed = {};
   const setIf = (k, from, to) => { if (String(from ?? '') !== String(to ?? '')) changed[k] = { from: from ?? null, to: to ?? null }; };
@@ -1278,6 +1328,10 @@ async function createReturn(res, ctx, body, params) {
            VALUES (current_shop_id(), $1, $2, $3, $4, $5)`, [ret.id, t.variant_id, t.qty, t.unit, t.cost],
         );
       }
+      // Hàng đã về lại shop → hoa hồng CTV chờ duyệt phải trừ theo (docs/51 quy tắc 4). ĐẶT
+      // SAU khi chèn return_lines: hàm cộng tổng hàng-đã-trả từ chính bảng đó, chạy trước thì
+      // lượt trả này chưa được tính. Trả HẾT → base về 0 (và vòng quét sẽ void, xem worker).
+      await tinhLaiHoaHongCTV(c, orderId);
       // Nhập lại kho (nếu hàng còn bán được) — khoá theo THỨ TỰ variant_id (chống deadlock).
       if (restock) {
         for (const t of [...retLines].sort((a, b) => a.variant_id.localeCompare(b.variant_id))) {

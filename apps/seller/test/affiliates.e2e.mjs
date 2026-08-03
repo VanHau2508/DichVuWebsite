@@ -254,6 +254,86 @@ async function main() {
   /affiliate_commission_vnd/.test(String(csv.raw ?? ''))
     ? ok('CSV báo cáo có cột affiliate_commission_vnd') : bad('CSV thiếu cột hoa hồng — cộng tay không ra lãi vận hành');
 
+  sect('13. Ô "ghi nhớ mã bao nhiêu ngày" PHẢI có tác dụng thật (không phải đồ trang trí)');
+  // Tuổi thọ cookie CHÍNH LÀ cửa sổ quy gán: checkout không so ngày click ở đâu cả, nó chỉ
+  // đọc cookie còn hay mất. Trước bản vá, storefront đọc `resolved.affiliateCookieDays` —
+  // một thuộc tính KHÔNG BAO GIỜ được gán → mọi shop đều 30 ngày dù ô cấu hình lưu/hiện
+  // đúng số vừa gõ. Kiểm bằng SỐ GIÂY THẬT trong header, không kiểm "có cookie".
+  await api('PUT', '/affiliates/config', { enabled: true, rate_kind: 'percent', rate_value: 10, hold_days: 7, cookie_days: 7 });
+  const s7 = await sf('/?ref=HAU2025', A.host);
+  /Max-Age=604800\b/.test(s7.setCookie.find((c) => c.startsWith('__Host-ref=')) ?? '')
+    ? ok('shop đặt 7 ngày → cookie Max-Age=604800')
+    : bad('cookie KHÔNG theo cấu hình shop', (s7.setCookie.find((c) => c.startsWith('__Host-ref=')) ?? '').slice(0, 120));
+  await api('PUT', '/affiliates/config', { enabled: true, rate_kind: 'percent', rate_value: 10, hold_days: 7, cookie_days: 45 });
+  const s45 = await sf('/?ref=HAU2025', A.host);
+  /Max-Age=3888000\b/.test(s45.setCookie.find((c) => c.startsWith('__Host-ref=')) ?? '')
+    ? ok('đổi sang 45 ngày → cookie đổi theo (3888000)') : bad('đổi cấu hình không đổi cookie');
+  // Mã RÁC vẫn không tốn truy vấn nào (hàng rào cũ) — và vẫn phải XOÁ cookie.
+  const sRac = await sf('/?ref=%3Cscript%3E', A.host);
+  /__Host-ref=;/.test(sRac.setCookie.find((c) => c.startsWith('__Host-ref=')) ?? '')
+    ? ok('mã rác vẫn xoá cookie (hàng rào không tra DB còn nguyên)') : bad('mã rác xử sai sau khi thêm truy vấn');
+  await api('PUT', '/affiliates/config', { enabled: true, rate_kind: 'percent', rate_value: 10, hold_days: 7, cookie_days: 30 });
+
+  sect('14. Chặn CTV tự mua: cùng MỘT số nhưng ghi khác dạng (+84…) vẫn phải chặn');
+  // Bên GHI giữ '+84900002222', bên ĐỌC chuẩn hoá thành '0900002222'; chỗ so trước đây là so
+  // chuỗi tuyệt đối nên điều kiện chặn im lặng vô hiệu — mà block_self_referral mặc định BẬT,
+  // tức shop tin là mình đang được bảo vệ. Đây là lỗ đầu tiên mọi chương trình CTV bị khai thác.
+  await api('POST', '/affiliates', { code: 'QUOCTE', name: 'CTV lưu số kiểu quốc tế', phone: '+84900002222' });
+  const luuNhuSau = (await owner.query(`SELECT phone FROM affiliates WHERE shop_id=$1 AND code='QUOCTE'`, [shopId])).rows[0]?.phone;
+  luuNhuSau !== '0900002222'
+    ? ok(`DB lưu "${luuNhuSau}" ≠ số khách gõ "0900002222" — đúng tình huống cần chặn`)
+    : bad('bên ghi đã tự chuẩn hoá → ca này không còn kiểm được thứ định kiểm');
+  o = await place('0900002222', 'QUOCTE');
+  o.status === 201 && (await commOf(o.order.id)) == null
+    ? ok('cùng số ghi khác dạng → vẫn chặn tự thưởng') : bad('CTV tự thưởng lọt qua bằng cách lưu số dạng +84');
+
+  sect('15. SỬA ĐƠN hạ giá trị → hoa hồng tạm tính hạ theo (docs/51 quy tắc 4)');
+  // Trước bản vá `grep -c affiliate apps/seller/src/orders.js` = 0: KHÔNG đường nào của
+  // seller đụng bảng hoa hồng. Sửa đơn từ 2 món xuống 1 mà hoa hồng vẫn ăn theo căn cứ CŨ.
+  const cart2 = (await co('POST', '/cart/items', { json: { variant_id: V, qty: 2 } })).cartCookie;
+  const r2 = await co('POST', '/checkout', {
+    json: { customer: { name: 'K', phone: '0912340001' }, address: { line: 'x', province: 'Hà Nội' }, payment_method: 'cod' },
+    cartCookie: cart2, idem: `i-${uniq()}`, ref: 'HAU2025',
+  });
+  const oEdit = (await owner.query(`SELECT id, subtotal_vnd FROM orders WHERE shop_id=$1 AND order_number=$2`, [shopId, r2.json?.order_number])).rows[0];
+  const kTruoc = await commOf(oEdit.id);
+  N(kTruoc?.base_vnd) === 400000 && N(kTruoc.amount_vnd) === 40000
+    ? ok('đơn 2 món 400.000 → hoa hồng 40.000 tạm tính') : bad('mốc đầu sai', JSON.stringify(kTruoc));
+  r = await api('POST', `/orders/${oEdit.id}/edit`, {
+    lines: [{ variant_id: V, qty: 1 }], customer: { name: 'K', phone: '0912340001', address_line: 'x', province: 'Hà Nội' },
+  });
+  const kSau = await commOf(oEdit.id);
+  r.status === 200 && N(kSau.base_vnd) === 200000 && N(kSau.amount_vnd) === 20000
+    ? ok('sửa còn 1 món → căn cứ 200.000, hoa hồng 20.000') : bad('sửa đơn KHÔNG hạ hoa hồng', `${r.status} ${JSON.stringify(kSau)}`);
+
+  sect('16. TRẢ HÀNG một phần → hoa hồng trừ theo; trả HẾT → rụng hẳn');
+  // Đường rò nặng hơn: đơn trả một phần vẫn giữ 'delivered' (đúng), rồi vòng quét lật
+  // pending → eligible với căn cứ GỐC → shop hoàn tiền hàng cho khách MÀ VẪN trả hoa hồng
+  // trọn đơn. Không có màn nào sửa tay: bảng hoa hồng chỉ đọc.
+  const cart3 = (await co('POST', '/cart/items', { json: { variant_id: V, qty: 2 } })).cartCookie;
+  const r3 = await co('POST', '/checkout', {
+    json: { customer: { name: 'K', phone: '0912340002' }, address: { line: 'x', province: 'Hà Nội' }, payment_method: 'cod' },
+    cartCookie: cart3, idem: `i-${uniq()}`, ref: 'HAU2025',
+  });
+  const oRet = (await owner.query(`SELECT id, total_vnd FROM orders WHERE shop_id=$1 AND order_number=$2`, [shopId, r3.json?.order_number])).rows[0];
+  await owner.query(`UPDATE orders SET status='delivered', delivered_at=now(), payment_status='paid', paid_at=now(), amount_paid_vnd=total_vnd WHERE id=$1`, [oRet.id]);
+  await stepUp();   // trả hàng = tiền ra → step-up
+  r = await api('POST', `/orders/${oRet.id}/return`, { lines: [{ variant_id: V, qty: 1 }], reason: 'khách đổi ý 1 món', restock: true });
+  const kMotPhan = await commOf(oRet.id);
+  r.status === 200 && N(kMotPhan.base_vnd) === 200000 && N(kMotPhan.amount_vnd) === 20000
+    ? ok('trả 1/2 món → căn cứ còn 200.000, hoa hồng 20.000') : bad('trả một phần KHÔNG trừ hoa hồng', `${r.status} ${JSON.stringify(kMotPhan)}`);
+  r = await api('POST', `/orders/${oRet.id}/return`, { lines: [{ variant_id: V, qty: 1 }], reason: 'trả nốt', restock: true });
+  const kHet = await commOf(oRet.id);
+  r.status === 200 && N(kHet.base_vnd) === 0 && N(kHet.amount_vnd) === 0
+    ? ok('trả nốt → căn cứ về 0') : bad('trả hết mà hoa hồng còn tiền', `${r.status} ${JSON.stringify(kHet)}`);
+  // Và dòng đó KHÔNG được kẹt 'pending' vĩnh viễn: đơn 'returned' không khớp nhánh nào của
+  // vòng quét trước bản vá (không 'delivered' để chốt, không cancelled/refunded để rụng).
+  (await owner.query(`SELECT status FROM orders WHERE id=$1`, [oRet.id])).rows[0].status === 'returned'
+    ? ok("trả hết → đơn về trạng thái 'returned'") : bad('trả hết mà đơn không đổi trạng thái');
+  await sweep();
+  (await commOf(oRet.id)).status === 'void'
+    ? ok('vòng quét cho rụng hẳn (không kẹt "chờ duyệt" vĩnh viễn)') : bad('hoa hồng đơn trả-hết kẹt pending', JSON.stringify(await commOf(oRet.id)));
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

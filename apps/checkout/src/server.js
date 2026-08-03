@@ -1010,7 +1010,8 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
                 affiliate_commission_amount($2::bigint, coalesce(a.rate_kind, cfg.rate_kind), coalesce(a.rate_value, cfg.rate_value))
            FROM affiliates a, shop_affiliate_config cfg
           WHERE upper(a.code) = upper($3) AND a.active AND cfg.enabled
-            AND (NOT cfg.block_self_referral OR a.phone IS NULL OR a.phone <> $4)
+            AND (NOT cfg.block_self_referral OR a.phone IS NULL OR canon_phone(a.phone) IS NULL
+                 OR canon_phone(a.phone) <> $4)
          ON CONFLICT (shop_id, order_id) DO NOTHING`,
         [order.id, Math.max(0, subtotal - discount), String(ctx.refCode).slice(0, 24), phoneCanon ?? phone]);
     }

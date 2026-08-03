@@ -686,14 +686,20 @@ async function sweepAffiliateCommissions(batch = 300) {
             (o.status = 'delivered' AND o.delivered_at IS NOT NULL
              AND o.delivered_at < now() - (cfg.hold_days || ' days')::interval)
             -- hoặc rụng: đơn kết thúc theo hướng xấu
-            OR o.status IN ('cancelled', 'refunded')
+            --
+            -- 'returned' PHẢI có mặt. Thiếu nó thì dòng hoa hồng của đơn hoàn về (bom hàng,
+            -- 0059) hoặc trả HẾT (RMA) không khớp NHÁNH NÀO: không 'delivered' để lật
+            -- eligible, không cancelled/refunded để rụng → nằm 'pending' VĨNH VIỄN. Người bán
+            -- thấy nó trong "chờ duyệt" mãi mãi, không có nút nào dọn (bảng hoa hồng chỉ đọc),
+            -- và tổng nợ CTV trên báo cáo cứ đội lên bằng tiền của hàng đã quay về kho.
+            OR o.status IN ('cancelled', 'refunded', 'returned')
           )
         ORDER BY k.created_at LIMIT $1 FOR UPDATE OF k SKIP LOCKED`, [batch])).rows;
-    const dead = rows.filter((r) => r.order_status === 'cancelled' || r.order_status === 'refunded').map((r) => r.id);
+    const dead = rows.filter((r) => r.order_status !== 'delivered').map((r) => r.id);
     const live = rows.filter((r) => r.order_status === 'delivered').map((r) => r.id);
     if (dead.length) {
       await c.query(
-        `UPDATE affiliate_commissions SET status='void', void_reason='đơn huỷ/hoàn trước khi đủ điều kiện', updated_at=now()
+        `UPDATE affiliate_commissions SET status='void', void_reason='đơn huỷ/hoàn/trả về trước khi đủ điều kiện', updated_at=now()
           WHERE id = ANY($1::uuid[]) AND status='pending'`, [dead]);
     }
     if (live.length) {

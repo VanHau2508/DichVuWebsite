@@ -431,7 +431,13 @@ export async function cancelOrderTx(c, orderId, { reason = null, actorId = null,
     return { code: 400, msg: 'đơn đã thanh toán: phải nêu lý do huỷ (khách sẽ nhận được lý do này)' };
   }
   // RELEASE reserve: trả lại tồn đã giữ chỗ lúc checkout.
-  const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1`, [orderId])).rows;
+  // ORDER BY variant_id = THỨ TỰ KHOÁ CỐ ĐỊNH (mirror checkout/server.js:853, bom-hàng, RMA,
+  // sửa-đơn). Thiếu nó thì thứ tự khoá = thứ tự VẬT LÝ của order_lines, mà đơn từ KHÁCH ghi
+  // dòng theo thứ tự BỎ VÀO GIỎ (checkout/server.js:859 `ORDER BY ci.created_at`) — hai khách
+  // mua cùng hai món theo thứ tự ngược nhau là hai đơn khoá ngược nhau. Đo được ở a15:
+  // khách bỏ X trước → dòng "X → Y", khách bỏ Y trước → dòng "Y → X". Hai lệnh huỷ/hoàn chạy
+  // song song trên hai đơn đó khoá chéo = deadlock, Postgres huỷ một bên (40P01).
+  const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1 ORDER BY variant_id`, [orderId])).rows;
   for (const ln of lines) {
     await c.query(`UPDATE inventory_levels SET reserved = GREATEST(0, reserved - $2), updated_at = now() WHERE variant_id = $1`, [ln.variant_id, ln.qty]);
   }
@@ -656,7 +662,8 @@ async function refundOrder(res, ctx, body, params) {
     // KHÔNG restock phần ĐÃ gửi: hoàn tiền không có nghĩa hàng đã về kho. Hàng về thì dùng
     // "Đánh dấu hoàn về" / đổi-trả — hai việc khác nhau, đừng gộp.
     if (['pending', 'confirmed', 'shipped'].includes(o.status)) {
-      const lines = (await c.query(`SELECT variant_id, qty, shipped_qty FROM order_lines WHERE order_id = $1`, [orderId])).rows;
+      // ORDER BY variant_id: thứ tự khoá cố định, xem chú thích ở cancelOrderTx (a15).
+      const lines = (await c.query(`SELECT variant_id, qty, shipped_qty FROM order_lines WHERE order_id = $1 ORDER BY variant_id`, [orderId])).rows;
       for (const ln of lines) {
         const nha = Number(ln.qty) - Number(ln.shipped_qty ?? 0);   // phần chưa rời kho
         if (nha <= 0) continue;

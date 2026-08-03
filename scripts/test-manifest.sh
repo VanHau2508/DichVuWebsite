@@ -51,10 +51,13 @@ MANIFEST_UNIT_FILES=(
   # nên không gộp được). E2E không bắt nổi: mỗi bản chạy trong một container khác nhau,
   # không có màn nào nhìn thấy cả hai cùng lúc.
   apps/seller/test/shared-sql.test.js
+  # Thứ tự KHOÁ TỒN. Deadlock phụ thuộc điểm xen kẽ giữa hai giao dịch nên e2e sẽ CHẬP CHỜN;
+  # thứ kiểm ổn định là bất biến sinh ra nó (ORDER BY variant_id ở truy vấn nạp dòng hàng).
+  apps/seller/test/lock-order.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=17
+MANIFEST_UNIT_COUNT=18
 MANIFEST_E2E_COUNT=92
 
 manifest_unit_files() {

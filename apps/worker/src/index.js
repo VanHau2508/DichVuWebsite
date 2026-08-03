@@ -788,7 +788,11 @@ async function sweepExpired() {
       [String(ORDER_EXPIRY_MINUTES), String(COD_EXPIRY_DAYS)],
     )).rows;
     for (const o of orders) {
-      const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
+      // ORDER BY variant_id: thứ tự khoá cố định (mirror cancelOrderTx). Ở ĐÂY quan trọng
+      // hơn cả — vòng quét xử tới 200 đơn trong MỘT giao dịch, nên nó giữ khoá lâu nhất và
+      // đụng nhiều biến thể nhất; deadlock ở đây kéo đổ cả lô, tức 200 đơn không được nhả
+      // giữ chỗ trong nhịp đó.
+      const lines = (await c.query(`SELECT variant_id, qty FROM order_lines WHERE order_id = $1 ORDER BY variant_id`, [o.id])).rows;
       for (const ln of lines) {
         await c.query(
           `UPDATE inventory_levels SET reserved = GREATEST(0, reserved - $3), updated_at = now()

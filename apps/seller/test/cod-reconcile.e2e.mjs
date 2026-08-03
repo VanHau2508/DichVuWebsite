@@ -192,6 +192,48 @@ async function main() {
       : bad('NGÕ CỤT: không ghi được phiếu cho đơn đã hoàn/trả', `${rrem.status} ${rrem.json?.error ?? ''}`);
   }
 
+  // ── Vận đơn ĐÃ HUỶ không được đẻ ra khoản phải thu MA ────────────────────────
+  // Điều kiện dễ gặp, không cần ai làm sai: shop tạo vận đơn hãng, rồi huỷ (huỷ trên portal
+  // hãng, hoặc claim chết sau 15' → worker đặt 'cancelled'), sau đó TỰ ĐI GIAO và bấm "Đã
+  // giao xong". Hãng KHÔNG cầm hàng, KHÔNG thu hộ đồng nào — nhưng câu SQL sinh sổ chỉ hỏi
+  // "dòng shipments có provider mới nhất", không hỏi nó còn sống không. Người bán nhìn màn
+  // Đối soát COD rồi đi đòi hãng một khoản KHÔNG TỒN TẠI, và memo trong Báo cáo P&L cũng
+  // báo phải-thu ma. Cùng file reports.js, truy vấn PHÍ HÃNG đã lọc 'cancelled' từ lâu.
+  sect('Vận đơn ĐÃ HUỶ → KHÔNG phải "hãng còn nợ" (đòi hãng khoản không tồn tại)');
+  {
+    // Lấy CHÍNH con số sổ đang hiện cho đơn này, không cắm số cứng: total_vnd còn cộng phí
+    // ship của shop, nên số "đoán tay" sẽ sai và bản thân phép đo thành ra kiểm nhầm thứ.
+    const dongSo = async (id) => {
+      const rr = await rq(SELLER, 'GET', `/shops/${shopId}/cod/reconciliation`, { cookie: oc });
+      return (rr.json?.outstanding ?? []).find((x) => x.id === id) ?? null;
+    };
+    const trongSo = async (id) => !!(await dongSo(id));
+    const memoPnl = async () => {
+      const t = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+      const rr = await rq(SELLER, 'GET', `/shops/${shopId}/reports/sales?from=${t}&to=${t}`, { cookie: oc });
+      return N(rr.json?.totals?.cod_outstanding?.amount_vnd ?? 0);
+    };
+    const idH = await mkCodViaCarrier(1, 15000);
+    const memoTruoc = await memoPnl();
+    const ky = N((await dongSo(idH))?.expected_net_vnd ?? 0);
+    ky > 0 ? ok(`mốc: vận đơn còn sống → đơn nằm trong sổ, kỳ vọng ${ky}đ`) : bad('không dựng được mốc');
+    // Hãng huỷ vận đơn (worker sweep đặt 'cancelled' khi hãng báo huỷ — index.js).
+    await owner.query(`UPDATE shipments SET status='cancelled' WHERE order_id=$1`, [idH]);
+    !(await trongSo(idH))
+      ? ok('vận đơn huỷ → đơn RỜI sổ đối soát (shop giữ tiền mặt, hãng không nợ gì)')
+      : bad('SỔ ĐỐI SOÁT đẻ khoản phải thu MA cho vận đơn đã huỷ');
+    const memoSau = await memoPnl();
+    memoSau === memoTruoc - ky
+      ? ok(`memo P&L "hãng còn nợ" tụt ĐÚNG ${ky}đ (${memoTruoc} → ${memoSau}) — hai màn nói MỘT con số`)
+      : bad('memo P&L và sổ Đối soát nói hai con số khác nhau', `truoc=${memoTruoc} sau=${memoSau} ky=${ky}`);
+    // Và không được ghi phiếu chuyển tiền cho đơn đó nữa (nếu còn ghi được thì sổ vẫn sai).
+    await su(oc, op);
+    r = await rq(SELLER, 'POST', `/shops/${shopId}/cod/remittances`, { body: { carrier: 'ghn', amount_vnd: ky, order_ids: [idH] }, cookie: oc, origin: OS });
+    r.status === 422
+      ? ok('ghi phiếu cho đơn có vận đơn đã huỷ → 422 (không đối soát khoản không tồn tại)')
+      : bad('vẫn ghi được phiếu chuyển tiền cho vận đơn đã huỷ', `${r.status} ${r.json?.error ?? ''}`);
+  }
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

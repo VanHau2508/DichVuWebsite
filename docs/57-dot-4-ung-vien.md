@@ -3,7 +3,16 @@
 > **Cập nhật cùng ngày:** cụm **hoa hồng CTV** (4 mục dưới) đã vá trọn một lượt — xem
 > docs/51 quy tắc 4/5/6 và migration 0137. Kèm một lỗ THỨ NĂM chỉ lộ ra khi dựng lại ca
 > "trả hết hàng": đơn về `returned` không khớp nhánh nào của vòng quét hoa hồng → dòng kẹt
-> `pending` VĨNH VIỄN, không màn nào dọn được. **11 mục còn lại vẫn CHƯA vá.**
+> `pending` VĨNH VIỄN, không màn nào dọn được.
+>
+> **Đợt tiếp (cùng ngày):** vá thêm **A · B · C** dưới đây. Cả ba đi qua 3 lăng kính phản biện
+> độc lập (đúng-sai kỹ thuật · tới-được-không · có-cố-ý-không) — **9/9 xác nhận, 0 bác bỏ**, và
+> lượt quét lân cận moi thêm **6 chỗ khác cùng khuôn** chưa ai nhắc, đã vá luôn:
+> claim chết khoá VĨNH VIỄN quyền sửa đơn (nặng nhất) · bot đưa khách mã vận đơn đã huỷ ·
+> trang tra cứu của khách + tài khoản khách in mã đã huỷ · phiếu giao hàng/hoá đơn in kiện
+> cũ nhất · digest "đơn ứ" bị claim chết reset đồng hồ · màn "Trang nội dung" chỉ sai đường
+> dẫn công khai cho chính chủ shop. Khoá lại bằng `apps/seller/test/shipment-status.test.js`.
+> **8 mục còn lại vẫn CHƯA vá.**
 
 Nguồn: workflow 20 agent quét 5 mảng **chưa từng soi** — storefront công khai · hoa hồng CTV ·
 vận chuyển qua hãng · phiên/MFA/step-up · xuất dữ liệu. Mỗi phát hiện đi qua một lượt phản biện
@@ -32,7 +41,7 @@ liệu ra đọc.
 
 **Đề xuất:** Cho resolveShop trả thêm cookie_days (LEFT JOIN shop_affiliate_config theo d.shop_id, mặc định 30 khi chưa cấu hình) rồi dùng đúng nó ở dòng 469; hoặc bỏ hẳn ô cấu hình khỏi UI nếu quyết định giữ cứng 30. Kèm một e2e: đặt cookie_days = 7 → GET /?ref=MA → khẳng định Max-Age = 604800.
 
-### [vua] sitemap.xml khai TRANG NỘI DUNG ở sai đường dẫn (/slug thay vì /pages/slug) — mọi URL trang chính sách nộp cho Google đều 404
+### ✅ ĐÃ VÁ (+1 chỗ lân cận) — [vua] sitemap.xml khai TRANG NỘI DUNG ở sai đường dẫn (/slug thay vì /pages/slug) — mọi URL trang chính sách nộp cho Google đều 404
 
 **Điều kiện cần đủ:** Chỉ cần shop có ≥1 trang CMS đã xuất bản — không cần bật gì. Sitemap được phục vụ cho mọi shop (server.js:507). Không có cờ tắt.
 
@@ -68,13 +77,13 @@ liệu ra đọc.
 
 ## Vận chuyển qua hãng
 
-### [cao] Đổi hãng vận chuyển (GHTK→GHN) làm CHẾT ÂM THẦM đồng bộ mọi vận đơn đang chạy của hãng cũ — COD không bao giờ tự chốt 'paid'
+### ✅ ĐÃ VÁ — [cao] Đổi hãng vận chuyển (GHTK→GHN) làm CHẾT ÂM THẦM đồng bộ mọi vận đơn đang chạy của hãng cũ — COD không bao giờ tự chốt 'paid'
 
 **Điều kiện cần đủ:** Cần đủ: (1) shop ĐÃ tạo vận đơn qua hãng A và còn dòng status='in_transit'; (2) shop đổi sang hãng B bằng PUT /shipping (perm shop.write + step-up — chính chủ shop làm, không phải kẻ tấn công). Mặc định BẬT: TRACKING_ON/sweep chạy sẵn, không cần shop tự bật gì. KHÔNG cần điều kiện đặc biệt nào khác — chỉ cần shop đổi hãng khi còn hàng đang đi. Lưu ý: nếu shop chỉ dán LẠI token của CÙNG một hãng thì không dính (provider khớp).
 
 **Đề xuất:** 
 
-### [vua] Vận đơn ĐÃ HUỶ vẫn được tính là "hãng còn nợ tiền" — sổ đối soát COD và memo trong Báo cáo P&L đẻ ra khoản phải thu MA
+### ✅ ĐÃ VÁ (+5 chỗ lân cận) — [vua] Vận đơn ĐÃ HUỶ vẫn được tính là "hãng còn nợ tiền" — sổ đối soát COD và memo trong Báo cáo P&L đẻ ra khoản phải thu MA
 
 **Điều kiện cần đủ:** Cần đủ: (1) đơn COD; (2) từng tồn tại MỘT dòng shipments có provider (ghn/ghtk) — kể cả dòng đã huỷ; (3) dòng provider mới nhất đang ở status='cancelled'; (4) đơn có delivered_at (shop tự bấm "Đã giao xong" sau khi giao tay, hoặc kiện khác được sweep chốt). Mặc định BẬT hoàn toàn: không cần shop bật cờ nào, hai màn hình Đối soát COD và Báo cáo P&L đều đọc đúng hai câu SQL này. Đường dễ xảy ra nhất là shop huỷ vận đơn trên port
 

@@ -22,6 +22,8 @@
 import { send } from './http.js';
 import { withTenant, audit } from './db.js';
 import { toCsv } from './export.js';
+// Định nghĩa "vận đơn qua hãng còn hiệu lực" — MỘT nguồn, dùng chung với màn Đối soát COD.
+import { LATERAL_VAN_DON_HANG } from './cod.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const TZ = 'Asia/Ho_Chi_Minh';
@@ -231,13 +233,14 @@ async function computeSales(shopId, { from, to, group, sort }) {
       `SELECT coalesce(sum(o.total_vnd - coalesce(sh.carrier_fee_vnd, 0)), 0)::bigint AS outstanding,
               count(*)::int AS orders
          FROM orders o
-         JOIN LATERAL (SELECT carrier_fee_vnd FROM shipments s
-                        WHERE s.order_id = o.id AND s.provider IS NOT NULL
-                        ORDER BY s.created_at DESC LIMIT 1) sh ON true
-        -- "ĐÃ TỪNG GIAO" chứ không phải "đang delivered" — PHẢI KHỚP với OUTSTANDING_SQL ở
-        -- apps/seller/src/cod.js. Cùng một định nghĩa "hãng còn nợ bao nhiêu" viết ở hai nơi;
-        -- lệch nhau là màn Đối soát COD và memo trong Báo cáo nói hai con số khác nhau, mà
-        -- không ai biết cái nào đúng. (Lọc theo status làm đơn hoàn/trả rơi khỏi CẢ HAI.)
+         -- KHÔNG chép lại truy vấn vận đơn: DÙNG CHUNG hằng của cod.js. Chú thích cũ ở đây
+         -- dặn "PHẢI KHỚP với OUTSTANDING_SQL" — và hai bản chép tay ĐÃ lệch thật (cả hai
+         -- cùng quên điều kiện loại vận đơn đã huỷ, trong khi q5 ngay trên đã lọc từ lâu).
+         -- Dặn dò không giữ nổi hai bản đồng bộ; dùng chung một hằng thì giữ BẰNG CẤU TRÚC.
+         JOIN LATERAL (${LATERAL_VAN_DON_HANG}
+                      ) sh ON true
+        -- "ĐÃ TỪNG GIAO" chứ không phải "đang delivered": hãng thu tiền của khách xong là món
+        -- nợ giữa SHOP và HÃNG; shop hoàn tiền hay nhận trả hàng sau đó là việc khác.
         WHERE o.payment_method = 'cod' AND o.delivered_at IS NOT NULL
           AND o.cod_settled_at IS NULL AND NOT o.is_migrated`)).rows[0];
     return { q1, q2, q3, q4, q5, q6, q7, q8, q9 };

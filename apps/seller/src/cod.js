@@ -11,15 +11,34 @@ import { withTenant, audit } from './db.js';
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/**
+ * VẬN ĐƠN QUA HÃNG mới nhất CÒN HIỆU LỰC của một đơn — NGUỒN DUY NHẤT cho câu hỏi
+ * "hãng nào đang giữ tiền của đơn này, và phí bao nhiêu".
+ *
+ * `s.status <> 'cancelled'` KHÔNG phải chi tiết vụn. Vận đơn đã huỷ nghĩa là hãng KHÔNG cầm
+ * hàng và KHÔNG thu hộ đồng nào. Thiếu điều kiện đó thì một dòng huỷ vẫn đủ tư cách kéo đơn
+ * vào sổ "hãng còn nợ" — và đường dễ xảy ra nhất chẳng cần ai làm sai: shop tạo vận đơn, huỷ
+ * trên portal hãng (hoặc claim chết sau 15' → worker đặt 'cancelled'), rồi tự đi giao và bấm
+ * "Đã giao xong". Kết quả: người bán đi đòi hãng một khoản KHÔNG TỒN TẠI, và memo trong Báo
+ * cáo P&L báo phải-thu ma. Ngược lại, đơn giao TAY hoàn toàn không có dòng shipments nào nên
+ * JOIN (INNER) loại nó ra — đúng, vì tiền mặt đã nằm trong tay shop.
+ *
+ * ĐỂ Ở MỘT CHỖ, EXPORT SANG reports.js: hai bản chép tay của cùng định nghĩa đã lệch một lần
+ * rồi — chú thích ở reports.js còn ghi rõ "PHẢI KHỚP với OUTSTANDING_SQL". Cùng file
+ * reports.js, truy vấn phí hãng (q5) ĐÃ lọc `s.status <> 'cancelled'` từ lâu; chỉ hai câu
+ * COD là quên. Đúng khuôn "hàng rào có ở hầu hết nơi, thiếu ở vài nơi".
+ */
+export const LATERAL_VAN_DON_HANG = `
+      SELECT provider, carrier, carrier_fee_vnd FROM shipments s
+       WHERE s.order_id = o.id AND s.provider IS NOT NULL AND s.status <> 'cancelled'
+       ORDER BY s.created_at DESC LIMIT 1`;
+
 // Đơn COD đã giao QUA HÃNG chưa đối soát (kèm phí hãng → COD-net kỳ vọng nhận về).
 const OUTSTANDING_SQL = `
   SELECT o.id, o.order_number, o.total_vnd, o.delivered_at, sh.provider, sh.carrier, sh.carrier_fee_vnd,
          (o.total_vnd - coalesce(sh.carrier_fee_vnd, 0)) AS expected_net_vnd
     FROM orders o
-    JOIN LATERAL (
-      SELECT provider, carrier, carrier_fee_vnd FROM shipments s
-       WHERE s.order_id = o.id AND s.provider IS NOT NULL
-       ORDER BY s.created_at DESC LIMIT 1
+    JOIN LATERAL (${LATERAL_VAN_DON_HANG}
     ) sh ON true
    -- Đơn DI CƯ (0104) không bao giờ là đơn chờ đối soát: tiền của chúng do sàn cũ thu, ta
    -- không hề gửi hàng qua hãng nào. Lọt vào đây là người bán đi đòi hãng một khoản không tồn tại.
@@ -86,9 +105,8 @@ async function recordRemittance(res, ctx, body) {
         `SELECT o.id, o.order_number, o.payment_method, o.status, o.delivered_at, o.cod_settled_at, o.total_vnd,
                 sh.provider, coalesce(sh.carrier_fee_vnd, 0) AS fee
            FROM orders o
-           LEFT JOIN LATERAL (SELECT provider, carrier_fee_vnd FROM shipments s
-                               WHERE s.order_id = o.id AND s.provider IS NOT NULL
-                               ORDER BY s.created_at DESC LIMIT 1) sh ON true
+           LEFT JOIN LATERAL (${LATERAL_VAN_DON_HANG}
+                             ) sh ON true
           WHERE o.id = ANY($1::uuid[]) AND NOT o.is_migrated ORDER BY o.id FOR UPDATE OF o`, [sorted],
       )).rows;
       const found = new Map(rows.map((r) => [r.id, r]));

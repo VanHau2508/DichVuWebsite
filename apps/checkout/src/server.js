@@ -1297,8 +1297,12 @@ async function getSuccessPage(req, res, _body, ctx, query) {
     )).rows[0];
     if (!o) return null;
     o.lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, orig_unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
-    // Mã vận đơn (0092) → khách tự tra GHN/GHTK. Chỉ vận đơn ĐÃ có mã.
-    o.shipments = (await c.query(`SELECT carrier, tracking_number, status FROM shipments WHERE order_id = $1 AND tracking_number IS NOT NULL ORDER BY created_at`, [o.id])).rows;
+    // Mã vận đơn (0092) → khách tự tra GHN/GHTK. Chỉ vận đơn ĐÃ có mã và CHƯA HUỶ: trang
+    // này in nguyên văn "Đơn đã được gửi qua đơn vị vận chuyển. Theo dõi hành trình bằng mã
+    // dưới đây" — đưa mã đã huỷ là nói với khách một câu KHÔNG ĐÚNG rồi bắt họ tự phát hiện
+    // trên trang hãng. (Câu SELECT vẫn lấy `status` để nơi khác dùng, nhưng lọc ngay ở đây
+    // mới đúng: trước bản vá cột đó được lấy về rồi KHÔNG ai đọc.)
+    o.shipments = (await c.query(`SELECT carrier, tracking_number, status FROM shipments WHERE order_id = $1 AND tracking_number IS NOT NULL AND status <> 'cancelled' ORDER BY created_at`, [o.id])).rows;
     let pay = null;
     if (o.payment_method === 'qr' && o.payment_status !== 'paid') {
       pay = (await c.query(`SELECT bank_bin, account_number, account_name FROM shop_payment_config WHERE shop_id = current_shop_id()`)).rows[0] ?? null;

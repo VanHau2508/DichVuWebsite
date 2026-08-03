@@ -1043,6 +1043,18 @@ async function tinhLaiHoaHongCTV(c, orderId) {
 // kiểm tồn+reserve / giảm nhả, thay order_lines, cập nhật header (KHÔNG đụng payment_status/
 // amount_paid — phần đó do nơi gọi tự xử theo v1/v2). `fail` THROW → ROLLBACK.
 async function reconcileEditLines(c, o, P, fail) {
+  // DỌN CLAIM CHẾT trước khi xét. Claim là chỗ giữ trước khi gọi hãng; nếu hãng từ chối hoặc
+  // request timeout thì 15' sau vòng quét đặt status='cancelled', provider_status='claim_expired'
+  // (worker index.js) — nhưng CHỈ UPDATE, còn shipment_lines nằm lại. Từ đó mọi lần Sửa đơn
+  // đều 409 "đơn đã có vận đơn" cho một đơn CHƯA TỪNG gửi món hàng nào, và màn sửa đơn không
+  // có đường vòng nào: ngõ cụt vĩnh viễn.
+  //
+  // Chỉ xoá dòng KHÔNG CÓ MÃ VẬN ĐƠN — đúng tiêu chí mà chính vòng quét dùng để kết luận "hãng
+  // chưa tạo gì, mở khoá được". Có mã = vận đơn THẬT từng tồn tại trên hãng → giữ nguyên chứng
+  // từ và vẫn chặn sửa (hàng có thể đã đi; FK cũng phải giữ). Xoá dòng shipments kéo theo
+  // shipment_lines bằng ON DELETE CASCADE (0080) — cùng đường mà shipping.js dùng khi hãng từ chối.
+  await c.query(
+    `DELETE FROM shipments WHERE order_id = $1 AND status = 'cancelled' AND tracking_number IS NULL`, [o.id]);
   // Chặn sửa khi đơn đã có VẬN ĐƠN (kể cả claim 'created' của hãng): sửa xoá+chèn lại
   // order_lines sẽ vỡ FK shipment_lines→order_lines + reset shipped_qty (0080). Đơn đang
   // giao dở phải xử qua đổi-trả/hoàn, không sửa dòng.

@@ -167,8 +167,11 @@ async function lookupOrders(res, shopId, query) {
   const rows = await withTenant(shopId, async (c) =>
     (await c.query(
       `SELECT o.order_number, o.status, o.payment_status, o.total_vnd, o.created_at,
+              -- BỎ vận đơn đã huỷ: đây là câu trả lời bot nhắn thẳng cho khách khi họ hỏi
+              -- "đơn tôi tới đâu rồi". Mã của vận đơn đã huỷ tra trên trang hãng ra số 0 —
+              -- khách tưởng shop lừa rồi gọi điện, tức là còn tệ hơn trả lời "chưa có mã".
               (SELECT s.tracking_number FROM shipments s
-                WHERE s.order_id = o.id AND s.tracking_number IS NOT NULL
+                WHERE s.order_id = o.id AND s.tracking_number IS NOT NULL AND s.status <> 'cancelled'
                 ORDER BY s.created_at DESC LIMIT 1) AS tracking_number
          FROM orders o
         WHERE o.source = 'facebook' AND o.source_ref LIKE $1

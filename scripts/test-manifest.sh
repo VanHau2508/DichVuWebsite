@@ -54,10 +54,14 @@ MANIFEST_UNIT_FILES=(
   # Thứ tự KHOÁ TỒN. Deadlock phụ thuộc điểm xen kẽ giữa hai giao dịch nên e2e sẽ CHẬP CHỜN;
   # thứ kiểm ổn định là bất biến sinh ra nó (ORDER BY variant_id ở truy vấn nạp dòng hàng).
   apps/seller/test/lock-order.test.js
+  # Vận đơn ĐÃ HUỶ không được làm "đại diện" cho đơn. Sáu chỗ dính nằm ở SÁU service khác
+  # nhau (mỗi service một image) và vài chỗ là chuỗi HTML in ra giấy — không e2e nào nhìn
+  # thấy cả sáu cùng lúc, bất biến mức mã nguồn thì thấy.
+  apps/seller/test/shipment-status.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=18
+MANIFEST_UNIT_COUNT=19
 MANIFEST_E2E_COUNT=92
 
 manifest_unit_files() {

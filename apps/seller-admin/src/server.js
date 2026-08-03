@@ -822,9 +822,13 @@ async function shippingTest(res, me, cookie, shopId) {
   return shippingPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không kết nối được hãng.');
 }
 async function doShippingOp(res, me, cookie, shopId, form) {
+  // `warning` của seller (số vận đơn mất theo dõi tự động) PHẢI lên màn hình. Không nối vào
+  // đây thì lời cảnh báo chết ở tầng BFF: shop thấy "Đã kết nối GHN." và tin rằng mọi thứ
+  // vẫn tự chạy, trong khi hàng chục kiện GHTK vừa thành mồ côi.
+  const keo = (r, base) => shippingPage(res, me, cookie, shopId, r.json?.warning ? `${base} ⚠ ${r.json.warning}` : base, null);
   if (form.__op === 'disconnect') {
     const r = await sellerApi('DELETE', `/shops/${shopId}/shipping`, { cookie });
-    return r.status === 200 ? shippingPage(res, me, cookie, shopId, 'Đã ngắt kết nối hãng vận chuyển.', null)
+    return r.status === 200 ? keo(r, 'Đã ngắt kết nối hãng vận chuyển.')
       : shippingPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không ngắt được kết nối.');
   }
   const body = {
@@ -832,7 +836,7 @@ async function doShippingOp(res, me, cookie, shopId, form) {
     pickup: { name: form.pick_name, phone: form.pick_phone, address: form.pick_address, province: form.pick_province, district: form.pick_district, ward: form.pick_ward },
   };
   const r = await sellerApi('PUT', `/shops/${shopId}/shipping`, { cookie, body });
-  return r.status === 200 ? shippingPage(res, me, cookie, shopId, `Đã kết nối ${form.provider.toUpperCase()}.`, null)
+  return r.status === 200 ? keo(r, `Đã kết nối ${form.provider.toUpperCase()}.`)
     : shippingPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không kết nối được.');
 }
 async function shippingOp(req, res, me, cookie, shopId) {

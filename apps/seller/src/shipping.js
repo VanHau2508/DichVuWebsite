@@ -59,16 +59,37 @@ async function connectShipping(res, ctx, body) {
     if (!pickup[f]) return send(res, 400, { error: `thiếu thông tin điểm lấy hàng: ${f}` });
   }
   const prefix = token.slice(0, 6);
-  await withTenant(ctx.shopId, async (c) => {
+  const out = await withTenant(ctx.shopId, async (c) => {
+    // ĐỔI HÃNG = MẤT THEO DÕI vận đơn của hãng cũ, y hệt NGẮT KẾT NỐI. Bảng cấu hình có PK
+    // shop_id (0044) — MỘT dòng/shop — nên UPSERT dưới đây GHI ĐÈ token cũ, và token hãng cũ
+    // biến mất vĩnh viễn: không còn đường nào hỏi hãng cũ về những kiện đang trên đường.
+    //
+    // disconnectShipping ngay dưới đã xử đúng ca này từ lâu (đánh dấu 'orphan' + trả cảnh
+    // báo để shop tự chốt giao tay). Đường ĐỔI hãng gây đúng hậu quả đó mà KHÔNG có dòng nào
+    // tương ứng — nên vận đơn cũ chết ÂM THẦM: worker im lặng bỏ qua (0044 join theo
+    // provider), đơn COD nằm 'shipped'/'unpaid' mãi, mà trang Vận chuyển vẫn hứa
+    // "hệ thống tự theo dõi trạng thái tới khi giao xong".
+    const cu = (await c.query(`SELECT provider FROM shop_shipping_config WHERE shop_id = current_shop_id()`, [])).rows[0];
+    const doiHang = cu?.provider && cu.provider !== provider;
+    let mocCoi = 0;
+    if (doiHang) {
+      mocCoi = (await c.query(
+        `UPDATE shipments SET provider_status = 'orphan'
+          WHERE status IN ('created','in_transit') AND provider = $1 RETURNING id`, [cu.provider])).rowCount;
+    }
     await c.query(
       `INSERT INTO shop_shipping_config (shop_id, provider, token_enc, token_prefix, ghn_shop_id, pickup, enabled, updated_at)
        VALUES (current_shop_id(), $1, $2, $3, $4, $5, true, now())
        ON CONFLICT (shop_id) DO UPDATE SET provider = $1, token_enc = $2, token_prefix = $3, ghn_shop_id = $4, pickup = $5, enabled = true, updated_at = now()`,
       [provider, seal(token, ENC_KEY), prefix, provider === 'ghn' ? ghnShopId : null, JSON.stringify(pickup)],
     );
-    await audit(c, 'shipping.connected', { actorId: ctx.user.id, ip: ctx.ip, metadata: { provider } });
+    await audit(c, 'shipping.connected', { actorId: ctx.user.id, ip: ctx.ip, metadata: { provider, ...(doiHang ? { tu_hang: cu.provider, van_don_mo_coi: mocCoi } : {}) } });
+    return { doiHang, mocCoi, hangCu: cu?.provider ?? null };
   });
-  return send(res, 200, { ok: true, provider, token_prefix: prefix });
+  return send(res, 200, {
+    ok: true, provider, token_prefix: prefix, live_shipments: out.mocCoi,
+    ...(out.mocCoi ? { warning: `${out.mocCoi} vận đơn ${String(out.hangCu).toUpperCase()} đang chạy sẽ KHÔNG còn được theo dõi tự động (token hãng cũ đã bị thay) — hãy tự đánh dấu "Đã giao xong" và "Đã nhận tiền" khi hàng tới.` } : {}),
+  });
 }
 
 // KIỂM TRA KẾT NỐI: dùng token ĐÃ lưu, gọi API tính phí (GHTK) / danh mục (GHN) — 0đ, KHÔNG

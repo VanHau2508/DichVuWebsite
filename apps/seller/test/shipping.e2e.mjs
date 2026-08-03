@@ -108,7 +108,11 @@ async function placeCod(shop, vid, email) {
 }
 
 // ── STUB hãng VC: server giả trong dbtest, hành vi điều khiển bằng biến `mode` ──
-const stub = { ghtkMode: 'ok', ghtkStatus: 4, lastCreateBody: null, ghnMode: 'ok' };
+// ghtkTrackCalls: ĐẾM lượt hỏi tra-cứu GHTK. Cần đếm chứ không chỉ kiểm kết quả, vì bằng
+// chứng của lỗi "đổi hãng" là worker VẪN ĐI HỎI hãng cũ (bằng token hãng mới) — nhìn kết quả
+// cuối thì hai nguyên nhân "không hỏi" và "hỏi nhưng hãng từ chối" trông y hệt nhau.
+// createDelayMs: giả lập request tạo vận đơn TIMEOUT (CarrierError ambiguous) → claim ở lại.
+const stub = { ghtkMode: 'ok', ghtkStatus: 4, lastCreateBody: null, ghnMode: 'ok', ghtkTrackCalls: 0, ghtkTrackUrls: [], createDelayMs: 0 };
 function startStubs() {
   const ghtk = http.createServer((req, res) => {
     let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
@@ -117,13 +121,20 @@ function startStubs() {
         try { stub.lastCreateBody = JSON.parse(b); } catch { stub.lastCreateBody = null; }
         if (req.headers.token !== 'ghtk-token-cua-shop-a-123') { res.statusCode = 401; return res.end(JSON.stringify({ success: false, message: 'sai token' })); }
         if (stub.ghtkMode !== 'ok') { res.statusCode = 422; return res.end(JSON.stringify({ success: false, message: 'hãng từ chối (stub)' })); }
-        return res.end(JSON.stringify({ success: true, order: { label: `S1.A2.${Math.floor(Math.random() * 1e7)}`, fee: 22000 } }));
+        const tra = () => res.end(JSON.stringify({ success: true, order: { label: `S1.A2.${Math.floor(Math.random() * 1e7)}`, fee: 22000 } }));
+        // Trả CHẬM hơn CARRIER_TIMEOUT_MS → seller huỷ chờ và ném CarrierError{ambiguous}.
+        // Đây là ca "không biết hãng đã tạo chưa": claim CỐ Ý ở lại, không xoá.
+        return stub.createDelayMs ? setTimeout(tra, stub.createDelayMs) : tra();
       }
       if (req.url.startsWith('/services/shipment/fee') && req.method === 'GET') {
         if (req.headers.token !== 'ghtk-token-cua-shop-a-123') { res.statusCode = 401; return res.end(JSON.stringify({ success: false, message: 'sai token' })); }
         return res.end(JSON.stringify({ success: true, fee: { name: 'Nội quận', fee: 15000, insurance_fee: 0 } }));
       }
       if (req.url.startsWith('/services/shipment/v2/') && req.method === 'GET') {
+        stub.ghtkTrackCalls++; stub.ghtkTrackUrls.push(req.url);
+        // KIỂM TOKEN như hãng thật. Thiếu dòng này thì stub trả 'đã giao' cho BẤT KỲ token
+        // nào — nên mọi phép đo về lệch-token đều MÙ, kể cả phép đo của chính bộ test này.
+        if (req.headers.token !== 'ghtk-token-cua-shop-a-123') { res.statusCode = 401; return res.end(JSON.stringify({ success: false, message: 'sai token' })); }
         return res.end(JSON.stringify({ success: true, order: { status: stub.ghtkStatus } }));
       }
       res.statusCode = 404; res.end('{}');
@@ -343,6 +354,95 @@ async function main() {
     body: { customer: { name: 'K', phone: phone() }, address: { line: 'x', province: 'Tỉnh Không Tồn Tại' }, payment_method: 'cod' },
     cartToken: cart, idemKey: `k-${uniq()}` });
   r.status === 400 ? ok('province lạ → 400') : bad('không validate province', r.raw);
+
+  // ── 8. ĐỔI HÃNG khi còn kiện đang bay ───────────────────────────────────────
+  sect('8. Đổi hãng khi còn kiện đang bay: không được chết ÂM THẦM');
+  // shop_shipping_config có PK shop_id — MỘT dòng/shop — nên đổi hãng GHI ĐÈ token. Vận đơn
+  // của hãng cũ vẫn nằm 'in_transit', và trước bản vá worker vẫn nhặt chúng lên rồi hỏi hãng
+  // CŨ bằng token MỚI: hãng từ chối → xoay xuống cuối → lặp ~4.320 lượt/30 ngày rồi im. COD
+  // của những đơn đó KHÔNG BAO GIỜ tự lật 'paid' (nhánh duy nhất làm việc đó nằm sau
+  // st.state === 'delivered'), mà trang Vận chuyển vẫn hứa "hệ thống tự theo dõi tới khi giao xong".
+  const stepUp = () => rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
+  const sweepTrack = () => fetch(`${WORKER}/internal/tracking-sweep`, { method: 'POST' }).then((x) => x.json());
+  const donCua = async (id) => (await owner.query(`SELECT status, payment_status FROM orders WHERE id=$1`, [id])).rows[0];
+  const kienCua = async (id) => (await owner.query(`SELECT status, provider, provider_status, tracking_number FROM shipments WHERE order_id=$1 ORDER BY created_at DESC LIMIT 1`, [id])).rows[0];
+
+  await stepUp();
+  r = await a.put('/shipping', { provider: 'ghtk', token: 'ghtk-token-cua-shop-a-123', pickup: PICKUP });
+  r.status === 200 ? ok('quay lại kết nối GHTK') : bad('không nối lại GHTK', r.raw);
+
+  // ĐỐI CHỨNG: cùng kịch bản nhưng KHÔNG đổi hãng → đường tự động phải chạy trọn.
+  const oCtrl = await placeCod(A, vid, null);
+  await a.post(`/orders/${oCtrl.id}/confirm`, {});
+  await a.post(`/orders/${oCtrl.id}/carrier-shipment`, TO);
+  stub.ghtkStatus = 5;                       // hãng báo ĐÃ GIAO
+  await sweepTrack();
+  let d = await donCua(oCtrl.id);
+  d.status === 'delivered' && d.payment_status === 'paid'
+    ? ok('ĐỐI CHỨNG: không đổi hãng → sweep chốt delivered + COD tự paid')
+    : bad('đường tự động vốn đã hỏng — mọi khẳng định dưới đây vô nghĩa', JSON.stringify(d));
+
+  // Ca thật: kiện GHTK đang bay, shop đổi sang GHN.
+  const oSwap = await placeCod(A, vid, null);
+  await a.post(`/orders/${oSwap.id}/confirm`, {});
+  await a.post(`/orders/${oSwap.id}/carrier-shipment`, TO);
+  await stepUp();
+  r = await a.put('/shipping', { provider: 'ghn', token: 'ghn-token-abc', ghn_shop_id: '190001', pickup: PICKUP });
+  r.status === 200 && Number(r.json?.live_shipments) >= 1 && /không còn được theo dõi tự động/i.test(r.json?.warning ?? '')
+    ? ok(`đổi hãng → API báo ${r.json.live_shipments} vận đơn mất theo dõi + cảnh báo chốt tay`)
+    : bad('đổi hãng IM LẶNG (không đếm, không cảnh báo)', `${r.status} ${JSON.stringify(r.json)}`);
+  (await kienCua(oSwap.id))?.provider_status === 'orphan'
+    ? ok("kiện của hãng cũ được đánh dấu 'orphan' (mirror ngắt-kết-nối)") : bad('kiện cũ không được đánh dấu', JSON.stringify(await kienCua(oSwap.id)));
+
+  // Đếm theo ĐÚNG MÃ VẬN ĐƠN này, không đếm tổng số lượt. Vòng quét chạy CHÉO SHOP và DB dev
+  // tích luỹ vận đơn GHTK của những lần chạy trước (cùng trỏ vào stub này), nên bộ đếm toàn
+  // cục sẽ chập chờn — bản thân phép đo phải miễn nhiễm với rác của lần chạy trước.
+  const maSwap = (await kienCua(oSwap.id))?.tracking_number;
+  const truoc = stub.ghtkTrackUrls.filter((u) => u.includes(maSwap)).length;
+  await sweepTrack();
+  const sau = stub.ghtkTrackUrls.filter((u) => u.includes(maSwap)).length;
+  maSwap && sau === truoc
+    ? ok(`sweep KHÔNG hỏi hãng cũ về ${maSwap} nữa (0 lượt gọi GHTK bằng token GHN)`)
+    : bad(`sweep vẫn nã hãng cũ bằng token sai: ${sau - truoc} lượt cho ${maSwap}`);
+  d = await donCua(oSwap.id);
+  d.status === 'shipped' && d.payment_status === 'unpaid'
+    ? ok('đơn giữ nguyên shipped/unpaid — shop phải chốt tay, đúng như cảnh báo đã nói')
+    : bad('trạng thái đơn sau đổi hãng sai', JSON.stringify(d));
+
+  // ── 9. CLAIM CHẾT không được khoá vĩnh viễn quyền sửa đơn ───────────────────
+  sect('9. Claim chết (timeout) không khoá vĩnh viễn quyền SỬA ĐƠN');
+  // Request tạo vận đơn timeout SAU khi hãng có thể đã nhận lệnh → seller GIỮ claim (chống
+  // tạo trùng vận đơn thật). 15' sau worker đặt status='cancelled'/'claim_expired' — nhưng
+  // chỉ UPDATE, shipment_lines nằm lại. Từ đó MỌI lần Sửa đơn đều 409 "đơn đã có vận đơn"
+  // cho một đơn CHƯA TỪNG gửi món hàng nào, và màn sửa đơn không có đường vòng nào.
+  await stepUp();
+  await a.put('/shipping', { provider: 'ghtk', token: 'ghtk-token-cua-shop-a-123', pickup: PICKUP });
+  const oDead = await placeCod(A, vid, null);
+  await a.post(`/orders/${oDead.id}/confirm`, {});
+  stub.createDelayMs = 12000;                 // > CARRIER_TIMEOUT_MS (10s)
+  r = await a.post(`/orders/${oDead.id}/carrier-shipment`, TO);
+  stub.createDelayMs = 0;
+  r.status === 502 && /giữ chỗ/.test(r.json?.error ?? '')
+    ? ok('timeout khi gọi hãng → 502 và GIỮ claim (không tạo trùng vận đơn thật)') : bad('không dựng được ca timeout', `${r.status} ${r.raw}`);
+  // Tua nhanh 15 phút rồi để CHÍNH vòng quét dọn claim — không tự tay UPDATE trạng thái.
+  await owner.query(`UPDATE shipments SET created_at = now() - interval '20 minutes' WHERE order_id = $1 AND status = 'created'`, [oDead.id]);
+  await sweepTrack();
+  const kienChet = await kienCua(oDead.id);
+  kienChet?.status === 'cancelled' && kienChet?.provider_status === 'claim_expired' && kienChet?.tracking_number == null
+    ? ok("vòng quét đặt claim thành 'cancelled'/'claim_expired' (chưa có mã vận đơn)") : bad('GC claim không chạy', JSON.stringify(kienChet));
+  r = await a.post(`/orders/${oDead.id}/edit`, {
+    lines: [{ variant_id: vid, qty: 1 }],
+    customer: { name: 'Khách Vận Đơn', phone: '0912345678', address_line: '12 Nguyễn Huệ', province: 'TP. Hồ Chí Minh' },
+  });
+  r.status === 200
+    ? ok('sửa đơn ĐƯỢC sau khi claim chết bị dọn (không còn ngõ cụt vĩnh viễn)')
+    : bad('claim chết vẫn khoá quyền sửa đơn', `${r.status} ${r.raw}`);
+  // Nhưng vận đơn THẬT (đã có mã) thì vẫn phải chặn — dọn dẹp không được nới hàng rào.
+  r = await a.post(`/orders/${oCtrl.id}/edit`, {
+    lines: [{ variant_id: vid, qty: 1 }],
+    customer: { name: 'K', phone: '0912345678', address_line: 'x', province: 'TP. Hồ Chí Minh' },
+  });
+  r.status === 409 ? ok('đơn có vận đơn THẬT vẫn 409 (hàng rào không bị nới)') : bad('nới nhầm hàng rào sửa đơn', `${r.status} ${r.raw}`);
 
   servers.ghn.close(); servers.ghtk.close();
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);

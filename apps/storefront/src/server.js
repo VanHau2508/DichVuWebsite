@@ -544,7 +544,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         ...(coGiDo ? [loc('/')] : []),
         ...(sm.prods.length ? [loc('/products'), ...sm.cats.map((c) => loc(`/products?cat=${c.slug}`))] : []),
         ...sm.prods.map((p) => loc(`/p/${p.slug}`)),
-        ...sm.pages.map((pg) => loc(`/${pg.slug}`)),
+        // /pages/:slug — ĐÚNG route thật (xem nhánh phục vụ trang nội dung bên dưới, và
+        // theme.js dựng menu bằng cùng đường đó). Trước đây phát `/${slug}` trần: mọi URL
+        // trang chính sách nộp cho Google đều 404, mà sitemap thì im lặng — không ai thấy
+        // cho tới khi mở Search Console. Đây cũng là lý do e2e phải LẤY CHÍNH <loc> trong
+        // sitemap rồi fetch lại, thay vì gõ tay đường dẫn vào test.
+        ...sm.pages.map((pg) => loc(`/pages/${pg.slug}`)),
         ...(sm.blog.length ? [loc('/blog'), ...sm.blog.map((b) => loc(`/blog/${b.slug}`))] : [])]
       const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
       res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': CACHE_PUBLIC });

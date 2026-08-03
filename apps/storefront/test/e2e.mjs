@@ -613,6 +613,39 @@ async function main() {
   r = await sf(A.host, '/sitemap.xml');
   r.body.includes(`<loc>https://${A.host}/products</loc>`) ? ok('sitemap có /products') : bad('sitemap thiếu /products');
 
+  // MỌI <loc> PHẢI TRỎ VÀO CHỖ CÓ THẬT — lấy CHÍNH chuỗi trong sitemap rồi fetch lại.
+  // KHÔNG gõ tay đường dẫn vào test: gõ tay đúng là cách lỗi này sống sót. Sitemap phát
+  // `/<slug>` cho trang nội dung trong khi route thật là `/pages/<slug>`, nên MỌI URL trang
+  // chính sách nộp cho Google đều 404 — mà cả sitemap lẫn test đều "tự tin" về cùng một
+  // đường dẫn không tồn tại. Nộp sitemap toàn URL chết còn hạ uy tín cả tên miền.
+  //
+  // Gom theo KHUÔN url (đoạn cuối → :x, kèm tên tham số) rồi thử MỘT đại diện mỗi khuôn:
+  // lớp lỗi ở đây là sai TIỀN TỐ, nên một đại diện là đủ, và không bắn N request vào
+  // chính rate-limit của storefront.
+  {
+    const locs = [...r.body.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1].replace(/&amp;/g, '&'));
+    const daiDien = new Map();
+    for (const u of locs) {
+      const { pathname, search, searchParams } = new URL(u);
+      const seg = pathname.split('/').filter(Boolean);
+      const khuon = (seg.length ? '/' + seg.slice(0, -1).concat(seg.length > 1 ? ':x' : seg[0]).join('/') : '/')
+        + (search ? '?' + [...searchParams.keys()].sort().join('&') : '');
+      if (!daiDien.has(khuon)) daiDien.set(khuon, pathname + search);
+    }
+    // Nếu fixture không có trang nội dung nào thì khẳng định dưới đây RỖNG NGHĨA — chặn trước.
+    [...daiDien.keys()].some((k) => k.startsWith('/pages/'))
+      ? ok(`sitemap có khuôn /pages/:x (${daiDien.size} khuôn URL)`)
+      : bad('sitemap KHÔNG có URL trang nội dung — ca kiểm dưới đây vô nghĩa', [...daiDien.keys()].join(' '));
+    const chet = [];
+    for (const [khuon, p] of daiDien) {
+      const rr = await sf(A.host, p);
+      if (rr.status !== 200) chet.push(`${khuon} → ${rr.status} (${p})`);
+    }
+    chet.length === 0
+      ? ok(`mọi khuôn URL trong sitemap đều trả 200 (${[...daiDien.keys()].join(' · ')})`)
+      : bad('sitemap mời Google vào URL CHẾT', chet.join(' | '));
+  }
+
   // ── Banner trang chủ tuỳ chỉnh (Phase 5): carousel ảnh tải riêng + fallback ──
   sect('Banner trang chủ (ảnh tự tải) + fallback hero tự động');
   // Upload 1 ảnh banner thật (seller re-encode WebP) → lấy key banner-.

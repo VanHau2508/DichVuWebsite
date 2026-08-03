@@ -1294,7 +1294,14 @@ async function sweepTracking() {
               cfg.token_enc, cfg.ghn_shop_id,
               o.status AS order_status, o.order_number, o.total_vnd, o.customer_email
          FROM shipments s
+         -- cfg.provider = s.provider LÀ BẮT BUỘC. shop_shipping_config có PK shop_id — MỘT
+         -- dòng/shop — nên đổi hãng là GHI ĐÈ token (seller/shipping.js ON CONFLICT). Ghép
+         -- chỉ theo shop_id thì vận đơn GHTK cũ vẫn bị nhặt lên nhưng đi hỏi bằng token GHN
+         -- mới: hãng trả lỗi → carrierState() trả null → bump → thử lại 4.320 lượt vô ích
+         -- trong 30 ngày rồi im. Không log, không metric — COD của những đơn đó KHÔNG BAO
+         -- GIỜ tự lật 'paid' (nhánh duy nhất làm việc đó nằm sau st.state === 'delivered').
          JOIN shop_shipping_config cfg ON cfg.shop_id = s.shop_id AND cfg.enabled
+                                      AND cfg.provider = s.provider
          JOIN orders o ON o.id = s.order_id
         WHERE s.provider IS NOT NULL AND s.status = 'in_transit'
           AND s.created_at > now() - ($2 || ' days')::interval
@@ -1307,6 +1314,7 @@ async function sweepTracking() {
     const zomb = await expiryDb.query(
       `SELECT count(*)::int n FROM shipments s
          JOIN shop_shipping_config cfg ON cfg.shop_id = s.shop_id AND cfg.enabled
+                                      AND cfg.provider = s.provider
         WHERE s.provider IS NOT NULL AND s.status = 'in_transit'
           AND s.created_at <= now() - ($1 || ' days')::interval`, [String(TRACKING_GIVEUP_DAYS)]).catch(() => null);
     log('warn', 'tracking_batch_saturated', { batch: TRACKING_BATCH, gave_up: zomb?.rows[0]?.n ?? null });
@@ -2081,7 +2089,12 @@ const STALE_SQL =
        UNION ALL
        SELECT o.shop_id, o.order_number, o.created_at, 'shipped' FROM orders o
         WHERE o.status = 'shipped'
-          AND coalesce((SELECT max(s.created_at) FROM shipments s WHERE s.order_id = o.id), o.created_at)
+          -- BỎ vận đơn đã huỷ khỏi mốc "đã gửi hãng". max() trên MỌI dòng cho phép một claim
+          -- chết tạo hôm nay (hoặc dòng bị 'orphan' khi shop đổi/ngắt hãng) kéo mốc về hiện
+          -- tại → đơn gửi 10 ngày trước KHÔNG BAO GIỜ lọt digest "đơn ứ". Tức là chính lớp
+          -- cảnh báo sinh ra để cứu đơn kẹt lại bị đơn kẹt nhất làm mù.
+          AND coalesce((SELECT max(s.created_at) FROM shipments s
+                         WHERE s.order_id = o.id AND s.status <> 'cancelled'), o.created_at)
               < now() - ($2 || ' days')::interval
      ) t
     WHERE shop_id > $3

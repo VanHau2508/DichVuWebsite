@@ -2708,7 +2708,10 @@ export function renderOrderPrint(shopId, shop, o) {
     : '';
   const contact = [s.business_address, s.contact_phone ? `ĐT: ${s.contact_phone}` : '', s.contact_email ? `Email: ${s.contact_email}` : '']
     .filter(Boolean).map(esc).join(' · ');
-  const ship = (o.shipments ?? [])[0];
+  // KIỆN CÒN SỐNG đầu tiên, không phải kiện ĐẦU DANH SÁCH. o.shipments sắp xếp
+  // ORDER BY created_at (cũ nhất trước), nên đơn có claim hỏng rồi gửi lại sẽ in mã của
+  // kiện ĐÃ HUỶ lên phiếu giao hàng/hoá đơn — shipper cầm giấy sai, khách tra mã ra số 0.
+  const ship = (o.shipments ?? []).find((x) => x.status !== 'cancelled');
   const ST = { pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn tiền', returned: 'Hoàn hàng' };
   const PT = { unpaid: 'Chưa thanh toán', pending: 'Chờ thanh toán', paid: 'Đã thanh toán', refunded: 'Đã hoàn tiền' };
   const CSS = `*{box-sizing:border-box}body{font-family:system-ui,'Segoe UI',Roboto,sans-serif;color:#0d1526;margin:0;padding:24px;font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased}
@@ -2734,7 +2737,10 @@ function printDoc(shopId, s, o, { backLink = false } = {}) {
     : '';
   const contact = [s.business_address, s.contact_phone ? `ĐT: ${s.contact_phone}` : '', s.contact_email ? `Email: ${s.contact_email}` : '']
     .filter(Boolean).map(esc).join(' · ');
-  const ship = (o.shipments ?? [])[0];
+  // KIỆN CÒN SỐNG đầu tiên, không phải kiện ĐẦU DANH SÁCH. o.shipments sắp xếp
+  // ORDER BY created_at (cũ nhất trước), nên đơn có claim hỏng rồi gửi lại sẽ in mã của
+  // kiện ĐÃ HUỶ lên phiếu giao hàng/hoá đơn — shipper cầm giấy sai, khách tra mã ra số 0.
+  const ship = (o.shipments ?? []).find((x) => x.status !== 'cancelled');
   const ST = { pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn tiền', returned: 'Hoàn hàng' };
   const PT = { unpaid: 'Chưa thanh toán', pending: 'Chờ thanh toán', paid: 'Đã thanh toán', refunded: 'Đã hoàn tiền' };
   return `<div class="doc">
@@ -3623,8 +3629,13 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
 // ── Trang nội dung (versioned: draft → publish snapshot) ─────────────────────
 export function renderContentPages(ctx, shopId, data) {
   const pages = data?.pages ?? [];
+  // Dòng phụ dưới tên trang phải là ĐƯỜNG DẪN CÔNG KHAI THẬT `/pages/<slug>`. Đây là chỉ dẫn
+  // DUY NHẤT trên màn này về chỗ trang đang nằm, và người bán sẽ dán nó vào bài Facebook/Zalo.
+  // In "/<slug>" trần là đưa họ một link 404 — đúng lỗi mà sitemap từng mắc (storefront chỉ
+  // phục vụ trang nội dung ở /pages/:slug). Bộ chọn liên kết của trang Giao diện, CÙNG FILE
+  // này, vốn đã dựng đúng '/pages/' + slug.
   const rows = pages.map((p) => `<tr>
-    <td><a href="/shops/${esc(shopId)}/pages/${esc(p.id)}">${esc(p.title)}</a><div class="muted" style="font-size:.8rem">/${esc(p.slug)}</div></td>
+    <td><a href="/shops/${esc(shopId)}/pages/${esc(p.id)}">${esc(p.title)}</a><div class="muted" style="font-size:.8rem">/pages/${esc(p.slug)}</div></td>
     <td>${badge(p.status, PGSTATUS[p.status] ?? p.status)}</td>
     <td class="num right">${p.menu_position ?? '—'}</td>
     <td class="muted">${dt(p.updated_at)}</td></tr>`).join('');

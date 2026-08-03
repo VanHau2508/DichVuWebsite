@@ -19,9 +19,10 @@ CREATE TABLE platform_unmatched_transfers (
   content           text,
   received_account  text,
   reason            text NOT NULL CHECK (reason IN ('no_ref','charge_not_found','charge_cancelled','charge_paid','amount_short')),
-  -- Biết được shop nào thì ghi (charge_* / amount_short tra ra từ billing_charges); no_ref
-  -- và charge_not_found thì NULL — người vận hành đối chiếu bằng nội dung + số tiền.
-  shop_id           uuid REFERENCES shops(id),
+  -- CỐ Ý KHÔNG có cột shop_id. Shop suy ra được: pay_ref → billing_charges.shop_id (chỉ
+  -- no_ref/charge_not_found là không suy ra được, và đúng là lúc đó ta KHÔNG biết shop nào).
+  -- Thêm cột shop_id sẽ vừa thừa vừa phá bất biến schema "mọi bảng có shop_id đều ENABLE +
+  -- FORCE RLS" — bảng này là CẤP NỀN TẢNG, cô lập bằng GRANT chứ không bằng policy.
   pay_ref           text,
   raw               jsonb NOT NULL,
   resolved_at       timestamptz,
@@ -36,6 +37,12 @@ CREATE INDEX platform_unmatched_open ON platform_unmatched_transfers (created_at
 -- KHÔNG bật RLS: bảng CẤP NỀN TẢNG, không thuộc shop nào. Cô lập bằng GRANT hẹp thay vì
 -- policy — vai nào không được kể tên dưới đây thì không đọc/ghi nổi.
 ALTER TABLE platform_unmatched_transfers OWNER TO app_owner;
+
+-- app_rw (vai của seller/checkout — mọi shop dùng chung) TUYỆT ĐỐI không đụng bảng NỀN TẢNG:
+-- ghi được vào đây là một shop tự đóng dấu "đã xử lý" cho khoản tiền của mình, hoặc bịa ra
+-- khoản tiền lạc. Bất biến P0-3 ("app_rw không ghi được bảng global nào trừ shops") đã bắt
+-- đúng chỗ này khi bảng vừa ra đời — GRANT mặc định của schema public là thứ dễ quên nhất.
+REVOKE ALL ON platform_unmatched_transfers FROM app_rw;
 
 -- payment: CHÈN (và SELECT vì ON CONFLICT dưới RLS/quyền cần đọc để đánh giá xung đột).
 GRANT SELECT, INSERT ON platform_unmatched_transfers TO app_payment;

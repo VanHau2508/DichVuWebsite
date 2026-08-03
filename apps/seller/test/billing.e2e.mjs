@@ -255,8 +255,11 @@ async function main() {
   // trong tài khoản nền tảng, DB không vết, 7 ngày sau shop bị khoá vì "chưa trả". (0135)
   const openQ = async () => Number((await owner.query(
     `SELECT count(*)::int n FROM platform_unmatched_transfers WHERE resolved_at IS NULL`)).rows[0].n);
+  // shop KHÔNG lưu thành cột (bảng cấp nền tảng, không bật RLS) — suy ra qua pay_ref.
   const rowOf = async (evId) => (await owner.query(
-    `SELECT reason, amount_vnd, shop_id, pay_ref FROM platform_unmatched_transfers WHERE provider_event_id=$1`, [evId])).rows[0];
+    `SELECT u.reason, u.amount_vnd, u.pay_ref, bc.shop_id
+       FROM platform_unmatched_transfers u LEFT JOIN billing_charges bc ON bc.pay_ref = u.pay_ref
+      WHERE u.provider_event_id = $1`, [evId])).rows[0];
   await owner.query(`DELETE FROM platform_unmatched_transfers`);   // bộ khác có thể để lại
 
   // (a) shop gõ THIẾU nội dung chuyển khoản → không dò ra mã.

@@ -272,10 +272,10 @@ async function sepayWebhook(req, res, body) {
           log('warn', 'billing_unmatched', { reason, ref: bref, amount: ev.amount, ...extra });
           await c.query(
             `INSERT INTO platform_unmatched_transfers
-               (provider, provider_event_id, amount_vnd, content, received_account, reason, shop_id, pay_ref, raw)
-             VALUES ('sepay', $1, $2, $3, $4, $5, $6, $7, $8)
+               (provider, provider_event_id, amount_vnd, content, received_account, reason, pay_ref, raw)
+             VALUES ('sepay', $1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (provider, provider_event_id) DO NOTHING`,
-            [ev.eventId, ev.amount, ev.content ?? null, ev.rcvAccount || null, reason, extra.shop_id ?? null, bref, body],
+            [ev.eventId, ev.amount, ev.content ?? null, ev.rcvAccount || null, reason, bref, body],
           );
           return { matched: false, reason };
         };

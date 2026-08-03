@@ -304,7 +304,9 @@ async function getBillingConfig(req, res) {
   // biết LÀ GÌ và xử được. Chỉ khoản CHƯA xử lý; đã xử lý thì rơi khỏi danh sách.
   const unmatched = (await db.query(
     `SELECT u.id, u.amount_vnd, u.content, u.reason, u.pay_ref, u.created_at, s.slug AS shop_slug
-       FROM platform_unmatched_transfers u LEFT JOIN shops s ON s.id = u.shop_id
+       FROM platform_unmatched_transfers u
+       LEFT JOIN billing_charges bc ON bc.pay_ref = u.pay_ref
+       LEFT JOIN shops s ON s.id = bc.shop_id
       WHERE u.resolved_at IS NULL ORDER BY u.created_at DESC LIMIT 100`)).rows;
   return send(res, 200, {
     unmatched,

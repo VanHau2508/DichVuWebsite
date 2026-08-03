@@ -53,6 +53,8 @@ thống của ta; giữ lại chỉ vì mới import chính là vi phạm chính
 `shops.pii_retention_months` mặc định NULL = **tắt**, nên chỉ shop chủ động bật mới gặp.
 
 Cái thiếu là **lời báo trước**: người bán vừa bỏ công di cư để giữ CRM, không ai nói cho họ
-biết N đơn trong tệp sẽ bị ẩn danh trong 24 giờ. Hướng đúng là **cảnh báo lúc nhập** (đếm số
-dòng cũ hơn hạn lưu, hiện ngay trên trang kết quả nhập), KHÔNG phải miễn trừ đơn di cư khỏi
-quét — miễn trừ là tạo một lỗ hổng PII vĩnh viễn để chữa một sự bất ngờ.
+biết N đơn trong tệp sẽ bị ẩn danh trong 24 giờ. **ĐÃ LÀM (commit 1648dca):** cảnh báo ngay ở màn XEM TRƯỚC (và nhắc lại ở màn nhập thật) —
+`demDonSeAnDanh()` trong `apps/seller/src/import.js` đếm số đơn trong lô sẽ quá hạn, mốc cắt
+tính bằng SQL cho khớp đúng biểu thức quét. Shop chưa bật hạn lưu thì không cảnh báo gì.
+KHÔNG miễn trừ đơn di cư khỏi quét — miễn trừ là tạo một lỗ hổng PII vĩnh viễn để chữa một
+sự bất ngờ.

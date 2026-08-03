@@ -535,6 +535,42 @@ const O_STATUS = { delivered: 'delivered', completed: 'delivered', done: 'delive
 const O_PAY = { paid: 'paid', 'đã thanh toán': 'paid', 'da thanh toan': 'paid', unpaid: 'unpaid',
   pending: 'unpaid', refunded: 'refunded' };
 
+// Trạng thái mà quét ẩn danh PII đụng tới — MIRROR của apps/worker/src/index.js
+// (sweepPiiRetention, `o.status IN (...)`). Bản chép tay này để CẢNH BÁO, không cưỡng chế:
+// hai bên lệch thì con số cảnh báo sai, KHÔNG mất tiền và không mất dữ liệu.
+//
+// NÓI THẲNG: HÔM NAY đây là no-op. O_STATUS ở trên chỉ ánh xạ ra delivered/cancelled/refunded
+// và mọi chuỗi lạ rơi về 'delivered' (dòng 574) → mọi đơn nhập đều terminal, bộ lọc không
+// loại dòng nào. Giữ lại vì nó chặn ĐÚNG hướng an toàn: nếu sau này O_STATUS nhận thêm một
+// trạng thái CHƯA XONG (vd 'shipped'), cảnh báo sẽ tự động thôi đếm dòng đó thay vì doạ nhầm.
+// Cố ý KHÔNG viết test cho nhánh này: qua đường nhập nó không tới được, test sẽ phải bịa
+// dữ liệu và chỉ chứng minh chính nó.
+const PII_TERMINAL = new Set(['delivered', 'cancelled', 'refunded', 'returned']);
+
+/**
+ * Đếm xem trong lô sắp nhập, bao nhiêu đơn sẽ bị ẩn danh NGAY nhịp quét kế.
+ *
+ * VÌ SAO CẦN: importOrders ghi `created_at` = NGÀY TRÊN TỆP CŨ (đúng — đó là ngày đơn phát
+ * sinh thật), còn quét ẩn danh lọc theo `created_at`. Shop có bật hạn lưu mà nhập 2 năm lịch
+ * sử thì tên/SĐT/địa chỉ của phần cũ hơn hạn sẽ bị xoá trong vòng 24 giờ. Việc XOÁ là ĐÚNG
+ * chính sách (hạn lưu đo theo TUỔI DỮ LIỆU, không theo ngày nhập vào hệ thống) — cái sai duy
+ * nhất là KHÔNG AI BÁO TRƯỚC: người bán vừa bỏ công di cư để giữ hồ sơ khách. Xem docs/56.
+ *
+ * Mốc cắt tính BẰNG SQL, không bằng JS: `now() - (N || ' months')::interval` là đúng biểu
+ * thức quét dùng — cộng trừ tháng bằng tay trong JS sẽ lệch ở tháng 28/29/30/31 ngày.
+ * Shop chưa bật hạn lưu (NULL = mặc định) → trả null, không cảnh báo gì.
+ */
+async function demDonSeAnDanh(shopId, ready) {
+  const cfg = await withTenant(shopId, async (c) => (await c.query(
+    `SELECT pii_retention_months AS thang,
+            now() - (pii_retention_months || ' months')::interval AS moc
+       FROM shops WHERE id = current_shop_id()`)).rows[0] ?? null);
+  if (!cfg?.thang || !cfg.moc) return null;
+  const moc = new Date(cfg.moc);
+  const soDon = ready.filter((o) => PII_TERMINAL.has(o.status) && o.when < moc).length;
+  return soDon > 0 ? { retention_months: Number(cfg.thang), rows: soDon } : null;
+}
+
 export async function importOrders(res, ctx, body) {
   const raw = Array.isArray(body.rows) ? body.rows : [];
   if (raw.length === 0) return send(res, 400, { error: 'không có dòng nào để nhập' });
@@ -584,10 +620,14 @@ export async function importOrders(res, ctx, body) {
     });
   }
 
+  // Cảnh báo ẩn danh: tính cho CẢ hai đường. Ở xem-trước nó có giá trị nhất (còn kịp đổi
+  // hạn lưu trước khi ghi); ở nhập-thật vẫn phải có, vì người bán bấm thẳng "Nhập thật" được.
+  const pii = await demDonSeAnDanh(ctx.shopId, ready);
+
   if (body.dry_run === true) {
     return send(res, 200, {
       dry_run: true, rows: raw.length, created: ready.length, failed: errors.length,
-      errors: errors.slice(0, 100), columns,
+      errors: errors.slice(0, 100), columns, ...(pii ? { pii } : {}),
       preview: ready.slice(0, 20).map((o) => ({
         ref: o.ref, date: o.when.toISOString().slice(0, 10), name: o.name, phone: o.phone,
         total_vnd: o.total, status: o.status,
@@ -646,7 +686,7 @@ export async function importOrders(res, ctx, body) {
 
   return send(res, 200, {
     created, duplicate, failed: errors.length, errors: errors.slice(0, 100), columns,
-    customers: new Set(ready.map((x) => x.phone)).size,
+    customers: new Set(ready.map((x) => x.phone)).size, ...(pii ? { pii } : {}),
   });
 }
 

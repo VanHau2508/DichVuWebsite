@@ -514,6 +514,41 @@ async function main() {
     ? ok('nhập thật đơn cũ qua trang admin')
     : bad('nhập thật đơn cũ lỗi', String(or2.status));
 
+  // ── CẢNH BÁO ẨN DANH: shop có bật hạn lưu PII thì phải BÁO TRƯỚC ở màn xem trước ──
+  // Đơn cũ nhập vào mang created_at = ngày ở sàn cũ, mà quét ẩn danh lọc theo created_at →
+  // phần cũ hơn hạn lưu mất tên/SĐT trong 24h. Xoá là ĐÚNG chính sách shop tự đặt; cái sai
+  // là không ai báo cho người vừa bỏ công di cư để giữ hồ sơ khách (docs/56).
+  const oCsvCu = [
+    'order_code,date,customer_name,customer_phone,total_vnd,status',
+    `OLD-${uniq()},10/01/2021,Khách Rất Cũ,0977000222,300000,delivered`,
+    `NEW-${uniq()},10/05/2026,Khách Mới,0977000333,300000,delivered`,
+  ].join('\n');
+  // (a) chưa bật hạn lưu (mặc định) → KHÔNG cảnh báo gì, không doạ người dùng vô cớ.
+  let oc = await multipart(`/shops/${A.shopId}/orders/import`, { cookie: A.cookie, mode: 'preview', csv: oCsvCu });
+  oc.status === 200 && !/cũ hơn hạn lưu/.test(oc.body)
+    ? ok('chưa bật hạn lưu PII → xem trước KHÔNG hiện cảnh báo ẩn danh')
+    : bad('doạ người bán dù chưa bật hạn lưu', String(oc.status));
+  // (b) bật 12 tháng → cảnh báo ĐÚNG 1 đơn (đơn 2026 chưa quá hạn), kèm lối đổi cài đặt.
+  await owner.query(`UPDATE shops SET pii_retention_months = 12 WHERE id = $1`, [A.shopId]);
+  oc = await multipart(`/shops/${A.shopId}/orders/import`, { cookie: A.cookie, mode: 'preview', csv: oCsvCu });
+  const hienSo = /1 đơn trong lô này cũ hơn hạn lưu thông tin khách của bạn \(12 tháng\)/.test(oc.body);
+  hienSo ? ok('bật hạn lưu 12 tháng → xem trước cảnh báo ĐÚNG 1 đơn (đơn mới không bị đếm)')
+    : bad('cảnh báo ẩn danh sai/thiếu', (oc.body.match(/cũ hơn hạn lưu[^<]*/) ?? ['(không có)'])[0]);
+  /Doanh số, dòng hàng và trạng thái đơn <strong>giữ nguyên<\/strong>/.test(oc.body)
+    ? ok('cảnh báo nói RÕ cái KHÔNG mất (doanh số + nội dung đơn)') : bad('cảnh báo đọc như "mất đơn"');
+  // Soi TRONG khối cảnh báo, không phải cả trang: đường /settings có sẵn ở menu điều hướng
+  // nên kiểm cả trang thì khẳng định này luôn xanh kể cả khi khối cảnh báo biến mất — đúng
+  // loại khẳng định chứng minh chính nó. (Mutation đã lộ ra điều đó.)
+  const khoiCanhBao = /⚠ \d+ đơn trong lô này cũ hơn hạn lưu[\s\S]*?<\/div>/.exec(oc.body)?.[0] ?? '';
+  new RegExp(`/shops/${A.shopId}/settings`).test(khoiCanhBao)
+    ? ok('cảnh báo chỉ thẳng lối đổi hạn lưu (link Cài đặt nằm TRONG khối cảnh báo)')
+    : bad('cảnh báo không có lối ra');
+  // (c) nhập thật cũng phải nhắc lại — người bán bấm thẳng "Nhập thật" được, không qua xem trước.
+  oc = await multipart(`/shops/${A.shopId}/orders/import`, { cookie: A.cookie, mode: 'commit', csv: oCsvCu });
+  oc.status === 200 && /cũ hơn hạn lưu/.test(oc.body)
+    ? ok('nhập thật cũng nhắc lại cảnh báo ẩn danh') : bad('nhập thẳng không cảnh báo gì');
+  await owner.query(`UPDATE shops SET pii_retention_months = NULL WHERE id = $1`, [A.shopId]);
+
   // ── Biến thể NGAY Ở FORM TẠO (size/màu) ────────────────────────────────────
   // Trước đây phải tạo SP xong rồi mới vào trang chi tiết mới đặt được phân loại — shop thời
   // trang/giày dép gặp đúng ở sản phẩm ĐẦU TIÊN. BFF gọi lại chính endpoint PUT .../options

@@ -3291,6 +3291,26 @@ export const ORDER_IMPORT_SAMPLE_CSV = [
   'SPX-240701-003,01/07/2026,Trần Văn Nam,0912888777,,99000,đã huỷ,,',
 ].join('\n');
 
+// Cảnh báo ẩn danh PII cho lô đơn cũ sắp nhập / vừa nhập.
+// Nói HẬU QUẢ trước, cơ chế sau, và chỉ THẲNG chỗ đổi — người bán vừa bỏ công di cư để giữ
+// hồ sơ khách, họ cần biết ngay là sẽ mất phần nào và đổi được ở đâu. Nói RÕ cái KHÔNG mất
+// (doanh số, nội dung đơn) cũng quan trọng ngang: thiếu vế đó thì câu này đọc như "mất đơn".
+function piiImportWarn(pii, shopId, truocKhiNhap) {
+  if (!pii?.rows) return '';
+  return `<div class="card" style="border-color:var(--warn);background:var(--warnbg)">
+    <h2 style="margin-top:0">⚠ ${esc(pii.rows)} đơn trong lô này cũ hơn hạn lưu thông tin khách của bạn (${esc(pii.retention_months)} tháng)</h2>
+    <p style="margin:0 0 8px">${truocKhiNhap
+      ? `Nếu nhập, <strong>tên · số điện thoại · email · địa chỉ</strong> của ${esc(pii.rows)} đơn đó sẽ được <strong>ẩn danh trong vòng 24 giờ</strong>.`
+      : `<strong>Tên · số điện thoại · email · địa chỉ</strong> của ${esc(pii.rows)} đơn vừa nhập sẽ được <strong>ẩn danh trong vòng 24 giờ</strong>.`}
+      Doanh số, dòng hàng và trạng thái đơn <strong>giữ nguyên</strong> — chỉ phần nhận dạng khách bị xoá.</p>
+    <p class="muted" style="margin:0 0 12px;font-size:.9rem">Đây là chính sách <em>bạn</em> đã đặt: hạn lưu tính theo
+      <strong>tuổi của đơn</strong>, không tính theo ngày nhập vào hệ thống — nên đơn cũ vừa nhập cũng đã quá hạn.</p>
+    <p style="margin:0">${truocKhiNhap
+      ? `Muốn giữ lại thông tin khách thì <strong>đổi hạn lưu trước khi bấm Nhập thật</strong>: `
+      : `Muốn giữ lại cho những lần nhập sau: `}<a class="btn" href="/shops/${esc(shopId)}/settings">Cài đặt → Ẩn danh đơn cũ</a></p>
+  </div>`;
+}
+
 export function renderOrderImport(ctx, shopId, result, err) {
   const base = `/shops/${esc(shopId)}/orders`;
   const n = (x) => esc(Number(x ?? 0));
@@ -3324,7 +3344,7 @@ export function renderOrderImport(ctx, shopId, result, err) {
       ${result.failed ? `<p><strong style="color:var(--warn)">${n(result.failed)} dòng sẽ bị bỏ</strong> — sửa rồi tải lại.</p>${errTable}` : '<p class="muted">Không có lỗi nào.</p>'}
       ${rows ? `<div class="tblscroll"><table data-cards><thead><tr><th>Mã gốc</th><th>Ngày</th><th>Khách</th><th class="right">Tổng tiền</th><th>Trạng thái</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
       <p style="margin:16px 0 0">Ưng ý thì chọn lại tệp ở dưới và bấm <strong>Nhập thật</strong>.</p>
-    </div>`;
+    </div>${piiImportWarn(result.pii, shopId, true)}`;
   } else if (result) {
     card = `<div class="card" style="border-color:var(--good)">
       <h2 style="margin-top:0">Đã nhập xong</h2>
@@ -3336,7 +3356,7 @@ export function renderOrderImport(ctx, shopId, result, err) {
       ${result.duplicate ? '<p class="muted" style="margin-top:-4px">Các đơn bỏ qua đã có sẵn (khớp mã gốc) — nhập lại cùng tệp KHÔNG nhân đôi số liệu khách.</p>' : ''}
       ${errTable}
       <p style="margin-bottom:0"><a class="btn" href="/shops/${esc(shopId)}/customers">Xem hồ sơ khách hàng →</a></p>
-    </div>`;
+    </div>${piiImportWarn(result.pii, shopId, false)}`;
   }
 
   return layout('Nhập đơn cũ', ctx, `

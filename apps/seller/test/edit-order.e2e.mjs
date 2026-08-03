@@ -188,6 +188,59 @@ async function main() {
       : bad('tổng sau khi đổi số lượng không trừ điểm', `http=${r.status} thực=${sau3} kỳ vọng=${kyVong}`);
   }
 
+  sect('Đơn có MÃ GIẢM GIÁ: sửa bớt hàng phải TÍNH LẠI giảm giá theo luật của mã');
+  // Ca thật: checkout kẹp mã hai lớp (từ chối khi subtotal < min_subtotal_vnd, rồi
+  // min(raw, subtotal)). Đường sửa đơn từng bê nguyên discount_vnd cũ sang tiền hàng MỚI —
+  // dựng lại được: mã "giảm 85.000, đơn từ 340.000" trên đơn sửa còn 85.000 vẫn ăn đủ
+  // 85.000 → KHÁCH ÔM HÀNG MIỄN PHÍ, chỉ trả ship. Ca nặng hơn thì tổng âm → 422 ngõ cụt
+  // (màn sửa đơn không có ô nào chỉnh giảm giá).
+  {
+    const giaB = Number((await owner.query(`SELECT price_vnd FROM variants WHERE id=$1`, [B])).rows[0].price_vnd);
+    // Nạp thêm tồn cho B: các khối trước đã ăn gần hết, mà khối này cần 4 món.
+    await owner.query(`UPDATE inventory_levels SET on_hand = on_hand + 20 WHERE variant_id=$1`, [B]);
+    const c4 = await co('POST', '/cart/items', { json: { variant_id: B, qty: 4 } });
+    const pl = await co('POST', '/checkout', { json: { customer: { name: 'M', phone: '0912000444', email: 'm@x.vn' }, address: { line: 'z', province: 'Hà Nội' }, payment_method: 'cod' }, cartCookie: c4.cartCookie, idem: `m-${uniq()}` });
+    const md = (await owner.query(`SELECT id, shipping_vnd FROM orders WHERE shop_id=$1 AND customer_phone='0912000444' ORDER BY created_at DESC LIMIT 1`, [shopId])).rows[0];
+    if (!md) bad('không tạo được đơn để test mã giảm giá', `cart=${c4.status} place=${pl.status} ${pl.raw}`);
+    else {
+      // (a) mã CÒN trong bảng, có ngưỡng đơn tối thiểu → sửa xuống dưới ngưỡng = mất giảm.
+      const code = `MG${uniq()}`.toUpperCase().slice(0, 18);
+      await owner.query(`INSERT INTO coupons (shop_id, code, kind, value, min_subtotal_vnd, active) VALUES ($1,$2,'fixed',$3::bigint,$4::bigint,true)`,
+        [shopId, code, giaB, giaB * 3]);
+      await owner.query(`UPDATE orders SET coupon_code=$2, discount_vnd=$3::bigint, total_vnd=total_vnd-$3::bigint WHERE id=$1`, [md.id, code, giaB]);
+      r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${md.id}/edit`,
+        { body: { lines: [{ variant_id: B, qty: 1 }], customer: { name: 'M', phone: '0912000444' } }, cookie: oc, origin: OS });
+      const a = (await owner.query(`SELECT subtotal_vnd, discount_vnd, total_vnd FROM orders WHERE id=$1`, [md.id])).rows[0];
+      r.status === 200 && Number(a.discount_vnd) === 0 && Number(a.total_vnd) === giaB + Number(md.shipping_vnd)
+        ? ok(`sửa còn ${giaB}đ hàng < ngưỡng mã ${giaB * 3}đ → giảm giá về 0, tổng ${a.total_vnd}đ`)
+        : bad('mã vẫn ăn giảm dù đơn tụt dưới ngưỡng', `http=${r.status} hàng=${a.subtotal_vnd} giảm=${a.discount_vnd} tổng=${a.total_vnd}`);
+      // Bất biến CỨNG, đúng thứ checkout giữ: giảm giá không bao giờ vượt tiền hàng.
+      Number(a.discount_vnd) <= Number(a.subtotal_vnd)
+        ? ok('bất biến: giảm giá ≤ tiền hàng sau khi sửa')
+        : bad('giảm giá vượt tiền hàng', `${a.discount_vnd} > ${a.subtotal_vnd}`);
+      // (b) mã ĐÃ BỊ XOÁ khỏi bảng → không còn luật để tra → chia theo TỶ LỆ hàng còn lại
+      //     (cùng quy tắc phân bổ giảm giá đã dùng ở nhận-trả-hàng), KHÔNG giữ nguyên số cũ.
+      await owner.query(`UPDATE orders SET discount_vnd=$2::bigint, coupon_code='DAXOA' WHERE id=$1`, [md.id, giaB]);
+      r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${md.id}/edit`,
+        { body: { lines: [{ variant_id: B, qty: 4 }], customer: { name: 'M', phone: '0912000444' } }, cookie: oc, origin: OS });
+      const b2 = (await owner.query(`SELECT subtotal_vnd, discount_vnd FROM orders WHERE id=$1`, [md.id])).rows[0];
+      // Sửa TĂNG hàng (1→4): tỷ lệ cho ra số lớn hơn, nhưng luật là "không bao giờ cao hơn
+      // mức ban đầu" → giữ nguyên giaB. Chốt luôn chiều này để không ai nới thành phình ra.
+      r.status === 200 && Number(b2.discount_vnd) === giaB
+        ? ok(`mã đã xoá + sửa TĂNG hàng → giảm giá GIỮ ${giaB}đ (không phình theo tỷ lệ)`)
+        : bad('sửa tăng hàng làm giảm giá phình ra', `http=${r.status} giảm=${b2.discount_vnd} (ban đầu ${giaB})`);
+      // Rồi sửa GIẢM: 4 → 1 = còn 1/4 hàng → giảm giá cũng còn 1/4.
+      r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${md.id}/edit`,
+        { body: { lines: [{ variant_id: B, qty: 1 }], customer: { name: 'M', phone: '0912000444' } }, cookie: oc, origin: OS });
+      const b3 = (await owner.query(`SELECT subtotal_vnd, discount_vnd FROM orders WHERE id=$1`, [md.id])).rows[0];
+      const cho = Math.round((giaB * giaB) / (giaB * 4));
+      r.status === 200 && Number(b3.discount_vnd) === cho
+        ? ok(`mã đã xoá + sửa 4→1 món → giảm giá chia tỷ lệ còn ${b3.discount_vnd}đ`)
+        : bad('mã đã xoá: không chia tỷ lệ', `http=${r.status} giảm=${b3.discount_vnd} kỳ vọng=${cho}`);
+      await owner.query(`DELETE FROM coupons WHERE shop_id=$1 AND code=$2`, [shopId, code]);
+    }
+  }
+
   sect('Audit: order.edited ghi diff from→to');
   const ae = (await owner.query(`SELECT metadata FROM audit_logs WHERE shop_id=$1 AND action='order.edited' ORDER BY id DESC LIMIT 1`, [shopId])).rows[0];
   ae && ae.metadata?.changed && (ae.metadata.changed.total_vnd || ae.metadata.lines) ? ok('audit order.edited có changed/lines diff') : bad('audit thiếu diff', JSON.stringify(ae?.metadata));

@@ -47,10 +47,14 @@ MANIFEST_UNIT_FILES=(
   # isApex: chọn hiện hướng dẫn CNAME (tên miền con) hay A+TXT (tên miền gốc). Bẫy là
   # đuôi nhiều nhãn kiểu `com.vn` — e2e không dựng nổi đủ biến thể, unit thì dựng được.
   apps/seller/test/hostname-apex.test.js
+  # Canh TRÔI LỆCH cho các đoạn SQL chép tay sang nhiều service (mỗi service một image
+  # nên không gộp được). E2E không bắt nổi: mỗi bản chạy trong một container khác nhau,
+  # không có màn nào nhìn thấy cả hai cùng lúc.
+  apps/seller/test/shared-sql.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=16
+MANIFEST_UNIT_COUNT=17
 MANIFEST_E2E_COUNT=92
 
 manifest_unit_files() {

@@ -946,6 +946,44 @@ function parseEditBody(body) {
   return { ok: true, lines0, name, phone, email, addressLine, province, hasNote, noteVal, shipOverride };
 }
 
+/**
+ * TRẦN GIẢM GIÁ sau khi sửa dòng hàng — bất biến "giảm giá ≤ tiền hàng còn lại".
+ *
+ * VÌ SAO CÓ: checkout kẹp giảm giá hai lớp — từ chối mã khi `subtotal < min_subtotal_vnd`,
+ * rồi `Math.min(raw, subtotal)` (checkout/server.js:313-330). Đường SỬA ĐƠN vốn bê nguyên
+ * `discount_vnd` cũ sang tiền hàng MỚI, không tra lại `coupons` lần nào. Dựng lại được
+ * (a14 ca B): mã "giảm 85.000, đơn từ 340.000" trên đơn sửa còn 85.000 tiền hàng vẫn ăn đủ
+ * 85.000 → KHÁCH ÔM HÀNG MIỄN PHÍ, chỉ trả ship. Ca nặng hơn thì tổng âm → 422 "điều chỉnh
+ * lại", mà màn sửa đơn KHÔNG có ô nào chỉnh giảm giá → ngõ cụt.
+ *
+ * LUẬT: giảm giá sau sửa = mã đó tính trên số hàng CÒN LẠI, và KHÔNG BAO GIỜ cao hơn mức
+ * ban đầu. Nói một câu: "sửa đơn cho ra đúng con số như khách vừa đặt đơn mới với đúng số
+ * hàng đó; sửa thêm hàng cũng không làm giảm giá phình ra."
+ *
+ * KHÔNG lọc active/expires: ta không CẤP LẠI mã, chỉ đọc LUẬT của nó (kind/value/ngưỡng) để
+ * chặn trên. Mã đã tắt/hết hạn mà xoá sạch giảm giá của đơn cũ là phạt oan khách.
+ * Mã đã bị XOÁ khỏi bảng → không còn luật để tra → chia theo TỶ LỆ hàng còn lại, đúng quy
+ * tắc phân bổ giảm giá đã dùng ở nhận-trả-hàng (createReturn).
+ */
+async function tranGiamGiaSauSua(c, h, subtotal, fail) {
+  const cu = Number(h.discount);
+  if (cu <= 0) return 0;
+  const cp = h.coupon_code ? (await c.query(
+    `SELECT kind, value, min_subtotal_vnd FROM coupons
+      WHERE shop_id = current_shop_id() AND upper(code) = upper($1)`, [h.coupon_code])).rows[0] : null;
+  let tran;
+  if (cp) {
+    // Y HỆT couponDiscount() của checkout: percent làm tròn XUỐNG, cap ≤ tiền hàng.
+    tran = subtotal < Number(cp.min_subtotal_vnd) ? 0
+      : Math.max(0, Math.min(cp.kind === 'percent' ? Math.floor(subtotal * Number(cp.value) / 100) : Number(cp.value), subtotal));
+  } else {
+    const cuSub = Number(h.subtotal);
+    tran = cuSub > 0 ? Math.min(Math.round((cu * subtotal) / cuSub), subtotal) : 0;
+  }
+  if (!Number.isFinite(tran) || tran < 0) fail(500, 'không tính được giảm giá sau khi sửa');
+  return Math.min(cu, tran);
+}
+
 // Đối chiếu dòng hàng + tồn kho + tính tiền — LÕI CHUNG v1/v2. Đơn `o` ĐÃ khoá FOR UPDATE
 // và ĐÃ qua guard trạng thái ở nơi gọi. Khoá biến thể theo THỨ TỰ (chống deadlock), tăng
 // kiểm tồn+reserve / giảm nhả, thay order_lines, cập nhật header (KHÔNG đụng payment_status/
@@ -995,19 +1033,25 @@ async function reconcileEditLines(c, o, P, fail) {
   }
   let subtotal = 0;
   for (const t of targetLines) subtotal += t.unit * t.qty;
-  const discount = Number(o.discount_vnd);
+  // TIỀN HEADER — ĐỌC THẲNG TỪ DB, không nhận qua `o`: hai nơi gọi (v1/v2) có SELECT riêng,
+  // để mấy cột này phụ thuộc caller nhớ chọn là dựng lại đúng cái bẫy đã vá ở a6 — quên một
+  // bên thì `?? 0` nuốt im lặng và tiền sai. Đơn đã khoá FOR UPDATE nên đọc thêm vẫn nhất quán.
   // GIẢM GIÁ ĐIỂM là khoản trừ RIÊNG, không nằm trong discount_vnd (checkout: total =
-  // subtotal − discount − points_discount + shipping). Quên nó ở đây thì mỗi lần sửa đơn,
-  // tổng tự nhảy lên ĐÚNG bằng số điểm khách đã đổi — khách bị đòi lại phần đã tiêu điểm,
-  // mà sổ điểm thì vẫn ghi đã trừ. Đã dựng lại được ở a6 (776.000 → 826.000).
-  // ĐỌC THẲNG TỪ DB, không nhận qua `o`: hai nơi gọi (v1/v2) có SELECT riêng, để cột này
-  // phụ thuộc caller nhớ chọn là dựng lại đúng cái bẫy vừa vá — quên một bên thì `?? 0`
-  // nuốt im lặng và tiền lại sai. Đơn đã khoá FOR UPDATE nên đọc thêm vẫn nhất quán.
-  const pointsDiscount = Number((await c.query(
-    `SELECT coalesce(points_discount_vnd, 0)::bigint AS d FROM orders WHERE id = $1`, [o.id])).rows[0].d);
+  // subtotal − discount − points_discount + shipping). Quên nó thì mỗi lần sửa đơn tổng tự
+  // nhảy lên ĐÚNG bằng số điểm khách đã đổi (a6: 776.000 → 826.000).
+  const h = (await c.query(
+    `SELECT coalesce(points_discount_vnd, 0)::bigint AS points_discount,
+            coalesce(discount_vnd, 0)::bigint AS discount, coalesce(subtotal_vnd, 0)::bigint AS subtotal,
+            coupon_code
+       FROM orders WHERE id = $1`, [o.id])).rows[0];
+  const pointsDiscount = Number(h.points_discount);
+  const discount = await tranGiamGiaSauSua(c, h, subtotal, fail);
   const shipping = P.shipOverride != null ? P.shipOverride : Number(o.shipping_vnd);
   const total = subtotal + shipping - discount - pointsDiscount;
-  if (total < 0) fail(422, 'tổng đơn âm (giảm giá + điểm thưởng vượt tiền hàng + ship) — điều chỉnh lại');
+  // Chỉ còn ĐIỂM THƯỞNG mới đẩy được tổng xuống âm (giảm giá đã bị kẹp ≤ tiền hàng ở trên).
+  // KHÔNG kẹp điểm: điểm là tiền KHÁCH đã tiêu, cắt đi = ăn không của khách. Đường ra đúng
+  // là hoàn lại phần điểm thừa — cần quyền ghi sổ điểm từ seller, để v2 (xem docs/54).
+  if (total < 0) fail(422, 'tổng đơn âm: điểm thưởng khách đã đổi vượt giá trị đơn sau khi sửa — huỷ đơn và đặt lại thay vì sửa');
 
   await c.query(`DELETE FROM order_lines WHERE order_id = $1`, [o.id]);
   for (const t of targetLines) {
@@ -1021,14 +1065,17 @@ async function reconcileEditLines(c, o, P, fail) {
   // Header CHUNG (khách/địa chỉ/tiền) — payment_status/amount_paid_vnd để nơi gọi tự set.
   await c.query(
     `UPDATE orders SET customer_name = $2, customer_phone = $3, customer_email = $4, shipping_address = $5,
-            subtotal_vnd = $6, shipping_vnd = $7, total_vnd = $8, note = $9 WHERE id = $1`,
-    [o.id, P.name, P.phone, P.email, address, subtotal, shipping, total, note],
+            subtotal_vnd = $6, shipping_vnd = $7, total_vnd = $8, note = $9, discount_vnd = $10 WHERE id = $1`,
+    [o.id, P.name, P.phone, P.email, address, subtotal, shipping, total, note, discount],
   );
   // Audit diff from→to.
   const changed = {};
   const setIf = (k, from, to) => { if (String(from ?? '') !== String(to ?? '')) changed[k] = { from: from ?? null, to: to ?? null }; };
   setIf('subtotal_vnd', Number(o.subtotal_vnd), subtotal);
   setIf('shipping_vnd', Number(o.shipping_vnd), shipping);
+  // Giảm giá tính lại theo hàng còn lại → PHẢI vào nhật ký: đây là khoản tiền đổi mà người
+  // bán không tự gõ, không ghi thì sau này không ai giải thích được vì sao tổng lệch.
+  setIf('discount_vnd', Number(h.discount), discount);
   setIf('total_vnd', Number(o.total_vnd), total);
   setIf('customer_name', o.customer_name, P.name);
   setIf('customer_phone', o.customer_phone, P.phone);

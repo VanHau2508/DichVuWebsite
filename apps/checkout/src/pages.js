@@ -172,7 +172,16 @@ const itemsBlock = (items) => items.map((it) => `
     </form>
   </div></div><div class="right"><strong>${money(it.line_total_vnd)}</strong></div></div>`).join('');
 
+// Món KHÔNG CÒN BÁN nằm trong giỏ (biến thể mồ côi: shop thu hẹp phân loại sau khi khách đã
+// thêm vào giỏ). Chúng bị loại khỏi tổng tiền — phải NÓI RA, vì lặng lẽ bớt món là khách
+// tưởng mình bấm nhầm, còn lặng lẽ giữ món thì tổng trên màn khác tổng lúc chốt đơn.
+const hiddenNote = (s) => (Number(s.hidden_items ?? 0) > 0
+  ? `<div class="muted" style="font-size:.85rem;color:#b45309;margin:6px 0">
+       ${Number(s.hidden_items)} sản phẩm trong giỏ không còn được bán (cửa hàng đã đổi phân loại) nên không tính vào đơn.
+     </div>` : '');
+
 const totalsBlock = (s) => `
+  ${hiddenNote(s)}
   <div class="tot"><span class="muted">Tạm tính</span><span>${money(s.subtotal_vnd)}</span></div>
   ${s.discount_vnd ? `<div class="tot"><span class="muted">Giảm giá${s.coupon_code ? ` (${esc(s.coupon_code)})` : ''}</span><span style="color:#0e9f6e">−${money(s.discount_vnd)}</span></div>` : ''}
   ${s.points_discount_vnd ? `<div class="tot"><span class="muted">Đổi ${esc(s.loyalty?.applied_points ?? '')} điểm</span><span style="color:#0e9f6e">−${money(s.points_discount_vnd)}</span></div>` : ''}

@@ -337,8 +337,16 @@ async function summarize(c, cartId, province = null, coords = null) {
             (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key
        FROM cart_items ci JOIN variants v ON v.id = ci.variant_id JOIN products p ON p.id = v.product_id
        LEFT JOIN LATERAL promo_effective(p.id, v.price_vnd, now()) pe ON true
-      WHERE ci.cart_id = $1 ORDER BY ci.created_at`, [cartId],
+      WHERE ci.cart_id = $1 AND ${VARIANT_NOT_ORPHAN_SQL} ORDER BY ci.created_at`, [cartId],
   )).rows;
+  // Món MỒ CÔI phải bị loại Ở ĐÂY NỮA, không chỉ ở createOrderTx (dòng ~810). Trước đây chỉ
+  // lúc chốt đơn mới lọc, nên GIỎ và ĐƠN đếm HAI TẬP KHÁC NHAU → subtotal_seen (có món mồ
+  // côi) luôn > subtotal tính lại lúc chốt → 409 "giá sản phẩm vừa cập nhật" → dựng lại form
+  // → summarize lại kèm món đó → 409 lại. VÒNG LẶP VÔ TẬN: khách không đặt được đơn nào
+  // trong giỏ đó, kể cả các món BÌNH THƯỜNG nằm chung. Đếm để màn hình nói ra, không nuốt.
+  const soMonAn = Number((await c.query(
+    `SELECT count(*)::int n FROM cart_items ci JOIN variants v ON v.id = ci.variant_id
+      WHERE ci.cart_id = $1 AND NOT (${VARIANT_NOT_ORPHAN_SQL})`, [cartId])).rows[0].n);
   let subtotal = 0;
   const out = items.map((it) => {
     // GIÁ HIỆU LỰC: promo_effective (flash sale 0082) NẾU đang chạy, không thì giá gốc variants.
@@ -360,6 +368,7 @@ async function summarize(c, cartId, province = null, coords = null) {
   const coupon = cc ? await resolveCoupon(c, cc, subtotal) : null;
   const discount = coupon?.discount ?? 0;
   return { items: out, subtotal_vnd: subtotal, shipping_vnd: outOfRange ? null : shipping, discount_vnd: discount, coupon_code: coupon?.code ?? null,
+    hidden_items: soMonAn,
     total_vnd: outOfRange ? null : subtotal - discount + shipping, fee_region_pending: feeRegionPending, ship_out_of_range: outOfRange,
     distance_mode: cfg.mode === 'distance' };
 }

@@ -259,7 +259,10 @@ async function main() {
   const cart4 = (await co({ method: 'POST', host: A.host, path: '/cart/add', form: { variant_id: prod.vid, qty: '1' } })).cartCookie;
   await co({ method: 'POST', host: A.host, path: '/cart/coupon', form: { code: MA }, cartCookie: cart4 });
   const page4 = (await co({ host: A.host, path: '/checkout', accept: 'text/html', cartCookie: cart4 })).body;
-  const grab2 = (b) => ({ ...grab(b), giam: b.match(/name="giam_seen" value="(\d+)"/)?.[1] });
+  // PHẢI lấy cả subtotal_seen: chính nó là cổng sinh ra vòng 409 ở ca biến thể mồ côi.
+  // Bản đầu của bộ này quên gửi ô đó nên mutation KHÔNG đỏ — test đo nhầm thứ.
+  const grab2 = (b) => ({ ...grab(b), giam: b.match(/name="giam_seen" value="(\d+)"/)?.[1],
+    sub: b.match(/name="subtotal_seen" value="(\d+)"/)?.[1] });
   let fm4 = grab2(page4);
   fm4.giam === '30000'
     ? ok('trang checkout mang hidden giam_seen=30000 (khách đang thấy giảm 30k)') : bad('không phát giam_seen', `giam=${fm4.giam} ${page4.slice(0, 200)}`);
@@ -269,7 +272,7 @@ async function main() {
   const n4Before = (await owner.query('SELECT count(*)::int n FROM orders WHERE shop_id=$1', [A.shopId])).rows[0].n;
   await sleep(2600);
   r = await co({ method: 'POST', host: A.host, path: '/checkout/place', cartCookie: cart4,
-    form: { idempotency_key: fm4.idem, ct: fm4.ct, ship_seen: fm4.seen, giam_seen: fm4.giam, name: 'Vũ Thị D', phone: '0905555555', address_line: '7 Trần Phú', province: 'Hà Nội', payment_method: 'cod' } });
+    form: { idempotency_key: fm4.idem, ct: fm4.ct, ship_seen: fm4.seen, giam_seen: fm4.giam, subtotal_seen: fm4.sub, name: 'Vũ Thị D', phone: '0905555555', address_line: '7 Trần Phú', province: 'Hà Nội', payment_method: 'cod' } });
   const n4After = (await owner.query('SELECT count(*)::int n FROM orders WHERE shop_id=$1', [A.shopId])).rows[0].n;
   r.status === 200 && n4After === n4Before && /Ưu đãi trên đơn vừa thay đổi/.test(r.body)
     ? ok('mã bị tắt giữa chừng → 200 dựng lại form báo "ưu đãi vừa thay đổi", KHÔNG tạo đơn')
@@ -280,12 +283,57 @@ async function main() {
   // Bấm lại với con số đúng → đơn tạo được, tổng KHÔNG có giảm giá.
   await sleep(2600);
   r = await co({ method: 'POST', host: A.host, path: '/checkout/place', cartCookie: cart4,
-    form: { idempotency_key: fm4.idem, ct: fm4.ct, ship_seen: fm4.seen, giam_seen: fm4.giam, name: 'Vũ Thị D', phone: '0905555555', address_line: '7 Trần Phú', province: 'Hà Nội', payment_method: 'cod' } });
+    form: { idempotency_key: fm4.idem, ct: fm4.ct, ship_seen: fm4.seen, giam_seen: fm4.giam, subtotal_seen: fm4.sub, name: 'Vũ Thị D', phone: '0905555555', address_line: '7 Trần Phú', province: 'Hà Nội', payment_method: 'cod' } });
   const m4 = /number=(\d+)&token=([^&\s]+)/.exec(r.location ?? '');
   const row4 = m4 ? (await owner.query('SELECT discount_vnd, total_vnd FROM orders WHERE shop_id=$1 AND order_number=$2', [A.shopId, Number(m4[1])])).rows[0] : null;
   r.status === 303 && row4 && Number(row4.discount_vnd) === 0
     ? ok(`bấm lại → 303 tạo đơn #${m4[1]}, giảm giá 0 đúng như màn hình vừa báo`)
     : bad('bấm lại sau khi xác nhận vẫn hỏng', `status=${r.status} ${JSON.stringify(row4)}`);
+
+  // ── 12. Món KHÔNG CÒN BÁN kẹt trong giỏ: KHÔNG được khoá cả giỏ ────────────
+  sect('12. Biến thể mồ côi trong giỏ → vẫn đặt được các món còn lại');
+  // Ca thật: khách bỏ vào giỏ, SAU đó shop thu hẹp phân loại (bỏ bớt một giá trị) →
+  // biến thể cũ mất ánh xạ trục = "mồ côi", vẫn active + còn giá/tồn.
+  // createOrderTx loại nó (dòng ~810) còn summarize thì KHÔNG → subtotal_seen luôn CAO HƠN
+  // subtotal tính lại lúc chốt → 409 "giá vừa cập nhật" → dựng lại form → summarize lại kèm
+  // đúng món đó → 409 lại. VÒNG LẶP VÔ TẬN, và nó khoá CẢ GIỎ chứ không riêng món hỏng.
+  const pOrp = await rq(SELLER, 'POST', `/shops/${A.shopId}/products`, {
+    body: { title: `SP mo coi ${uniq()}`, slug: `orp-${uniq()}`, status: 'active', price_vnd: 70000,
+      variants: [{ sku: `O-${uniq()}`, price_vnd: 70000 }] }, cookie: A.cookie, origin: OS });
+  const pid = pOrp.json?.id;
+  if (!pid) bad('không tạo được SP để dựng ca mồ côi', `${pOrp.status} ${pOrp.raw?.slice(0, 200)}`);
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/products/${pid}/options`, {
+    body: { options: [{ name: 'Màu', values: ['Đỏ', 'Vàng'] }] }, cookie: A.cookie, origin: OS });
+  const rOpt = await rq(SELLER, 'GET', `/shops/${A.shopId}/products/${pid}`, { cookie: A.cookie });
+  const vs = rOpt.json?.variants ?? [];
+  if (vs.length < 2) bad('không sinh được 2 biến thể theo trục Màu', `${rOpt.status} ${JSON.stringify(rOpt.json?.variants ?? rOpt.raw?.slice(0, 200))}`);
+  for (const v of vs) await rq(SELLER, 'POST', `/shops/${A.shopId}/variants/${v.id}/inventory/adjust`, { body: { delta: 20, reason: 'nhập' }, cookie: A.cookie, origin: OS });
+  const vVang = vs.find((v) => /Vàng/.test(v.title ?? ''))?.id ?? vs[1].id;
+  // Khách bỏ CẢ hai món vào giỏ: một món bình thường + món sắp thành mồ côi.
+  let cart5 = (await co({ method: 'POST', host: A.host, path: '/cart/add', form: { variant_id: prod.vid, qty: '1' } })).cartCookie;
+  cart5 = (await co({ method: 'POST', host: A.host, path: '/cart/add', form: { variant_id: vVang, qty: '1' }, cartCookie: cart5 })).cartCookie;
+  // Shop bỏ giá trị 'Vàng' → biến thể Vàng thành mồ côi.
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/products/${pid}/options`, {
+    body: { options: [{ name: 'Màu', values: ['Đỏ'] }] }, cookie: A.cookie, origin: OS });
+  const gio5 = (await co({ host: A.host, path: '/cart', accept: 'text/html', cartCookie: cart5 })).body;
+  /không còn được bán/.test(gio5)
+    ? ok('giỏ NÓI RA có món không còn bán (không lẳng lặng bớt, không lẳng lặng giữ)') : bad('giỏ không báo món mồ côi', gio5.slice(0, 300));
+  // Các mục trước đã để lại nhiều đơn 'pending' cùng IP → hàng rào chống bot leo thang sang
+  // câu hỏi xác minh, che mất thứ đang đo. Coi như shop đã xử lý xong chỗ đơn đó.
+  await owner.query(`UPDATE orders SET status='confirmed' WHERE shop_id=$1 AND status='pending'`, [A.shopId]);
+  const page5 = (await co({ host: A.host, path: '/checkout', accept: 'text/html', cartCookie: cart5 })).body;
+  const fm5 = grab2(page5);
+  await sleep(2600);
+  r = await co({ method: 'POST', host: A.host, path: '/checkout/place', cartCookie: cart5,
+    form: { idempotency_key: fm5.idem, ct: fm5.ct, ship_seen: fm5.seen, giam_seen: fm5.giam, subtotal_seen: fm5.sub, name: 'Đỗ Văn E', phone: '0906666666', address_line: '3 Bà Triệu', province: 'Hà Nội', payment_method: 'cod' } });
+  const m5 = /number=(\d+)&token=([^&\s]+)/.exec(r.location ?? '');
+  r.status === 303 && m5
+    ? ok(`đặt được ngay lần đầu (đơn #${m5[1]}) — không còn vòng 409 vô tận`)
+    : bad('vẫn kẹt vòng 409 với món mồ côi trong giỏ', `status=${r.status} LỖI=${(String(r.body).match(/(Vui lòng[^<]*|Ưu đãi[^<]*|Phí giao[^<]*|Giá sản phẩm[^<]*|giỏ hàng[^<]*|hết hàng[^<]*|xác minh[^<]*)/g) ?? ['(không thấy thông báo)']).join(' | ')}`);
+  const nLine = m5 ? (await owner.query(
+    `SELECT count(*)::int n FROM order_lines l JOIN orders o ON o.id=l.order_id WHERE o.shop_id=$1 AND o.order_number=$2`,
+    [A.shopId, Number(m5[1])])).rows[0].n : null;
+  nLine === 1 ? ok('đơn chỉ gồm 1 dòng hàng còn bán được (món mồ côi không lọt vào đơn)') : bad('số dòng hàng sai', String(nLine));
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

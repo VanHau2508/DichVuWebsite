@@ -202,6 +202,50 @@ async function main() {
     ? ok(`trả tiền → mở lại được (về '${un7b.status}') dù kẻ khoá là sweep thuê bao`)
     : bad('TRẢ TIỀN RỒI VẪN BỊ KHOÁ VĨNH VIỄN', `shop=${un7b.status}`);
 
+  sect('7c. Shop bị nền tảng khoá vì VI PHẠM: cưỡng chế nợ phí KHÔNG được đóng dấu hộ');
+  // Lỗ hợp thành: (1) enforce khoá shop rồi đóng dấu suspended_at để đường mở khoá biết
+  // "chính ta khoá"; (2) apply mở khoá dựa DUY NHẤT vào dấu đó. Shop đã bị nền tảng khoá tay
+  // thì UPDATE ở (1) trượt (guard status IN active/onboarding) NHƯNG dấu vẫn bị đóng → shop
+  // vi phạm TỰ MỞ LẠI ĐƯỢC bằng cách trả một tháng tiền. §7 ở trên không bắt được vì nó
+  // không hề chạy enforce ở giữa — đúng kiểu "test xanh mà lỗ vẫn còn".
+  await owner.query(`UPDATE shops SET status='suspended' WHERE id=$1`, [A.shopId]);
+  await owner.query(
+    `UPDATE subscriptions SET status='past_due', current_period_end = now() - interval '60 days',
+            suspended_at = NULL, suspended_from = NULL WHERE shop_id=$1`, [A.shopId]);
+  await billSweep();
+  const sub7c = await subOf(A.shopId);
+  !sub7c.suspended_at
+    ? ok('enforce KHÔNG đóng dấu lên shop nó không khoá được (dấu vẫn trống)')
+    : bad('enforce đóng dấu khống → shop vi phạm mở lại được bằng tiền', `dấu=${sub7c.suspended_at}`);
+  const pay7c = await a.post('/billing/charge', { months: 1 });
+  await sepay(PLAT_TOKEN, { ref: pay7c.json.pay_ref, amount: Number(pay7c.json.amount_vnd), account: ACC });
+  await billSweep();
+  (await shopOf(A.shopId)).status === 'suspended'
+    ? ok('trả tiền xong shop vi phạm VẪN khoá (cưỡng chế của nền tảng còn nguyên nghĩa)')
+    : bad('TRẢ TIỀN MỞ ĐƯỢC SHOP BỊ KHOÁ VÌ VI PHẠM');
+
+  sect('7d. Nền tảng mở lại shop → dọn cờ nợ phí, kỳ sau vẫn khoá lại được');
+  // Cờ suspended_at là điều kiện LỌC của enforce (suspended_at IS NULL). Mở shop mà để cờ
+  // nguyên = shop rơi khỏi tập cưỡng chế VĨNH VIỄN → dùng miễn phí mãi mãi.
+  await owner.query(`UPDATE shops SET status='active' WHERE id=$1`, [A.shopId]);
+  await owner.query(
+    `UPDATE subscriptions SET status='past_due', current_period_end = now() - interval '60 days',
+            suspended_at = NULL, suspended_from = NULL WHERE shop_id=$1`, [A.shopId]);
+  await billSweep();                                   // → khoá thật + đóng dấu thật
+  const sub7d0 = await subOf(A.shopId);
+  sub7d0.suspended_at ? ok('enforce khoá shop nợ phí và đóng dấu') : bad('enforce không khoá được', JSON.stringify(sub7d0));
+  // Nhân viên nền tảng bấm "Mở lại" (/ops/shops/:id/restore — admin + step-up).
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: 'staff strong passphrase' }, cookie: staff, origin: OA });
+  const rest = await rq(PLATFORM, 'POST', `/ops/shops/${A.shopId}/restore`, { cookie: staff, origin: OO });
+  const sub7d1 = await subOf(A.shopId);
+  rest.status === 200 && !sub7d1.suspended_at
+    ? ok('bấm Mở lại → cờ nợ phí được DỌN (shop trở lại tầm ngắm của cưỡng chế)')
+    : bad('mở lại mà cờ còn nguyên → shop dùng miễn phí vĩnh viễn', `http=${rest.status} dấu=${sub7d1.suspended_at}`);
+  await billSweep();
+  (await shopOf(A.shopId)).status === 'suspended'
+    ? ok('vẫn nợ → nhịp cưỡng chế sau khoá lại được (không mù vĩnh viễn)')
+    : bad('mở lại xong cưỡng chế MÙ với shop này');
+
   sect('8. MÀN HÌNH: chủ shop BẤM THẬT trên trang Gói dịch vụ');
   // Bài học cũ: nút "có mặt" không nói gì về việc bấm vào có chạy. Ở đây gửi form thật.
   const adm = async (method, path, form) => {

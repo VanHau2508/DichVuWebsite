@@ -617,6 +617,14 @@ async function sweepBillingEnforce(batch = 200) {
       `SELECT s.shop_id, sh.status AS prev_status FROM subscriptions s
          JOIN shops sh ON sh.id = s.shop_id
         WHERE s.status IN ('past_due', 'cancelled') AND s.suspended_at IS NULL
+          -- CHỈ shop ĐANG BÁN ĐƯỢC. Shop đã bị nền tảng khoá vì VI PHẠM (hoặc đã chấm dứt)
+          -- không thuộc việc của cưỡng chế nợ phí — và quan trọng hơn: nếu để nó vào lô thì
+          -- UPDATE bên dưới trượt, còn dấu suspended_at vẫn bị đóng, tức shop bị khoá vì vi
+          -- phạm TỰ MỞ LẠI ĐƯỢC bằng cách trả một tháng tiền (sweepBillingApply:573 mở khoá
+          -- chỉ dựa vào suspended_at IS NOT NULL). Lọc ở đây thay vì bỏ dấu vì tập vẫn phải
+          -- CO LẠI khi xử xong — bỏ dấu mà không lọc thì mấy shop này nằm mãi đầu lô
+          -- (ORDER BY current_period_end) và chặn shop khác = đói quét.
+          AND sh.status IN ('active', 'onboarding')
           AND s.current_period_end IS NOT NULL
           AND s.current_period_end < now() - ($1 || ' days')::interval
         ORDER BY s.current_period_end LIMIT $2 FOR UPDATE OF s SKIP LOCKED`,
@@ -625,18 +633,19 @@ async function sweepBillingEnforce(batch = 200) {
     for (const r of rows) {
       // 'onboarding' CŨNG phải khoá: shop ở trạng thái đó VẪN bán được (0006 + nút "Mở
       // bán"), nên bỏ sót nó là để cả một nhóm shop dùng mãi không trả tiền mà vẫn hợp lệ.
-      //
-      // prev_status lấy từ truy vấn chọn ở trên (0126). Shop đang ở trạng thái khác (đã bị
-      // nền tảng khoá, đã terminated) → rowCount = 0 → KHÔNG ghi suspended_from, để việc
-      // trả tiền sau này không mở nhầm một shop bị khoá vì lý do khác.
       const locked = await c.query(
         `UPDATE shops SET status = 'suspended' WHERE id = $1 AND status IN ('active', 'onboarding')`,
         [r.shop_id],
       );
-      await c.query(
-        `UPDATE subscriptions SET suspended_at = now(), suspended_from = $2 WHERE shop_id = $1`,
-        [r.shop_id, locked.rowCount ? r.prev_status : null],
-      );
+      // ĐÓNG DẤU CHỈ KHI CHÍNH TA KHOÁ (mirror sweepSubscriptions:976). Trạng thái shop có
+      // thể đổi giữa lúc chọn và lúc UPDATE — ta chỉ khoá dòng subscriptions (FOR UPDATE OF s),
+      // không khoá shops. Ca hiếm đó để lại dòng cho lô sau xử, không đóng dấu khống.
+      if (locked.rowCount) {
+        await c.query(
+          `UPDATE subscriptions SET suspended_at = now(), suspended_from = $2 WHERE shop_id = $1`,
+          [r.shop_id, r.prev_status],
+        );
+      }
       log('warn', 'shop_suspended_nonpayment', { shop_id: r.shop_id, grace_days: BILLING_GRACE_DAYS, locked: locked.rowCount > 0 });
     }
     await c.query('COMMIT');

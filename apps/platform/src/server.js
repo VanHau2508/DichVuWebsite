@@ -465,6 +465,14 @@ async function renewSubscription(req, res, shopId, staff, ip, body) {
       [shopId, planCode, String(months)],
     );
     await client.query(`UPDATE shops SET status = 'active' WHERE id = $1 AND status = 'suspended'`, [shopId]);
+    // DỌN CỜ khoá-vì-nợ-phí. `subscriptions.suspended_at` mang đúng MỘT nghĩa: "shop ĐANG bị
+    // khoá bởi đường nợ phí". Mở shop mà để cờ nguyên thì shop rơi khỏi tập cưỡng chế VĨNH VIỄN
+    // (sweepBillingEnforce lọc `suspended_at IS NULL`) — kỳ sau hết hạn không ai khoá nữa,
+    // shop dùng miễn phí mãi.
+    // CÓ CHỦ Ý mở cả shop bị khoá TAY (vi phạm): đây là nhân viên nền tảng tự bấm renew, một
+    // quyết định của con người — khác hẳn webhook tự động của sweepBillingApply, nơi luật
+    // "trả tiền KHÔNG mở được shop bị khoá vì vi phạm" vẫn giữ nguyên (worker index.js:570).
+    await client.query(`UPDATE subscriptions SET suspended_at = NULL, suspended_from = NULL WHERE shop_id = $1`, [shopId]);
     await client.query(
       `INSERT INTO platform_invoices (shop_id, plan_code, months, amount_vnd, note, created_by)
        VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -548,6 +556,14 @@ async function setShopStatus(req, res, shopId, action, staff, ip, body) {
   const r = await db.query(sql, [shopId]);
   if (r.rowCount === 0) {
     return send(res, 409, { error: 'shop không ở trạng thái cho phép thao tác này' });
+  }
+  if (action !== 'suspend') {
+    // DỌN CỜ khoá-vì-nợ-phí. `subscriptions.suspended_at` mang đúng MỘT nghĩa: "shop đang bị
+    // khoá BỞI đường nợ phí". Mở lại mà để cờ nguyên thì shop rơi khỏi tập cưỡng chế VĨNH VIỄN
+    // (sweepBillingEnforce lọc suspended_at IS NULL) → dùng miễn phí mãi mãi.
+    // Sau khi dọn, nếu shop vẫn thực sự nợ thì cưỡng chế khoá lại ở nhịp sau — ĐÚNG như vậy:
+    // công cụ để cho shop bán tiếp là "ghi nhận đã thu" (cộng hạn), không phải nút Mở lại.
+    await db.query(`UPDATE subscriptions SET suspended_at = NULL, suspended_from = NULL WHERE shop_id = $1`, [shopId]);
   }
   await audit(auditAction, { shopId, actorId: staff.user.id, ip, metadata: { reason: body?.reason ?? null } });
   return send(res, 200, { ok: true, status: action === 'suspend' ? 'suspended' : 'active' });

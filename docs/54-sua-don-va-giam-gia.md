@@ -1,5 +1,29 @@
 # Sửa đơn và các khoản GIẢM GIÁ (mã giảm giá · điểm thưởng)
 
+## Bất biến gốc: MÀN HÌNH và ĐƠN phải nói cùng một con số
+
+`total = subtotal − discount − points_discount + shipping`
+
+Bốn số hạng đó phải do **một chỗ duy nhất** tính ra cho mọi màn (trang giỏ, trang checkout,
+form dựng lại sau 409, phản hồi định vị GPS): hàm `summarize()` ở `apps/checkout/src/server.js`.
+Lúc chốt đơn `createOrderTx` tính lại dưới khoá — đó mới là chân lý — nhưng nó phải RA CÙNG
+KẾT QUẢ, và vòng trung thực (`subtotal_seen` · `ship_seen` · `giam_seen`) là thứ cưỡng chế
+điều đó: lệch thì 409 + dựng lại form, không bao giờ lẳng lặng thu số khác.
+
+Ba lần vi phạm bất biến này đã tìm thấy trong cùng một ngày (2026-08-03), cả ba đều cùng
+hình dạng "một số hạng được tính ở nơi màn hình kia không gọi tới":
+
+| Số hạng | Vi phạm | Hậu quả |
+|---|---|---|
+| `discount` | mã chết giữa lúc xem và lúc bấm, không ai canh | khách bị thu **nhiều hơn** số trên nút |
+| `points_discount` | ngưỡng `min_redeem_points` chỉ kiểm lúc chốt đơn | giỏ hứa giảm mà đơn không giảm |
+| `points_discount` | chỉ được cộng vào ở handler `/cart`, trang checkout không có | nút in số **cao hơn** số thực thu; và sau khi có `giam_seen` thì thành **409 chặn đặt hàng** |
+
+Luật cho lần sau: **thêm bất kỳ khoản giảm mới nào thì phải thêm vào `summarize()`**, không
+phải vào một handler. Nếu buộc phải tính ở nơi khác, ô `giam_seen` sẽ đỏ ngay ở e2e — đó là
+chủ ý, đừng nới nó ra.
+
+
 Ghi lại luật đang chạy ở `reconcileEditLines` (apps/seller/src/orders.js) và **phần cố ý
 chưa làm**, để lần sau không ai phải đoán.
 

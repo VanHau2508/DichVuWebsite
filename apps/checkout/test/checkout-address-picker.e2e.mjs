@@ -156,6 +156,45 @@ async function main() {
   !fm.body.includes('name="address_choice"') && fm.body.includes('name="name" required')
     ? ok('guest: form nhập tay thường (không picker, field required)') : bad('guest thấy picker?', fm.body.slice(0, 150));
 
+  sect('6. Khách ĐĂNG NHẬP có ĐỔI ĐIỂM: trang checkout và đơn nói CÙNG một số');
+  // Hai lỗ chồng nhau ở đây:
+  //  (a) phần đổi điểm trước đây chỉ được cộng vào ở handler /cart, nên TRANG CHECKOUT không
+  //      trừ điểm → nút "Đặt hàng · X" in con số CAO HƠN số thực thu;
+  //  (b) vòng trung thực ưu đãi (giam_seen) đọc từ chính tóm tắt đó → lệch với lúc chốt đơn
+  //      → khách đổi điểm bị 409 "ưu đãi vừa thay đổi" CHẶN ĐẶT HÀNG ở mọi lần bấm.
+  // Bộ loyalty-redeem không bắt được vì nó đi đường API JSON (không gửi giam_seen).
+  await owner.query(
+    `INSERT INTO shop_loyalty_config (shop_id, enabled, earn_points_per_1000, redeem_vnd_per_point, earn_vesting_days, max_redeem_pct, min_redeem_points)
+     VALUES ($1,true,1,100,0,50,0) ON CONFLICT (shop_id) DO UPDATE SET enabled=true, redeem_vnd_per_point=100, max_redeem_pct=50, min_redeem_points=0, updated_at=now()`,
+    [A.shopId]);
+  await owner.query(
+    `INSERT INTO loyalty_balances (shop_id, customer_id, balance_points) VALUES ($1,$2,300)
+     ON CONFLICT (shop_id,customer_id) DO UPDATE SET balance_points=300, updated_at=now()`, [A.shopId, cust.id]);
+  const cartD = (await hreq(A.host, 'POST', '/cart/items', { json: { variant_id: vid, qty: 1 } })).cartTok;
+  await owner.query(`UPDATE carts SET points_redeem = 200 WHERE id = (SELECT id FROM carts WHERE shop_id=$1 ORDER BY created_at DESC LIMIT 1)`, [A.shopId]);
+  const pageD = await hreq(A.host, 'GET', '/checkout', { cartTok: cartD, custTok: cust.custTok });
+  const giamSeen = /name="giam_seen" value="(\d+)"/.exec(pageD.body)?.[1];
+  giamSeen === '20000'
+    ? ok('trang checkout TRỪ 20.000₫ đổi điểm (giam_seen=20000, khớp thứ sẽ thu)')
+    : bad('trang checkout không trừ điểm → nút in sai số + vòng trung thực sẽ lệch', `giam_seen=${giamSeen}`);
+  /Đổi 200 điểm/.test(pageD.body) ? ok('màn hiện dòng "Đổi 200 điểm"') : bad('không hiện dòng đổi điểm trên checkout');
+  const fmD = { ct: /name="ct" value="([^"]*)"/.exec(pageD.body)?.[1], idem: /name="idempotency_key" value="([^"]*)"/.exec(pageD.body)?.[1],
+    ship: /name="ship_seen" value="(\d+)"/.exec(pageD.body)?.[1], sub: /name="subtotal_seen" value="(\d+)"/.exec(pageD.body)?.[1] };
+  // Hàng rào chống bot đòi form phải "già" tối thiểu (formTs). Thiếu chỗ chờ này thì mọi POST
+  // đều rơi vào "Bạn thao tác hơi nhanh" — và test sẽ tố oan phần đang đo.
+  await sleep(2600);
+  const rD = await hreq(A.host, 'POST', '/checkout/place', { form: {
+    idempotency_key: fmD.idem, ct: fmD.ct, ship_seen: fmD.ship, subtotal_seen: fmD.sub, giam_seen: giamSeen,
+    address_choice: 'new', name: 'Khách Điểm', phone: '0913000111', address_line: '1 Lê Lợi', province: 'Hà Nội', payment_method: 'cod',
+  }, cartTok: cartD, custTok: cust.custTok });
+  if (rD.status !== 303) bad('khách đổi điểm KHÔNG đặt được đơn (409 chặn)', `${rD.status} ${(/<strong>([^<]+)<\/strong><\/div>/.exec(String(rD.body))?.[1] ?? '(không có khối lỗi nào trên trang)')}`);
+  else {
+    const oD = (await owner.query(`SELECT points_discount_vnd, total_vnd FROM orders WHERE shop_id=$1 AND order_number=$2`, [A.shopId, numFromLoc(rD.location)])).rows[0];
+    Number(oD.points_discount_vnd) === 20000
+      ? ok(`đặt hàng được, đơn trừ đúng 20.000₫ điểm (tổng ${oD.total_vnd}₫ — đúng số trên nút)`)
+      : bad('đơn không trừ điểm như màn hình hứa', JSON.stringify(oD));
+  }
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

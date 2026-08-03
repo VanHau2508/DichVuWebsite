@@ -330,7 +330,12 @@ async function resolveCoupon(c, code, subtotal) {
   return discount > 0 ? { code: cp.code, kind: cp.kind, value: Number(cp.value), discount } : null;
 }
 
-async function summarize(c, cartId, province = null, coords = null) {
+// customerId: khách ĐĂNG NHẬP → tóm tắt trừ luôn phần ĐỔI ĐIỂM. Trước đây phần điểm chỉ được
+// cộng vào ở handler /cart, nên TRANG GIỎ và TRANG CHECKOUT nói hai con số khác nhau: giỏ hiện
+// "−30.000₫ đổi điểm", checkout thì không, mà đơn tạo ra thì CÓ trừ. Nút "Đặt hàng · X" in ra
+// một con số không phải số sẽ thu. Gom vào đây = một luật cho mọi màn (và cho cả ô giam_seen
+// của vòng trung thực — thiếu nó thì khách đổi điểm bị 409 chặn đặt hàng ở mọi lần bấm).
+async function summarize(c, cartId, province = null, coords = null, customerId = null) {
   const items = (await c.query(
     `SELECT ci.variant_id, ci.qty, v.price_vnd, v.weight_gram, v.title AS variant_title, v.sku, p.title AS product_title, p.slug,
             pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct,
@@ -367,9 +372,31 @@ async function summarize(c, cartId, province = null, coords = null) {
   const cc = (await c.query(`SELECT coupon_code FROM carts WHERE id = $1`, [cartId])).rows[0]?.coupon_code;
   const coupon = cc ? await resolveCoupon(c, cc, subtotal) : null;
   const discount = coupon?.discount ?? 0;
+  // ĐỔI ĐIỂM (0086) — chỉ XEM; chân lý vẫn là createOrderTx tính lại dưới khoá số dư. Ba trần
+  // + ngưỡng tối thiểu phải KHỚP TỪNG CHỮ với chỗ chốt đơn, nếu không màn hình lại hứa một
+  // đằng đơn tính một nẻo (đúng lớp lỗi vừa vá ở ngưỡng min_redeem_points).
+  let pointsDiscount = 0, loyalty = null;
+  if (customerId) {
+    // GUC danh tính khách: RLS 2 trục của loyalty_balances cần nó (mirror handler /cart).
+    await c.query(`SELECT set_config('app.customer_id', $1, true)`, [customerId]);
+    const lc = (await c.query(`SELECT enabled, redeem_vnd_per_point, max_redeem_pct, min_redeem_points FROM shop_loyalty_config WHERE shop_id = current_shop_id()`)).rows[0];
+    if (lc?.enabled) {
+      const bal = (await c.query(`SELECT balance_points FROM loyalty_balances WHERE customer_id = current_customer_id()`)).rows[0];
+      const balance = Math.max(0, bal ? Number(bal.balance_points) : 0);
+      const perPoint = Number(lc.redeem_vnd_per_point);
+      const goods = subtotal - discount;
+      const maxPoints = Math.max(0, Math.min(balance, Math.floor(goods / perPoint), Math.floor((goods * Number(lc.max_redeem_pct) / 100) / perPoint)));
+      const want = Number((await c.query(`SELECT points_redeem FROM carts WHERE id = $1`, [cartId])).rows[0]?.points_redeem ?? 0);
+      const thoNgan = Math.min(want, maxPoints);
+      // Dưới ngưỡng tối thiểu = KHÔNG đổi được điểm nào (y hệt lúc chốt đơn), không phải "đổi ít hơn".
+      const applied = thoNgan >= Number(lc.min_redeem_points ?? 0) ? thoNgan : 0;
+      pointsDiscount = applied * perPoint;
+      loyalty = { balance, per_point_vnd: perPoint, max_points: maxPoints, applied_points: applied };
+    }
+  }
   return { items: out, subtotal_vnd: subtotal, shipping_vnd: outOfRange ? null : shipping, discount_vnd: discount, coupon_code: coupon?.code ?? null,
-    hidden_items: soMonAn,
-    total_vnd: outOfRange ? null : subtotal - discount + shipping, fee_region_pending: feeRegionPending, ship_out_of_range: outOfRange,
+    hidden_items: soMonAn, points_discount_vnd: pointsDiscount, ...(loyalty ? { loyalty } : {}),
+    total_vnd: outOfRange ? null : subtotal - discount - pointsDiscount + shipping, fee_region_pending: feeRegionPending, ship_out_of_range: outOfRange,
     distance_mode: cfg.mode === 'distance' };
 }
 
@@ -478,35 +505,11 @@ async function getCart(req, res, _body, ctx) {  // HTML (trình duyệt) hoặc 
   const token = parseCookies(req)[CART_COOKIE];
   const cust = await resolveCustomer(ctx.shopId, req); // đăng nhập? → widget đổi điểm
   const summary = await withTenant(ctx.shopId, async (c) => {
-    if (cust?.id) await c.query(`SELECT set_config('app.customer_id', $1, true)`, [cust.id]);
     const cart = await findCart(c, token);
-    const base = cart ? await summarize(c, cart.id) : { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 };
-    // Điểm thưởng (0086): CHỈ khi shop BẬT + khách ĐĂNG NHẬP. Hiển thị số dư + số điểm đang áp +
-    // giảm giá (client-side chỉ để XEM; checkout re-tính dưới khoá là chân lý). Điểm giảm tiền HÀNG.
-    if (cust?.id && cart) {
-      // min_redeem_points PHẢI đọc ở đây: lúc CHỐT ĐƠN có kiểm (dòng ~911 `pts >=
-      // min_redeem_points`), giỏ thì trước đây không → shop đặt ngưỡng "đổi tối thiểu 100
-      // điểm" là GIỎ hiện đã-giảm-tiền còn ĐƠN tạo ra KHÔNG giảm, khách bị thu cao hơn con
-      // số vừa nhìn. Một luật ở hai nơi, một nơi quên.
-      const cfg = (await c.query(`SELECT enabled, redeem_vnd_per_point, max_redeem_pct, min_redeem_points FROM shop_loyalty_config WHERE shop_id = current_shop_id()`)).rows[0];
-      if (cfg?.enabled) {
-        const bal = (await c.query(`SELECT balance_points FROM loyalty_balances WHERE customer_id = current_customer_id()`)).rows[0];
-        const balance = Math.max(0, bal ? Number(bal.balance_points) : 0);
-        const perPoint = Number(cfg.redeem_vnd_per_point);
-        const goods = base.subtotal_vnd - (base.discount_vnd ?? 0);
-        const maxPoints = Math.max(0, Math.min(balance, Math.floor(goods / perPoint), Math.floor((goods * Number(cfg.max_redeem_pct) / 100) / perPoint)));
-        const want = Number((await c.query(`SELECT points_redeem FROM carts WHERE id = $1`, [cart.id])).rows[0]?.points_redeem ?? 0);
-        const thoNgan = Math.min(want, maxPoints);
-        // Dưới ngưỡng tối thiểu = KHÔNG đổi được điểm nào (y hệt lúc chốt đơn), không phải
-        // "đổi ít hơn" — nên về 0 chứ không kẹp.
-        const applied = thoNgan >= Number(cfg.min_redeem_points ?? 0) ? thoNgan : 0;
-        const pointsDiscount = applied * perPoint;
-        base.loyalty = { balance, per_point_vnd: perPoint, max_points: maxPoints, applied_points: applied };
-        base.points_discount_vnd = pointsDiscount;
-        base.total_vnd = base.total_vnd - pointsDiscount; // total hiển thị đã trừ điểm (chân lý ở checkout)
-      }
-    }
-    return base;
+    // Phần ĐỔI ĐIỂM nằm TRỌN trong summarize (một luật cho giỏ + checkout + form dựng lại).
+    // Bản trước tính riêng ở đây, và đó chính là lý do trang checkout không trừ điểm.
+    return cart ? await summarize(c, cart.id, null, null, cust?.id ?? null)
+      : { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 };
   });
   if (wantsHtml(req)) return sendHtml(res, 200, renderCart(await getShopName(ctx.shopId), summary));
   return send(res, 200, summary);
@@ -1083,13 +1086,16 @@ async function geocode(req, res, body, ctx) {
   let addr;
   try { addr = await reverseGeocode({ lat, lng }); } catch { return soft('geocode_failed'); }
   const province = normalizeProvince(addr.province); // null → ép khách chọn tỉnh tay (không ghi tỉnh lạ)
+  // Điểm thưởng phải vào TỔNG trả về ở đây nữa: JS ghi con số này lên màn. Thiếu nó thì lấy
+  // xong vị trí là tổng NHẢY LÊN đúng bằng phần điểm khách đã đổi — trông như bị tính thêm tiền.
+  const custGeo = await resolveCustomer(ctx.shopId, req);
   const out = await withTenant(ctx.shopId, async (c) => {
     const cfg = await shopShipping(c);
     if (cfg.mode !== 'distance') return { reason: 'not_distance' };
     const token = parseCookies(req)[CART_COOKIE];
     const cart = await findCart(c, token);
     if (!cart) return { reason: 'no_cart' };
-    return { s: await summarize(c, cart.id, province, { lat, lng }), dist: resolveShipDistance(cfg, { lat, lng }).distanceMeters };
+    return { s: await summarize(c, cart.id, province, { lat, lng }, custGeo?.id ?? null), dist: resolveShipDistance(cfg, { lat, lng }).distanceMeters };
   });
   if (out.reason) return soft(out.reason);
   const s = out.s;
@@ -1135,7 +1141,7 @@ async function checkoutPlace(req, res, form, ctx) {
       if (!cart) return { summary: { items: [] }, qrEnabled: false };
       // Tỉnh đã chọn hợp lệ → tổng dựng lại TÍNH THEO TỈNH (ship_seen mới = phí đúng → vòng
       // xác nhận phí hội tụ sau đúng một cú bấm). Toạ độ (nếu có) → ship theo km khớp lúc chốt.
-      return { summary: await summarize(c, cart.id, isProvince(String(form.province ?? '')) ? String(form.province) : null, parseCoords(form.lat, form.lng)), qrEnabled: await shopQrEnabled(c) };
+      return { summary: await summarize(c, cart.id, isProvince(String(form.province ?? '')) ? String(form.province) : null, parseCoords(form.lat, form.lng), cust?.id ?? null), qrEnabled: await shopQrEnabled(c) };
     });
     if (!summary.items.length) return redirect(res, '/cart');
     const idem = genToken();
@@ -1252,14 +1258,16 @@ async function orderLookup(req, res, _body, ctx, query) {
 async function getCheckoutPage(req, res, _body, ctx) {
   const bn = new URL(req.url, 'http://x').searchParams.get('bn') === '1'; // MUA NGAY → giỏ riêng
   const token = parseCookies(req)[bn ? BUYNOW_COOKIE : CART_COOKIE];
+  // Nạp khách TRƯỚC khi tóm tắt: summarize cần customerId để trừ phần ĐỔI ĐIỂM. Thiếu nó thì
+  // nút "Đặt hàng · X" in một con số, đơn tạo ra thu một con số khác — và ô giam_seen của vòng
+  // trung thực sẽ lệch, chặn luôn khách đổi điểm bằng 409 ở mọi lần bấm.
+  const cust = await resolveCustomer(ctx.shopId, req, { withAddresses: true });
   const { summary, qrEnabled } = await withTenant(ctx.shopId, async (c) => {
     const cart = await findCart(c, token);
     if (!cart) return { summary: { items: [], subtotal_vnd: 0, shipping_vnd: 0, total_vnd: 0 }, qrEnabled: false };
-    return { summary: await summarize(c, cart.id), qrEnabled: await shopQrEnabled(c) };
+    return { summary: await summarize(c, cart.id, null, null, cust?.id ?? null), qrEnabled: await shopQrEnabled(c) };
   });
   if (!summary.items.length) return redirect(res, bn ? '/' : '/cart'); // giỏ trống → về giỏ (mua-ngay → về trang chủ)
-  // Khách đăng nhập → điền nhanh tên/SĐT/email + CHỌN NHANH địa chỉ đã lưu (no-JS radio).
-  const cust = await resolveCustomer(ctx.shopId, req, { withAddresses: true });
   const prefill = cust ? {
     name: cust.full_name ?? '', phone: cust.phone ?? '', email: cust.email ?? '',
     address_line: cust.addr?.line1 ?? '', province: cust.addr?.province ?? '',

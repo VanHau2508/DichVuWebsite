@@ -706,10 +706,26 @@ async function saveProductOptions(res, ctx, body, params) {
     //  b) ĐƠN ĐANG CHỜ BỊ ĐỔI RUỘT. order_lines trỏ theo variant_id; tái dùng chính id đó
     //     cho tổ hợp khác nghĩa là kiện hàng khách đang đợi âm thầm thành mặt hàng khác.
     // Tạo biến thể MỚI thay vì tái dùng là rẻ (một dòng) và không có mặt trái nào.
+    //
+    // CÙNG LÝ LẼ (b) cho MỌI CHỨNG TỪ ĐANG CHỜ khác, không riêng đơn hàng:
+    //  · PHIẾU NHẬP draft/ordered — receive() cộng tồn + ghi giá vốn bình quân THEO variant_id
+    //    và KHÔNG kiểm lại danh tính (purchasing.js:291-321). Phiếu nhập KHÔNG ghi `reserved`
+    //    nên mệnh đề reserved>0 ở trên KHÔNG che nó. Hậu quả: 50 cái "Đỏ / M" đã đặt NCC về
+    //    kho thành "Đỏ / XL", giá vốn cũng chạy theo — mà màn xác nhận nhận hàng vẫn in tên
+    //    CŨ (title_snapshot) nên người bán không thấy gì bất thường.
+    //  · KIỂM KÊ đang đếm — stocktake_lines cũng trỏ theo variant_id, chốt phiên sẽ điều chỉnh
+    //    tồn của mặt hàng đã bị đổi ruột.
+    // KHÔNG vá bằng cách cho receive() so title_snapshot: snapshot là tên HIỂN THỊ, không phải
+    // danh tính. Shop đổi tên sản phẩm là việc hợp lệ và hay xảy ra → so tên sẽ chặn oan mọi
+    // phiếu đang chờ, tức chặn nhận hàng đã về. Chặn ở GỐC (không tái dùng) mới đúng.
     const pool = (await c.query(
       `SELECT id FROM variants v WHERE v.product_id = $1
          AND NOT EXISTS (SELECT 1 FROM variant_option_values x WHERE x.variant_id = v.id)
          AND NOT EXISTS (SELECT 1 FROM inventory_levels il WHERE il.variant_id = v.id AND il.reserved > 0)
+         AND NOT EXISTS (SELECT 1 FROM purchase_order_lines pl JOIN purchase_orders po ON po.id = pl.po_id
+                          WHERE pl.variant_id = v.id AND po.status IN ('draft', 'ordered'))
+         AND NOT EXISTS (SELECT 1 FROM stocktake_lines sl JOIN stocktakes st ON st.id = sl.stocktake_id
+                          WHERE sl.variant_id = v.id AND st.status = 'counting')
         ORDER BY position`, [productId])).rows.map((r) => r.id);
     // SKU đang dùng trong shop → sinh SKU mới KHÔNG đụng (INSERT lỗi 23505 sẽ hỏng cả tx).
     const skuSet = new Set((await c.query(`SELECT sku FROM variants`)).rows.map((r) => r.sku));

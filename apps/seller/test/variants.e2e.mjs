@@ -244,6 +244,49 @@ async function main() {
       : bad('TỒN SỐNG LẠI: đặt được đơn cho biến thể không thuộc tổ hợp nào', `bán được ${banDuoc}`);
   }
 
+  // ── Biến thể đang bị CHỨNG TỪ KHÁC đang chờ trỏ tới cũng KHÔNG được tái dùng ──────
+  // Mục 5 chỉ che ĐƠN HÀNG (reserved > 0). Phiếu nhập draft/ordered và phiên kiểm kê đang
+  // đếm KHÔNG ghi `reserved` → lọt qua chốt chặn đó. Mà receive() cộng tồn + ghi giá vốn
+  // bình quân THEO variant_id và không kiểm lại danh tính → 50 cái "Đỏ" đã đặt nhà cung cấp
+  // về kho thành mặt hàng khác, giá vốn chạy theo. Màn xác nhận nhận hàng vẫn in tên CŨ
+  // (title_snapshot) nên người bán không thấy gì bất thường.
+  sect('6. Biến thể đang bị PHIẾU NHẬP / KIỂM KÊ chờ trỏ tới KHÔNG bị tái dùng');
+  {
+    const mkSp = async (ten) => {
+      const pr = await a.post('/products', { title: `${ten} ${uniq()}`, slug: `${ten.toLowerCase()}-${uniq()}`, price_vnd: 100000, status: 'active', variants: [{ price_vnd: 100000 }] });
+      const id = pr.json.id;
+      await a.put(`/products/${id}/options`, { options: [{ name: 'Màu', values: ['Đỏ', 'Xanh'] }] });
+      const v = (await a.get(`/products/${id}`)).json.variants.find((x) => /Đỏ/.test(x.title ?? ''));
+      return { pid: id, vid: v.id };
+    };
+    // Hai lượt sửa trục = đúng chuỗi khiến pool chạm tới biến thể (mục 5 đã chứng minh).
+    const doiTrucHaiLuot = async (pid) => {
+      await a.put(`/products/${pid}/options`, { options: [{ name: 'Size', values: ['S', 'M'] }] });
+      await a.put(`/products/${pid}/options`, { options: [{ name: 'Chất liệu', values: ['Cotton', 'Len'] }] });
+    };
+    const soTruc = async (vid) => Number((await owner.query('SELECT count(*)::int n FROM variant_option_values WHERE variant_id=$1', [vid])).rows[0].n);
+
+    // (a) PHIẾU NHẬP đang chờ hàng về.
+    const A1 = await mkSp('PhieuNhap');
+    const sup = await a.post('/suppliers', { name: `NCC ${uniq()}` });
+    const po = await a.post('/purchase-orders', { supplier_id: sup.json.id, note: 'chờ hàng', lines: [{ variant_id: A1.vid, qty: 50, unit_cost_vnd: 100000 }] });
+    po.status === 201 ? ok('dựng cảnh: phiếu nhập 50 cái đang chờ') : bad('không lập được phiếu nhập', `${po.status} ${po.raw?.slice(0, 160)}`);
+    await doiTrucHaiLuot(A1.pid);
+    (await soTruc(A1.vid)) === 0
+      ? ok('biến thể có phiếu nhập đang chờ KHÔNG bị tái dùng (vẫn mồ côi)')
+      : bad('TÁI DÙNG biến thể đang bị phiếu nhập trỏ tới → hàng về sẽ vào nhầm mặt hàng');
+
+    // (b) PHIÊN KIỂM KÊ đang đếm.
+    const A2 = await mkSp('KiemKe');
+    await a.post(`/variants/${A2.vid}/inventory/adjust`, { delta: 20, reason: 'nhập' });
+    const st = await a.post('/stocktakes', { scope: 'all', note: 'đang đếm' });
+    st.status === 201 ? ok('dựng cảnh: phiên kiểm kê đang đếm') : bad('không tạo được phiên kiểm kê', `${st.status} ${st.raw?.slice(0, 160)}`);
+    await doiTrucHaiLuot(A2.pid);
+    (await soTruc(A2.vid)) === 0
+      ? ok('biến thể đang trong phiên kiểm kê KHÔNG bị tái dùng')
+      : bad('TÁI DÙNG biến thể đang kiểm kê → chốt phiên điều chỉnh nhầm mặt hàng');
+  }
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

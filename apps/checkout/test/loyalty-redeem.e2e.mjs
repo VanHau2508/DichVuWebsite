@@ -181,6 +181,36 @@ async function main() {
   N(o.points_redeemed) === 0 && N(await balOf(A.shopId, cust.id)) === 500
     ? ok('config tắt → không đổi (số dư giữ nguyên)') : bad('tắt vẫn đổi', JSON.stringify(o));
 
+  sect('8. NGƯỠNG đổi tối thiểu: GIỎ và ĐƠN phải nói CÙNG một con số');
+  // Lỗ hợp thành: lúc CHỐT ĐƠN có kiểm `pts >= min_redeem_points`, còn truy vấn config của
+  // GIỎ trước đây không hề chọn cột min_redeem_points → giỏ hiện "đã giảm 5.000đ" mà đơn
+  // tạo ra KHÔNG giảm. Khách bị thu cao hơn đúng số vừa nhìn thấy trên giỏ.
+  await setCfg(A.shopId, { rate: 1, redeem: 100, vesting: 0, pct: 50, min: 100 });
+  await seedBalance(A.shopId, cust.id, 800);
+  const cart8 = (await co(A.host, 'POST', '/cart/items', { json: { variant_id: V, qty: 1 } })).cartTok;
+  // Đóng dấu số điểm muốn đổi THẲNG vào giỏ — đúng thứ mà form /cart/points ghi, và cũng
+  // đúng thứ mà cả trang giỏ lẫn lúc chốt đơn đọc ra (carts.points_redeem).
+  const stampPoints = async (pts) => owner.query(
+    `UPDATE carts SET points_redeem = $2 WHERE id = (SELECT id FROM carts WHERE shop_id=$1 ORDER BY created_at DESC LIMIT 1)`,
+    [A.shopId, pts]);
+  await stampPoints(50);
+  const gio8 = (await co(A.host, 'GET', '/cart', { cartTok: cart8, custTok: cust.custTok })).json;
+  N(gio8?.points_discount_vnd ?? 0) === 0 && N(gio8?.loyalty?.applied_points ?? 0) === 0
+    ? ok('đổi 50 điểm < ngưỡng 100 → GIỎ hiện giảm 0 (đúng như đơn sẽ tính)')
+    : bad('giỏ hứa giảm tiền mà đơn sẽ không giảm', JSON.stringify({ pd: gio8?.points_discount_vnd, ap: gio8?.loyalty?.applied_points }));
+  r = await order({ custTok: cust.custTok, redeem: 50 });
+  o = await orderRow(A.shopId, r.json.order_number);
+  N(o.points_discount_vnd) === 0 && N(await balOf(A.shopId, cust.id)) === 800
+    ? ok('đơn cũng không đổi điểm, số dư giữ nguyên 800 — hai màn khớp nhau')
+    : bad('đơn xử lý khác giỏ', JSON.stringify(o));
+  // Và ĐỦ ngưỡng thì cả hai cùng giảm.
+  const cart8b = (await co(A.host, 'POST', '/cart/items', { json: { variant_id: V, qty: 1 } })).cartTok;
+  await stampPoints(300);
+  const gio8b = (await co(A.host, 'GET', '/cart', { cartTok: cart8b, custTok: cust.custTok })).json;
+  N(gio8b?.points_discount_vnd ?? 0) === 30000
+    ? ok('đổi 300 điểm ≥ ngưỡng → giỏ hiện giảm 30.000đ như cũ (không chặn nhầm)')
+    : bad('ngưỡng chặn nhầm ca hợp lệ', JSON.stringify(gio8b?.points_discount_vnd));
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

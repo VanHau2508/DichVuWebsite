@@ -330,6 +330,12 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
           <input type="hidden" name="ct" value="${esc(opts.formTs ?? '')}">
           <input type="hidden" name="ship_seen" value="${s.ship_out_of_range ? '' : Number(s.shipping_vnd)}">
           <input type="hidden" name="subtotal_seen" value="${Number(s.subtotal_vnd)}">
+          <!-- Tổng các khoản GIẢM khách đang thấy (mã giảm giá + điểm thưởng). Vòng trung
+               thực trước đây chỉ phủ tiền hàng và phí ship, nên mã hết hạn/hết lượt giữa
+               lúc xem và lúc bấm là đơn tạo luôn với giá ĐỦ — khách bị thu nhiều hơn con
+               số trên nút mà không có bước xác nhận nào. Một ô cho CẢ HAI khoản để sau này
+               thêm khoản giảm mới vẫn được che. -->
+          <input type="hidden" name="giam_seen" value="${Number(s.discount_vnd ?? 0) + Number(s.points_discount_vnd ?? 0)}">
           ${opts.bn ? '<input type="hidden" name="bn" value="1">' : ''}
           <input type="hidden" name="lat" id="f-lat" value="${v(pf.lat)}">
           <input type="hidden" name="lng" id="f-lng" value="${v(pf.lng)}">

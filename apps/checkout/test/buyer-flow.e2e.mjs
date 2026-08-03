@@ -246,6 +246,47 @@ async function main() {
   rowS && Number(rowS.shipping_vnd) === 40000 && Number(rowS.total_vnd) === 190000
     ? ok('orders.shipping_vnd=40000 (liên miền), total=190k — khớp nút đã bấm') : bad('phí ship lưu sai', JSON.stringify(rowS));
 
+  // ── 11. Vòng trung thực ƯU ĐÃI (giam_seen): mã chết giữa chừng KHÔNG được âm thầm thu đủ ──
+  sect('11. Mã giảm giá chết giữa lúc xem và lúc bấm → phải hỏi lại, không thu thêm');
+  // Hai cổng trước chỉ phủ tiền HÀNG và phí SHIP. Mã giảm giá có thể chết theo 4 đường (hết
+  // hạn / shop tắt / hết lượt do đua với đơn khác / shop sửa giá trị) — khi đó discount về 0
+  // mà hàng + ship vẫn khớp, hai cổng kia cho qua → đơn tạo LUÔN với giá ĐỦ. Khách bị thu
+  // nhiều hơn con số trên nút "Đặt hàng · …" mà không có bước xác nhận nào.
+  const MA = `HONEST${uniq()}`.toUpperCase().slice(0, 16);
+  await owner.query(
+    `INSERT INTO coupons (shop_id, code, kind, value, min_subtotal_vnd, active) VALUES ($1,$2,'fixed',30000,0,true)`,
+    [A.shopId, MA]);
+  const cart4 = (await co({ method: 'POST', host: A.host, path: '/cart/add', form: { variant_id: prod.vid, qty: '1' } })).cartCookie;
+  await co({ method: 'POST', host: A.host, path: '/cart/coupon', form: { code: MA }, cartCookie: cart4 });
+  const page4 = (await co({ host: A.host, path: '/checkout', accept: 'text/html', cartCookie: cart4 })).body;
+  const grab2 = (b) => ({ ...grab(b), giam: b.match(/name="giam_seen" value="(\d+)"/)?.[1] });
+  let fm4 = grab2(page4);
+  fm4.giam === '30000'
+    ? ok('trang checkout mang hidden giam_seen=30000 (khách đang thấy giảm 30k)') : bad('không phát giam_seen', `giam=${fm4.giam} ${page4.slice(0, 200)}`);
+
+  // Shop TẮT mã ngay lúc khách đang điền form.
+  await owner.query(`UPDATE coupons SET active = false WHERE shop_id=$1 AND code=$2`, [A.shopId, MA]);
+  const n4Before = (await owner.query('SELECT count(*)::int n FROM orders WHERE shop_id=$1', [A.shopId])).rows[0].n;
+  await sleep(2600);
+  r = await co({ method: 'POST', host: A.host, path: '/checkout/place', cartCookie: cart4,
+    form: { idempotency_key: fm4.idem, ct: fm4.ct, ship_seen: fm4.seen, giam_seen: fm4.giam, name: 'Vũ Thị D', phone: '0905555555', address_line: '7 Trần Phú', province: 'Hà Nội', payment_method: 'cod' } });
+  const n4After = (await owner.query('SELECT count(*)::int n FROM orders WHERE shop_id=$1', [A.shopId])).rows[0].n;
+  r.status === 200 && n4After === n4Before && /Ưu đãi trên đơn vừa thay đổi/.test(r.body)
+    ? ok('mã bị tắt giữa chừng → 200 dựng lại form báo "ưu đãi vừa thay đổi", KHÔNG tạo đơn')
+    : bad('đơn vẫn được tạo với giá ĐỦ (khách bị thu thêm im lặng)', `status=${r.status} orders ${n4Before}→${n4After}`);
+  fm4 = grab2(r.body);
+  fm4.giam === '0' ? ok('form dựng lại mang giam_seen=0 (khách thấy đúng tổng mới rồi tự quyết)') : bad('giam_seen dựng lại sai', fm4.giam);
+
+  // Bấm lại với con số đúng → đơn tạo được, tổng KHÔNG có giảm giá.
+  await sleep(2600);
+  r = await co({ method: 'POST', host: A.host, path: '/checkout/place', cartCookie: cart4,
+    form: { idempotency_key: fm4.idem, ct: fm4.ct, ship_seen: fm4.seen, giam_seen: fm4.giam, name: 'Vũ Thị D', phone: '0905555555', address_line: '7 Trần Phú', province: 'Hà Nội', payment_method: 'cod' } });
+  const m4 = /number=(\d+)&token=([^&\s]+)/.exec(r.location ?? '');
+  const row4 = m4 ? (await owner.query('SELECT discount_vnd, total_vnd FROM orders WHERE shop_id=$1 AND order_number=$2', [A.shopId, Number(m4[1])])).rows[0] : null;
+  r.status === 303 && row4 && Number(row4.discount_vnd) === 0
+    ? ok(`bấm lại → 303 tạo đơn #${m4[1]}, giảm giá 0 đúng như màn hình vừa báo`)
+    : bad('bấm lại sau khi xác nhận vẫn hỏng', `status=${r.status} ${JSON.stringify(row4)}`);
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

@@ -475,7 +475,11 @@ async function getCart(req, res, _body, ctx) {  // HTML (trình duyệt) hoặc 
     // Điểm thưởng (0086): CHỈ khi shop BẬT + khách ĐĂNG NHẬP. Hiển thị số dư + số điểm đang áp +
     // giảm giá (client-side chỉ để XEM; checkout re-tính dưới khoá là chân lý). Điểm giảm tiền HÀNG.
     if (cust?.id && cart) {
-      const cfg = (await c.query(`SELECT enabled, redeem_vnd_per_point, max_redeem_pct FROM shop_loyalty_config WHERE shop_id = current_shop_id()`)).rows[0];
+      // min_redeem_points PHẢI đọc ở đây: lúc CHỐT ĐƠN có kiểm (dòng ~911 `pts >=
+      // min_redeem_points`), giỏ thì trước đây không → shop đặt ngưỡng "đổi tối thiểu 100
+      // điểm" là GIỎ hiện đã-giảm-tiền còn ĐƠN tạo ra KHÔNG giảm, khách bị thu cao hơn con
+      // số vừa nhìn. Một luật ở hai nơi, một nơi quên.
+      const cfg = (await c.query(`SELECT enabled, redeem_vnd_per_point, max_redeem_pct, min_redeem_points FROM shop_loyalty_config WHERE shop_id = current_shop_id()`)).rows[0];
       if (cfg?.enabled) {
         const bal = (await c.query(`SELECT balance_points FROM loyalty_balances WHERE customer_id = current_customer_id()`)).rows[0];
         const balance = Math.max(0, bal ? Number(bal.balance_points) : 0);
@@ -483,7 +487,10 @@ async function getCart(req, res, _body, ctx) {  // HTML (trình duyệt) hoặc 
         const goods = base.subtotal_vnd - (base.discount_vnd ?? 0);
         const maxPoints = Math.max(0, Math.min(balance, Math.floor(goods / perPoint), Math.floor((goods * Number(cfg.max_redeem_pct) / 100) / perPoint)));
         const want = Number((await c.query(`SELECT points_redeem FROM carts WHERE id = $1`, [cart.id])).rows[0]?.points_redeem ?? 0);
-        const applied = Math.min(want, maxPoints);
+        const thoNgan = Math.min(want, maxPoints);
+        // Dưới ngưỡng tối thiểu = KHÔNG đổi được điểm nào (y hệt lúc chốt đơn), không phải
+        // "đổi ít hơn" — nên về 0 chứ không kẹp.
+        const applied = thoNgan >= Number(cfg.min_redeem_points ?? 0) ? thoNgan : 0;
         const pointsDiscount = applied * perPoint;
         base.loyalty = { balance, per_point_vnd: perPoint, max_points: maxPoints, applied_points: applied };
         base.points_discount_vnd = pointsDiscount;
@@ -915,6 +922,17 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
         }
       }
     }
+    // VÒNG TRUNG THỰC cho các khoản GIẢM. Hai cổng trên chỉ phủ tiền hàng (subtotal_seen) và
+    // phí ship (ship_seen) — khoản giảm thì không ai canh. Mã giảm giá có thể CHẾT giữa lúc
+    // khách xem trang và lúc bấm Đặt hàng theo bốn đường: hết hạn, shop tắt, hết lượt (đua
+    // với đơn khác — UPDATE ở trên khoá hàng nên chỉ một đơn thắng), hoặc shop sửa giá trị.
+    // Khi đó discount về 0, tiền hàng và ship vẫn khớp → hai cổng kia cho qua → đơn tạo LUÔN
+    // với giá ĐỦ, khách bị thu nhiều hơn con số trên nút "Đặt hàng · …". Điểm thưởng cũng
+    // rơi vào đây (dưới ngưỡng min_redeem_points thì không đổi được điểm nào).
+    // So CẢ HAI CHIỀU như các cổng kia; API JSON không gửi giam_seen → bỏ qua cổng.
+    if (f.expectedGiam != null && discount + pointsDiscount !== f.expectedGiam) {
+      fail(409, 'ưu đãi vừa thay đổi', { discount_vnd: discount, points_discount_vnd: pointsDiscount });
+    }
     const total = subtotal - discount - pointsDiscount + shipping;
 
     // QR: cần cấu hình ngân hàng của shop + mã đối soát duy nhất.
@@ -1151,6 +1169,10 @@ async function checkoutPlace(req, res, form, ctx) {
   // Subtotal (đã sale, trước coupon) khách ĐÃ THẤY (hidden subtotal_seen) — vòng trung thực
   // GIÁ: promo bật/tắt giữa lúc khách điền form → createOrderTx 409 → dựng lại form giá mới.
   f.expectedSubtotal = /^\d{1,12}$/.test(String(form.subtotal_seen ?? '')) ? Number(form.subtotal_seen) : null;
+  // TỔNG CÁC KHOẢN GIẢM khách ĐÃ THẤY (hidden giam_seen = mã giảm giá + điểm thưởng) — vòng
+  // trung thực ƯU ĐÃI: mã chết giữa lúc xem và lúc bấm thì createOrderTx 409 → dựng lại form
+  // với con số đúng, thay vì lẳng lặng tạo đơn giá ĐỦ.
+  f.expectedGiam = /^\d{1,12}$/.test(String(form.giam_seen ?? '')) ? Number(form.giam_seen) : null;
 
   // (c) Leo thang: nguồn (IP) đã nhiều đơn CHỜ → bắt trả lời câu hỏi toán (ký HMAC).
   if (ctx.ip) {
@@ -1183,6 +1205,12 @@ async function checkoutPlace(req, res, form, ctx) {
     // MỚI (giá hiện hành) → khách thấy giá đúng, bấm Đặt hàng lại là xong.
     if (err.statusCode === 409 && err.body?.subtotal_vnd != null) {
       return reRender({ error: 'Giá sản phẩm vừa được cập nhật (khuyến mãi thay đổi) — vui lòng kiểm tra và bấm Đặt hàng lại.' });
+    }
+    // ƯU ĐÃI vừa đổi (mã hết hạn/hết lượt/shop tắt, hoặc điểm không đủ ngưỡng đổi) → dựng
+    // lại form: summarize phát giam_seen MỚI → khách thấy tổng đúng rồi tự quyết bấm tiếp
+    // hay bỏ. Không có bước này thì khách bị thu nhiều hơn con số đã nhìn.
+    if (err.statusCode === 409 && err.body?.discount_vnd != null) {
+      return reRender({ error: 'Ưu đãi trên đơn vừa thay đổi (mã giảm giá hết hiệu lực hoặc điểm thưởng không áp được) — vui lòng kiểm tra tổng tiền và bấm Đặt hàng lại.' });
     }
     // QR không khả dụng (shop tắt QR giữa chừng) → dựng lại form GIỮ dữ liệu (reRender ẩn radio QR
     // → còn COD) thay vì trang lỗi cụt mất data. Chống ngõ-cụt trên đường tới hạn.

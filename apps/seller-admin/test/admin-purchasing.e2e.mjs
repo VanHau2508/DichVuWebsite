@@ -88,6 +88,11 @@ async function main() {
   const p = await rq(SELLER, 'POST', `${base}/products`, { body: { title: `SP ${uniq()}`, slug: `sp-${uniq()}`, price_vnd: 100000, status: 'active', variants: [{ sku: `K-${uniq()}`, price_vnd: 100000 }] }, cookie: A.cookie, origin: OS });
   const vid = (await rq(SELLER, 'GET', `${base}/products/${p.json.id}`, { cookie: A.cookie })).json.variants[0].id;
   await rq(SELLER, 'POST', `${base}/variants/${vid}/inventory/adjust`, { body: { delta: 5, reason: 'ban đầu' }, cookie: A.cookie, origin: OS });
+  // SP THỨ HAI với SKU rất riêng — dùng để lọc danh sách hàng ở mục 3b (lọc ra ĐÚNG nó,
+  // đẩy biến thể của SP thứ nhất ra khỏi danh sách).
+  const sku2 = `ZZQ${uniq()}`.toUpperCase();
+  const p2 = await rq(SELLER, 'POST', `${base}/products`, { body: { title: `SP hai ${uniq()}`, slug: `sp2-${uniq()}`, price_vnd: 80000, status: 'active', variants: [{ sku: sku2, price_vnd: 80000 }] }, cookie: A.cookie, origin: OS });
+  const vid2 = (await rq(SELLER, 'GET', `${base}/products/${p2.json.id}`, { cookie: A.cookie })).json.variants[0].id;
   const cookieA = await admLogin(A.email, A.password);
   cookieA ? ok('dựng shop + SP (tồn 5), đăng nhập BFF owner') : bad('không login BFF');
 
@@ -139,6 +144,41 @@ async function main() {
     ? ok(`chốt → 303, tồn ${onHandNow}→${afterCount}, ledger adjust delta=-1`) : bad('chốt kiểm kê sai', `${r.status} tồn=${afterCount} delta=${adjRow?.delta}`);
   r = await adm('GET', stLoc, { cookie: cookieA });
   r.body.includes('Đã chốt') ? ok('phiên sau chốt: badge "Đã chốt"') : bad('badge kiểm kê sai', r.body.match(/Đã chốt|Đang đếm/g));
+
+  sect('3b. Sửa phiếu sau khi LỌC danh sách hàng → KHÔNG được nuốt mất dòng cũ');
+  // Lỗ hợp thành: (a) PATCH /purchase-orders/:id có ngữ nghĩa "thay TOÀN BỘ dòng" — đúng khi
+  // caller gửi ĐỦ tập; (b) mỗi ô chọn chỉ dựng <option> từ danh sách được truyền vào — đúng
+  // cho một picker; (c) danh sách đó lọc theo ?q= (và LIMIT 500) — đúng cho một picker.
+  // Ghép lại: dòng cũ có biến thể KHÔNG nằm trong danh sách đã lọc thì <select> rơi về rỗng,
+  // form vẫn gửi như tập đầy đủ → dòng đó bị DELETE im lặng. Ô SL/Giá nhập vẫn hiện nguyên
+  // nên màn hình trông như còn đủ. Khi hàng về, tồn + giá vốn thiếu đúng phần đã mất.
+  const supB = (await owner.query(`SELECT id FROM suppliers WHERE shop_id=$1 LIMIT 1`, [A.shopId])).rows[0].id;
+  r = await adm('POST', `${base}/purchasing/new`, { cookie: cookieA, origin: OADM, form: [
+    ['supplier_id', supB], ['note', 'phiếu 2 dòng'], ['picker_q', ''],
+    ['variant_id', vid], ['qty', '7'], ['unit_cost', '30000'],
+    ['variant_id', vid2], ['qty', '3'], ['unit_cost', '20000'],
+  ] });
+  const po2 = (r.location ?? '').split('/').pop();
+  const dem = async () => Number((await owner.query(`SELECT count(*)::int n FROM purchase_order_lines WHERE po_id=$1`, [po2])).rows[0].n);
+  (await dem()) === 2 ? ok('phiếu mới có đúng 2 dòng') : bad('không dựng được phiếu 2 dòng', String(await dem()));
+  // Người bán gõ ô "Tìm hàng cho ô chọn" một từ CHỈ khớp SP thứ hai rồi bấm Lọc.
+  r = await adm('GET', `${base}/purchasing/${po2}/edit?q=${encodeURIComponent(sku2)}`, { cookie: cookieA });
+  const soOption = (r.body.match(new RegExp(`value="${vid}"`, 'g')) ?? []).length;
+  soOption > 0
+    ? ok('trang Sửa sau khi lọc VẪN có option cho biến thể của dòng cũ (bù vào danh sách)')
+    : bad('lọc làm biến mất option của dòng đang có → sẽ bị xoá khi Lưu');
+  // Gửi form Y HỆT TRÌNH DUYỆT: mỗi <select> gửi giá trị của option ĐANG selected, và gửi
+  // CHUỖI RỖNG khi không option nào selected. Nếu tự gõ variant_id vào form thì test đang
+  // giả định trình duyệt vẫn có option — tức đo nhầm, và mutation sẽ không đỏ.
+  const nhuTrinhDuyet = (html) => [...html.matchAll(/<select name="variant_id"[^>]*>([\s\S]*?)<\/select>/g)]
+    .map((m) => /<option value="([^"]*)" selected>/.exec(m[1])?.[1] ?? '');
+  const chon = nhuTrinhDuyet(r.body);
+  r = await adm('POST', `${base}/purchasing/${po2}/edit`, { cookie: cookieA, origin: OADM, form: [
+    ['supplier_id', supB], ['note', 'sửa ghi chú'], ['picker_q', sku2],
+    ['variant_id', chon[0] ?? ''], ['qty', '7'], ['unit_cost', '30000'],
+    ['variant_id', chon[1] ?? ''], ['qty', '3'], ['unit_cost', '20000'],
+  ] });
+  (await dem()) === 2 ? ok('lưu sau khi lọc → phiếu VẪN đủ 2 dòng') : bad('lưu sau khi lọc làm mất dòng', `còn ${await dem()} dòng`);
 
   sect('4. RBAC: order_manager không thấy nav Nhập hàng + gõ tay URL → 403');
   const om = await inviteRole(staff, A.shopId, 'order_manager');

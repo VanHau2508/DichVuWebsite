@@ -2470,7 +2470,21 @@ async function poEditPage(res, me, cookie, shopId, pid, err, q) {
     sellerApi('GET', `/shops/${shopId}/purchasable-variants${pq ? `?q=${encodeURIComponent(pq)}` : ''}`, { cookie }),
     sellerApi('GET', `/shops/${shopId}/suppliers?all=1`, { cookie }),
   ]);
-  return sendHtml(res, err ? 400 : 200, V.renderPurchaseOrderEdit(ctx, shopId, r.json, pv.json?.variants ?? [], sup.json?.suppliers ?? [], err, { q: pq }));
+  // BIẾN THỂ CỦA CHÍNH CÁC DÒNG ĐANG CÓ luôn phải nằm trong danh sách chọn.
+  // Không có bước này thì: người bán gõ ô "Tìm hàng" rồi bấm Lọc (hoặc shop có >500 biến thể
+  // nên purchasable-variants bị LIMIT cắt) → mấy <select> của dòng cũ không còn <option> nào
+  // để 'selected' → trình duyệt gửi chuỗi RỖNG → poLinesFromForm lặng lẽ bỏ qua → PATCH
+  // (ngữ nghĩa "thay TOÀN BỘ dòng") xoá sạch rồi chèn lại mỗi phần sót. Ô SL và Giá nhập vẫn
+  // hiển thị đầy đủ (dựng từ po.lines) nên MÀN HÌNH TRÔNG NHƯ KHÔNG MẤT GÌ. Khi hàng về,
+  // receive() chỉ cộng tồn + ghi giá vốn cho phần sót → thiếu tồn, thiếu tiền, không ai biết.
+  const dsChon = pv.json?.variants ?? [];
+  const daCo = new Set(dsChon.map((v) => v.id));
+  const buThem = (r.json.lines ?? []).filter((l) => !daCo.has(l.variant_id)).map((l) => ({
+    id: l.variant_id, product_title: l.title_snapshot ?? '(sản phẩm đã đổi tên)',
+    variant_title: null, sku: l.sku_snapshot, on_hand: l.on_hand ?? 0, cost_vnd: null,
+  }));
+  return sendHtml(res, err ? 400 : 200,
+    V.renderPurchaseOrderEdit(ctx, shopId, r.json, [...dsChon, ...buThem], sup.json?.suppliers ?? [], err, { q: pq }));
 }
 async function poEditSubmit(req, res, me, cookie, shopId, pid) {
   if (!isMember(me, shopId)) return denyShop(res, me);

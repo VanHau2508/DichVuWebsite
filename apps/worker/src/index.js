@@ -1704,6 +1704,76 @@ async function sweepProductViews() {
   return { keys };
 }
 
+// ── sweep: GỘP LƯỢT DÙNG TÍNH NĂNG từ Redis vào DB (0141) ───────────────────
+// Mọi service đếm vào hash Redis `fu:<ngày VN>:<service>`, field = `<METHOD> <mẫu-route>|<shop>`
+// (`-` = đường không thuộc shop nào). Worker gộp vào feature_usage rồi xoá khoá.
+//
+// CÙNG KHUÔN với sweepProductViews (0098) và KHÔNG phải ngẫu nhiên: RENAME sang `fuf:…` TRƯỚC
+// khi đọc để lượt phát sinh trong lúc gộp rơi vào khoá MỚI (HGETALL rồi DEL sẽ nuốt mất phần
+// chen giữa hai lệnh); SCAN chứ không KEYS vì Redis này còn giữ session/rate-limit/BullMQ;
+// try từng khoá để một khoá hỏng không làm hỏng vòng gộp của service khác.
+const USAGE_SWEEP_MS = Number(process.env.USAGE_SWEEP_MS ?? 300000);   // 5 phút
+const USAGE_KEEP_DAYS = Number(process.env.USAGE_KEEP_DAYS ?? 400);    // đủ so cùng kỳ năm ngoái
+const UUID_RE_FU = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+async function flushUsageKey(rc, flushKey) {
+  // fuf:<ngày>:<service>
+  const parts = flushKey.split(':');
+  const day = parts[1], service = parts.slice(2).join(':');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day ?? '') || !/^[a-z][a-z0-9-]{0,31}$/.test(service ?? '')) {
+    log('error', 'usage_bad_key', { key: flushKey });
+    await rc.del(flushKey).catch(() => {});
+    return 0;
+  }
+  const h = await rc.hgetall(flushKey);
+  const fields = Object.keys(h ?? {});
+  if (!fields.length) { await rc.del(flushKey).catch(() => {}); return 0; }
+  const routes = [], shops = [], counts = [];
+  for (const f of fields) {
+    const bar = f.lastIndexOf('|');
+    if (bar <= 0) continue;                       // field méo → bỏ, không làm hỏng cả lô
+    const route = f.slice(0, bar), shop = f.slice(bar + 1);
+    if (!route || route.length > 160) continue;
+    routes.push(route);
+    // Shop không còn tồn tại (đã xoá) → NULL, dòng vẫn giữ được để không mất lịch sử dùng.
+    shops.push(UUID_RE_FU.test(shop) ? shop : null);
+    counts.push(Math.max(0, parseInt(h[f], 10) || 0));
+  }
+  if (!routes.length) { await rc.del(flushKey).catch(() => {}); return 0; }
+  // UPSERT CỘNG DỒN: chạy lại cùng lô cũng chỉ cộng phần chưa cộng (khoá đã xoá sau khi ghi).
+  // LEFT JOIN shops: shop_id trỏ shop đã xoá sẽ vi phạm khoá ngoại và làm hỏng CẢ LÔ — hạ về
+  // NULL thay vì vứt dòng, vì "ai đó đã dùng tính năng này" vẫn là sự thật cần giữ.
+  await expiryDb.query(`
+    INSERT INTO feature_usage (service, route, shop_id, day, hits)
+    SELECT $1, u.route, s.id, $2::date, u.n
+      FROM unnest($3::text[], $4::uuid[], $5::bigint[]) AS u(route, shop, n)
+      LEFT JOIN shops s ON s.id = u.shop
+    ON CONFLICT (service, route, day, shop_id)
+      DO UPDATE SET hits = feature_usage.hits + excluded.hits`,
+    [service, day, routes, shops, counts]);
+  await rc.del(flushKey).catch(() => {});
+  return routes.length;
+}
+async function sweepFeatureUsage() {
+  if (!expiryDb) return { keys: 0 };
+  let rc;
+  try { rc = await queue.client; } catch { return { keys: 0 }; }
+  let keys = 0;
+  try {
+    const one = async (k) => { try { await flushUsageKey(rc, k); keys++; } catch (e) { log('error', 'usage_key_error', { key: k, message: e.message }); } };
+    for (const k of await scanKeys(rc, 'fuf:*')) await one(k);      // dọn lô dở của lần chết trước
+    for (const k of await scanKeys(rc, 'fu:*')) {
+      const dst = `fuf:${k.slice(3)}`;
+      try { await rc.rename(k, dst); } catch { continue; }           // khoá vừa hết hạn/biến mất
+      await one(dst);
+    }
+    await expiryDb.query(`DELETE FROM feature_usage WHERE day < current_date - $1::int`, [USAGE_KEEP_DAYS]);
+  } catch (e) {
+    log('error', 'usage_sweep_error', { message: e.message });       // không bao giờ throw ra timer
+  }
+  if (keys) log('info', 'usage_flushed', { keys });
+  return { keys };
+}
+
 // ── sweep: cảnh báo SẮP HẾT HÀNG (0050) — mỗi ngày 1 email/shop nếu có hàng tồn thấp ──
 // Ngưỡng per-shop (NULL → 5). Chỉ shop active + có contact_email. Nhóm theo shop → 1 email
 // tối đa 20 dòng. Idempotent theo NHỊP (timer 24h); gọi tay /internal/lowstock-sweep để test.
@@ -2352,6 +2422,7 @@ const nudgeTimer = expiryDb ? setInterval(sweepOnboardingNudge, NUDGE_SWEEP_MS) 
 const lowstockTimer = expiryDb ? setInterval(sweepLowStock, LOWSTOCK_SWEEP_MS) : null;
 const prodStatsTimer = expiryDb ? setInterval(sweepProductStats, PRODSTATS_SWEEP_MS) : null;
 const prodViewTimer = expiryDb ? setInterval(sweepProductViews, PRODVIEW_SWEEP_MS) : null;
+const usageTimer = expiryDb ? setInterval(sweepFeatureUsage, USAGE_SWEEP_MS) : null;
 const revImgTimer = expiryDb ? setInterval(sweepReviewImages, REVIMG_GC_MS) : null;
 const outboxGcTimer = setInterval(sweepOutboxGc, OUTBOX_GC_MS);
 const alertTimer = setInterval(sweepMoneyAlerts, ALERT_SWEEP_MS);
@@ -2482,6 +2553,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(r));
   }
+  // Gộp lượt DÙNG TÍNH NĂNG từ Redis vào DB ngay (nội bộ — cho e2e xác định, 0141).
+  if (url.pathname === '/internal/usage-sweep' && req.method === 'POST') {
+    const r = await sweepFeatureUsage();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify(r));
+  }
   // Dọn rác ảnh đánh giá ngay (nội bộ — cho e2e xác định, không phải đợi nhịp 1 giờ).
   if (url.pathname === '/internal/revimg-gc' && req.method === 'POST') {
     const r = await sweepReviewImages();
@@ -2580,6 +2657,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (lowstockTimer) clearInterval(lowstockTimer);
     if (prodStatsTimer) clearInterval(prodStatsTimer);
     if (prodViewTimer) clearInterval(prodViewTimer);
+    if (usageTimer) clearInterval(usageTimer);
     if (revImgTimer) clearInterval(revImgTimer);
     if (piiTimer) clearInterval(piiTimer);
     if (messengerGcTimer) clearInterval(messengerGcTimer);

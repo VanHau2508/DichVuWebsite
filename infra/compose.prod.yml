@@ -192,6 +192,8 @@ services:
       # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
       - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
       - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
+      # Redis tối giản dùng chung (image không có packages/) — import '../redis-lite.js'.
+      - ../packages/redis-lite/src/redis-lite.js:/app/redis-lite.js:ro
     restart: unless-stopped
     <<: *logging
     environment:
@@ -200,6 +202,9 @@ services:
       AUTH_URL: http://auth:3020
       ALLOWED_ORIGINS: https://${ADMIN_DOMAIN:-admin.nentang.vn}
       PORT: "3040"
+      # ĐO LUỒNG DÙNG (0141): đếm vào Redis, worker gộp. Vắng biến này → không đếm, service
+      # chạy y như trước. Không bao giờ là điều kiện khởi động.
+      REDIS_URL: redis://redis:6379
       # Link chấp nhận lời mời trong EMAIL (mirror RESET_LINK_BASE của auth).
       INVITE_LINK_BASE: https://${ADMIN_DOMAIN:-admin.nentang.vn}/invite/accept
       # Custom domain (A5): chặn khách chiếm subdomain nền tảng.
@@ -469,9 +474,14 @@ services:
       # Ảnh SP phục vụ từ CDN → origin thêm vào CSP img-src; PHẢI khớp img-src ở Caddyfile.
       MEDIA_PUBLIC_BASE: ${MEDIA_PUBLIC_BASE:?}
       PORT: "3001"
+      # ĐO LUỒNG DÙNG (0141): đếm vào Redis, worker gộp. Vắng biến này → không đếm, service
+      # chạy y như trước. Không bao giờ là điều kiện khởi động.
+      REDIS_URL: redis://redis:6379
     volumes:
       # Thư viện preset dùng chung (image không có packages/) — import '../presets.js'.
       - ../packages/presets/src/index.js:/app/presets.js:ro
+      # Redis tối giản dùng chung (image không có packages/) — import '../redis-lite.js'.
+      - ../packages/redis-lite/src/redis-lite.js:/app/redis-lite.js:ro
     deploy: { resources: { limits: { memory: 160m } } }
     depends_on:
       auth: { condition: service_healthy }

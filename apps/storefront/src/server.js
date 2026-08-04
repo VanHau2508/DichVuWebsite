@@ -20,7 +20,7 @@ import pg from 'pg';
 import { renderHome, renderProducts, renderProduct, renderPage, renderSearch, renderBlogList, renderBlogPost, renderMaintenance, renderNotFound } from './theme.js';
 import { renderLanding } from './landing.js';
 import { renderAbout, renderSupport, renderTerms, renderPrivacy, renderContact, renderBlogList as renderCoBlogList, renderBlogPost as renderCoBlogPost, findPost, companyPaths } from './company.js';
-import { runReq, makeLog, health } from './obs.js';
+import { runReq, makeLog, health, setUsageSink, makeUsageSink, noteShop } from './obs.js';
 import { AVAIL_SQL } from '../safety-stock.js';
 // Bộ đếm rate-limit DÙNG CHUNG với auth (atomic Lua, FAIL-OPEN khi Redis lỗi). File
 // gắn vào /app/ratelimit.js qua bind-mount trong compose.dev.yml (không copy, không sửa).
@@ -159,6 +159,9 @@ function countProductView(shopId, productId, req) {
 }
 // REDIS_URL vắng → không dựng client → gate tự bỏ qua (fail-open). Không bao giờ chặn khởi động.
 const redis = process.env.REDIS_URL ? makeRedis(process.env.REDIS_URL, { commandTimeout: 1000 }) : null;
+// ĐO LUỒNG DÙNG (0141): đếm (service, mẫu-route, shop, ngày) vào Redis; worker gộp vào
+// feature_usage. Không REDIS_URL → makeUsageSink trả null → runReq chạy y như trước.
+setUsageSink(makeUsageSink('storefront', redis));
 // Đọc chung 240/60s (~4 req/s bền — rộng cho người duyệt web, trang catalog rẻ). TÌM KIẾM
 // 30/60s (LIKE full-scan là bộ khuếch đại đắt). Cửa sổ cố định 60s, chỉnh được qua env.
 const SF_READ_RL = Number(process.env.SF_READ_RL_PER_MIN) || 240;
@@ -492,6 +495,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       return res.end();
     }
     const shopId = resolved.shopId;
+    noteShop(shopId);   // ĐO LUỒNG DÙNG (0141): shop phân giải theo TÊN MIỀN, không có trong đường dẫn
 
     // ── Mã giới thiệu CTV: ?ref=MA → cookie rồi 302 BỎ tham số (docs/51) ──────────
     // Vì sao phải bỏ tham số khỏi URL: khách hay copy nguyên thanh địa chỉ gửi bạn bè —

@@ -23,7 +23,7 @@ import { SAFETY_SQL, availOf } from '../safety-stock.js';
 import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE, BUYNOW_COOKIE, REF_COOKIE, setBuynowCookie, clearBuynowCookie } from './http.js';
 import { buildVietQR } from './vietqr.js';
 import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
-import { runReq, makeLog, health } from './obs.js';
+import { runReq, makeLog, health, setUsageSink, makeUsageSink, noteShop } from './obs.js';
 import { isProvince, regionOf } from './provinces.js';
 import { haversineKm, inVietnam } from './geo.js';
 import { reverseGeocode, normalizeProvince, GEOCODE_ON } from './geocode.js';
@@ -164,6 +164,9 @@ function makeRedis(url, { commandTimeout = 1000 } = {}) {
 }
 // REDIS_URL vắng → không dựng client → gate tự bỏ qua (fail-open). Không chặn khởi động.
 const redis = process.env.REDIS_URL ? makeRedis(process.env.REDIS_URL, { commandTimeout: 1000 }) : null;
+// ĐO LUỒNG DÙNG (0141): đếm (service, mẫu-route, shop, ngày) vào Redis; worker gộp vào
+// feature_usage. Không REDIS_URL → makeUsageSink trả null → runReq chạy y như trước.
+setUsageSink(makeUsageSink('checkout', redis));
 // Cổng NGOÀI per-IP cho thao tác GHI (POST/PATCH giỏ + checkout). 120/60s: rộng cho khách
 // thật (giỏ đua 10 request đồng thời vẫn lọt), đủ chặt để chặn flood. Chỉnh được qua env.
 const CO_RL = Number(process.env.CHECKOUT_RL_PER_MIN) || 120;
@@ -1434,6 +1437,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   try {
     const host = String(req.headers.host ?? '').split(':')[0].trim().toLowerCase();
     const shopId = host ? await resolveShop(host) : null;
+    noteShop(shopId);   // ĐO LUỒNG DÙNG (0141): shop phân giải theo TÊN MIỀN, không có trong đường dẫn
     if (!shopId) return send(res, 404, { error: 'tên miền chưa kết nối' });
 
     // Shop phải CÒN NHẬN ĐƠN. Đây là nơi kích hoạt policy checkout_shop (0012):

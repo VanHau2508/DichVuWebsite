@@ -66,11 +66,16 @@ MANIFEST_UNIT_FILES=(
   # compose — một phụ thuộc VÔ HÌNH với Dockerfile. Mất mount thì service chết lúc khởi động;
   # e2e phát hiện được nhưng muộn và mù mờ, bất biến mã nguồn thì chỉ thẳng dòng còn thiếu.
   apps/seller/test/safety-mount.test.js
+  # Chuẩn hoá đường dẫn cho ĐO LUỒNG DÙNG. Toàn bộ giá trị của bảng feature_usage nằm ở chỗ
+  # `route` phải là MẪU: lọt một id thật là bảng nổ theo số shop. E2E chỉ đi qua vài đường có
+  # thật của shop test, còn hình dạng nguy hiểm (slug tiếng Việt, 12 tầng, ký tự lạ) thì không.
+  # Bộ này cũng canh 10 bản obs.js khớp từng ký tự.
+  apps/seller/test/usage-route.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=21
-MANIFEST_E2E_COUNT=93
+MANIFEST_UNIT_COUNT=22
+MANIFEST_E2E_COUNT=94
 
 manifest_unit_files() {
   shopt -s nullglob

@@ -50,7 +50,8 @@ import { API_KEY_ROUTES, handleIngest } from './api-keys.js';
 import { MESSENGER_ROUTES } from './messenger-config.js';
 import { BILLING_ROUTES } from './billing.js';
 import { isProvince } from './provinces.js';
-import { runReq, makeLog, health } from './obs.js';
+import { runReq, makeLog, health, setUsageSink, makeUsageSink } from './obs.js';
+import { makeRedis } from '../redis-lite.js';
 
 const MAX_UPLOAD = 10 * 1024 * 1024;
 
@@ -65,6 +66,12 @@ const INVITE_LINK_BASE = process.env.INVITE_LINK_BASE ?? 'https://admin.nentang.
 if (ALLOWED_ORIGINS.length === 0) throw new Error('thiếu ALLOWED_ORIGINS');
 
 const log = makeLog('seller');
+
+// ĐO LUỒNG DÙNG (0141). Service này KHÔNG có Redis trước đây — thêm vào ĐÚNG cho việc đếm,
+// và chỉ cho việc đếm. REDIS_URL vắng → không dựng client → không đếm, chạy y như trước;
+// Redis chết lúc đang chạy → lệnh reject nhanh, số đếm mất, request KHÔNG hề bị ảnh hưởng.
+const usageRedis = process.env.REDIS_URL ? makeRedis(process.env.REDIS_URL, { commandTimeout: 1000 }) : null;
+setUsageSink(makeUsageSink('seller', usageRedis));
 
 async function introspect(cookieHeader) {
   if (!cookieHeader) return null;

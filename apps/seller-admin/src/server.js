@@ -14,7 +14,8 @@ import { parseCookies, readForm, readFormAll, readMultipartFile, readMultipartFi
 import { authApi, sellerApi, platformApi, sellerUpload, sellerDownload, loadSession } from './api.js';
 import * as V from './pages.js';
 import { getPreset } from '../presets.js';
-import { runReq, makeLog, health } from './obs.js';
+import { runReq, makeLog, health, setUsageSink, makeUsageSink } from './obs.js';
+import { makeRedis } from '../redis-lite.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const ALLOWED = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -23,6 +24,12 @@ if (ALLOWED.length === 0) throw new Error('thiếu ALLOWED_ORIGINS');
 const ADMIN_ORIGIN = process.env.ADMIN_ORIGIN ?? 'https://admin.nentang.vn';
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const log = makeLog('seller-admin');
+
+// ĐO LUỒNG DÙNG (0141). Service này KHÔNG có Redis trước đây — thêm vào ĐÚNG cho việc đếm,
+// và chỉ cho việc đếm. REDIS_URL vắng → không dựng client → không đếm, chạy y như trước;
+// Redis chết lúc đang chạy → lệnh reject nhanh, số đếm mất, request KHÔNG hề bị ảnh hưởng.
+const usageRedis = process.env.REDIS_URL ? makeRedis(process.env.REDIS_URL, { commandTimeout: 1000 }) : null;
+setUsageSink(makeUsageSink('seller-admin', usageRedis));
 
 const isMember = (me, shopId) => (me.memberships ?? []).some((m) => m.shop_id === shopId);
 const roleFor = (me, shopId) => (me.memberships ?? []).find((m) => m.shop_id === shopId)?.role ?? null;
@@ -194,6 +201,14 @@ async function platformCreate(req, res, me, cookie) {
   if (r.status === 201) return redirect(res, `/platform/shops/${r.json.id}`);
   if (isDenied(r.status)) return platDenied(res, me);
   return platformShopNew(res, me, cookie, r.json?.error ?? 'Không tạo được cửa hàng.', f);
+}
+// ── đo luồng dùng (0141) ─────────────────────────────────────────────────────
+async function platformUsage(res, me, cookie, sp) {
+  const days = Math.min(365, Math.max(1, parseInt(sp?.get('days') ?? '30', 10) || 30));
+  const svc = (sp?.get('service') ?? '').trim().slice(0, 32);
+  const r = await platformApi('GET', `/ops/usage?days=${days}${svc ? `&service=${encodeURIComponent(svc)}` : ''}`, { cookie });
+  if (r.status !== 200) return platDenied(res, me);
+  return sendHtml(res, 200, V.renderPlatformUsage(platCtx(me), r.json ?? {}, { days, service: svc }));
 }
 // ── hàng đợi phiếu hỗ trợ (0108) ─────────────────────────────────────────────
 async function platformSupport(res, me, cookie, sp, opts = {}) {
@@ -3369,6 +3384,7 @@ async function handle(req, res, url, p) {
     if (p === '/platform' && req.method === 'GET') return platformShops(res, me, cookie, url.searchParams);
     if (p === '/platform/new' && req.method === 'GET') return platformShopNew(res, me, cookie, null, {});
     if (p === '/platform/support' && req.method === 'GET') return platformSupport(res, me, cookie, url.searchParams);
+    if (p === '/platform/usage' && req.method === 'GET') return platformUsage(res, me, cookie, url.searchParams);
     if (p === '/platform/billing' && req.method === 'GET') return platformBillingPage(res, me, cookie, null, null);
     if (p === '/platform/billing' && req.method === 'POST') return platformBillingSave(req, res, me, cookie);
     if (p === '/platform/billing/step-up' && req.method === 'POST') return platformBillingStepUp(req, res, me, cookie);

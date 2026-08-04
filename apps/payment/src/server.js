@@ -20,7 +20,7 @@ import http from 'node:http';
 import net from 'node:net';
 import crypto from 'node:crypto';
 import pg from 'pg';
-import { runReq, makeLog, health } from './obs.js';
+import { runReq, makeLog, health, setUsageSink, makeUsageSink } from './obs.js';
 // Bộ đếm rate-limit DÙNG CHUNG với auth (atomic Lua, FAIL-OPEN khi Redis lỗi). File
 // gắn vào /app/ratelimit.js qua bind-mount trong compose.dev.yml (không copy, không sửa).
 import { hit } from '../ratelimit.js';
@@ -112,6 +112,9 @@ function makeRedis(url, { commandTimeout = 1000 } = {}) {
 }
 // REDIS_URL vắng → không dựng client → gate tự bỏ qua (fail-open). Không chặn khởi động.
 const redis = process.env.REDIS_URL ? makeRedis(process.env.REDIS_URL, { commandTimeout: 1000 }) : null;
+// ĐO LUỒNG DÙNG (0141): đếm (service, mẫu-route, shop, ngày) vào Redis; worker gộp vào
+// feature_usage. Không REDIS_URL → makeUsageSink trả null → runReq chạy y như trước.
+setUsageSink(makeUsageSink('payment', redis));
 // SePay hợp lệ post từ VÀI IP, lưu lượng thấp → 120/60s/IP là an toàn. Nếu 1 IP SePay
 // hợp lệ post nhiều hơn → NÂNG qua env (không bịa số chết). 429 bảo SePay THỬ LẠI (an
 // toàn — không mất thông báo thật). Cửa sổ cố định 60s.

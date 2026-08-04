@@ -1382,6 +1382,7 @@ export function renderPlatformShops(ctx, data, metrics = null, filters = {}) {
       <div class="actions" style="gap:8px;flex-wrap:wrap">
         <a class="btn alt" href="/platform/support">Phiếu hỗ trợ${Number(metrics?.open_tickets) > 0 ? ` (${esc(metrics.open_tickets)})` : ''}</a>
         <a class="btn alt" href="/platform/billing">Thu tiền thuê bao</a>
+        <a class="btn alt" href="/platform/usage">Đo luồng dùng</a>
         ${isOperator ? '<span class="muted" style="align-self:center">Vai trò: operator (chỉ xem)</span>' : '<a class="btn" href="/platform/new">+ Tạo cửa hàng</a>'}
       </div></div>
     ${platformOverview(metrics)}
@@ -1452,6 +1453,59 @@ function diagLine(diag) {
     shop ? `<span class="muted">${esc(shop)}</span>` : '',
     ua ? `<span class="muted">${esc(ua)}</span>` : '',
   ].filter(Boolean).join('');
+}
+
+// ── ĐO LUỒNG DÙNG (0141) ─────────────────────────────────────────────────────
+// Bảng xếp hạng NGƯỢC: ít shop dùng nhất lên đầu. Bảng xuôi thì ai cũng đoán được kết quả
+// (danh sách đơn, danh sách SP luôn đứng nhất) — nó không dạy ta điều gì. Thứ đứng đầu bảng
+// ngược mới là thứ đang âm thầm thu thuế bảo trì lên đúng một người.
+//
+// Cột quan trọng nhất là SỐ SHOP, không phải số lượt: một shop bấm 500 lần vẫn là MỘT shop
+// cần nó. "10% shop dùng" là ngưỡng đã chốt để cân nhắc gỡ hoặc giấu vào mục nâng cao.
+export function renderPlatformUsage(ctx, data, opt) {
+  const rows = data?.rows ?? [];
+  const shops = Number(data?.active_shops ?? 0);
+  const pctOf = (n) => (shops > 0 ? Math.round((Number(n) / shops) * 100) : null);
+  const dOpt = (v) => `<option value="${v}"${opt.days === v ? ' selected' : ''}>${v} ngày</option>`;
+  const body = rows.map((r) => {
+    const pct = pctOf(r.shops);
+    // Ngưỡng 10%: dưới ngưỡng thì tô để mắt bắt được ngay, KHÔNG tự động kết luận "gỡ đi" —
+    // một tính năng ít shop dùng vẫn có thể là tính năng giữ chân đúng shop trả tiền nhiều nhất.
+    const yeu = pct !== null && pct < 10;
+    return `<tr>
+      <td class="muted">${esc(r.service)}</td>
+      <td><code>${esc(r.route)}</code></td>
+      <td class="num right"><strong${yeu ? ' style="color:var(--bad)"' : ''}>${esc(r.shops)}</strong>${pct !== null ? ` <span class="muted">(${pct}%)</span>` : ''}</td>
+      <td class="num right muted">${esc(r.hits)}</td>
+      <td class="muted">${esc(String(r.last_day ?? '').slice(0, 10))}</td>
+    </tr>`;
+  }).join('');
+  return layout('Đo luồng dùng', ctx, `
+    <a class="muted" href="/platform">← Console nền tảng</a>
+    <div class="toolbar"><h1 style="margin:0">Đo luồng dùng</h1></div>
+    <p class="muted" style="margin-top:-8px">Cái gì đang được dùng, <strong>bao nhiêu cửa hàng</strong> dùng, lần cuối khi nào.
+      Xếp <strong>ít cửa hàng dùng nhất lên đầu</strong> — thứ ở đầu bảng này là thứ đang tốn công bảo trì mà chưa chắc ai cần.
+      Chỉ đếm <em>đường dẫn đã chuẩn hoá</em>: không có mã khách, không có tham số, không lần được ra một con người.</p>
+    ${data?.measuring_since
+      ? `<div class="card"><strong>${esc(shops)}</strong> cửa hàng đang hoạt động ·
+           đo từ <strong>${esc(String(data.measuring_since).slice(0, 10))}</strong>
+           đến <strong>${esc(String(data.measured_until ?? '').slice(0, 10))}</strong>.
+           <div class="muted" style="margin-top:6px">Số liệu chỉ đáng tin sau khi đã đo đủ vài tuần với cửa hàng thật.
+             Đo được vài ngày mà kết luận "tính năng này chết" là đọc sai con số.</div></div>`
+      : '<div class="card">Chưa có số liệu nào. Bảng sẽ có dữ liệu sau vài phút kể từ lượt dùng đầu tiên (worker gộp theo chu kỳ 5 phút).</div>'}
+    <div class="card"><form method="GET" action="/platform/usage" class="filters">
+      <div><label>Khoảng</label><select name="days">${dOpt(7)}${dOpt(30)}${dOpt(90)}${dOpt(365)}</select></div>
+      <div><label>Dịch vụ</label><input name="service" value="${esc(opt.service ?? '')}" maxlength="32" placeholder="tất cả" style="width:160px"></div>
+      <div><button class="btn alt sm" type="submit">Xem</button></div>
+    </form></div>
+    <div class="card">${rows.length ? `<div class="tblscroll"><table data-cards><thead><tr>
+        <th>Dịch vụ</th><th>Đường dẫn</th><th class="right">Cửa hàng dùng</th><th class="right">Lượt</th><th>Lần cuối</th>
+      </tr></thead><tbody>${body}</tbody></table></div>
+      <p class="muted" style="margin-top:12px;font-size:.85rem">
+        <strong>Chưa trả lời được:</strong> đường dẫn <em>chưa ai chạm bao giờ</em> thì không xuất hiện ở đây — bảng này chỉ
+        biết những gì đã được dùng ít nhất một lần. Muốn có danh sách "chưa từng chạm" thì cần một bản kê toàn bộ đường dẫn
+        của mọi dịch vụ; đó là việc riêng, chưa làm.</p>`
+      : '<p class="muted">Chưa có lượt dùng nào khớp bộ lọc.</p>'}</div>`);
 }
 
 export function renderPlatformSupport(ctx, data, opts = {}) {

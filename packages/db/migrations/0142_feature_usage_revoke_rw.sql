@@ -1,0 +1,19 @@
+-- 0142 — THU HỒI app_rw khỏi feature_usage (vá cho 0141).
+--
+-- 0141 viết "CỐ Ý KHÔNG cấp quyền cho app_rw". Câu đó SAI TRONG THỰC TẾ, và chỉ lộ ra khi bộ
+-- e2e đi kiểm chính điều nó khẳng định:
+--
+--   ALTER DEFAULT PRIVILEGES ... GRANT ALL ON TABLES TO app_rw
+--
+-- đang bật trên schema này, nên MỌI bảng mới tự động rơi vào tay vai seller — kể cả bảng
+-- không dành cho nó. "Không viết GRANT" KHÔNG có nghĩa là "không có quyền".
+--
+-- Cửa CÓ đóng, nhưng đóng bằng lớp khác: feature_usage bật FORCE RLS và không có policy nào
+-- cho app_rw, nên app_rw SELECT ra 0 dòng (đã kiểm tay). Vấn đề là nó đóng nhờ một SỰ VẮNG
+-- MẶT — ngày nào đó ai đó thêm một policy PERMISSIVE cho app_rw là mở toang, mà không ai
+-- nghĩ mình vừa mở gì. Thu hồi thẳng thì ý định nằm trong mã, không nằm trong may mắn.
+--
+-- Vì sao là migration MỚI chứ không sửa 0141: bộ chạy migration băm nội dung và từ chối file
+-- đã áp dụng mà đổi ruột ("DRIFT: migration là bất biến"). Đúng — sửa tại chỗ thì máy đã chạy
+-- và máy chưa chạy có schema khác nhau mà cùng một số hiệu.
+REVOKE ALL ON feature_usage FROM app_rw;

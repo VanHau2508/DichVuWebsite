@@ -713,6 +713,47 @@ const TICKETS_PAGE_SIZE = 20;
  * Kèm gói + trạng thái thuê bao: phiếu của shop ĐANG TRẢ TIỀN không giống phiếu của một bản
  * dùng thử mở hôm qua, và console không nên bắt mở tab khác mới biết mình đang nói với ai.
  */
+// ── ĐO LUỒNG DÙNG (0141) ─────────────────────────────────────────────────────
+// Trả lời: cái gì đang được dùng, BAO NHIÊU SHOP dùng, lần cuối khi nào.
+//
+// SẮP XẾP MẶC ĐỊNH là "ít shop dùng nhất trước" chứ không phải "nhiều lượt nhất trước". Bảng
+// xếp hạng ngược mới là bảng hữu ích: thứ đứng đầu bảng-thuận thì ai cũng đoán được (danh sách
+// đơn, danh sách SP); thứ đứng đầu bảng-NGƯỢC mới là thứ đang âm thầm thu thuế bảo trì.
+//
+// MẪU SỐ là số shop ĐANG HOẠT ĐỘNG, không phải tổng số shop từng tạo: chia cho shop đã ngừng
+// thì mọi tỉ lệ đều bé đi và mọi tính năng trông như đang chết.
+async function getUsage(req, res) {
+  const url = new URL(req.url, 'http://internal');
+  const days = Math.min(365, Math.max(1, parseInt(url.searchParams.get('days') ?? '30', 10) || 30));
+  const svc = (url.searchParams.get('service') ?? '').trim().slice(0, 32);
+  const args = [days];
+  let svcSql = '';
+  if (/^[a-z][a-z0-9-]{0,31}$/.test(svc)) { args.push(svc); svcSql = ` AND service = $${args.length}`; }
+  const [rows, shops, span] = await Promise.all([
+    db.query(
+      `SELECT service, route,
+              sum(hits)::bigint                        AS hits,
+              count(DISTINCT shop_id)::int             AS shops,
+              max(day)                                 AS last_day
+         FROM feature_usage
+        WHERE day >= current_date - $1::int${svcSql}
+        GROUP BY service, route
+        ORDER BY shops ASC, hits ASC, service, route
+        LIMIT 500`, args),
+    db.query(`SELECT count(*)::int AS n FROM shops WHERE status = 'active' AND deleted_at IS NULL`),
+    // Đo được BAO LÂU RỒI. Không có con số này thì "3 shop dùng" đọc thế nào cũng được — dữ
+    // liệu mới bật hôm qua trông y hệt dữ liệu ba tháng không ai chạm.
+    db.query(`SELECT min(day) AS from_day, max(day) AS to_day FROM feature_usage`),
+  ]);
+  return send(res, 200, {
+    days,
+    active_shops: shops.rows[0]?.n ?? 0,
+    measuring_since: span.rows[0]?.from_day ?? null,
+    measured_until: span.rows[0]?.to_day ?? null,
+    rows: rows.rows,
+  });
+}
+
 async function listSupportTickets(req, res) {
   const url = new URL(req.url, 'http://internal');
   // CHẶN TRÊN cho page. OFFSET nội suy thẳng vào chuỗi SQL (an toàn vì luôn là số, nhưng
@@ -839,6 +880,8 @@ const ROUTES = [
   { m: 'GET', re: /^\/ops\/shops$/, fn: (req, res, b, s) => listShops(req, res, s) },
   { m: 'GET', re: /^\/ops\/plans$/, fn: (req, res) => listPlans(req, res) },
   { m: 'GET', re: /^\/ops\/metrics$/, fn: (req, res) => getMetrics(req, res) },
+  // Đo luồng dùng: CHỈ ĐỌC, không phải admin-only — operator cũng cần biết cái gì đang sống.
+  { m: 'GET', re: /^\/ops\/usage$/, fn: (req, res) => getUsage(req, res) },
   { m: 'GET', re: /^\/ops\/billing-config$/, minRole: 'admin', fn: (req, res) => getBillingConfig(req, res) },
   // Đổi cấu hình THU TIỀN của nền tảng — step-up như mọi thao tác chạm đường tiền.
   { m: 'PUT', re: /^\/ops\/billing-config$/, minRole: 'admin', stepUp: true, fn: (req, res, b, s, ip) => setBillingConfig(req, res, b, s, ip) },

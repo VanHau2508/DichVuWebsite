@@ -37,7 +37,7 @@ import {
   clientIp,
   SESSION_COOKIE,
 } from './http.js';
-import { runReq, makeLog, health } from './obs.js';
+import { runReq, makeLog, health, setUsageSink, makeUsageSink } from './obs.js';
 
 const PORT = Number(process.env.PORT ?? 3020);
 const MFA_ENC_KEY = process.env.MFA_ENC_KEY;
@@ -85,6 +85,10 @@ const redis = new Redis(process.env.REDIS_URL, {
   commandTimeout: 1000,
 });
 redis.on('error', () => {}); // nuốt sự kiện error (đã xử lý fail-open ở hit/reset)
+
+// ĐO LUỒNG DÙNG (0141): đếm (service, mẫu-route, shop, ngày) vào Redis; worker gộp vào
+// feature_usage. Số đếm mất khi Redis hỏng cũng không sao — đo đạc luôn fail-open.
+setUsageSink(makeUsageSink('auth', redis));
 
 const log = makeLog('auth');
 

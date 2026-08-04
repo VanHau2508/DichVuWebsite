@@ -1072,8 +1072,12 @@ async function reconcileEditLines(c, o, P, fail) {
   // chưa tạo gì, mở khoá được". Có mã = vận đơn THẬT từng tồn tại trên hãng → giữ nguyên chứng
   // từ và vẫn chặn sửa (hàng có thể đã đi; FK cũng phải giữ). Xoá dòng shipments kéo theo
   // shipment_lines bằng ON DELETE CASCADE (0080) — cùng đường mà shipping.js dùng khi hãng từ chối.
+  // KHÔNG đụng claim 'ambiguous'/'finalize_failed': ở đó ta KHÔNG BIẾT hãng đã tạo chưa (hoặc
+  // biết là CÓ). Xoá chúng là xoá luôn dấu vết của một vận đơn có thể đang thu hộ COD thật —
+  // đúng cái giả định "tracking NULL = chưa từng tồn tại" mà đợt này đi vá.
   await c.query(
-    `DELETE FROM shipments WHERE order_id = $1 AND status = 'cancelled' AND tracking_number IS NULL`, [o.id]);
+    `DELETE FROM shipments WHERE order_id = $1 AND status = 'cancelled' AND tracking_number IS NULL
+       AND coalesce(provider_status, '') NOT IN ('ambiguous', 'finalize_failed')`, [o.id]);
   // Chặn sửa khi đơn đã có VẬN ĐƠN (kể cả claim 'created' của hãng): sửa xoá+chèn lại
   // order_lines sẽ vỡ FK shipment_lines→order_lines + reset shipped_qty (0080). Đơn đang
   // giao dở phải xử qua đổi-trả/hoàn, không sửa dòng.

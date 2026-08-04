@@ -229,6 +229,15 @@ function buildCatTree(rows, toImg) {
   return roots;
 }
 
+// TRẦN DANH MỤC — MỘT con số cho khái niệm "danh mục của shop".
+//
+// Trước đây cây menu lấy LIMIT 100 còn sitemap lấy LIMIT 200, và seller KHÔNG có trần nào khi
+// tạo. Nên với shop >100 danh mục: mục thứ 101 biến mất khỏi menu, bấm vào link của nó thì
+// resolveCatSlug không thấy → 404 — TRONG KHI sitemap vẫn mời Google vào đúng URL đó. Rất dễ
+// chạm: bộ nhập CSV từ sàn khác tự đẻ danh mục theo mỗi đường dẫn, và tạp hoá/siêu thị dùng
+// cây 2 cấp.
+const CAT_MAX = 200;
+
 // Duyệt cây tìm danh mục theo slug + trả tập id để lọc sản phẩm:
 //   - slug là CHA → ids = [cha, ...tất cả con]  (lọc gộp)
 //   - slug là CON hoặc lá → ids = [chính nó]     (lọc hẹp)
@@ -241,6 +250,25 @@ function resolveCatSlug(tree, slug) {
     }
   }
   return null;
+}
+
+/**
+ * Tra danh mục THẲNG DB khi slug không có trong cây đã nạp (vượt CAT_MAX).
+ *
+ * Vì sao cần dù đã đồng bộ hai con số: trần nào cũng có mép, và mép của nó là một trang 404
+ * cho danh mục CÓ THẬT — người bán tự tay tạo, thấy trong seller-admin, mà khách bấm vào thì
+ * "không tìm thấy". Nâng trần chỉ dời mép đi chứ không bỏ mép.
+ *
+ * Menu vẫn chỉ hiện CAT_MAX mục (dropdown 200 dòng đã là vô dụng rồi) — nhưng ĐIỀU HƯỚNG thì
+ * không được có mép. RLS store_categories (0011) đã lọc shop + deleted_at nên không cần lặp lại.
+ */
+async function resolveCatSlugDb(c, slug) {
+  const row = (await c.query(`SELECT id, name, parent_id FROM categories WHERE slug = $1 LIMIT 1`, [slug])).rows[0];
+  if (!row) return null;
+  // Cha → gộp cả con (đúng luật của resolveCatSlug); con/lá → chỉ chính nó.
+  const ids = row.parent_id ? [row.id]
+    : [row.id, ...(await c.query(`SELECT id FROM categories WHERE parent_id = $1`, [row.id])).rows.map((r) => r.id)];
+  return { cat: { id: row.id, name: row.name, slug }, parent: null, ids };
 }
 
 function normalizeHost(raw) {
@@ -528,7 +556,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       const sm = await withStore(shopId, async (c) => {
         if (!(await c.query(`SELECT 1 FROM shops WHERE id = current_shop_id() AND status <> 'suspended'`)).rows[0]) return null;
         const prods = (await c.query(`SELECT slug FROM products ORDER BY created_at DESC LIMIT 5000`)).rows;
-        const cats = (await c.query(`SELECT slug FROM categories ORDER BY position LIMIT 200`)).rows;
+        const cats = (await c.query(`SELECT slug FROM categories ORDER BY position LIMIT ${CAT_MAX}`)).rows;
         const pages = (await c.query(`SELECT p.slug FROM pages p JOIN page_revisions pr ON pr.id = p.published_revision_id LIMIT 1000`)).rows;
         const blog = (await c.query(`SELECT slug FROM blog_posts WHERE status = 'published' ORDER BY published_at DESC LIMIT 2000`)).rows;
         return { prods, cats, pages, blog };
@@ -581,7 +609,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
              ORDER BY p.created_at DESC, m.position LIMIT 1)) AS image_key` : '';
       // Nạp cả cây (2 cấp, 0095): parent_id để dựng cha→con ở dropdown/sidebar. Danh mục con
       // của cha đã ẩn (soft-delete) sẽ có parent_id treo → coi như cấp-1 (xử lý ở buildCatTree).
-      const catRows = (await c.query(`SELECT c.id, c.slug, c.name, c.parent_id${catImg} FROM categories c ORDER BY c.position, c.name LIMIT 100`)).rows;
+      const catRows = (await c.query(`SELECT c.id, c.slug, c.name, c.parent_id${catImg} FROM categories c ORDER BY c.position, c.name LIMIT ${CAT_MAX}`)).rows;
       const categories = buildCatTree(catRows, imgUrl); // mảng cấp-1, mỗi phần tử có .children[]
       // Menu chân trang: chỉ trang ĐÃ published, có menu_position. Tiêu đề lấy từ
       // bản published (page_revisions), không phải draft → khớp nội dung hiển thị.
@@ -795,7 +823,8 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         if (catSlug) {
           // Danh mục 2 cấp (0095): cha → gộp mọi con; con/lá → chỉ chính nó. EXISTS + ANY để
           // KHÔNG nhân đôi hàng khi SP thuộc nhiều con của cùng cha (JOIN sẽ nhân đôi).
-          const hit = resolveCatSlug(categories, catSlug);
+          // Không có trong cây đã nạp → tra thẳng DB (danh mục vượt CAT_MAX vẫn phải vào được).
+          const hit = resolveCatSlug(categories, catSlug) ?? await resolveCatSlugDb(c, catSlug);
           if (!hit) return { ...base, notFound: true };
           activeCatName = hit.cat.name;
           args.push(hit.ids);

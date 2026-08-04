@@ -422,8 +422,14 @@ async function main() {
   stub.createDelayMs = 12000;                 // > CARRIER_TIMEOUT_MS (10s)
   r = await a.post(`/orders/${oDead.id}/carrier-shipment`, TO);
   stub.createDelayMs = 0;
-  r.status === 502 && /giữ chỗ/.test(r.json?.error ?? '')
-    ? ok('timeout khi gọi hãng → 502 và GIỮ claim (không tạo trùng vận đơn thật)') : bad('không dựng được ca timeout', `${r.status} ${r.raw}`);
+  r.status === 502 && /giữ chỗ|CHƯA RÕ/.test(r.json?.error ?? '')
+    ? ok('gọi hãng không xong → 502 và GIỮ claim (không tạo trùng vận đơn thật)') : bad('không dựng được ca claim treo', `${r.status} ${r.raw}`);
+  // DỰNG ĐÚNG HIỆN TRƯỜNG: ca ở đây là "tiến trình CHẾT TRƯỚC khi kịp gọi hãng" — claim còn
+  // provider_status NULL, và CHẮC CHẮN hãng chưa nhận lệnh nên mở khoá là an toàn. Timeout
+  // (mục 10) là ca KHÁC HẲN: đã gọi rồi nhưng không biết kết quả → ghi dấu 'ambiguous' và
+  // KHÔNG được tự mở. Trước bản vá hai ca này không phân biệt được, nên bộ test này vô tình
+  // dùng timeout để đại diện cho cả hai — tức đo nhầm ca.
+  await owner.query(`UPDATE shipments SET provider_status = NULL WHERE order_id = $1 AND status = 'created'`, [oDead.id]);
   // Tua nhanh 15 phút rồi để CHÍNH vòng quét dọn claim — không tự tay UPDATE trạng thái.
   await owner.query(`UPDATE shipments SET created_at = now() - interval '20 minutes' WHERE order_id = $1 AND status = 'created'`, [oDead.id]);
   await sweepTrack();
@@ -443,6 +449,63 @@ async function main() {
     customer: { name: 'K', phone: '0912345678', address_line: 'x', province: 'TP. Hồ Chí Minh' },
   });
   r.status === 409 ? ok('đơn có vận đơn THẬT vẫn 409 (hàng rào không bị nới)') : bad('nới nhầm hàng rào sửa đơn', `${r.status} ${r.raw}`);
+
+  // ── 10. CLAIM MƠ HỒ: "không biết" KHÔNG được biến thành "chưa tạo" ──────────
+  sect('10. Claim mơ hồ (timeout): giữ khoá, có đường đối soát, KHÔNG tự mở');
+  // Request tạo vận đơn timeout SAU khi hãng có thể đã nhận lệnh. Trước bản vá, dòng claim
+  // trông y hệt dòng "tiến trình chết trước khi kịp gọi hãng" (cùng status='created',
+  // tracking NULL) nên vòng quét 15' huỷ nó bằng giả định "tracking NULL = hãng chưa tạo" →
+  // mở khoá → shop tạo vận đơn THỨ HAI: hãng thu hộ COD hai lần, vận đơn đầu mồ côi.
+  await stepUp();
+  await a.put('/shipping', { provider: 'ghtk', token: 'ghtk-token-cua-shop-a-123', pickup: PICKUP });
+  const oMo = await placeCod(A, vid, null);
+  await a.post(`/orders/${oMo.id}/confirm`, {});
+  stub.createDelayMs = 12000;                 // > CARRIER_TIMEOUT_MS
+  r = await a.post(`/orders/${oMo.id}/carrier-shipment`, TO);
+  stub.createDelayMs = 0;
+  r.status === 502 && /CHƯA RÕ/.test(r.json?.error ?? '')
+    ? ok('timeout → 502 nói thẳng "CHƯA RÕ hãng đã nhận lệnh chưa"') : bad('thông điệp timeout sai', `${r.status} ${r.raw?.slice(0, 120)}`);
+  let k = await kienCua(oMo.id);
+  k?.provider_status === 'ambiguous'
+    ? ok("claim được ghi dấu 'ambiguous' — hệ GIỮ LẠI việc mình KHÔNG BIẾT") : bad('không ghi dấu mơ hồ', JSON.stringify(k));
+  // Tạo lại ngay → phải bị chặn, kèm lời cảnh báo thu hộ hai lần.
+  r = await a.post(`/orders/${oMo.id}/carrier-shipment`, TO);
+  r.status === 409 && /hai lần|KHÔNG RÕ/i.test(r.json?.error ?? '')
+    ? ok('tạo lại ngay → 409, cảnh báo nguy cơ thu hộ COD hai lần') : bad('cho tạo vận đơn thứ hai', `${r.status} ${r.json?.error ?? ''}`);
+  // Tua 20 phút rồi để CHÍNH vòng quét chạy — nó KHÔNG được tự mở khoá.
+  await owner.query(`UPDATE shipments SET created_at = now() - interval '20 minutes' WHERE order_id = $1 AND status = 'created'`, [oMo.id]);
+  await sweepTrack();
+  k = await kienCua(oMo.id);
+  k?.status === 'created' && k?.provider_status === 'ambiguous'
+    ? ok('vòng quét 15 phút KHÔNG huỷ claim mơ hồ (không đoán "chưa tạo")')
+    : bad('vòng quét vẫn huỷ mù claim mơ hồ → mở đường tạo vận đơn trùng', JSON.stringify(k));
+  // Và sửa đơn KHÔNG được xoá mất dấu vết đó (bản vá dọn claim chết của đợt trước).
+  r = await a.post(`/orders/${oMo.id}/edit`, {
+    lines: [{ variant_id: vid, qty: 1 }],
+    customer: { name: 'K', phone: '0912345678', address_line: 'x', province: 'TP. Hồ Chí Minh' },
+  });
+  (await kienCua(oMo.id)) != null
+    ? ok('sửa đơn KHÔNG xoá claim mơ hồ (giữ dấu vết vận đơn có thể có thật)') : bad('mất dấu claim mơ hồ khi sửa đơn');
+  // ĐƯỜNG RA 1: shop kiểm trang hãng, THẤY vận đơn → nhập mã để chốt.
+  r = await a.post(`/orders/${oMo.id}/carrier-reconcile`, { action: 'shipped' });
+  r.status === 400 && /nhập mã vận đơn/.test(r.json?.error ?? '')
+    ? ok('xác nhận mà KHÔNG có mã → 400 đòi mã (hệ không bịa mã)') : bad('chốt được mà không có mã', `${r.status} ${r.json?.error ?? ''}`);
+  r = await a.post(`/orders/${oMo.id}/carrier-reconcile`, { action: 'shipped', tracking_number: 'S1.A2.9999999' });
+  const dOk = (await owner.query(`SELECT status FROM orders WHERE id=$1`, [oMo.id])).rows[0];
+  r.status === 200 && dOk.status === 'shipped' && (await kienCua(oMo.id))?.tracking_number === 'S1.A2.9999999'
+    ? ok('nhập mã đọc trên trang hãng → chốt giao, mã vào đúng dòng vận đơn') : bad('đường ra "đã tạo" hỏng', `${r.status} ${r.raw?.slice(0, 120)}`);
+  // ĐƯỜNG RA 2: hãng KHÔNG hề tạo → mở khoá, đặt lại được.
+  const oMo2 = await placeCod(A, vid, null);
+  await a.post(`/orders/${oMo2.id}/confirm`, {});
+  stub.createDelayMs = 12000;
+  await a.post(`/orders/${oMo2.id}/carrier-shipment`, TO);
+  stub.createDelayMs = 0;
+  r = await a.post(`/orders/${oMo2.id}/carrier-reconcile`, { action: 'cancel' });
+  const k2 = await kienCua(oMo2.id);
+  r.status === 200 && k2?.status === 'cancelled'
+    ? ok('kiểm hãng thấy CHƯA tạo → mở khoá được') : bad('không mở khoá được', `${r.status} ${JSON.stringify(k2)}`);
+  r = await a.post(`/orders/${oMo2.id}/carrier-shipment`, TO);
+  r.status === 200 ? ok('sau khi mở khoá → tạo lại vận đơn bình thường (không ngõ cụt)') : bad('vẫn kẹt sau khi đối soát', `${r.status} ${r.raw?.slice(0, 120)}`);
 
   servers.ghn.close(); servers.ghtk.close();
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);

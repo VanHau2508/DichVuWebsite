@@ -157,8 +157,12 @@ async function createCarrierShipment(res, ctx, body, params) {
     // phần chưa gửi bằng hãng). Carrier v1 gửi TRỌN phần CÒN LẠI (không tách tuỳ ý qua hãng).
     if (!['confirmed', 'shipped'].includes(o.status)) return { code: 409, error: `không thể tạo vận đơn từ trạng thái ${o.status} (cần xác nhận đơn trước)` };
     // Claim 'created' đang KẸT (finalize_failed) → hướng dẫn đối soát vận đơn (không tạo mới đè).
-    const stuck = (await c.query(`SELECT tracking_number FROM shipments WHERE order_id = $1 AND status = 'created' AND provider_status = 'finalize_failed' LIMIT 1`, [orderId])).rows[0];
-    if (stuck) return { code: 409, error: `vận đơn ${stuck.tracking_number} ĐÃ tạo trên hãng nhưng chưa chốt được — kiểm tra portal hãng / đối soát vận đơn trước khi thử lại` };
+    const stuck = (await c.query(`SELECT tracking_number, provider_status FROM shipments WHERE order_id = $1 AND status = 'created' AND provider_status IN ('finalize_failed','ambiguous') LIMIT 1`, [orderId])).rows[0];
+    if (stuck) {
+      return { code: 409, error: stuck.provider_status === 'ambiguous'
+        ? 'lần tạo trước KHÔNG RÕ hãng đã nhận lệnh chưa — kiểm tra trên trang hãng rồi xác nhận ở phần "Đối soát vận đơn" của đơn này; tạo mới ngay có thể sinh vận đơn thứ hai (thu hộ COD hai lần)'
+        : `vận đơn ${stuck.tracking_number} ĐÃ tạo trên hãng nhưng chưa chốt được — kiểm tra portal hãng / đối soát vận đơn trước khi thử lại` };
+    }
     // Dòng CÒN LẠI = qty − đã gửi − đang claim('created'). Guard luỹ kế DƯỚI orders FOR UPDATE
     // (thay index 0046): claim đua thứ 2 thấy planned của claim 1 → remaining 0 → chặn.
     const ol = (await c.query(
@@ -203,9 +207,16 @@ async function createCarrierShipment(res, ctx, body, params) {
     });
   } catch (e) {
     if (e instanceof CarrierError && e.ambiguous) {
-      // Timeout/đứt mạng: KHÔNG BIẾT hãng đã tạo chưa → GIỮ claim (chống retry mù tạo
-      // vận đơn thật thứ 2); worker sweep sẽ tự mở khoá sau 15' nếu hãng không tạo.
-      return send(res, 502, { error: `${e.message} — chưa rõ hãng đã nhận lệnh chưa, hệ thống giữ chỗ và tự kiểm tra lại; thử lại sau ít phút` });
+      // Timeout/đứt mạng: KHÔNG BIẾT hãng đã tạo chưa → GIỮ claim (chống retry mù tạo vận
+      // đơn thật thứ 2). GHI DẤU 'ambiguous' NGAY: đây là điểm duy nhất trong hệ còn biết
+      // rằng ta KHÔNG BIẾT. Không ghi thì dòng claim trông y hệt dòng "tiến trình chết trước
+      // khi kịp gọi hãng" (cả hai đều status='created', tracking NULL), và vòng quét 15' sẽ
+      // huỷ nó bằng giả định "tracking NULL = hãng chưa tạo" — trong khi hãng RẤT CÓ THỂ đã
+      // tạo vận đơn thật, đang cài thu hộ COD. Mở khoá xong shop tạo vận đơn thứ hai: hai
+      // vận đơn cùng một đơn, hai lần thu hộ, còn vận đơn đầu thì mồ côi không ai theo dõi.
+      await withTenant(ctx.shopId, (c) => c.query(
+        `UPDATE shipments SET provider_status = 'ambiguous' WHERE id = $1 AND status = 'created'`, [sid])).catch(() => {});
+      return send(res, 502, { error: `${e.message} — CHƯA RÕ hãng đã nhận lệnh chưa. Hệ thống giữ chỗ để không tạo trùng vận đơn. Hãy kiểm tra trên trang hãng rồi vào chi tiết đơn để xác nhận (đã tạo / chưa tạo).` });
     }
     // Hãng TỪ CHỐI rõ ràng → nhả chỗ claim (chỉ khi còn 'created') rồi báo lỗi.
     await withTenant(ctx.shopId, (c) => c.query(`DELETE FROM shipments WHERE id = $1 AND status = 'created'`, [sid])).catch(() => {});
@@ -254,11 +265,19 @@ async function createCarrierShipment(res, ctx, body, params) {
 async function reconcileShipment(res, ctx, body, params) {
   const orderId = params[1];
   const action = body.action === 'cancel' ? 'cancel' : 'shipped';
+  // Mã vận đơn shop đọc được TRÊN TRANG HÃNG. Chỉ dùng cho claim 'ambiguous' — ở đó ta chưa
+  // bao giờ nhận được phản hồi của hãng nên trong DB không có mã. Không có đường nhập tay này
+  // thì ca "hãng ĐÃ tạo mà ta không biết" chỉ còn lối huỷ, tức bỏ rơi một vận đơn thật.
+  const maNhapTay = String(body.tracking_number ?? '').trim().slice(0, 64);
   const out = await withTenant(ctx.shopId, async (c) => {
     const sh = (await c.query(
-      `SELECT id, tracking_number, provider FROM shipments
-        WHERE order_id = $1 AND provider_status = 'finalize_failed' AND status = 'created' FOR UPDATE`, [orderId])).rows[0];
+      `SELECT id, tracking_number, provider, provider_status FROM shipments
+        WHERE order_id = $1 AND provider_status IN ('finalize_failed','ambiguous') AND status = 'created' FOR UPDATE`, [orderId])).rows[0];
     if (!sh) return { code: 404 };
+    const maThat = sh.tracking_number ?? maNhapTay;
+    if (action === 'shipped' && !maThat) {
+      return { code: 4090, error: 'cần nhập mã vận đơn đọc trên trang hãng để xác nhận (lần tạo trước không nhận được phản hồi nên hệ thống chưa có mã)' };
+    }
     const o = (await c.query(`SELECT id, status, order_number, customer_email FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
     if (action === 'cancel') {
       await c.query(`UPDATE shipments SET status = 'cancelled', provider_status = 'reconciled_cancel' WHERE id = $1`, [sh.id]);
@@ -270,12 +289,13 @@ async function reconcileShipment(res, ctx, body, params) {
       return { code: 409, error: `đơn không còn ở trạng thái giao được (${o.status})` };
     }
     await consumeAndShip(c, ctx, o, {
-      tracking: sh.tracking_number, carrier: (sh.provider ?? '').toUpperCase(), shipmentId: sh.id,
+      tracking: maThat, carrier: (sh.provider ?? '').toUpperCase(), shipmentId: sh.id,
       provider: sh.provider, providerStatus: 'reconciled',
     });
     return { code: 200, action };
   });
   if (out.code === 404) return send(res, 404, { error: 'không có vận đơn cần phục hồi' });
+  if (out.code === 4090) return send(res, 400, { error: out.error });
   if (out.code === 409) return send(res, 409, { error: out.error });
   return send(res, 200, { ok: true, action: out.action });
 }

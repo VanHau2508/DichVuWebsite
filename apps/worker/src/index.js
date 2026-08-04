@@ -1275,16 +1275,30 @@ async function sweepTracking() {
   // fail). tracking NULL = hãng CHƯA tạo → mở khoá (cancelled). tracking CÓ (finalize_failed)
   // = vận đơn THẬT tồn tại trên hãng → GIỮ khoá + log cảnh báo (mở là double-create COD thật).
   try {
+    // CHỈ mở khoá claim mà ta CHẮC CHẮN hãng chưa hề nhận lệnh: provider_status còn NULL,
+    // tức tiến trình chết TRƯỚC khi kịp gọi hãng. Claim 'ambiguous' (gọi hãng rồi nhưng
+    // timeout/đứt mạng) thì KHÔNG được đụng: ở đó ta không biết hãng đã tạo chưa, mà đoán
+    // "chưa" rồi mở khoá là mời shop tạo vận đơn THỨ HAI cho cùng một đơn — hai lần thu hộ
+    // COD, và vận đơn đầu mồ côi. Cả hệ đã dựng ra cờ `ambiguous` đúng vì KHÔNG BIẾT; vòng
+    // quét không được biến "không biết" thành "chưa tạo".
     const gc = await expiryDb.query(
       `UPDATE shipments SET status = 'cancelled', provider_status = 'claim_expired', synced_at = now()
         WHERE status = 'created' AND provider IS NOT NULL AND tracking_number IS NULL
+          AND provider_status IS NULL
           AND created_at < now() - interval '15 minutes' RETURNING id`);
     if (gc.rowCount) log('info', 'tracking_claims_expired', { n: gc.rowCount });
+    // Claim CẦN NGƯỜI XỬ: có mã (finalize_failed) hoặc không rõ (ambiguous). Cả hai đều giữ
+    // khoá và chờ shop đối soát trên trang hãng — nêu tên ra log để người vận hành thấy,
+    // thay vì im lặng như trước.
     const stuck = await expiryDb.query(
-      `SELECT id, order_id, tracking_number FROM shipments
-        WHERE status = 'created' AND provider IS NOT NULL AND tracking_number IS NOT NULL
+      `SELECT id, order_id, tracking_number, provider_status FROM shipments
+        WHERE status = 'created' AND provider IS NOT NULL
+          AND (tracking_number IS NOT NULL OR provider_status = 'ambiguous')
           AND created_at < now() - interval '15 minutes'`);
-    for (const r of stuck.rows) log('warn', 'tracking_finalize_stuck', { shipmentId: r.id, tracking: r.tracking_number });
+    for (const r of stuck.rows) {
+      log('warn', r.provider_status === 'ambiguous' ? 'tracking_claim_ambiguous' : 'tracking_finalize_stuck',
+        { shipmentId: r.id, orderId: r.order_id, tracking: r.tracking_number });
+    }
   } catch (e) { log('error', 'tracking_gc_error', { message: e.message }); }
 
   let rows;

@@ -613,6 +613,40 @@ async function main() {
   r = await sf(A.host, '/sitemap.xml');
   r.body.includes(`<loc>https://${A.host}/products</loc>`) ? ok('sitemap có /products') : bad('sitemap thiếu /products');
 
+  // ── Danh mục VƯỢT TRẦN vẫn phải vào được ────────────────────────────────────
+  // Cây menu vốn lấy LIMIT 100 còn sitemap lấy LIMIT 200, mà seller không có trần nào khi
+  // tạo. Nên danh mục thứ 101 biến mất khỏi menu VÀ trả 404 khi bấm vào — trong khi sitemap
+  // vẫn mời Google vào đúng URL đó. Rất dễ chạm: bộ nhập CSV từ sàn khác tự đẻ danh mục theo
+  // mỗi đường dẫn. Nay resolve slug tra thẳng DB khi vượt trần: menu có thể không liệt kê hết
+  // (dropdown 200 dòng là vô dụng) nhưng ĐIỀU HƯỚNG thì không được có mép.
+  {
+    // PHẢI vượt trần THẬT thì khẳng định mới có nghĩa. Shop test chỉ có vài danh mục nên
+    // position=9999 vẫn lọt LIMIT 200 — đo như vậy là đo cái không tồn tại (đã bắt được bằng
+    // đột biến: gỡ hẳn fallback mà test vẫn xanh). Chèn 205 danh mục đệm để đẩy mục cần đo
+    // ra NGOÀI trần.
+    await owner.query(
+      `INSERT INTO categories (shop_id, slug, name, position)
+       SELECT $1, 'dem-' || $2 || '-' || g, 'Đệm ' || g, g FROM generate_series(1, 205) g`,
+      [A.shopId, uniq()]);
+    const catSlug = `xa-tran-${uniq()}`;
+    const cid = (await owner.query(
+      `INSERT INTO categories (shop_id, slug, name, position) VALUES ($1, $2, 'Danh mục xa trần', 9999) RETURNING id`,
+      [A.shopId, catSlug])).rows[0].id;
+    // Gắn một SP vào đó để trang có nội dung thật, không chỉ "không tìm thấy sản phẩm".
+    const pid = (await owner.query(`SELECT id FROM products WHERE shop_id=$1 AND status='active' AND deleted_at IS NULL LIMIT 1`, [A.shopId])).rows[0]?.id;
+    if (pid) await owner.query(`INSERT INTO product_categories (shop_id, product_id, category_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [A.shopId, pid, cid]);
+    // position=9999 đẩy nó xuống CUỐI ORDER BY position → nằm ngoài mọi trần hữu hạn.
+    const rc = await sf(A.host, `/products?cat=${catSlug}`);
+    rc.status === 200 && !/không tìm thấy|404/i.test(rc.body.slice(0, 400))
+      ? ok('danh mục xếp CUỐI (ngoài trần menu) vẫn mở được trang, không 404')
+      : bad('danh mục vượt trần trả 404 — sitemap mời Google vào URL chết', String(rc.status));
+    pid && rc.body.includes('Danh mục xa trần')
+      ? ok('trang hiện đúng tên danh mục đó (resolve tra DB, không chỉ đoán)') : bad('không nhận ra danh mục', rc.body.slice(0, 120));
+    const rx = await sf(A.host, `/products?cat=khong-ton-tai-${uniq()}`);
+    /không tìm thấy|Không có sản phẩm|404/i.test(rx.body) || rx.status === 404
+      ? ok('slug KHÔNG có thật vẫn báo không tìm thấy (fallback không nới lỏng)') : bad('slug rác cũng ra trang', String(rx.status));
+  }
+
   // MỌI <loc> PHẢI TRỎ VÀO CHỖ CÓ THẬT — lấy CHÍNH chuỗi trong sitemap rồi fetch lại.
   // KHÔNG gõ tay đường dẫn vào test: gõ tay đúng là cách lỗi này sống sót. Sitemap phát
   // `/<slug>` cho trang nội dung trong khi route thật là `/pages/<slug>`, nên MỌI URL trang

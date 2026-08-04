@@ -1,0 +1,21 @@
+-- 0139 — vòng quét phải ĐỌC được `provider_status` để thôi đoán mò.
+--
+-- LỖ ĐANG VÁ. Vòng quét dọn claim vận đơn (worker) mở khoá mọi dòng
+--     status = 'created' AND tracking_number IS NULL AND created_at < now() - 15 phút
+-- bằng giả định viết thẳng trong chú thích: "tracking NULL = hãng CHƯA tạo".
+--
+-- Giả định đó SAI đúng ở ca mà cả hệ đã dựng cờ `ambiguous` để mô tả: request tạo vận đơn
+-- TIMEOUT sau khi hãng có thể đã nhận lệnh. Khi đó ta không nhận được phản hồi nên không có
+-- mã vận đơn — dòng claim trông y hệt dòng "tiến trình chết trước khi kịp gọi hãng". Mở khoá
+-- nó nghĩa là mời người bán tạo vận đơn THỨ HAI cho cùng một đơn: hãng thu hộ COD hai lần,
+-- còn vận đơn đầu thì mồ côi, không ai theo dõi, không ai đối soát.
+--
+-- Nay seller ghi dấu `provider_status = 'ambiguous'` ngay lúc biết mình KHÔNG BIẾT, và vòng
+-- quét chỉ mở khoá dòng còn `provider_status IS NULL` (chắc chắn chưa hề gọi hãng). Để làm
+-- được, app_expiry phải ĐỌC được cột đó.
+--
+-- 0044 cấp quyền theo CỘT cho vai này — cố ý, để job nền thấy ít nhất có thể. Nó đã có
+-- UPDATE (status, provider_status, synced_at) nhưng KHÔNG có SELECT (provider_status): ghi
+-- được mà không đọc được. Thiếu dòng dưới đây thì truy vấn mới bị từ chối và rơi vào nhánh
+-- `catch` → chỉ còn một dòng log `tracking_gc_error`, còn claim thì nằm lại mãi mãi.
+GRANT SELECT (provider_status) ON shipments TO app_expiry;

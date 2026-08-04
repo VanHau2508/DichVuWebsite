@@ -2513,16 +2513,30 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     ${returnHistory}
     ${carrierCard}
     ${shipmentsCard}
-    ${(o.shipments ?? []).some((s) => s.provider_status === 'finalize_failed') ? `
-    <div class="card" style="border-color:#fca5a5;background:#fef2f2">
+    ${(() => {
+      // Hai ca cùng cần người xử, KHÁC nhau ở chỗ ta biết gì:
+      //   finalize_failed — hãng ĐÃ tạo, có mã, chỉ hỏng bước chốt → chỉ cần xác nhận.
+      //   ambiguous       — request TIMEOUT, ta KHÔNG BIẾT hãng đã tạo chưa và KHÔNG CÓ mã.
+      //                     Muốn xác nhận thì shop phải đọc mã trên trang hãng rồi gõ vào,
+      //                     nếu không thì đường duy nhất là huỷ — tức bỏ rơi vận đơn thật.
+      const kt = (o.shipments ?? []).find((s) => s.provider_status === 'finalize_failed' || s.provider_status === 'ambiguous');
+      if (!kt) return '';
+      const moHo = kt.provider_status === 'ambiguous';
+      const act = `/shops/${esc(shopId)}/orders/${esc(o.id)}/carrier-reconcile`;
+      return `<div class="card" style="border-color:#fca5a5;background:#fef2f2">
       <h2 style="margin-top:0;color:#b91c1c">⚠ Vận đơn cần phục hồi</h2>
-      <p class="muted">Hãng ĐÃ tạo vận đơn nhưng hệ thống chốt đơn không thành công (đơn còn "đã xác nhận", chưa trừ kho).
-        Kiểm tra trên trang hãng: nếu vận đơn <strong>${esc((o.shipments.find((s) => s.provider_status === 'finalize_failed') ?? {}).tracking_number ?? '')}</strong> có thật → bấm "Đã tạo trên hãng"; nếu bạn đã huỷ nó trên portal hãng → bấm "Huỷ vận đơn".</p>
+      <p class="muted">${moHo
+        ? 'Lần tạo vận đơn trước <strong>không nhận được phản hồi</strong> từ hãng (mạng chậm/đứt), nên hệ thống KHÔNG BIẾT hãng đã tạo hay chưa và chưa có mã vận đơn. Chỗ giữ được giữ nguyên để không tạo trùng — nếu tạo mới ngay, đơn có thể bị <strong>thu hộ COD hai lần</strong>.<br>Hãy mở trang hãng kiểm tra: <strong>nếu có</strong> vận đơn cho đơn này → nhập mã rồi bấm "Đã tạo trên hãng"; <strong>nếu không có</strong> → bấm "Chưa tạo — mở khoá" để đặt lại.'
+        : `Hãng ĐÃ tạo vận đơn nhưng hệ thống chốt đơn không thành công (đơn còn "đã xác nhận", chưa trừ kho). Kiểm tra trên trang hãng: nếu vận đơn <strong>${esc(kt.tracking_number ?? '')}</strong> có thật → bấm "Đã tạo trên hãng"; nếu bạn đã huỷ nó trên portal hãng → bấm "Huỷ vận đơn".`}</p>
       <div class="actions">
-        <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/carrier-reconcile"><input type="hidden" name="action" value="shipped"><button class="btn sm" type="submit">Đã tạo trên hãng → giao</button></form>
-        <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/carrier-reconcile"><input type="hidden" name="action" value="cancel"><button class="btn warn sm" type="submit">Huỷ vận đơn</button></form>
+        <form method="POST" action="${act}">
+          <input type="hidden" name="action" value="shipped">
+          ${moHo ? '<input name="tracking_number" placeholder="Mã vận đơn đọc trên trang hãng" required style="max-width:260px">' : ''}
+          <button class="btn sm" type="submit">Đã tạo trên hãng → giao</button></form>
+        <form method="POST" action="${act}"><input type="hidden" name="action" value="cancel"><button class="btn warn sm" type="submit">${moHo ? 'Chưa tạo — mở khoá' : 'Huỷ vận đơn'}</button></form>
       </div>
-    </div>` : ''}
+    </div>`;
+    })()}
     <div class="card"><h2>Khách hàng</h2>
       <p>${esc(o.customer_name)} · ${esc(o.customer_phone ?? '')}${o.customer_email ? ` · ${esc(o.customer_email)}` : ''}</p>
       ${o.note ? `<p class="muted">📝 Ghi chú nội bộ: ${esc(o.note)}</p>` : ''}

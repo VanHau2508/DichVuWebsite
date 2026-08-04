@@ -23,7 +23,13 @@
 > REDEEM giảm doanh thu"** từ đầu, reports.js chỉ là chưa cài; và bất biến chéo màn mà chính
 > bộ e2e đã viết ra CHỈ đúng khi không có đơn đổi điểm — lỗ sống được vì fixture chưa từng có
 > đơn như thế. Mục H rộng hơn mô tả: **năm** nơi đánh rơi `payment`, không phải ba.
-> **2 mục còn lại vẫn CHƯA vá** (trần 100 danh mục storefront · sweep tự huỷ claim 15 phút).
+> **ĐÃ ĐÓNG TRỌN DANH SÁCH.** Hai mục cuối vá ở docs/61 — cùng một sai lầm nhận thức: hệ thay
+> một sự thật nó KHÔNG CÓ bằng một giả định tiện tay ("tracking NULL = hãng chưa tạo",
+> "danh mục nằm ngoài trần = không tồn tại"). Mục claim-mơ-hồ còn lộ ra rằng bản vá của chính
+> đợt trước (docs/58, dọn claim chết) dựa lên đúng giả định đang bị bác — đã sửa theo.
+>
+> **Tổng kết đợt 4: 15/15 mục đã vá.** Không mục nào bị bác bỏ; mỗi lượt kiểm chứng còn kéo
+> thêm chỗ lân cận cùng khuôn.
 
 Nguồn: workflow 20 agent quét 5 mảng **chưa từng soi** — storefront công khai · hoa hồng CTV ·
 vận chuyển qua hãng · phiên/MFA/step-up · xuất dữ liệu. Mỗi phát hiện đi qua một lượt phản biện
@@ -58,7 +64,7 @@ liệu ra đọc.
 
 **Đề xuất:** Sửa server.js:527 thành ``loc(`/pages/${pg.slug}`)``. Thêm khẳng định e2e: xuất bản 1 trang → sitemap phải chứa `/pages/<slug>` VÀ GET đúng chuỗi đó phải trả 200 (kiểm bằng cách lấy chính <loc> trong sitemap rồi fetch lại, không gõ tay đường dẫn — nếu không lần sau lại lệch).
 
-### [vua] Trần 100 danh mục ở storefront trong khi seller không có trần và sitemap lấy 200 — danh mục thứ 101 trở đi biến mất khỏi menu và trả 404 khi bấm vào
+### ✅ ĐÃ VÁ (CAT_MAX + tra DB) — [vua] Trần 100 danh mục ở storefront trong khi seller không có trần và sitemap lấy 200 — danh mục thứ 101 trở đi biến mất khỏi menu và trả 404 khi bấm vào
 
 **Điều kiện cần đủ:** Cần shop có >100 danh mục còn sống (deleted_at IS NULL). Không cần bật gì. Rất dễ chạm với: bộ nhập CSV từ sàn khác (tự đẻ danh mục theo mỗi đường dẫn), hoặc tạp hoá/siêu thị dùng cây 2 cấp. Shop ≤100 danh mục hoàn toàn không dính. Hậu quả nặng dần theo số vượt trần.
 
@@ -100,7 +106,7 @@ liệu ra đọc.
 
 **Đề xuất:** 
 
-### [cao] Sweep tự huỷ claim sau 15' bằng giả định "tracking NULL = hãng CHƯA tạo" — đúng lúc mà cả hệ thống thiết kế ra cờ 'ambiguous' vì KHÔNG BIẾT; vận đơn thật + tiền COD mồ côi, và thông báo cho shop hứa một việc không có code nào làm
+### ✅ ĐÃ VÁ (0139 + cờ ambiguous) — [cao] Sweep tự huỷ claim sau 15' bằng giả định "tracking NULL = hãng CHƯA tạo" — đúng lúc mà cả hệ thống thiết kế ra cờ 'ambiguous' vì KHÔNG BIẾT; vận đơn thật + tiền COD mồ côi, và thông báo cho shop hứa một việc không có code nào làm
 
 **Điều kiện cần đủ:** Cần đủ: (1) request tạo vận đơn timeout/đứt mạng SAU khi hãng đã nhận lệnh — tức quá 10s (CARRIER_TIMEOUT_MS, carriers.js:16) hoặc rớt kết nối giữa chừng; (2) worker chạy (TRACKING_ON) để GC 15' kích hoạt — đây là mặc định. Cùng cơ chế còn kích hoạt ở đường thứ hai: khi tx chốt hỏng VÀ câu UPDATE bù cũng hỏng (shipping.js:218-220 kết thúc bằng `.catch(() => {})`), tracking cũng không kịp ghi → 15' sau bị huỷ mù y hệt. KHÔNG cầ
 

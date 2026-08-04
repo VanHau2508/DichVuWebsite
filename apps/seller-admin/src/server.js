@@ -787,7 +787,10 @@ async function codRemittanceStepUp(req, res, me, cookie, shopId) {
 async function carrierReconcile(req, res, me, cookie, shopId, oid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
-  const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/carrier-reconcile`, { cookie, body: { action: f.action === 'cancel' ? 'cancel' : 'shipped' } });
+  // tracking_number CHUYỂN TIẾP xuống seller: ca 'ambiguous' không có mã trong DB, shop
+  // đọc trên trang hãng rồi gõ vào. Nuốt trường này ở đây thì nút "Đã tạo trên hãng" luôn
+  // báo lỗi thiếu mã, và ca đó chỉ còn lối huỷ — tức bỏ rơi một vận đơn có thật.
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/carrier-reconcile`, { cookie, body: { action: f.action === 'cancel' ? 'cancel' : 'shipped', tracking_number: String(f.tracking_number ?? '').trim() } });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}`);
   return orderDetail(res, me, cookie, shopId, oid, r.json?.error ?? 'Không phục hồi được vận đơn.');
 }

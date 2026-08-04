@@ -58,10 +58,14 @@ MANIFEST_UNIT_FILES=(
   # nhau (mỗi service một image) và vài chỗ là chuỗi HTML in ra giấy — không e2e nào nhìn
   # thấy cả sáu cùng lúc, bất biến mức mã nguồn thì thấy.
   apps/seller/test/shipment-status.test.js
+  # Bộ lọc đơn hàng bị chép tay ở NĂM nơi (form Lọc, tab, phân trang, nút Xuất CSV, BFF)
+  # và đã trôi. E2E không dựng nổi ca phân trang (limit đóng cứng 20 → cần 21 đơn), còn
+  # bất biến mã nguồn thấy cả năm nơi trong một lượt. Canh luôn quy tắc BIÊN NGÀY giờ VN.
+  apps/seller/test/order-filter-fields.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=19
+MANIFEST_UNIT_COUNT=20
 MANIFEST_E2E_COUNT=92
 
 manifest_unit_files() {

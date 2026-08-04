@@ -302,6 +302,77 @@ async function main() {
   /settlement_variance_vnd/.test(String(csvR.raw ?? ''))
     ? ok('CSV theo kỳ có cột settlement_variance_vnd') : bad('CSV thiếu cột chênh đối soát — hai màn hình hai số');
 
+  // ── ĐIỂM THƯỞNG: doanh thu phải TRỪ điểm khách đổi ──────────────────────────
+  // docs/41 đã chốt từ đầu: "chi phí điểm ghi tại REDEEM giảm doanh thu". reports.js thì
+  // chưa cài — công thức `subtotal − discount` viết ra TRƯỚC khi có tính năng điểm (0086)
+  // và chưa từng được sửa lại. Ba nơi khác đã trừ đúng (checkout total, sửa đơn, worker tích
+  // điểm); chỉ báo cáo sót, nên lãi trên màn hình cao hơn thật ĐÚNG bằng số điểm khách đổi —
+  // và luôn lệch theo chiều đó, không bao giờ tự triệt tiêu.
+  //
+  // Dựng trạng thái đơn bằng owner SQL thay vì đi trọn luồng điểm thưởng: luồng đó cần thêm
+  // service tài khoản khách + vòng quét vesting, vốn đã có bộ e2e riêng. Thứ đang kiểm ở đây
+  // là BÁO CÁO ĐỌC dòng đơn thế nào, nên tái dựng ĐÚNG những cột checkout ghi ra là đủ và
+  // đúng chỗ.
+  sect('ĐIỂM THƯỞNG: doanh thu hàng phải trừ points_discount_vnd');
+  {
+    const stats = async () => N((await rq(SELLER, 'GET', `/shops/${shopId}/stats`, { cookie: oc })).json?.revenue?.today);
+    const t0 = (await sales()).json.totals;
+    const st0 = await stats();
+    const oP = await place([[vA, 1]], '0900000009');          // tiền hàng 100.000
+    await markPaid(oP.id);
+    const DIEM = 40000;
+    // Y HỆT checkout: total = subtotal − discount − points + ship; đã thu = total.
+    await owner.query(
+      `UPDATE orders SET points_discount_vnd = $2, total_vnd = total_vnd - $2, amount_paid_vnd = total_vnd - $2 WHERE id = $1`,
+      [oP.id, DIEM]);
+    const t1 = (await sales()).json.totals;
+    const st1 = await stats();
+    const dRev = N(t1.revenue_goods_vnd) - N(t0.revenue_goods_vnd);
+    dRev === 100000 - DIEM
+      ? ok(`doanh thu hàng tăng ${dRev} = tiền hàng 100.000 − điểm ${DIEM} (không phải 100.000)`)
+      : bad('doanh thu KHÔNG trừ điểm — lãi trên màn cao hơn thật', `tăng ${dRev}, đúng phải ${100000 - DIEM}`);
+    N(t1.points_discount_vnd) - N(t0.points_discount_vnd) === DIEM
+      ? ok(`có dòng memo "giảm giá bằng điểm" = ${DIEM} (chủ shop thấy chương trình tốn bao nhiêu)`)
+      : bad('thiếu dòng memo điểm thưởng', `${t1.points_discount_vnd} vs ${t0.points_discount_vnd}`);
+    // BẤT BIẾN CHÉO (docs/37 quy tắc 7): Tổng quan và Báo cáo phải nói MỘT con số.
+    // stats = Σ total_vnd (đã trừ điểm) — reports = revenue_goods + ship. Chỉ khớp khi
+    // revenue_goods cũng đã trừ điểm. Đây chính là chỗ lỗ cũ ẩn được: fixture chưa từng có
+    // đơn đổi điểm nên đẳng thức luôn đúng một cách may mắn.
+    const dStats = st1 - st0;
+    const dReports = dRev + (N(t1.shipping_income_vnd) - N(t0.shipping_income_vnd));
+    dStats === dReports
+      ? ok(`Tổng quan (+${dStats}) === Báo cáo (+${dReports}) trên đơn CÓ đổi điểm`)
+      : bad('HAI TRANG HAI SỐ trên đơn đổi điểm', `stats +${dStats} reports +${dReports}`);
+    const csvP = await rq(SELLER, 'GET', `/shops/${shopId}/reports/export?type=pnl`, { cookie: oc });
+    /points_discount_vnd/.test(String(csvP.raw ?? ''))
+      ? ok('CSV P&L có cột points_discount_vnd') : bad('CSV thiếu cột điểm — cộng tay không ra lãi');
+  }
+
+  // ── BIÊN NGÀY: danh sách đơn phải cắt theo GIỜ VN như báo cáo ───────────────
+  // DB chạy UTC, nên `created_at >= '2026-07-15'::date` trần cắt tại 0h UTC = 7 GIỜ SÁNG giờ
+  // VN. Đơn đặt lúc 2h sáng — khung săn sale 0h — bị đẩy sang ngày hôm trước ở trang Đơn hàng,
+  // trong khi Báo cáo (AT TIME ZONE) xếp đúng ngày. Cùng một ô "Từ/Đến", hai trang hai tập đơn.
+  sect('BIÊN NGÀY giờ VN: đơn đặt 2h sáng phải thuộc ĐÚNG ngày đó ở danh sách đơn');
+  {
+    // 02:00 giờ VN hôm nay = 19:00 UTC hôm qua. Đặt thẳng để không phụ thuộc giờ chạy test.
+    const hnay = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+    const oSom = await place([[vA, 1]], '0900000010');
+    await owner.query(
+      `UPDATE orders SET created_at = ($2::date::timestamp AT TIME ZONE 'Asia/Ho_Chi_Minh') + interval '2 hours' WHERE id = $1`,
+      [oSom.id, hnay]);
+    const trongNgay = async (f, t) => {
+      const rr = await rq(SELLER, 'GET', `/shops/${shopId}/orders?from=${f}&to=${t}&limit=100`, { cookie: oc });
+      return (rr.json?.orders ?? []).some((x) => x.id === oSom.id);
+    };
+    (await trongNgay(hnay, hnay))
+      ? ok(`đơn 02:00 sáng ${hnay} NẰM TRONG bộ lọc "từ ${hnay} đến ${hnay}"`)
+      : bad('đơn sáng sớm rơi khỏi ngày của nó (biên UTC)');
+    const homQua = new Date(Date.parse(hnay + 'T00:00:00Z') - 86400e3).toISOString().slice(0, 10);
+    !(await trongNgay(homQua, homQua))
+      ? ok(`và KHÔNG lọt vào ngày hôm trước (${homQua})`)
+      : bad('đơn bị xếp nhầm sang ngày hôm trước');
+  }
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

@@ -205,7 +205,11 @@ async function main() {
   d = await rqBin(`/shops/${A.shopId}/export/download?token=${encodeURIComponent(token)}`, { cookie: A.cookie });
   d.status === 404 ? ok('token HẾT HẠN → 404 (RLS cưỡng chế expires_at)') : bad('token hết hạn vẫn tải được — LỖ HỔNG', String(d.status));
 
-  console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
+  // KHÔNG tô màu dòng tổng kết ở đây: `B` trong hàm này là SHOP THỨ HAI (const B = await
+  // makeShopOwner… ở trên), che mất hằng màu cùng tên → dòng tổng kết in ra
+  // "[object Object]22 pass, 0 fail". Bộ chạy hàng loạt dò `^[0-9]+ pass` sẽ KHÔNG khớp và
+  // báo bộ này ĐỎ trong khi nó xanh — đúng thứ làm hỏng luật "thiếu dòng tổng kết = ĐỎ".
+  console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);
 }

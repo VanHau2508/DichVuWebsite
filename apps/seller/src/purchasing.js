@@ -16,6 +16,8 @@
  */
 import { send } from './http.js';
 import { withTenant, audit } from './db.js';
+// Biên ngày giờ VN: DÙNG CHUNG với reports.js/orders.js thay vì chép tay (xem date-range.js).
+import { rangeSql } from './date-range.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -354,12 +356,9 @@ async function listPurchasableVariants(res, ctx, query) {
 
 // ─────────────────────────── BÁO CÁO NHẬP HÀNG ───────────────────────────────
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const TZ = 'Asia/Ho_Chi_Minh';
 const todayVN = () => new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
 const realDate = (s) => { const d = new Date(s + 'T00:00:00Z'); return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s; };
 const addDays = (s, k) => new Date(Date.parse(s + 'T00:00:00Z') + k * 86400e3).toISOString().slice(0, 10);
-// Khoảng sargable theo received_at, giờ VN (như reports.js): [00:00 from VN, 00:00 to+1 VN).
-const rangeSql = (col, i) => `${col} >= ($${i}::date::timestamp AT TIME ZONE '${TZ}') AND ${col} < (($${i + 1}::date + 1)::timestamp AT TIME ZONE '${TZ}')`;
 
 // GET /shops/:id/purchasing/report?from&to — tổng nhập theo kỳ (phiếu ĐÃ nhận, theo received_at).
 async function purchasingReport(res, ctx, query) {

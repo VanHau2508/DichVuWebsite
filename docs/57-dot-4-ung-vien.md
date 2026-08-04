@@ -16,7 +16,14 @@
 > xác nhận. Lượt phản biện còn **bác lại chính docs này** ở hai điểm: (1) route thu hồi lời mời
 > KHÔNG nên đòi step-up (ngược học thuyết đã viết ở api-keys.js: *tạo* thì step-up, *thu hồi*
 > thì không); (2) docs bỏ sót câu CLAIM ở auth — chỉ vá câu SELECT thì còn cuộc đua mà người
-> mời LUÔN THUA. **5 mục còn lại vẫn CHƯA vá.**
+> mời LUÔN THUA.
+>
+> **Đợt tiếp:** vá nốt cụm **xuất dữ liệu & báo cáo (G · H · I)** — xem docs/60. 9/9 lăng kính
+> xác nhận. Mục G có bằng chứng mạnh hơn cả mô tả: **docs/41 đã chốt "chi phí điểm ghi tại
+> REDEEM giảm doanh thu"** từ đầu, reports.js chỉ là chưa cài; và bất biến chéo màn mà chính
+> bộ e2e đã viết ra CHỈ đúng khi không có đơn đổi điểm — lỗ sống được vì fixture chưa từng có
+> đơn như thế. Mục H rộng hơn mô tả: **năm** nơi đánh rơi `payment`, không phải ba.
+> **2 mục còn lại vẫn CHƯA vá** (trần 100 danh mục storefront · sweep tự huỷ claim 15 phút).
 
 Nguồn: workflow 20 agent quét 5 mảng **chưa từng soi** — storefront công khai · hoa hồng CTV ·
 vận chuyển qua hãng · phiên/MFA/step-up · xuất dữ liệu. Mỗi phát hiện đi qua một lượt phản biện
@@ -123,19 +130,19 @@ liệu ra đọc.
 
 ## Xuất dữ liệu & báo cáo
 
-### [cao] Báo cáo P&L (và CSV P&L) KHÔNG trừ tiền giảm bằng ĐIỂM THƯỞNG — doanh thu và lãi phồng lên đúng bằng số điểm khách đổi; Tổng quan và Báo cáo nói hai con số ✔ ĐÃ TỰ KIỂM CHỨNG
+### ✅ ĐÃ VÁ — [cao] Báo cáo P&L (và CSV P&L) KHÔNG trừ tiền giảm bằng ĐIỂM THƯỞNG — doanh thu và lãi phồng lên đúng bằng số điểm khách đổi; Tổng quan và Báo cáo nói hai con số ✔ ĐÃ TỰ KIỂM CHỨNG
 
 **Điều kiện cần đủ:** CẦN: shop bật điểm thưởng (shop_loyalty_config.enabled DEFAULT false — shop phải TỰ BẬT, migration 0086:36) + khách ĐĂNG NHẬP tài khoản storefront (apps/checkout/src/server.js:917 `if (ctx.customerId)`) + đổi ≥ min_redeem_points. KHÔNG cần gì thêm: khi ba điều đó xảy ra thì mọi đơn đổi điểm đều sai, mặc định, không có cờ nào tắt được. Shop chưa bật loyalty thì points_discount_vnd = 0 và báo cáo đúng.
 
 **Đề xuất:** Sửa reports.js:163 thành `sum(o.subtotal_vnd - o.discount_vnd - o.points_discount_vnd)` (và cân nhắc thêm một dòng P&L riêng "Giảm giá bằng điểm" để chủ shop thấy chi phí chương trình). Đồng thời thêm vào fixture reports.e2e.mjs một đơn có points_discount_vnd > 0 để đẳng thức stats↔reports ở dòng 249 thực sự canh được lỗi này.
 
-### [cao] Nút "Xuất CSV" ở trang Đơn hàng đánh rơi bộ lọc TÌNH TRẠNG THANH TOÁN — xuất thừa toàn bộ SĐT/địa chỉ khách, và với shop lớn thì rơi thẳng vào ngõ cụt 413
+### ✅ ĐÃ VÁ (5 nơi, không phải 3) — [cao] Nút "Xuất CSV" ở trang Đơn hàng đánh rơi bộ lọc TÌNH TRẠNG THANH TOÁN — xuất thừa toàn bộ SĐT/địa chỉ khách, và với shop lớn thì rơi thẳng vào ngõ cụt 413
 
 **Điều kiện cần đủ:** Không cần shop bật gì. Chỉ cần: vai owner (perm 'export', rbac.js:22+38 — admin không có) + vào trang Đơn hàng qua đường có ?payment= (ô "Đơn chưa thu tiền" trên Tổng quan là đường mặc định, pages.js:1791) rồi bấm Xuất CSV. Lọc bằng status/q/from/to/source thì KHÔNG bị (5 trường đó có hidden).
 
 **Đề xuất:** Thêm `<input type="hidden" name="payment" value="${esc(filter.payment ?? '')}">` vào exportBtn (pages.js:2245) và `payment: ['unpaid','pending','paid','refunded'].includes(f.payment) ? f.payment : ''` vào ordersExportFields (server.js:2339); thêm `payment` vào nav() dòng 2222. Về lâu dài nên dựng danh sách trường lọc thành MỘT h
 
-### [vua] Khoảng ngày của danh sách + xuất CSV đơn hàng cắt theo biên UTC, trong khi Báo cáo/Nhập hàng cắt theo biên giờ VN — cùng một ô "Từ ngày/Đến ngày" cho hai tập đơn khác nhau
+### ✅ ĐÃ VÁ (date-range.js) — [vua] Khoảng ngày của danh sách + xuất CSV đơn hàng cắt theo biên UTC, trong khi Báo cáo/Nhập hàng cắt theo biên giờ VN — cùng một ô "Từ ngày/Đến ngày" cho hai tập đơn khác nhau
 
 **Điều kiện cần đủ:** CẦN: có đơn tạo trong khung 00:00–07:00 giờ VN (đúng khung săn sale 0h) + người bán dùng ô Từ ngày/Đến ngày ở trang Đơn hàng hoặc bản xuất CSV đơn. Đây là mặc định — không có thiết lập nào của shop bật/tắt. SẼ HẾT nếu ai đó đặt TimeZone='Asia/Ho_Chi_Minh' cho DB (hiện không nơi nào đặt), nhưng khi đó lại lệch với các chỗ đã hard-code AT TIME ZONE ở reports/purchasing nếu có ai chỉnh nửa vời.
 

@@ -2372,6 +2372,10 @@ function ordersExportFields(f) {
     from: DATE_RE.test(String(f.from ?? '').trim()) ? String(f.from).trim() : '',
     to: DATE_RE.test(String(f.to ?? '').trim()) ? String(f.to).trim() : '',
     source: ['web', 'manual', 'facebook', 'zalo', 'tiktok', 'other'].includes(f.source) ? f.source : '',
+    // payment: allowlist khớp PAYMENT_STATUSES phía seller. Thiếu trường này thì dù hidden có
+    // gửi lên, BFF vẫn nuốt — xuất ra MỌI đơn thay vì đơn đang lọc, tức phát tán SĐT + địa chỉ
+    // khách vượt xa phạm vi người bán định lấy, và với shop lớn còn đâm thẳng vào trần 413.
+    payment: ['unpaid', 'pending', 'paid', 'refunded'].includes(f.payment) ? f.payment : '',
   };
 }
 async function doOrdersExport(res, me, cookie, shopId, fields) {

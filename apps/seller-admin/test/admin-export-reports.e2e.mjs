@@ -206,7 +206,45 @@ async function main() {
   /preset=last_month/.test(a.body) ? ok('nút "Tháng trước" mang &preset= để server chọn đúng kỳ so') : bad('nút tháng thiếu preset');
   !/<script(?![^>]*nonce=)/.test(a.body) ? ok('trang Báo cáo: không script NÀO thiếu nonce (ADR-011)') : bad('lọt <script> không nonce');
 
-  console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
+  // ── Bộ lọc TÌNH TRẠNG THANH TOÁN phải sống sót MỌI đường rời trang ─────────
+  // `payment` từng bị đánh rơi ở NĂM nơi: form Lọc, tab trạng thái, phân trang, hidden của
+  // nút Xuất CSV, và hàm dựng query của BFF. Mà đường vào mặc định của nó là ô "Đơn chưa thu
+  // tiền" trên Tổng quan. Hậu quả không chỉ khó chịu: bản CSV chứa TÊN, SĐT, ĐỊA CHỈ khách —
+  // rơi bộ lọc là phát tán PII của mọi đơn thay vì đúng tập người bán định lấy, và với shop
+  // lớn còn đâm vào trần 413 nên không xuất được gì.
+  sect('4b. Bộ lọc "tình trạng thanh toán" không được rơi khi lọc/đổi tab/sang trang/xuất CSV');
+  {
+    const M = `/shops/${A.shopId}/orders`;
+    let p = await adm('GET', `${M}?payment=unpaid`, { cookie: A.cookie });
+    p.status === 200 ? ok('mở trang Đơn hàng với ?payment=unpaid') : bad('không mở được', String(p.status));
+    // (1) hidden trong FORM LỌC — bấm "Lọc" không được nuốt điều kiện.
+    /<input type="hidden" name="payment" value="unpaid">/.test(p.body)
+      ? ok('form Lọc mang theo payment (hidden)') : bad('form Lọc đánh rơi payment');
+    // (2) TAB trạng thái + (3) PHÂN TRANG: link phải mang payment.
+    /href="\?status=[^"]*payment=unpaid/.test(p.body)
+      ? ok('link tab trạng thái mang theo payment') : bad('đổi tab là mất bộ lọc thanh toán');
+    // Phân trang: link chỉ render khi có >20 đơn (limit đóng cứng 20 ở BFF), dựng 21 đơn chỉ
+    // để kiểm một chuỗi query là không đáng. Bất biến đó được canh ở tầng MÃ NGUỒN thay vì
+    // ở đây: apps/seller/test/order-filter-fields.test.js đối chiếu BỐN nơi khai trường lọc
+    // với danh sách thật của buildOrderFilter — phủ cả lớp lỗi, không chỉ mỗi `payment`.
+    // (5) BFF phải CHUYỂN TIẾP payment xuống seller — đo bằng NỘI DUNG file, không đoán.
+    //     Đơn duy nhất của fixture là đơn tay CHƯA thu tiền, nên lọc paid phải ra file RỖNG
+    //     (chỉ còn dòng tiêu đề); lọc unpaid phải có đơn đó.
+    const xuat = async (payment) => adm('POST', `${M}/export/step-up`, {
+      cookie: A.cookie, origin: OADM, form: { status: '', q: '', from: '', to: '', payment, password: A.password } });
+    const chuaThu = await xuat('unpaid');
+    const daThu = await xuat('paid');
+    const dem = (r) => r.body.split('\r\n').filter(Boolean).length - 1;   // trừ dòng tiêu đề
+    chuaThu.status === 200 && dem(chuaThu) >= 1
+      ? ok(`lọc "chưa thu tiền" → ${dem(chuaThu)} đơn trong CSV`) : bad('lọc unpaid không ra đơn nào', `${chuaThu.status}`);
+    daThu.status === 200 && dem(daThu) === 0
+      ? ok('lọc "đã thu tiền" → CSV rỗng (bộ lọc ĐI TỚI được seller, không bị nuốt)')
+      : bad('BFF nuốt payment: xuất ra cả đơn ngoài bộ lọc (rò SĐT/địa chỉ)', `${daThu.status} ${dem(daThu)} dòng`);
+    !daThu.body.includes('0912345678')
+      ? ok('CSV "đã thu tiền" KHÔNG chứa SĐT của đơn chưa thu') : bad('SĐT khách lọt ra ngoài phạm vi lọc');
+  }
+
+  console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail ? 1 : 0);
 }

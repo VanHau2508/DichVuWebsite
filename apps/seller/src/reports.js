@@ -24,9 +24,10 @@ import { withTenant, audit } from './db.js';
 import { toCsv } from './export.js';
 // Định nghĩa "vận đơn qua hãng còn hiệu lực" — MỘT nguồn, dùng chung với màn Đối soát COD.
 import { LATERAL_VAN_DON_HANG } from './cod.js';
+// BIÊN NGÀY giờ VN — MỘT nguồn dùng chung với purchasing.js và orders.js (xem date-range.js).
+import { bucketSql, rangeSql, bucketDateSql, rangeDateSql } from './date-range.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
-const TZ = 'Asia/Ho_Chi_Minh';
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_DAYS = 366;         // trần khoảng — khớp 1 năm dương lịch
 const FORCE_MONTH_DAYS = 92;  // > 1 quý → tự gộp theo tháng (chart/bảng còn đọc được)
@@ -108,21 +109,9 @@ function parseRange(query) {
   return { from, to, group, days, preset };
 }
 
-// Mảnh SQL bucket theo múi giờ VN cho một cột timestamptz — CHỈ dùng ở SELECT/GROUP BY
-// (WHERE giữ sargable trên cột thuần). KHÔNG nội suy giá trị người dùng.
-const bucketSql = (col, group) => group === 'month'
-  ? `to_char(date_trunc('month', ${col} AT TIME ZONE '${TZ}'), 'YYYY-MM')`
-  : `to_char((${col} AT TIME ZONE '${TZ}')::date, 'YYYY-MM-DD')`;
-// Điều kiện khoảng sargable: $i=from, $i+1=to (date). [00:00 from VN, 00:00 to+1 VN).
-const rangeSql = (col, i) => `${col} >= ($${i}::date::timestamp AT TIME ZONE '${TZ}') AND ${col} < (($${i + 1}::date + 1)::timestamp AT TIME ZONE '${TZ}')`;
-// `cod_remittances.remitted_at` là kiểu DATE (ngày ghi trên sao kê hãng), KHÔNG phải
-// timestamptz. Dùng bucketSql/rangeSql của cột timestamptz cho nó là SAI: Postgres ép
-// date → timestamp rồi AT TIME ZONE dịch đi 7 giờ, đẩy phiếu sang ngày khác — tiền nhảy
-// kỳ. Ngày dương lịch không có múi giờ để quy đổi, nên so thẳng.
-const bucketDateSql = (col, group) => (group === 'month'
-  ? `to_char(date_trunc('month', ${col}), 'YYYY-MM')`
-  : `to_char(${col}, 'YYYY-MM-DD')`);
-const rangeDateSql = (col, i) => `${col} >= $${i}::date AND ${col} <= $${i + 1}::date`;
+// bucketSql / rangeSql / bucketDateSql / rangeDateSql nay lấy từ ./date-range.js — MỘT nguồn
+// dùng chung với purchasing.js (vốn là bản chép tay) và orders.js (vốn dùng `::date` trần =
+// biên UTC, lệch 7 giờ với chính báo cáo này).
 // COGS: loại đơn đã huỷ/hoàn mà hàng CHƯA BAO GIỜ xuất kho (quy tắc 4).
 const COGS_ORDER_GUARD = `NOT (o.status IN ('cancelled','refunded') AND o.fulfillment_status = 'unfulfilled')`;
 // Đơn DI CƯ (0104) KHÔNG vào bất kỳ con số nào của báo cáo lãi — chủ nền tảng đã chốt:
@@ -161,8 +150,26 @@ async function computeSales(shopId, { from, to, group, sort }) {
     const B = (col) => bucketSql(col, group);
     // (1) Header đơn ever-paid theo bucket paid_at.
     const q1 = (await c.query(
+      // DOANH THU HÀNG = subtotal − discount − ĐIỂM THƯỞNG ĐÃ ĐỔI.
+      //
+      // points_discount_vnd là khoản trừ RIÊNG ở header đơn: checkout ghi
+      // total = subtotal − discount − points_discount + shipping. Bỏ nó ra khỏi đây là ghi
+      // nhận một khoản tiền KHÔNG AI TRẢ — doanh thu, lãi gộp và lãi vận hành cùng phồng lên
+      // đúng bằng số điểm khách đổi, tháng nào chạy chương trình điểm mạnh thì báo cáo càng
+      // đẹp một cách giả tạo.
+      //
+      // Đây KHÔNG phải quyết định cố ý: docs/36-37 chốt "doanh thu hàng = subtotal − discount"
+      // từ trước khi có tính năng điểm thưởng (0086-0088) và KHÔNG hề nhắc tới điểm. Bằng
+      // chứng mạnh hơn: bất biến đối chiếu chéo mà chính bộ e2e đã chốt —
+      //     stats.revenue = Σ total_vnd − Σ refunds  ==  (revenue_goods + shipping) − refunds
+      // CHỈ đúng khi points_discount = 0, vì total_vnd đã trừ điểm còn vế phải thì chưa. Lỗ
+      // sống sót được là vì fixture chưa từng có đơn đổi điểm.
+      //
+      // ĐỪNG "đồng bộ" với căn cứ hoa hồng CTV: docs/51 quy tắc 1 chốt base = subtotal −
+      // discount, KHÔNG trừ điểm — đó là đại lượng KHÁC (tiền hàng làm căn cứ thưởng), cố ý.
       `SELECT ${B('o.paid_at')} AS bucket, count(*)::int AS orders_paid,
-              sum(o.subtotal_vnd - o.discount_vnd)::bigint AS revenue_goods,
+              sum(o.subtotal_vnd - o.discount_vnd - coalesce(o.points_discount_vnd, 0))::bigint AS revenue_goods,
+              coalesce(sum(o.points_discount_vnd), 0)::bigint AS points_discount,
               sum(o.shipping_vnd)::bigint AS shipping_income
          FROM orders o WHERE ${rangeSql('o.paid_at', 1)} AND ${NOT_MIGRATED} GROUP BY 1`, [from, to])).rows;
     // (2) COGS + độ phủ giá vốn — CÙNG CƠ SỞ DÒNG (đừng trộn header có coupon: pct >100% ảo).
@@ -258,6 +265,10 @@ async function computeSales(shopId, { from, to, group, sort }) {
       return {
         bucket: b, orders_paid: n(a?.orders_paid),
         revenue_goods_vnd: revenue_goods, refunds_vnd: refunds, net_revenue_vnd: net,
+        // MEMO: chương trình điểm thưởng tốn bao nhiêu trong kỳ. ĐÃ trừ khỏi revenue_goods ở
+        // trên nên KHÔNG trừ lần nữa ở bất kỳ phép cộng nào — đây chỉ để chủ shop nhìn thấy
+        // cái giá của chương trình, thay vì nó biến mất im lặng vào một con số doanh thu thấp hơn.
+        points_discount_vnd: n(a?.points_discount),
         cogs_vnd: cogs, cogs_reversal_vnd: reversal, gross_profit_vnd: gross,
         shipping_income_vnd: shipping, carrier_fee_vnd: fee,
         settlement_variance_vnd: variance, affiliate_commission_vnd: commission,
@@ -271,6 +282,7 @@ async function computeSales(shopId, { from, to, group, sort }) {
     const totals = {
       orders_paid: T('orders_paid'),
       revenue_goods_vnd: T('revenue_goods_vnd'), refunds_vnd: T('refunds_vnd'), net_revenue_vnd: T('net_revenue_vnd'),
+      points_discount_vnd: T('points_discount_vnd'),
       cogs_vnd: T('cogs_vnd'), cogs_reversal_vnd: T('cogs_reversal_vnd'), gross_profit_vnd: T('gross_profit_vnd'),
       shipping_income_vnd: T('shipping_income_vnd'), carrier_fee_vnd: T('carrier_fee_vnd'),
       settlement_variance_vnd: T('settlement_variance_vnd'), affiliate_commission_vnd: T('affiliate_commission_vnd'),
@@ -336,10 +348,10 @@ async function exportReport(res, ctx, _b, _p, query) {
     csv = toCsv(
       // Cột PHẢI khớp trang Báo cáo. Xuất thiếu settlement_variance thì kế toán cộng tay
       // các cột trong CSV sẽ KHÔNG ra operating_profit — người ta sẽ tin cột nào?
-      ['bucket', 'orders_paid', 'revenue_goods_vnd', 'refunds_vnd', 'net_revenue_vnd', 'cogs_vnd',
+      ['bucket', 'orders_paid', 'revenue_goods_vnd', 'points_discount_vnd', 'refunds_vnd', 'net_revenue_vnd', 'cogs_vnd',
        'cogs_reversal_vnd', 'gross_profit_vnd', 'shipping_income_vnd', 'carrier_fee_vnd',
        'settlement_variance_vnd', 'affiliate_commission_vnd', 'operating_profit_vnd'],
-      [...data.series, { bucket: 'TOTAL', orders_paid: data.totals.orders_paid, revenue_goods_vnd: data.totals.revenue_goods_vnd, refunds_vnd: data.totals.refunds_vnd, net_revenue_vnd: data.totals.net_revenue_vnd, cogs_vnd: data.totals.cogs_vnd, cogs_reversal_vnd: data.totals.cogs_reversal_vnd, gross_profit_vnd: data.totals.gross_profit_vnd, shipping_income_vnd: data.totals.shipping_income_vnd, carrier_fee_vnd: data.totals.carrier_fee_vnd, settlement_variance_vnd: data.totals.settlement_variance_vnd, affiliate_commission_vnd: data.totals.affiliate_commission_vnd, operating_profit_vnd: data.totals.operating_profit_vnd }],
+      [...data.series, { bucket: 'TOTAL', orders_paid: data.totals.orders_paid, revenue_goods_vnd: data.totals.revenue_goods_vnd, points_discount_vnd: data.totals.points_discount_vnd, refunds_vnd: data.totals.refunds_vnd, net_revenue_vnd: data.totals.net_revenue_vnd, cogs_vnd: data.totals.cogs_vnd, cogs_reversal_vnd: data.totals.cogs_reversal_vnd, gross_profit_vnd: data.totals.gross_profit_vnd, shipping_income_vnd: data.totals.shipping_income_vnd, carrier_fee_vnd: data.totals.carrier_fee_vnd, settlement_variance_vnd: data.totals.settlement_variance_vnd, affiliate_commission_vnd: data.totals.affiliate_commission_vnd, operating_profit_vnd: data.totals.operating_profit_vnd }],
     );
   }
   await withTenant(ctx.shopId, (c) =>

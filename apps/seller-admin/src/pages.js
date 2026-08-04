@@ -2243,13 +2243,17 @@ export function renderOrders(ctx, shopId, data, filter) {
   const total = data.total ?? orders.length;
   const off = filter.offset, lim = filter.limit;
   const qenc = encodeURIComponent(filter.q ?? '');
-  const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&offset=${o}`;
+  // MỌI đường rời trang này phải mang THEO ĐỦ bộ lọc. `payment` từng bị bỏ quên ở CẢ BỐN
+  // nơi (phân trang, tab trạng thái, nút Xuất CSV, và hàm dựng query của BFF) — mà đường vào
+  // mặc định của nó là ô "Đơn chưa thu tiền" trên Tổng quan. Người bán bấm vào đó rồi sang
+  // trang 2, hoặc đổi tab, hoặc bấm Xuất CSV là bộ lọc BIẾN MẤT không báo gì.
+  const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}&offset=${o}`;
   // TAB trạng thái kèm SỐ ĐẾM (thay <select> cũ) — mẫu quen thuộc của TikTok Shop/Shopee:
   // nhìn là biết "còn 12 đơn chờ xác nhận", bấm 1 phát là lọc. Số đếm tôn trọng ô tìm kiếm
   // + khoảng ngày đang áp (nhưng không tính chính mệnh đề trạng thái) nên luôn khớp kết quả.
   // Giữ nguyên q/from/to khi đổi tab để không mất bộ lọc người dùng đang xem.
   const cnts = data.counts ?? {};
-  const keep = `&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}`;
+  const keep = `&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}`;
   const statusTabs = `<div class="stabs" role="tablist" aria-label="Lọc theo trạng thái">${
     STATUSES.map((s) => {
       const on = (filter.status ?? '') === s;
@@ -2260,12 +2264,18 @@ export function renderOrders(ctx, shopId, data, filter) {
     }).join('')}</div>`;
   // Xuất CSV theo ĐÚNG bộ lọc đang xem — hidden mang nguyên status/q/from/to sang POST.
   // Chỉ chủ shop (EXPORT_ROLES) thấy nút: file chứa SĐT + địa chỉ khách hàng loạt.
+  // Form Lọc bên dưới mang `payment` ở dạng hidden: đây là chỗ THỨ NĂM từng đánh rơi nó.
+  // Bấm "Lọc" từ màn "Đơn chưa thu tiền" mà mất điều kiện là người bán lặng lẽ nhìn nhầm
+  // tập đơn — và nút xuất ngay cạnh sẽ xuất theo cái nhầm đó.
+  // (Chú thích để ở JS, KHÔNG dùng <!-- --> : chú thích HTML lọt ra trang người dùng, và
+  //  một khẳng định e2e khác grep đúng chuỗi trong đó → đỏ vì lý do không liên quan.)
   const exportBtn = EXPORT_ROLES.has(ctx.role) ? `<form method="POST" action="/shops/${esc(shopId)}/orders/export" style="display:inline">
         <input type="hidden" name="status" value="${esc(filter.status ?? '')}">
         <input type="hidden" name="q" value="${esc(filter.q ?? '')}">
         <input type="hidden" name="from" value="${esc(filter.from ?? '')}">
         <input type="hidden" name="to" value="${esc(filter.to ?? '')}">
         <input type="hidden" name="source" value="${esc(filter.source ?? '')}">
+        <input type="hidden" name="payment" value="${esc(filter.payment ?? '')}">
         <button class="btn alt" type="submit">⬇ Xuất CSV</button></form>` : '';
   return layout('Đơn hàng', ctx, `<div class="toolbar"><h1 style="margin:0">Đơn hàng</h1>
       <span class="actions">${exportBtn}<a class="btn" href="/shops/${esc(shopId)}/orders/new">+ Tạo đơn</a></span></div>
@@ -2279,6 +2289,7 @@ export function renderOrders(ctx, shopId, data, filter) {
       <summary class="filt-sum">Lọc &amp; tìm đơn${(filter.q || filter.from || filter.to || filter.source) ? ' <strong>(đang lọc)</strong>' : ''}</summary>
       <form method="GET" class="filters">
       <input type="hidden" name="status" value="${esc(filter.status ?? '')}">
+      <input type="hidden" name="payment" value="${esc(filter.payment ?? '')}">
       <div style="flex:1 1 200px"><label>Tìm (mã đơn / tên / SĐT)</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="123, Nguyễn…, 09…"></div>
       <div><label>Từ ngày</label><input type="date" name="from" value="${esc(filter.from ?? '')}"></div>
       <div><label>Đến ngày</label><input type="date" name="to" value="${esc(filter.to ?? '')}"></div>

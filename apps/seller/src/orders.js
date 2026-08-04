@@ -8,6 +8,8 @@
 import crypto from 'node:crypto';
 import { send, parseOffset } from './http.js';
 import { withTenant, audit } from './db.js';
+// BIÊN NGÀY giờ VN — MỘT nguồn dùng chung với reports.js/purchasing.js (xem date-range.js).
+import { rangeSql, TZ } from './date-range.js';
 import { toCsv, CsvText, EXPORT_ORDERS_MAX_ROWS } from './export.js';
 import { isProvince } from './provinces.js';
 
@@ -94,12 +96,29 @@ function buildOrderFilter(query) {
       where.push(`(vn_unaccent(customer_name) LIKE vn_unaccent($${lk}) OR customer_phone ILIKE $${lk})`);
     }
   }
-  // Khoảng ngày (theo created_at, biên [from, to] tính cả ngày to).
+  // Khoảng ngày (theo created_at, biên [from, to] tính cả ngày to) — BIÊN GIỜ VIỆT NAM.
+  //
+  // Trước bản vá chỗ này dùng `created_at >= $n::date` TRẦN. DB chạy ở UTC nên biên đó rơi vào
+  // 0h UTC = 7 GIỜ SÁNG giờ VN: mọi đơn đặt trong khung 00:00–07:00 — đúng khung săn sale 0h —
+  // bị đẩy sang ngày hôm trước. Trong khi trang Báo cáo và Nhập hàng cắt theo giờ VN. Cùng một
+  // ô "Từ 15 đến 15", hai trang trả về HAI TẬP ĐƠN KHÁC NHAU, và bản xuất CSV đơn lệch với bản
+  // xuất CSV báo cáo — người bán không có cách nào biết con số nào đúng.
+  //
+  // rangeSql cần HAI tham số liền nhau ($i = from, $i+1 = to). Khi chỉ có một đầu, vẫn dùng
+  // đúng phép đổi múi giờ đó cho vế tương ứng để hai nhánh không lệch nhau lần nữa.
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
   const from = (query.get('from') ?? '').trim();
   const to = (query.get('to') ?? '').trim();
-  if (DATE_RE.test(from)) { args.push(from); where.push(`created_at >= $${args.length}::date`); }
-  if (DATE_RE.test(to)) { args.push(to); where.push(`created_at < ($${args.length}::date + 1)`); }
+  if (DATE_RE.test(from) && DATE_RE.test(to)) {
+    args.push(from, to);
+    where.push(rangeSql('created_at', args.length - 1));
+  } else if (DATE_RE.test(from)) {
+    args.push(from);
+    where.push(`created_at >= ($${args.length}::date::timestamp AT TIME ZONE '${TZ}')`);
+  } else if (DATE_RE.test(to)) {
+    args.push(to);
+    where.push(`created_at < (($${args.length}::date + 1)::timestamp AT TIME ZONE '${TZ}')`);
+  }
   // Lọc theo NGUỒN đơn (0119). Giá trị lạ bị BỎ QUA (không lọc) chứ không lỗi: đây là
   // tham số trên URL, người dùng sửa tay hoặc link cũ không được làm vỡ trang danh sách.
   const src = (query.get('source') ?? '').trim();

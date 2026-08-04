@@ -276,6 +276,63 @@ async function bulkConfirm(res, ctx, body) {
   return send(res, 200, { ok: true, confirmed, skipped });
 }
 
+// GIAO HÀNG LOẠT (tự giao) — mirror bulkConfirm: mỗi đơn một transaction riêng, thành công
+// một phần, trần 100. Việc tốn thời gian nhất của buổi sáng: 26 đơn trước đây là 26 lần mở
+// trang chi tiết + gõ tay mã vận đơn ≈ 12 phút mỗi sáng, ~5-6 giờ mỗi tháng.
+//
+// KHÔNG NHẬN MÃ VẬN ĐƠN — cố ý. Mã là của TỪNG đơn; gõ 26 mã vào một ô là vô nghĩa. Đơn gửi
+// qua hãng (GHN/GHTK) đã có đường riêng và mã do hãng cấp. Nút này dành cho shop TỰ GIAO.
+//
+// BA ĐIỀU KIỆN BỎ QUA, mỗi cái có lý do riêng:
+//   · status <> 'confirmed' — chỉ giao đơn đã xác nhận. KHÔNG nhận 'shipped' như đường đơn lẻ:
+//     ở đó người bán chủ động chọn dòng để gửi tiếp (giao một phần), còn hàng loạt mà tự tạo
+//     kiện thứ hai là ngoài ý muốn của người bấm.
+//   · đang có claim vận đơn của HÃNG (shipments.status='created') — đơn đó đang trên đường
+//     GHN/GHTK. Giao tay đè lên là tạo vận đơn thứ hai cho cùng một đơn: hãng thu hộ COD hai
+//     lần (đúng lớp lỗi docs/61 đã vá ở chỗ khác).
+//   · không còn dòng nào chưa gửi — đơn đã gửi đủ.
+async function bulkShip(res, ctx, body) {
+  const ids = Array.isArray(body.order_ids) ? [...new Set(body.order_ids.filter((x) => typeof x === 'string' && /^[0-9a-f-]{36}$/.test(x)))] : [];
+  if (!ids.length) return send(res, 400, { error: 'không có đơn nào được chọn' });
+  if (ids.length > 100) return send(res, 400, { error: 'tối đa 100 đơn mỗi lần' });
+  let shipped = 0, skipped = 0;
+  for (const orderId of ids) {
+    try {
+      const out = await withTenant(ctx.shopId, async (c) => {
+        const o = (await c.query(
+          `SELECT id, status, order_number, customer_email, fulfillment_status FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
+        if (!o || o.status !== 'confirmed') return false;
+        const dangGuiQuaHang = (await c.query(
+          `SELECT 1 FROM shipments WHERE order_id = $1 AND status = 'created' LIMIT 1`, [orderId])).rows[0];
+        if (dangGuiQuaHang) return false;
+        // ORDER BY variant_id: mọi giao dịch khoá dòng tồn theo CÙNG một thứ tự, nếu không thì
+        // hai lượt chạy đồng thời khoá chéo nhau và deadlock. Giao HÀNG LOẠT làm chuyện đó dễ
+        // xảy ra hơn hẳn (25 đơn liên tiếp, nhiều đơn dùng chung biến thể).
+        // Bất biến apps/seller/test/lock-order.test.js bắt đúng thiếu sót này khi tôi viết xong.
+        const ol = (await c.query(
+          `SELECT ol.id, ol.variant_id, ol.qty, ol.unit_price_vnd, ol.shipped_qty
+             FROM order_lines ol WHERE ol.order_id = $1 ORDER BY variant_id`, [orderId])).rows;
+        const gui = ol.map((l) => ({ id: l.id, variant_id: l.variant_id, qty: l.qty - l.shipped_qty, unit: Number(l.unit_price_vnd) }))
+          .filter((x) => x.qty > 0);
+        if (!gui.length) return false;
+        const sh = (await c.query(
+          `INSERT INTO shipments (shop_id, order_id, carrier, status) VALUES (current_shop_id(), $1, NULL, 'created') RETURNING id`, [orderId])).rows[0];
+        for (const g of gui) {
+          await c.query(
+            `INSERT INTO shipment_lines (shop_id, shipment_id, order_line_id, variant_id, qty, unit_price_vnd)
+             VALUES (current_shop_id(), $1, $2, $3, $4, $5)`, [sh.id, g.id, g.variant_id, g.qty, g.unit]);
+        }
+        // tracking null = tự giao, không có mã. consumeAndShip đẩy vận đơn sang 'in_transit'
+        // nên vòng quét dọn-claim-chết (chỉ đụng status='created') không bao giờ chạm tới nó.
+        await consumeAndShip(c, ctx, o, { shipmentId: sh.id, tracking: null, carrier: null });
+        return true;
+      });
+      out ? shipped++ : skipped++;
+    } catch { skipped++; }
+  }
+  return send(res, 200, { ok: true, shipped, skipped });
+}
+
 // ĐÃ NHẬN TIỀN HÀNG LOẠT (COD, gom tiền cuối ngày): mirror bulkConfirm — mỗi đơn 1
 // transaction riêng, thành công một phần, trần 100. Cùng perm 'orders.write' + cùng
 // guard với markPaid đơn lẻ: CHỈ COD, chưa paid, không ở trạng thái terminal
@@ -1483,6 +1540,7 @@ export const ORDER_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders$`), perm: 'orders.write', fn: (res, ctx, b) => createManualOrder(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/sellable-variants$`), perm: 'orders.write', fn: (res, ctx, b, p, q) => listSellableVariants(res, ctx, q) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/bulk/confirm$`), perm: 'orders.write', fn: (res, ctx, b) => bulkConfirm(res, ctx, b) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/bulk/ship$`), perm: 'orders.write', fn: (res, ctx, b) => bulkShip(res, ctx, b) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/bulk/mark-paid$`), perm: 'orders.write', fn: (res, ctx, b) => bulkMarkPaid(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/orders/${UUID}$`), perm: 'orders.read', fn: (res, ctx, b, p) => getOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/edit$`), perm: 'orders.write', fn: (res, ctx, b, p) => editOrder(res, ctx, b, p) },

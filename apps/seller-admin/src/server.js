@@ -375,7 +375,11 @@ async function ordersList(res, me, cookie, shopId, q) {
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
   const from = DATE_RE.test((q.get('from') ?? '').trim()) ? q.get('from').trim() : '';
   const to = DATE_RE.test((q.get('to') ?? '').trim()) ? q.get('to').trim() : '';
-  const limit = 20, offset = Math.max(0, parseInt(q.get('offset') ?? '0', 10) || 0);
+  // SỐ DÒNG MỖI TRANG do người bán chọn. Cứng 20 dòng nghĩa là 26 đơn chờ xử lý phải làm HAI
+  // LƯỢT cho mọi thao tác hàng loạt — in ra hai xấp phiếu và dễ bỏ quên xấp thứ hai.
+  // Chỉ nhận 20/50/100: cho gõ số tuỳ ý là mở đường quét sâu (limit=100000).
+  const limit = [20, 50, 100].includes(Number(q.get('limit'))) ? Number(q.get('limit')) : 20;
+  const offset = Math.max(0, parseInt(q.get('offset') ?? '0', 10) || 0);
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   const payment = ['unpaid', 'pending', 'paid', 'refunded'].includes(q.get('payment')) ? q.get('payment') : '';
   const source = ['web', 'manual', 'facebook', 'zalo', 'tiktok', 'other'].includes(q.get('source')) ? q.get('source') : '';
@@ -388,7 +392,25 @@ async function ordersList(res, me, cookie, shopId, q) {
   const r = await sellerApi('GET', `/shops/${shopId}/orders?${qs}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được đơn hàng.'));
-  return sendHtmlJs(res, 200, (nonce) => V.renderOrders({ ...ctx, nonce }, shopId, r.json, { status, payment, source, q: search, from, to, limit, offset }));
+  // BÁO ĐÃ XONG. Trước đây thao tác hàng loạt xong chỉ đổi URL (?bulk_ok=20) mà KHÔNG chữ nào
+  // trên trang nói gì — người bán phải tự nhìn số trên tab xem có tụt không mới dám tin máy đã
+  // làm. Dựng câu ở đây, ngay cạnh chỗ đọc tham số, để không ai phải đoán.
+  // PHẢI kiểm tham số CÓ MẶT trước. `q.get('bulk_ok')` vắng thì trả null, mà `Number(null)`
+  // là 0 — và 0 là số nguyên ≥ 0, nên nhánh đầu luôn thắng và mọi thao tác hàng loạt đều báo
+  // "Đã xác nhận 0 đơn" kể cả khi vừa giao 50 đơn. Chính tôi viết lỗi này và chỉ thấy vì đi
+  // đọc lại dòng chữ hiện ra trên màn hình thay vì tin vào mã.
+  const soOk = (k) => {
+    const raw = q.get(k);
+    if (raw == null) return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n >= 0 ? n : null;
+  };
+  const bo = (nOk, nSkip, lam) => (nOk == null ? null
+    : `✓ Đã ${lam} ${nOk} đơn.` + (nSkip ? ` ${nSkip} đơn không hợp lệ nên bỏ qua.` : ''));
+  const bulk = bo(soOk('bulk_ok'), soOk('bulk_skip'), 'xác nhận')
+    ?? bo(soOk('bulkpay_ok'), soOk('bulkpay_skip'), 'ghi nhận đã thu tiền')
+    ?? bo(soOk('bulkship_ok'), soOk('bulkship_skip'), 'chuyển sang đang giao');
+  return sendHtmlJs(res, 200, (nonce) => V.renderOrders({ ...ctx, nonce }, shopId, r.json, { status, payment, source, q: search, from, to, limit, offset, bulk }));
 }
 
 // ── Tạo đơn thủ công (nhân viên chốt đơn Facebook/Zalo rồi gõ vào) ─────────────
@@ -1114,13 +1136,44 @@ async function apiKeyRevoke(res, me, cookie, shopId, keyId) {
 }
 
 // Xác nhận HÀNG LOẠT: forward danh sách id (checkbox) → seller (thành công một phần).
+// QUAY VỀ ĐÚNG CHỖ ĐANG ĐỨNG. Trước đây mọi thao tác hàng loạt đá người bán về tab "Tất cả" —
+// đang ở "Chờ xử lý" tích 20 đơn, bấm xong thì màn hình nhảy về danh sách 395 đơn với mấy đơn
+// hoàn hàng từ tháng trước ở đầu bảng, rồi phải bấm lại tab để làm nốt 6 đơn còn lại.
+// Form hàng loạt mang sẵn bộ lọc ở hidden; hàm này chỉ việc trả lại đúng nó.
+function veLai(shopId, params, them) {
+  const sp = new URLSearchParams();
+  for (const k of ['status', 'q', 'from', 'to', 'source', 'payment', 'limit', 'offset']) {
+    const v = (params.get(k) ?? '').trim();
+    if (v) sp.set(k, v);
+  }
+  for (const [k, v] of Object.entries(them)) if (v != null) sp.set(k, String(v));
+  const qs = sp.toString();
+  return `/shops/${shopId}/orders${qs ? `?${qs}` : ''}`;
+}
+
 async function ordersBulkConfirm(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const params = await readFormAll(req);
   const ids = params.getAll('order_ids').filter((x) => /^[0-9a-f-]{36}$/.test(x));
   if (!ids.length) return redirect(res, `/shops/${shopId}/orders`);
   const r = await sellerApi('POST', `/shops/${shopId}/orders/bulk/confirm`, { cookie, body: { order_ids: ids } });
-  return redirect(res, `/shops/${shopId}/orders${r.status === 200 ? `?bulk_ok=${r.json.confirmed}&bulk_skip=${r.json.skipped}` : ''}`);
+  return redirect(res, veLai(shopId, params, r.status === 200 ? { bulk_ok: r.json.confirmed, bulk_skip: r.json.skipped } : {}));
+}
+
+// GIAO HÀNG LOẠT. Việc tốn thời gian nhất của buổi sáng: trước đây 26 đơn là 26 lần mở trang
+// chi tiết + gõ tay mã vận đơn + hai lần bấm để quay lại danh sách ≈ 12 phút mỗi sáng, ~5-6 giờ
+// mỗi tháng, gần như toàn bộ là lặp máy móc.
+//
+// KHÔNG nhận mã vận đơn ở đây — CỐ Ý. Mã vận đơn là của TỪNG đơn, gõ 26 mã vào một ô là vô
+// nghĩa; còn đơn gửi qua hãng (GHN/GHTK) thì mã do hãng cấp và đã có đường riêng. Nút này dành
+// cho shop TỰ GIAO hoặc giao qua người quen — chiếm phần lớn đơn nội thành của shop nhỏ.
+async function ordersBulkShip(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const params = await readFormAll(req);
+  const ids = params.getAll('order_ids').filter((x) => /^[0-9a-f-]{36}$/.test(x));
+  if (!ids.length) return redirect(res, veLai(shopId, params, {}));
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/bulk/ship`, { cookie, body: { order_ids: ids } });
+  return redirect(res, veLai(shopId, params, r.status === 200 ? { bulkship_ok: r.json.shipped, bulkship_skip: r.json.skipped } : {}));
 }
 
 // ĐÃ NHẬN TIỀN HÀNG LOẠT (COD): mirror bulk-confirm — seller tự bỏ qua đơn không hợp
@@ -1131,7 +1184,7 @@ async function ordersBulkMarkPaid(req, res, me, cookie, shopId) {
   const ids = params.getAll('order_ids').filter((x) => /^[0-9a-f-]{36}$/.test(x));
   if (!ids.length) return redirect(res, `/shops/${shopId}/orders`);
   const r = await sellerApi('POST', `/shops/${shopId}/orders/bulk/mark-paid`, { cookie, body: { order_ids: ids } });
-  return redirect(res, `/shops/${shopId}/orders${r.status === 200 ? `?bulkpay_ok=${r.json.paid}&bulkpay_skip=${r.json.skipped}` : ''}`);
+  return redirect(res, veLai(shopId, params, r.status === 200 ? { bulkpay_ok: r.json.paid, bulkpay_skip: r.json.skipped } : {}));
 }
 
 // In HÀNG LOẠT (GET từ nút formaction, target _blank): mỗi đơn 1 trang.
@@ -1225,6 +1278,9 @@ async function productsBulkStatus(req, res, me, cookie, shopId) {
   const back = new URLSearchParams();
   if (params.get('status_filter')) back.set('status', params.get('status_filter'));
   if (params.get('q')) back.set('q', params.get('q'));
+  // `stock` cũng phải quay về: đang rà 27 SP sắp hết, tắt bán 2 cái xong mà rơi về danh sách
+  // 202 SP thì mất chỗ đang làm dở — và lần sau dễ tưởng đã rà hết.
+  if (params.get('stock')) back.set('stock', params.get('stock'));
   if (params.get('offset')) back.set('offset', params.get('offset'));
   const dest = (extra) => `/shops/${shopId}/products?${new URLSearchParams({ ...Object.fromEntries(back), ...extra })}`;
   if (!ids.length) return redirect(res, dest({ bulk_none: '1' }));
@@ -3430,6 +3486,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'GET') return orderNewPage(res, me, cookie, m[1], null, null, url.searchParams.get('q') ?? '');
     if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'POST') return orderNewSubmit(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/bulk-confirm$`).exec(p)) && req.method === 'POST') return ordersBulkConfirm(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/bulk-ship$`).exec(p)) && req.method === 'POST') return ordersBulkShip(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/bulk-mark-paid$`).exec(p)) && req.method === 'POST') return ordersBulkMarkPaid(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/print-batch$`).exec(p)) && req.method === 'GET') return ordersPrintBatch(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/orders/export$`).exec(p)) && req.method === 'POST') return ordersExportCreate(req, res, me, cookie, m[1]);

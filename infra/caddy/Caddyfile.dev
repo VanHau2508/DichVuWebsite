@@ -32,6 +32,32 @@
 	}
 }
 
+# ── NÉN (gzip/zstd) ──────────────────────────────────────────────────────────
+# Trước đây KHÔNG có dòng nào nén, dù trình duyệt nào cũng gửi accept-encoding. Đo trên một
+# shop thật đã bán 2 tháng: một ngày làm việc của người bán tải 2,58 MB thay vì 0,67 MB, và
+# trang chủ cửa hàng nặng 157 KB trong đó 104 KB là khối CSS nội tuyến lặp lại ở MỌI trang.
+# Với 4G yếu ở tiệm, đó là ~1 giây mỗi lần bấm — đúng chỗ khách bỏ đi.
+#
+# MATCH THEO CONTENT-TYPE, không nén tất: ảnh JPEG/PNG/WebP và woff2 đã nén sẵn, nén lại chỉ
+# tốn CPU và có khi PHÌNH ra. Vì vậy cdn.nentang.vn (phục vụ ảnh từ MinIO) KHÔNG import khối
+# này — ở đó không có gì đáng nén.
+#
+# zstd đứng trước gzip: trình duyệt nào hiểu zstd thì dùng nó (nén tốt hơn ~10-15% và giải nén
+# nhanh hơn), còn lại tự rơi về gzip. Không có trình duyệt nào bị bỏ rơi.
+(compress) {
+	encode {
+		zstd
+		gzip 5
+		match {
+			header Content-Type text/*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type application/xml*
+			header Content-Type image/svg+xml*
+		}
+	}
+}
+
 # ── Chuyển hướng HTTP → HTTPS ────────────────────────────────────────────────
 # Ở production, Caddy tự chèn handler ACME HTTP-01 vào block này trước redirect.
 http:// {
@@ -44,6 +70,7 @@ http:// {
 auth.localtest {
 	tls internal
 	import security_headers
+	import compress
 	header Cache-Control "no-store"
 	reverse_proxy auth:3020
 }
@@ -53,6 +80,7 @@ auth.localtest {
 admin.localtest {
 	tls internal
 	import security_headers
+	import compress
 	# Ảnh public (logo, ảnh SP) phục vụ CÙNG origin admin → CSP 'self' cho phép, trình
 	# duyệt tới được (khác với minio:9000 nội bộ). Bucket public đọc ẩn danh (initMedia).
 	handle /media-public/* {
@@ -69,6 +97,7 @@ admin.localtest {
 hooks.localtest {
 	tls internal
 	import security_headers
+	import compress
 	header Cache-Control "no-store"
 	# Webhook Messenger (0122) — ĐẶT TRƯỚC handle tổng quát của payment.
 	@fbhook path /webhooks/messenger
@@ -92,6 +121,7 @@ hooks.localtest {
 shop.localtest {
 	tls internal
 	import security_headers
+	import compress
 	@checkout path /cart /cart/* /checkout /checkout/*
 	handle @checkout {
 		reverse_proxy checkout:3060
@@ -117,6 +147,7 @@ shop.localtest {
 nentang.vn, www.nentang.vn {
 	tls internal
 	import security_headers
+	import compress
 	# Self-serve signup (0091): /signup* → service signup (SSR no-JS, vai app_signup). TRƯỚC catch-all.
 	handle /signup* {
 		reverse_proxy signup:3064
@@ -138,6 +169,7 @@ nentang.vn, www.nentang.vn {
 *.nentang.vn {
 	tls internal
 	import security_headers
+	import compress
 	@checkout path /cart /cart/* /checkout /checkout/*
 	handle @checkout {
 		reverse_proxy checkout:3060
@@ -165,6 +197,7 @@ https:// {
 	}
 
 	import security_headers
+	import compress
 
 	# /cart* /checkout* → dịch vụ checkout (ghi đơn, tự đặt Cache-Control: no-store).
 	# Còn lại → storefront (duyệt, tự đặt public cache cho trang, no-store cho 404).

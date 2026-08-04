@@ -2310,13 +2310,16 @@ export function renderOrders(ctx, shopId, data, filter) {
   // nơi (phân trang, tab trạng thái, nút Xuất CSV, và hàm dựng query của BFF) — mà đường vào
   // mặc định của nó là ô "Đơn chưa thu tiền" trên Tổng quan. Người bán bấm vào đó rồi sang
   // trang 2, hoặc đổi tab, hoặc bấm Xuất CSV là bộ lọc BIẾN MẤT không báo gì.
-  const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}&offset=${o}`;
+  // `limit` cũng phải đi theo: chọn 100 dòng rồi bấm "Sau →" mà rơi về 20 thì người bán mất
+  // chỗ đang đứng và phải chọn lại — đúng kiểu mất-bộ-lọc mà chú thích trên đang nói tới.
+  const limQ = filter.limit && filter.limit !== 20 ? `&limit=${esc(filter.limit)}` : '';
+  const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}${limQ}&offset=${o}`;
   // TAB trạng thái kèm SỐ ĐẾM (thay <select> cũ) — mẫu quen thuộc của TikTok Shop/Shopee:
   // nhìn là biết "còn 12 đơn chờ xác nhận", bấm 1 phát là lọc. Số đếm tôn trọng ô tìm kiếm
   // + khoảng ngày đang áp (nhưng không tính chính mệnh đề trạng thái) nên luôn khớp kết quả.
   // Giữ nguyên q/from/to khi đổi tab để không mất bộ lọc người dùng đang xem.
   const cnts = data.counts ?? {};
-  const keep = `&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}`;
+  const keep = `&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}${limQ}`;
   const statusTabs = `<div class="stabs" role="tablist" aria-label="Lọc theo trạng thái">${
     STATUSES.map((s) => {
       const on = (filter.status ?? '') === s;
@@ -2363,18 +2366,29 @@ export function renderOrders(ctx, shopId, data, filter) {
     <div class="card">
       <!-- Chip "đang lọc" nằm NGOÀI nhánh có-dòng: lọc ra 0 kết quả mà không nói đang lọc gì
            thì người bán thấy trang trống và không hiểu vì sao, cũng không có lối quay ra. -->
+      ${filter.bulk ? `<p class="ok" style="margin:0 0 10px">${esc(filter.bulk)}</p>` : ''}
       ${filter.payment ? `<p class="muted" style="margin:0 0 10px">Đang lọc: <strong>${esc(PAYMENT_LABEL[filter.payment] ?? filter.payment)}</strong> · <a href="?${esc(new URLSearchParams({ ...(filter.status ? { status: filter.status } : {}), ...(filter.q ? { q: filter.q } : {}) }).toString())}">Xoá bộ lọc</a></p>` : ''}
       ${orders.length ? `
       <form id="bulkf" method="POST" action="/shops/${esc(shopId)}/orders/bulk-confirm" class="actions" style="margin-bottom:10px">
+        <!-- Bộ lọc đang xem đi kèm để làm xong còn QUAY VỀ ĐÚNG CHỖ ĐANG ĐỨNG (xem veLai ở BFF).
+             Thiếu mấy dòng này là người bán bị đá về tab "Tất cả" sau mỗi lượt hàng loạt. -->
+        ${['status', 'q', 'from', 'to', 'source', 'payment'].map((k) => `<input type="hidden" name="${k}" value="${esc(filter[k] ?? '')}">`).join('')}
+        <input type="hidden" name="limit" value="${esc(filter.limit ?? '')}">
+        <input type="hidden" name="offset" value="${esc(filter.offset ?? '')}">
         <button class="btn sm" type="submit">✓ Xác nhận các đơn đã chọn</button>
+        <button class="btn sm" type="submit" formaction="/shops/${esc(shopId)}/orders/bulk-ship">🚚 Giao các đơn đã chọn</button>
         <button class="btn alt sm" type="submit" formaction="/shops/${esc(shopId)}/orders/bulk-mark-paid">₫ Đã nhận tiền (COD)</button>
         <button class="btn alt sm" type="submit" formaction="/shops/${esc(shopId)}/orders/print-batch" formmethod="get" formtarget="_blank">🖨 In các đơn đã chọn</button>
-        <span class="muted" style="font-size:.82rem">Tích chọn ở cột đầu (xác nhận: chỉ đơn "Chờ xử lý"; nhận tiền: chỉ đơn COD chưa thu; đơn khác tự bỏ qua).</span>
+        <span class="muted" data-bulk-count="order_ids" hidden style="font-size:13px"></span>
+        <span class="muted" style="font-size:.82rem">Tích ô ở đầu bảng để chọn cả trang (xác nhận: chỉ đơn "Chờ xử lý"; giao: chỉ đơn đã xác nhận, KHÔNG gồm đơn đang gửi qua hãng vận chuyển; nhận tiền: chỉ đơn COD chưa thu; đơn khác tự bỏ qua).</span>
       </form>
-      <table data-cards><thead><tr><th></th><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Khách</th><th>Nguồn</th><th>Thời gian</th><th style="text-align:right">Tổng</th></tr></thead><tbody>${rows}</tbody></table>
+      <table data-cards><thead><tr><th><input type="checkbox" data-bulk-all="order_ids" form="bulkf" hidden aria-label="Chọn tất cả đơn trên trang"></th><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Khách</th><th>Nguồn</th><th>Thời gian</th><th style="text-align:right">Tổng</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="muted" style="margin-top:12px">${total} đơn ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
+        · <span style="white-space:nowrap">Mỗi trang: ${[20, 50, 100].map((n) => (n === lim
+          ? `<strong>${n}</strong>`
+          : `<a href="?status=${esc(filter.status ?? '')}${keep.replace(limQ, '')}${n === 20 ? '' : `&limit=${n}`}&offset=0">${n}</a>`)).join(' · ')}</span>
       </div>` : '<p class="muted">Không tìm thấy đơn nào khớp bộ lọc.</p>'}</div>
     <a class="btn alt" href="/">← Về bảng điều khiển</a>`);
 }
@@ -2909,10 +2923,18 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
   const nav = (o) => `?q=${q}&status=${esc(filter.status)}&offset=${o}`;
   // Tồn: '—' = CHƯA BIẾT (API cũ chưa trả cột) ≠ 0 = hết hàng. Giữ đúng quy ước của trang
   // chi tiết SP (pages.js:2202) để hai trang không "chửi nhau".
+  // CON SỐ TỔNG GIẤU SIZE ĐÃ HẾT. Khách không mua "tổng" — khách mua đúng MỘT size. Trên một
+  // shop thật 60 ngày, 14/15 biến thể hết hàng nằm trong sản phẩm hiện tồn 204, 172, 148: nhìn
+  // là yên tâm bỏ qua, còn khách chọn đúng size đó thì mất đơn. Ngày đầu mỗi SP một biến thể
+  // nên con số tổng CHÍNH LÀ sự thật — lỗi này chỉ sinh ra khi shop bắt đầu bán nhiều size.
   const stockCell = (p) => {
     if (p.stock == null) return '<span class="muted" title="Chưa tải được tồn kho">—</span>';
     const n = Number(p.stock);
-    return `<span class="stock${n <= 0 ? ' zero' : (n < 5 ? ' low' : '')}">${esc(n)}</span>`;
+    const het = Number(p.oos_variants ?? 0);
+    const nhan = het > 0 && Number(p.variant_count) > 1
+      ? ` <span class="badge cancelled" title="${esc(het)} phân loại (size/màu) đã hết hàng — khách chọn đúng phân loại đó sẽ không mua được">${esc(het)} loại hết</span>`
+      : '';
+    return `<span class="stock${n <= 0 ? ' zero' : (n < 5 ? ' low' : '')}">${esc(n)}</span>${nhan}`;
   };
   const rows = products.map((p) => `<tr>
     <td><input type="checkbox" name="product_ids" value="${esc(p.id)}" form="pbulk" aria-label="Chọn ${esc(p.title)}"></td>
@@ -2933,7 +2955,11 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
       const on = (filter.status ?? '') === s;
       const label = s ? (PSTATUS[s] ?? s) : 'Tất cả';
       const n = cnts[s];
-      return `<a class="stab${on ? ' on' : ''}" href="?status=${esc(s)}&q=${q}"${on ? ' aria-current="page"' : ''}>${esc(label)}${
+      // Bộ lọc "sắp hết hàng" phải đi theo ở CẢ BA đường rời trang: tab này, ô "Tìm theo tên",
+      // và form thao tác hàng loạt. Số trên tab ĐÃ tính theo bộ lọc đó (tab ghi "26") nhưng
+      // đường dẫn thì không mang nó — bấm vào ra 190 sản phẩm. Con số trên nút nói một đằng,
+      // bấm vào ra một nẻo, và người bán lạc mà không biết mình đang lạc.
+      return `<a class="stab${on ? ' on' : ''}" href="?status=${esc(s)}&q=${q}${filter.stock === 'low' ? '&stock=low' : ''}"${on ? ' aria-current="page"' : ''}>${esc(label)}${
         n != null ? `<span class="cnt">${esc(n)}</span>` : ''}</a>`;
     }).join('')}</div>`;
   // Thao tác hàng loạt (no-JS): checkbox nằm TRONG <table> nhưng thuộc form ngoài qua
@@ -2943,6 +2969,7 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
       <form id="pbulk" method="POST" action="/shops/${esc(shopId)}/products/bulk-status" class="actions" style="margin-bottom:10px">
         <input type="hidden" name="status_filter" value="${esc(filter.status ?? '')}">
         <input type="hidden" name="q" value="${esc(filter.q ?? '')}">
+        <input type="hidden" name="stock" value="${esc(filter.stock ?? '')}">
         <input type="hidden" name="offset" value="${esc(off)}">
         <button class="btn sm" type="submit" name="to" value="active" data-bulk-act="product_ids">✓ Đăng bán</button>
         <button class="btn alt sm" type="submit" name="to" value="draft" data-bulk-act="product_ids">✎ Chuyển nháp (ẩn)</button>
@@ -2961,6 +2988,7 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
     ${statusTabs}
     <div class="card"><form method="GET" class="filters">
       <input type="hidden" name="status" value="${esc(filter.status ?? '')}">
+      ${filter.stock === 'low' ? '<input type="hidden" name="stock" value="low">' : ''}
       <div style="flex:1 1 200px"><label>Tìm theo tên</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="Ghế sofa…"></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>

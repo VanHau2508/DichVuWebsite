@@ -317,6 +317,14 @@ async function listProducts(res, ctx, _body, _params, query) {
               (SELECT coalesce(sum(il.on_hand - il.reserved), 0)::int
                  FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
                 WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS stock,
+              -- SỐ BIẾN THỂ ĐÃ HẾT. Con số "stock" ở trên là TỔNG — mà khách không mua "tổng",
+              -- khách mua đúng MỘT size. Trên một shop thật 60 ngày, 14/15 biến thể hết hàng nằm
+              -- trong những sản phẩm hiện tồn 204, 172, 148 — nhìn là yên tâm bỏ qua, còn khách
+              -- chọn đúng size đó thì mất đơn. Đếm ở đây để danh sách nói ra được điều đó.
+              (SELECT count(*)::int
+                 FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
+                WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}
+                  AND coalesce(il.on_hand - il.reserved, 0) <= 0) AS oos_variants,
               (SELECT m.public_key FROM media m
                  WHERE m.product_id = p.id AND m.status = 'ready' AND m.deleted_at IS NULL
                  ORDER BY m.position, m.created_at LIMIT 1) AS image_key

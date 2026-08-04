@@ -42,6 +42,32 @@
 	}
 }
 
+# ── NÉN (gzip/zstd) ──────────────────────────────────────────────────────────
+# Trước đây KHÔNG có dòng nào nén, dù trình duyệt nào cũng gửi accept-encoding. Đo trên một
+# shop thật đã bán 2 tháng: một ngày làm việc của người bán tải 2,58 MB thay vì 0,67 MB, và
+# trang chủ cửa hàng nặng 157 KB trong đó 104 KB là khối CSS nội tuyến lặp lại ở MỌI trang.
+# Với 4G yếu ở tiệm, đó là ~1 giây mỗi lần bấm — đúng chỗ khách bỏ đi.
+#
+# MATCH THEO CONTENT-TYPE, không nén tất: ảnh JPEG/PNG/WebP và woff2 đã nén sẵn, nén lại chỉ
+# tốn CPU và có khi PHÌNH ra. Vì vậy cdn.nentang.vn (phục vụ ảnh từ MinIO) KHÔNG import khối
+# này — ở đó không có gì đáng nén.
+#
+# zstd đứng trước gzip: trình duyệt nào hiểu zstd thì dùng nó (nén tốt hơn ~10-15% và giải nén
+# nhanh hơn), còn lại tự rơi về gzip. Không có trình duyệt nào bị bỏ rơi.
+(compress) {
+	encode {
+		zstd
+		gzip 5
+		match {
+			header Content-Type text/*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type application/xml*
+			header Content-Type image/svg+xml*
+		}
+	}
+}
+
 # ── Quản trị nhà bán hàng: MỘT origin duy nhất (ADR-005) ─────────────────────
 # CSP: seller-admin tự đặt theo TỪNG RESPONSE, edge KHÔNG đặt nữa (ADR-011).
 #
@@ -59,6 +85,7 @@
 # mà dev không hề báo.
 admin.nentang.vn {
 	import security_headers
+	import compress
 	header Cache-Control "private, no-store"
 	reverse_proxy seller-admin:3001
 }
@@ -71,6 +98,7 @@ hooks.nentang.vn {
 		dns cloudflare {env.CF_API_TOKEN}
 	}
 	import security_headers
+	import compress
 	header Cache-Control "no-store"
 	# Webhook Messenger (0122) — ĐẶT TRƯỚC @hooks vì @hooks nuốt cả /webhooks/*.
 	# Caddy xét handle theo THỨ TỰ trong block, nên cụ thể phải đứng trên tổng quát.
@@ -102,6 +130,8 @@ cdn.nentang.vn {
 		dns cloudflare {env.CF_API_TOKEN}
 	}
 	import security_headers
+	# CỐ Ý KHÔNG `import compress`: khối này chỉ phục vụ ảnh từ MinIO. JPEG/PNG/WebP đã nén sẵn
+	# — nén lại chỉ tốn CPU, có khi còn phình ra.
 	@media path /media-public/*
 	handle @media {
 		reverse_proxy minio:9000
@@ -121,6 +151,7 @@ nentang.vn, www.nentang.vn {
 		dns cloudflare {env.CF_API_TOKEN}
 	}
 	import security_headers
+	import compress
 	# Self-serve signup (0091): /signup* → service signup (SSR no-JS, vai app_signup). TRƯỚC catch-all.
 	handle /signup* {
 		reverse_proxy signup:3064
@@ -137,6 +168,7 @@ nentang.vn, www.nentang.vn {
 		dns cloudflare {env.CF_API_TOKEN}
 	}
 	import security_headers
+	import compress
 
 	# Đường JSON đặt đơn (POST /checkout) BỎ QUA lớp chống bot no-JS; khách thật dùng
 	# POST /checkout/place. Chặn ở biên (e2e chạy nội bộ, không qua Caddy nên vẫn gọi được).
@@ -168,6 +200,7 @@ https:// {
 		on_demand
 	}
 	import security_headers
+	import compress
 
 	@checkout_json {
 		method POST

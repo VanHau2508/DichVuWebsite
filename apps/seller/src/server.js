@@ -232,15 +232,52 @@ async function updateShopProfile(res, ctx, body) {
 }
 
 async function listMembers(res, ctx) {
-  const rows = await withTenant(ctx.shopId, async (c) => {
-    const { rows } = await c.query(
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const members = (await c.query(
       `SELECT m.user_id, m.role, u.email, m.created_at
          FROM memberships m JOIN users u ON u.id = m.user_id
         ORDER BY m.created_at`,
-    );
-    return rows;
+    )).rows;
+    // LỜI MỜI ĐANG CHỜ. Trước bản vá màn Thành viên chỉ liệt kê người ĐÃ vào, nên một lời
+    // mời gửi nhầm email nằm im 7 ngày mà chủ shop không hề biết là có — không thấy thì
+    // không thể muốn thu hồi. TUYỆT ĐỐI KHÔNG trả token/token_hash: token là bằng chứng sở
+    // hữu email, chỉ đi qua chính email người được mời (0073).
+    const invitations = (await c.query(
+      `SELECT i.id, i.email, i.role, i.created_at, i.expires_at, u.email AS invited_by_email
+         FROM invitations i LEFT JOIN users u ON u.id = i.invited_by
+        WHERE i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now()
+        ORDER BY i.created_at DESC LIMIT 50`,
+    )).rows;
+    return { members, invitations };
   });
-  return send(res, 200, { members: rows });
+  return send(res, 200, { members: out.members, invitations: out.invitations });
+}
+
+/**
+ * THU HỒI lời mời chưa dùng. Mời nhầm email (gõ nhầm tên miền có người sở hữu thật) hoặc
+ * nhầm vai trò vốn là NGÕ CỤT 7 NGÀY: token đã gửi đi, không nút nào rút lại được.
+ *
+ * KHÔNG đòi step-up — CỐ Ý, ngược với gợi ý ban đầu trong docs/57. Học thuyết đã viết ra của
+ * kho này (apps/seller/src/api-keys.js: thu hồi khoá kết nối) nói: *tạo* năng lực thì step-up,
+ * *thu hồi* thì không, vì "đường an toàn phải là đường dễ đi nhất" — lúc phát hiện mời nhầm
+ * là lúc người ta hoảng, bắt gõ lại mật khẩu chỉ kéo dài cửa sổ cho người lạ bấm link.
+ * Thu hồi cũng KHÔNG phá gì: không đụng memberships, không ai đang đăng nhập bị mất quyền.
+ */
+async function revokeInvitation(res, ctx, invId) {
+  const out = await withTenant(ctx.shopId, async (c) => {
+    // RLS tenant_isolation lo cô lập shop; guard accepted_at để không "thu hồi" thứ đã thành
+    // thành viên thật (gỡ người đã vào là việc của DELETE /members/:uid).
+    const r = await c.query(
+      `UPDATE invitations SET revoked_at = now()
+        WHERE id = $1 AND accepted_at IS NULL AND revoked_at IS NULL
+        RETURNING email, role`, [invId],
+    );
+    if (r.rowCount !== 1) return null;
+    await audit(c, 'member.invitation_revoked', { actorId: ctx.user.id, ip: ctx.ip, metadata: { invitation_id: invId, email: r.rows[0].email, role: r.rows[0].role } });
+    return r.rows[0];
+  });
+  if (!out) return send(res, 404, { error: 'lời mời không tồn tại, đã được dùng hoặc đã thu hồi' });
+  return send(res, 200, { ok: true, email: out.email });
 }
 
 async function inviteMember(res, ctx, body) {
@@ -347,6 +384,8 @@ const ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/members/invite$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b) => inviteMember(res, ctx, b) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/members/${UUID}/role$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b, p) => changeRole(res, ctx, p[1], b) },
   { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/members/${UUID}$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b, p) => removeMember(res, ctx, p[1]) },
+  // KHÔNG stepUp — xem chú thích ở revokeInvitation (cùng học thuyết với thu hồi khoá kết nối).
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/members/invitations/${UUID}/revoke$`), perm: 'members.write', fn: (res, ctx, b, p) => revokeInvitation(res, ctx, p[1]) },
   ...CATALOG_ROUTES,
   ...AFFILIATE_ROUTES,
   ...IMPORT_ROUTES,

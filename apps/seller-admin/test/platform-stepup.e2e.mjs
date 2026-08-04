@@ -75,6 +75,40 @@ async function main() {
   r.status === 200 && inv?.months === 3 && inv?.note === 'deal thu cong' && /Đã ghi nhận thu/.test(r.raw)
     ? ok('step-up xong → renew chạy đúng 3 tháng + note vào sổ thu') : bad('renew sau step-up lỗi', `${r.status} ${JSON.stringify(inv)}`);
 
+  // ── Lưu CẤU HÌNH THU TIỀN của nền tảng: cùng cổng step-up, KHÔNG được là ngõ cụt ──
+  // Trước bản vá, platformBillingSave xét `isDenied(status)` TRƯỚC `step_up_required` — mà cờ
+  // step-up luôn đi kèm 403 nên bị nuốt trọn: người dùng LÀ admin nền tảng lại đọc "Tài khoản
+  // của bạn không có quyền", nhánh hiển thị đúng bên dưới thành MÃ CHẾT, và không có route
+  // step-up nào cho màn này. Xảy ra 100% ở lần cấu hình ĐẦU TIÊN của cả nền tảng, đúng lúc
+  // chưa ai từng step-up. Token vừa gõ cũng mất sạch.
+  await owner.query(`UPDATE sessions SET stepped_up_at = now() - interval '10 minutes' WHERE user_id=$1`, [uid]);
+  const TOKEN = `sepay-token-thu-nghiem-${uniq()}`;
+  const truocDb = (await owner.query(`SELECT count(*)::int n FROM platform_billing_config WHERE sepay_token_hash IS NOT NULL`)).rows[0].n;
+  r = await rq(ADMIN, 'POST', '/platform/billing', { form: { sepay_token: TOKEN, enabled: '1' }, cookie: c, origin: OAD });
+  r.status === 200 && /Xác nhận mật khẩu/.test(r.raw)
+    ? ok('lưu cấu hình thu tiền chưa step-up → interstitial (không phải "bạn không có quyền")')
+    : bad('NGÕ CỤT: lưu cấu hình thu tiền không có đường đi tiếp', `${r.status} ${/không có quyền/.test(r.raw) ? 'hiện "không có quyền"' : ''}`);
+  !/Tài khoản của bạn không có quyền/.test(r.raw)
+    ? ok('không còn nói sai bản chất (họ LÀ admin nền tảng)') : bad('vẫn hiện màn "không có quyền"');
+  // Dữ liệu vừa gõ phải sống sót — mất token dài là bắt gõ lại từ đầu (ngõ cụt mất dữ liệu).
+  new RegExp(`name="sepay_token" value="${TOKEN}"`).test(r.raw)
+    ? ok('token vừa gõ được GIỮ trong form step-up (không bắt gõ lại)') : bad('mất token đã gõ khi qua step-up');
+  /name="enabled" value="1"/.test(r.raw) ? ok('giữ cả lựa chọn "bật thu tiền tự động"') : bad('mất cờ enabled');
+  (await owner.query(`SELECT count(*)::int n FROM platform_billing_config WHERE sepay_token_hash IS NOT NULL`)).rows[0].n === truocDb
+    ? ok('chưa xác thực thì CHƯA ghi gì vào cấu hình thu tiền') : bad('ghi cấu hình khi chưa step-up!');
+  // Gõ sai mật khẩu → quay lại form, vẫn giữ dữ liệu.
+  r = await rq(ADMIN, 'POST', '/platform/billing/step-up', { form: { sepay_token: TOKEN, enabled: '1', password: 'sai het roi' }, cookie: c, origin: OAD });
+  r.status === 401 && /Mật khẩu không đúng/.test(r.raw) && new RegExp(`value="${TOKEN}"`).test(r.raw)
+    ? ok('mật khẩu sai → 401, form giữ nguyên token') : bad('nhánh mật khẩu sai lỗi', `${r.status}`);
+  r = await rq(ADMIN, 'POST', '/platform/billing/step-up', { form: { sepay_token: TOKEN, enabled: '1', password }, cookie: c, origin: OAD });
+  const cfg = (await owner.query(`SELECT enabled, sepay_token_hash FROM platform_billing_config LIMIT 1`)).rows[0];
+  r.status === 200 && /Đã lưu cấu hình thu tiền/.test(r.raw) && cfg?.enabled === true && cfg?.sepay_token_hash
+    ? ok('xác thực xong → LƯU THẬT (token + bật), không phải gõ lại lần nữa')
+    : bad('sau step-up vẫn không lưu được', `${r.status} ${JSON.stringify(cfg)}`);
+  // Bí mật KHÔNG được hiện dưới dạng đọc được sau khi đã lưu.
+  r = await rq(ADMIN, 'GET', '/platform/billing', { cookie: c, origin: OAD });
+  !r.raw.includes(TOKEN) ? ok('trang cấu hình KHÔNG in lại token đã lưu') : bad('token SePay bị echo ra màn hình');
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

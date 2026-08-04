@@ -160,6 +160,43 @@ async function main() {
   ms = await members(A.shopId, A.cookie);
   r.status === 303 && ms.length === 1 ? ok('gỡ thành viên → còn 1 (owner)') : bad('gỡ thành viên lỗi', `${r.status} n=${ms.length}`);
 
+  // ── 3a-bis. THU HỒI lời mời chưa dùng ──────────────────────────────────────
+  // Mời nhầm email (gõ nhầm tên miền có người sở hữu thật) hoặc nhầm vai trò vốn là NGÕ CỤT
+  // 7 NGÀY: token đã gửi đi, không nút nào rút lại, và màn Thành viên còn không HIỆN lời mời
+  // đang chờ nên chủ shop có khi không biết là có. "Gỡ thành viên" cũng không đụng lời mời
+  // chưa dùng — gỡ xong người kia bấm lại link cũ là vào lại.
+  sect('3a-bis. Thu hồi lời mời gửi nhầm');
+  const nham = `nham-${uniq()}@shop.vn`;
+  r = await adm('POST', M('/invite'), { cookie: A.cookie, origin: OADM, form: { email: nham, role: 'admin' } });
+  const tokenNham = await inviteTokenOf(nham);
+  r.status === 200 && tokenNham ? ok(`mời nhầm ${nham} (đang trong cửa sổ step-up)`) : bad('không mời được', `${r.status}`);
+  // (1) Màn Thành viên phải HIỆN lời mời đang chờ — không thấy thì không thể muốn thu hồi.
+  r = await adm('GET', M(''), { cookie: A.cookie });
+  const coKhoiCho = /Lời mời đang chờ/.test(r.body) && r.body.includes(nham);
+  coKhoiCho ? ok('màn Thành viên hiện khối "Lời mời đang chờ" kèm email') : bad('lời mời chờ VÔ HÌNH với chủ shop');
+  // (2) Nhưng TUYỆT ĐỐI không lộ token ra màn hình (0073) — dù đang liệt kê lời mời.
+  !/invite\/accept\?token=/.test(r.body) && !r.body.includes(tokenNham)
+    ? ok('khối lời mời chờ KHÔNG in link/token') : bad('LỘ TOKEN lời mời trên màn Thành viên');
+  const invId = (await owner.query(`SELECT id FROM invitations WHERE email=$1 ORDER BY created_at DESC LIMIT 1`, [nham])).rows[0].id;
+  // (3) Bấm Huỷ — KHÔNG hỏi lại mật khẩu (cố ý: đường chữa cháy phải là đường dễ đi nhất,
+  //     cùng học thuyết với thu hồi khoá kết nối).
+  r = await adm('POST', M(`/invitations/${invId}/revoke`), { cookie: A.cookie, origin: OADM, form: {} });
+  r.status === 200 && /Đã huỷ lời mời/.test(r.body) && !/Xác nhận mật khẩu/.test(r.body)
+    ? ok('bấm Huỷ → thu hồi ngay, không bắt gõ lại mật khẩu') : bad('huỷ lời mời lỗi', `${r.status} ${r.body.slice(0, 140)}`);
+  (await owner.query(`SELECT revoked_at FROM invitations WHERE id=$1`, [invId])).rows[0].revoked_at
+    ? ok('DB ghi revoked_at (giữ dấu vết, không xoá dòng)') : bad('không ghi revoked_at');
+  // (4) THỬ THẬT: link đã gửi phải CHẾT. Đây là điểm mấu chốt — nút Huỷ mà token còn dùng
+  //     được thì nó chỉ là trang trí.
+  r = await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: tokenNham, password: 'ke la manh 2026' }, origin: OA });
+  r.status === 400 ? ok('link trong email đã gửi KHÔNG dùng được nữa') : bad('THU HỒI GIẢ: token vẫn nhận được', `${r.status}`);
+  (await members(A.shopId, A.cookie)).some((x) => x.email === nham)
+    ? bad('người bị thu hồi VẪN vào được shop') : ok('người bị thu hồi không có trong danh sách thành viên');
+  // (5) Huỷ lần hai → 404, và khối lời mời chờ không còn dòng đó.
+  r = await adm('POST', M(`/invitations/${invId}/revoke`), { cookie: A.cookie, origin: OADM, form: {} });
+  /Không huỷ được|không tồn tại|đã thu hồi/.test(r.body) ? ok('huỷ lần hai → báo lỗi rõ ràng') : bad('huỷ lại vẫn 200 im lặng');
+  r = await adm('GET', M(''), { cookie: A.cookie });
+  !r.body.includes(nham) ? ok('lời mời đã thu hồi rời khỏi danh sách chờ') : bad('lời mời đã huỷ vẫn nằm trong danh sách');
+
   // ── 3b. Trang chấp nhận lời mời (công khai — người được mời chưa có phiên) ──
   sect('3b. Chấp nhận lời mời');
   r = await adm('GET', `/invite/accept?token=${encodeURIComponent(token2)}`, {});

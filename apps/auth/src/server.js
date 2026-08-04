@@ -398,6 +398,22 @@ async function mfaActivate(req, res, body, ctx) {
       ]);
     }
     await client.query(`UPDATE sessions SET mfa_satisfied = true WHERE id = $1`, [session.id]);
+    // THU HỒI MỌI PHIÊN KHÁC. Phiên mở TRƯỚC khi bật 2FA được tạo với `mfaSatisfied: true`
+    // (nhánh đăng nhập không-MFA), mà cổng là `!mfaEnabled || mfaSatisfied` — nên sau khi
+    // bật MFA chúng VẪN qua cổng và KHÔNG BAO GIỜ bị hỏi mã, suốt phần còn lại của
+    // SESSION_TTL (tối đa 7 ngày). Bật 2FA mà kẻ đang cầm phiên cũ không hề bị đá ra thì
+    // đúng lúc cần nhất — vừa nghi bị lộ — nó chẳng bảo vệ được gì.
+    //
+    // `id != $2` GIỮ LẠI PHIÊN HIỆN TẠI, copy nguyên khuôn changePassword: bản thu-hồi-tất
+    // sẽ đá chính người vừa bấm ra ngoài GIỮA LÚC màn hình đang hiện mã khôi phục — mà mã
+    // đó chỉ hiện MỘT lần (xem chú thích dưới), mất là mất vĩnh viễn.
+    //
+    // TRONG transaction, TRƯỚC bước rotate ở dưới: đặt sau rotate mà không loại trừ phiên
+    // vừa cấp thì giết luôn phiên mới.
+    await client.query(
+      `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND id != $2 AND revoked_at IS NULL`,
+      [user.id, session.id],
+    );
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');
@@ -587,6 +603,14 @@ async function mfaDisable(req, res, body, ctx) {
     await client.query(`UPDATE users SET mfa_enabled = false WHERE id = $1`, [user.id]);
     await client.query(`UPDATE mfa_totp SET confirmed_at = NULL, last_counter = NULL WHERE user_id = $1`, [user.id]);
     await client.query(`UPDATE mfa_recovery_codes SET used_at = now() WHERE user_id = $1 AND used_at IS NULL`, [user.id]);
+    // TẮT 2FA cũng là ĐỔI YẾU TỐ XÁC THỰC → thu hồi mọi phiên khác, cùng lý lẽ với lúc BẬT.
+    // Ca thật: người dùng nghi máy ở cửa hàng bị chiếm, vào tắt rồi bật lại 2FA để "làm mới"
+    // — nếu bước tắt không đá phiên nào thì phiên của kẻ kia sống nguyên qua cả hai bước.
+    // `id != $2` giữ phiên hiện tại (khuôn changePassword), không tự đá mình ra.
+    await client.query(
+      `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND id != $2 AND revoked_at IS NULL`,
+      [user.id, ctx.auth.session.id],
+    );
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }
 
@@ -696,8 +720,10 @@ async function acceptInvitation(req, res, body, ctx) {
   if (!token) return send(res, 400, { error: 'thiếu token' });
 
   const inv = await db.query(
+    // revoked_at IS NULL (0138): lời mời đã thu hồi thì token đã gửi đi phải CHẾT ngay.
+    // Không có điều kiện này thì nút "Huỷ lời mời" chỉ là trang trí.
     `SELECT id, shop_id, email, role FROM invitations
-      WHERE token_hash = $1 AND accepted_at IS NULL AND expires_at > now()`,
+      WHERE token_hash = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()`,
     [hashToken(token)],
   );
   if (inv.rows.length === 0) return send(res, 400, { error: 'lời mời không hợp lệ hoặc đã hết hạn' });
@@ -708,13 +734,16 @@ async function acceptInvitation(req, res, body, ctx) {
     await client.query('BEGIN');
 
     // Claim lời mời trước (dùng một lần, atomic). 0 dòng = request khác đã nhận.
+    // `revoked_at IS NULL` PHẢI có mặt Ở ĐÂY nữa, không chỉ ở câu SELECT trên: giữa SELECT
+    // và UPDATE có khe hở, và đó đúng là khoảnh khắc người bán bấm Huỷ vì vừa nhận ra mình
+    // mời nhầm. Thiếu điều kiện này thì cuộc đua đó người mời LUÔN THUA.
     const claimed = await client.query(
-      `UPDATE invitations SET accepted_at = now() WHERE id = $1 AND accepted_at IS NULL`,
+      `UPDATE invitations SET accepted_at = now() WHERE id = $1 AND accepted_at IS NULL AND revoked_at IS NULL`,
       [invId],
     );
     if (claimed.rowCount !== 1) {
       await client.query('ROLLBACK');
-      return send(res, 400, { error: 'lời mời đã được dùng' });
+      return send(res, 400, { error: 'lời mời đã được dùng hoặc đã bị thu hồi' });
     }
 
     // TOKEN LỜI MỜI = bằng chứng sở hữu email. Ba nhánh (xem 0020):

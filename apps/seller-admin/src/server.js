@@ -139,18 +139,37 @@ async function platformBillingPage(res, me, cookie, ok, err) {
   if (isDenied(r.status)) return platDenied(res, me);
   return sendHtml(res, err ? 400 : 200, V.renderPlatformBilling(platCtx(me), r.json ?? {}, err, ok));
 }
-async function platformBillingSave(req, res, me, cookie) {
-  const f = await readForm(req);
+async function doPlatformBillingSave(res, me, cookie, p) {
   const r = await platformApi('PUT', '/ops/billing-config', {
-    cookie, body: { sepay_token: String(f.sepay_token ?? '').trim(), enabled: f.enabled === '1' },
+    cookie, body: { sepay_token: p.sepay_token, enabled: p.enabled === '1' },
   });
-  if (isDenied(r.status)) return platDenied(res, me);
-  // step_up_required nói RÕ ra: đây là thao tác chạm đường tiền, nuốt thành "không lưu
-  // được" thì người dùng bấm lại mãi mà không hiểu thiếu gì.
+  // step_up_required PHẢI xét TRƯỚC isDenied. `isDenied = (st) => st === 401 || st === 403`
+  // mà cờ step-up LUÔN đi kèm 403 → đặt sau là bị nuốt trọn, và nhánh dưới thành MÃ CHẾT.
+  // Đó chính là lỗ đã vá: người dùng LÀ admin nền tảng lại đọc "Tài khoản của bạn không có
+  // quyền", còn token vừa gõ thì mất sạch. Ba đường suspend/restore/renew/terminate đã đặt
+  // đúng thứ tự này từ lâu — đây là chỗ duy nhất trong kho đặt ngược.
+  if (r.json?.step_up_required) return platformBillingStepUpPage(res, me, p);
+  if (isDenied(r.status)) return platDenied(res, me);   // 403 THƯỜNG = không phải staff
   return platformBillingPage(res, me, cookie,
     r.status === 200 ? 'Đã lưu cấu hình thu tiền.' : null,
-    r.status === 200 ? null
-      : (r.json?.step_up_required ? 'Cần xác thực lại mật khẩu (thao tác chạm đường tiền).' : (r.json?.error ?? 'Không lưu được.')));
+    r.status === 200 ? null : (r.json?.error ?? 'Không lưu được.'));
+}
+const billingForm = (f) => ({ sepay_token: String(f.sepay_token ?? '').trim(), enabled: f.enabled === '1' ? '1' : '' });
+async function platformBillingSave(req, res, me, cookie) {
+  return doPlatformBillingSave(res, me, cookie, billingForm(await readForm(req)));
+}
+async function platformBillingStepUpPage(res, me, p, err) {
+  return sendHtml(res, err ? 401 : 200, V.renderPlatformBillingStepUp(platCtx(me), p, err));
+}
+// Nhận mật khẩu → step-up → CHẠY TIẾP thao tác đang chờ. Mirror platformStepUp, nhưng KHÔNG
+// dùng lại được nó: form kia đóng đinh vào `/platform/shops/:id/step-up` (phải có shopId),
+// còn màn này không thuộc shop nào.
+async function platformBillingStepUp(req, res, me, cookie) {
+  const f = await readForm(req);
+  const p = billingForm(f);
+  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+  if (r.status !== 200) return platformBillingStepUpPage(res, me, p, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.');
+  return doPlatformBillingSave(res, me, cookie, p);
 }
 
 // Đóng một khoản tiền lạc rồi quay lại chính màn đó (PRG) — danh sách tự ngắn đi một dòng.
@@ -2086,7 +2105,12 @@ async function mfaActivate(req, res, me, cookie) {
   const r = await authApi('POST', '/auth/mfa/activate', { cookie, body: { code: String(f.code ?? '').replace(/\s/g, '') } });
   // A6: activate ROTATE token → auth trả cookie phiên mới; relay để trình duyệt theo phiên mới.
   const setC = r.status === 200 ? (r.setCookie ?? []) : [];
-  if (r.status === 200) return sendHtml(res, 200, V.renderAccount({ email: me.email, mfa_enabled: me.mfa_enabled, sessions: [], recovery_codes: r.json?.recovery_codes ?? [], notice: 'Đã bật MFA thành công.' }), setC);
+  // NÓI RA việc thiết bị khác bị đăng xuất (mirror passwordChange bên dưới). Auth thu hồi mọi
+  // phiên khác khi bật MFA — im lặng thì người dùng chỉ phát hiện lúc điện thoại bắt đăng nhập
+  // lại và tưởng hỏng. `sessions: []` giữ nguyên: phiên cũ vừa bị thu hồi nên danh sách CHỈ
+  // còn phiên hiện tại, mà cookie phiên đó vừa xoay (setC) — gọi /auth/sessions bằng cookie CŨ
+  // sẽ 401. Trang /account tải lại là hiện đúng danh sách.
+  if (r.status === 200) return sendHtml(res, 200, V.renderAccount({ email: me.email, mfa_enabled: me.mfa_enabled, sessions: [], recovery_codes: r.json?.recovery_codes ?? [], notice: 'Đã bật MFA thành công. Các thiết bị khác đã bị đăng xuất — hãy đăng nhập lại trên chúng.' }), setC);
   // Sai mã: giữ nguyên bước 2 (secret còn nguyên, chưa xác nhận) để thử lại — không phải enroll lại.
   return accountPage(res, me, cookie, { enroll: { secret: f.secret, otpauth_url: f.otpauth }, err: r.json?.error ?? 'Mã không đúng, thử lại.' });
 }
@@ -2195,6 +2219,14 @@ async function doRemove(res, me, cookie, shopId, p) {
   const r = await sellerApi('DELETE', `/shops/${shopId}/members/${encodeURIComponent(p.uid)}`, { cookie });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/members`);
   return membersList(res, me, cookie, shopId, null, r.json?.error ?? 'Không gỡ được thành viên.');
+}
+// THU HỒI lời mời — KHÔNG qua step-up, CỐ Ý (xem chú thích revokeInvitation ở apps/seller).
+// Đây là nút chữa cháy: mời nhầm email xong thì đường an toàn phải là đường dễ đi nhất.
+async function invitationRevoke(res, me, cookie, shopId, invId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/members/invitations/${encodeURIComponent(invId)}/revoke`, { cookie, body: {} });
+  if (r.status === 200) return membersList(res, me, cookie, shopId, { revoked: r.json?.email ?? '' });
+  return membersList(res, me, cookie, shopId, null, r.json?.error ?? 'Không huỷ được lời mời.');
 }
 async function stepUpPage(res, me, cookie, shopId, action, params, err) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -3293,6 +3325,7 @@ async function handle(req, res, url, p) {
     if (p === '/platform/support' && req.method === 'GET') return platformSupport(res, me, cookie, url.searchParams);
     if (p === '/platform/billing' && req.method === 'GET') return platformBillingPage(res, me, cookie, null, null);
     if (p === '/platform/billing' && req.method === 'POST') return platformBillingSave(req, res, me, cookie);
+    if (p === '/platform/billing/step-up' && req.method === 'POST') return platformBillingStepUp(req, res, me, cookie);
     if ((pm = new RegExp(`^/platform/billing/unmatched/${UUID}/resolve$`).exec(p)) && req.method === 'POST') return platformUnmatchedResolve(res, me, cookie, pm[1]);
     if ((pm = new RegExp(`^/platform/support/${UUID}/(resolve|reopen)$`).exec(p)) && req.method === 'POST') return platformSupportAction(req, res, me, cookie, pm[1], pm[2]);
     if (p === '/platform' && req.method === 'POST') return platformCreate(req, res, me, cookie);
@@ -3461,6 +3494,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/members/step-up$`).exec(p)) && req.method === 'POST') return memberStepUp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/members/${UUID}/role$`).exec(p)) && req.method === 'POST') return memberRole(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/members/${UUID}/remove$`).exec(p)) && req.method === 'POST') return memberRemove(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/members/invitations/${UUID}/revoke$`).exec(p)) && req.method === 'POST') return invitationRevoke(res, me, cookie, m[1], m[2]);
 
     // Xuất dữ liệu (owner).
     if ((m = new RegExp(`^/shops/${UUID}/reports$`).exec(p)) && req.method === 'GET') return reportsPage(res, me, cookie, m[1], url.searchParams);

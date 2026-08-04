@@ -1579,6 +1579,30 @@ export function renderPlatformStepUp(ctx, shopId, action, params, err) {
   </div></div>`);
 }
 
+// Interstitial mật khẩu cho màn THU TIỀN của nền tảng. Không dùng lại renderPlatformStepUp
+// được: form kia đóng đinh vào `/platform/shops/:id/step-up`, mà màn này không thuộc shop nào.
+//
+// Token SePay vừa gõ được MANG THEO trong hidden field — cân nhắc có thật, không phải sơ ý.
+// Bỏ đi thì người dùng gõ lại token dài từ đầu sau mỗi lần xác thực, đúng kiểu "ngõ cụt mất
+// dữ liệu" mà dự án đã phải vá một lần ở QR checkout. Bí mật này nằm trong POST body và
+// trong DOM của CHÍNH trang họ vừa gõ nó vào, trên phiên đã đăng nhập của họ — không vào URL,
+// không vào lịch sử trình duyệt, không vào log. Đổi lại là không mất dữ liệu.
+export function renderPlatformBillingStepUp(ctx, p, err) {
+  const hidden = Object.entries(p).filter(([, v]) => v != null && v !== '')
+    .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('');
+  return layout('Xác nhận mật khẩu', ctx, `<div class="center"><div class="card">
+    <h1>Xác nhận mật khẩu</h1>
+    <p class="muted">Đổi cấu hình <strong>thu tiền thuê bao</strong> là thao tác chạm đường tiền của nền tảng — cần xác thực lại. Nhập mật khẩu để lưu tiếp; những gì bạn vừa nhập được giữ nguyên.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    <form method="POST" action="/platform/billing/step-up">
+      ${hidden}
+      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
+      <button class="btn" type="submit" style="width:100%;margin-top:12px">Xác nhận &amp; lưu</button>
+    </form>
+    <a class="muted" href="/platform/billing" style="display:inline-block;margin-top:10px">← Huỷ</a>
+  </div></div>`);
+}
+
 // shop.staff_role (trả kèm từ GET /ops/shops/:id) = 'operator' → ẨN mọi form ghi
 // (khoá/mở, gia hạn, mời, offboard). Chỉ là UX đỡ bấm nhầm — gate THẬT là minRole
 // 403 phía platform. Offboard (admin): xuất dữ liệu (JSON quản lý) + chấm dứt hợp
@@ -3872,11 +3896,30 @@ export function renderMembers(ctx, shopId, data, canWrite, notice, err) {
     <td class="muted">${dt(mb.created_at)}</td>
     <td class="right">${canWrite ? `<form method="POST" action="${base}/${esc(mb.user_id)}/remove"><button class="btn warn sm" type="submit">Gỡ</button></form>` : ''}</td>
   </tr>`).join('');
+  // LỜI MỜI ĐANG CHỜ. Trước đây màn này chỉ liệt kê người ĐÃ vào, nên lời mời gửi nhầm nằm im
+  // 7 ngày mà chủ shop không biết là có — không thấy thì không thể muốn thu hồi.
+  //
+  // TUYỆT ĐỐI KHÔNG in token/link nhận lời mời ra đây (bất biến 0073: token chỉ đi qua email
+  // người được mời; có bộ test canh đúng chuỗi `invite/accept?token=`). Chỉ email + vai trò +
+  // hạn. Vai trò in bằng NHÃN trong <span>, KHÔNG dùng <select><option> — trang này có khẳng
+  // định "không được có option value=owner" và một select thừa ở đây sẽ phá nó.
+  const cho = data?.invitations ?? [];
+  const choRows = cho.map((iv) => `<tr>
+    <td>${esc(iv.email)}</td>
+    <td><span class="badge">${esc(ROLE_LABEL[iv.role] ?? iv.role)}</span></td>
+    <td class="muted">${dt(iv.expires_at)}</td>
+    <td class="right">${canWrite ? `<form method="POST" action="${base}/invitations/${esc(iv.id)}/revoke"><button class="btn warn sm" type="submit" data-confirm="Huỷ lời mời gửi tới ${esc(iv.email)}? Link đã gửi sẽ hết hiệu lực ngay.">Huỷ</button></form>` : ''}</td>
+  </tr>`).join('');
   return layout('Nhân sự', ctx, `<h1>Nhân sự cửa hàng</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${notice?.invited ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0">
       <strong>Đã gửi email lời mời tới ${esc(notice.invited)}.</strong> Họ mở email, bấm link để đặt mật khẩu & tham gia (lời mời sống 7 ngày).</div>` : ''}
+    ${notice?.revoked ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0">
+      <strong>Đã huỷ lời mời${notice.revoked ? ` gửi tới ${esc(notice.revoked)}` : ''}.</strong> Link trong email đó không dùng được nữa.</div>` : ''}
     <div class="card"><table data-cards><thead><tr><th>Email</th><th>Vai trò</th><th>Tham gia</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${cho.length ? `<div class="card"><h2 style="margin-top:0">Lời mời đang chờ</h2>
+      <p class="muted" style="font-size:.85rem">Người được mời chưa bấm link. Mời nhầm email hoặc nhầm vai trò thì <strong>Huỷ</strong> ngay — link đã gửi sẽ hết hiệu lực lập tức.</p>
+      <table data-cards><thead><tr><th>Email</th><th>Vai trò</th><th>Hết hạn</th><th></th></tr></thead><tbody>${choRows}</tbody></table></div>` : ''}
     ${canWrite ? `<div class="card"><h2 style="margin-top:0">Mời thành viên</h2>
       <p class="muted" style="font-size:.85rem">Thao tác nhân sự cần xác nhận lại mật khẩu (step-up).</p>
       <form method="POST" action="${base}/invite">

@@ -290,6 +290,44 @@ async function main() {
   meOff === false && loginNoMfa.status === 200 && loginNoMfa.json?.mfa_required === false
     ? ok('sau tắt MFA: mfa_enabled false + đăng nhập không hỏi mã') : bad('tắt MFA không thực', `off=${meOff} login=${JSON.stringify(loginNoMfa.json)}`);
 
+  // ── 10b-bis. BẬT/TẮT MFA phải THU HỒI phiên khác ───────────────────────────
+  // Phiên mở TRƯỚC khi bật 2FA được tạo với mfa_satisfied=true (nhánh đăng nhập không-MFA),
+  // mà cổng là `!mfaEnabled || mfaSatisfied` — nên trước bản vá chúng VẪN qua cổng và KHÔNG
+  // BAO GIỜ bị hỏi mã, suốt phần còn lại của SESSION_TTL (tới 7 ngày). Bật 2FA đúng lúc nghi
+  // bị lộ mà kẻ đang cầm phiên cũ không hề bị đá ra thì lớp bảo vệ đó chẳng bảo vệ gì.
+  sect('10b-bis. Bật/tắt MFA thu hồi phiên KHÁC, giữ phiên hiện tại');
+  await redis.flushdb();
+  const mEmail = `mfa2-${uniq()}@a.vn`, mPw = 'mfa two passphrase strong';
+  await req('POST', '/auth/register', { body: { email: mEmail, password: mPw } });
+  // HAI thiết bị đăng nhập khi tài khoản CHƯA bật MFA (điện thoại + máy tính — chuyện thường).
+  let mDev1 = tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: mEmail, password: mPw } })).setCookie);
+  const mDev2 = tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: mEmail, password: mPw } })).setCookie);
+  ((await req('GET', '/auth/me', { cookie: mDev1 })).status === 200 && (await req('GET', '/auth/me', { cookie: mDev2 })).status === 200)
+    ? ok('mốc: hai phiên cùng sống khi CHƯA bật MFA') : bad('không dựng được hai phiên');
+  const mKey = base32Decode((await req('POST', '/auth/mfa/enroll', { cookie: mDev1 })).json.secret);
+  const mC0 = counterFor(Date.now());
+  const actR = await req('POST', '/auth/mfa/activate', { cookie: mDev1, body: { code: totp(mKey, {}) } });
+  mDev1 = tokenFromSetCookie(actR.setCookie) ?? mDev1;   // activate ROTATE token
+  (actR.json?.recovery_codes ?? []).length === 10
+    ? ok('bật MFA vẫn trả đủ 10 mã khôi phục (không tự đá mình ra giữa chừng)') : bad('mất mã khôi phục', JSON.stringify(actR.json).slice(0, 120));
+  (await req('GET', '/auth/me', { cookie: mDev1 })).status === 200
+    ? ok('phiên VỪA bật MFA còn sống (id != phiên hiện tại)') : bad('bật MFA tự đăng xuất chính mình — mã khôi phục mất vĩnh viễn');
+  (await req('GET', '/auth/me', { cookie: mDev2 })).status === 401
+    ? ok('phiên thiết bị KHÁC bị thu hồi — không còn cửa sổ 7 ngày bỏ qua 2FA')
+    : bad('BẬT 2FA KHÔNG đá phiên cũ: phiên mở trước 2FA vẫn full quyền');
+  // Tắt MFA cũng là đổi yếu tố xác thực → cùng luật.
+  while (counterFor(Date.now()) <= mC0) await sleep(1000);
+  const mDev3 = tokenFromSetCookie((await req('POST', '/auth/mfa/verify', {
+    cookie: tokenFromSetCookie((await req('POST', '/auth/login', { body: { email: mEmail, password: mPw } })).setCookie),
+    body: { code: totp(mKey, {}) },
+  })).setCookie);
+  (await req('GET', '/auth/me', { cookie: mDev3 })).status === 200 ? ok('dựng thiết bị 3 (đã qua 2FA)') : bad('không dựng được thiết bị 3');
+  const offR = await req('POST', '/auth/mfa/disable', { cookie: mDev1, body: { code: totp(mKey, {}) } });
+  offR.status === 200 && (await req('GET', '/auth/me', { cookie: mDev1 })).status === 200
+    ? ok('tắt MFA: giữ phiên hiện tại') : bad('tắt MFA đá nhầm phiên hiện tại', offR.raw);
+  (await req('GET', '/auth/me', { cookie: mDev3 })).status === 401
+    ? ok('tắt MFA: phiên khác cũng bị thu hồi') : bad('tắt 2FA không đá phiên khác (tắt-rồi-bật-lại để "làm mới" là vô nghĩa)');
+
   // ── 10c. Liệt kê + thu hồi phiên (A6) ──────────────────────────────────────
   sect('10c. Liệt kê + thu hồi phiên');
   await redis.flushdb();

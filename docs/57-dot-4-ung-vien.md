@@ -12,7 +12,11 @@
 > trang tra cứu của khách + tài khoản khách in mã đã huỷ · phiếu giao hàng/hoá đơn in kiện
 > cũ nhất · digest "đơn ứ" bị claim chết reset đồng hồ · màn "Trang nội dung" chỉ sai đường
 > dẫn công khai cho chính chủ shop. Khoá lại bằng `apps/seller/test/shipment-status.test.js`.
-> **8 mục còn lại vẫn CHƯA vá.**
+> **Đợt tiếp:** vá thêm cụm **phiên/MFA/step-up (D · E · F)** — xem docs/59. Lại 9/9 lăng kính
+> xác nhận. Lượt phản biện còn **bác lại chính docs này** ở hai điểm: (1) route thu hồi lời mời
+> KHÔNG nên đòi step-up (ngược học thuyết đã viết ở api-keys.js: *tạo* thì step-up, *thu hồi*
+> thì không); (2) docs bỏ sót câu CLAIM ở auth — chỉ vá câu SELECT thì còn cuộc đua mà người
+> mời LUÔN THUA. **5 mục còn lại vẫn CHƯA vá.**
 
 Nguồn: workflow 20 agent quét 5 mảng **chưa từng soi** — storefront công khai · hoa hồng CTV ·
 vận chuyển qua hãng · phiên/MFA/step-up · xuất dữ liệu. Mỗi phát hiện đi qua một lượt phản biện
@@ -98,19 +102,19 @@ liệu ra đọc.
 
 ## Phiên · MFA · step-up
 
-### [cao] Console nền tảng: lưu cấu hình THU TIỀN là ngõ cụt — 403 step_up_required bị nuốt thành "bạn không có quyền", và trang đó không có bất kỳ ô mật khẩu / route step-up nào
+### ✅ ĐÃ VÁ — [cao] Console nền tảng: lưu cấu hình THU TIỀN là ngõ cụt — 403 step_up_required bị nuốt thành "bạn không có quyền", và trang đó không có bất kỳ ô mật khẩu / route step-up nào
 
 **Điều kiện cần đủ:** Mặc định, không cần shop bật gì. Chỉ cần phiên staff chưa step-up trong 5 phút — tức là MỌI lần đăng nhập mới. Xảy ra 100% ở lần cấu hình đầu tiên (đúng lúc chưa ai từng step-up). Nếu người dùng vô tình vừa suspend/restore/renew/terminate một shop trong 5 phút trước đó thì lưu được, nên lỗi này TRÔNG như chập chờn.
 
 **Đề xuất:** Đảo thứ tự trong platformBillingSave: kiểm `r.json?.step_up_required` TRƯỚC `isDenied(r.status)` (giống hệt platformStatus:231 / doPlatformRenew:250 / doPlatformTerminate:265), và thêm route POST /platform/billing/step-up + form mật khẩu mang theo sepay_token/enabled (mirror renderPlatformStepUp có hidden field). Thêm khẳng định
 
-### [cao] BẬT MFA không thu hồi các phiên KHÁC — phiên mở trước khi bật 2FA giữ nguyên quyền đầy đủ 7 ngày, kể cả cổng "nhân viên nền tảng phải bật MFA"
+### ✅ ĐÃ VÁ (+ mfaDisable) — [cao] BẬT MFA không thu hồi các phiên KHÁC — phiên mở trước khi bật 2FA giữ nguyên quyền đầy đủ 7 ngày, kể cả cổng "nhân viên nền tảng phải bật MFA"
 
 **Điều kiện cần đủ:** Mặc định, không cần shop bật gì. Cần: (a) tài khoản có ≥2 phiên sống cùng lúc TRƯỚC khi bật MFA — chuyện bình thường (điện thoại + máy tính, hoặc máy cửa hàng), (b) bật MFA từ một trong các phiên đó. Cửa sổ tồn tại = phần còn lại của SESSION_TTL_HOURS=168 (tối đa 7 ngày). Người dùng CÓ đường tự chữa (/account → "Đăng xuất mọi thiết bị KHÁC") nhưng phải tự nghĩ ra, và đúng màn hình sau khi bật MFA lại ẩn nút đó.
 
 **Đề xuất:** Trong transaction của mfaActivate (apps/auth/src/server.js:381-401) thêm `UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND id != $2 AND revoked_at IS NULL` — copy nguyên câu ở changePassword:553. Cân nhắc làm tương tự cho mfaDisable. Tối thiểu: bỏ `sessions: []` ở apps/seller-admin/src/server.js:2085, gọi lại /auth/
 
-### [cao] Lời mời thành viên KHÔNG thu hồi được và KHÔNG bị thay thế: mời nhầm email/nhầm vai trò là ngõ cụt 7 ngày, và "gỡ thành viên" không đụng tới lời mời chưa dùng
+### ✅ ĐÃ VÁ (0138) — [cao] Lời mời thành viên KHÔNG thu hồi được và KHÔNG bị thay thế: mời nhầm email/nhầm vai trò là ngõ cụt 7 ngày, và "gỡ thành viên" không đụng tới lời mời chưa dùng
 
 **Điều kiện cần đủ:** Mặc định, không cần bật gì. Cần: một lời mời chưa dùng còn trong hạn 7 ngày (expires_at cố định `now() + interval '7 days'` ở apps/seller/src/server.js:258; phía platform là INVITE_TTL_DAYS). Kịch bản gõ nhầm email: chỉ cần domain gõ nhầm có người sở hữu — hoàn toàn nằm ngoài tầm kiểm soát của shop. Kịch bản mời-hai-lần: chỉ cần bấm Mời lần thứ hai, chuyện xảy ra thường xuyên khi email vào spam.
 

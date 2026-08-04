@@ -131,3 +131,97 @@ tồi khi làm cùng lúc với tính năng mới. Dọn dang dở **có chủ �
 |---|---|
 | Không chuẩn hoá uuid trong `routeTemplate` | 4 đỏ — kể cả "uuid thật lọt lên trang" |
 | UPSERT `hits = excluded.hits` (đè thay vì cộng) | 1 đỏ — đúng khẳng định cộng dồn |
+
+
+---
+
+# Phần II — sáu lỗ trong chính tính năng này (0143, commit `ab91bd0`)
+
+Cổng CI đầy đủ bắt đỏ, và mục đỏ là **bộ test mới của chính tôi**. Kéo sợi chỉ đó ra thì lòi
+cả cụm. Không lỗi nào trong sáu lỗi dưới đây bị bộ e2e ban đầu bắt được.
+
+## 1. Rác bot vào thẳng bảng — nặng nhất
+
+Vài service **thoát sớm bằng chuyển hướng, TRƯỚC khi khớp route**:
+
+| Service | Thoát bằng | Áp dụng cho |
+|---|---|---|
+| seller-admin | **303** về `/login` | mọi đường dẫn, khi chưa đăng nhập |
+| storefront | **302** bỏ `?ref=` | mọi đường dẫn |
+| storefront | **301** về tên miền chính | mọi đường dẫn, khi vào host phụ |
+
+Lá chắn 404 — thứ duy nhất giữ cho `routeTemplate` khỏi phải chuẩn hoá đường lạ — **không bao
+giờ chạy** ở ba lối này. Đo bằng request thật: `GET /wp-login.php` và `GET /.env` nằm trong
+Redis; bản ở storefront còn mang **shop_id thật**, nhìn bảng tưởng shop đó có tính năng lạ.
+
+Máy chủ công khai ăn hàng nghìn URL dò mỗi ngày là **mức nền**, không phải kịch bản hiếm. Chạm
+trần 5.000 ô/ngày/service thì mọi route thật **xuất hiện lần đầu** sau đó rơi vào `:over`.
+(Route đã có ô từ trước vẫn đếm đúng — Lua chỉ dồn ô **mới**. Bản báo cáo đầu tiên nói "mọi lượt
+dùng thật dồn vào `:over`" là **nói quá**.)
+
+Vá bằng `skipUsage()`, đánh dấu ở **đúng nơi thoát**: chỉ chỗ viết ra câu lệnh thoát mới biết
+chắc "đây không phải một lượt dùng". Đoán ở tầng đếm thì hoặc chặn nhầm PRG (302 sau POST là
+thao tác quan trọng nhất của seller-admin), hoặc bỏ sót.
+
+## 2–4. Ba lỗi trong chính luật chuẩn hoá
+
+| Lỗi | Triệu chứng | Vá |
+|---|---|---|
+| `'products'` nằm trong `SLUG_PREFIX` | `/products/new`, `/products/import`, `/products/bulk/status` ra **cùng một mẫu** ở seller và seller-admin | Bỏ `'products'` — storefront không hề có `/products/<slug>` |
+| Tiền tố **viết hoa** | `/P/ao-thun-nam` → `/p/ao-thun-nam`, slug thật lọt vào mẫu | So khớp tiền tố sau `.toLowerCase()` |
+| Slug **toàn số** | `/p/1234` → `/p/:n` còn `/p/ao-thun` → `/p/:slug` | Xét luật `:slug` **trước** luật số |
+
+Lỗi #2 đắt nhất về nghiệp vụ: bộ **nhập CSV** (di cư từ sàn khác, docs/45 — tính năng đắt tiền
+đang cần biết có ai dùng không) đếm chung với trang "thêm sản phẩm" được bấm mỗi ngày. Nó có thể
+chết hẳn mà con số vẫn to. Bất nhất còn lộ rõ khi so với endpoint anh em: `/orders/import` và
+`/orders/bulk/confirm` **giữ nguyên** tên, vì `'orders'` không nằm trong danh sách.
+
+Lỗi #3 nguy hiểm vì **mẫu sinh ra trông y hệt một route hợp lệ** — `/p/ao-thun-nam` không có gì
+đáng ngờ, cho tới lúc mở bảng ra thấy vài nghìn dòng.
+
+## 5–6. Hai lỗi về chiều SHOP và chiều SERVICE
+
+- **Trang marketing nentang.vn chạy chung tiến trình với storefront của shop** → `/`, `/blog`,
+  `/blog/:slug`, `/sitemap.xml` gộp làm một. Câu *"blog của người bán có ai đọc không"* — chính
+  là câu để quyết giữ hay bỏ tính năng blog — bị cộng lượt đọc 3 bài marketing của chính nền
+  tảng. Vá bằng `noteService('nentang')`.
+- **Cụm `/ingest/*`** (đơn từ Facebook/Zalo) lấy shop từ **khoá API**, không từ đường dẫn → mọi
+  shop dùng bot rơi chung ô `|-`, và câu "bao nhiêu % shop chạm kênh này" sai cho cả cụm. Một
+  dòng `noteShop(key.shop_id)`.
+
+Kèm: **tệp phông** vào `FU_SKIP` — mỗi lượt tải trang đầu kéo 3–9 tệp, không loại thì bảng xếp
+hạng "dùng nhiều nhất" của seller-admin do tệp phông đứng đầu chứ không phải tính năng nào.
+
+## Migration 0143 — policy từ chối tường minh
+
+Bất biến schema đòi *"mọi bảng có `shop_id` phải có ít nhất một policy cho `app_rw`"*. 0141 cố ý
+không viết policy nào (bảng xuyên-shop của nền tảng) → bất biến đỏ.
+
+**Không** thêm ngoại lệ cho bất biến: chính 0141 đã viết rằng ngoại lệ là chỗ bảng thứ 40 trốn ra
+được. Mục đích của bất biến là ép người thêm bảng phải **nghĩ** về `app_rw`; một policy
+`USING (false)` chính là kết quả của việc đã nghĩ, và nó nói ý định thành lời ngay trong schema —
+mạnh hơn hẳn sự im lặng mà 0141 để lại. Ba lớp giờ mới khép: FORCE RLS · REVOKE (0142) · deny (0143).
+
+## Bốn bẫy ĐO của chính tôi trong đợt này
+
+1. **Ba lần liên tiếp** viết khẳng định đếm **tuyệt đối** trên bảng còn rác từ lượt trước → luôn
+   xanh, đột biến không cắn. Cả ba nay đo **chênh lệch trước/sau**. Luật rút ra: *khẳng định phải
+   nói về hành vi HÔM NAY, không nói về tổng trạng thái của một bảng tích luỹ.*
+2. **Test dùng slug không tồn tại** → trang 404 → sink cố ý bỏ 404 → **không có dòng nào để
+   kiểm**. Đột biến gỡ luật `:slug` vẫn xanh. Phải tạo sản phẩm thật cho trang trả 200.
+3. **Khẳng định nói sai luật**: "chỉ có MỘT mẫu `/p/…`" — hệ có hai endpoint `/p/` thật
+   (`/p/:slug` và `/p/:slug/quickview`). Hai endpoint khác nhau ra hai mẫu khác nhau là điều ta
+   **muốn**. Đổi thành "không slug thật nào lọt".
+4. **Quên chép `obs.js` sang một service** khi chạy đột biến → kết quả đỏ ở nhầm chỗ, suýt kết
+   luận sai về một khẳng định khác. `obs.js` có 10 bản; đột biến phải chép đủ 10.
+
+## Lớp phản biện của workflow hỏng — và tôi vẫn dùng kết quả
+
+Workflow soi route chạy 26 agent, nhưng lớp phản biện đối kháng **hỏng do lỗi của tôi**
+(`parallel()` nhận promise thay vì hàm). Nghĩa là 10 phát hiện **chưa qua kiểm chứng ngược của
+máy**. Tôi tự kiểm từng cái bằng `node -e` và request thật trước khi vá, và **bác bỏ ba mục**:
+`/fonts` ở storefront (chỉ 9 tệp, không nổ cardinality), `/ingest/catalog/products/<36 ký tự>`
+(chỉ xảy ra với đầu vào rác), và mức độ của `:over` như đã nói ở mục 1.
+
+**Trạng thái:** CI đầy đủ **100/100 mục xanh**, 2.480 khẳng định e2e, unit 149, bất biến DB 88.
+Đã push `ab91bd0`.

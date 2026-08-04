@@ -7,7 +7,16 @@ import { PROVINCES } from './provinces.js';
 import { presetChoices } from '../presets.js';
 
 const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + '₫';
-const dt = (s) => { try { return new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(s)); } catch { return esc(s); } };
+// GIỜ VIỆT NAM, KHÔNG phải giờ của máy chủ. Thiếu `timeZone` thì Intl lấy múi giờ tiến trình —
+// container chạy UTC — nên màn hình in sớm hơn 7 tiếng và 54/395 đơn của một shop thật hiện SAI
+// NGÀY (đơn 05:17 sáng 01/08 hiện thành "22:17 31/07"). Đau nhất là nó CÃI NHAU VỚI CHÍNH TRANG
+// ĐÓ: bộ lọc khoảng ngày đã tính theo giờ VN từ docs/60, nên lọc "ngày 01/08" trả về một đống
+// đơn đề ngày 31/07 và người bán tưởng bộ lọc hỏng. Phiếu in giao cho người đóng gói cũng sai.
+//
+// Hai hàm `dt` cục bộ khác trong file này (trang Nhập hàng, trang Kiểm kê) đã truyền timeZone từ
+// đầu — tức luật ĐÚNG đã có sẵn, chỉ bản dùng nhiều nhất là trôi. Bộ apps/seller-admin/test/
+// date-tz.test.js canh mọi hàm định dạng ngày trong service này đều nêu múi giờ.
+const dt = (s) => { try { return new Intl.DateTimeFormat('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(s)); } catch { return esc(s); } };
 const STATUS = { pending: 'Chờ xử lý', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn', returned: 'Hoàn hàng' };
 const PAY = { unpaid: 'Chưa trả', paid: 'Đã trả' };
 const SHIP_ST = { created: 'Đang tạo', in_transit: 'Đang vận chuyển', delivered: 'Đã giao', returned: 'Hoàn hàng', cancelled: 'Đã huỷ' };
@@ -1296,7 +1305,7 @@ function renderTienLac(rows) {
       Xử lý: đối chiếu rồi vào shop đó bấm <em>Ghi nhận đã thu</em>, xong quay lại đây đánh dấu đã xử lý.</p>
     <table><thead><tr><th>Lúc</th><th>Số tiền</th><th>Shop</th><th>Nội dung CK</th><th>Vì sao lạc</th><th></th></tr></thead><tbody>
     ${rows.map((u) => `<tr>
-      <td class="muted">${esc(new Date(u.created_at).toLocaleString('vi-VN'))}</td>
+      <td class="muted">${dt(u.created_at)}</td>
       <td><strong>${esc(tien(u.amount_vnd))}</strong></td>
       <td>${u.shop_slug ? esc(u.shop_slug) : '<span class="muted">chưa rõ</span>'}</td>
       <td><code>${esc(u.content ?? '')}</code></td>

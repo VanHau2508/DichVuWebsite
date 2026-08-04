@@ -71,11 +71,15 @@ MANIFEST_UNIT_FILES=(
   # thật của shop test, còn hình dạng nguy hiểm (slug tiếng Việt, 12 tầng, ký tự lạ) thì không.
   # Bộ này cũng canh 10 bản obs.js khớp từng ký tự.
   apps/seller/test/usage-route.test.js
+  # Múi giờ hiển thị. Container test cũng chạy UTC nên "giờ máy chủ" và "giờ hiển thị" trùng
+  # nhau và MỌI khẳng định e2e đều xanh — chỉ bất biến mức mã nguồn mới thấy. Lỗi thật đã tìm
+  # ra khi tự đóng vai chủ shop ngày-60: 54/395 đơn hiện SAI NGÀY (docs/64).
+  apps/seller-admin/test/date-tz.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=22
-MANIFEST_E2E_COUNT=94
+MANIFEST_UNIT_COUNT=23
+MANIFEST_E2E_COUNT=95
 
 manifest_unit_files() {
   shopt -s nullglob

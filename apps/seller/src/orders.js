@@ -83,17 +83,30 @@ function buildOrderFilter(query) {
   const where = [];
   const args = [];
   // Tìm: mã đơn (nếu q toàn số) hoặc tên/điện thoại khách (ILIKE, escape wildcard).
-  const q = (query.get('q') ?? '').trim().slice(0, 100);
+  // Bỏ '#' đứng đầu: MỌI màn hình đều in mã đơn kèm dấu thăng ("Đơn #183", phiếu in cũng vậy),
+  // nên chép đúng thứ phần mềm đang hiện ra là gõ "#183" — mà trước đây nó ra 0 kết quả. Người
+  // dùng không sai; phần mềm bắt họ tự dịch lại định dạng của chính nó.
+  const q = (query.get('q') ?? '').trim().replace(/^#/, '').slice(0, 100);
   if (q) {
-    // Tên khách tìm KHÔNG DẤU (0048): "nguyen" khớp "Nguyễn". SĐT giữ ILIKE (toàn số).
+    // Tên khách tìm KHÔNG DẤU (0048): "nguyen" khớp "Nguyễn".
     const like = '%' + q.replace(/[%_\\]/g, '\\$&') + '%';
+    // SĐT: so bằng canon_phone() (0137) chứ KHÔNG phải ILIKE thô. Người bán dán số từ Zalo/
+    // Facebook thì nó ra "0910.395.950" / "0910 395 950" / "+84910395950" — ILIKE thô cho 0 kết
+    // quả và màn hình nói "Không tìm thấy đơn nào", y như khách chưa từng mua. Nhân viên mới sẽ
+    // tin câu đó và trả lời khách "bên em không có đơn nào của anh/chị".
+    // canon_phone chuẩn hoá CẢ HAI VẾ nên nó chữa luôn số đang lưu lệch định dạng trong DB.
+    // Hàm trả NULL khi <8 chữ số → gõ "183" không biến thành truy vấn SĐT vô nghĩa.
+    const soDigits = q.replace(/\D/g, '');
+    const dkSdt = soDigits.length >= 8
+      ? (args.push(q), ` OR canon_phone(customer_phone) = canon_phone($${args.length})`)
+      : ` OR customer_phone ILIKE $LK`;
     if (/^\d{1,15}$/.test(q)) {
       args.push(Number(q)); const on = args.length;
       args.push(like); const lk = args.length;
-      where.push(`(order_number = $${on} OR customer_phone ILIKE $${lk} OR vn_unaccent(customer_name) LIKE vn_unaccent($${lk}))`);
+      where.push(`(order_number = $${on} OR vn_unaccent(customer_name) LIKE vn_unaccent($${lk})${dkSdt.replace('$LK', `$${lk}`)})`);
     } else {
       args.push(like); const lk = args.length;
-      where.push(`(vn_unaccent(customer_name) LIKE vn_unaccent($${lk}) OR customer_phone ILIKE $${lk})`);
+      where.push(`(vn_unaccent(customer_name) LIKE vn_unaccent($${lk})${dkSdt.replace('$LK', `$${lk}`)})`);
     }
   }
   // Khoảng ngày (theo created_at, biên [from, to] tính cả ngày to) — BIÊN GIỜ VIỆT NAM.

@@ -17,6 +17,7 @@
  */
 import crypto from 'node:crypto';
 import { send } from './http.js';
+import { noteShop } from './obs.js';
 import { withTenant, audit, resolveApiKey } from './db.js';
 import { createManualOrder } from './orders.js';
 import { routeIngestCatalog, routeIngestWrite } from './ingest-catalog.js';
@@ -137,6 +138,10 @@ export async function handleIngest(req, res, { pathname, query, ip, readJson }) 
   if (!token) return send(res, 401, { error: 'thiếu hoặc sai khoá kết nối' });
   const key = await resolveApiKey(sha256(token));
   if (!key || key.scope !== 'orders.ingest') return send(res, 401, { error: 'thiếu hoặc sai khoá kết nối' });
+  // ĐO LUỒNG DÙNG (0141): cụm /ingest/* lấy shop từ KHOÁ, không có uuid trong đường dẫn — nên
+  // routeTemplate() không rút ra được và mọi shop dùng bot rơi chung một ô `|-`. Thiếu dòng này
+  // thì câu "bao nhiêu % shop đã chạm kênh đơn từ Facebook/Zalo" trả lời SAI cho cả cụm.
+  noteShop(key.shop_id);
 
   if (req.method === 'POST' && pathname === '/ingest/orders') {
     const body = await readJson(req);

@@ -52,13 +52,51 @@ export function noteShop(shopId) {
   if (s && typeof shopId === 'string') s.shopId = shopId;
 }
 
+/**
+ * "Request này KHÔNG phải ai đó dùng một tính năng — đừng đếm."
+ *
+ * VÌ SAO CẦN. Bộ lọc mặc định bỏ 404 (đường không tồn tại) và 429. Nhưng vài service THOÁT SỚM
+ * bằng CHUYỂN HƯỚNG, TRƯỚC khi khớp route — và lúc đó lá chắn 404 không bao giờ chạy:
+ *   · seller-admin: chưa đăng nhập → 303 về /login cho MỌI đường dẫn
+ *   · storefront:   ?ref=… → 302 bỏ tham số, cho MỌI đường dẫn
+ *   · storefront:   tên miền phụ → 301 về tên miền chính, cho MỌI đường dẫn
+ * Hậu quả đã đo được bằng request thật: `GET /wp-login.php` và `GET /.env` của bot dò vào THẲNG
+ * bảng feature_usage thành ô riêng — mỗi URL rác một ô. Trần 5.000 ô/ngày/service (FU_MAX_FIELDS)
+ * vì thế bị một đợt quét bot ăn hết, và từ lúc đó mọi route thật LẦN ĐẦU xuất hiện trong ngày
+ * rơi vào ô `:over`. (Route đã có ô từ trước vẫn đếm đúng — Lua chỉ dồn ô MỚI.)
+ *
+ * Đánh dấu ở NƠI THOÁT, không đoán ở tầng đếm: chỉ chỗ viết ra câu lệnh thoát mới biết chắc
+ * "đây không phải một lượt dùng".
+ */
+export function skipUsage() {
+  const s = als.getStore();
+  if (s) s.skipUsage = true;
+}
+
+/**
+ * Đổi TÊN SERVICE cho riêng request này. Một tiến trình có thể phục vụ hai sản phẩm khác nhau:
+ * storefront chạy cả trang bán hàng của shop LẪN trang marketing nentang.vn. Không tách thì
+ * '/', '/blog', '/blog/:slug', '/sitemap.xml' của hai bên gộp làm một — và câu "blog của người
+ * bán có ai đọc không" bị cộng thêm lượt đọc bài marketing của chính nền tảng.
+ */
+export function noteService(name) {
+  const s = als.getStore();
+  if (s && typeof name === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(name)) s.service = name;
+}
+
 /** request-id hiện tại (null nếu gọi ngoài request). */
 export const requestId = () => als.getStore()?.id ?? null;
 
 const UUID_SEG = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Đường công khai có SLUG do người bán tự đặt → cardinality vô hạn nếu giữ nguyên. Danh sách
 // này là các tiền tố CÓ THẬT trong storefront/checkout; cái nào sót thì trần route ở dưới đỡ.
-const SLUG_PREFIX = new Set(['p', 'c', 'pages', 'blog', 'products']);
+//
+// KHÔNG có 'products'. Storefront chỉ có /products (DANH SÁCH, không tham số) — chi tiết SP đi
+// qua /p/:slug. Nhưng seller và seller-admin có cả rổ đường TĨNH dưới /products/: /new, /import,
+// /bulk-status, /bulk/status… Để 'products' ở đây là biến MỌI đoạn tĩnh đó thành ':slug' rồi gộp
+// chúng làm MỘT dòng: bộ NHẬP CSV (di cư từ sàn khác, docs/45) đếm chung với trang "thêm sản
+// phẩm" — tính năng đắt tiền có thể chết hẳn mà con số vẫn to. Đã đo bằng node -e.
+const SLUG_PREFIX = new Set(['p', 'c', 'pages', 'blog']);
 
 /**
  * Biến đường dẫn thật thành MẪU route ổn định. Đây là chỗ quyết định bảng 0141 có dùng được
@@ -81,10 +119,16 @@ export function routeTemplate(pathname) {
     if (UUID_SEG.test(seg)) {
       if (i > 0 && parts[i - 1] === 'shops' && !shopId) shopId = seg.toLowerCase();
       out.push(':id');
+    } else if (i > 0 && SLUG_PREFIX.has(parts[i - 1].toLowerCase())) {
+      // XÉT TRƯỚC luật số: SLUG_RE của seller (catalog.js) cho phép slug TOÀN SỐ — shop đặt tên
+      // sản phẩm theo mã ('1234') là chuyện thường. Nếu luật số chạy trước thì '/p/1234' ra
+      // '/p/:n' còn '/p/ao-thun' ra '/p/:slug': MỘT endpoint đẻ HAI mẫu, gộp kiểu gì cũng lệch.
+      // .toLowerCase() BẮT BUỘC: nhánh giữ-nguyên bên dưới đã hạ chữ thường, nên so khớp đoạn
+      // THÔ ở đây thì '/P/ao-thun-nam' (link cũ, người gõ tay) trượt luật :slug và mẫu mang ĐÚNG
+      // slug sản phẩm → bảng nổ theo SỐ SẢN PHẨM. Hai chỗ phải dùng cùng một chuẩn hoá.
+      out.push(':slug');
     } else if (/^\d+$/.test(seg)) {
       out.push(':n');
-    } else if (i > 0 && SLUG_PREFIX.has(parts[i - 1])) {
-      out.push(':slug');
     } else if (/^[A-Za-z0-9._-]{1,40}$/.test(seg)) {
       out.push(seg.toLowerCase());
     } else {
@@ -128,7 +172,9 @@ const FU_TTL = 3 * 86400;      // lưới an toàn: worker chết vài ngày th�
 const FU_MAX_FIELDS = 5000;
 // Đường KHÔNG đếm: health (load balancer gọi mỗi vài giây → át hết số liệu thật) và tài
 // nguyên tĩnh (không phải "tính năng ai đó dùng").
-const FU_SKIP = /^\/(livez|healthz|readyz|favicon\.ico|robots\.txt|assets|static)\b/;
+// `fonts` có mặt vì mỗi lượt tải trang đầu kéo 3-9 tệp phông; không loại thì bảng xếp hạng
+// "dùng nhiều nhất" của seller-admin do tệp phông đứng đầu chứ không phải tính năng nào.
+const FU_SKIP = /^\/(livez|healthz|readyz|favicon\.ico|robots\.txt|assets|static|fonts)\b/;
 
 /**
  * Dựng nơi nhận số đếm cho một service. Dùng ở lúc khởi động:
@@ -142,6 +188,7 @@ const FU_SKIP = /^\/(livez|healthz|readyz|favicon\.ico|robots\.txt|assets|static
 export function makeUsageSink(service, redis) {
   if (!redis) return null;
   return (req, res, store) => {
+    if (store?.skipUsage) return;      // thoát sớm TRƯỚC khi khớp route — xem skipUsage()
     const status = res.statusCode ?? 0;
     // 404 nói về đường KHÔNG tồn tại, 429 nói về rate-limit — cả hai không phải "ai đó dùng
     // tính năng này". 5xx thì CÓ đếm: người dùng đã cố dùng, hỏng là chuyện khác.
@@ -151,10 +198,11 @@ export function makeUsageSink(service, redis) {
     const { route, shopId } = routeTemplate(path);
     const method = String(req.method ?? 'GET').toUpperCase();
     const shop = shopId ?? store?.shopId ?? '-';
+    const svc = store?.service ?? service;   // một tiến trình có thể phục vụ hai sản phẩm
     // Ngày theo GIỜ VN (+07) — khớp mốc ngày của báo cáo/dashboard, không lệch 1 ngày.
     const day = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
     const field = `${method} ${route}|${shop}`;
-    redis.eval(FU_LUA, 1, `fu:${day}:${service}`, field, String(FU_MAX_FIELDS), String(FU_TTL)).catch(() => {});
+    redis.eval(FU_LUA, 1, `fu:${day}:${svc}`, field, String(FU_MAX_FIELDS), String(FU_TTL)).catch(() => {});
   };
 }
 

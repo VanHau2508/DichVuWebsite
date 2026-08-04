@@ -122,11 +122,39 @@ async function main() {
     : bad(`storefront đếm sai: ${b2} → ${a2} (status ${page.status})`, '');
 
   // Slug do người bán tự đặt → phải thành :slug, nếu không mỗi sản phẩm là một dòng riêng.
-  await sf('/p/khong-co-san-pham-nay-dau');
+  //
+  // KHẲNG ĐỊNH ĐÚNG là "KHÔNG slug thật nào lọt", KHÔNG phải "chỉ có ĐÚNG MỘT mẫu /p/...".
+  // Bản đầu tôi viết vế sau và nó ĐỎ trong lượt CI đầy đủ — đỏ ĐÚNG, vì hệ có hai endpoint
+  // /p/ khác nhau CÓ THẬT: trang SP (/p/<slug>) và xem nhanh (/p/<slug>/quickview). Hai endpoint
+  // khác nhau ra hai mẫu khác nhau chính là điều ta MUỐN; gộp chúng lại mới là hỏng.
+  // Bài học: khẳng định phải nói đúng cái luật, đừng nói một hệ quả tình cờ đúng lúc viết.
+  // PHẢI dùng SẢN PHẨM CÓ THẬT. Slug bịa → trang 404 → sink CỐ Ý bỏ 404 → không có dòng nào,
+  // và khẳng định bên dưới xanh mà chẳng đo gì. Đột biến (gỡ 'p' khỏi SLUG_PREFIX) vẫn xanh —
+  // đúng lớp bẫy "khẳng định không đo thứ nó tưởng", lần này là do 404 nuốt mất hiện trường.
+  const slugSP = `sp-do-luong-${uniq()}`;
+  const cre = await rq(SELLER, 'POST', `/shops/${shopId}/products`, {
+    body: { title: 'SP đo luồng', slug: slugSP, price_vnd: 100000, status: 'active', variants: [{ sku: `DL-${uniq()}`, price_vnd: 100000 }] },
+    cookie: oc, origin: OS });
+  const sp1 = await sf(`/p/${slugSP}`);
+  const sp2 = await sf(`/p/${slugSP}/quickview`);
+  cre.status === 201 && sp1.status === 200
+    ? ok('dựng được SP thật để đo (trang SP trả 200, không phải 404)')
+    : bad(`không dựng được hiện trường: tạo=${cre.status} trang=${sp1.status} quickview=${sp2.status}`, cre.raw?.slice(0, 160));
   await sweep();
-  const slugRows = Number((await owner.query(
-    `SELECT count(*)::int n FROM feature_usage WHERE service='storefront' AND route LIKE 'GET /p/%' AND route <> 'GET /p/:slug'`)).rows[0].n);
-  slugRows === 0 ? ok('mọi trang SP gom vào MỘT mẫu "GET /p/:slug"') : bad(`${slugRows} mẫu /p/... khác nhau`, '');
+  // PHẠM VI: chỉ dòng của SHOP LƯỢT NÀY. Quét toàn bảng nghe mạnh hơn nhưng KHÔNG lặp lại được:
+  // một lượt chạy đột biến trước đó để lại dòng có slug thật, và mọi lượt sau đều đỏ vì rác cũ
+  // chứ không vì mã hiện tại. (Đã dính đúng thế.) Khẳng định phải nói về HÀNH VI HÔM NAY.
+  const { rows: pRows } = await owner.query(
+    `SELECT DISTINCT route FROM feature_usage
+      WHERE service='storefront' AND route LIKE '% /p/%' AND shop_id = $1`, [shopId]);
+  // Khẳng định TRỰC TIẾP nhất: slug thật của SP vừa tạo KHÔNG được có mặt ở bất kỳ mẫu nào.
+  const dinhSlug = pRows.map((r) => r.route).filter((r) => r.includes(slugSP));
+  dinhSlug.length === 0 ? ok('slug thật của SP KHÔNG xuất hiện trong mẫu nào') : bad(`slug thật lọt: ${dinhSlug.join(' | ')}`, '');
+  // Hợp lệ: '<METHOD> /p/:slug' và '<METHOD> /p/:slug/<gì đó>'. Sai: bất cứ gì khác sau /p/.
+  const ro = pRows.map((r) => r.route).filter((r) => !/ \/p\/:slug(\/|$)/.test(r));
+  ro.length === 0
+    ? ok(`mọi trang SP gom slug vào ':slug' (${pRows.length} mẫu /p/ hợp lệ, không rò)`)
+    : bad(`slug THẬT lọt vào mẫu: ${ro.join(' | ')}`, '');
 
   // ── 2. CỘNG DỒN QUA NHIỀU CHU KỲ ───────────────────────────────────────────
   // Gộp là UPSERT cộng dồn. Nếu ai đó đổi thành DO UPDATE SET hits = excluded.hits thì lần
@@ -157,6 +185,65 @@ async function main() {
   hz === 0 ? ok('đường health KHÔNG vào bảng (load balancer gọi liên tục sẽ át số liệu thật)') : bad(`${hz} dòng health`, '');
   const nf = await hitsOf('seller', 'GET /shops/:id/khong-co-duong-nay', shopId);
   nf === 0 ? ok('404 KHÔNG được đếm (nó nói về đường không tồn tại)') : bad(`404 vẫn đếm: ${nf}`, '');
+
+  // ── 3b. RÁC BOT KHÔNG ĐƯỢC VÀO BẢNG ────────────────────────────────────────
+  // Lỗ này e2e mới thấy được: vài service THOÁT SỚM bằng CHUYỂN HƯỚNG trước khi khớp route,
+  // nên lá chắn 404 không chạy và mọi URL bot dò thành một ô riêng. Máy chủ công khai ăn hàng
+  // nghìn URL dò mỗi ngày là mức NỀN — chạm trần 5.000 ô/ngày thì mọi route thật xuất hiện
+  // LẦN ĐẦU sau đó rơi vào ':over'.
+  sect('3b. Đường thoát-sớm không đẻ ô rác');
+  const RAC = ['/wp-login.php', '/.env', '/xmlrpc.php'];
+  // ĐO CHÊNH LỆCH, không đo tuyệt đối: bảng có thể còn ô rác từ lần chạy TRƯỚC khi vá (hoặc từ
+  // một lượt đột biến). Đếm tuyệt đối thì mọi lượt sau đều đỏ vì quá khứ, không vì mã hôm nay.
+  const demRac = async () => Number((await owner.query(
+    `SELECT count(*)::int n FROM feature_usage WHERE route ~ '(wp-login|xmlrpc|\.env)'`)).rows[0].n);
+  const racTruoc = await demRac();
+  // (a) seller-admin: chưa đăng nhập → 303 về /login cho MỌI đường dẫn.
+  for (const r of RAC) await adm('GET', r, {});
+  // (b) storefront: ?ref= → 302 cho MỌI đường dẫn, và nó nằm SAU noteShop nên rác còn mang
+  //     shop_id thật — nhìn bảng tưởng shop đó có tính năng lạ.
+  for (const r of RAC) await sf(`${r}?ref=CTV01`);
+  await sweep();
+  const racSau = await demRac();
+  racSau === racTruoc
+    ? ok(`đường bot dò (303 /login và 302 ?ref=) KHÔNG đẻ ô mới (${racTruoc} ô cũ giữ nguyên)`)
+    : bad(`${racSau - racTruoc} ô rác MỚI lọt vào bảng`, '');
+  // Nhưng KHÔNG được nới tay quá: đường THẬT vẫn phải đếm.
+  const truocSf = await hitsOf('storefront', 'GET /products', shopId);
+  await sf('/products');
+  await sweep();
+  (await hitsOf('storefront', 'GET /products', shopId)) === truocSf + 1
+    ? ok('và route THẬT vẫn đếm bình thường (không chặn nhầm)') : bad('chặn nhầm route thật', '');
+  // Tệp phông: mỗi lượt tải trang kéo 3-9 tệp → không loại thì chúng đứng đầu bảng xếp hạng.
+  const font = Number((await owner.query(
+    `SELECT count(*)::int n FROM feature_usage WHERE route LIKE '%/fonts/%'`)).rows[0].n);
+  font === 0 ? ok('tệp phông KHÔNG vào bảng') : bad(`${font} dòng tệp phông`, '');
+
+  // ── 3c. TRANG NỀN TẢNG TÁCH KHỎI TRANG SHOP ────────────────────────────────
+  // Một tiến trình storefront phục vụ CẢ trang marketing nentang.vn LẪN storefront của shop.
+  // Không tách tên service thì '/' và '/blog' của hai bên gộp làm một — câu "blog người bán có
+  // ai đọc không" bị cộng lượt đọc bài marketing của chính nền tảng.
+  sect('3c. Trang marketing nền tảng đếm riêng');
+  // ĐO CHÊNH LỆCH (lần thứ ba trong bộ này phải nhớ): bảng có thể đã có dòng 'nentang' từ lượt
+  // chạy trước, nên "sum >= 1" luôn đúng và khẳng định thành vô nghĩa — đột biến vô hiệu hoá
+  // noteService() vẫn xanh. Chỉ số TĂNG THÊM mới nói về hành vi của mã hôm nay.
+  const demNen = async () => Number((await owner.query(
+    `SELECT coalesce(sum(hits),0)::int n FROM feature_usage WHERE service='nentang'`)).rows[0].n);
+  const nenTruoc = await demNen();
+  await sf('/');                                    // Host = tên miền của SHOP
+  const sfHost = (path, host) => new Promise((res2, rej) => {
+    const q = http.request({ hostname: STORE.hostname, port: STORE.port, path, method: 'GET', headers: { host } }, (r2) => { r2.resume(); r2.on('end', () => res2(r2.statusCode)); });
+    q.on('error', rej); q.end();
+  });
+  const goc = await sfHost('/', 'nentang.vn');      // Host = tên miền NỀN TẢNG
+  await sweep();
+  const nenSau = await demNen();
+  goc === 200 && nenSau > nenTruoc
+    ? ok(`trang nền tảng đếm dưới service riêng 'nentang' (+${nenSau - nenTruoc} lượt)`)
+    : bad(`không tách được (status ${goc}, ${nenTruoc} → ${nenSau})`, '');
+  const tronLan = Number((await owner.query(
+    `SELECT count(*)::int n FROM feature_usage WHERE service='nentang' AND shop_id IS NOT NULL`)).rows[0].n);
+  tronLan === 0 ? ok("service 'nentang' không mang shop_id nào") : bad(`${tronLan} dòng nentang có shop_id`, '');
 
   // ── 4. API CONSOLE ─────────────────────────────────────────────────────────
   sect('4. API /ops/usage');

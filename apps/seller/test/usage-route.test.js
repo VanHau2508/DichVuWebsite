@@ -42,6 +42,51 @@ test('shop_id rút từ /shops/<uuid>/… (service có shop trong đường dẫ
   assert.equal(routeTemplate(`/shops/${uuid.toUpperCase()}/orders`).shopId, uuid);
 });
 
+test('tiền tố VIẾT HOA vẫn phải gom slug (hai chỗ chuẩn hoá phải cùng một chuẩn)', () => {
+  // Luật :slug so khớp tiền tố, còn nhánh giữ-nguyên hạ chữ thường. Nếu hai chỗ không cùng
+  // chuẩn hoá thì '/P/ao-thun' trượt luật :slug và mẫu mang ĐÚNG slug người bán đặt → bảng nổ
+  // theo SỐ SẢN PHẨM. Link cũ và người gõ tay tạo ra đường viết hoa thường xuyên hơn ta tưởng.
+  for (const [inp, want] of [
+    ['/P/ao-thun-nam', '/p/:slug'],
+    ['/C/thoi-trang', '/c/:slug'],
+    ['/Pages/chinh-sach-doi-tra', '/pages/:slug'],
+    ['/Blog/cach-chon-size', '/blog/:slug'],
+  ]) assert.equal(routeTemplate(inp).route, want, `${inp} rò slug`);
+});
+
+test('đoạn TĨNH dưới /products/ KHÔNG bị biến thành :slug (chống gộp nhầm hai tính năng)', () => {
+  // 'products' từng nằm trong SLUG_PREFIX (danh sách viết cho storefront). Ở seller và
+  // seller-admin, mọi đoạn tĩnh dưới /products/ vì thế thành ':slug' và GỘP làm một dòng:
+  // bộ NHẬP CSV (di cư từ sàn khác) đếm chung với trang "thêm sản phẩm" — tính năng đắt tiền
+  // có thể chết hẳn mà con số vẫn to. Storefront không có /products/<slug>, chỉ có /products.
+  const S = '/shops/9f3c1b2a-4d5e-6f70-8192-a3b4c5d6e7f8';
+  const mau = [`${S}/products/new`, `${S}/products/import`, `${S}/products/bulk/status`]
+    .map((p) => routeTemplate(p).route);
+  assert.deepEqual(mau, [
+    '/shops/:id/products/new',
+    '/shops/:id/products/import',
+    '/shops/:id/products/bulk/status',
+  ]);
+  assert.equal(new Set(mau).size, 3, 'ba endpoint khác nhau phải ra ba mẫu khác nhau');
+  // Và anh em của chúng dưới /orders/ phải được đo bằng CÙNG một thước (trước đây thì không).
+  assert.equal(routeTemplate(`${S}/orders/import`).route, '/shops/:id/orders/import');
+  assert.equal(routeTemplate(`${S}/orders/bulk/confirm`).route, '/shops/:id/orders/bulk/confirm');
+});
+
+test('slug TOÀN SỐ vẫn là slug (một endpoint không được đẻ hai mẫu)', () => {
+  // SLUG_RE của seller (catalog.js/blog.js/content.js) cho phép slug toàn số — shop đặt tên SP
+  // theo mã ('1234') là chuyện thường. Nếu luật số chạy trước luật :slug thì '/p/1234' ra
+  // '/p/:n' còn '/p/ao-thun' ra '/p/:slug': cùng MỘT endpoint mà hai dòng, gộp kiểu gì cũng lệch.
+  assert.equal(routeTemplate('/p/1234').route, '/p/:slug');
+  assert.equal(routeTemplate('/c/2024').route, '/c/:slug');
+  assert.equal(routeTemplate('/pages/2024').route, '/pages/:slug');
+  assert.equal(routeTemplate('/blog/2025').route, '/blog/:slug');
+  // Nhưng số ở vị trí KHÔNG phải sau tiền tố slug thì vẫn là :n (số thứ tự đơn, trang…).
+  assert.equal(routeTemplate('/orders/12345').route, '/orders/:n');
+  const S = '/shops/9f3c1b2a-4d5e-6f70-8192-a3b4c5d6e7f8';
+  assert.equal(routeTemplate(`${S}/orders/9`).route, '/shops/:id/orders/:n');
+});
+
 test('mọi hình dạng lạ đều bị chặn — không có đường nào đẻ ô vô hạn', () => {
   // Slug tiếng Việt có dấu / ký tự URL-encode → gom vào một rọ, không mang nguyên vào bảng.
   assert.equal(routeTemplate('/tim-kiem/%C3%A1o%20thun').route, '/tim-kiem/:x');

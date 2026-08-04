@@ -20,7 +20,7 @@ import pg from 'pg';
 import { renderHome, renderProducts, renderProduct, renderPage, renderSearch, renderBlogList, renderBlogPost, renderMaintenance, renderNotFound } from './theme.js';
 import { renderLanding } from './landing.js';
 import { renderAbout, renderSupport, renderTerms, renderPrivacy, renderContact, renderBlogList as renderCoBlogList, renderBlogPost as renderCoBlogPost, findPost, companyPaths } from './company.js';
-import { runReq, makeLog, health, setUsageSink, makeUsageSink, noteShop } from './obs.js';
+import { runReq, makeLog, health, setUsageSink, makeUsageSink, noteShop, skipUsage, noteService } from './obs.js';
 import { AVAIL_SQL } from '../safety-stock.js';
 // Bộ đếm rate-limit DÙNG CHUNG với auth (atomic Lua, FAIL-OPEN khi Redis lỗi). File
 // gắn vào /app/ratelimit.js qua bind-mount trong compose.dev.yml (không copy, không sửa).
@@ -464,6 +464,10 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const host = normalizeHost(req.headers.host);
     // Host GỐC nền tảng (nentang.vn) → trang công ty, không resolve shop.
     if (host && ROOT_HOSTS.has(host)) {
+      // Trang MARKETING của nền tảng chạy chung tiến trình với storefront của shop. Không tách
+      // tên service thì '/', '/blog', '/blog/:slug', '/sitemap.xml' của hai bên gộp làm một —
+      // và câu "blog người bán có ai đọc không" bị cộng lượt đọc bài marketing của nentang.vn.
+      noteService('nentang');
       if (url.pathname === '/robots.txt') { res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': CACHE_PUBLIC }); return res.end(`User-agent: *\nAllow: /\nSitemap: https://${host}/sitemap.xml\n`); }
       if (url.pathname === '/sitemap.xml') {
         const base = `https://${host}`;
@@ -491,6 +495,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     // A5: host phụ (không phải tên miền chính) → 301 sang tên miền chính. Một shop có thể
     // verified nhiều tên miền; phục vụ tất cả sẽ trùng nội dung → gom về chính cho SEO.
     if (!resolved.isPrimary && resolved.primaryHost && resolved.primaryHost !== host) {
+      skipUsage();   // 301 cho MỌI đường dẫn, TRƯỚC khi khớp route → không có 404 chặn rác bot
       res.writeHead(301, { location: `https://${resolved.primaryHost}${req.url}`, 'cache-control': 'no-store' });
       return res.end();
     }
@@ -508,6 +513,8 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     // dội ?ref= lung tung không làm shop tốn query nào.
     const ref = url.searchParams.get('ref');
     if (ref != null && req.method === 'GET') {
+      skipUsage();   // 302 cho MỌI đường dẫn (kể cả đường không tồn tại) → cùng lỗ hổng như trên
+
       const code = ref.trim().toUpperCase();
       const sp = new URLSearchParams(url.search);
       sp.delete('ref');

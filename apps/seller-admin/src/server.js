@@ -14,7 +14,7 @@ import { parseCookies, readForm, readFormAll, readMultipartFile, readMultipartFi
 import { authApi, sellerApi, platformApi, sellerUpload, sellerDownload, loadSession } from './api.js';
 import * as V from './pages.js';
 import { getPreset } from '../presets.js';
-import { runReq, makeLog, health, setUsageSink, makeUsageSink } from './obs.js';
+import { runReq, makeLog, health, setUsageSink, makeUsageSink, skipUsage } from './obs.js';
 import { makeRedis } from '../redis-lite.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
@@ -3373,6 +3373,10 @@ async function handle(req, res, url, p) {
 
     // Còn lại: cần phiên ĐẦY ĐỦ.
     const sess = await loadSession(cookie);
+    // ĐO LUỒNG DÙNG (0141): hai dòng dưới đá về /login|/mfa cho MỌI đường dẫn, TRƯỚC khi khớp
+    // route — nên lá chắn 404 của bộ đếm không bao giờ chạy và `GET /wp-login.php` của bot dò
+    // vào thẳng bảng thành một ô riêng. Đây KHÔNG phải ai đó dùng tính năng: họ bị đá ra.
+    if (sess.state !== 'ok') skipUsage();
     if (sess.state === 'mfa') return redirect(res, '/mfa');
     if (sess.state !== 'ok') return redirect(res, '/login');
     const me = sess.me;

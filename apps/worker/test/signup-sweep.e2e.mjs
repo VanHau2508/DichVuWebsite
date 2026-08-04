@@ -56,7 +56,15 @@ async function main() {
   await owner.query(`UPDATE shop_signups SET expires_at = now() - interval '1 minute' WHERE lower(slug)=$1`, [g.slug]);
   const r = await sweep();
   const st = await statusOf(g.slug);
-  typeof r.expired === 'number' && r.expired >= 1 && st === 'expired' ? ok(`sweep expired ${r.expired} nháp → status='expired'`) : bad('sweep không expire', `${JSON.stringify(r)} st=${st}`);
+  // ĐO TRẠNG THÁI, KHÔNG đo số trả về của MỘT lượt gọi. Worker còn một hẹn giờ 5 phút chạy
+  // CHÍNH hàm này; nếu nó kịp xử lý trước thì lượt gọi tay đếm được 0 dù mọi thứ đúng hoàn
+  // toàn. Đã đỏ GIẢ đúng như thế trong một lượt CI đầy đủ: log ghi `{"expired":0} st=expired`
+  // — tức bản ghi ĐÃ hết hạn đúng, chỉ là do người khác làm.
+  // Nới thế này KHÔNG che được lỗi thật: nếu quét hỏng thì hẹn giờ cũng hỏng (cùng một hàm),
+  // st sẽ đứng ở 'pending' và khẳng định vẫn đỏ.
+  st === 'expired'
+    ? ok(`nháp quá hạn → status='expired' (lượt gọi tay đếm ${typeof r?.expired === 'number' ? r.expired : '?'}; hẹn giờ 5' có thể đã làm trước)`)
+    : bad('nháp quá hạn KHÔNG chuyển expired', `${JSON.stringify(r)} st=${st}`);
   // slug đã giải phóng → đăng ký lại slug đó thành công (nháp pending MỚI).
   await signupPost(draftForm({ slug: g.slug }), rndIp());
   (await pendingCount(g.slug)) === 1 ? ok('slug giải phóng → đăng ký lại được (1 nháp pending mới)') : bad('slug chưa giải phóng', await pendingCount(g.slug));

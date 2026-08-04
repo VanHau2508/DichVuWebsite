@@ -11,6 +11,7 @@
 
 import { send, parseOffset } from './http.js';
 import { withTenant, audit } from './db.js';
+import { SAFETY_SQL, AVAIL_SQL } from '../safety-stock.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -138,7 +139,80 @@ async function getShopLedger(res, ctx, _body, _params, query) {
   return send(res, 200, { entries: rows.slice(0, limit), has_more, limit, offset });
 }
 
+// ── TỒN AN TOÀN (0140) ───────────────────────────────────────────────────────────────────
+//
+// BA CON SỐ, và người bán phải đọc được cả ba cùng lúc, nếu không họ sẽ tưởng hệ thống đếm sai:
+//   tồn thực (on_hand)  ·  giữ an toàn (đệm)  ·  còn bán được online
+// Cộng thêm `reserved` (đang giữ chỗ cho đơn chưa chốt) thì đẳng thức mới khép kín:
+//   còn bán được online = max(0, tồn thực − đang giữ chỗ − giữ an toàn)
+// Đây cũng là số ĐỐI CHIẾU ĐƯỢC với Sổ cái kho: `tồn thực` chính là cột mà sổ cái cộng dồn ra.
+//
+// Ai được xem: `inventory.manage` — cùng quyền với Nhập hàng/Kiểm kê/Sổ cái, vì đây là cấu hình
+// vận hành kho chứ không phải sửa sản phẩm.
+async function getSafety(res, ctx, _body, _params, query) {
+  const limit = Math.min(Math.max(parseInt(query.get('limit') ?? '50', 10) || 50, 1), 100);
+  const offset = parseOffset(query);
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const pct = (await c.query(`SELECT safety_stock_pct FROM shops WHERE id = current_shop_id()`)).rows[0];
+    // Sắp xếp theo SỐ LẦN BỊ CHẶN giảm dần: câu hỏi hữu ích nhất của trang này là "đệm đang
+    // ăn doanh thu ở SKU nào" — chứ không phải "SKU nào tên vần A".
+    const rows = (await c.query(
+      `SELECT v.id AS variant_id, v.sku, v.title AS variant_title, p.title AS product_title,
+              coalesce(il.on_hand, 0) AS on_hand, coalesce(il.reserved, 0) AS reserved,
+              il.safety_stock_qty AS safety_override,
+              coalesce(${SAFETY_SQL}, 0) AS safety_effective,
+              coalesce(${AVAIL_SQL}, 0) AS available_online,
+              coalesce(il.safety_blocked_count, 0) AS blocked_count
+         FROM variants v
+         JOIN products p ON p.id = v.product_id AND p.deleted_at IS NULL
+         LEFT JOIN inventory_levels il ON il.variant_id = v.id
+        WHERE v.shop_id = current_shop_id()
+        ORDER BY coalesce(il.safety_blocked_count, 0) DESC, p.title, v.position
+        LIMIT ${limit + 1} OFFSET ${offset}`)).rows;
+    return { pct: pct?.safety_stock_pct ?? 0, rows };
+  });
+  const has_more = out.rows.length > limit;
+  return send(res, 200, { safety_stock_pct: out.pct, rows: out.rows.slice(0, limit), has_more, limit, offset });
+}
+
+// Mức chung TOÀN SHOP. Trần 90 khớp CHECK của 0140 — chặn ở đây để trả 400 nói tiếng người,
+// thay vì để Postgres ném 23514 thành 500.
+async function putSafetyShop(res, ctx, body) {
+  const pct = body.safety_stock_pct;
+  if (!isInt(pct) || pct < 0 || pct > 90) return send(res, 400, { error: 'tỉ lệ phải là số nguyên 0–90' });
+  await withTenant(ctx.shopId, async (c) => {
+    await c.query(`UPDATE shops SET safety_stock_pct = $1 WHERE id = current_shop_id()`, [pct]);
+    await audit(c, 'inventory.safety_pct', { actorId: ctx.user.id, ip: ctx.ip, metadata: { safety_stock_pct: pct } });
+  });
+  return send(res, 200, { safety_stock_pct: pct });
+}
+
+// Ghi đè theo BIẾN THỂ, đơn vị là SỐ CÁI (xem chú thích 0140). null = bỏ ngoại lệ, về dùng tỉ lệ.
+async function putSafetyVariant(res, ctx, body, params) {
+  const variantId = params[1];
+  const qty = body.safety_stock_qty;
+  if (qty !== null && (!isInt(qty) || qty < 0)) return send(res, 400, { error: 'số lượng phải là số nguyên ≥ 0, hoặc null để bỏ ngoại lệ' });
+  const ok = await withTenant(ctx.shopId, async (c) => {
+    const v = await c.query(`SELECT 1 FROM variants WHERE id = $1`, [variantId]);
+    if (v.rows.length === 0) return false;
+    // Biến thể CHƯA có dòng inventory_levels (chưa từng nhập hàng) vẫn phải đặt ghi đè được —
+    // nếu không thì "chừa 2 cái cho khách quen" chỉ làm được SAU khi hàng đã về, tức là muộn.
+    await c.query(
+      `INSERT INTO inventory_levels (shop_id, variant_id, on_hand, reserved, safety_stock_qty)
+            VALUES (current_shop_id(), $1, 0, 0, $2)
+       ON CONFLICT (shop_id, variant_id) DO UPDATE SET safety_stock_qty = EXCLUDED.safety_stock_qty, updated_at = now()`,
+      [variantId, qty]);
+    await audit(c, 'inventory.safety_override', { actorId: ctx.user.id, ip: ctx.ip, metadata: { variantId, safety_stock_qty: qty } });
+    return true;
+  });
+  if (!ok) return send(res, 404, { error: 'không tìm thấy biến thể' });
+  return send(res, 200, { variant_id: variantId, safety_stock_qty: qty });
+}
+
 export const INVENTORY_ROUTES = [
+  { m: 'GET', re: new RegExp(`^/shops/${UUID}/inventory/safety$`), perm: 'inventory.manage', fn: (res, ctx, b, p, q) => getSafety(res, ctx, b, p, q) },
+  { m: 'PUT', re: new RegExp(`^/shops/${UUID}/inventory/safety$`), perm: 'inventory.manage', fn: (res, ctx, b) => putSafetyShop(res, ctx, b) },
+  { m: 'PUT', re: new RegExp(`^/shops/${UUID}/variants/${UUID}/inventory/safety$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => putSafetyVariant(res, ctx, b, p) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/inventory/ledger$`), perm: 'inventory.manage', fn: (res, ctx, b, p, q) => getShopLedger(res, ctx, b, p, q) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/variants/${UUID}/inventory$`), perm: 'catalog.read', fn: (res, ctx, b, p) => getLevel(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/variants/${UUID}/inventory/adjust$`), perm: 'catalog.write', fn: (res, ctx, b, p) => adjust(res, ctx, b, p) },

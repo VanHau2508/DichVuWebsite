@@ -2587,6 +2587,45 @@ async function inventoryLedgerPage(res, me, cookie, shopId, q) {
   return sendHtmlJs(res, 200, (nonce) => V.renderInventoryLedger({ ...ctx, nonce }, shopId, r.json, { kind, variantId, limit, offset }));
 }
 
+// ── Tồn an toàn (0140) ───────────────────────────────────────────────────────
+// Cùng khu Kho, cùng perm 'inventory.manage' với Sổ cái/Nhập hàng/Kiểm kê.
+async function safetyStockPage(res, me, cookie, shopId, q, notice, err) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'purchasing');
+  const limit = 50, offset = Math.max(0, parseInt(q.get('offset') ?? '0', 10) || 0);
+  const r = await sellerApi('GET', `/shops/${shopId}/inventory/safety?limit=${limit}&offset=${offset}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, invForbidden(r) ? invDenyMsg : (r.json?.error ?? 'Không tải được tồn an toàn.')));
+  return sendHtml(res, err ? 400 : 200, V.renderSafetyStock(ctx, shopId, r.json, { limit, offset, notice, err }));
+}
+async function safetyStockSave(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req);
+  // Ô trống → 0 (tắt đệm), KHÔNG phải NaN: người bán xoá sạch ô là ý "thôi không giữ nữa".
+  const raw = (f.get('safety_stock_pct') ?? '').trim();
+  const pct = raw === '' ? 0 : Number(raw);
+  if (!Number.isInteger(pct) || pct < 0 || pct > 90) {
+    return safetyStockPage(res, me, cookie, shopId, new URLSearchParams(), null, 'Tỉ lệ phải là số nguyên từ 0 đến 90.');
+  }
+  const r = await sellerApi('PUT', `/shops/${shopId}/inventory/safety`, { cookie, body: { safety_stock_pct: pct } });
+  if (r.status !== 200) return safetyStockPage(res, me, cookie, shopId, new URLSearchParams(), null, r.json?.error ?? 'Không lưu được.');
+  return redirect(res, `/shops/${shopId}/safety-stock?ok=pct`);
+}
+async function safetyStockOverride(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readFormAll(req);
+  const variantId = f.get('variant_id') ?? '';
+  const raw = (f.get('safety_stock_qty') ?? '').trim();
+  // Ô TRỐNG = BỎ ngoại lệ (null → về dùng tỉ lệ chung), khác hẳn số 0 = "SP này không giữ gì cả".
+  // Hai ý nghĩa khác nhau nên không được gộp; nhãn trên form nói rõ điều đó.
+  const qty = raw === '' ? null : Number(raw);
+  if (qty !== null && (!Number.isInteger(qty) || qty < 0)) {
+    return safetyStockPage(res, me, cookie, shopId, new URLSearchParams(), null, 'Số giữ riêng phải là số nguyên ≥ 0 (để trống nếu muốn dùng tỉ lệ chung).');
+  }
+  const r = await sellerApi('PUT', `/shops/${shopId}/variants/${variantId}/inventory/safety`, { cookie, body: { safety_stock_qty: qty } });
+  if (r.status !== 200) return safetyStockPage(res, me, cookie, shopId, new URLSearchParams(), null, r.json?.error ?? 'Không lưu được ngoại lệ.');
+  return redirect(res, `/shops/${shopId}/safety-stock?ok=override`);
+}
+
 // ── Kiểm kê ──────────────────────────────────────────────────────────────────
 async function stocktakesPage(res, me, cookie, shopId, notice, err) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -3524,6 +3563,9 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/purchasing/new$`).exec(p)) && req.method === 'POST') return poNewSubmit(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/purchasing/report$`).exec(p)) && req.method === 'GET') return purchasingReportPage(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/inventory-ledger$`).exec(p)) && req.method === 'GET') return inventoryLedgerPage(res, me, cookie, m[1], url.searchParams);
+    if ((m = new RegExp(`^/shops/${UUID}/safety-stock$`).exec(p)) && req.method === 'GET') return safetyStockPage(res, me, cookie, m[1], url.searchParams, url.searchParams.get('ok'), null);
+    if ((m = new RegExp(`^/shops/${UUID}/safety-stock$`).exec(p)) && req.method === 'POST') return safetyStockSave(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/safety-stock/override$`).exec(p)) && req.method === 'POST') return safetyStockOverride(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/purchasing/${UUID}/edit$`).exec(p)) && req.method === 'GET') return poEditPage(res, me, cookie, m[1], m[2], null, url.searchParams.get('q') ?? '');
     if ((m = new RegExp(`^/shops/${UUID}/purchasing/${UUID}/edit$`).exec(p)) && req.method === 'POST') return poEditSubmit(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/purchasing/${UUID}/receive$`).exec(p)) && req.method === 'GET') return poReceivePage(res, me, cookie, m[1], m[2]);

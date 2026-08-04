@@ -62,11 +62,15 @@ MANIFEST_UNIT_FILES=(
   # và đã trôi. E2E không dựng nổi ca phân trang (limit đóng cứng 20 → cần 21 đơn), còn
   # bất biến mã nguồn thấy cả năm nơi trong một lượt. Canh luôn quy tắc BIÊN NGÀY giờ VN.
   apps/seller/test/order-filter-fields.test.js
+  # Công thức TỒN AN TOÀN là MỘT file dùng chung, tới ba service bằng bind-mount khai trong
+  # compose — một phụ thuộc VÔ HÌNH với Dockerfile. Mất mount thì service chết lúc khởi động;
+  # e2e phát hiện được nhưng muộn và mù mờ, bất biến mã nguồn thì chỉ thẳng dòng còn thiếu.
+  apps/seller/test/safety-mount.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=20
-MANIFEST_E2E_COUNT=92
+MANIFEST_UNIT_COUNT=21
+MANIFEST_E2E_COUNT=93
 
 manifest_unit_files() {
   shopt -s nullglob

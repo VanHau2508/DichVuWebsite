@@ -4779,7 +4779,78 @@ function invTabs(shopId, active) {
     ${t(`${base}/stocktakes`, 'Kiểm kê', active === 'stocktakes')}
     ${t(`${base}/purchasing/report`, 'Báo cáo nhập', active === 'report')}
     ${t(`${base}/inventory-ledger`, 'Sổ cái kho', active === 'ledger')}
+    ${t(`${base}/safety-stock`, 'Tồn an toàn', active === 'safety')}
   </div>`;
+}
+
+// ── TỒN AN TOÀN (0140) ───────────────────────────────────────────────────────
+// Trang này trả lời đúng một câu hỏi mà MỌI người bán hỏi khi mở web bán hàng: "lỡ web bán
+// mất món cuối cùng mà kho đã hết thì sao?" — chừa lại một phần tồn không bán online.
+//
+// BA CON SỐ phải nằm CẠNH NHAU trên cùng một dòng. Nếu chỉ hiện "còn bán được", người bán mở
+// kho thấy 100 cái mà web nói 80 sẽ tin là hệ thống đếm sai — rồi tắt tính năng. Bốn cột
+// (tồn thực · đang giữ chỗ · giữ an toàn · còn bán được online) khép kín phép trừ, tự giải thích.
+const OK_MSG = { pct: 'Đã lưu tỉ lệ giữ an toàn cho toàn shop.', override: 'Đã lưu mức giữ riêng cho biến thể.' };
+export function renderSafetyStock(ctx, shopId, data, opt) {
+  const base = `/shops/${esc(shopId)}`;
+  const rows = data?.rows ?? [];
+  const pct = Number(data?.safety_stock_pct ?? 0);
+  const off = opt.offset, lim = opt.limit;
+  const body = rows.map((r) => {
+    const ov = r.safety_override;
+    return `<tr>
+      <td>${esc(r.product_title)}${r.variant_title ? ` <span class="muted">${esc(r.variant_title)}</span>` : ''}
+        ${r.sku ? `<div class="muted" style="font-size:.8rem">${esc(r.sku)}</div>` : ''}</td>
+      <td class="num right">${esc(r.on_hand)}</td>
+      <td class="num right muted">${esc(r.reserved)}</td>
+      <td class="num right">${esc(r.safety_effective)}${ov != null ? ' <span class="muted" style="font-size:.75rem">(riêng)</span>' : ''}</td>
+      <td class="num right"><strong>${esc(r.available_online)}</strong></td>
+      <td class="num right">${Number(r.blocked_count) > 0 ? `<strong style="color:var(--bad)">${esc(r.blocked_count)}</strong>` : '<span class="muted">0</span>'}</td>
+      <td><form method="POST" action="${base}/safety-stock/override" class="actions" style="gap:6px">
+        <input type="hidden" name="variant_id" value="${esc(r.variant_id)}">
+        <input class="sm" type="number" name="safety_stock_qty" min="0" step="1" style="width:80px"
+               value="${ov != null ? esc(ov) : ''}" placeholder="theo tỉ lệ" aria-label="Giữ riêng cho ${esc(r.product_title)}">
+        <button class="btn alt sm" type="submit">Lưu</button>
+      </form></td>
+    </tr>`;
+  }).join('');
+  const nav = (o) => `?offset=${o}`;
+  return layout('Tồn an toàn', ctx, `
+    <h1>Tồn an toàn</h1>
+    ${invTabs(shopId, 'safety')}
+    ${opt.notice && OK_MSG[opt.notice] ? `<div class="ok">${OK_MSG[opt.notice]}</div>` : ''}
+    ${opt.err ? `<div class="err">${esc(opt.err)}</div>` : ''}
+    <p class="muted" style="margin-top:-8px">Chừa lại một phần tồn <strong>không bán trên web</strong>, để hàng vỡ,
+      hàng bán tại quầy hay đếm sai không làm khách đặt trúng món đã hết.
+      Vùng đệm chỉ chặn <strong>khách tự đặt trên web</strong> — bạn tạo <strong>đơn tay</strong> thì vẫn bán được
+      tới con số tồn thực, vì lúc đó bạn đang nhìn thấy kho.</p>
+    <div class="card">
+      <form method="POST" action="${base}/safety-stock" class="filters">
+        <div><label>Tỉ lệ giữ an toàn cho toàn shop (%)</label>
+          <input type="number" name="safety_stock_pct" min="0" max="90" step="1" value="${esc(pct)}" style="width:110px">
+          <div class="muted" style="font-size:.8rem">0 = tắt. Ví dụ 20% thì kho 100 cái chỉ bán online 80.</div>
+        </div>
+        <div><button class="btn sm" type="submit">Lưu tỉ lệ</button></div>
+      </form>
+    </div>
+    <div class="card">${rows.length ? `<div class="tblscroll"><table data-cards><thead><tr>
+        <th>Sản phẩm</th>
+        <th class="right">Tồn thực</th>
+        <th class="right">Đang giữ chỗ</th>
+        <th class="right">Giữ an toàn</th>
+        <th class="right">Còn bán được online</th>
+        <th class="right">Số lần bị chặn</th>
+        <th>Giữ riêng (số cái)</th>
+      </tr></thead><tbody>${body}</tbody></table></div>
+      <p class="muted" style="margin-top:12px;font-size:.85rem">
+        <strong>Còn bán được online = Tồn thực − Đang giữ chỗ − Giữ an toàn</strong> (không âm).
+        Ô <em>Giữ riêng</em> để trống nghĩa là dùng tỉ lệ chung; gõ <code>0</code> nghĩa là sản phẩm này không giữ lại gì cả.
+        <strong>Số lần bị chặn</strong> đếm những lần khách bị vùng đệm chặn <em>trong khi kho vẫn còn hàng</em> —
+        số này cao ở đâu thì cân nhắc hạ mức giữ ở đó.</p>
+      <div class="muted" style="margin-top:12px">
+        ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trang trước</a>` : '<span style="color:#d1d5db">← Trang trước</span>'} ·
+        ${data?.has_more ? `<a href="${nav(off + lim)}">Trang sau →</a>` : '<span style="color:#d1d5db">Trang sau →</span>'}
+      </div>` : '<p class="muted">Chưa có biến thể nào.</p>'}</div>`);
 }
 
 // ── SỔ CÁI KHO (0097) — mọi chuyển động tồn của cả shop, mới nhất trước ───────

@@ -21,6 +21,7 @@ import { renderHome, renderProducts, renderProduct, renderPage, renderSearch, re
 import { renderLanding } from './landing.js';
 import { renderAbout, renderSupport, renderTerms, renderPrivacy, renderContact, renderBlogList as renderCoBlogList, renderBlogPost as renderCoBlogPost, findPost, companyPaths } from './company.js';
 import { runReq, makeLog, health } from './obs.js';
+import { AVAIL_SQL } from '../safety-stock.js';
 // Bộ đếm rate-limit DÙNG CHUNG với auth (atomic Lua, FAIL-OPEN khi Redis lỗi). File
 // gắn vào /app/ratelimit.js qua bind-mount trong compose.dev.yml (không copy, không sửa).
 import { hit } from '../ratelimit.js';
@@ -637,7 +638,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       const filterSql = (args) => {
         const parts = [];
         if (filters.instock) {
-          parts.push(`(SELECT coalesce(sum(il.on_hand - il.reserved), 0)
+          parts.push(`(SELECT coalesce(sum(${AVAIL_SQL}), 0)
                          FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
                         WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}) > 0`);
         }
@@ -668,7 +669,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
                   (SELECT count(*)::int FROM variants v WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS variant_count,
                   (SELECT v.id FROM variants v WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL} ORDER BY v.position LIMIT 1) AS first_variant_id,
                   ${cardCompareSql},
-                  (SELECT coalesce(sum(il.on_hand - il.reserved), 0)
+                  (SELECT coalesce(sum(${AVAIL_SQL}), 0)
                      FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
                     WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS available
              FROM products p
@@ -696,7 +697,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         const p = (await c.query(`SELECT id, slug, title, description, price_vnd FROM products WHERE slug = $1`, [qm[1]])).rows[0];
         if (!p) return { ...base, notFound: true };
         const variants = (await c.query(
-          `SELECT v.id, v.price_vnd, v.compare_at_vnd, coalesce(il.on_hand - il.reserved, 0) AS available,
+          `SELECT v.id, v.price_vnd, v.compare_at_vnd, coalesce(${AVAIL_SQL}, 0) AS available,
                   pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct
              FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
              LEFT JOIN LATERAL promo_effective(v.product_id, v.price_vnd, now()) pe ON true
@@ -722,13 +723,15 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         )).rows[0];
         if (!p) return { ...base, notFound: true };
         countProductView(shopId, p.id, req);   // fire-and-forget, không chặn trang
-        // available = on_hand - reserved (KHỚP checkout: không có dòng inventory = 0 = hết hàng).
+        // available = CÒN BÁN ĐƯỢC ONLINE = on_hand − reserved − đệm an toàn (0140, safety-stock.js).
+        // KHỚP TỪNG CHỮ với hàng rào của checkout — trang nói "còn hàng" mà checkout từ chối là
+        // lỗi tệ nhất của tính năng này. Không có dòng inventory = 0 = hết hàng (như cũ).
         // Lọc biến thể MỒ CÔI ngay tại query → selected/totalAvail/selector (theme.js)
         // đều kế thừa danh sách đã lọc, không cần sửa theme.
         // Flash sale (0082): promo_effective per biến thể (base = v.price_vnd RIÊNG → SP đa biến
         // thể ra giá sale đúng từng biến thể). ?variant= đổi giá sale theo biến thể được chọn.
         const variants = (await c.query(
-          `SELECT v.id, v.title, v.sku, v.price_vnd, v.compare_at_vnd, coalesce(il.on_hand - il.reserved, 0) AS available,
+          `SELECT v.id, v.title, v.sku, v.price_vnd, v.compare_at_vnd, coalesce(${AVAIL_SQL}, 0) AS available,
                   pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct, pe.promotion_id
              FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
              LEFT JOIN LATERAL promo_effective(v.product_id, v.price_vnd, now()) pe ON true
@@ -766,7 +769,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
           `SELECT DISTINCT p2.id, p2.slug, p2.title, p2.price_vnd, p2.sold_count, p2.rating_avg, p2.rating_count,
                   pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct,
                   (SELECT m.public_key FROM media m WHERE m.product_id = p2.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
-                  (SELECT coalesce(sum(il.on_hand - il.reserved), 0) FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
+                  (SELECT coalesce(sum(${AVAIL_SQL}), 0) FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
                     WHERE v.product_id = p2.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS available
              FROM products p2 JOIN product_categories pc2 ON pc2.product_id = p2.id
              LEFT JOIN LATERAL promo_effective(p2.id, p2.price_vnd, now()) pe ON true

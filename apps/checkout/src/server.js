@@ -18,6 +18,8 @@ import net from 'node:net';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import pg from 'pg';
+// TỒN AN TOÀN (0140) — công thức "còn bán được online", dùng chung với storefront.
+import { SAFETY_SQL, availOf } from '../safety-stock.js';
 import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE, BUYNOW_COOKIE, REF_COOKIE, setBuynowCookie, clearBuynowCookie } from './http.js';
 import { buildVietQR } from './vietqr.js';
 import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
@@ -786,9 +788,34 @@ function parseOrderInput(raw) {
   return { name, phone: phoneCanon, email, address, paymentMethod, pointsRedeem }; // phone đã chuẩn hoá → trần theo-SĐT luôn khớp
 }
 
+/**
+ * Đếm số lần VÙNG ĐỆM chặn một đơn (0140) — chạy SAU khi transaction đặt đơn đã kết thúc.
+ *
+ * Vì sao không đếm ngay trong tx: `fail()` ném lỗi → withTenant ROLLBACK → con số cũng bị cuốn
+ * theo, đếm bao nhiêu cũng bằng 0. Vì sao không mở connection thứ hai NGAY LÚC ĐÓ: tx ngoài
+ * đang giữ `FOR UPDATE` trên chính dòng đó, connection mới sẽ chờ khoá của connection cũ, mà
+ * connection cũ thì đang chờ ta → treo tới lúc timeout.
+ *
+ * "Cố gắng hết sức" (best-effort): đây là số liệu đo, không phải tiền. Nó hỏng thì không được
+ * phép làm hỏng câu trả lời cho khách — nên nuốt lỗi và chỉ log.
+ */
+async function ghiNhanBiDemChan(shopId, variantIds) {
+  if (!variantIds?.length) return;
+  try {
+    await withTenant(shopId, (c) => c.query(
+      `UPDATE inventory_levels SET safety_blocked_count = safety_blocked_count + 1
+        WHERE variant_id = ANY($1::uuid[])`, [variantIds]));
+  } catch (e) {
+    log('safety_blocked_count_error', { shop_id: shopId, error: String(e?.message ?? e) });
+  }
+}
+
 // Lõi tạo đơn (transaction). Ném fail() khi lỗi nghiệp vụ → withTenant ROLLBACK.
 async function createOrderTx(c, ctx, token, idemKey, f) {
   const { name, phone, email, address, paymentMethod } = f;
+  // Rổ hứng "đơn bị VÙNG ĐỆM chặn" (0140). Người gọi truyền mảng vào rồi đếm SAU khi tx kết
+  // thúc — xem ghiNhanBiDemChan(). Có `?? []` để mọi đường gọi khác không vỡ vì thiếu tham số.
+  const demBiChan = ctx.demBiChan ?? [];
   {
     // request_hash: nội dung ĐƠN, KHÔNG gồm bất kỳ giá/total nào client gửi. GỒM pointsRedeem
     // (input khách chọn như payment_method) → retry cùng key khác số điểm → 422, không double-spend.
@@ -857,9 +884,21 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     let subtotal = 0;
     const lines = [];
     for (const it of items) {
-      const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [it.variant_id])).rows[0];
-      const available = lvl ? lvl.on_hand - lvl.reserved : 0;
-      if (it.qty > available) fail(422, `hết hàng: ${it.product_title}`, { variant_id: it.variant_id });
+      // TỒN AN TOÀN (0140): chặn ở ĐÂY, trong transaction đang giữ FOR UPDATE — cùng chỗ với
+      // hàng rào chống oversell cũ. Không đặt bằng CHECK của DB được vì tỉ lệ nằm ở bảng
+      // `shops`, mà CHECK chỉ nhìn được cột cùng dòng. `reserved <= on_hand` (0009) vẫn là
+      // lớp cuối cùng; đệm là lớp nằm TRÊN nó.
+      const lvl = (await c.query(
+        `SELECT il.on_hand, il.reserved, ${SAFETY_SQL} AS safety
+           FROM inventory_levels il WHERE il.variant_id = $1 FOR UPDATE`, [it.variant_id])).rows[0];
+      const available = lvl ? availOf(lvl.on_hand, lvl.reserved, Number(lvl.safety)) : 0;
+      if (it.qty > available) {
+        // ĐO CÁI GIÁ CỦA TÍNH NĂNG: bị chặn vì ĐỆM (kho còn hàng thật) khác hẳn bị chặn vì
+        // HẾT SẠCH — ca sau là tính năng làm đúng việc, không phải chi phí. Ghi lại để đếm
+        // SAU khi transaction rollback: đếm trong tx thì con số cũng bị cuốn theo `fail`.
+        if (lvl && lvl.on_hand - lvl.reserved > 0) demBiChan.push(it.variant_id);
+        fail(422, `hết hàng: ${it.product_title}`, { variant_id: it.variant_id });
+      }
       await c.query(`UPDATE inventory_levels SET reserved = reserved + $2, updated_at = now() WHERE variant_id = $1`, [it.variant_id, it.qty]);
       // GIÁ HIỆU LỰC = flash sale (0082) nếu đang chạy TẠI now() của tx, không thì giá gốc.
       // orig = giá gốc CHỈ khi có sale (snapshot thông tin — không cộng vào tiền nào).
@@ -1118,7 +1157,9 @@ async function checkout(req, res, body, ctx) {
   if (f.error) return send(res, 400, { error: f.error });
   const token = parseCookies(req)[CART_COOKIE];
   const cust = await resolveCustomer(ctx.shopId, req);
-  const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, customerId: cust?.id ?? null, refCode: parseCookies(req)[REF_COOKIE] ?? null }, token, idemKey, f));
+  const demBiChan = [];
+  const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, demBiChan, customerId: cust?.id ?? null, refCode: parseCookies(req)[REF_COOKIE] ?? null }, token, idemKey, f))
+    .finally(() => { ghiNhanBiDemChan(ctx.shopId, demBiChan); }); // sau ROLLBACK, KHÔNG await: đo đạc không được giữ chân khách
   return send(res, out.code, out.body, out.replay ? { 'idempotency-replayed': 'true' } : {});
 }
 
@@ -1203,8 +1244,10 @@ async function checkoutPlace(req, res, form, ctx) {
   }
 
   const token = parseCookies(req)[bn ? BUYNOW_COOKIE : CART_COOKIE];
+  const demBiChan = [];
   try {
-    const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, customerId: cust?.id ?? null, refCode: parseCookies(req)[REF_COOKIE] ?? null }, token, idemKey, f));
+    const out = await withTenant(ctx.shopId, (c) => createOrderTx(c, { ...ctx, demBiChan, customerId: cust?.id ?? null, refCode: parseCookies(req)[REF_COOKIE] ?? null }, token, idemKey, f))
+      .finally(() => { ghiNhanBiDemChan(ctx.shopId, demBiChan); }); // xem chú thích ở đường JSON
     if (bn) clearBuynowCookie(res); // giỏ mua-ngay đã chốt đơn → xoá cookie (giỏ chính không đụng)
     return redirect(res, `/checkout/success?number=${out.body.order_number}&token=${encodeURIComponent(out.body.lookup_token)}&placed=1`);
   } catch (err) {

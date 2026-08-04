@@ -274,6 +274,8 @@ services:
       - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
       # Mount PHẢI khớp CMD (node src/server.js → /app/src). Xem docs/09 §6.
       - ../apps/seller/src:/app/src:ro
+      # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
+      - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
     depends_on:
       minio:
         condition: service_healthy
@@ -316,6 +318,8 @@ services:
       # (MEDIA_PUBLIC_BASE đã khai ở trên cho thumbnail giỏ — dùng chung, không khai lại.)
     volumes:
       - ../apps/checkout/src:/app/src:ro
+      # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
+      - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
       # Bộ đếm rate-limit DÙNG CHUNG (không copy): gắn thẳng file gốc của auth vào image
       # tối giản này để `import '../ratelimit.js'` giải được. RO. Chỉ luồng dev cần mount.
       - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
@@ -563,6 +567,8 @@ services:
     volumes:
       # Mount PHẢI khớp CMD (node src/server.js → /app/src).
       - ../apps/storefront/src:/app/src:ro
+      # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
+      - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
       # Bộ đếm rate-limit DÙNG CHUNG (không copy) — xem chú thích ở service checkout.
       - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
       # Thư viện preset dùng chung (preview áp mẫu) — import '../presets.js'.

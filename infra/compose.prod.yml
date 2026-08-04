@@ -189,6 +189,8 @@ services:
       # Hàng rào SSRF dùng chung (image không có packages/) — import '../fetch-image.js'.
       # CÙNG MỘT BẢN với service kia: nhân bản đường ống bảo mật là kiểu trùng lặp chắc
       # chắn trôi lệch — vá một bên, quên bên kia.
+      # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
+      - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
       - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
     restart: unless-stopped
     <<: *logging
@@ -247,6 +249,8 @@ services:
       # KHÔNG có packages/ — mount file vào /app/ratelimit.js để `import '../ratelimit.js'`
       # giải được. Thiếu mount → service fail healthcheck lúc khởi động (Caddy không route
       # tới upstream unhealthy) → deploy fail AN TOÀN, không phục vụ bản vỡ. RO.
+      # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
+      - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
       - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
     deploy: { resources: { limits: { memory: 192m } } }
     depends_on:
@@ -436,6 +440,8 @@ services:
       # Xem chú thích checkout: mount bộ đếm rate-limit dùng chung (image không có packages/).
       - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
       # Thư viện preset dùng chung (image không có packages/) — import '../presets.js'.
+      # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
+      - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
       - ../packages/presets/src/index.js:/app/presets.js:ro
     deploy: { resources: { limits: { memory: 256m } } }
     depends_on:

@@ -12,6 +12,7 @@ import { withTenant, audit } from './db.js';
 import { rangeSql, TZ } from './date-range.js';
 import { toCsv, CsvText, EXPORT_ORDERS_MAX_ROWS } from './export.js';
 import { isProvince } from './provinces.js';
+import { OWED_SQL, OWED_REASON_SQL, OWED_REFUNDED_SQL } from './owed.js';
 
 // Base URL ảnh public (giống storefront) — dựng thumbnail dòng hàng trong chi tiết đơn.
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
@@ -191,14 +192,61 @@ async function listOrders(res, ctx, _b, _p, query) {
   return send(res, 200, { ...data, limit, offset });
 }
 
+// SỔ CÔNG NỢ KHÁCH — mọi đơn shop đang giữ tiền không còn quyền giữ, cộng lại thành MỘT con số.
+//
+// Trước đây con số này không tồn tại ở đâu cả: nó nằm rải trong từng đơn, và chủ shop chỉ biết
+// mình nợ khi khách gọi tới đòi. Đo trên shop ngày-60: 6.050.000₫ trên 11 đơn, không màn hình
+// nào nói ra được.
+//
+// KHÔNG phân trang: đây là danh sách VIỆC PHẢI LÀM, không phải kho lưu trữ. Shop nào để nợ dài
+// tới mức tràn trang thì con số tổng đã là tiếng chuông rồi. Trần cứng 500 để một shop hỏng dữ
+// liệu không kéo sập trang, và nói THẲNG ra khi bị cắt thay vì lặng lẽ hiện thiếu.
+const OWED_MAX_ROWS = 500;
+
+async function owedOrders(res, ctx) {
+  const data = await withTenant(ctx.shopId, async (c) => {
+    const rows = (await c.query(
+      `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.customer_name,
+              o.customer_phone, o.total_vnd, coalesce(o.amount_paid_vnd, 0) AS amount_paid_vnd,
+              ${OWED_REFUNDED_SQL} AS refunded_vnd, ${OWED_SQL} AS owed_vnd, ${OWED_REASON_SQL} AS owed_reason,
+              coalesce(o.cancelled_at, o.returned_at, o.created_at) AS since
+         FROM orders o
+        WHERE ${OWED_SQL} > 0
+        ORDER BY ${OWED_SQL} DESC, o.order_number DESC
+        LIMIT ${OWED_MAX_ROWS + 1}`)).rows;
+    // Tổng tính TRÊN TOÀN BỘ đơn, không phải trên các dòng vừa lấy — nếu không thì tổng sẽ tụt
+    // đúng lúc nợ nhiều nhất, tức sai ở đúng lúc con số quan trọng nhất.
+    const tong = (await c.query(
+      `SELECT coalesce(sum(${OWED_SQL}), 0)::bigint AS total, count(*)::int AS n
+         FROM orders o WHERE ${OWED_SQL} > 0`)).rows[0];
+    return { rows, tong };
+  });
+  const cut = data.rows.length > OWED_MAX_ROWS;
+  return send(res, 200, {
+    total_owed_vnd: Number(data.tong.total),
+    count: Number(data.tong.n),
+    truncated: cut,
+    orders: data.rows.slice(0, OWED_MAX_ROWS).map((r) => ({
+      ...r,
+      total_vnd: Number(r.total_vnd), amount_paid_vnd: Number(r.amount_paid_vnd),
+      refunded_vnd: Number(r.refunded_vnd), owed_vnd: Number(r.owed_vnd),
+    })),
+  });
+}
+
 async function getOrder(res, ctx, _b, params) {
   const orderId = params[1];
   const data = await withTenant(ctx.shopId, async (c) => {
     const o = (await c.query(
-      `SELECT id, order_number, status, payment_status, payment_method, fulfillment_status, subtotal_vnd, shipping_vnd, total_vnd,
-              customer_name, customer_phone, customer_email, shipping_address, note, created_at, paid_at, shipped_at, delivered_at,
-              cancelled_at, cancel_reason, source, source_ref
-         FROM orders WHERE id = $1`, [orderId],
+      // owed_vnd tính ở ĐÂY, trong SQL, bằng biểu thức dùng chung — KHÔNG để trang quản trị tự
+      // trừ lấy từ total và refunded_total. Bản trước làm đúng như vậy và luật đó vừa hụt vừa
+      // sai (xem owed.js). Một con số tiền chỉ được có MỘT nơi sinh ra nó.
+      `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.fulfillment_status,
+              o.subtotal_vnd, o.shipping_vnd, o.total_vnd, o.amount_paid_vnd,
+              o.customer_name, o.customer_phone, o.customer_email, o.shipping_address, o.note, o.created_at,
+              o.paid_at, o.shipped_at, o.delivered_at, o.cancelled_at, o.cancel_reason, o.source, o.source_ref,
+              ${OWED_SQL} AS owed_vnd, ${OWED_REASON_SQL} AS owed_reason
+         FROM orders o WHERE o.id = $1`, [orderId],
     )).rows[0];
     if (!o) return null;
     // Ảnh dòng hàng: ưu tiên ảnh RIÊNG của biến thể, không có thì lấy ảnh CHÍNH của sản phẩm.
@@ -225,6 +273,7 @@ async function getOrder(res, ctx, _b, params) {
         WHERE r.order_id = $1 ORDER BY r.created_at, r.id`, [o.id],
     )).rows.map((r) => ({ ...r, amount_vnd: Number(r.amount_vnd) }));
     o.refunded_total_vnd = o.refunds.reduce((s, r) => s + r.amount_vnd, 0);
+    o.owed_vnd = Number(o.owed_vnd); // pg trả bigint dạng chuỗi — để nguyên thì UI so sánh > 0 sai
     // Đổi-trả (RMA 0078): lịch sử phiếu trả + qty ĐÃ TRẢ mỗi biến thể (form trả biết còn
     // trả được bao nhiêu). LEFT JOIN users: người thao tác đã rời shop → email NULL, dòng còn.
     o.returns = (await c.query(
@@ -1655,6 +1704,8 @@ export const ORDER_ROUTES = [
   // /orders/export PHẢI đứng trước /orders/:uuid — 'export' không khớp UUID nhưng giữ thứ tự cho rõ.
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/orders/export$`), perm: 'export', stepUp: true, fn: (res, ctx, b, p, q) => exportOrders(res, ctx, b, p, q) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/orders$`), perm: 'orders.read', fn: (res, ctx, b, p, q) => listOrders(res, ctx, b, p, q) },
+  // /orders/owed cũng phải đứng trước /orders/:uuid — cùng lý do với /orders/export.
+  { m: 'GET', re: new RegExp(`^/shops/${UUID}/orders/owed$`), perm: 'orders.read', fn: (res, ctx) => owedOrders(res, ctx) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders$`), perm: 'orders.write', fn: (res, ctx, b) => createManualOrder(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/sellable-variants$`), perm: 'orders.write', fn: (res, ctx, b, p, q) => listSellableVariants(res, ctx, q) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/bulk/confirm$`), perm: 'orders.write', fn: (res, ctx, b) => bulkConfirm(res, ctx, b) },

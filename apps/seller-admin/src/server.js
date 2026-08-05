@@ -2643,6 +2643,16 @@ async function purchasingReportPage(res, me, cookie, shopId, q) {
 // ── Sổ cái kho (0097) ────────────────────────────────────────────────────────
 // Trang CHỈ-ĐỌC liệt kê chuyển động tồn toàn shop. Cùng khu Kho nên dùng chung invForbidden
 // (perm 'inventory.manage' → owner/admin; vai khác nhận thông báo tử tế thay vì JSON 403).
+// CÔNG NỢ KHÁCH — trang trả lời "tôi còn nợ khách bao nhiêu". Không tham số, không bộ lọc:
+// hoặc là shop đang nợ, hoặc là không. Tab điều hướng vẫn tô 'orders' vì đây là việc của đơn.
+async function owedPage(res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+  const r = await sellerApi('GET', `/shops/${shopId}/orders/owed`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được công nợ khách.'));
+  return sendHtml(res, 200, V.renderOwed(ctx, shopId, r.json));
+}
+
 async function inventoryLedgerPage(res, me, cookie, shopId, q) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'purchasing');
@@ -3483,6 +3493,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/overview$`).exec(p)) && req.method === 'GET') return overviewPage(res, me, cookie, m[1], url.searchParams.get('live'));
     if ((m = new RegExp(`^/shops/${UUID}/activate$`).exec(p)) && req.method === 'POST') return activateShop(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders$`).exec(p)) && req.method === 'GET') return ordersList(res, me, cookie, m[1], url.searchParams);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/owed$`).exec(p)) && req.method === 'GET') return owedPage(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'GET') return orderNewPage(res, me, cookie, m[1], null, null, url.searchParams.get('q') ?? '');
     if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'POST') return orderNewSubmit(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/bulk-confirm$`).exec(p)) && req.method === 'POST') return ordersBulkConfirm(req, res, me, cookie, m[1]);

@@ -221,7 +221,15 @@ async function main() {
       const total = subtotal + ship - giam;
       const pm = Math.random() < 0.72 ? 'cod' : 'qr';
       const daTra = status === 'delivered' || (status === 'returned') || (pm === 'qr' && ['shipped', 'confirmed'].includes(status));
-      const payStatus = status === 'returned' ? 'refunded' : daTra ? 'paid' : 'unpaid';
+      // ĐƠN HOÀN VỀ: hai kết cục KHÁC NHAU, và bịa gộp làm một là nói dối sổ.
+      //   · đã hoàn tiền xong  → payment_status 'refunded' VÀ có phiếu hoàn đủ trong bảng refunds;
+      //   · chưa hoàn (bom hàng đã trả trước) → vẫn 'paid', shop ĐANG GIỮ tiền của khách.
+      // Bản trước đặt thẳng 'refunded' cho MỌI đơn returned mà không tạo phiếu nào — một hình
+      // dạng mã sản phẩm KHÔNG BAO GIỜ sinh ra được (orders.js:1587 chỉ lật 'refunded' kèm phiếu
+      // hoàn đủ). Hậu quả đo được: 13 đơn "đã hoàn" với 0₫ phiếu hoàn, tức 19,8 triệu nợ ảo mà
+      // bất kỳ báo cáo công-nợ nào cũng sẽ tin.
+      const daHoanXong = status === 'returned' && Math.random() < 0.55;
+      const payStatus = daHoanXong ? 'refunded' : daTra ? 'paid' : 'unpaid';
       const o = await c.query(
         `INSERT INTO orders (shop_id, order_number, status, payment_status, subtotal_vnd, shipping_vnd, discount_vnd,
              total_vnd, amount_paid_vnd, payment_method, customer_name, customer_phone, customer_email,
@@ -256,6 +264,12 @@ async function main() {
             [shopId, d.v.id, -d.qty]);
         }
       }
+      // Phiếu hoàn THẬT cho đơn đã hoàn xong — để "đã hoàn" trên đơn và tổng trong bảng refunds
+      // khớp nhau. Thiếu dòng này thì mọi con số công nợ đọc từ đây đều sai.
+      if (daHoanXong) await c.query(
+        `INSERT INTO refunds (shop_id, order_id, amount_vnd, reason, restock, kind, created_at)
+         VALUES ($1,$2,$3,$4,true,'rma', ${taoLuc} + interval '${rint(8, 13)} days')`,
+        [shopId, orderId, total, 'Khách trả hàng, đã hoàn tiền']);
       if (daTra) {
         doanhThu += total;
         // CHỈ đơn QR mới có dòng giao dịch: bảng này là sổ TIỀN VÀO TÀI KHOẢN (webhook SePay).

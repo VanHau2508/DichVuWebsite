@@ -13,6 +13,7 @@
  */
 import { send } from './http.js';
 import { withTenant } from './db.js';
+import { OWED_SQL } from './owed.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 // Base URL ảnh public (giống storefront) — thumbnail SP bán chạy trên Tổng quan.
@@ -115,7 +116,13 @@ async function stats(res, ctx) {
            JOIN products p ON p.id = v.product_id AND p.status = 'active' AND p.deleted_at IS NULL
            JOIN inventory_levels il ON il.variant_id = v.id
           WHERE (il.on_hand - il.reserved) <= coalesce((SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5)
-        ) AS low_stock_count`)).rows[0];
+        ) AS low_stock_count,
+        -- CÒN NỢ KHÁCH: tiền của khách đang nằm trong túi shop. Dùng CHUNG biểu thức với trang
+        -- Công nợ và băng đỏ trên đơn (owed.js) — ba nơi hiện cùng một con số thì mới tin được.
+        -- Đây là việc cần làm GẤP NHẤT trong hộp này: mọi việc khác chỉ chậm tiền về, việc này
+        -- là tiền của người khác đang giữ nhầm.
+        (SELECT count(*)::int FROM orders o WHERE ${OWED_SQL} > 0) AS owed_count,
+        (SELECT coalesce(sum(${OWED_SQL}), 0)::bigint FROM orders o WHERE ${OWED_SQL} > 0) AS owed_vnd`)).rows[0];
     return { k, rf, top, low, series, todo };
   });
   const n = (x) => Number(x ?? 0);
@@ -144,6 +151,8 @@ async function stats(res, ctx) {
       unpaid: n(out.k.n_unpaid),           // chưa thu được tiền
       reviews_pending: n(out.todo.reviews_pending),
       low_stock: n(out.todo.low_stock_count),
+      owed_count: n(out.todo.owed_count),   // số đơn shop đang giữ tiền của khách
+      owed_vnd: n(out.todo.owed_vnd),       // tổng tiền phải trả lại khách
     },
   });
 }

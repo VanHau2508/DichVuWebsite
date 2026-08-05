@@ -20,6 +20,13 @@ const dt = (s) => { try { return new Intl.DateTimeFormat('vi-VN', { timeZone: 'A
 const STATUS = { pending: 'Chờ xử lý', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ', refunded: 'Đã hoàn', returned: 'Hoàn hàng' };
 const PAY = { unpaid: 'Chưa trả', paid: 'Đã trả' };
 const SHIP_ST = { created: 'Đang tạo', in_transit: 'Đang vận chuyển', delivered: 'Đã giao', returned: 'Hoàn hàng', cancelled: 'Đã huỷ' };
+// Vì sao đơn này còn nợ — mã do API trả (owed.js), câu chữ ở đây. Ba lý do dẫn tới ba cách xử
+// lý khác nhau, nên nói ra lý do đắt hơn nhiều so với chỉ ném ra con số.
+const OWED_WHY = {
+  huy_da_thu: 'đơn đã huỷ nhưng khách đã thanh toán',
+  hoan_ve_chua_tra: 'hàng đã về shop nhưng chưa hoàn tiền cho khách',
+  thu_thua: 'đã thu nhiều hơn giá trị đơn (đơn bị sửa giảm)',
+};
 
 const FONTFACE = `@font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/bevietnampro-400-vietnamese.woff2) format('woff2');unicode-range:U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB}
 @font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/bevietnampro-400-latin-ext.woff2) format('woff2');unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
@@ -1873,6 +1880,10 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   // cứng cũ (#b45309/#1d4ed8/#7c3aed…) là tàn dư của bảng màu xanh-tím trước đây — để lại
   // thì lưới này là mảng duy nhất trong admin không theo hệ.
   const TODO = [
+    // ĐỨNG ĐẦU, và cố ý đứng trước cả đơn chờ xác nhận: mọi ô khác chỉ là tiền của shop về
+    // CHẬM, ô này là tiền của NGƯỜI KHÁC đang nằm trong túi shop. Nhãn mang theo SỐ TIỀN vì
+    // số đơn không nói lên mức độ — 1 đơn nợ 20 triệu gấp gáp hơn 11 đơn nợ 500 nghìn.
+    { n: Number(td.owed_count ?? 0), label: `Còn nợ khách${Number(td.owed_vnd ?? 0) > 0 ? ` · ${money(td.owed_vnd)}` : ''}`, href: `${base}/orders/owed`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '↩' },
     { n: Number(td.to_confirm ?? 0), label: 'Đơn chờ xác nhận', href: `${base}/orders?status=pending`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '🕐' },
     { n: Number(td.to_ship ?? 0), label: 'Đơn chờ gửi hàng', href: `${base}/orders?status=confirmed`, tone: 'var(--indigo)', bg: 'var(--indigobg)', bd: 'var(--indigo)', icon: '📦' },
     { n: Number(td.unpaid ?? 0), label: 'Đơn chưa thu tiền', href: `${base}/orders?payment=unpaid`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '💰' },
@@ -2585,11 +2596,14 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     + grp('Tiền', payAction + refundAction + returnAction, moneyHint)
     + grp('Huỷ đơn', cancelAction)) || '<div class="actions"><span class="muted">Không có thao tác.</span></div>';
 
-  // CÒN NỢ KHÁCH (0117): đơn đã huỷ mà khách đã trả tiền và chưa hoàn đủ. Treo băng đỏ
-  // tới khi có phiếu hoàn bù đủ — khoản nợ phải nằm trong tầm mắt, không nằm trong trí nhớ.
-  const owed = Number(o.total_vnd) - Number(o.refunded_total_vnd ?? 0);
-  const cancelDebt = (o.status === 'cancelled' && o.payment_status === 'paid' && owed > 0)
-    ? `<div class="err"><strong>Còn nợ khách ${esc(money(owed))}</strong> — đơn đã huỷ nhưng khách đã thanh toán.
+  // CÒN NỢ KHÁCH (0117, sửa lại): con số nay do API tính bằng biểu thức DÙNG CHUNG (owed.js) —
+  // trang này chỉ hiển thị. Luật cũ nằm ngay tại đây và vừa hụt vừa sai: nó chỉ xét đơn
+  // 'cancelled' nên bỏ trắng đơn BOM HÀNG đã trả trước (10 đơn / 5,62 triệu trên shop ngày-60),
+  // và với đơn từng SỬA GIẢM thì `total - đã hoàn` ra số ÂM nên tắt luôn cảnh báo cho một khoản
+  // nợ 430.000₫ có thật. Tự trừ tay ở tầng hiển thị là cách con số tiền sinh ra lần thứ hai.
+  const owed = Number(o.owed_vnd ?? 0);
+  const cancelDebt = owed > 0
+    ? `<div class="err"><strong>Còn nợ khách ${esc(money(owed))}</strong> — ${esc(OWED_WHY[o.owed_reason] ?? 'shop đang giữ tiền của khách')}.
          Chuyển khoản lại cho khách, rồi bấm <em>Hoàn tiền</em> bên dưới để ghi nhận. Băng này biến mất khi đã hoàn đủ.</div>`
     : '';
   return layout(`Đơn #${o.order_number}`, ctx, `
@@ -5024,6 +5038,50 @@ export function renderInventoryLedger(ctx, shopId, data, filter) {
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Mới hơn</a>` : '<span style="color:#d1d5db">← Mới hơn</span>'} ·
         ${data?.has_more ? `<a href="${nav(off + lim)}">Cũ hơn →</a>` : '<span style="color:#d1d5db">Cũ hơn →</span>'}
       </div>` : '<p class="muted">Chưa có chuyển động kho nào khớp bộ lọc.</p>'}</div>`);
+}
+
+/* CÔNG NỢ KHÁCH — một màn hình trả lời đúng một câu: "tôi còn nợ khách bao nhiêu".
+ *
+ * Trước khi có trang này, câu trả lời không tồn tại ở đâu cả. Số tiền nằm rải trong từng đơn,
+ * và chủ shop chỉ biết mình nợ khi khách gọi tới đòi — lúc đó thì mất khách rồi. Đo trên shop
+ * ngày-60: 6.050.000₫ trên 11 đơn, không màn hình nào nói ra được.
+ *
+ * Bố cục cố ý ĐẢO so với các trang danh sách khác: con số TỔNG đứng trước, to, ngay đầu trang.
+ * Bảng bên dưới chỉ để trả lời câu hỏi tiếp theo ("nợ ai, vì sao"). Người mở trang này đang
+ * cần một con số để quyết định, không cần một bảng để đọc.
+ */
+export function renderOwed(ctx, shopId, data) {
+  const base = `/shops/${esc(shopId)}`;
+  const list = data?.orders ?? [];
+  const tong = Number(data?.total_owed_vnd ?? 0);
+  const rows = list.map((o) => `<tr>
+    <td><a href="${base}/orders/${esc(o.id)}">#${esc(o.order_number)}</a></td>
+    <td>${esc(o.customer_name ?? '')}${o.customer_phone ? `<div class="muted" style="font-size:.8rem">${esc(o.customer_phone)}</div>` : ''}</td>
+    <td>${badge(o.status === 'cancelled' ? 'draft' : 'warn', STATUS[o.status] ?? o.status)}</td>
+    <td class="muted">${esc(OWED_WHY[o.owed_reason] ?? '—')}</td>
+    <td class="right num muted">${money(o.amount_paid_vnd)}</td>
+    <td class="right num muted">${money(o.refunded_vnd)}</td>
+    <td class="right num"><strong style="color:var(--bad)">${money(o.owed_vnd)}</strong></td>
+    <td class="muted">${dt(o.since)}</td>
+    <td><a class="btn alt sm" href="${base}/orders/${esc(o.id)}">Xử lý →</a></td></tr>`).join('');
+  const heading = tong > 0
+    ? `<div class="card" style="border-color:var(--bad);background:var(--badbg)">
+         <div class="muted" style="font-size:.9rem">Tổng tiền của khách đang nằm ở cửa hàng</div>
+         <div style="font-size:2.4rem;font-weight:700;color:var(--bad);line-height:1.2">${money(tong)}</div>
+         <div class="muted">${esc(data.count)} đơn cần trả lại tiền. Chuyển khoản cho khách rồi bấm <em>Hoàn tiền</em> trong từng đơn để ghi nhận — dòng đó sẽ tự rời khỏi danh sách này.</div>
+       </div>`
+    : `<div class="card"><div style="font-size:1.4rem;font-weight:600">Không nợ khách đồng nào</div>
+         <p class="muted" style="margin:6px 0 0">Mọi khoản đã thu đều tương ứng với đơn còn hiệu lực, hoặc đã hoàn đủ cho khách.</p></div>`;
+  return layout('Công nợ khách', ctx, `
+    <div class="toolbar"><h1 style="margin:0">Còn nợ khách</h1>
+      <a class="btn alt sm" href="${base}/orders">Danh sách đơn →</a></div>
+    ${heading}
+    ${list.length ? `<div class="card"><div class="tblscroll"><table data-cards><thead><tr>
+        <th>Đơn</th><th>Khách</th><th>Trạng thái</th><th>Vì sao còn nợ</th>
+        <th class="right">Đã thu</th><th class="right">Đã hoàn</th><th class="right">Còn nợ</th><th>Từ</th><th></th>
+      </tr></thead><tbody>${rows}</tbody></table></div>
+      ${data.truncated ? '<p class="muted" style="margin:12px 0 0">⚠ Danh sách bị cắt ở 500 đơn — con số tổng phía trên vẫn tính trên TOÀN BỘ đơn.</p>' : ''}
+    </div>` : ''}`);
 }
 
 // Danh sách phiếu nhập.

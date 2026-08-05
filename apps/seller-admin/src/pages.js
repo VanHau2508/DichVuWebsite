@@ -2376,8 +2376,8 @@ export function renderOrders(ctx, shopId, data, filter) {
         <input type="hidden" name="limit" value="${esc(filter.limit ?? '')}">
         <input type="hidden" name="offset" value="${esc(filter.offset ?? '')}">
         <button class="btn sm" type="submit">✓ Xác nhận các đơn đã chọn</button>
-        <button class="btn sm" type="submit" formaction="/shops/${esc(shopId)}/orders/bulk-ship">🚚 Giao các đơn đã chọn</button>
-        <button class="btn alt sm" type="submit" formaction="/shops/${esc(shopId)}/orders/bulk-mark-paid">₫ Đã nhận tiền (COD)</button>
+        <button class="btn sm" type="submit" formaction="/shops/${esc(shopId)}/orders/bulk-ship" data-confirm="Chuyển các đơn ĐANG CHỌN sang 'đang giao'? Mỗi đơn sẽ gửi ngay một email báo khách, và KHÔNG có nút lùi — muốn quay lại chỉ còn cách đánh dấu 'bom hàng', tức gắn nhãn xấu cho khách tử tế.">🚚 Giao các đơn đã chọn</button>
+        <button class="btn alt sm" type="submit" formaction="/shops/${esc(shopId)}/orders/bulk-mark-paid" data-confirm="Xác nhận ĐÃ CẦM TIỀN MẶT của TẤT CẢ các đơn đang chọn? Việc này ghi thẳng vào doanh thu — bấm nhầm là báo cáo lãi/lỗ sai và phải gỡ từng đơn một.">₫ Đã nhận tiền (COD)</button>
         <button class="btn alt sm" type="submit" formaction="/shops/${esc(shopId)}/orders/print-batch" formmethod="get" formtarget="_blank">🖨 In các đơn đã chọn</button>
         <span class="muted" data-bulk-count="order_ids" hidden style="font-size:13px"></span>
         <span class="muted" style="font-size:.82rem">Tích ô ở đầu bảng để chọn cả trang (xác nhận: chỉ đơn "Chờ xử lý"; giao: chỉ đơn đã xác nhận, KHÔNG gồm đơn đang gửi qua hãng vận chuyển; nhận tiền: chỉ đơn COD chưa thu; đơn khác tự bỏ qua).</span>
@@ -2394,7 +2394,12 @@ export function renderOrders(ctx, shopId, data, filter) {
 }
 
 export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returned) {
-  const act = (path, label, cls = 'btn sm', extra = '') => `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/${path}">${extra}<button class="${cls}" type="submit">${label}</button></form>`;
+  // HỎI LẠI TRƯỚC KHI LÀM THỨ KHÔNG LÙI ĐƯỢC. Cơ chế data-confirm đã có sẵn trong file này
+  // (đang dùng cho "Lưu trữ sản phẩm", "Nhập thật", "Thu hồi khoá API") nhưng KHÔNG một nút
+  // tiền/một-chiều nào của đơn hàng gắn nó — trong khi đó mới là chỗ bấm nhầm đắt nhất:
+  // "Đã nhận tiền (COD)" bấm một cú là ghi doanh thu chưa từng thu, và đường lùi duy nhất là
+  // ghi một phiếu hoàn tiền chưa từng trả → sổ sai vĩnh viễn ở bốn chỗ.
+  const act = (path, label, cls = 'btn sm', extra = '', hoi = '') => `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/${path}">${extra}<button class="${cls}" type="submit"${hoi ? ` data-confirm="${esc(hoi)}"` : ''}>${label}</button></form>`;
   // "Sửa đơn" CHỈ khi đơn còn sửa được: chưa gửi hãng (pending/confirmed) VÀ chưa thanh toán.
   // Đơn đã trả / đã giao → seller từ chối (409) nên không hiện nút (khỏi dẫn user vào ngõ cụt).
   const editable = ['pending', 'confirmed'].includes(o.status) && o.payment_status === 'unpaid';
@@ -2430,14 +2435,26 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   // đứng chung một dòng nên không có gì gợi ý cái nào dùng khi nào — mà chúng thuộc ba
   // nhóm việc khác hẳn nhau, và một trong số đó tiêu tiền thật.
   let flowActions = '', cancelAction = '';
-  if (o.status === 'pending') { flowActions = act('confirm', 'Xác nhận đơn'); cancelAction = act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra); }
-  else if (o.status === 'confirmed') cancelAction = act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra);
+  // Huỷ đơn báo email cho khách NGAY, nên vẫn hỏi lại — nhưng từ khi có nút Mở lại thì nó không
+  // còn là một chiều, và câu hỏi phải nói đúng như vậy: doạ "không mở lại được" khi thật ra mở
+  // lại được chỉ dạy người ta bỏ qua mọi câu hỏi khác của phần mềm.
+  const hoiHuy = `Huỷ đơn #${o.order_number}? Khách sẽ nhận ngay email báo đơn đã huỷ. Mở lại được sau đó, nhưng chỉ khi hàng vẫn còn.`;
+  if (o.status === 'pending') { flowActions = act('confirm', 'Xác nhận đơn'); cancelAction = act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra, hoiHuy); }
+  else if (o.status === 'confirmed') cancelAction = act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra, hoiHuy);
+  // MỞ LẠI ĐƠN ĐÃ HUỶ — trước đây màn hình này chỉ còn dòng "Không có thao tác." Huỷ nhầm một
+  // đơn (hoặc khách gọi lại xin mua tiếp) là buộc phải gõ tay một đơn mới: mất số đơn khách đang
+  // cầm, mất lịch sử. Ẩn nút khi đã có phiếu hoàn — lúc đó tiền đã về khách, mở lại là nói dối sổ.
+  else if (o.status === 'cancelled' && !(o.refunds ?? []).length) {
+    flowActions = act('reopen', '↻ Mở lại đơn', 'btn alt sm', '',
+      `Mở lại đơn #${o.order_number}? Đơn quay về "Chờ xử lý" và GIỮ CHỖ lại số hàng trong đơn — nếu hàng đã bán hết cho người khác thì không mở được. Khách sẽ nhận email báo đơn được mở lại.`);
+  }
   else if (o.status === 'shipped' && o.fulfillment_status === 'fulfilled') flowActions = act('deliver', 'Đã giao xong');
   // BOM HÀNG / HOÀN VỀ (audit #58): đơn ĐANG GIAO khách không nhận → hàng về. Restock phần đã gửi +
   // nhả reserve phần chưa gửi (đơn tách bỏ dở) → tồn sạch. Hiện cho MỌI đơn shipped (đủ/một-phần).
   if (o.status === 'shipped' && ['owner', 'admin'].includes(ctx.role)) {
     flowActions += act('mark-returned', '↩ Bom hàng / Hoàn về', 'btn warn sm',
-      '<label style="display:block;font-size:.82rem;margin-bottom:6px"><input type="checkbox" name="restock" checked style="width:auto"> Nhập lại kho (bỏ tick nếu hàng hỏng)</label>');
+      '<label style="display:block;font-size:.82rem;margin-bottom:6px"><input type="checkbox" name="restock" checked style="width:auto"> Nhập lại kho (bỏ tick nếu hàng hỏng)</label>',
+      `Đánh dấu đơn #${o.order_number} là BOM HÀNG? Khách nhận ngay email báo hoàn hàng, đơn đóng lại và không giao tiếp được. Chỉ dùng khi hàng đã thật sự quay về.`);
   }
   // Card giao tay per-dòng: SL mặc định = còn lại; giảm để TÁCH kiện, gửi nốt sau. order_line_id[]
   // đứng TRƯỚC ship_qty[] mỗi hàng → server zip theo chỉ số (dòng SL 0 bị bỏ, gửi kiện sau).
@@ -2497,8 +2514,23 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   // (owner) làm fallback khi feed vắng — sẽ đòi xác nhận lại mật khẩu (step-up).
   const unpaidLive = o.payment_status !== 'paid' && !['cancelled', 'refunded', 'returned'].includes(o.status);
   let payAction = '';
-  if (o.payment_method === 'cod' && unpaidLive) payAction = act('mark-paid', 'Đã nhận tiền (COD)');
-  else if (o.payment_method === 'qr' && unpaidLive && ctx.role === 'owner') payAction = act('mark-paid-qr', 'Đã nhận tiền (QR) — xác nhận tay', 'btn warn sm');
+  // Ghi nhận đã thu = ghi DOANH THU. Bấm nhầm là báo cáo lãi/lỗ sai, mà đường lùi (trước khi
+  // có nút gỡ ở dưới) là ghi một phiếu hoàn tiền chưa từng trả — sổ sai thêm một chỗ nữa.
+  if (o.payment_method === 'cod' && unpaidLive) {
+    payAction = act('mark-paid', 'Đã nhận tiền (COD)', 'btn sm', '',
+      `Xác nhận ĐÃ CẦM ${money(o.total_vnd)} tiền mặt của đơn #${o.order_number}? Việc này ghi vào doanh thu.`);
+  } else if (o.payment_method === 'cod' && o.payment_status === 'paid'
+             && !['cancelled', 'refunded', 'returned'].includes(o.status)
+             && !(o.refunds ?? []).length) {
+    // CÁI TẨY cho cú bấm nhầm. Chỉ hiện đúng lúc gỡ được (COD · đã đánh dấu · chưa hoàn đồng
+    // nào · đơn chưa đóng) — hiện nút rồi bấm vào ăn 409 là đẩy người ta vào ngõ cụt lần hai.
+    payAction = act('unmark-paid', '↶ Gỡ "đã nhận tiền"', 'btn alt sm', '',
+      `Gỡ đánh dấu đã thu ${money(o.total_vnd)} của đơn #${o.order_number}? Dùng khi bấm nhầm — đơn quay về "chưa thu tiền" và doanh thu trừ lại khoản này. Khách KHÔNG nhận email nào.`);
+  }
+  else if (o.payment_method === 'qr' && unpaidLive && ctx.role === 'owner') {
+    payAction = act('mark-paid-qr', 'Đã nhận tiền (QR) — xác nhận tay', 'btn warn sm', '',
+      `Xác nhận ĐÃ THẤY ${money(o.total_vnd)} về tài khoản của đơn #${o.order_number}? Hãy mở app ngân hàng kiểm tra trước khi bấm.`);
+  }
   // Hoàn tiền (bút toán 0070): đơn ĐÃ thanh toán, chưa hoàn — owner/admin (perm 'refund'
   // + step-up). Số tiền để trống = hoàn TOÀN BỘ số còn lại; ghi số nhỏ hơn = hoàn MỘT PHẦN
   // (đơn giữ trạng thái, luỹ kế chạm tổng mới lật "Đã hoàn").

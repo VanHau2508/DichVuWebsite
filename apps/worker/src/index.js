@@ -171,6 +171,18 @@ function compose(topic, p) {
           par('Hàng đã được trả lại kho — nếu bạn vẫn muốn mua, vui lòng đặt lại đơn mới.'), trackCta),
       };
     }
+    // MỞ LẠI ĐƠN: khách vừa nhận thư "đơn đã huỷ" — im lặng mở lại rồi giao tới nhà là làm khách
+    // hoảng. Tách nhánh riêng vì trạng thái đích là 'pending', mà nhãn thô của nó lọt ra ngoài
+    // sẽ thành "Đơn hàng #216 — pending" trong hộp thư của người Việt.
+    if (p.status === 'pending' && p.reopened) {
+      return {
+        subject: `Đơn hàng #${p.order_number} đã được mở lại`,
+        text: `Đơn hàng #${p.order_number} trước đó đã huỷ, nay được cửa hàng MỞ LẠI và đang chờ xử lý.\nNếu bạn không còn muốn mua, vui lòng báo lại cửa hàng để huỷ.${footer}`,
+        html: emailHtml(p, `Đơn hàng #${p.order_number} đã được mở lại`,
+          par(`Đơn hàng <strong>#${escHtml(p.order_number)}</strong> trước đó đã huỷ, nay được cửa hàng <strong>mở lại</strong> và đang chờ xử lý.`) +
+          par('Nếu bạn không còn muốn mua, vui lòng báo lại cửa hàng để huỷ.'), trackCta),
+      };
+    }
     const label = { confirmed: 'đã được xác nhận', shipped: 'đang trên đường giao', delivered: 'đã giao thành công', cancelled: 'đã huỷ', refunded: 'đã hoàn tiền', returned: 'đã được hoàn về cửa hàng' }[p.status] ?? p.status;
     // HUỶ ĐƠN (0117): người mất tiền có quyền biết VÌ SAO và BAO NHIÊU sẽ được trả.
     // Trước đây email chỉ nói "đã huỷ" — khách đã chuyển khoản không có thông tin nào

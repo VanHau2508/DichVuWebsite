@@ -642,6 +642,110 @@ async function markPaid(res, ctx, _body, params) {
 // Khác markPaid (COD, orders.write): đây là NỚI bất biến "QR chỉ webhook đặt paid" nên
 // khoá chặt hơn — perm 'payment.write' (chỉ owner) + STEP-UP + audit RIÊNG (đánh dấu
 // manual để phân biệt với webhook đối soát). Chỉ chủ shop tự nhận rủi ro "tiền đã về".
+// MỞ LẠI ĐƠN ĐÃ HUỶ — đường về cho cú bấm nhầm, và cho ca thật "khách gọi lại xin mua tiếp".
+//
+// Trước khi có nút này, huỷ đơn là XOÁ SỔ: màn hình chi tiết chỉ còn dòng "Không có thao tác.",
+// mọi endpoint khác trả 409. Cách duy nhất là gõ tay lại một đơn mới — mất số đơn cũ khách đang
+// cầm, mất lịch sử, và với đơn ĐÃ THU TIỀN thì số tiền đó không còn chỗ nào bám vào.
+//
+// VỀ 'pending' chứ không về trạng thái cũ: mở lại là đưa đơn về ĐẦU luồng để người bán tự bấm
+// xác nhận lại một cách có ý thức — và vì 'pending' nằm trong cổng huỷ, đơn vừa mở lại vẫn huỷ
+// được, không đổi một ngõ cụt lấy một ngõ cụt khác.
+//
+// GIỮ CHỖ TỒN LẠI: huỷ đã nhả reserve, 60 ngày sau hàng có thể đã bán cho người khác. Kiểm từng
+// dòng TRƯỚC khi đổi trạng thái, thiếu thì 409 kèm TÊN sản phẩm thiếu — chứ không mở lại một đơn
+// không có hàng để giao. Đo theo tồn VẬT LÝ (on_hand - reserved), CỐ Ý bỏ qua đệm tồn-an-toàn:
+// đệm đó chặn đơn MỚI để khỏi bán quá tay, còn đây là đơn cũ vốn đã từng giữ đúng số hàng ấy —
+// bắt nó qua đệm là dựng lên một ngõ cụt mới ngay trong tính năng vừa mở ngõ cụt cũ.
+//
+// CHẶN khi ĐÃ CÓ PHIẾU HOÀN: tiền đã chạy ngược về khách rồi. Mở lại lúc đó là đơn "còn sống"
+// mà sổ ghi đã trả tiền lại — muốn bán tiếp thì đặt đơn mới, đó mới là sự thật.
+async function reopenOrder(res, ctx, _body, params) {
+  const orderId = params[1];
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const o = (await c.query(
+      `SELECT id, order_number, status, payment_status, coupon_code, customer_email, customer_name
+         FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
+    if (!o) return { code: 404 };
+    if (o.status !== 'cancelled') return { code: 409, msg: `chỉ mở lại được đơn đã huỷ (đơn này đang ở '${o.status}')` };
+    const daHoan = (await c.query(`SELECT 1 FROM refunds WHERE order_id = $1 LIMIT 1`, [orderId])).rows[0];
+    if (daHoan) return { code: 409, msg: 'đơn đã hoàn tiền cho khách — hãy tạo đơn mới thay vì mở lại đơn cũ' };
+    // ORDER BY variant_id = thứ tự khoá cố định (xem chú thích dài ở cancelOrderTx). Không tiền
+    // tố `ol.` vì bất biến lock-order.test.js tìm đúng chuỗi này — và ở đây chỉ có một bảng.
+    const lines = (await c.query(
+      `SELECT variant_id, qty, title_snapshot,
+              (SELECT il.on_hand - il.reserved FROM inventory_levels il WHERE il.variant_id = order_lines.variant_id) AS con_lai
+         FROM order_lines WHERE order_id = $1 ORDER BY variant_id`, [orderId])).rows;
+    // Vòng đọc này CHỈ để soạn câu báo thiếu cho đủ MỌI dòng thiếu trong một lần. Chốt chặn thật
+    // nằm ở điều kiện của chính lệnh UPDATE bên dưới — kiểm-rồi-mới-ghi thì giữa hai bước vẫn có
+    // khách khác chốt đơn xong, và cái lọt qua khe đó là bán quá tồn.
+    const thieu = lines.filter((l) => Number(l.con_lai ?? 0) < Number(l.qty));
+    if (thieu.length) {
+      return { code: 409, msg: `không đủ hàng để mở lại: ${thieu.map((l) => `${l.title_snapshot} (cần ${l.qty}, còn ${Math.max(0, Number(l.con_lai ?? 0))})`).join('; ')}` };
+    }
+    for (const ln of lines) {
+      const u = await c.query(
+        `UPDATE inventory_levels SET reserved = reserved + $2, updated_at = now()
+          WHERE variant_id = $1 AND on_hand - reserved >= $2`, [ln.variant_id, ln.qty]);
+      if (!u.rowCount) return { code: 409, msg: `hàng vừa hết trong lúc mở đơn: ${ln.title_snapshot} — thử lại sau khi nhập thêm` };
+    }
+    await c.query(
+      `UPDATE orders SET status = 'pending', cancelled_at = NULL, cancel_reason = NULL WHERE id = $1`, [orderId]);
+    // Trả lại lượt coupon đã hoàn lúc huỷ — cùng điều kiện huỷ đã dùng để hoàn, nên hai vế khớp
+    // nhau. KHÔNG kiểm lại hạn/trần: lượt này vốn là của đơn, mở lại là ghi đúng thực tế chứ
+    // không phải cấp thêm một lượt mới.
+    if (o.coupon_code && o.payment_status !== 'paid') {
+      await c.query(`UPDATE coupons SET used_count = used_count + 1 WHERE shop_id = current_shop_id() AND upper(code) = upper($1)`, [o.coupon_code]);
+    }
+    o.status = 'pending';
+    await audit(c, 'order.reopened', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId } });
+    // BÁO KHÁCH: họ vừa nhận email "đơn đã huỷ". Im lặng mở lại rồi giao hàng tới là làm khách
+    // hoảng. `reopened` để worker chọn đúng câu chữ thay vì rơi về nhãn thô 'pending'.
+    await statusEvent(c, o, { reopened: true });
+    return { code: 200 };
+  });
+  if (out.code !== 200) return send(res, out.code, { error: out.msg ?? 'không tìm thấy đơn' });
+  return send(res, 200, { ok: true, status: 'pending' });
+}
+
+// GỠ "ĐÃ NHẬN TIỀN" — sửa cú bấm nhầm, KHÔNG phải một nghiệp vụ hoàn tiền.
+//
+// Trước khi có nút này, bấm nhầm "Đã nhận tiền (COD)" là hỏng vĩnh viễn: đường lùi duy nhất là
+// ghi một PHIẾU HOÀN TIỀN CHƯA TỪNG TRẢ, và đo thật trên báo cáo P&L thì sổ sai ở BỐN chỗ —
+// doanh thu hàng phồng lên một lần bán không có thật, dòng hoàn tiền phồng lên một lần trả
+// không có thật (con số đi thẳng vào quyết toán), rồi doanh thu thuần và lãi gộp cùng thấp đi
+// đúng bằng phí ship vì phiếu hoàn ôm cả ship còn doanh thu chỉ ghi phần hàng.
+//
+// ĐIỀU KIỆN NGẶT — đây là cái tẩy, không phải cái cửa:
+//   · CHỈ đơn COD. Đơn QR có tiền vào tài khoản thật, không ai "gỡ" một giao dịch ngân hàng.
+//   · CHỈ khi CHƯA có phiếu hoàn nào. Đã hoàn rồi thì trạng thái trả tiền là dữ kiện của
+//     nghiệp vụ hoàn, gỡ nó là làm hỏng sổ chứ không phải sửa sổ.
+//   · CHỈ đơn chưa ở trạng thái cuối (huỷ/hoàn/trả) — khớp đúng bộ chốt của markPaid.
+// Cùng perm 'orders.write' và KHÔNG step-up, y như chính nút đã gây ra lỗi: bắt gõ lại mật khẩu
+// để SỬA một lỗi mình vừa tạo là đẩy người ta sang cách làm bậy (ghi phiếu hoàn khống).
+async function unmarkPaid(res, ctx, _body, params) {
+  const orderId = params[1];
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const o = (await c.query(
+      `SELECT id, order_number, payment_method, payment_status, status
+         FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
+    if (!o) return { code: 404 };
+    if (o.payment_method !== 'cod') return { code: 409, msg: 'chỉ gỡ được đơn COD đánh dấu tay — tiền QR đã vào tài khoản thật' };
+    if (o.payment_status !== 'paid') return { code: 409, msg: 'đơn chưa ở trạng thái đã thanh toán' };
+    if (['cancelled', 'refunded', 'returned'].includes(o.status)) return { code: 409, msg: 'đơn đã huỷ/hoàn/trả — không gỡ được' };
+    const daHoan = (await c.query(`SELECT 1 FROM refunds WHERE order_id = $1 LIMIT 1`, [orderId])).rows[0];
+    if (daHoan) return { code: 409, msg: 'đơn đã có phiếu hoàn tiền — gỡ ở đây sẽ làm sai sổ, hãy xử lý ở mục Hoàn tiền' };
+    await c.query(
+      `UPDATE orders SET payment_status = 'unpaid', paid_at = NULL, amount_paid_vnd = 0 WHERE id = $1`, [orderId]);
+    await audit(c, 'order.unmarked_paid', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId } });
+    // KHÔNG gửi email. Khách đã nhận biên nhận "đã thanh toán" lúc bấm nhầm; gửi thêm một thư
+    // "thật ra chưa" chỉ làm khách hoang mang. Người bán tự nhắn lại nếu cần — đây là lỗi nội bộ.
+    return { code: 200 };
+  });
+  if (out.code !== 200) return send(res, out.code, { error: out.msg ?? 'không tìm thấy đơn' });
+  return send(res, 200, { ok: true, payment_status: 'unpaid' });
+}
+
 async function markPaidQr(res, ctx, _body, params) {
   const orderId = params[1];
   const out = await withTenant(ctx.shopId, async (c) => {
@@ -705,9 +809,23 @@ async function refundOrder(res, ctx, body, params) {
     if (o.payment_status !== 'paid') return { code: 409, msg: 'chỉ hoàn được đơn đã thanh toán' };
     if (o.status === 'refunded') return { code: 409, msg: 'đơn đã hoàn tiền' };
     // 'returned' cũng là TRẠNG THÁI CUỐI của một lần hoàn (RMA đã hoàn phần hàng trả).
-    // Thiếu nó thì nút Hoàn tiền vẫn hiện trên đơn đã trả hàng, bấm vào là GHI ĐÈ status
+    // Thiếu chốt này thì nút Hoàn tiền vẫn hiện trên đơn đã trả hàng, bấm vào là GHI ĐÈ status
     // thành 'refunded' — đơn biến mất khỏi bộ lọc "Hoàn hàng" và lịch sử trả hàng mất dấu.
-    if (o.status === 'returned') return { code: 409, msg: 'đơn đã trả hàng — xem phiếu trả, không hoàn thêm ở đây' };
+    //
+    // NHƯNG CHỈ KHOÁ KHI ĐÃ CÓ PHIẾU HOÀN. Có HAI đường tới 'returned', và chúng khác hẳn nhau:
+    //   · RMA (createReturn) — luôn ghi kèm một phiếu hoàn. Khoá ở đây là đúng.
+    //   · BOM HÀNG (khách từ chối nhận, hãng trả về) — KHÔNG ghi phiếu nào. Với đơn COD thì
+    //     không sao (chưa cầm đồng nào), nhưng đơn TRẢ TRƯỚC (QR) thì shop đang giữ tiền của
+    //     khách mà câu 409 lại bảo "xem phiếu trả" — một phiếu KHÔNG TỒN TẠI. Đo thật trên đơn
+    //     #291: refunds có 0 dòng, cả /refund lẫn /return đều 409 → 1.450.000₫ kẹt trong sổ,
+    //     chủ shop buộc phải ghi tay ra ngoài phần mềm.
+    // Khoá theo SỰ CÓ MẶT của phiếu hoàn, không khoá theo trạng thái: trần `remaining` bên dưới
+    // vẫn chặn hoàn quá, nên mở chỗ này không đẻ đường rò tiền nào.
+    if (o.status === 'returned') {
+      const daCoPhieu = (await c.query(
+        `SELECT 1 FROM refunds WHERE order_id = $1 AND kind <> 'edit_adjustment' LIMIT 1`, [orderId])).rows[0];
+      if (daCoPhieu) return { code: 409, msg: 'đơn đã trả hàng và đã có phiếu hoàn — xem mục Hoàn tiền của đơn' };
+    }
     // Đã hoàn luỹ kế (khoá đơn FOR UPDATE ở trên → không ai chen dòng refunds mới của đơn này).
     // LOẠI 'edit_adjustment' ra khỏi "đã hoàn".
     //
@@ -1541,6 +1659,8 @@ export const ORDER_ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/sellable-variants$`), perm: 'orders.write', fn: (res, ctx, b, p, q) => listSellableVariants(res, ctx, q) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/bulk/confirm$`), perm: 'orders.write', fn: (res, ctx, b) => bulkConfirm(res, ctx, b) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/bulk/ship$`), perm: 'orders.write', fn: (res, ctx, b) => bulkShip(res, ctx, b) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/unmark-paid$`), perm: 'orders.write', fn: (res, ctx, b, p) => unmarkPaid(res, ctx, b, p) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/reopen$`), perm: 'orders.write', fn: (res, ctx, b, p) => reopenOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/bulk/mark-paid$`), perm: 'orders.write', fn: (res, ctx, b) => bulkMarkPaid(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/orders/${UUID}$`), perm: 'orders.read', fn: (res, ctx, b, p) => getOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/edit$`), perm: 'orders.write', fn: (res, ctx, b, p) => editOrder(res, ctx, b, p) },

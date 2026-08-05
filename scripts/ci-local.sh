@@ -91,9 +91,16 @@ else
     fail "không thấy bộ e2e nào — glob hỏng?"
   else
     printf '  %s%d bộ, ước tính ~45 phút%s\n' "$DIM" "${#suites[@]}" "$RST"
+    # XOÁ log của LẦN CHẠY TRƯỚC. Bộ đỏ để lại log, bộ xanh thì không xoá đi — nên một bộ
+    # từng đỏ rồi được vá xong vẫn để lại tệp log cũ nằm đó vô thời hạn. Lần sau người đọc
+    # (hoặc chính tôi) mở đúng đường dẫn ấy ra và tưởng đang xem hiện trường của lần này.
+    # Đã mất một vòng điều tra vì đúng chuyện đó. Sau thay đổi này, BẤT BIẾN là:
+    #   còn tệp /tmp/va-e2e-*.log sau khi chạy xong ⇒ bộ đó đỏ TRONG CHÍNH LẦN NÀY.
+    rm -f /tmp/va-e2e-*.log
     for f in "${suites[@]}"; do
       cont=dbtest
       case "$f" in apps/auth/test/e2e.mjs) cont=auth ;; esac
+      log=/tmp/va-e2e-$(echo "$f" | tr '/.' '--').log
       clear_rl
       out=$($COMPOSE exec -T "$cont" node "$f" 2>&1 | tr -d '\r')
       sum=$(printf '%s' "$out" | grep -oE '[0-9]+ pass, [0-9]+ fail' | tail -1)
@@ -102,10 +109,10 @@ else
       # đủ (chạy riêng thì xanh) thì dựng lại chính là thứ khó nhất. Đã mất một vòng đoán mò
       # vì thiếu đúng ba dòng này.
       case "$sum" in
-        *' 0 fail') pass "$f — $sum" ;;
-        '')         log=/tmp/va-e2e-$(echo "$f" | tr '/.' '--').log; printf '%s' "$out" > "$log"
+        *' 0 fail') rm -f "$log"; pass "$f — $sum" ;;
+        '')         printf '%s' "$out" > "$log"
                     fail "$f — KHÔNG CHẠY ĐƯỢC: $(printf '%s' "$out" | tail -2 | head -1 | cut -c1-100) [$log]" ;;
-        *)          log=/tmp/va-e2e-$(echo "$f" | tr '/.' '--').log; printf '%s' "$out" > "$log"
+        *)          printf '%s' "$out" > "$log"
                     fail "$f — $sum · $(printf '%s' "$out" | grep -E '^\s*(FAIL|.*\[31m)' | head -1 | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-90) [$log]" ;;
       esac
     done

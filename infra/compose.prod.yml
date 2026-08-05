@@ -270,6 +270,10 @@ services:
       APP_ENV: production
       DATABASE_URL: postgres://app_payment:${APP_PAYMENT_PASSWORD:?}@postgres:5432/app
       SEPAY_WEBHOOK_KEY: ${SEPAY_WEBHOOK_KEY:?}
+      # Tài khoản nhận tiền thuê bao — CÙNG biến mà platform dùng vẽ mã QR (0128). payment so
+      # số này với tài khoản nhận trong sự kiện SePay trước khi ghi hoá đơn 'paid'; thiếu thì
+      # mọi khoản rơi vào hàng đợi đối soát thay vì được cộng hạn mù.
+      PLATFORM_BANK_ACCOUNT: ${PLATFORM_BANK_ACCOUNT:-}
       REDIS_URL: redis://redis:6379               # rate-limit webhook per-IP (Đợt 6.2); vắng → fail-open
       SEPAY_WEBHOOK_RL_PER_MIN: ${SEPAY_WEBHOOK_RL_PER_MIN:-120}
       PORT: "3070"

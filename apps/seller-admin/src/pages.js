@@ -1301,6 +1301,10 @@ const LY_DO_TIEN_LAC = {
   charge_cancelled: 'Shop tạo mã mới sau khi đã chuyển theo mã cũ → mã cũ bị huỷ',
   charge_paid: 'Hoá đơn đã thu rồi (chuyển hai lần?)',
   amount_short: 'Về THIẾU so với hoá đơn (ngân hàng trừ phí?) — không có cộng dồn',
+  // 0144: tiền rơi vào một tài khoản KHÁC tài khoản in trên mã QR. Câu chữ phải nói rõ phải
+  // làm gì, vì đây là lý do duy nhất trong bảng này mà nguyên nhân có thể nằm ở CẤU HÌNH của
+  // chính nền tảng (gắn nhầm/gắn thêm tài khoản vào SePay) chứ không phải shop gõ sai.
+  account_mismatch: 'Tiền vào TÀI KHOẢN KHÁC với tài khoản in trên mã QR — kiểm lại PLATFORM_BANK_ACCOUNT và danh sách tài khoản gắn vào SePay',
 };
 function renderTienLac(rows) {
   if (!rows.length) return '';

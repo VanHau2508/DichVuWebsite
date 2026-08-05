@@ -124,6 +124,26 @@ async function main() {
   r.status === 200 && r.json?.matched === false ? ok('mã CK lạ → không khớp, không cộng gì') : bad('mã lạ vẫn khớp!', r.raw);
   r = await sepay(PLAT_TOKEN, { ref: live.json.pay_ref, amount: Number(live.json.amount_vnd) - 1000, account: ACC });
   r.json?.reason === 'amount_short' ? ok('trả THIẾU → không ghi nhận (không cộng hạn hụt)') : bad('trả thiếu vẫn qua!', r.raw);
+  // TIỀN RƠI NHẦM TÀI KHOẢN. Đường tiền ĐƠN HÀNG có chốt này từ lâu; đường tiền NỀN TẢNG thì
+  // không, suốt từ 0124 — cùng một luật, thiếu ở đúng nhánh tiền về túi chủ nền tảng. Token bí
+  // mật KHÔNG cứu được: SePay bắn sự kiện cho MỌI tài khoản gắn vào tài khoản SePay đó, nên chỉ
+  // cần gắn thêm (hoặc gắn nhầm) một tài khoản thứ hai là mọi chuyển khoản vào đó mang mã SUB…
+  // sẽ cộng hạn, trong khi tiền không nằm ở tài khoản in trên mã QR. Hoá đơn ghi 'paid', shop
+  // dùng tiếp, sổ ngân hàng không có khoản đó — không cách nào phát hiện muộn.
+  const evLac = `lac-${uniq()}`;
+  r = await sepay(PLAT_TOKEN, { ref: live.json.pay_ref, amount: Number(live.json.amount_vnd), account: '9999999999', eventId: evLac });
+  r.status === 200 && r.json?.matched === false && r.json?.reason === 'account_mismatch'
+    ? ok('tiền vào TÀI KHOẢN KHÁC → không khớp hoá đơn (dù đúng mã, đúng số tiền, đúng token)')
+    : bad(`tiền lạc tài khoản vẫn cộng hạn: ${r.raw}`);
+  {
+    const q = await owner.query(
+      `SELECT reason, received_account, pay_ref FROM platform_unmatched_transfers WHERE provider_event_id = $1`, [String(evLac)]);
+    q.rows[0]?.reason === 'account_mismatch' && q.rows[0]?.pay_ref === live.json.pay_ref
+      ? ok('và khoản đó vào HÀNG ĐỢI đối soát kèm mã hoá đơn — tiền đã nằm đâu đó, không được nuốt im lặng')
+      : bad(`không vào hàng đợi: ${JSON.stringify(q.rows[0] ?? null)}`);
+    const ch = await owner.query(`SELECT status FROM billing_charges WHERE pay_ref = $1`, [live.json.pay_ref]);
+    ch.rows[0]?.status === 'pending' ? ok('hoá đơn vẫn PENDING, không bị đánh dấu đã trả') : bad(`hoá đơn đổi trạng thái: ${ch.rows[0]?.status}`);
+  }
   r = await sepay(PLAT_TOKEN, { ref: live.json.pay_ref, amount: Number(live.json.amount_vnd), account: ACC });
   r.status === 200 && r.json?.matched === true ? ok('trả ĐÚNG → webhook khớp hoá đơn') : bad('không khớp hoá đơn', r.raw);
   let sw = await billSweep();

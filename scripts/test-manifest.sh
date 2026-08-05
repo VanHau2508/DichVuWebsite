@@ -75,10 +75,15 @@ MANIFEST_UNIT_FILES=(
   # nhau và MỌI khẳng định e2e đều xanh — chỉ bất biến mức mã nguồn mới thấy. Lỗi thật đã tìm
   # ra khi tự đóng vai chủ shop ngày-60: 54/395 đơn hiện SAI NGÀY (docs/64).
   apps/seller-admin/test/date-tz.test.js
+  # Tài khoản nhận tiền của NỀN TẢNG: dịch vụ VẼ mã QR (platform) và dịch vụ KIỂM tiền về
+  # (payment) phải đọc CÙNG một biến env. Phụ thuộc vô hình — chỉ là một dòng trong compose;
+  # quên cắm thì chốt fail-closed chặn hết và shop trả tiền xong vẫn bị khoá, không lỗi nào
+  # hiện ra. E2E chạy trên compose.dev đã cắm đúng nên mù, và không thấy compose.prod.
+  apps/payment/test/bank-env.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=23
+MANIFEST_UNIT_COUNT=24
 MANIFEST_E2E_COUNT=98
 
 manifest_unit_files() {

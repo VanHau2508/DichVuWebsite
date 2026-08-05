@@ -27,6 +27,11 @@ import { hit } from '../ratelimit.js';
 
 const PORT = Number(process.env.PORT ?? 3070);
 const SEPAY_KEY = process.env.SEPAY_WEBHOOK_KEY ?? '';
+// Tài khoản NHẬN TIỀN của nền tảng — cùng env mà apps/platform dùng để vẽ mã QR (0128 gom
+// về một nguồn duy nhất, cố ý). Dùng để chốt: tiền thuê bao chỉ được ghi nhận khi rơi đúng
+// tài khoản này. Thiếu env → chặn hết và đẩy vào hàng đợi đối soát (xem chú thích ở nhánh
+// billing của sepayWebhook).
+const PLATFORM_BANK_ACCOUNT = process.env.PLATFORM_BANK_ACCOUNT ?? '';
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 8 });
 
 if (!SEPAY_KEY) throw new Error('thiếu SEPAY_WEBHOOK_KEY');
@@ -287,6 +292,27 @@ async function sepayWebhook(req, res, body) {
           `SELECT id, shop_id, amount_vnd, status FROM billing_charges WHERE pay_ref = $1 FOR UPDATE`, [bref],
         )).rows[0];
         if (!ch) return nuot('charge_not_found');
+        // TIỀN PHẢI RƠI ĐÚNG TÀI KHOẢN CỦA NỀN TẢNG. Đường tiền ĐƠN HÀNG đã có chốt này từ
+        // lâu (so `ev.rcvAccount` với `order.qr_account`, xem bên dưới) — đường tiền NỀN TẢNG
+        // thì không, suốt từ 0124. Cùng một luật, có ở nhánh đi nhiều, thiếu ở nhánh kia; và
+        // nhánh thiếu lại đúng là nhánh tiền về túi CHỦ NỀN TẢNG.
+        //
+        // Vì sao nguy hiểm dù webhook đã có token bí mật: SePay bắn sự kiện cho MỌI tài khoản
+        // ngân hàng gắn vào tài khoản SePay đó. Chỉ cần một tài khoản thứ hai được gắn thêm
+        // (hoặc gắn nhầm) là mọi chuyển khoản vào đó mang mã SUB… sẽ cộng hạn thuê bao, trong
+        // khi tiền không hề nằm ở tài khoản mà nền tảng dùng để in mã QR. Không có gì phát
+        // hiện muộn được: hoá đơn ghi 'paid', shop dùng tiếp, sổ ngân hàng không có khoản đó.
+        //
+        // Nguồn số tài khoản là env PLATFORM_BANK_ACCOUNT — CHÍNH nguồn dùng để vẽ mã QR
+        // (0128 cố ý gom về một chỗ). So với chỗ khác là mở đường cho hai số lệch nhau.
+        //
+        // FAIL-CLOSED khi thiếu env: thà đẩy vào hàng đợi đối soát để người vận hành xử tay,
+        // còn hơn cộng hạn cho một khoản tiền không biết đang nằm ở đâu. Giống hệt nhánh đơn
+        // hàng, và đây cũng là lý do trang "Thu tiền" đã cắm sẵn dấu ✓/✗ cho ba biến env.
+        const wantAcc = norm(PLATFORM_BANK_ACCOUNT);
+        if (!wantAcc || norm(ev.rcvAccount) !== wantAcc) {
+          return nuot('account_mismatch', { shop_id: ch.shop_id, rcv: mask(ev.rcvAccount), want: mask(wantAcc) });
+        }
         // Trả TRÙNG (SePay gửi lại, hoặc shop chuyển hai lần): đã paid thì thôi, không
         // đánh dấu lại. Việc cộng hạn nằm ở worker và cũng chỉ chạy một lần (applied_at).
         // KHÔNG vào hàng đợi: SePay gửi lại cùng eventId là chuyện thường, không phải tiền lạc.

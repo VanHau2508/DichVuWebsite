@@ -412,6 +412,10 @@ services:
       # app_payment: nhận webhook, chỉ đọc cột không-PII + đặt trạng thái thanh toán.
       DATABASE_URL: postgres://app_payment:devpassword@postgres:5432/app
       SEPAY_WEBHOOK_KEY: dev-sepay-secret-key-12345
+      # Tài khoản nhận tiền thuê bao — PHẢI trùng giá trị mà apps/platform dùng vẽ mã QR.
+      # payment so số này với tài khoản nhận trong sự kiện SePay trước khi ghi hoá đơn 'paid'.
+      # Bất biến canh cả hai nơi: apps/payment/test/bank-env.test.js
+      PLATFORM_BANK_ACCOUNT: "0123456789"
       PORT: "3070"
       # Rate-limit per-IP webhook (Đợt 6.2): 120/60s/IP; nâng nếu 1 IP SePay post nhiều
       # hơn. FAIL-OPEN — không bao giờ âm thầm bỏ thông báo thanh toán thật.

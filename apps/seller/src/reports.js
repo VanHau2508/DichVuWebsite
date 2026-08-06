@@ -199,6 +199,15 @@ async function computeSales(shopId, { from, to, group, sort }) {
       `SELECT ${B('s.created_at')} AS bucket, sum(s.carrier_fee_vnd)::bigint AS carrier_fee
          FROM shipments s
         WHERE s.carrier_fee_vnd IS NOT NULL AND s.status <> 'cancelled' AND ${rangeSql('s.created_at', 1)} GROUP BY 1`, [from, to])).rows;
+    // (5b) Phí hãng thu CHIỀU VỀ khi đơn bị bom / trả hàng (0147) — cùng dòng chi phí với
+    //      chiều đi, vì với chủ shop nó là một khoản: tiền cước của đơn đó.
+    //      Ngày ghi nhận = `returned_at` (lúc hàng quay về, tức lúc phát sinh khoản này), KHÔNG
+    //      phải ngày tạo vận đơn: hai chiều có thể rơi vào hai kỳ khác nhau và ghi nhầm kỳ là
+    //      dịch lỗ sang tháng không có nó.
+    const q5b = (await c.query(
+      `SELECT ${B('coalesce(o.returned_at, o.created_at)')} AS bucket, sum(o.return_fee_vnd)::bigint AS return_fee
+         FROM orders o
+        WHERE o.return_fee_vnd IS NOT NULL AND ${rangeSql('coalesce(o.returned_at, o.created_at)', 1)} GROUP BY 1`, [from, to])).rows;
     // (6) Lãi theo sản phẩm (gộp snapshot title/sku). profit NULL khi CÓ dòng thiếu cost
     //     (không bịa 0). LIMIT 101 → cờ truncated (top 100).
     const q6 = (await c.query(
@@ -250,15 +259,15 @@ async function computeSales(shopId, { from, to, group, sort }) {
         -- nợ giữa SHOP và HÃNG; shop hoàn tiền hay nhận trả hàng sau đó là việc khác.
         WHERE o.payment_method = 'cod' AND o.delivered_at IS NOT NULL
           AND o.cod_settled_at IS NULL AND NOT o.is_migrated`)).rows[0];
-    return { q1, q2, q3, q4, q5, q6, q7, q8, q9 };
-  }).then(({ q1, q2, q3, q4, q5, q6, q7, q8, q9 }) => {
+    return { q1, q2, q3, q4, q5, q5b, q6, q7, q8, q9 };
+  }).then(({ q1, q2, q3, q4, q5, q5b, q6, q7, q8, q9 }) => {
     const idx = (rows) => new Map(rows.map((r) => [r.bucket, r]));
-    const m1 = idx(q1), m2 = idx(q2), m3 = idx(q3), m4 = idx(q4), m5 = idx(q5), m7 = idx(q7), m9 = idx(q9);
+    const m1 = idx(q1), m2 = idx(q2), m3 = idx(q3), m4 = idx(q4), m5 = idx(q5), m5b = idx(q5b), m7 = idx(q7), m9 = idx(q9);
     const series = bucketList(from, to, group).map((b) => {
       const a = m1.get(b), g = m2.get(b), r = m3.get(b), v = m4.get(b), s = m5.get(b), w = m7.get(b), af = m9.get(b);
       const revenue_goods = n(a?.revenue_goods), refunds = n(r?.refunds);
       const cogs = n(g?.cogs), reversal = n(v?.cogs_reversal);
-      const shipping = n(a?.shipping_income), fee = n(s?.carrier_fee);
+      const shipping = n(a?.shipping_income), fee = n(s?.carrier_fee) + n(m5b.get(b)?.return_fee);
       const variance = n(w?.settlement_variance), commission = n(af?.commission);
       const net = revenue_goods - refunds;
       const gross = net - cogs + reversal;

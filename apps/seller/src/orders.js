@@ -260,7 +260,7 @@ async function getOrder(res, ctx, _b, params) {
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.fulfillment_status,
               o.subtotal_vnd, o.shipping_vnd, o.total_vnd, o.amount_paid_vnd,
               o.customer_name, o.customer_phone, o.customer_email, o.shipping_address, o.note, o.created_at,
-              o.paid_at, o.shipped_at, o.delivered_at, o.cancelled_at, o.cancel_reason, o.source, o.source_ref,
+              o.paid_at, o.shipped_at, o.delivered_at, o.cancelled_at, o.cancel_reason, o.source, o.source_ref, o.return_fee_vnd,
               ${OWED_SQL} AS owed_vnd, ${OWED_REASON_SQL} AS owed_reason
          FROM orders o WHERE o.id = $1`, [orderId],
     )).rows[0];
@@ -709,6 +709,64 @@ async function markPaid(res, ctx, _body, params) {
 // Khác markPaid (COD, orders.write): đây là NỚI bất biến "QR chỉ webhook đặt paid" nên
 // khoá chặt hơn — perm 'payment.write' (chỉ owner) + STEP-UP + audit RIÊNG (đánh dấu
 // manual để phân biệt với webhook đối soát). Chỉ chủ shop tự nhận rủi ro "tiền đã về".
+// PHÍ VẬN CHUYỂN SHOP THỰC TRẢ — khoản lỗ có thật mà sổ lãi lỗ đang không nhìn thấy.
+//
+// Đo trên DB dev: 1.568/2.019 vận đơn là "giao tay" (provider NULL) và KHÔNG dòng nào có
+// `carrier_fee_vnd` — nghĩa là shop tự giao, hoặc dùng hãng chưa nối API (phần lớn shop Việt:
+// Grab, Ahamove, xe ôm quen), thì TOÀN BỘ tiền cước biến mất khỏi P&L. Và với đơn BỊ BOM thì
+// còn mất thêm cước CHIỀU VỀ, khoản này không có chỗ ghi với bất kỳ hãng nào.
+//
+// Hai ô, một khái niệm "tiền cước của đơn này", cùng đổ vào MỘT dòng chi phí sẵn có của P&L:
+//   · outbound_fee_vnd → ghi vào `carrier_fee_vnd` của các vận đơn GIAO TAY. KHÔNG cho sửa vận
+//     đơn do hãng đồng bộ: ở đó hãng là nguồn sự thật, người bán gõ đè lên là tự tạo hai con
+//     số cho một khoản rồi tin nhầm con số mình gõ.
+//   · return_fee_vnd → cột mới trên orders (0147), chỉ đơn đã quay về.
+//
+// NULL ≠ 0: chưa nhập thì màn hình còn nhắc; nhập 0 là câu trả lời "hãng không thu", nhắc nữa
+// là làm phiền. Vì vậy nhận `null` để XOÁ, và phân biệt vắng-mặt với số 0.
+async function setShipCost(res, ctx, body, params) {
+  const orderId = params[1];
+  // Number(null) === 0 và Number('') === 0 — kiểm CÓ MẶT trước, nếu không thì bỏ trống ô cũng
+  // ghi thành 0₫ và "chưa biết" lặng lẽ biến thành "biết chắc bằng không" (bẫy docs/64).
+  const doc = (k) => {
+    if (!(k in (body ?? {}))) return undefined;          // không gửi → không đụng
+    const v = body[k];
+    if (v === null || v === '') return null;             // gửi rỗng → xoá về "chưa nhập"
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 0 || n > 100_000_000) return NaN;
+    return n;
+  };
+  const out_ = doc('outbound_fee_vnd'), ret = doc('return_fee_vnd');
+  if (Number.isNaN(out_) || Number.isNaN(ret)) return send(res, 400, { error: 'phí không hợp lệ (số nguyên ≥ 0)' });
+  if (out_ === undefined && ret === undefined) return send(res, 400, { error: 'không có gì để ghi' });
+
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const o = (await c.query(`SELECT id, status FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
+    if (!o) return { code: 404 };
+    let nManual = 0;
+    if (out_ !== undefined) {
+      const u = await c.query(
+        `UPDATE shipments SET carrier_fee_vnd = $2
+          WHERE order_id = $1 AND provider IS NULL AND status <> 'cancelled'`, [orderId, out_]);
+      nManual = u.rowCount;
+      if (!nManual) return { code: 409, msg: 'đơn này không có vận đơn giao tay nào — phí của vận đơn do hãng tạo lấy từ hãng, không sửa tay' };
+    }
+    if (ret !== undefined) {
+      if (!['returned', 'refunded', 'cancelled'].includes(o.status)) {
+        return { code: 409, msg: 'chỉ nhập phí chiều về cho đơn đã quay lại shop (hoàn hàng / huỷ)' };
+      }
+      await c.query(`UPDATE orders SET return_fee_vnd = $2 WHERE id = $1`, [orderId, ret]);
+    }
+    await audit(c, 'order.ship_cost_set', {
+      actorId: ctx.user.id, ip: ctx.ip,
+      metadata: { orderId, ...(out_ !== undefined ? { outbound_fee_vnd: out_, shipments: nManual } : {}), ...(ret !== undefined ? { return_fee_vnd: ret } : {}) },
+    });
+    return { code: 200, nManual };
+  });
+  if (out.code !== 200) return send(res, out.code, { error: out.msg ?? 'không tìm thấy đơn' });
+  return send(res, 200, { ok: true, shipments_updated: out.nManual });
+}
+
 // MỞ LẠI ĐƠN ĐÃ HUỶ — đường về cho cú bấm nhầm, và cho ca thật "khách gọi lại xin mua tiếp".
 //
 // Trước khi có nút này, huỷ đơn là XOÁ SỔ: màn hình chi tiết chỉ còn dòng "Không có thao tác.",
@@ -1730,6 +1788,7 @@ export const ORDER_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/bulk/ship$`), perm: 'orders.write', fn: (res, ctx, b) => bulkShip(res, ctx, b) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/unmark-paid$`), perm: 'orders.write', fn: (res, ctx, b, p) => unmarkPaid(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/reopen$`), perm: 'orders.write', fn: (res, ctx, b, p) => reopenOrder(res, ctx, b, p) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/ship-cost$`), perm: 'orders.write', fn: (res, ctx, b, p) => setShipCost(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/bulk/mark-paid$`), perm: 'orders.write', fn: (res, ctx, b) => bulkMarkPaid(res, ctx, b) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/orders/${UUID}$`), perm: 'orders.read', fn: (res, ctx, b, p) => getOrder(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/edit$`), perm: 'orders.write', fn: (res, ctx, b, p) => editOrder(res, ctx, b, p) },

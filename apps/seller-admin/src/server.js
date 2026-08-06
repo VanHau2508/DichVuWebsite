@@ -1228,6 +1228,17 @@ async function orderAction(req, res, me, cookie, shopId, oid, action) {
     }
     // Có chọn dòng → gửi subset; không dòng nào (form cũ) → bỏ lines = seller gửi TRỌN còn lại.
     if (lines.length) body.lines = lines;
+  } else if (action === 'ship-cost') {
+    // Ô để TRỐNG khác ô điền 0: trống = "chưa nhập" (màn hình còn nhắc), 0 = "hãng không thu".
+    // Gộp hai thứ thành 0 là biến chưa-biết thành biết-chắc-bằng-không — sổ trông sạch hơn thực
+    // tế. Gửi null cho ô trống để seller xoá về NULL; KHÔNG gửi trường nào không có trong form.
+    const f = await readFormAll(req);
+    body = {};
+    for (const k of ['outbound_fee_vnd', 'return_fee_vnd']) {
+      if (!f.has(k)) continue;
+      const v = String(f.get(k) ?? '').trim();
+      body[k] = v === '' ? null : v;
+    }
   } else if (action === 'mark-returned') {
     // Bom hàng: checkbox "Nhập lại kho" (checked → restock; bỏ → hàng hỏng không nhập lại).
     const f = await readFormAll(req);
@@ -3509,7 +3520,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/edit-paid$`).exec(p)) && req.method === 'POST') return orderEditPaidSubmit(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/edit-paid/step-up$`).exec(p)) && req.method === 'POST') return orderEditPaidStepUp(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/print$`).exec(p)) && req.method === 'GET') return orderPrint(res, me, cookie, m[1], m[2]);
-    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/(confirm|ship|cancel|deliver|mark-paid|unmark-paid|mark-returned|reopen)$`).exec(p)) && req.method === 'POST') return orderAction(req, res, me, cookie, m[1], m[2], m[3]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/(confirm|ship|cancel|deliver|mark-paid|unmark-paid|mark-returned|reopen|ship-cost)$`).exec(p)) && req.method === 'POST') return orderAction(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr$`).exec(p)) && req.method === 'POST') return markPaidQrConfirm(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr/step-up$`).exec(p)) && req.method === 'POST') return markPaidQrStepUp(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/refund$`).exec(p)) && req.method === 'POST') return refundConfirm(req, res, me, cookie, m[1], m[2]);

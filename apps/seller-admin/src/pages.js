@@ -2600,6 +2600,32 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     + grp('Tiền', payAction + refundAction + returnAction, moneyHint)
     + grp('Huỷ đơn', cancelAction)) || '<div class="actions"><span class="muted">Không có thao tác.</span></div>';
 
+  // PHÍ VẬN CHUYỂN SHOP THỰC TRẢ (0147) — khoản lỗ có thật mà P&L đang không thấy.
+  //
+  // Đo trên DB dev: 1.568/2.019 vận đơn là GIAO TAY và không dòng nào có phí, nên với shop tự
+  // giao hoặc dùng hãng chưa nối API thì toàn bộ tiền cước biến mất khỏi sổ lãi lỗ. Đơn bị bom
+  // còn mất thêm cước CHIỀU VỀ — không hãng nào đồng bộ khoản đó về.
+  //
+  // Ô chỉ hiện khi CÓ CHỖ ĐỂ ĐIỀN: có vận đơn giao tay (sửa được), hoặc đơn đã quay về (nhập
+  // được chiều về). Bày một ô không ghi được vào đâu chỉ để trang trông đầy đủ là mời người ta
+  // gõ vào rồi nhận 409.
+  const coGiaoTay = (o.shipments ?? []).some((s) => !s.provider && s.status !== 'cancelled');
+  const daVeShop = ['returned', 'refunded', 'cancelled'].includes(o.status);
+  const phiGiaoTay = (o.shipments ?? []).find((s) => !s.provider && s.status !== 'cancelled')?.carrier_fee_vnd;
+  const shipCostCard = (coGiaoTay || daVeShop) ? `
+    <div class="card"><h2>Chi phí vận chuyển thực trả</h2>
+      <p class="muted" style="margin-top:0">Tiền cước shop bỏ ra cho đơn này. Nhập vào đây thì nó vào <strong>Báo cáo lãi lỗ</strong>; bỏ trống thì khoản lỗ đó không nằm ở đâu cả.</p>
+      <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/ship-cost" class="gridform">
+        ${coGiaoTay ? `<label>Phí chiều đi (giao tay)
+          <input type="number" name="outbound_fee_vnd" min="0" step="1000" value="${phiGiaoTay != null ? esc(phiGiaoTay) : ''}" placeholder="chưa nhập">
+          <span class="muted" style="font-size:.8rem">Vận đơn do hãng tạo thì lấy số từ hãng, không sửa ở đây.</span></label>` : ''}
+        ${daVeShop ? `<label>Phí chiều về (hãng thu khi mang hàng ngược lại)
+          <input type="number" name="return_fee_vnd" min="0" step="1000" value="${o.return_fee_vnd != null ? esc(o.return_fee_vnd) : ''}" placeholder="chưa nhập">
+          <span class="muted" style="font-size:.8rem">Hãng không thu chiều về thì điền <strong>0</strong> — khác với bỏ trống.</span></label>` : ''}
+        <div><button class="btn alt sm" type="submit">Lưu chi phí</button></div>
+      </form>
+    </div>` : '';
+
   // CÒN NỢ KHÁCH (0117, sửa lại): con số nay do API tính bằng biểu thức DÙNG CHUNG (owed.js) —
   // trang này chỉ hiển thị. Luật cũ nằm ngay tại đây và vừa hụt vừa sai: nó chỉ xét đơn
   // 'cancelled' nên bỏ trắng đơn BOM HÀNG đã trả trước (10 đơn / 5,62 triệu trên shop ngày-60),
@@ -2624,7 +2650,9 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     <div class="card"><span class="pill">${badge(o.status, STATUS[o.status] ?? o.status)}</span>
       <span class="pill">${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} ${esc(o.payment_method?.toUpperCase() ?? '')}</span>
       ${['confirmed', 'shipped'].includes(o.status) && ['partial', 'fulfilled'].includes(o.fulfillment_status) ? `<span class="pill">${badge(o.fulfillment_status === 'fulfilled' ? 'delivered' : 'shipped', o.fulfillment_status === 'fulfilled' ? 'Đã gửi đủ' : 'Giao một phần')}</span>` : ''}
-      ${actionGroups}</div>
+      ${actionGroups}
+    </div>
+    ${shipCostCard}
     ${o.status === 'returned' ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg)">
       <h2 style="margin-top:0">↩️ Đơn bị hoàn (bom hàng)</h2>
       <p class="muted" style="margin-bottom:0">Hãng vận chuyển báo hàng đang/đã hoàn về. Khi <strong>nhận lại hàng thực tế</strong>,

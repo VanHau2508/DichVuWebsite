@@ -12,7 +12,7 @@ import { withTenant, audit } from './db.js';
 import { rangeSql, TZ } from './date-range.js';
 import { toCsv, CsvText, EXPORT_ORDERS_MAX_ROWS } from './export.js';
 import { isProvince } from './provinces.js';
-import { OWED_SQL, OWED_REASON_SQL, OWED_REFUNDED_SQL } from './owed.js';
+import { OWED_SQL, OWED_REASON_SQL, OWED_REFUNDED_SQL } from '../owed.js';
 
 // Base URL ảnh public (giống storefront) — dựng thumbnail dòng hàng trong chi tiết đơn.
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';

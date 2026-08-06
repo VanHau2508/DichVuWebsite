@@ -10,6 +10,9 @@ import { PROVINCES } from './provinces.js';
 const AMP = /&/g, LT = /</g, GT = />/g, QUOT = /"/g, APOS = /'/g;
 export const esc = (s) => String(s ?? '').replace(AMP, '&amp;').replace(LT, '&lt;').replace(GT, '&gt;').replace(QUOT, '&quot;').replace(APOS, '&#39;');
 const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + '₫';
+// Ngày theo giờ VN. Container chạy UTC nên bỏ timeZone là in giờ MÁY CHỦ — đã có lần lệch
+// đúng một ngày trên 54/395 đơn ở màn quản trị (docs/64); trang này là trang KHÁCH đọc.
+const ngayVN = (t) => (t ? new Date(t).toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : '');
 // Vận đơn: tên hãng + link tra cứu công khai của hãng (khách tự theo dõi shipment).
 const carrierName = (c) => ({ ghn: 'GHN', ghtk: 'GHTK' }[String(c ?? '').toLowerCase()] ?? (c || 'Hãng vận chuyển'));
 const carrierTrackUrl = (c, code) => {
@@ -110,6 +113,9 @@ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--pri);box
 .qrbox{text-align:center;margin:14px 0}.qrbox svg{max-width:220px;height:auto;border:1px solid var(--bd);border-radius:var(--r);padding:8px;background:#fff}
 .badge{display:inline-flex;align-items:center;gap:5px;padding:5px 13px;border-radius:var(--pill);font-size:.82rem;font-weight:600;line-height:1.3}
 .badge.wait{background:var(--warnbg);color:var(--warn)}.badge.paid{background:var(--goodbg);color:var(--good)}.badge.ok{background:var(--wash);color:var(--prid)}
+/* Đơn ĐÃ ĐÓNG (huỷ/hoàn hàng/hoàn tiền): trước đây mọi trạng thái đều dùng .ok màu xanh,
+   nên "Đã huỷ" hiện ra y hệt "Đã giao" — màu nói một đằng, chữ nói một nẻo. */
+.badge.cancelled{background:var(--badbg,#fef2f2);color:var(--bad,#b91c1c)}
 .empty{text-align:center;padding:48px 24px;color:var(--mut)}
 a:focus-visible,.btn:focus-visible,button:focus-visible,summary:focus-visible{outline:3px solid var(--pri);outline-offset:2px;border-radius:8px}
 .pay input:focus-visible{outline:3px solid var(--pri);outline-offset:2px}
@@ -403,10 +409,27 @@ function gpsScript(nonce) {
 
 export function renderOrder(shopName, o, pay, qr, justPlaced = false, lookupToken = '') {
   const paid = o.payment_status === 'paid';
-  const statusVi = { pending: 'Chờ xử lý', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao', cancelled: 'Đã huỷ' }[o.status] ?? o.status;
-  const head = (o.payment_method === 'qr' && !paid && o.status !== 'cancelled') ? '<meta http-equiv="refresh" content="8">' : '';
+  // ĐƠN ĐÃ ĐÓNG = huỷ / hoàn hàng / hoàn tiền. Trước đây chỉ 'cancelled' được coi là đóng,
+  // nên đơn đã trả hàng vẫn chạy tiếp vào nhánh thanh toán bên dưới. Hậu quả đo được:
+  //   · đơn QR bị BOM HÀNG giữ payment_status='paid' → khách trả hàng xong vẫn thấy
+  //     "Đã thanh toán ✓" như chưa có chuyện gì;
+  //   · đơn QR ĐÃ HOÀN TIỀN có payment_status='refunded' (khác 'paid') → rơi vào nhánh cuối
+  //     và trang VẼ LẠI MÃ QR ĐÒI TIỀN, kèm tự tải lại mỗi 8 giây. Khách vừa được hoàn tiền
+  //     mở link ra thấy shop đòi chuyển khoản tiếp.
+  const daDong = ['cancelled', 'refunded', 'returned'].includes(o.status);
+  const statusVi = {
+    pending: 'Chờ xử lý', confirmed: 'Đã xác nhận', shipped: 'Đang giao', delivered: 'Đã giao',
+    cancelled: 'Đã huỷ',
+    // Thiếu hai nhãn này thì trang in nguyên chữ `refunded` / `returned` cho khách người Việt —
+    // đo thật ở đơn #275. Cùng lớp lỗi với nhãn thô lọt ra email (docs/65).
+    refunded: 'Đã hoàn tiền', returned: 'Đã hoàn hàng',
+  }[o.status] ?? o.status;
+  const badgeCls = o.status === 'delivered' ? 'ok' : daDong ? 'cancelled' : 'wait';
+  const head = (o.payment_method === 'qr' && !paid && !daDong) ? '<meta http-equiv="refresh" content="8">' : '';
   let payBlock = '';
-  if (o.payment_method === 'qr' && o.status !== 'cancelled') {
+  if (daDong) {
+    payBlock = '';   // khối tiền của đơn đã đóng nằm ở moneyBlock bên dưới
+  } else if (o.payment_method === 'qr') {
     payBlock = paid
       ? `<div class="card"><span class="badge paid">Đã thanh toán ✓</span></div>`
       : o.pay_config_changed
@@ -427,11 +450,33 @@ export function renderOrder(shopName, o, pay, qr, justPlaced = false, lookupToke
   } else if (o.payment_method === 'cod') {
     payBlock = `<div class="card"><span class="badge ok">Thanh toán khi nhận hàng (COD)</span></div>`;
   }
+  // KHỐI TIỀN CỦA ĐƠN ĐÃ ĐÓNG — câu trả lời cho đúng câu khách hỏi lúc tranh chấp:
+  // "tôi đã trả bao nhiêu, shop đã trả lại tôi bao nhiêu, còn thiếu bao nhiêu".
+  //
+  // Trước đây trang này im lặng hoàn toàn về tiền khi đơn đóng: đơn #275 khách trả hàng và
+  // shop ĐÃ hoàn 1.405.000₫ mà không một chữ nào nhắc tới; đơn #267 khách trả 1.990.000₫,
+  // được hoàn 1.560.000₫, trang chỉ ghi "Đã huỷ". Khách không có cách nào biết ngoài gọi điện.
+  //
+  // `owed_vnd` do máy chủ tính bằng biểu thức DÙNG CHUNG với trang quản trị — cùng một con số
+  // ở hai đầu cuộc tranh chấp. KHÔNG hứa ngày giờ cụ thể: nền tảng không biết shop chuyển
+  // khoản lúc nào, hứa hộ là hứa thay người khác.
+  const daTraGi = Number(o.amount_paid_vnd ?? 0) > 0 || Number(o.refunded_vnd ?? 0) > 0;
+  const moneyBlock = (daDong && daTraGi) ? `<div class="card"${Number(o.owed_vnd ?? 0) > 0 ? ' style="border-color:#fcd34d;background:var(--warnbg,#fffbeb)"' : ''}>
+      <h2 style="margin-top:0">Khoản tiền của đơn này</h2>
+      <div class="row"><span class="muted">Bạn đã thanh toán</span><span><strong>${money(o.amount_paid_vnd)}</strong></span></div>
+      <div class="row"><span class="muted">Cửa hàng đã hoàn lại</span><span><strong>${money(o.refunded_vnd)}</strong>${o.last_refund_at ? ` <span class="muted">· ${ngayVN(o.last_refund_at)}</span>` : ''}</span></div>
+      ${Number(o.owed_vnd ?? 0) > 0
+        ? `<div class="row"><span>Cửa hàng còn phải hoàn</span><span><strong>${money(o.owed_vnd)}</strong></span></div>
+           <p class="muted" style="margin:10px 0 0">Cửa hàng sẽ chuyển lại khoản trên. Nếu sau vài ngày làm việc bạn vẫn chưa nhận được, hãy liên hệ cửa hàng kèm số đơn <strong>#${o.order_number}</strong>.</p>`
+        : Number(o.refunded_vnd ?? 0) > 0
+        ? '<p class="muted" style="margin:10px 0 0">Cửa hàng đã hoàn đủ khoản bạn thanh toán cho đơn này.</p>'
+        : '<p class="muted" style="margin:10px 0 0">Đơn này bạn chưa thanh toán khoản nào nên không có gì phải hoàn.</p>'}
+    </div>` : '';
   return page(`Đơn #${o.order_number}`, shopName, `
     <div class="card" style="text-align:center">
       <h1>${justPlaced ? 'Đặt hàng thành công 🎉' : `Đơn hàng #${o.order_number}`}</h1>
-      <p>Đơn <strong>#${o.order_number}</strong> · <span class="badge ok">${esc(statusVi)}</span></p></div>
-    ${payBlock}
+      <p>Đơn <strong>#${o.order_number}</strong> · <span class="badge ${badgeCls}">${esc(statusVi)}</span></p></div>
+    ${payBlock}${moneyBlock}
     ${(o.shipments?.length) ? `<div class="card"><h2>Vận chuyển</h2>
       <p class="muted" style="margin:0 0 8px">Đơn đã được gửi qua đơn vị vận chuyển. Theo dõi hành trình bằng mã dưới đây:</p>
       ${o.shipments.map((s) => `<div class="row"><span class="muted">${esc(carrierName(s.carrier))}</span><span><strong style="user-select:all">${esc(s.tracking_number)}</strong></span></div>

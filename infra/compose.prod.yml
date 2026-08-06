@@ -191,6 +191,9 @@ services:
       # chắn trôi lệch — vá một bên, quên bên kia.
       # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
       - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
+      # Công thức CÒN NỢ KHÁCH dùng chung — import '../owed.js'. Con số tiền của khách
+      # phải GIỐNG NHAU ở trang quản trị và ở trang tra cứu của chính khách.
+      - ../packages/orders/src/owed.js:/app/owed.js:ro
       - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
       # Redis tối giản dùng chung (image không có packages/) — import '../redis-lite.js'.
       - ../packages/redis-lite/src/redis-lite.js:/app/redis-lite.js:ro
@@ -256,6 +259,9 @@ services:
       # tới upstream unhealthy) → deploy fail AN TOÀN, không phục vụ bản vỡ. RO.
       # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
       - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
+      # Công thức CÒN NỢ KHÁCH dùng chung — import '../owed.js'. Con số tiền của khách
+      # phải GIỐNG NHAU ở trang quản trị và ở trang tra cứu của chính khách.
+      - ../packages/orders/src/owed.js:/app/owed.js:ro
       - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
     deploy: { resources: { limits: { memory: 192m } } }
     depends_on:
@@ -331,6 +337,11 @@ services:
   # cả *.nentang.vn lẫn tên miền riêng). Vai app_customer least-priv. Build repo-root (COPY packages/auth).
   account:
     build: { context: .., dockerfile: apps/account/Dockerfile }
+    volumes:
+      # Công thức CÒN NỢ KHÁCH dùng chung — mirror seller/checkout, NHƯNG service này để mã ở
+      # /app/apps/account/src nên '../owed.js' trỏ /app/apps/account/owed.js, không phải /app.
+      # Mount sai chỗ thì container chết ngay lúc khởi động với ERR_MODULE_NOT_FOUND.
+      - ../packages/orders/src/owed.js:/app/apps/account/owed.js:ro
     restart: unless-stopped
     <<: *logging
     environment:
@@ -451,6 +462,9 @@ services:
       # Thư viện preset dùng chung (image không có packages/) — import '../presets.js'.
       # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
       - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
+      # Công thức CÒN NỢ KHÁCH dùng chung — import '../owed.js'. Con số tiền của khách
+      # phải GIỐNG NHAU ở trang quản trị và ở trang tra cứu của chính khách.
+      - ../packages/orders/src/owed.js:/app/owed.js:ro
       - ../packages/presets/src/index.js:/app/presets.js:ro
     deploy: { resources: { limits: { memory: 256m } } }
     depends_on:

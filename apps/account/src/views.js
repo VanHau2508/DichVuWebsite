@@ -194,9 +194,28 @@ export function renderOrderDetail(shopName, o, lines, shipments = []) {
   const lineRows = lines.map((l) => `<tr>
       <td>${esc(l.title_snapshot)}${l.sku_snapshot ? ` <span class="muted">${esc(l.sku_snapshot)}</span>` : ''}</td>
       <td class="muted">×${esc(l.qty)}</td><td style="text-align:right">${money(Number(l.unit_price_vnd) * l.qty)}</td></tr>`).join('');
+  // ĐƠN ĐÃ ĐÓNG (huỷ / hoàn hàng / hoàn tiền): nhãn tiền trần "Đã thanh toán" ở đây là NỬA
+  // SỰ THẬT — đơn bom hàng giữ nguyên payment_status='paid', nên khách đã trả hàng đọc được
+  // đúng chữ "Đã trả" đứng cạnh "Đã thanh toán" và không biết tiền đã về hay chưa. Thay nhãn
+  // đó bằng khối tiền nói đủ ba con số. Mirror trang tra cứu của checkout — hai đường vào
+  // cùng một sự thật phải nói cùng một câu.
+  const daDong = ['cancelled', 'refunded', 'returned'].includes(o.status);
+  const daTraGi = Number(o.amount_paid_vnd ?? 0) > 0 || Number(o.refunded_vnd ?? 0) > 0;
+  const moneyBlock = (daDong && daTraGi) ? `<div class="card">
+      <h2>Khoản tiền của đơn này</h2>
+      <div class="row"><span class="muted">Bạn đã thanh toán</span><span><strong>${money(o.amount_paid_vnd)}</strong></span></div>
+      <div class="row"><span class="muted">Cửa hàng đã hoàn lại</span><span><strong>${money(o.refunded_vnd)}</strong>${o.last_refund_at ? ` <span class="muted">· ${dt(o.last_refund_at)}</span>` : ''}</span></div>
+      ${Number(o.owed_vnd ?? 0) > 0
+        ? `<div class="row" style="font-weight:700;border-top:1px solid var(--bd);padding-top:8px;margin-top:6px"><span>Cửa hàng còn phải hoàn</span><span>${money(o.owed_vnd)}</span></div>
+           <p class="muted" style="margin:10px 0 0">Nếu sau vài ngày làm việc bạn vẫn chưa nhận được, hãy liên hệ cửa hàng kèm số đơn <strong>#${esc(o.order_number)}</strong>.</p>`
+        : Number(o.refunded_vnd ?? 0) > 0
+        ? '<p class="muted" style="margin:10px 0 0">Cửa hàng đã hoàn đủ khoản bạn thanh toán cho đơn này.</p>'
+        : '<p class="muted" style="margin:10px 0 0">Đơn này bạn chưa thanh toán khoản nào nên không có gì phải hoàn.</p>'}
+    </div>` : '';
   return layout(`Đơn #${o.order_number}`, shopName, `
     <div class="hd"><h1>Đơn #${esc(o.order_number)}</h1><a class="btn alt sm" href="${base}/orders">← Danh sách đơn</a></div>
-    <div class="card"><p class="muted" style="margin:0">Đặt ngày ${dt(o.created_at)} · <span class="badge">${esc(ORDER_ST[o.status] ?? o.status)}</span> <span class="badge">${esc(PAY_ST[o.payment_status] ?? o.payment_status)}</span></p></div>
+    <div class="card"><p class="muted" style="margin:0">Đặt ngày ${dt(o.created_at)} · <span class="badge">${esc(ORDER_ST[o.status] ?? o.status)}</span>${daDong ? '' : ` <span class="badge">${esc(PAY_ST[o.payment_status] ?? o.payment_status)}</span>`}</p></div>
+    ${moneyBlock}
     <div class="card"><h2>Sản phẩm</h2>
       <table><tbody>${lineRows}</tbody></table>
       <div class="row" style="margin-top:10px"><span class="muted">Tạm tính</span><span>${money(o.subtotal_vnd)}</span></div>

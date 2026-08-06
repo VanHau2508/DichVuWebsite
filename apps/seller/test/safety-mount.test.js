@@ -69,6 +69,58 @@ test('service nào import công thức tồn an toàn thì cả hai compose đ�
   }
 });
 
+// CÔNG THỨC CÒN NỢ KHÁCH (packages/orders/src/owed.js) đi cùng cơ chế — nhưng có một cái bẫy
+// riêng: `account` để mã ở /app/apps/account/src nên '../owed.js' trỏ /app/apps/account/owed.js,
+// KHÔNG phải /app/owed.js như seller/checkout. Mount sai đích thì container chết ngay lúc khởi
+// động với ERR_MODULE_NOT_FOUND — đã dính đúng một lần khi thêm service này (docs/67). Vì vậy
+// đích mount tra theo TỪNG service, không dùng chung một chuỗi.
+const OWED_IMPORT = "from '../owed.js'";
+const OWED_DICH = { account: '/app/apps/account/owed.js' };   // mặc định: /app/owed.js
+const owedMount = (svc) => `../packages/orders/src/owed.js:${OWED_DICH[svc] ?? '/app/owed.js'}:ro`;
+
+function servicesDungOwed() {
+  const out = new Set();
+  for (const app of readdirSync(join(ROOT, 'apps'))) {
+    const src = join(ROOT, 'apps', app, 'src');
+    if (!existsSync(src)) continue;
+    for (const f of readdirSync(src)) {
+      if (!f.endsWith('.js')) continue;
+      if (readFileSync(join(src, f), 'utf8').includes(OWED_IMPORT)) out.add(app);
+    }
+  }
+  return [...out].sort();
+}
+
+test('service nào import công thức CÒN NỢ KHÁCH thì cả hai compose đều mount đúng ĐÍCH', () => {
+  const services = servicesDungOwed();
+  // Cùng chốt chặn tự-lừa như trên: đổi đường import mà quên sửa hằng → danh sách rỗng → xanh giả.
+  assert.ok(services.length >= 3,
+    `chỉ thấy ${services.length} service import '../owed.js' — kỳ vọng ≥3 (seller/checkout/account). Đổi đường import mà chưa sửa bộ test?`);
+  for (const compose of ['infra/compose.dev.yml', 'infra/compose.prod.yml']) {
+    const blocks = khoiService(compose);
+    for (const svc of services) {
+      const block = blocks.get(svc);
+      assert.ok(block, `${compose}: không thấy khối service "${svc}"`);
+      assert.ok(block.includes(owedMount(svc)),
+        `${compose}: service "${svc}" import '../owed.js' nhưng KHÔNG mount đúng đích.\n` +
+        `  → thêm vào volumes của "${svc}":  - ${owedMount(svc)}`);
+    }
+  }
+});
+
+test('công thức còn-nợ-khách là MỘT bản, xuất đủ các mảnh và không âm', () => {
+  const src = doc('packages/orders/src/owed.js');
+  for (const name of ['OWED_ENTITLED_SQL', 'OWED_REFUNDED_SQL', 'OWED_SQL', 'OWED_REASON_SQL']) {
+    assert.ok(new RegExp(`export const ${name}\\b`).test(src), `thiếu export ${name}`);
+  }
+  // OWED_SQL phải DỰNG TRÊN hai mảnh kia — chép lại biểu thức lần hai đúng là lớp lỗi cần chặn.
+  assert.match(src, /OWED_SQL = `[^`]*\$\{OWED_REFUNDED_SQL\}[^`]*\$\{OWED_ENTITLED_SQL\}/,
+    'OWED_SQL không dùng lại hai mảnh con');
+  // Chặn ở 0: số âm nghĩa là shop trả DƯ, không phải khách nợ shop. Bỏ chặn thì con số âm đó
+  // sẽ bị cộng vào một tổng nào đó và ăn mất khoản nợ của đơn khác.
+  assert.match(src, /greatest\(0,/, 'công thức không chặn ở 0');
+});
+
 test('file công thức dùng chung tồn tại và xuất đủ ba thứ', () => {
   const src = doc('packages/inventory/src/safety-stock.js');
   for (const name of ['SAFETY_SQL', 'AVAIL_SQL', 'availOf']) {

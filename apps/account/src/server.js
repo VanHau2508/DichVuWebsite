@@ -21,6 +21,8 @@ import { passwordError } from '../../../packages/auth/src/password-policy.js';
 import { send, sendHtml, redirect, readForm, parseCookies, sameOrigin, clientIp,
   CUSTOMER_COOKIE, setCustomerCookie, clearCustomerCookie } from './http.js';
 import * as V from './views.js';
+// Công thức CÒN NỢ KHÁCH dùng chung (bind-mount /app/owed.js) — xem packages/orders/src/owed.js.
+import { OWED_SQL, OWED_REFUNDED_SQL } from '../owed.js';
 import { PROVINCES, isProvince } from './provinces.js';
 
 const PORT = Number(process.env.PORT ?? 3062);
@@ -273,10 +275,17 @@ async function pageOrderDetail(req, res, ctx, q, params) {
   const num = parseInt(params[0], 10);
   const out = await withCustomer(ctx.shopId, ctx.customer.id, async (c) => {
     const o = (await c.query(
-      `SELECT id, order_number, status, payment_status, subtotal_vnd, shipping_vnd, discount_vnd, total_vnd,
-              customer_name, customer_phone, shipping_address, created_at
-         FROM orders WHERE customer_id = current_customer_id() AND order_number = $1`, [num])).rows[0];
+      // TIỀN (0146): đã thu / đã hoàn / còn phải hoàn. `owed_vnd` dùng CHUNG biểu thức với
+      // trang quản trị và trang tra cứu (packages/orders owed.js) — khách và shop phải đọc
+      // cùng một con số, nếu không cuộc gọi khiếu nại bắt đầu bằng hai màn hình cãi nhau.
+      `SELECT o.id, o.order_number, o.status, o.payment_status, o.subtotal_vnd, o.shipping_vnd,
+              o.discount_vnd, o.total_vnd, coalesce(o.amount_paid_vnd, 0) AS amount_paid_vnd,
+              o.customer_name, o.customer_phone, o.shipping_address, o.created_at,
+              ${OWED_REFUNDED_SQL} AS refunded_vnd, ${OWED_SQL} AS owed_vnd,
+              (SELECT max(r.created_at) FROM refunds r WHERE r.order_id = o.id) AS last_refund_at
+         FROM orders o WHERE o.customer_id = current_customer_id() AND o.order_number = $1`, [num])).rows[0];
     if (!o) return null;
+    o.amount_paid_vnd = Number(o.amount_paid_vnd); o.refunded_vnd = Number(o.refunded_vnd); o.owed_vnd = Number(o.owed_vnd);
     const lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
     // Mã vận đơn (0092) → khách tự tra GHN/GHTK ngay trong tài khoản. BỎ vận đơn đã huỷ:
     // nút "Tra cứu vận đơn →" trỏ thẳng sang trang hãng, mã đã huỷ thì ra trang trống.

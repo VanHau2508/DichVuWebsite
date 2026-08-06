@@ -279,6 +279,9 @@ services:
       - ../apps/seller/src:/app/src:ro
       # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
       - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
+      # Công thức CÒN NỢ KHÁCH dùng chung — import '../owed.js'. Con số tiền của khách
+      # phải GIỐNG NHAU ở trang quản trị và ở trang tra cứu của chính khách.
+      - ../packages/orders/src/owed.js:/app/owed.js:ro
       # Redis tối giản dùng chung (image không có packages/) — import '../redis-lite.js'.
       - ../packages/redis-lite/src/redis-lite.js:/app/redis-lite.js:ro
     depends_on:
@@ -325,6 +328,9 @@ services:
       - ../apps/checkout/src:/app/src:ro
       # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
       - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
+      # Công thức CÒN NỢ KHÁCH dùng chung — import '../owed.js'. Con số tiền của khách
+      # phải GIỐNG NHAU ở trang quản trị và ở trang tra cứu của chính khách.
+      - ../packages/orders/src/owed.js:/app/owed.js:ro
       # Bộ đếm rate-limit DÙNG CHUNG (không copy): gắn thẳng file gốc của auth vào image
       # tối giản này để `import '../ratelimit.js'` giải được. RO. Chỉ luồng dev cần mount.
       - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
@@ -353,6 +359,10 @@ services:
     volumes:
       # Dev: mount src + test để lặp không rebuild; packages/auth/src COPY sẵn trong image.
       - ../apps/account/src:/app/apps/account/src:ro
+      # Công thức CÒN NỢ KHÁCH dùng chung — mirror seller/checkout, NHƯNG service này để mã ở
+      # /app/apps/account/src nên '../owed.js' trỏ /app/apps/account/owed.js, không phải /app.
+      # Mount sai chỗ thì container chết ngay lúc khởi động với ERR_MODULE_NOT_FOUND.
+      - ../packages/orders/src/owed.js:/app/apps/account/owed.js:ro
       - ../apps/account/test:/app/apps/account/test:ro
       - ../packages/auth/src:/app/packages/auth/src:ro
     depends_on:
@@ -578,6 +588,9 @@ services:
       - ../apps/storefront/src:/app/src:ro
       # Công thức TỒN AN TOÀN dùng chung (image không có packages/) — import '../safety-stock.js'.
       - ../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro
+      # Công thức CÒN NỢ KHÁCH dùng chung — import '../owed.js'. Con số tiền của khách
+      # phải GIỐNG NHAU ở trang quản trị và ở trang tra cứu của chính khách.
+      - ../packages/orders/src/owed.js:/app/owed.js:ro
       # Bộ đếm rate-limit DÙNG CHUNG (không copy) — xem chú thích ở service checkout.
       - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
       # Thư viện preset dùng chung (preview áp mẫu) — import '../presets.js'.

@@ -13,7 +13,7 @@
  */
 import { send } from './http.js';
 import { withTenant } from './db.js';
-import { OWED_SQL } from './owed.js';
+import { OWED_SQL } from '../owed.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 // Base URL ảnh public (giống storefront) — thumbnail SP bán chạy trên Tổng quan.

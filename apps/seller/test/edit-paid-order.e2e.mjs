@@ -156,8 +156,13 @@ async function main() {
   const ev = (await owner.query(
     `SELECT payload FROM outbox WHERE topic='order.status_changed'
        AND payload->>'status'='cancelled' AND shop_id=$1 ORDER BY id DESC LIMIT 1`, [shopId])).rows[0]?.payload;
-  ev?.cancel_reason === 'hết hàng, không kịp giao' && Number(ev?.refund_due_vnd) === 530000
-    ? ok('outbox mang cancel_reason + refund_due_vnd = 530.000đ') : bad('payload email thiếu', JSON.stringify(ev));
+  // Đơn này CỐ Ý có amount_paid_vnd = 0 (đánh dấu paid bằng SQL trần, xem đầu bộ) — đúng hình
+  // dạng LAZY của 0077. Payload nay không còn `refund_due_vnd` (luật cũ = total_vnd) mà mang
+  // paid/refunded/owed tính bằng công thức dùng chung; `paid_vnd` phải rơi về total_vnd chứ
+  // KHÔNG được là 0, nếu không email báo shop chẳng nợ gì trong khi nợ nguyên đơn.
+  ev?.cancel_reason === 'hết hàng, không kịp giao' && Number(ev?.paid_vnd) === 530000 && Number(ev?.owed_vnd) === 530000
+    ? ok('outbox mang cancel_reason + paid/owed = 530.000đ (lazy: amount_paid 0 → dùng total)')
+    : bad('payload email thiếu hoặc sai số', JSON.stringify(ev));
 
   // KHÔNG tự tạo phiếu hoàn: tiền ra khỏi tài khoản là việc người bán làm tay. Bịa một
   // bút toán "đã hoàn" trong khi tiền chưa đi là nói dối sổ sách.

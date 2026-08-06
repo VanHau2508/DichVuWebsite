@@ -31,6 +31,28 @@
  * DÙNG: các biểu thức đòi bảng `orders` được đặt bí danh `o`.
  */
 
+/**
+ * ĐÃ THU — và cái bẫy `amount_paid_vnd = 0`.
+ *
+ * Cột này (0077) là LAZY: nó chỉ được KHOÁ lúc sửa đơn đã-trả lần đầu. Giá trị 0 trên một đơn
+ * ĐÃ TỪNG THU TIỀN nghĩa là "chưa khoá", và quy ước của 0077 là dùng `total_vnd` — vì đơn chưa
+ * từng sửa nên total chính là số đã charge. Backfill của 0077 cũng CỐ Ý bỏ qua đơn
+ * unpaid/refunded/cancelled ("lazy xử khi cần").
+ *
+ * Bản đầu của file này đọc thẳng `coalesce(amount_paid_vnd, 0)` và thế là BÁO THIẾU NỢ đúng ở
+ * nhóm đơn quan trọng nhất: đơn đã thu tiền rồi chết (huỷ / hoàn về / hoàn tiền) — chính là
+ * nhóm mà màn hình công nợ sinh ra để canh. Đo trên DB dev: 693 đơn `paid` có
+ * `amount_paid_vnd = 0`. Bộ `edit-paid-order.e2e.mjs` bắt được (nó CỐ Ý dựng đơn kiểu này).
+ *
+ * "Đã từng thu" = `paid_at IS NOT NULL` — quy tắc sổ cái ever-paid của docs/37, và nó SỐNG SÓT
+ * qua hoàn tiền (refundOrder lật payment_status nhưng GIỮ paid_at). Gỡ đánh dấu đã-thu thì
+ * `paid_at` về NULL, nên đơn bấm nhầm không bị tính nợ oan.
+ */
+export const OWED_PAID_SQL = `CASE
+    WHEN coalesce(o.amount_paid_vnd, 0) > 0 THEN o.amount_paid_vnd
+    WHEN o.paid_at IS NOT NULL THEN o.total_vnd
+    ELSE 0 END`;
+
 /** Số tiền shop CÓ QUYỀN giữ trên đơn này. */
 export const OWED_ENTITLED_SQL = `CASE WHEN o.status IN ('cancelled', 'returned', 'refunded') THEN 0 ELSE o.total_vnd END`;
 
@@ -38,7 +60,7 @@ export const OWED_ENTITLED_SQL = `CASE WHEN o.status IN ('cancelled', 'returned'
 export const OWED_REFUNDED_SQL = `coalesce((SELECT sum(r.amount_vnd) FROM refunds r WHERE r.order_id = o.id), 0)`;
 
 /** Còn nợ khách, ₫. Không bao giờ âm. */
-export const OWED_SQL = `greatest(0, coalesce(o.amount_paid_vnd, 0) - ${OWED_REFUNDED_SQL} - ${OWED_ENTITLED_SQL})`;
+export const OWED_SQL = `greatest(0, ${OWED_PAID_SQL} - ${OWED_REFUNDED_SQL} - ${OWED_ENTITLED_SQL})`;
 
 /**
  * Vì sao đơn này còn nợ — để màn hình nói được LÝ DO thay vì chỉ ném ra một con số. Chủ shop

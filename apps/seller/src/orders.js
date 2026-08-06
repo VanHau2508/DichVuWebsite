@@ -12,7 +12,7 @@ import { withTenant, audit } from './db.js';
 import { rangeSql, TZ } from './date-range.js';
 import { toCsv, CsvText, EXPORT_ORDERS_MAX_ROWS } from './export.js';
 import { isProvince } from './provinces.js';
-import { OWED_SQL, OWED_REASON_SQL, OWED_REFUNDED_SQL } from '../owed.js';
+import { OWED_SQL, OWED_PAID_SQL, OWED_REASON_SQL, OWED_REFUNDED_SQL } from '../owed.js';
 
 // Base URL ảnh public (giống storefront) — dựng thumbnail dòng hàng trong chi tiết đơn.
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
@@ -68,7 +68,7 @@ async function statusEvent(c, order, extra = {}) {
   // Gọi SAU khi trạng thái đã đổi trong cùng giao dịch (mọi caller đều vậy) nên số đọc ra là
   // số SAU sự kiện — đúng thứ khách cần biết.
   const t = (await c.query(
-    `SELECT coalesce(o.amount_paid_vnd, 0)::bigint AS paid, ${OWED_REFUNDED_SQL}::bigint AS refunded,
+    `SELECT ${OWED_PAID_SQL}::bigint AS paid, ${OWED_REFUNDED_SQL}::bigint AS refunded,
             ${OWED_SQL}::bigint AS owed
        FROM orders o WHERE o.id = $1`, [order.id])).rows[0] ?? {};
   await c.query(
@@ -223,7 +223,7 @@ async function owedOrders(res, ctx) {
   const data = await withTenant(ctx.shopId, async (c) => {
     const rows = (await c.query(
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.customer_name,
-              o.customer_phone, o.total_vnd, coalesce(o.amount_paid_vnd, 0) AS amount_paid_vnd,
+              o.customer_phone, o.total_vnd, ${OWED_PAID_SQL} AS amount_paid_vnd,
               ${OWED_REFUNDED_SQL} AS refunded_vnd, ${OWED_SQL} AS owed_vnd, ${OWED_REASON_SQL} AS owed_reason,
               coalesce(o.cancelled_at, o.returned_at, o.created_at) AS since
          FROM orders o

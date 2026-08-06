@@ -20,7 +20,7 @@ import crypto from 'node:crypto';
 import pg from 'pg';
 // TỒN AN TOÀN (0140) — công thức "còn bán được online", dùng chung với storefront.
 import { SAFETY_SQL, availOf } from '../safety-stock.js';
-import { OWED_SQL, OWED_REFUNDED_SQL } from '../owed.js';
+import { OWED_SQL, OWED_PAID_SQL, OWED_REFUNDED_SQL } from '../owed.js';
 import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE, BUYNOW_COOKIE, REF_COOKIE, setBuynowCookie, clearBuynowCookie } from './http.js';
 import { buildVietQR } from './vietqr.js';
 import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
@@ -1344,7 +1344,7 @@ async function getSuccessPage(req, res, _body, ctx, query) {
       // owed.js): con số shop nhìn thấy và con số KHÁCH nhìn thấy mà lệch nhau thì cuộc gọi
       // khiếu nại tiếp theo bắt đầu bằng hai bên đọc hai màn hình khác nhau.
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.shipping_vnd, o.total_vnd,
-              coalesce(o.amount_paid_vnd, 0) AS amount_paid_vnd, o.customer_name, o.payment_ref, o.qr_account,
+              ${OWED_PAID_SQL} AS amount_paid_vnd, o.customer_name, o.payment_ref, o.qr_account,
               ${OWED_REFUNDED_SQL} AS refunded_vnd, ${OWED_SQL} AS owed_vnd,
               (SELECT max(r.created_at) FROM refunds r WHERE r.order_id = o.id) AS last_refund_at
          FROM orders o WHERE o.order_number = $1 AND o.lookup_token_hash = $2`, [number, hashToken(token)],

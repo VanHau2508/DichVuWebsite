@@ -56,6 +56,36 @@ khi nội dung email hoàn toàn đúng.
 Bẫy này **đã ghi trong docs/50** và tôi vẫn vấp lại. Ghi lại lần nữa ở đây, kèm chú thích ngay
 trong tệp test, vì rõ ràng ghi một lần chưa đủ.
 
+## Lỗi THẬT mà cổng CI bắt được — và nó không nằm ở email
+
+Bộ `edit-paid-order.e2e.mjs` (đã có từ trước) đỏ ở dòng khẳng định payload email. Đọc kỹ thì
+không phải test cũ lạc hậu, mà là **giả định sai của tôi trong công thức `owed`**.
+
+`orders.amount_paid_vnd` (0077) là **LAZY**: nó chỉ được KHOÁ lúc sửa đơn đã-trả lần đầu. Giá
+trị `0` trên một đơn **đã từng thu tiền** nghĩa là *"chưa khoá"*, và quy ước viết rõ trong
+0077 là dùng `total_vnd`. Backfill của 0077 cũng **cố ý** bỏ qua đơn `unpaid/refunded/cancelled`.
+
+Công thức của tôi đọc thẳng `coalesce(amount_paid_vnd, 0)` → **báo thiếu nợ đúng ở nhóm đơn
+quan trọng nhất**: đơn đã thu tiền rồi chết (huỷ / hoàn về / hoàn tiền) — chính là nhóm mà màn
+hình công nợ sinh ra để canh.
+
+Đo trên DB dev: **693 đơn** `paid` có `amount_paid_vnd = 0`. Khoảng chênh giữa hai luật:
+
+| | số đơn | tiền |
+|---|---:|---:|
+| luật cũ (đọc thô) | 291 | 55.513.000₫ |
+| luật đúng (lazy) | 377 | **79.343.000₫** |
+
+→ **86 đơn / 23.830.000₫ bị giấu.** Sai này có ở docs/66 và docs/67 ngay từ đầu; nó chỉ lộ ra
+khi email đi qua một bộ test cũ CỐ Ý dựng đơn kiểu đó.
+
+Đã thêm `OWED_PAID_SQL` vào `packages/orders/src/owed.js` và dùng ở **cả bốn nơi** hiển thị số
+"đã thanh toán" (seller API · trang Công nợ · trang tra cứu · lịch sử đơn) — không chỉ vá chỗ
+vừa đỏ.
+
+> Bài học: shop ngày-60 **không bắt được** lỗi này vì bộ dựng luôn ghi `amount_paid_vnd`. Một
+> fixture "đẹp" che đúng lớp lỗi mà dữ liệu thật (có đơn cũ, có đường ghi thiếu) sẽ phơi ra.
+
 ## Còn lại
 
 Đơn chốt trong **chat Messenger** không có email (bot không hỏi email) — `statusEvent` gửi

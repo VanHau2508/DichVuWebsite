@@ -188,13 +188,34 @@ function compose(topic, p) {
     // Trước đây email chỉ nói "đã huỷ" — khách đã chuyển khoản không có thông tin nào
     // về khoản tiền của mình.
     const cancelWhy = p.status === 'cancelled' && p.cancel_reason ? `\nLý do: ${p.cancel_reason}` : '';
-    const cancelDue = p.status === 'cancelled' && Number(p.refund_due_vnd) > 0
-      ? `\nBạn đã thanh toán ${money(p.refund_due_vnd)} cho đơn này — cửa hàng sẽ hoàn lại khoản tiền trên. `
-        + 'Nếu sau vài ngày làm việc chưa nhận được, vui lòng liên hệ cửa hàng.' : '';
     const cancelWhyHtml = p.status === 'cancelled' && p.cancel_reason ? par(`Lý do: ${escHtml(p.cancel_reason)}`) : '';
-    const cancelDueHtml = p.status === 'cancelled' && Number(p.refund_due_vnd) > 0
-      ? par(`Bạn đã thanh toán <strong>${escHtml(money(p.refund_due_vnd))}</strong> cho đơn này — cửa hàng sẽ hoàn lại khoản tiền trên. `
-        + 'Nếu sau vài ngày làm việc chưa nhận được, vui lòng liên hệ cửa hàng.') : '';
+    // TIỀN TRONG EMAIL — cho MỌI trạng thái đóng đơn, không riêng 'cancelled'.
+    //
+    // Trước đây chỉ đơn huỷ mới nhắc tới tiền, và nhắc bằng `refund_due_vnd` do nhánh huỷ tự
+    // tính = total_vnd. Hai chỗ sai: (1) đơn ĐÃ TRẢ HÀNG hoặc ĐÃ HOÀN TIỀN thì email im lặng
+    // hoàn toàn về tiền — khách vừa gửi hàng đi, đọc thư chỉ thấy đổi trạng thái; (2) đơn đã
+    // hoàn một phần rồi mới huỷ thì email HỨA hoàn nguyên tổng đơn, nhiều hơn số shop còn nợ.
+    // Một lời hứa sai bằng chữ, gửi thẳng vào hộp thư, là thứ khó rút lại nhất.
+    //
+    // Nay statusEvent đính kèm paid/refunded/owed tính bằng công thức DÙNG CHUNG (owed.js) —
+    // cùng con số với trang quản trị, trang tra cứu và lịch sử đơn của khách (docs/66, 67).
+    // `refund_due_vnd` giữ làm đường lui cho các dòng outbox CŨ đã nằm sẵn trong hàng đợi.
+    const dong = ['cancelled', 'refunded', 'returned'].includes(p.status);
+    const daTra = Number(p.paid_vnd ?? p.refund_due_vnd ?? 0);
+    const daHoan = Number(p.refunded_vnd ?? 0);
+    const conNo = p.owed_vnd != null ? Number(p.owed_vnd) : Math.max(0, daTra - daHoan);
+    const tienDong = [];
+    if (dong && daTra > 0) {
+      tienDong.push(`Bạn đã thanh toán ${money(daTra)} cho đơn này.`);
+      if (daHoan > 0) tienDong.push(`Cửa hàng đã hoàn lại ${money(daHoan)}.`);
+      if (conNo > 0) {
+        tienDong.push(`Cửa hàng còn phải hoàn ${money(conNo)}. Nếu sau vài ngày làm việc bạn vẫn chưa nhận được, vui lòng liên hệ cửa hàng kèm số đơn #${p.order_number}.`);
+      } else if (daHoan > 0) {
+        tienDong.push('Cửa hàng đã hoàn đủ khoản bạn thanh toán cho đơn này.');
+      }
+    }
+    const cancelDue = tienDong.length ? `\n${tienDong.join(' ')}` : '';
+    const cancelDueHtml = tienDong.map((s) => par(escHtml(s))).join('');
     const extra = p.status === 'shipped' && p.tracking_number ? `\nMã vận đơn: ${p.tracking_number} — bạn có thể tra trên trang của hãng vận chuyển.`
       : p.status === 'delivered' ? '\nCảm ơn bạn đã mua hàng! Nếu có vấn đề với sản phẩm, hãy liên hệ cửa hàng.'
       : p.tracking_number ? `\nMã vận đơn: ${p.tracking_number}` : '';

@@ -56,11 +56,27 @@ async function statusEvent(c, order, extra = {}) {
   // customer_name → cá nhân hoá "Chào <tên>". Email builder (worker compose) đã dùng 2 field này +
   // tracking_number (shipped truyền qua extra) — chỉ thiếu ở payload nên bổ sung tại đây.
   const shopName = (await c.query(`SELECT name FROM shops WHERE id = current_shop_id()`)).rows[0]?.name ?? null;
+  // TIỀN đi kèm MỌI sự kiện trạng thái, tính bằng biểu thức DÙNG CHUNG (packages/orders
+  // owed.js) ngay tại thời điểm phát — cùng con số với trang quản trị, trang Công nợ, trang
+  // tra cứu của khách và lịch sử đơn (docs/66, 67).
+  //
+  // Vì sao không để mỗi nơi tự tính: nhánh huỷ trước đây tự gửi `refund_due_vnd = total_vnd`,
+  // tức luật CŨ đã bị bác. Đơn đã thu 500.000₫, hoàn trước một phần 100.000₫ rồi mới huỷ →
+  // email HỨA hoàn 500.000₫ trong khi shop chỉ còn nợ 400.000₫. Một lời hứa sai bằng chữ, gửi
+  // thẳng vào hộp thư khách, là thứ khó rút lại nhất.
+  //
+  // Gọi SAU khi trạng thái đã đổi trong cùng giao dịch (mọi caller đều vậy) nên số đọc ra là
+  // số SAU sự kiện — đúng thứ khách cần biết.
+  const t = (await c.query(
+    `SELECT coalesce(o.amount_paid_vnd, 0)::bigint AS paid, ${OWED_REFUNDED_SQL}::bigint AS refunded,
+            ${OWED_SQL}::bigint AS owed
+       FROM orders o WHERE o.id = $1`, [order.id])).rows[0] ?? {};
   await c.query(
     `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.status_changed', $1)`,
     // `to` để null khi không có email — deliverNotification tự bỏ qua, không gửi tới địa chỉ ma.
     [{ to: order.customer_email ?? null, order_number: Number(order.order_number), status: order.status,
        shop_name: shopName, customer_name: order.customer_name ?? null,
+       paid_vnd: Number(t.paid ?? 0), refunded_vnd: Number(t.refunded ?? 0), owed_vnd: Number(t.owed ?? 0),
        ...(canMessenger ? { messenger_psid: psid } : {}), ...extra }],
   );
 }
@@ -589,7 +605,9 @@ export async function cancelOrderTx(c, orderId, { reason = null, actorId = null,
     actorId, ip,
     metadata: { orderId, reason, was_paid: paid, refund_due_vnd: paid ? Number(o.total_vnd) : 0, source },
   });
-  await statusEvent(c, o, { cancel_reason: reason, refund_due_vnd: paid ? Number(o.total_vnd) : 0 });
+  // KHÔNG còn tự gửi `refund_due_vnd = total_vnd` (luật cũ, sai với đơn đã hoàn một phần hoặc
+  // từng sửa giảm). statusEvent nay tự đính kèm paid/refunded/owed bằng công thức dùng chung.
+  await statusEvent(c, o, { cancel_reason: reason });
   return { code: 200 };
 }
 

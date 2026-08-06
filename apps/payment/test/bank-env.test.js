@@ -27,7 +27,11 @@ const CAN_CO = ['platform', 'payment'];
 // Cắt khối YAML của một service: từ dòng `  <tên>:` tới dòng đầu tiên cùng mức thụt (2 dấu
 // cách) không phải chính nó. Đủ chắc cho định dạng compose của kho này và không cần thư viện.
 function khoiService(src, ten) {
-  const dong = src.split('\n');
+  // BỎ '\r' TRƯỚC KHI SO. Hai file compose nằm trong thư mục làm việc dạng CRLF (git tự chuẩn
+  // hoá lúc commit nên diff vẫn sạch), nên `split('\n')` để lại '\r' cuối mỗi dòng và phép so
+  // BẰNG tuyệt đối trượt hết. Bộ này đã xanh lúc mới viết rồi ĐỎ ở CI sau một lần sửa compose
+  // — một bất biến phụ thuộc kiểu xuống dòng là máy sinh báo-đỏ-giả, đúng thứ nó phải chống.
+  const dong = src.replace(/\r/g, '').split('\n');
   const bd = dong.findIndex((l) => l === `  ${ten}:`);
   if (bd < 0) return null;
   let kt = dong.length;

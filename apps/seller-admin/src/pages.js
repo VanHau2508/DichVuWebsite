@@ -3059,7 +3059,7 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
   const capLine = mx != null ? `<p class="muted" style="margin:-6px 0 14px">Đã dùng <strong>${esc(cc)}/${esc(mx)}</strong> sản phẩm theo gói.${cc >= mx ? ' <strong style="color:#b45309">Đã đạt giới hạn — nâng gói để thêm.</strong>' : ''}</p>` : '';
   return layout('Sản phẩm', ctx, `
     <div class="toolbar"><h1 style="margin:0">Sản phẩm</h1>
-      <span class="actions"><a class="btn alt" href="/shops/${esc(shopId)}/products/import">⬆ Nhập CSV</a>
+      <span class="actions"><a class="btn alt" href="/shops/${esc(shopId)}/products/import">⬆ Nhập CSV/XLSX</a>
       <a class="btn" href="/shops/${esc(shopId)}/products/new">+ Thêm sản phẩm</a></span></div>
     ${capLine}
     ${notice ? `<div class="card" style="border-color:#a7f3d0;background:#ecfdf5;color:#065f46">${esc(notice)}</div>` : ''}
@@ -3389,7 +3389,8 @@ export function renderBlogEditor(ctx, shopId, post, err, media = []) {
     ${manage}`);
 }
 
-// Nhập sản phẩm hàng loạt từ CSV (onboard concierge nhanh). Mỗi dòng = 1 sản phẩm.
+// Nhập sản phẩm hàng loạt từ CSV/XLSX (onboard concierge nhanh). Mỗi dòng biến thể; các dòng
+// cùng handle/product_id được gộp thành một sản phẩm.
 // Tệp mẫu — ĐÚNG định dạng docs/45: có handle để gộp biến thể, có trục, danh mục, ảnh URL.
 // Ba dòng đầu cùng handle ⇒ MỘT sản phẩm ba biến thể; dòng cuối handle khác ⇒ sản phẩm riêng.
 // Mẫu phải TỰ NÓ dạy được cách gộp, vì đó là thứ khó hiểu nhất của định dạng này — một mẫu
@@ -3423,6 +3424,22 @@ export function renderProductImport(ctx, shopId, result, err) {
     ${(cols.ignored ?? []).length ? `<p class="muted" style="margin:0"><strong style="color:var(--warn)">Bỏ qua:</strong> ${cols.ignored.map((h) => `<code>${esc(h)}</code>`).join(', ')} — dữ liệu ở các cột này KHÔNG được nhập.</p>` : ''}
   </div>` : '';
 
+  const axisHints = (result?.axisHints ?? []).filter((h) => h?.productId);
+  const axisControls = axisHints.length ? `<div class="card" style="flex-basis:100%">
+    <h2 style="margin-top:0">Tách trục TikTok</h2>
+    <p class="muted" style="margin-top:-6px">Dấu <code>, </code> chỉ là suy đoán. Kiểm tra giá trị gốc và đặt tên trục trước khi nhập thật. Bỏ chọn <strong>Tách</strong> nếu dấu phẩy thuộc cùng một giá trị.</p>
+    <div class="tblscroll"><table data-cards><thead><tr><th>product_id</th><th>Giá trị gốc</th><th>Tên trục</th><th>Hành động</th></tr></thead><tbody>
+      ${axisHints.map((h) => `<tr>
+        <td><code>${esc(h.productId)}</code><div class="muted">${esc(h.name || '')}</div></td>
+        <td><code>${esc(h.sample || '—')}</code><div class="muted">→ ${(h.parts ?? []).map(esc).join(' · ')}</div></td>
+        <td class="actions" style="align-items:flex-start;flex-wrap:wrap">
+          ${Array.from({ length: Number(h.count ?? 1) }, (_, i) => `<label style="min-width:130px"><span class="muted">Trục ${i + 1}</span><input name="axis_${esc(h.productId)}_${i + 1}" value="${esc(h.axisNames?.[i] || (h.count === 1 ? 'Phân loại' : `Phân loại ${i + 1}`))}" maxlength="60"></label>`).join('')}
+        </td>
+        <td><label><input type="checkbox" name="split_off_${esc(h.productId)}" value="1"> Tắt tách</label></td>
+      </tr>`).join('')}
+    </tbody></table></div>
+  </div>` : '';
+
   let resultCard = '';
   if (result?.dry_run) {
     // XEM TRƯỚC: chưa ghi gì. Phải NÓI RÕ điều đó — một trang tên "kết quả" mà không nói đã
@@ -3437,6 +3454,7 @@ export function renderProductImport(ctx, shopId, result, err) {
       <div class="metrics" style="margin-bottom:12px">
         <div class="metric"><div class="l">Dòng trong tệp</div><div class="v">${n(result.rows)}</div></div>
         <div class="metric"><div class="l">Sẽ tạo</div><div class="v">${n(result.created)} sản phẩm</div></div>
+        ${result.skipped_existing ? `<div class="metric"><div class="l">Đã có, sẽ bỏ qua</div><div class="v">${n(result.skipped_existing)}</div></div>` : ''}
         <div class="metric"><div class="l">Biến thể</div><div class="v">${n(result.variants)}</div></div>
         <div class="metric"><div class="l">Ảnh sẽ tải</div><div class="v">${n(result.images?.queued)}${result.images?.invalid ? ` <span style="font-size:13px;color:var(--warn)">+${n(result.images.invalid)} sai địa chỉ</span>` : ''}</div></div>
       </div>
@@ -3451,6 +3469,7 @@ export function renderProductImport(ctx, shopId, result, err) {
       <h2 style="margin-top:0">Đã nhập xong</h2>
       <div class="metrics" style="margin-bottom:12px">
         <div class="metric"><div class="l">Sản phẩm đã tạo</div><div class="v" style="color:var(--good)">${n(result.created)}</div></div>
+        ${result.skipped_existing ? `<div class="metric"><div class="l">Bỏ qua trùng</div><div class="v">${n(result.skipped_existing)}</div></div>` : ''}
         <div class="metric"><div class="l">Biến thể</div><div class="v">${n(result.variants)}</div></div>
         <div class="metric"><div class="l">Ảnh đang tải nền</div><div class="v">${n(img.queued)}</div></div>
         ${result.failed ? `<div class="metric"><div class="l">Bị bỏ</div><div class="v" style="color:var(--warn)">${n(result.failed)}</div></div>` : ''}
@@ -3462,10 +3481,10 @@ export function renderProductImport(ctx, shopId, result, err) {
     </div>`;
   }
 
-  return layout('Nhập sản phẩm CSV', ctx, `
+  return layout('Nhập sản phẩm', ctx, `
     <a class="muted" href="${base}">← Danh sách sản phẩm</a>
-    <h1>Nhập sản phẩm từ tệp CSV</h1>
-    <p class="muted" style="margin-top:-8px">Chuyển danh mục từ sàn khác sang. Tệp xuất của Shopify/Haravan dùng được luôn — không cần đổi tên cột.</p>
+    <h1>Nhập sản phẩm từ CSV hoặc XLSX</h1>
+    <p class="muted" style="margin-top:-8px">Chuyển danh mục từ TikTok Shop, Shopify hoặc Haravan. Tệp XLSX TikTok và CSV Shopify/Haravan được nhận diện tự động.</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${resultCard}
     ${colCard}
@@ -3474,12 +3493,13 @@ export function renderProductImport(ctx, shopId, result, err) {
       <h2 style="margin-top:0">Tải tệp lên</h2>
       <p class="muted" style="margin-top:-6px">Bấm <strong>Xem trước</strong> để kiểm tra kết quả trước khi ghi — bước này không ghi gì vào cửa hàng.</p>
       <form method="POST" action="${base}/import" enctype="multipart/form-data" class="actions" style="align-items:center;flex-wrap:wrap;gap:10px">
-        <input type="file" name="file" accept=".csv,text/csv" required>
+        ${axisControls}
+        <input type="file" name="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required>
         <button class="btn" type="submit" name="mode" value="preview">Xem trước</button>
         <button class="btn alt" type="submit" name="mode" value="commit"
-          data-confirm="Ghi THẬT vào cửa hàng. Nên bấm Xem trước ít nhất một lần. Tiếp tục?">Nhập thật</button>
+          data-confirm="Ghi THẬT các sản phẩm mới vào cửa hàng. Tiếp tục?">Nhập thật</button>
       </form>
-      <p class="muted" style="font-size:13px;margin-bottom:0">Tối đa 1000 dòng và 10MB mỗi lần. Sản phẩm nhập vào để ở trạng thái <strong>nháp</strong> trừ khi cột <code>status</code> ghi <code>active</code> — soát lại rồi hãy đăng bán.</p>
+      <p class="muted" style="font-size:13px;margin-bottom:0">Tối đa 1000 sản phẩm và 10MB mỗi lần. Hệ thống tự chia lô nhưng không bao giờ cắt giữa các biến thể của cùng sản phẩm. Sản phẩm mới mặc định ở trạng thái <strong>nháp</strong>.</p>
     </div>
 
     <div class="card">

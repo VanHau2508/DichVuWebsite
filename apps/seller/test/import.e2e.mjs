@@ -298,6 +298,52 @@ async function main() {
     ? ok('>100 biến thể trong một sản phẩm → từ chối cả nhóm')
     : bad('trần biến thể không chặn', JSON.stringify(r.json));
 
+  // ── 8b. TikTok XLSX shape sau adapter: source refs + idempotency + tách trục ──
+  sect('8b. TikTok: product_id/sku_id, tách trục và nhập lại không nhân đôi');
+  const t1 = '1731000000000000001', t2 = '1731000000000000002';
+  const tiktokRows = [
+    { product_id: t1, product_name: 'Vòng tay TikTok', product_description: '<p>Mô tả&nbsp;đẹp</p>', category: 'Vòng tay (1)', price: '450000', quantity: '49', parcel_weight: '200', variation_value: '48', sku_id: '1731000000000000101' },
+    { product_id: t1, product_name: 'Vòng tay TikTok', product_description: '<p>Mô tả&nbsp;đẹp</p>', category: 'Vòng tay (1)', price: '450000', quantity: '48', parcel_weight: '200', variation_value: '50cm (vừa cổ)', sku_id: '1731000000000000102' },
+    { product_id: t2, product_name: 'Dây chuyền TikTok', product_description: '<p>Dây chuyền</p>', category: 'Dây chuyền (2)', price: '550000', quantity: '10', parcel_weight: '200', variation_value: '45cm, 45cm', sku_id: '1731000000000000201' },
+    { product_id: t2, product_name: 'Dây chuyền TikTok', product_description: '<p>Dây chuyền</p>', category: 'Dây chuyền (2)', price: '560000', quantity: '9', parcel_weight: '200', variation_value: '45cm, 50cm', sku_id: '1731000000000000202' },
+  ];
+  r = await imp(tiktokRows);
+  r.json?.source === 'tiktok' && r.json?.created === 2 && r.json?.variants === 4 && r.json?.failed === 0
+    ? ok('TikTok 2 product_id → 2 sản phẩm / 4 biến thể')
+    : bad('adapter TikTok nhập sai', JSON.stringify(r.json));
+  const refs = (await owner.query(`SELECT kind, count(*)::int AS n FROM product_source_refs WHERE shop_id = $1 GROUP BY kind ORDER BY kind`, [A.shopId])).rows;
+  JSON.stringify(refs) === JSON.stringify([{ kind: 'product', n: 2 }, { kind: 'variant', n: 4 }])
+    ? ok('ghi đủ 2 ref sản phẩm + 4 ref biến thể (product_id/sku_id)')
+    : bad('source refs sai', JSON.stringify(refs));
+  r = await imp(tiktokRows);
+  r.json?.created === 0 && r.json?.skipped_existing === 2 && r.json?.failed === 0
+    ? ok('nhập lại cùng file → bỏ qua 2 sản phẩm, không nhân đôi')
+    : bad('idempotency TikTok sai', JSON.stringify(r.json));
+
+  const t3 = '1731000000000000003';
+  r = await a.post('/products/import', { rows: [
+    { product_id: t3, product_name: 'Phân loại có dấu phẩy', product_description: '<p>X</p>', category: 'Khác (3)', price: '100000', quantity: '1', parcel_weight: '200', variation_value: 'A, B', sku_id: '1731000000000000301' },
+  ], axis_names: { [t3]: ['Mã hàng'] }, split_off: [t3] });
+  const p3t = (await a.get('/products?limit=100')).json.products.find((p) => p.slug === t3);
+  const d3t = p3t ? (await a.get(`/products/${p3t.id}`)).json : null;
+  d3t?.options?.length === 1 && d3t.options[0].name === 'Mã hàng' && d3t.options[0].values?.[0]?.value === 'A, B'
+    ? ok('tắt tách theo từng sản phẩm giữ nguyên dấu phẩy + tên trục người bán')
+    : bad('tách trục TikTok sai', JSON.stringify({ options: d3t?.options }));
+
+  const collisionSku = 'SAN-PHAM-DUNG-SKU-A';
+  r = await imp([{ title: 'Mã đã có', sku: collisionSku, price_vnd: '100000' }]);
+  const t4 = '1731000000000000004';
+  r = await imp([{
+    product_id: t4, product_name: 'Sản phẩm đụng SKU', product_description: '<p>X</p>',
+    category: 'Khác (3)', price: '100000', quantity: '1', parcel_weight: '200',
+    variation_value: 'A', sku_id: '1731000000000000401',
+  }]);
+  const p4t = (await a.get('/products?limit=100')).json.products.find((p) => p.slug === t4);
+  const d4t = p4t ? (await a.get(`/products/${p4t.id}`)).json : null;
+  r.json?.created === 1 && d4t?.variants?.[0]?.sku === `${collisionSku}-2`
+    ? ok('SKU TikTok sinh tự động đụng mã đã có → tự nối -2, sản phẩm vẫn nhập được')
+    : bad('SKU TikTok chưa né mã đã có trong shop', JSON.stringify({ result: r.json, sku: d4t?.variants?.[0]?.sku }));
+
   // ── 9. Cô lập chéo shop ─────────────────────────────────────────────────
   sect('9. Cô lập chéo shop');
   const Bs = await makeShopOwner(staff, `imp-b-${uniq()}`);

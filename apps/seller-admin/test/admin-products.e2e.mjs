@@ -8,6 +8,7 @@
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
+import { buildXlsx } from '../../seller/test/xlsx-fixture.js';
 
 const AUTH = process.env.AUTH_URL ?? 'http://auth:3020';
 const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
@@ -425,13 +426,18 @@ async function main() {
   // ── docs/45: trang NHẬP DANH MỤC — xem trước phải THẬT SỰ không ghi gì ────
   sect('10. Nhập danh mục CSV (docs/45)');
   // Multipart dựng tay: helper adm() chỉ biết form urlencoded.
-  const multipart = async (path, { cookie, mode, csv }) => {
+  const multipart = async (path, { cookie, mode, csv, bytes, fields = {}, filename = 'a.csv', contentType = 'text/csv' }) => {
     const bd = '----nt' + uniq();
-    const body = Buffer.concat([
-      Buffer.from(`--${bd}\r\nContent-Disposition: form-data; name="mode"\r\n\r\n${mode}\r\n`),
-      Buffer.from(`--${bd}\r\nContent-Disposition: form-data; name="file"; filename="a.csv"\r\nContent-Type: text/csv\r\n\r\n`),
-      Buffer.from(csv, 'utf8'), Buffer.from(`\r\n--${bd}--\r\n`),
-    ]);
+    const fileBytes = bytes ?? Buffer.from(csv, 'utf8');
+    const parts = [Buffer.from(`--${bd}\r\nContent-Disposition: form-data; name="mode"\r\n\r\n${mode}\r\n`)];
+    for (const [name, value] of Object.entries(fields)) {
+      parts.push(Buffer.from(`--${bd}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+    }
+    parts.push(
+      Buffer.from(`--${bd}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`),
+      fileBytes, Buffer.from(`\r\n--${bd}--\r\n`),
+    );
+    const body = Buffer.concat(parts);
     const res = await fetch(ADMIN + path, {
       method: 'POST', redirect: 'manual',
       headers: { 'content-type': `multipart/form-data; boundary=${bd}`, origin: OADM, cookie: `__Host-session=${cookie}` },
@@ -483,6 +489,69 @@ async function main() {
   ir.status === 200 && /Đã nhập xong/.test(ir.body) && afterCommit === nBefore + 1
     ? ok(`NHẬP THẬT: sản phẩm vào cửa hàng (${nBefore} → ${afterCommit})`)
     : bad('nhập thật không ghi', `${ir.status} ${nBefore}→${afterCommit}`);
+
+  const xlsxBytes = await buildXlsx([
+    ['product_id', 'category', 'product_name', 'sku_id', 'variation_value', 'product_description', 'price', 'quantity', 'parcel_weight', 'main_image', 'cod'],
+    ['V4', 'All_Information', 'metric', '', '', '', '', '', '', '', ''],
+    ['ID sản phẩm', 'Hạng mục', 'Tên sản phẩm', 'ID SKU', 'Phân loại', 'Mô tả', 'Giá', 'Tồn', 'Khối lượng', 'Ảnh', 'COD'],
+    ['Bắt buộc', 'Bắt buộc có điều kiện', 'Bắt buộc', 'Bắt buộc', 'Bắt buộc', 'Không bắt buộc', 'Bắt buộc', 'Bắt buộc', 'Bắt buộc', 'Không bắt buộc', 'Không bắt buộc'],
+    ['Hướng dẫn', '', '', '', '', '', '', '', '', '', ''],
+    ['1731999999999999001', 'Vòng tay (1)', 'Vòng tay XLSX', '1731999999999999101', '48', '<p>Mô tả&nbsp;đẹp</p>', '450000', '4', '200', 'https://img.test/a.jpg', 'Y'],
+    ['1731999999999999001', 'Vòng tay (1)', 'Vòng tay XLSX', '1731999999999999102', '50', '<p>Mô tả&nbsp;đẹp</p>', '450000', '3', '200', 'https://img.test/a.jpg', 'Y'],
+    ['1731999999999999002', 'Dây chuyền (2)', 'Dây chuyền XLSX', '1731999999999999201', '45cm, 50cm', '<p>Dây chuyền</p>', '550000', '2', '200', 'https://img.test/b.jpg', 'Y'],
+  ]);
+  const beforeXlsxPreview = await countProducts();
+  ir = await multipart(P('/import'), {
+    cookie: A.cookie, mode: 'preview', bytes: xlsxBytes, filename: 'tiktok.xlsx',
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const afterXlsxPreview = await countProducts();
+  ir.status === 200 && /2 sản phẩm/.test(ir.body) && /<div class="l">Biến thể<\/div><div class="v">3<\/div>/.test(ir.body)
+    && /Không có lỗi nào/.test(ir.body) && beforeXlsxPreview === afterXlsxPreview
+    ? ok('XLSX qua BFF: 5 dòng tiêu đề bị bỏ, xem trước đúng 2 sản phẩm / 3 biến thể / 0 lỗi và không ghi DB')
+    : bad('XLSX qua BFF đọc hoặc gộp sai', `${ir.status} ${beforeXlsxPreview}→${afterXlsxPreview}`);
+  /Tách trục TikTok/.test(ir.body) && /1731999999999999002/.test(ir.body) && /Phân loại 1/.test(ir.body) && /Phân loại 2/.test(ir.body)
+    ? ok('XLSX qua BFF hiện bảng tách hai trục và ô đặt tên trục')
+    : bad('XLSX qua BFF thiếu màn duyệt tách trục');
+  /sku_id → source_ref\.variant/.test(ir.body) && /<code>cod<\/code>/.test(ir.body) && /KHÔNG được nhập/.test(ir.body)
+    ? ok('XLSX qua BFF báo đúng sku_id được lưu, cod bị bỏ qua')
+    : bad('XLSX qua BFF báo cột nhận/bỏ qua sai');
+  const beforeXlsxCommit = await countProducts();
+  ir = await multipart(P('/import'), {
+    cookie: A.cookie, mode: 'commit', bytes: xlsxBytes, filename: 'tiktok.xlsx',
+    fields: {
+      axis_1731999999999999001_1: 'Kích thước',
+      axis_1731999999999999002_1: 'Chiều dài',
+      axis_1731999999999999002_2: 'Kiểu',
+    },
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const afterXlsxCommit = await countProducts();
+  ir.status === 200 && /Đã nhập xong/.test(ir.body) && afterXlsxCommit === beforeXlsxCommit + 2
+    ? ok('Nhập thật XLSX qua BFF tạo đúng 2 sản phẩm')
+    : bad('Nhập thật XLSX qua BFF không tạo đúng', `${ir.status} ${beforeXlsxCommit}→${afterXlsxCommit}`);
+  const optionNames = (await owner.query(
+    `SELECT r.external_id, array_agg(po.name ORDER BY po.position) AS names
+       FROM product_source_refs r JOIN product_options po ON po.product_id = r.product_id AND po.shop_id = r.shop_id
+      WHERE r.shop_id = $1 AND r.source = 'tiktok' AND r.kind = 'product'
+        AND r.external_id = ANY($2::text[])
+      GROUP BY r.external_id ORDER BY r.external_id`,
+    [A.shopId, ['1731999999999999001', '1731999999999999002']],
+  )).rows;
+  JSON.stringify(optionNames) === JSON.stringify([
+    { external_id: '1731999999999999001', names: ['Kích thước'] },
+    { external_id: '1731999999999999002', names: ['Chiều dài', 'Kiểu'] },
+  ])
+    ? ok('Tên trục nhập từ form BFF được lưu đúng vào product_options')
+    : bad('Tên trục BFF không được lưu đúng', JSON.stringify(optionNames));
+  ir = await multipart(P('/import'), {
+    cookie: A.cookie, mode: 'commit', bytes: xlsxBytes, filename: 'tiktok.xlsx',
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const afterXlsxRepeat = await countProducts();
+  afterXlsxRepeat === afterXlsxCommit && /Bỏ qua trùng/.test(ir.body)
+    ? ok('Nhập lại XLSX qua BFF không nhân đôi sản phẩm')
+    : bad('Nhập lại XLSX qua BFF bị nhân đôi', `${afterXlsxCommit}→${afterXlsxRepeat}`);
 
   // ── docs/45: trang NHẬP ĐƠN CŨ ───────────────────────────────────────────
   sect('11. Nhập đơn cũ (docs/45)');

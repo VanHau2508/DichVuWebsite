@@ -16,13 +16,14 @@
 import crypto from 'node:crypto';
 import { send } from './http.js';
 import { parseAmount, parseOrderDate } from './import-parse.js';
+import { adaptRows, inspectSourceColumns } from './adapters/index.js';
 import { withTenant, audit } from './db.js';
 import {
   isInt, validPrice, validTitle, validSku, validSlug, validWeight, validCompareAt, validCost,
   slugify, planMaxProducts, catalogCount, conflictMessage,
 } from './catalog.js';
 
-const IMPORT_MAX_ROWS = 1000;
+const IMPORT_MAX_PRODUCTS = 1000;
 const MAX_VARIANTS_PER_PRODUCT = 100;   // cùng trần với ma trận biến thể (0041-0043)
 const MAX_OPTIONS = 3;
 const MAX_CATEGORY_DEPTH = 2;           // 0095: chỉ 2 cấp
@@ -337,6 +338,7 @@ async function insertProduct(ctx, p) {
       optIds.push({ id: or.rows[0].id, valueIds });
     }
 
+    const variantIds = [];
     for (let vi = 0; vi < p.variants.length; vi++) {
       const v = p.variants[vi];
       const title = v.values.length ? v.values.join(' / ') : null;
@@ -346,6 +348,7 @@ async function insertProduct(ctx, p) {
         [productId, title, v.sku, v.price, v.compareAt, v.weight, vi],
       );
       const variantId = vr.rows[0].id;
+      variantIds.push(variantId);
 
       for (let ai = 0; ai < p.axes.length; ai++) {
         await c.query(
@@ -373,26 +376,81 @@ async function insertProduct(ctx, p) {
       }
     }
 
+    if (p.source === 'tiktok' && p.sourceProductId) {
+      const productRef = await c.query(
+        `INSERT INTO product_source_refs (shop_id, source, kind, external_id, product_id, raw_row)
+         VALUES (current_shop_id(), 'tiktok', 'product', $1, $2, $3)
+         ON CONFLICT (shop_id, source, kind, external_id) DO NOTHING RETURNING id`,
+        [p.sourceProductId, productId, p.sourceRawRow ?? null],
+      );
+      if (productRef.rows.length === 0) {
+        const old = (await c.query(
+          `SELECT product_id FROM product_source_refs
+           WHERE source = 'tiktok' AND kind = 'product' AND external_id = $1`, [p.sourceProductId])).rows[0];
+        if (old?.product_id !== productId) throw Object.assign(new Error('product_id từ TikTok đã được nhập đồng thời'), { code: 'IMPORT_SOURCE_CONFLICT' });
+      }
+      for (let i = 0; i < p.variants.length; i++) {
+        const externalId = p.variants[i].sourceVariantId;
+        if (!externalId) continue;
+        const variantRef = await c.query(
+          `INSERT INTO product_source_refs (shop_id, source, kind, external_id, product_id, variant_id, raw_row)
+           VALUES (current_shop_id(), 'tiktok', 'variant', $1, $2, $3, $4)
+           ON CONFLICT (shop_id, source, kind, external_id) DO NOTHING RETURNING id`,
+          [externalId, productId, variantIds[i], p.variants[i].sourceRawRow ?? null],
+        );
+        if (variantRef.rows.length === 0) {
+          const old = (await c.query(
+            `SELECT variant_id FROM product_source_refs
+             WHERE source = 'tiktok' AND kind = 'variant' AND external_id = $1`, [externalId])).rows[0];
+          if (old?.variant_id !== variantIds[i]) throw Object.assign(new Error('sku_id từ TikTok đã được nhập đồng thời'), { code: 'IMPORT_SOURCE_CONFLICT' });
+        }
+      }
+    }
+
     await audit(c, 'product.imported', {
       actorId: ctx.user.id, ip: ctx.ip,
       metadata: { productId, slug: p.slug, variants: p.variants.length, axes: p.axes.length },
     });
-    return productId;
+    return { productId, variantIds };
   });
+}
+
+async function findSourceProduct(ctx, p) {
+  if (p.source !== 'tiktok' || !p.sourceProductId) return null;
+  return withTenant(ctx.shopId, async (c) => (await c.query(
+    `SELECT id, product_id FROM product_source_refs
+     WHERE source = 'tiktok' AND kind = 'product' AND external_id = $1`, [p.sourceProductId])).rows[0] ?? null);
+}
+
+function reserveImportedSku(base, reserved) {
+  let sku = String(base ?? '').slice(0, 64);
+  for (let n = 2; reserved.has(sku); n++) {
+    const suffix = `-${n}`;
+    sku = `${String(base ?? '').slice(0, 64 - suffix.length)}${suffix}`;
+  }
+  reserved.add(sku);
+  return sku;
 }
 
 // ── Handler ────────────────────────────────────────────────────────────────
 export async function importProducts(res, ctx, body) {
-  const raw = Array.isArray(body.rows) ? body.rows : [];
-  if (raw.length === 0) return send(res, 400, { error: 'không có dòng nào để nhập' });
-  if (raw.length > IMPORT_MAX_ROWS) return send(res, 413, { error: `tối đa ${IMPORT_MAX_ROWS} dòng mỗi lần nhập` });
+  const originalRows = Array.isArray(body.rows) ? body.rows : [];
+  if (originalRows.length === 0) return send(res, 400, { error: 'không có dòng nào để nhập' });
+  const adapted = adaptRows(originalRows, {
+    axisNames: body.axis_names ?? {},
+    splitOff: new Set(Array.isArray(body.split_off) ? body.split_off.map(String) : []),
+  });
+  const raw = adapted.rows;
 
   // Có cột handle hay không quyết định chế độ gộp — xét trên TOÀN FILE, không theo từng dòng.
   const hasHandleColumn = raw.some((r) => Object.keys(r ?? {}).some((k) => COLS.handle.includes(normKey(k))));
   const rows = raw.map(mapRow);
   const groups = groupRows(rows, hasHandleColumn);
+  if (groups.length > IMPORT_MAX_PRODUCTS) {
+    return send(res, 413, { error: `tối đa ${IMPORT_MAX_PRODUCTS} sản phẩm mỗi lần nhập` });
+  }
 
-  const columns = inspectColumns(raw);
+  const columns = inspectSourceColumns(originalRows, adapted.source) ?? inspectColumns(originalRows);
 
   // XEM TRƯỚC: kiểm + gộp rồi trả kết quả, KHÔNG ghi một dòng nào và KHÔNG tải ảnh.
   // Vì sao đáng có: file 500 dòng nhập sai một lần là 500 sản phẩm rác phải xoá tay. Mọi
@@ -400,10 +458,12 @@ export async function importProducts(res, ctx, body) {
   if (body.dry_run === true) {
     const errs = [], preview = [];
     let variants = 0, imgOk = 0, imgBad = 0;
+    const sourceIds = [];
     for (const g of groups) {
       const built = buildProduct(g);
       if (!built.ok) { errs.push({ line: built.line, title: str(g.rows[0].r.title), error: built.error }); continue; }
       const p = built.product;
+      if (adapted.source === 'tiktok') sourceIds.push(p.slug);
       variants += p.variants.length;
       // Đếm ĐÚNG NHƯ lúc ghi thật: xem trước báo "10 ảnh" rồi lúc nhập ra "7 xếp hàng,
       // 3 sai định dạng" là xem trước nói dối.
@@ -413,15 +473,28 @@ export async function importProducts(res, ctx, body) {
           axes: p.axes.map((a) => a.name), category: p.catPath.join(' > ') });
       }
     }
+    let skippedExisting = 0;
+    if (sourceIds.length) {
+      skippedExisting = await withTenant(ctx.shopId, async (c) => (await c.query(
+        `SELECT count(*)::int AS n FROM product_source_refs
+         WHERE source = 'tiktok' AND kind = 'product' AND external_id = ANY($1::text[])`, [sourceIds])).rows[0]?.n ?? 0);
+    }
     return send(res, 200, {
-      dry_run: true, rows: raw.length, groups: groups.length,
-      created: groups.length - errs.length, variants,
+      dry_run: true, rows: originalRows.length, groups: groups.length,
+      created: groups.length - errs.length - skippedExisting, skipped_existing: skippedExisting, variants,
       images: { queued: imgOk, invalid: imgBad },
       failed: errs.length, errors: errs.slice(0, 100), preview, columns,
+      source: adapted.source, axisHints: adapted.axisHints,
     });
   }
 
   const cap = await withTenant(ctx.shopId, async (c) => ({ max: await planMaxProducts(c), count: await catalogCount(c) }));
+  // TikTok không có seller_sku nên adapter phải sinh mã. Chỉ né trùng trong chính tệp là
+  // chưa đủ: shop có thể đã dùng mã đó từ trước, và UNIQUE(shop_id, sku) sẽ làm cả sản phẩm
+  // rollback. Chụp tập SKU hiện có một lần rồi giữ chỗ cho từng biến thể trong lô.
+  const reservedSkus = adapted.source === 'tiktok'
+    ? new Set(await withTenant(ctx.shopId, async (c) => (await c.query('SELECT sku FROM variants')).rows.map((r) => r.sku)))
+    : null;
 
   const seenSlug = new Set();
   const errors = [];
@@ -432,10 +505,28 @@ export async function importProducts(res, ctx, body) {
     const built = buildProduct(g);
     if (!built.ok) { errors.push({ line: built.line, title: str(g.rows[0].r.title), error: built.error }); continue; }
     const p = built.product;
+    p.source = adapted.source;
+    if (adapted.source === 'tiktok') {
+      p.sourceProductId = p.slug;
+      p.sourceRawRow = adapted.sourceRefs.products.get(p.sourceProductId)?.rawRow ?? null;
+      for (const v of p.variants) {
+        const ref = adapted.sourceRefs.variants.get(v.sku);
+        if (ref) { v.sourceVariantId = ref.externalId; v.sourceRawRow = ref.rawRow; }
+      }
+    }
+
+    const existing = await findSourceProduct(ctx, p);
+    if (existing) {
+      errors.push({ line: p.line, title: p.title, skipped: true, error: 'sản phẩm từ nguồn này đã nhập trước đó, bỏ qua' });
+      continue;
+    }
 
     if (cap.max != null && cap.count + created >= cap.max) {
       errors.push({ line: p.line, title: p.title, error: `vượt giới hạn gói (${cap.max} sản phẩm)` });
       continue;
+    }
+    if (reservedSkus) {
+      for (const v of p.variants) v.sku = reserveImportedSku(v.sku, reservedSkus);
     }
     // Slug trùng NGAY trong lô (DB chỉ chặn trùng với dữ liệu đã có).
     if (seenSlug.has(p.slug)) {
@@ -445,7 +536,8 @@ export async function importProducts(res, ctx, body) {
     seenSlug.add(p.slug);
 
     try {
-      const productId = await insertProduct(ctx, p);
+      const inserted = await insertProduct(ctx, p);
+      const productId = inserted.productId;
       created++;
       variantsCreated += p.variants.length;
       for (const url of p.images) {
@@ -471,17 +563,21 @@ export async function importProducts(res, ctx, body) {
     } catch (err) {
       // withTenant rollback-on-throw ⇒ không để lại sản phẩm thiếu biến thể/thiếu map trục.
       seenSlug.delete(p.slug);
-      errors.push({ line: p.line, title: p.title, error: err.code === '23505' ? conflictMessage(err) : 'lỗi khi tạo sản phẩm' });
+      errors.push({ line: p.line, title: p.title,
+        error: err.code === 'IMPORT_SOURCE_CONFLICT' ? 'nguồn TikTok vừa được nhập bởi một yêu cầu khác' : (err.code === '23505' ? conflictMessage(err) : 'lỗi khi tạo sản phẩm') });
     }
   }
 
   return send(res, 200, {
-    created, variants: variantsCreated, groups: groups.length,
-    failed: errors.length, errors: errors.slice(0, 100),
+    created,
+    skipped_existing: errors.filter((e) => e.skipped).length,
+    variants: variantsCreated, groups: groups.length,
+    failed: errors.filter((e) => !e.skipped).length, errors: errors.slice(0, 100),
     // queued: worker sẽ tải nền · invalid: URL sai dáng, KHÔNG bao giờ tải được ·
     // skipped: vượt trần số ảnh mỗi lần nhập. Không con số nào im lặng.
     images: { queued: imgQueued, invalid: imgInvalid, skipped: imgOverflow },
     columns,
+    source: adapted.source, axisHints: adapted.axisHints,
   });
 }
 

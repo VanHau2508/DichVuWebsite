@@ -13,6 +13,8 @@ import crypto from 'node:crypto';
 import { parseCookies, readForm, readFormAll, readMultipartFile, readMultipartFiles, readMultipartAll, sendHtml, sendHtmlJs, redirect, sendDownload, sameOrigin, SESSION_COOKIE } from './http.js';
 import { authApi, sellerApi, platformApi, sellerUpload, sellerDownload, loadSession } from './api.js';
 import * as V from './pages.js';
+import { readXlsx, isXlsxMagic } from '../xlsx-read.js';
+import { countProductGroups, mergeImportResults, splitProductBatches } from './import-batch.js';
 import { getPreset } from '../presets.js';
 import { runReq, makeLog, health, setUsageSink, makeUsageSink, skipUsage } from './obs.js';
 import { makeRedis } from '../redis-lite.js';
@@ -1380,8 +1382,8 @@ async function productCreate(req, res, me, cookie, shopId) {
   return redirect(res, `/shops/${shopId}/products/${pid}`);
 }
 
-// Nhập sản phẩm hàng loạt từ CSV: đọc file (multipart) → parse → forward mảng rows tới
-// seller (validate + tạo từng dòng, thành công một phần) → render kết quả.
+// Nhập sản phẩm hàng loạt từ CSV/XLSX: đọc file (multipart), nhận diện TikTok, chia lô theo
+// ranh giới sản phẩm rồi forward từng mảng rows tới seller → gộp một kết quả cho người bán.
 async function productImportPage(res, me, cookie, shopId, result, err) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'products');
@@ -1398,16 +1400,46 @@ async function productImport(req, res, me, cookie, shopId) {
   if (tooBig) return productImportPage(res, me, cookie, shopId, null, 'Tệp quá lớn (tối đa 10MB).');
   const file = (parsed?.files ?? [])[0];
   const dryRun = String(parsed?.fields?.mode ?? '') !== 'commit';   // MẶC ĐỊNH là xem trước
-  if (!file?.bytes?.length) return productImportPage(res, me, cookie, shopId, null, 'Chưa chọn tệp CSV hợp lệ.');
-  const rows = parseCsv(file.bytes.toString('utf8'));
+  if (!file?.bytes?.length) return productImportPage(res, me, cookie, shopId, null, 'Chưa chọn tệp CSV/XLSX hợp lệ.');
+  const filename = String(file.filename ?? '').toLowerCase();
+  let rows;
+  try {
+    if (isXlsxMagic(file.bytes)) rows = readXlsx(file.bytes);
+    else if (filename.endsWith('.xlsx')) throw new Error('Tệp có đuôi .xlsx nhưng nội dung không phải XLSX hợp lệ.');
+    else rows = parseCsv(file.bytes.toString('utf8'));
+  } catch (e) {
+    return productImportPage(res, me, cookie, shopId, null, e?.message ?? 'Không đọc được tệp CSV/XLSX.');
+  }
   if (rows.length === 0) return productImportPage(res, me, cookie, shopId, null, 'Tệp không có dòng dữ liệu (cần hàng tiêu đề + ít nhất 1 dòng).');
-  if (rows.length > 1000) return productImportPage(res, me, cookie, shopId, null, 'Tối đa 1000 dòng mỗi lần nhập.');
-  // timeoutMs 70s (mặc định 8s): seller tạo sản phẩm rồi TẢI ẢNH theo URL với ngân sách 45s.
-  // Để 8s thì người bán thấy "không nhập được" trong khi hàng ĐÃ vào — họ bấm lại, nhân đôi.
-  const r = await sellerApi('POST', `/shops/${shopId}/products/import`,
-    { cookie, body: { rows, dry_run: dryRun }, timeoutMs: dryRun ? 15000 : 70000 });
-  if (r.status !== 200) return productImportPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không nhập được — kiểm tra quyền hoặc định dạng tệp.');
-  return productImportPage(res, me, cookie, shopId, { ...r.json, total: rows.length }, null);
+  if (countProductGroups(rows) > 1000) return productImportPage(res, me, cookie, shopId, null, 'Tối đa 1000 sản phẩm mỗi lần nhập.');
+  const axisNames = {};
+  const splitOff = [];
+  for (const [key, value] of Object.entries(parsed?.fields ?? {})) {
+    const axis = /^axis_(\d{10,})_([123])$/.exec(key);
+    if (axis) {
+      axisNames[axis[1]] ??= [];
+      axisNames[axis[1]][Number(axis[2]) - 1] = String(value ?? '').trim();
+    }
+    const split = /^split_off_(\d{10,})$/.exec(key);
+    if (split && String(value) === '1') splitOff.push(split[1]);
+  }
+  let batches;
+  try { batches = splitProductBatches(rows); }
+  catch (e) { return productImportPage(res, me, cookie, shopId, null, e.message); }
+  const results = [];
+  for (const batch of batches) {
+    // 70 giây giữ khoảng đệm cho ngân sách ảnh 45 giây; hiện ảnh được xếp hàng nền nhưng
+    // giữ trần này để không tái sinh lỗi client timeout trong lúc seller đã ghi thành công.
+    const r = await sellerApi('POST', `/shops/${shopId}/products/import`, {
+      cookie,
+      body: { rows: batch, dry_run: dryRun, axis_names: axisNames, split_off: splitOff,
+      },
+      timeoutMs: dryRun ? 30000 : 70000,
+    });
+    if (r.status !== 200) return productImportPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không nhập được — kiểm tra quyền hoặc định dạng tệp.');
+    results.push(r.json ?? {});
+  }
+  return productImportPage(res, me, cookie, shopId, { ...mergeImportResults(results), total: rows.length }, null);
 }
 
 async function orderImportPage(res, me, cookie, shopId, result, err) {

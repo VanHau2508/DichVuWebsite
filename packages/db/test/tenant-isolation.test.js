@@ -45,6 +45,25 @@ describe('ĐỌC', () => {
     assert.ok(!ids.includes(B.productId), 'KHÔNG được thấy sản phẩm của shop B');
   });
 
+  test('shop A không thấy tham chiếu nhập sản phẩm của shop B', async () => {
+    const aExternal = `tenant-a-${randomUUID()}`;
+    const bExternal = `tenant-b-${randomUUID()}`;
+    await withTenant(A.id, (c) => c.query(
+      `INSERT INTO product_source_refs (shop_id, source, kind, external_id, product_id)
+       VALUES (current_shop_id(), 'tiktok', 'product', $1, $2)`, [aExternal, A.productId],
+    ));
+    await withTenant(B.id, (c) => c.query(
+      `INSERT INTO product_source_refs (shop_id, source, kind, external_id, product_id)
+       VALUES (current_shop_id(), 'tiktok', 'product', $1, $2)`, [bExternal, B.productId],
+    ));
+
+    const rows = await withTenant(A.id, (c) => c.query(
+      `SELECT external_id FROM product_source_refs WHERE external_id = ANY($1::text[]) ORDER BY external_id`,
+      [[aExternal, bExternal]],
+    ));
+    assert.deepEqual(rows.rows.map((r) => r.external_id), [aExternal]);
+  });
+
   test('truy vấn thẳng theo id của shop B vẫn trả về rỗng', async () => {
     // Đây là IDOR: kẻ tấn công đoán/biết được uuid của shop khác.
     const r = await withTenant(A.id, (c) =>
@@ -168,6 +187,15 @@ describe('COMPOSITE FOREIGN KEY — lớp phòng thủ khi RLS thất bại', ()
         [A.id, B.productId, `x-${randomUUID().slice(0, 8)}`],
       ),
     );
+    assert.equal(code, SQLSTATE.FOREIGN_KEY_VIOLATION);
+  });
+
+  test('tham chiếu nguồn của shop A không trỏ được sang sản phẩm shop B', async () => {
+    const code = await sqlstateOf(() => owner.query(
+      `INSERT INTO product_source_refs (shop_id, source, kind, external_id, product_id)
+       VALUES ($1, 'tiktok', 'product', $2, $3)`,
+      [A.id, `cross-${randomUUID()}`, B.productId],
+    ));
     assert.equal(code, SQLSTATE.FOREIGN_KEY_VIOLATION);
   });
 

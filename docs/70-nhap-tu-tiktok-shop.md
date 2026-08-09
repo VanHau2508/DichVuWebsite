@@ -1,9 +1,66 @@
 # 70 — Nhập danh mục từ TikTok Shop
 
-> Trạng thái: **đặc tả, chưa viết mã.**
+> Trạng thái: **đặc tả đã chốt, chưa viết mã.**
 > Liên quan: [45-di-cu-tu-san-khac](45-di-cu-tu-san-khac.md) · [11-catalog](11-catalog.md) ·
-> [12-inventory-media](12-inventory-media.md) · [56-tai-dung-bien-the](56-tai-dung-bien-the-va-chung-tu-cho.md) ·
+> [12-inventory-media](12-inventory-media.md) · [37-bao-cao-loi-nhuan](37-bao-cao-loi-nhuan.md) ·
+> [38-flash-sale](38-flash-sale.md) · [56-tai-dung-bien-the](56-tai-dung-bien-the-va-chung-tu-cho.md) ·
 > [04-quyet-dinh-kien-truc-adr](04-quyet-dinh-kien-truc-adr.md) (ADR-008)
+
+---
+
+## 0. Bộ nhập hiện có CÓ chạy — và trượt file TikTok ở đúng một chốt
+
+Đã **chạy thật**, không suy từ mã: PostgreSQL 16 thật · 146 migration áp sạch · gọi thẳng
+`importProducts()` của `apps/seller/src/import.js`, dùng đúng `parseCsv` của
+`seller-admin/src/server.js`.
+
+### 0.1 Bất biến DB — xanh
+
+```
+node --test packages/db/test/*.test.js
+# tests 88 · pass 88 · fail 0
+```
+
+Khớp đúng con số README (`88 bất biến DB`). Cô lập tenant, least-privilege, bất biến schema:
+không có gì hỏng.
+
+### 0.2 Tệp mẫu của kho — **chạy đúng**
+
+`maunhapsanpham.csv`, 4 dòng → xem trước rồi nhập thật:
+
+| | kết quả |
+|---|---|
+| HTTP | 200 (cả `dry_run` lẫn ghi thật) |
+| nhóm → sản phẩm | 2 nhóm → **2 sản phẩm, 4 biến thể** |
+| DB sau khi ghi | `products 2 · variants 4 · product_options 2 · option_values 4 · variant_option_values 6` |
+| gộp theo `handle` | ✔ `ao-thun-basic` → 1 SP, 3 SKU, **2 trục (Màu+Size)** |
+| tổ hợp | `Đen/M` · `Đen/L` · `Trắng/M` — đúng từng cái |
+| `status` | `active` / `draft` tôn trọng đúng cột |
+| giá cấp SP | 199.000₫ = **min** của nhóm — đúng quy tắc `docs/45 §4.4` |
+
+**Kết luận: chức năng "chuyển nhà" của `docs/45` hoạt động đúng như đã viết.** Không cần sửa
+phần lõi. Việc còn lại thuần tuý là **dạy nó đọc thêm một định dạng**.
+
+### 0.3 File TikTok thật qua đúng bộ nhập đó — **0 sản phẩm**
+
+Chạy hai ca, cả hai đều thất bại toàn phần:
+
+| ca | dòng gửi | nhóm | **tạo được** | hỏng | nguyên nhân |
+|---|---:|---:|---:|---:|---|
+| **A.** người bán lưu thẳng sang CSV | 645 | 645 | **0** | 645 | `SKU trống hoặc quá dài` ×99 + 1 nhóm toàn ảnh |
+| **B.** đã xoá tay 5 dòng tiêu đề thừa | 641 | 641 | **0** | 641 | `SKU trống hoặc quá dài` ×100 |
+
+Cột được nhận: **`category`, `product_name`, `price`, `quantity`** — 4/36. Bỏ qua 32 cột.
+
+Hai điều đọc ra từ bảng này:
+
+1. **`nhóm = 641` chứ không phải `124`.** Không có cột `handle` ⇒ mỗi dòng thành một sản phẩm
+   riêng — đúng kịch bản `docs/45 §1` sinh ra để chặn, chỉ là đến từ hướng khác.
+2. **Chốt chặn là `sku`**, không phải biến thể hay ảnh. `seller_sku` rỗng 0/641 nên không dòng
+   nào qua nổi `validSku` (`import.js:196`). Kể cả có gộp nhóm đúng thì vẫn ra 0.
+
+Ca A tệ hơn ca B **4 dòng** — đó là 4 dòng tiêu đề TikTok bị đọc thành sản phẩm. Nhỏ, nhưng
+xác nhận lỗi §3 là thật chứ không phải lo xa.
 
 ---
 
@@ -323,19 +380,20 @@ test phải dựng DB, chậm hơn và yếu hơn.
 
 **Ngưỡng đổi ý:** khi người bán cần **tự** khai mapping cho file lạ.
 
-#### (d) Upsert mặc định — CẦN QUYẾT ĐỊNH RIÊNG, không mặc định bật
+#### (d) Upsert — **CHỦ DỰ ÁN ĐÃ CHỐT: LÀM**
 
-`docs/45 §2` cố ý loại upsert:
+`docs/45 §2` từng cố ý loại upsert:
 
 > *"Cần quy tắc khớp và sẽ **ghi đè giá đang bán**. Một file nhập sai cột giá có thể hạ giá cả
 > cửa hàng trong một lần bấm."*
 
-Lý do đó **vẫn đúng**. Nhưng có một dữ kiện mới: hồi đó chưa có khoá khớp đáng tin, nay có
-`sku_id` 100%. Nên upsert trở nên **an toàn hơn trước**, chứ chưa phải an toàn.
+Dữ kiện đã đổi: hồi đó **không có khoá khớp đáng tin**, nay có `sku_id` 100%. Chủ dự án chốt
+làm. Nhưng **cái giá mà `docs/45` cảnh báo không biến mất** — nó chỉ chuyển từ "không làm" sang
+"làm kèm hàng rào". Ba hàng rào bắt buộc, không cái nào bỏ được:
 
-**Đề nghị:** đợt 1–3 chỉ làm **`create_only`**. Upsert để đợt 4, kèm bảng sở hữu trường (§5.4)
-và màn khác biệt bắt buộc xem. Đây là **quyết định kinh doanh** — theo `CLAUDE.md §7`, hỏi chủ
-dự án trước khi làm.
+1. **Bảng sở hữu trường** (§5.4) — mặc định của mọi trường là *không* ghi đè.
+2. **Màn khác biệt bắt buộc xem** trước khi ghi, khi có bất kỳ thay đổi giá nào.
+3. **Không xoá gì bao giờ** — xem §5.5, đây là chỗ upsert có thể phá dữ liệu không hoàn lại.
 
 ---
 
@@ -450,6 +508,86 @@ Chốt trước để đợt 4 không phải cãi lại. **Mặc định của m
 | `status` | **không** | nhập không được tự bày bán (`docs/45 §3`) |
 | `product_source_refs.*` | **có** | đó là việc của nó |
 
+### 5.5 BẢN ĐỒ ẢNH HƯỞNG — sửa chỗ này thì phải sửa chỗ nào nữa
+
+Phần quan trọng nhất của cả tài liệu khi bắt tay viết mã. Upsert không phải "thêm câu
+`UPDATE`": mỗi trường nó chạm đều có thứ khác bám vào. Bảng dưới là **danh sách bắt buộc kiểm
+từng dòng** trước khi gọi một đợt là xong.
+
+#### (1) Sửa `variants.price_vnd` → kéo theo 4 chỗ
+
+| kéo theo | vì sao | file |
+|---|---|---|
+| `products.price_vnd` phải tính lại | giá cấp SP = **min** các biến thể (`docs/45 §4.4`); sửa một biến thể mà quên tính lại thì storefront hiện *"từ …₫"* sai | `apps/seller/src/catalog.js` |
+| `compare_at_price_vnd` phải kiểm lại | ràng buộc `compareAt > price` (`import.js:205`). **Nâng** giá lên quá giá gạch cũ tạo badge giảm giá ÂM — dữ liệu cũ hợp lệ trở thành không hợp lệ vì một lần nhập | `import.js` |
+| khuyến mãi / flash sale đang chạy | `promotion_products` bám theo sản phẩm; đổi giá gốc là đổi số tiền khách thấy giữa lúc chiến dịch chạy | `promotions.js`, `docs/38` |
+| **`order_lines` — KHÔNG cần làm gì** | đã snapshot `unit_price_vnd`/`sku_snapshot`/`title_snapshot` (`0002`). Đơn cũ **an toàn tuyệt đối**. Đây là chỗ duy nhất trong bảng này không phải lo — vì kiến trúc đã lo sẵn | `0002_catalog_orders.sql` |
+
+#### (2) Sửa tồn kho → chỗ nguy hiểm nhất
+
+**Cấm `UPDATE inventory_levels.on_hand` thẳng.** Bất biến của `0009`: *tổng `delta` trong
+`inventory_ledger` == `on_hand`*. Ghi thẳng là phá nó, và sổ kho lệch **im lặng**.
+
+| kéo theo | vì sao |
+|---|---|
+| ghi `inventory_ledger` một dòng `kind='adjust'` | đúng đường `import.js:365` đang làm cho tồn ban đầu (`kind='receive'`) và `inventory.js:68`. `kind` chỉ nhận `receive/ship/adjust/reserve/release` |
+| **kiểm `reserved` trước khi hạ tồn** | `reserved` đang bị giỏ hàng và đơn chưa giao giữ. Đặt `on_hand` < `reserved` ⇒ tồn khả dụng ÂM ⇒ `safety-stock.js` trả 0 và shop **mất bán** mà không hiểu vì sao |
+| ngưỡng cảnh báo sắp hết | `shops.low_stock_threshold`, `low_stock_alerted_on` — nhập một phát 124 SP có thể bắn hàng loạt cảnh báo |
+| tồn an toàn | `packages/inventory/src/safety-stock.js` — công thức dùng chung, **không được chép lại** trong bộ nhập |
+
+**Quy tắc chốt:** tồn từ file TikTok là **`adjust` về số tuyệt đối**, và nếu số mới < `reserved`
+thì **từ chối dòng đó kèm lý do**, không tự ép.
+
+#### (3) Biến thể biến mất khỏi file → TUYỆT ĐỐI KHÔNG XOÁ
+
+`order_lines.variant_id` là **`NOT NULL` + FK tới `variants`** (`0002`). Xoá một biến thể từng
+có đơn = vi phạm khoá ngoại; xoá biến thể *chưa* có đơn thì hôm nay được, ngày mai có đơn là hỏng.
+
+Cùng lý do `docs/45 §8` đã ghi cho đơn di cư: *"Nới `NOT NULL` là phá một bất biến kế toán bảo
+vệ toàn hệ."*
+
+→ Biến thể vắng mặt trong file: **để nguyên**, chỉ **báo cáo** ở màn khác biệt
+(*"3 biến thể đang có trong shop không xuất hiện trong file"*). Người bán tự quyết.
+
+#### (4) Sửa ảnh → dọn rác KHÔNG tự lo hộ
+
+`media-gc.js` chỉ xoá object có **tiền tố trưng bày** (`banner-`/`logo-`/`content-`/`cat-`).
+Ảnh sản phẩm là `<shop>/<uuid>.webp` **không tiền tố**, cố ý nằm ngoài tầm gc vì nó thuộc vòng
+đời bảng `media`.
+
+→ Upsert thay ảnh phải **tự xoá dòng `media` cũ tường minh**. Bỏ qua bước này thì ảnh cũ nằm
+lại kho mãi mãi và **vẫn hiện trong thư viện sản phẩm**.
+
+#### (5) Ba trường KHÔNG BAO GIỜ để import chạm
+
+| trường | hậu quả nếu chạm |
+|---|---|
+| `products.slug` | gãy mọi link đang chạy + sitemap + thứ hạng tìm kiếm |
+| `variants.sku` | người bán đã **in ra giấy** — phiếu kho, vận đơn. Đổi = hàng đi sai |
+| `variant_costs.cost_vnd` | file TikTok **không có** giá vốn; ghi đè = phá sổ lãi lỗ (`docs/37`) |
+
+#### (6) Các chỗ nhỏ nhưng phải sửa cùng lượt
+
+| việc | file |
+|---|---|
+| Trần gói: **upsert không tính** vào trần, chỉ `create` tính | `catalog.js` `planMaxProducts()` |
+| Sự kiện audit riêng `product.updated_by_import` (khác `product.imported`) | `db.js` `audit()` |
+| Chuẩn hoá route cho đo luồng dùng — **route phải là MẪU, không lọt id** | `obs.js` (10 bản phải khớp từng ký tự — `usage-route.test.js`) |
+| Timeout BFF 70s / ngân sách ảnh 45s | `seller-admin/src/api.js`, `docs/45 §5` |
+| RBAC: dùng lại `catalog.write`, **không** thêm quyền mới | `rbac.js` |
+
+#### (7) Ràng buộc kích thước — ĐÃ ĐO
+
+| số đo | giá trị |
+|---|---|
+| 641 dòng TikTok → JSON | **1,32 MB** — lọt trần `maxBody` 2 MB (`import.js:701`) |
+| trong đó `product_description` chiếm | **32%** |
+| 5.000 SP (~25.847 dòng) → JSON | **~53 MB** — vượt trần **26 lần** |
+
+⇒ Trần đếm theo **sản phẩm** (đã chốt) chưa đủ; phải **chia lô ở phía BFF**: cắt theo ranh giới
+`product_id` rồi gửi nhiều lượt. Cắt giữa một sản phẩm là xé nhóm biến thể — ra sản phẩm thiếu
+SKU mà không có lỗi nào báo.
+
 ---
 
 ## 6. Kế hoạch — 4 đợt, mỗi đợt tự đứng được
@@ -466,18 +604,22 @@ Mỗi đợt phải **chạy được và có ích ngay**, không để lại n�
 | Bộ đọc `.xlsx` → mảng bản ghi | mới: `apps/seller/src/xlsx-read.js` |
 | Dò dòng tiêu đề (tìm dòng chứa `product_id`/`handle`, **không** đóng cứng dòng 1) | `xlsx-read.js` |
 | Nới `accept` của form + kiểm magic byte `PK\x03\x04` | `seller-admin/src/pages.js:3477`, `server.js` |
-| Trần đếm theo **sản phẩm** thay vì dòng | `import.js:25,388` |
+| Trần đếm theo **sản phẩm** (`IMPORT_MAX_PRODUCTS = 1000`), bỏ trần dòng | `import.js:25,388` |
+| **Chia lô ở BFF** theo ranh giới `product_id` (§5.5.7) | `seller-admin/src/server.js` |
+
+Bộ đọc xlsx theo §9.4: **zero-dep**, sáu hàng rào bắt buộc. Đây là mã ăn tệp của người lạ —
+viết nó với cùng thái độ như `net-guard`, không phải như một hàm tiện ích.
 
 **Nghiệm thu:**
-- tải file thật lên → Xem trước báo **124 sản phẩm / 641 biến thể / 0 lỗi**;
-- 5 dòng tiêu đề **không** biến thành sản phẩm;
-- file `.csv` cũ (`maunhapsanpham.csv`) cho kết quả **y hệt trước** — không đổi một chữ;
-- file `.xlsx` giả mạo (đuôi đúng, ruột không phải zip) bị từ chối.
-
-**Không viết bộ đọc xlsx từ đầu.** Định dạng là zip+XML, tự làm là chuốc lỗi. Kho đã có `zip.js`
-— đánh giá xem dùng lại được không; nếu không thì thêm **một** phụ thuộc đọc-thuần, và ghi lý do
-vào commit. Cân nhắc: `xlsx` (SheetJS) có lịch sử CVE — nếu chọn, ghim phiên bản và cho vào
-`security-scan.sh`.
+- tải file thật lên → Xem trước báo **124 sản phẩm / 641 biến thể / 0 lỗi**
+  *(hôm nay: 641 nhóm / 0 tạo được — §0.3)*;
+- 5 dòng tiêu đề **không** biến thành sản phẩm *(ca A hôm nay: 645 nhóm thay vì 641)*;
+- file `.csv` cũ chạy **y hệt §0.2**: 2 sản phẩm · 4 biến thể · 2 trục `Màu+Size` ·
+  tổ hợp `Đen/M` `Đen/L` `Trắng/M` · giá cấp SP 199.000₫;
+- zip bomb (tỉ lệ nén > 1:100) bị từ chối **trước khi** giải nén hết;
+- xlsx chứa `<!DOCTYPE`/`<!ENTITY` bị từ chối;
+- file `.xlsx` giả mạo (đuôi đúng, ruột không phải zip) bị từ chối;
+- entry có `..` trong đường dẫn bị từ chối.
 
 ---
 
@@ -531,22 +673,40 @@ vào commit. Cân nhắc: `xlsx` (SheetJS) có lịch sử CVE — nếu chọn,
 
 ---
 
-### Đợt 4 — Upsert *(cần chủ dự án đồng ý trước — `CLAUDE.md §7`)*
+### Đợt 4 — Upsert *(chủ dự án ĐÃ chốt làm — §9.1)*
 
-**Mục tiêu:** nhập lại file mới hơn để cập nhật giá/tồn, không tạo bản sao, không phá dữ liệu.
+**Mục tiêu:** nhập lại file mới hơn để cập nhật giá/tồn/nội dung, không tạo bản sao, **không phá
+dữ liệu và không xoá gì**.
 
-| việc |
-|---|
-| Chọn chế độ: `create_only` (mặc định) · `update_only` · `upsert` |
-| Bảng sở hữu trường §5.4 |
-| Màn **khác biệt**: SKU · trường · hiện tại → mới · hành động |
-| Bắt buộc xem khác biệt trước khi ghi khi có thay đổi giá |
+Đợt này **phải làm trọn §5.5** — đó là danh sách kiểm, không phải gợi ý.
 
-**Nghiệm thu:**
+| việc | file bị chạm |
+|---|---|
+| Chọn chế độ: `create_only` (**mặc định**) · `update_only` · `upsert` | `import.js`, `pages.js` |
+| Bảng sở hữu trường §5.4 | `import.js` |
+| Màn **khác biệt**: SKU · trường · hiện tại → mới · hành động | `pages.js` |
+| Bắt buộc xem khác biệt khi có **bất kỳ** thay đổi giá | `pages.js`, `server.js` |
+| Tính lại `products.price_vnd` = min(biến thể) sau mỗi lần sửa giá | `catalog.js` |
+| Kiểm lại `compare_at > price` trên **dữ liệu đã có**, không chỉ dòng mới | `import.js` |
+| Tồn: **`adjust` qua `inventory_ledger`**, không `UPDATE` thẳng `on_hand` | `import.js`, `inventory.js` |
+| Từ chối hạ tồn xuống dưới `reserved`, kèm lý do | `import.js` |
+| Biến thể vắng mặt: **báo cáo, không xoá** | `import.js`, `pages.js` |
+| Thay ảnh: xoá dòng `media` cũ **tường minh** (gc không lo hộ) | `media.js` |
+| `upsert` **không** tính vào trần gói | `catalog.js` |
+| Sự kiện audit riêng `product.updated_by_import` | `db.js` |
+
+**Nghiệm thu — mỗi dòng là một test:**
 - `create_only` + file đã nhập → **0 thay đổi**;
-- `upsert` + file sửa giá 1 SP → **đúng 1 dòng** trong bảng khác biệt;
-- `cost_vnd` **không đổi** trong mọi chế độ;
-- đột biến: gỡ chốt sở hữu trường → test giá **phải ĐỎ**.
+- `upsert` + file sửa giá 1 SP → **đúng 1 dòng** trong bảng khác biệt, và
+  `products.price_vnd` **đổi theo** nếu đó là biến thể rẻ nhất;
+- nâng giá lên **cao hơn** `compare_at_price` đang có → **từ chối kèm lý do**, không tạo badge âm;
+- `upsert` sửa tồn → `inventory_ledger` có **đúng một** dòng `adjust`, và
+  `sum(delta) == on_hand` vẫn đúng;
+- hạ tồn xuống **dưới `reserved`** → **từ chối dòng đó**, các dòng khác vẫn vào;
+- file thiếu 3 biến thể đang có → **0 biến thể bị xoá**, màn khác biệt **báo đủ 3**;
+- `cost_vnd` · `slug` · `variants.sku` **không đổi** trong mọi chế độ;
+- đơn cũ: `order_lines.unit_price_vnd` và `sku_snapshot` **không nhúc nhích** sau upsert;
+- đột biến: gỡ chốt sở hữu trường → test giá **phải ĐỎ**; gỡ chốt `reserved` → test tồn **ĐỎ**.
 
 ---
 
@@ -562,7 +722,10 @@ ca thử phải đi qua **đúng** chốt đó.
 | `adapters/tiktok.test.js` | 641 dòng → 124 SP; tách trục; sinh sku; danh mục |
 | `html-to-text.test.js` | `<br>`→`\n`; `</p>`→`\n\n`; `&nbsp;`; rút `<img>`; **không** để lọt `<script>` |
 | `xlsx-read.test.js` | dò dòng tiêu đề; 5 dòng meta không thành dữ liệu; file giả bị từ chối |
+| `xlsx-guard.test.js` | zip bomb · zip-slip (`..`) · `<!DOCTYPE`/`<!ENTITY` · trần entry/dòng/cột |
 | `tiktok-weight.test.js` | `parcel_weight` **không** bị nhân 1000 — bất biến riêng vì đây là **sai tiền** |
+| `import-field-owner.test.js` | bảng sở hữu trường §5.4 — `cost_vnd`/`slug`/`sku` không bao giờ đổi |
+| `batch-split.test.js` | chia lô **không cắt giữa một `product_id`** |
 
 **E2E** (nhớ sửa `MANIFEST_E2E_COUNT`):
 
@@ -570,9 +733,15 @@ ca thử phải đi qua **đúng** chốt đó.
 |---|---|
 | `import-tiktok.e2e.mjs` | file thật → 124/641; ảnh xếp hàng **299**; mô tả sạch |
 | `import-tiktok-idem.e2e.mjs` | nhập 2 lần → không nhân đôi |
+| `import-tiktok-upsert.e2e.mjs` | sửa giá → `products.price_vnd` theo kịp; `compare_at` vô lý bị chặn |
+| `import-tiktok-stock.e2e.mjs` | tồn qua `inventory_ledger`; `sum(delta)==on_hand`; chặn xuống dưới `reserved` |
+| `import-tiktok-nodelete.e2e.mjs` | biến thể vắng mặt **không bị xoá**; đơn cũ giữ nguyên snapshot |
 | `import-tiktok-isolation.e2e.mjs` | shop A nhập, shop B **không** thấy gì |
 
 **Bất biến DB:** bảng mới phải qua `schema-invariants` + `tenant-isolation` sẵn có.
+
+**Hồi quy bắt buộc** (upsert chạm giá/tồn nên kéo theo cả vùng tiền): `dashboard` · `reports`
+P&L · `promotions`/flash sale · `checkout` (đặt hàng khi tồn vừa đổi) · `owed` (công nợ).
 
 **Cổng:** đụng migration + gói dùng chung + nhiều service ⇒ **cổng đầy đủ** (`CLAUDE.md §5`),
 `bash scripts/ci-local.sh` exit 0.
@@ -593,10 +762,64 @@ ca thử phải đi qua **đúng** chốt đó.
 
 ---
 
-## 9. Việc còn chờ người quyết
+## 9. Bốn quyết định — ĐÃ CHỐT
 
-1. **Bật upsert hay không** (§4.3d) — quyết định kinh doanh, rủi ro là giá.
-2. **Trần: đếm theo sản phẩm hay nhập theo lô nền** (§3.7).
-3. **Ảnh nhúng trong mô tả:** rút ra thư viện *(đề nghị)* hay bỏ hẳn (§3.2).
-4. **Phụ thuộc đọc xlsx:** thêm thư viện ngoài hay tự dựng trên `zip.js` — kho hiện gần như
-   không có phụ thuộc runtime; thêm một cái là quyết định có giá.
+### 9.1 Upsert: **CÓ** *(chủ dự án chốt)*
+
+Kèm ba hàng rào bắt buộc ở §4.3(d) và toàn bộ §5.5. Không có hàng rào thì không bật.
+
+### 9.2 Trần: **đếm theo SẢN PHẨM** *(chủ dự án chốt)*
+
+`IMPORT_MAX_PRODUCTS = 1000`, bỏ trần theo dòng. Đơn vị người bán nghĩ tới là sản phẩm, và
+`docs/45 §4.6` đã chốt đơn vị "một phần" là sản phẩm chứ không phải dòng.
+
+⚠️ Chưa đủ một mình — §5.5(7) đo được 5.000 SP ≈ 53 MB JSON, vượt `maxBody` 26 lần. **Phải kèm
+chia lô ở BFF, cắt đúng ranh giới `product_id`.**
+
+### 9.3 Ảnh nhúng trong mô tả: **rút ra thư viện ảnh**
+
+Chọn phương án (b) của §3.2. Lý do — theo thứ tự quan trọng:
+
+1. **Dùng lại nguyên đường ống đã có**, không thêm đường mã nào: `media` `pending` → worker →
+   `net-guard` (8 lớp SSRF) → `sharp` re-encode WebP → bỏ EXIF/GPS. Đường này đã có test, đã
+   chạy, đã qua kiểm toán.
+2. **Không phá ADR-008 / CSP.** Giữ thẻ `<img>` trỏ `ibyteimg.com` là tài nguyên ngoài — CSP
+   chặn, ảnh vỡ, và tạo phụ thuộc vĩnh viễn vào CDN TikTok cho một shop đã rời TikTok.
+3. **Không mất thông tin**, khác hẳn phương án bỏ hẳn.
+4. Khối lượng nhỏ: đo được **4 thẻ, 1 URL riêng** trên 641 dòng.
+
+Xếp **cuối** thư viện, sau `main_image` và `image_2..9` — ảnh trong mô tả là ảnh minh hoạ, không
+phải ảnh trưng bày, không được cướp vị trí ảnh bìa.
+
+### 9.4 Đọc `.xlsx`: **tự dựng bộ đọc tối thiểu, zero-dep**
+
+Theo đúng lập luận đã viết sẵn trong `zip.js` cho chiều ngược lại:
+
+> *"Thêm archiver/jszip = kéo phụ thuộc + phải regen lockfile (Dockerfile dùng `npm ci`). Ta chỉ
+> đóng gói vài file CSV nhỏ → tự ghi định dạng ZIP bằng `zlib.deflateRawSync`."*
+
+Chiều đọc cũng vậy: `zlib.inflateRawSync` có sẵn, và ta chỉ cần **ba tệp** trong gói xlsx —
+`xl/workbook.xml`, `xl/worksheets/sheet1.xml`, `xl/sharedStrings.xml`. Không cần công thức,
+không cần định dạng, không cần biểu đồ.
+
+**Nhưng phải nói thẳng: ĐỌC nguy hiểm hơn GHI.** `zip.js` ghi dữ liệu của chính ta; bộ đọc này
+ăn tệp của **người lạ trên Internet** (self-serve signup — `docs/43`). Sáu hàng rào bắt buộc,
+cùng tinh thần `net-guard`:
+
+| hàng rào | chặn gì |
+|---|---|
+| Trần **tổng kích thước giải nén** (đề nghị 200 MB) + trần tỉ lệ nén (1:100) | zip bomb |
+| Trần **số entry** | zip có triệu tệp rỗng |
+| Chuẩn hoá đường dẫn entry, **từ chối** `..` và đường tuyệt đối | zip-slip |
+| **Từ chối** `<!DOCTYPE` và `<!ENTITY`, không bao giờ giải thực thể ngoài | XXE, billion laughs |
+| Chỉ đọc **đúng ba tệp** trên, bỏ qua phần còn lại | giảm mặt tấn công |
+| Trần **số dòng / số cột** trước khi cấp phát | OOM |
+
+**Không viết bộ phân tích XML tổng quát.** Chỉ cần bộ quét theo thẻ cho `<row>`/`<c>`/`<v>`/`<t>`
+— hẹp hơn, kiểm được hết, và không có chỗ cho thực thể ngoài.
+
+**Đường lùi nếu bộ đọc phình quá ~400 dòng:** dừng lại, thêm thư viện, ghi lý do vào commit —
+nhưng ghim phiên bản, đưa vào `security-scan.sh`, và biết trước rằng SheetJS có lịch sử CVE
+(prototype pollution, ReDoS) đúng ở đường nhận tệp từ người lạ.
+
+---

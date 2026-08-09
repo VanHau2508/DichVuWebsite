@@ -294,7 +294,7 @@ khôi phục backup.
 
 ## 11. Bản đồ tài liệu `docs/`
 
-71 tệp. Đọc theo chủ đề, không đọc theo số.
+72 tệp. Đọc theo chủ đề, không đọc theo số.
 
 - **Nền móng:** `01` kiến trúc · `02` mô hình dữ liệu & bảo mật · `03` hạ tầng · **`04` ADR
   (11 quyết định, đọc trước khi định làm khác)** · `06` cô lập tenant.
@@ -309,7 +309,7 @@ khôi phục backup.
   local · `33` sổ tay vận hành · `35` go-live · `36` PII.
 - **Tăng trưởng:** `39` tài khoản khách · `40` nhập hàng · `42` GPS/km · `43` self-serve · `45`
   di cư · `46` hỗ trợ · `47`,`48` Facebook/Messenger · `50` onboarding · `51` CTV · **`70` nhập
-  từ TikTok Shop** (đo trên file xuất thật — đọc cùng `45`).
+  từ TikTok Shop** (đo trên file xuất thật — đọc cùng `45`) · `71` brief thi công tự chứa.
 - **Bài học phương pháp (đọc nếu muốn hiểu *vì sao* kho này khắt khe):** `61` "không biết ≠ chưa
   xảy ra" · `62` tồn an toàn · `63` đo luồng dùng · **`64` vai shop ngày-60 · `65` vai shop lúc
   có sự cố**.

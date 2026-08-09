@@ -24,7 +24,7 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 | bộ unit | 24 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 101 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 6 bộ, ~155 khẳng định | `packages/db/test/` |
-| tài liệu | 71 tệp | `docs/` |
+| tài liệu | 72 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,73 — cao có chủ ý, xem §4.
 
@@ -76,7 +76,7 @@ clone: `git config core.hooksPath scripts/hooks`.
 apps/<service>/src/     mã service        apps/<service>/test/    test của nó
 packages/               mã DÙNG CHUNG     packages/db/migrations/ toàn bộ SQL
 infra/compose.*.yml     dàn dịch vụ       scripts/                cổng, seed, vận hành
-docs/                   71 tệp ghi chép   .github/workflows/ci.yml cổng đám mây
+docs/                   72 tệp ghi chép   .github/workflows/ci.yml cổng đám mây
 ```
 
 | việc cần sửa | file |
@@ -251,7 +251,7 @@ giá trị nhất khi đọc lại.
 | **11 quyết định kiến trúc** — đọc trước khi định làm khác | **`docs/04`** |
 | xác thực & quyền | `07`, `08`, `10`, `29`, `59` |
 | bán hàng | `11` catalog · `12` kho/ảnh · `13` storefront · `14` checkout · `38` flash sale · `56` biến thể |
-| di cư từ sàn khác | `45` khung chung (Shopify/Haravan) · **`70` TikTok Shop — số đo trên file xuất thật** |
+| di cư từ sàn khác | `45` khung chung (Shopify/Haravan) · **`70` TikTok Shop — quyết định + số đo** · `71` brief thi công (tự chứa, đưa cho người ngoài) |
 | tiền | `15`,`16` QR · `37` lãi lỗ · `41` điểm · `49` thuê bao · `51`–`53` săn lỗ tiền · `54` sửa đơn · `55` tiền lạc · `66` công nợ · `67` tranh chấp · `68` email · `69` phí ship |
 | vận hành | `22` bootstrap · `23` backup · `27` observability · `31` CI · `32` test local · `33` sổ tay · `35` go-live · `36` PII |
 | **vì sao kho này khắt khe** | `61` "không biết ≠ chưa xảy ra" · `62` tồn an toàn · `63` đo luồng dùng · `64` vai ngày-60 · `65` vai lúc sự cố |

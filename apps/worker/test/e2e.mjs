@@ -474,7 +474,7 @@ async function main() {
   const code = /start=([^&\s]+)/.exec(tr.json?.deep_link ?? '')?.[1];
   code ? ok('shop tạo liên kết Telegram (deep-link có mã)') : bad('không tạo được liên kết', tr.raw);
   // 2) Giả lập chủ shop bấm START → worker getUpdates thấy "/start <code>" → bind chat_id.
-  const CHAT = '900100200';
+  const CHAT = String(900_000_000_000 + Math.floor(Math.random() * 99_999_999_999));
   tg.updates.push({ update_id: 1, message: { chat: { id: Number(CHAT) }, text: `/start ${code}` } });
   await (await fetch(`${WORKER}/internal/telegram-link-sweep`, { method: 'POST' })).json();
   await sleep(300);

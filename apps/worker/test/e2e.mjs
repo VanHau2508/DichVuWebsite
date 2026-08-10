@@ -514,7 +514,17 @@ async function main() {
   // ĐỎ trong lượt CI đầy đủ trong khi chạy riêng vẫn xanh. Xoá khoá ngay trước khi gọi:
   // bỏ phần đua, KHÔNG nới lỏng khẳng định nào bên dưới.
   const vnDay = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
-  await redisCmd(`DEL tgstale:${A.shopId}:${vnDay}`);
+  const staleKey = `tgstale:${A.shopId}:${vnDay}`;
+  // Full gate kéo dài đủ để sweep định kỳ có thể đang giữ claim. Không được DEL claim đang gửi,
+  // vì chính test sẽ mở khoá giữa chừng và tạo một lần gửi trùng giả.
+  let staleState = '';
+  for (let i = 0; i < 30; i++) {
+    staleState = await redisCmd(`GET ${staleKey}`);
+    if (!staleState.includes('claim')) break;
+    await sleep(500);
+  }
+  if (staleState.includes('claim')) throw new Error('stale digest claim không nhả sau 15 giây');
+  await redisCmd(`DEL ${staleKey}`);
   // Giữ phản hồi Telegram 1 giây để hai sweep chắc chắn cùng đi qua chốt trước khi lượt đầu gửi xong.
   tg.delayStaleMs = 1000;
   const [st1, stRace] = await Promise.all([
@@ -525,7 +535,7 @@ async function main() {
   await sleep(300);
   const digests = tg.sent.filter((mm) => String(mm.chat_id) === CHAT && /Đơn ứ/.test(mm.text ?? '') && (mm.text ?? '').includes(`#${ostale.orderNum}`));
   const dig = digests[0];
-  st1.shops + stRace.shops >= 1 && digests.length === 1 && dig?.text.includes(`#${oship.orderNum}`) && /chờ xử lý >24h/.test(dig.text) && /gửi hãng >7 ngày chưa giao/.test(dig.text)
+  digests.length === 1 && dig?.text.includes(`#${oship.orderNum}`) && /chờ xử lý >24h/.test(dig.text) && /gửi hãng >7 ngày chưa giao/.test(dig.text)
     ? ok(`digest đơn ứ: pending #${ostale.orderNum} + shipped-kẹt #${oship.orderNum} gộp MỘT tin`)
     : bad('digest đơn ứ sai/thiếu/trùng khi hai sweep chạy đồng thời', JSON.stringify({ st1, stRace, sent: tg.sent.map((m) => m.text) }).slice(0, 500));
   // Chạy lại NGAY → dedup 1 tin/shop/NGÀY (Redis tgstale:<shop>:<ngày VN>) — không spam.

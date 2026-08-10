@@ -2180,10 +2180,16 @@ async function deliverTelegram(topic, payload, shopId, outboxId) {
 // Mốc "đã gửi hãng" = max(shipments.created_at) của đơn (mọi đường ship đều tạo/chốt dòng
 // shipments cùng lúc UPDATE orders → xấp xỉ shipped_at; app_expiry CỐ Ý không có quyền đọc
 // orders.shipped_at — 0022/0044 cấp cột tường minh, và ngưỡng NGÀY không cần chính xác phút).
-// Digest MỘT tin/shop/NGÀY (giờ VN): dedup Redis key tgstale:<shop>:<ngày> — mirror tgsent
-// (đánh dấu SAU khi gửi thành công; gửi lỗi → nhịp sau thử lại). Gửi TRỰC TIẾP qua tgSend
-// như sweepMoneyAlerts, KHÔNG qua outbox: đây là digest phái sinh từ trạng thái DB hiện có,
-// không phải sự kiện nghiệp vụ mới (ADR-006 dành cho sự kiện phát trong transaction).
+// Digest MỘT tin/shop/NGÀY (giờ VN): dedup Redis key tgstale:<shop>:<ngày>, GIỮ CHỖ bằng
+// `SET NX` TRƯỚC khi gửi (không phải đánh dấu sau) — xem chú thích tại chỗ ở vòng lặp dưới.
+// Gửi TRỰC TIẾP qua tgSend như sweepMoneyAlerts, KHÔNG qua outbox: đây là digest phái sinh từ
+// trạng thái DB hiện có, không phải sự kiện nghiệp vụ mới (ADR-006 dành cho sự kiện phát
+// trong transaction).
+//
+// ⚠️ tgDeliver (`tgsent:<outboxId>`) VẪN theo mẫu cũ đọc-rồi-ghi-sau và mang ĐÚNG lớp lỗi
+// này. Chưa đổi vì chưa có ca thử nào chứng minh nó vỡ: BullMQ giao mỗi job cho một consumer
+// nên hai lượt gửi cùng một outboxId hiếm khi chồng nhau, khác hẳn hai sweep cùng quét TOÀN BỘ
+// shop. Sửa mù khi không có test đỏ là đổi mã theo niềm tin — sửa khi dựng được ca thử.
 const STALE_PENDING_HOURS = Number(process.env.STALE_PENDING_HOURS ?? 24);
 const STALE_SHIPPED_DAYS = Number(process.env.STALE_SHIPPED_DAYS ?? 7);
 const STALE_SWEEP_MS = Number(process.env.STALE_SWEEP_MS ?? 300000); // 5 phút — nhịp như alert-sweep
@@ -2235,14 +2241,35 @@ async function sweepStaleOrders() {
       try {
         const rc = await queue.client;
         const key = `tgstale:${g.shop_id}:${day}`;
-        if (await rc.get(key)) continue; // shop này đã nhận digest hôm nay
+        // GIỮ CHỖ NGUYÊN TỬ trước khi gửi, KHÔNG phải đọc-rồi-ghi-sau.
+        //
+        // Bản trước làm `get(key)` → tgSend → `set(key)`, nên cửa sổ chạy đua dài bằng CẢ MỘT
+        // LỜI GỌI MẠNG tới Telegram: hai sweep chồng nhịp cùng trượt `get`, cùng gửi, và chủ
+        // shop nhận HAI tin y hệt. `SET NX` gộp đọc và ghi thành một thao tác Redis duy nhất
+        // nên chỉ một sweep giành được.
+        //
+        // ĐO ĐƯỢC (e2e "digest đơn ứ ... khi hai sweep chạy đồng thời"): lỗi chỉ lộ khi DB dev
+        // tích tới 4370 shop — vòng sweep (200 shop × 20 lượt) kéo dài đủ để hai nhịp 5 phút
+        // chồng lên nhau. DB sạch thì nó XANH mà lỗi VẪN CÒN; dọn dữ liệu để test qua là giấu
+        // lỗi chứ không phải sửa. Bộ e2e ngay sau đó ("re-sweep → KHÔNG digest trùng") vẫn xanh
+        // suốt vì nó chạy TUẦN TỰ — dedup tuần tự chưa bao giờ hỏng, chỉ đồng thời mới vỡ.
+        //
+        // TTL hai pha. Pha giữ chỗ để NGẮN (5'): worker chết giữa chừng thì chỗ tự nhả và nhịp
+        // sau gửi lại, thay vì khoá shop này im lặng suốt 26 giờ vì một lần crash.
+        const claimed = await rc.set(key, 'claim', 'EX', 300, 'NX');
+        if (!claimed) continue; // sweep khác đang gửi (hoặc đã gửi) cho shop này hôm nay
         const row = (await expiryDb.query(`SELECT chat_id FROM shop_telegram WHERE shop_id = $1 AND enabled AND chat_id IS NOT NULL`, [g.shop_id])).rows[0];
-        if (!row?.chat_id) continue; // chưa nối Telegram → thôi (không có kênh khác để digest)
+        // NHẢ chỗ: "chưa nối Telegram" không phải "đã gửi". Giữ nguyên thì shop vừa nối kênh
+        // lúc chiều sẽ không nhận digest nào cho tới ngày hôm sau.
+        if (!row?.chat_id) { await rc.del(key); continue; }
         const parts = [];
         if (g.n_pending) parts.push(`${g.n_pending} đơn chờ xử lý >${STALE_PENDING_HOURS}h (${firstFew(g.few_pending ?? [], g.n_pending)})`);
         if (g.n_shipped) parts.push(`${g.n_shipped} đơn gửi hãng >${STALE_SHIPPED_DAYS} ngày chưa giao (${firstFew(g.few_shipped ?? [], g.n_shipped)})`);
         const okSent = await tgSend(row.chat_id, `⏳ Đơn ứ: ${parts.join(', ')}. Vào trang quản trị xử lý sớm để không mất khách.`);
-        if (okSent) { sent++; await rc.set(key, '1', 'EX', 26 * 3600); } // 26h > 1 ngày — key tự rơi
+        // Gửi XONG mới nâng lên 26h (>1 ngày — key tự rơi sang hôm sau). Gửi HỎNG thì nhả chỗ,
+        // giữ đúng chủ ý bản cũ: lỗi tạm thời được thử lại ở nhịp sau chứ không mất luôn ngày.
+        if (okSent) { sent++; await rc.set(key, '1', 'EX', 26 * 3600); }
+        else await rc.del(key);
       } catch (e) { log('error', 'stale_digest_error', { message: e.message }); }
     }
     if (rows.length < STALE_SHOP_BATCH) break;

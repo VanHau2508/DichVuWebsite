@@ -453,12 +453,18 @@ async function main() {
 
   // ── Thông báo TELEGRAM per-shop (stub Telegram API dbtest:9104) ──────────────
   sect('Thông báo Telegram per-shop');
-  const tg = { updates: [], sent: [] };
+  const tg = { updates: [], sent: [], delayStaleMs: 0 };
   const tgStub = http.createServer((rq2, rs2) => {
     let b = ''; rq2.on('data', (d) => (b += d)); rq2.on('end', () => {
       rs2.setHeader('content-type', 'application/json');
       if (/\/getUpdates/.test(rq2.url)) { const out = tg.updates.splice(0); return rs2.end(JSON.stringify({ ok: true, result: out })); }
-      if (/\/sendMessage/.test(rq2.url)) { try { tg.sent.push(JSON.parse(b)); } catch {} return rs2.end(JSON.stringify({ ok: true, result: {} })); }
+      if (/\/sendMessage/.test(rq2.url)) {
+        let msg;
+        try { msg = JSON.parse(b); tg.sent.push(msg); } catch {}
+        const done = () => rs2.end(JSON.stringify({ ok: true, result: {} }));
+        if (tg.delayStaleMs && /Đơn ứ/.test(msg?.text ?? '')) return setTimeout(done, tg.delayStaleMs);
+        return done();
+      }
       rs2.statusCode = 404; rs2.end('{}');
     });
   });
@@ -509,12 +515,19 @@ async function main() {
   // bỏ phần đua, KHÔNG nới lỏng khẳng định nào bên dưới.
   const vnDay = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
   await redisCmd(`DEL tgstale:${A.shopId}:${vnDay}`);
-  const st1 = await (await fetch(`${WORKER}/internal/stale-sweep`, { method: 'POST' })).json();
+  // Giữ phản hồi Telegram 1 giây để hai sweep chắc chắn cùng đi qua chốt trước khi lượt đầu gửi xong.
+  tg.delayStaleMs = 1000;
+  const [st1, stRace] = await Promise.all([
+    fetch(`${WORKER}/internal/stale-sweep`, { method: 'POST' }).then((r) => r.json()),
+    fetch(`${WORKER}/internal/stale-sweep`, { method: 'POST' }).then((r) => r.json()),
+  ]);
+  tg.delayStaleMs = 0;
   await sleep(300);
-  const dig = tg.sent.find((mm) => String(mm.chat_id) === CHAT && /Đơn ứ/.test(mm.text ?? '') && (mm.text ?? '').includes(`#${ostale.orderNum}`));
-  st1.shops >= 1 && dig && dig.text.includes(`#${oship.orderNum}`) && /chờ xử lý >24h/.test(dig.text) && /gửi hãng >7 ngày chưa giao/.test(dig.text)
+  const digests = tg.sent.filter((mm) => String(mm.chat_id) === CHAT && /Đơn ứ/.test(mm.text ?? '') && (mm.text ?? '').includes(`#${ostale.orderNum}`));
+  const dig = digests[0];
+  st1.shops + stRace.shops >= 1 && digests.length === 1 && dig?.text.includes(`#${oship.orderNum}`) && /chờ xử lý >24h/.test(dig.text) && /gửi hãng >7 ngày chưa giao/.test(dig.text)
     ? ok(`digest đơn ứ: pending #${ostale.orderNum} + shipped-kẹt #${oship.orderNum} gộp MỘT tin`)
-    : bad('digest đơn ứ sai/thiếu', JSON.stringify({ st1, sent: tg.sent.map((m) => m.text) }).slice(0, 400));
+    : bad('digest đơn ứ sai/thiếu/trùng khi hai sweep chạy đồng thời', JSON.stringify({ st1, stRace, sent: tg.sent.map((m) => m.text) }).slice(0, 500));
   // Chạy lại NGAY → dedup 1 tin/shop/NGÀY (Redis tgstale:<shop>:<ngày VN>) — không spam.
   tg.sent.length = 0;
   const st2 = await (await fetch(`${WORKER}/internal/stale-sweep`, { method: 'POST' })).json();

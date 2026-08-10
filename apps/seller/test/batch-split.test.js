@@ -35,7 +35,7 @@ test('hình dạng 641 dòng và 124 sản phẩm được chia ba lô mà khôn
   }
 });
 
-test('gộp kết quả nhiều lô giữ số bỏ qua và không sinh trường cập nhật của Đợt 4', () => {
+test('gộp kết quả nhiều lô giữ số bỏ qua và cộng đủ thống kê cập nhật của Đợt 4', () => {
   const merged = mergeImportResults([
     { dry_run: true, rows: 400, groups: 80, created: 79, variants: 400, skipped_existing: 1,
       images: { queued: 180, invalid: 0 }, columns: { recognised: [{ header: 'product_id', field: 'handle' }], ignored: ['cod'] } },
@@ -50,5 +50,14 @@ test('gộp kết quả nhiều lô giữ số bỏ qua và không sinh trườn
   assert.equal(merged.images.queued, 299);
   assert.equal(merged.columns.recognised.length, 1);
   assert.deepEqual(merged.columns.ignored, ['cod']);
-  assert.equal(Object.hasOwn(merged, 'updated'), false);
+  assert.equal(merged.updated, 0);
+  assert.equal(merged.variants_updated, 0);
+});
+
+test('gộp nhiều lô giữ một ngân sách ảnh chung thay vì cấp lại trần cho từng lô', () => {
+  const merged = mergeImportResults([
+    { images: { queued: 2, invalid: 1, skipped: 0, limit: 3, remaining: 1 } },
+    { images: { queued: 1, invalid: 0, skipped: 4, limit: 1, remaining: 0 } },
+  ]);
+  assert.deepEqual(merged.images, { queued: 3, invalid: 1, skipped: 4, limit: 3, remaining: 0 });
 });

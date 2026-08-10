@@ -46,14 +46,24 @@ export function splitProductBatches(rows, { maxProducts = 200, maxBytes = 1_500_
 
 export function mergeImportResults(results) {
   const out = { dry_run: results.every((r) => r.dry_run === true), rows: 0, groups: 0, created: 0,
-    variants: 0, failed: 0, skipped_existing: 0, errors: [], preview: [], axisHints: [],
-    images: { queued: 0, invalid: 0, skipped: 0 }, columns: { recognised: [], ignored: [] } };
+    updated: 0, unchanged: 0, variants: 0, variants_updated: 0, variants_created: 0,
+    failed: 0, skipped_existing: 0, errors: [], diffs: [], missing_variants: [], warnings: [], preview: [], axisHints: [],
+    images: { queued: 0, invalid: 0, skipped: 0, limit: Number(results[0]?.images?.limit ?? 0), remaining: 0 },
+    columns: { recognised: [], ignored: [] },
+    import_mode: results[0]?.import_mode ?? 'create_only',
+    update_content: results[0]?.update_content !== false,
+    update_price: results[0]?.update_price === true,
+    update_stock: results[0]?.update_stock === true,
+    price_confirmed: results[0]?.price_confirmed === true };
   const recognised = new Set();
   const ignored = new Set();
   for (const r of results) {
-    for (const key of ['rows', 'groups', 'created', 'variants', 'failed', 'skipped_existing']) out[key] += Number(r[key] ?? 0);
+    for (const key of ['rows', 'groups', 'created', 'updated', 'unchanged', 'variants', 'variants_updated', 'variants_created', 'failed', 'skipped_existing']) out[key] += Number(r[key] ?? 0);
     for (const key of ['queued', 'invalid', 'skipped']) out.images[key] += Number(r.images?.[key] ?? 0);
     out.errors.push(...(r.errors ?? []));
+    out.diffs.push(...(r.diffs ?? []));
+    out.missing_variants.push(...(r.missing_variants ?? []));
+    out.warnings.push(...(r.warnings ?? []));
     out.preview.push(...(r.preview ?? []));
     out.axisHints.push(...(r.axisHints ?? []));
     for (const c of r.columns?.recognised ?? []) {
@@ -63,6 +73,10 @@ export function mergeImportResults(results) {
     for (const h of r.columns?.ignored ?? []) if (!ignored.has(h)) { ignored.add(h); out.columns.ignored.push(h); }
   }
   out.errors = out.errors.slice(0, 100);
+  out.diffs = out.diffs.slice(0, 500);
+  out.missing_variants = out.missing_variants.slice(0, 200);
+  out.warnings = out.warnings.slice(0, 100);
   out.preview = out.preview.slice(0, 20);
+  out.images.remaining = Number(results.at(-1)?.images?.remaining ?? 0);
   return out;
 }

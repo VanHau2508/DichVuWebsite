@@ -21,6 +21,7 @@ const doc = (p) => readFileSync(join(ROOT, p), 'utf8');
 
 const MOUNT = '../packages/inventory/src/safety-stock.js:/app/safety-stock.js:ro';
 const IMPORT = "from '../safety-stock.js'";
+const XLSX_MOUNT = '../apps/seller/src/xlsx-read.js:/app/xlsx-read.js:ro';
 
 // Tên thư mục service → tên service trong compose (trùng nhau ở repo này, giữ ánh xạ cho rõ).
 function servicesDungCongThuc() {
@@ -66,6 +67,18 @@ test('service nào import công thức tồn an toàn thì cả hai compose đ�
         `${compose}: service "${svc}" import '../safety-stock.js' nhưng KHÔNG mount file đó.\n` +
         `  → thêm vào volumes của "${svc}":  - ${MOUNT}`);
     }
+  }
+});
+
+test('seller-admin import XLSX thì cả hai compose đều mount bộ đọc dùng chung', () => {
+  const server = doc('apps/seller-admin/src/server.js');
+  assert.match(server, /from ['"]\.\.\/xlsx-read\.js['"]/, 'seller-admin không còn import bộ đọc XLSX');
+  for (const compose of ['infra/compose.dev.yml', 'infra/compose.prod.yml']) {
+    const block = khoiService(compose).get('seller-admin');
+    assert.ok(block, `${compose}: không thấy khối service "seller-admin"`);
+    assert.ok(block.includes(XLSX_MOUNT),
+      `${compose}: seller-admin import xlsx-read.js nhưng KHÔNG mount bộ đọc dùng chung.\n` +
+      `  → thêm vào volumes của seller-admin:  - ${XLSX_MOUNT}`);
   }
 });
 

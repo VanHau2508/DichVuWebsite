@@ -1414,6 +1414,16 @@ async function productImport(req, res, me, cookie, shopId) {
   if (countProductGroups(rows) > 1000) return productImportPage(res, me, cookie, shopId, null, 'Tối đa 1000 sản phẩm mỗi lần nhập.');
   const axisNames = {};
   const splitOff = [];
+  const fieldOn = (name) => String(parsed?.fields?.[name] ?? '') === '1';
+  const requestedImportMode = String(parsed?.fields?.import_mode ?? 'create_only');
+  const importMode = ['create_only', 'update_only', 'upsert'].includes(requestedImportMode) ? requestedImportMode : 'create_only';
+  const importOptions = {
+    import_mode: importMode,
+    update_price: fieldOn('update_price'),
+    update_stock: fieldOn('update_stock'),
+    update_content: parsed?.fields?.update_content === undefined || fieldOn('update_content'),
+    price_confirmed: fieldOn('price_confirmed'),
+  };
   for (const [key, value] of Object.entries(parsed?.fields ?? {})) {
     const axis = /^axis_(\d{10,})_([123])$/.exec(key);
     if (axis) {
@@ -1427,17 +1437,21 @@ async function productImport(req, res, me, cookie, shopId) {
   try { batches = splitProductBatches(rows); }
   catch (e) { return productImportPage(res, me, cookie, shopId, null, e.message); }
   const results = [];
+  let remainingImageBudget;
   for (const batch of batches) {
     // 70 giây giữ khoảng đệm cho ngân sách ảnh 45 giây; hiện ảnh được xếp hàng nền nhưng
     // giữ trần này để không tái sinh lỗi client timeout trong lúc seller đã ghi thành công.
     const r = await sellerApi('POST', `/shops/${shopId}/products/import`, {
       cookie,
       body: { rows: batch, dry_run: dryRun, axis_names: axisNames, split_off: splitOff,
+        ...(remainingImageBudget === undefined ? {} : { image_limit: remainingImageBudget }),
+        ...importOptions,
       },
       timeoutMs: dryRun ? 30000 : 70000,
     });
     if (r.status !== 200) return productImportPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không nhập được — kiểm tra quyền hoặc định dạng tệp.');
     results.push(r.json ?? {});
+    remainingImageBudget = Math.max(0, Number(r.json?.images?.remaining ?? 0));
   }
   return productImportPage(res, me, cookie, shopId, { ...mergeImportResults(results), total: rows.length }, null);
 }

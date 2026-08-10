@@ -450,10 +450,10 @@ còn lại                                        → 'chuẩn'     (tệp mẫu
 
 ## 6. ĐỢT 3 — Lưu tham chiếu + màn hình
 
-### 6.1 Migration mới: `packages/db/migrations/0148_product_source_refs.sql`
+### 6.1 Migration mới: `packages/db/migrations/0152_product_source_refs.sql`
 
-**Số `0148` — kiểm lại thư mục trước khi đặt tên, đừng trùng.** File migration **bất biến**:
-đã áp rồi thì sửa gì cũng bằng file mới.
+**Số `0152` — các migration `0148`–`0151` đã tồn tại trong kho.** File migration **bất biến**:
+đã áp rồi thì sửa gì cũng bằng file mới; không đổi tên về `0148`.
 
 ```sql
 CREATE TABLE product_source_refs (

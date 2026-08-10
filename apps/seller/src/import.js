@@ -18,9 +18,10 @@ import { send } from './http.js';
 import { parseAmount, parseOrderDate } from './import-parse.js';
 import { adaptRows, inspectSourceColumns } from './adapters/index.js';
 import { withTenant, audit } from './db.js';
+import { purgeReplacedProductMedia } from './media.js';
 import {
   isInt, validPrice, validTitle, validSku, validSlug, validWeight, validCompareAt, validCost,
-  slugify, planMaxProducts, catalogCount, conflictMessage,
+  slugify, planMaxProducts, catalogCount, conflictMessage, syncProductPrice,
 } from './catalog.js';
 
 const IMPORT_MAX_PRODUCTS = 1000;
@@ -37,6 +38,13 @@ const MAX_CATEGORY_DEPTH = 2;           // 0095: chỉ 2 cấp
 // VẪN kiểm URL NGAY TẠI ĐÂY (rẻ, không chạm mạng): người bán phải biết LIỀN nếu tệp dùng
 // đường dẫn tương đối hay sai scheme, chứ không phải mười phút sau mới thấy 300 ảnh hỏng.
 const IMG_MAX_PER_IMPORT = Number(process.env.IMPORT_IMG_MAX ?? 2000);
+
+function imageLimitForRequest(body = {}) {
+  if (body.image_limit === undefined) return IMG_MAX_PER_IMPORT;
+  const requested = Number(body.image_limit);
+  if (!Number.isFinite(requested)) return IMG_MAX_PER_IMPORT;
+  return Math.min(IMG_MAX_PER_IMPORT, Math.max(0, Math.floor(requested)));
+}
 
 /** URL có DÁNG hợp lệ để xếp hàng? Chỉ kiểm cú pháp — hàng rào SSRF thật chạy ở worker. */
 function looksFetchable(u) {
@@ -432,6 +440,348 @@ function reserveImportedSku(base, reserved) {
   return sku;
 }
 
+const IMPORT_MODES = new Set(['create_only', 'update_only', 'upsert']);
+
+function importFlags(body = {}) {
+  const requestedMode = String(body.import_mode ?? body.mode ?? '');
+  const mode = IMPORT_MODES.has(requestedMode) ? requestedMode : 'create_only';
+  return {
+    mode,
+    updateContent: body.update_content !== false,
+    updatePrice: body.update_price === true,
+    updateStock: body.update_stock === true,
+    priceConfirmed: body.price_confirmed === true,
+  };
+}
+
+function sourceFields(p, adapted) {
+  p.source = adapted.source;
+  if (adapted.source !== 'tiktok') return p;
+  p.sourceProductId = p.slug;
+  p.sourceRawRow = adapted.sourceRefs.products.get(p.sourceProductId)?.rawRow ?? null;
+  for (const v of p.variants) {
+    const ref = adapted.sourceRefs.variants.get(v.sku);
+    if (ref) { v.sourceVariantId = ref.externalId; v.sourceRawRow = ref.rawRow; }
+  }
+  return p;
+}
+
+async function readImportTarget(c, productId, lock = false) {
+  const suffix = lock ? ' FOR UPDATE' : '';
+  const product = (await c.query(
+    `SELECT id, title, description, price_vnd FROM products
+      WHERE id = $1 AND deleted_at IS NULL${suffix}`, [productId])).rows[0];
+  if (!product) return null;
+  const variants = (await c.query(
+    `SELECT r.external_id, r.id AS source_ref_id, r.variant_id,
+            v.sku, v.price_vnd, v.compare_at_vnd,
+            coalesce(il.on_hand, 0)::int AS on_hand,
+            coalesce(il.reserved, 0)::int AS reserved
+       FROM product_source_refs r
+       JOIN variants v ON v.id = r.variant_id AND v.product_id = r.product_id
+       LEFT JOIN inventory_levels il ON il.variant_id = v.id
+       WHERE r.source = 'tiktok' AND r.kind = 'variant' AND r.product_id = $1
+      ORDER BY v.position${lock ? ' FOR UPDATE OF r, v' : ''}`, [productId])).rows;
+  const media = (await c.query(
+    `SELECT id, source_url, public_key, original_key, position
+       FROM media WHERE product_id = $1 AND deleted_at IS NULL ORDER BY position`, [productId])).rows;
+  return { product, variants, media };
+}
+
+function importDiff(productId, p, target, flags) {
+  const diffs = [], errors = [], priceChanges = [], stockChanges = [], newVariants = [];
+  const currentByExternal = new Map(target.variants.map((v) => [String(v.external_id), v]));
+  const incomingByExternal = new Map();
+  const add = (field, from, to, action, extra = {}) => diffs.push({
+    product_id: productId, product_external_id: p.sourceProductId, field,
+    from: from == null ? null : from, to: to == null ? null : to, action, ...extra,
+  });
+
+  if (flags.updateContent) {
+    if (target.product.title !== p.title) add('title', target.product.title, p.title, 'update');
+    if ((target.product.description ?? null) !== (p.description ?? null)) add('description', target.product.description, p.description, 'update');
+    if (p.images.length) {
+      const oldUrls = target.media.map((m) => m.source_url).filter(Boolean);
+      if (JSON.stringify(oldUrls) !== JSON.stringify(p.images)) {
+        add('images', oldUrls.length, p.images.length, 'update', { sku: null });
+      }
+    }
+  }
+
+  for (const v of p.variants) {
+    const externalId = String(v.sourceVariantId ?? '');
+    if (!externalId) {
+      errors.push({ line: v.line, title: p.title, error: 'TikTok thiếu sku_id — không thể cập nhật an toàn' });
+      continue;
+    }
+    if (incomingByExternal.has(externalId)) {
+      errors.push({ line: v.line, title: p.title, error: `sku_id TikTok lặp: ${externalId}` });
+      continue;
+    }
+    incomingByExternal.set(externalId, v);
+    const cur = currentByExternal.get(externalId);
+    if (!cur) {
+      if (flags.mode === 'upsert') {
+        newVariants.push(v);
+        add('variant', null, v.price, 'create', { external_id: externalId, sku: v.sku });
+      } else {
+        errors.push({ line: v.line, title: p.title, error: `sku_id mới ${externalId} không tồn tại trong shop (update_only không tạo mới)` });
+        add('variant', null, v.price, 'reject', { external_id: externalId, sku: v.sku });
+      }
+      continue;
+    }
+
+    if (flags.updatePrice && Number(cur.price_vnd) !== Number(v.price)) {
+      const compareAt = v.compareAt !== null ? v.compareAt : (cur.compare_at_vnd == null ? null : Number(cur.compare_at_vnd));
+      if (compareAt != null && compareAt <= Number(v.price)) {
+        errors.push({ line: v.line, title: p.title, error: `giá mới của ${externalId} không được cao hơn hoặc bằng giá gạch đang có` });
+        add('price_vnd', Number(cur.price_vnd), v.price, 'reject', { external_id: externalId, sku: cur.sku });
+      } else {
+        priceChanges.push({ cur, incoming: v, compareAt });
+        add('price_vnd', Number(cur.price_vnd), v.price, 'update', { external_id: externalId, sku: cur.sku });
+      }
+    } else if (!flags.updatePrice && Number(cur.price_vnd) !== Number(v.price)) {
+      add('price_vnd', Number(cur.price_vnd), v.price, 'skip', { external_id: externalId, sku: cur.sku, reason: 'chưa bật cập nhật giá' });
+    }
+
+    if (flags.updateStock && Number(cur.on_hand) !== Number(v.stock)) {
+      if (Number(v.stock) < Number(cur.reserved)) {
+        errors.push({ line: v.line, title: p.title, error: `tồn mới của ${externalId} thấp hơn số đang giữ chỗ (${cur.reserved})` });
+        add('stock', Number(cur.on_hand), v.stock, 'reject', { external_id: externalId, sku: cur.sku });
+      } else {
+        stockChanges.push({ cur, incoming: v });
+        add('stock', Number(cur.on_hand), v.stock, 'update', { external_id: externalId, sku: cur.sku });
+      }
+    } else if (!flags.updateStock && Number(cur.on_hand) !== Number(v.stock)) {
+      add('stock', Number(cur.on_hand), v.stock, 'skip', { external_id: externalId, sku: cur.sku, reason: 'chưa bật cập nhật tồn' });
+    }
+  }
+
+  for (const cur of target.variants) {
+    if (!incomingByExternal.has(String(cur.external_id))) {
+      add('variant', cur.sku, null, 'keep', {
+        external_id: cur.external_id, sku: cur.sku,
+        reason: 'biến thể đang có trong shop không xuất hiện trong file — giữ nguyên',
+      });
+    }
+  }
+
+  return { diffs, errors, priceChanges, stockChanges, newVariants, changed: diffs.some((d) => d.action === 'update' || d.action === 'create') };
+}
+
+async function loadProductOptions(c, productId) {
+  const rows = (await c.query(
+    `SELECT o.id, o.name, o.position, ov.id AS value_id, ov.value, ov.position AS value_position
+       FROM product_options o LEFT JOIN option_values ov ON ov.option_id = o.id
+      WHERE o.product_id = $1 ORDER BY o.position, ov.position`, [productId])).rows;
+  const out = [];
+  for (const row of rows) {
+    let option = out.find((x) => x.id === row.id);
+    if (!option) { option = { id: row.id, name: row.name, position: row.position, values: new Map() }; out.push(option); }
+    if (row.value_id) option.values.set(row.value, row.value_id);
+  }
+  return out;
+}
+
+async function ensureVariantOptions(c, productId, axes, values) {
+  const options = await loadProductOptions(c, productId);
+  const links = [];
+  for (let i = 0; i < axes.length; i++) {
+    let option = options[i];
+    if (!option) {
+      option = (await c.query(
+        `INSERT INTO product_options (shop_id, product_id, name, position)
+         VALUES (current_shop_id(), $1, $2, $3) RETURNING id`, [productId, axes[i].name.slice(0, 60), i])).rows[0];
+      option.values = new Map();
+      options.push(option);
+    }
+    const value = String(values[i] ?? '').slice(0, 60);
+    let valueId = option.values.get(value);
+    if (!valueId) {
+      valueId = (await c.query(
+        `INSERT INTO option_values (shop_id, option_id, value, position)
+         VALUES (current_shop_id(), $1, $2, (SELECT coalesce(max(position), -1) + 1 FROM option_values WHERE option_id = $1))
+         RETURNING id`, [option.id, value])).rows[0].id;
+      option.values.set(value, valueId);
+    }
+    links.push([option.id, valueId]);
+  }
+  return links;
+}
+
+async function applyStockImport(c, ctx, variantId, desired, current) {
+  const next = Number(desired);
+  if (!Number.isInteger(next) || next < 0) return { error: 'tồn kho không hợp lệ' };
+  await c.query(
+    `INSERT INTO inventory_levels (shop_id, variant_id, on_hand)
+     VALUES (current_shop_id(), $1, 0)
+     ON CONFLICT (shop_id, variant_id) DO NOTHING`, [variantId]);
+  const locked = (await c.query(
+    `SELECT on_hand, reserved FROM inventory_levels
+      WHERE variant_id = $1 AND shop_id = current_shop_id() FOR UPDATE`, [variantId])).rows[0];
+  if (!locked) return { error: 'không tìm thấy dòng tồn kho của biến thể' };
+  const onHand = Number(locked.on_hand), reserved = Number(locked.reserved);
+  if (next < reserved) return { error: `tồn mới thấp hơn số đang giữ chỗ (${reserved})` };
+  if (next === onHand) return { changed: false };
+  await c.query(
+    `UPDATE inventory_levels SET on_hand = $2, updated_at = now()
+      WHERE variant_id = $1 AND shop_id = current_shop_id()`, [variantId, next]);
+  await c.query(
+    `INSERT INTO inventory_ledger (shop_id, variant_id, delta, kind, reason, actor_id)
+     VALUES (current_shop_id(), $1, $2, 'adjust', 'nhập từ TikTok', $3)`,
+    [variantId, next - onHand, ctx.user.id]);
+  return { changed: true, from: onHand, to: next };
+}
+
+async function queueImportImages(c, ctx, productId, urls, imageState) {
+  if (!urls.length) return { changed: false, replaced: [] };
+  const mediaRows = (await c.query(
+    `SELECT id, source_url, public_key, original_key, deleted_at
+       FROM media WHERE product_id = $1 ORDER BY position FOR UPDATE`, [productId])).rows;
+  const oldRows = mediaRows.filter((r) => r.deleted_at === null);
+  const staleRows = mediaRows.filter((r) => r.deleted_at !== null);
+  const validUrls = [];
+  for (const url of urls) {
+    if (!looksFetchable(url)) { imageState.invalid++; continue; }
+    // Tính cả URL đã giữ chỗ trong chính sản phẩm này; nếu chỉ nhìn queued thì một sản phẩm
+    // có thể đẩy tổng vượt trần trước khi vòng INSERT bắt đầu tăng bộ đếm.
+    if (imageState.queued + validUrls.length >= imageState.limit) { imageState.overflow++; continue; }
+    validUrls.push(String(url).slice(0, 2000));
+  }
+  if (!validUrls.length) return { changed: false, replaced: staleRows };
+  const old = oldRows.map((r) => r.source_url).filter(Boolean);
+  if (oldRows.length === old.length && JSON.stringify(old) === JSON.stringify(validUrls)) {
+    return { changed: false, replaced: staleRows };
+  }
+  await c.query(`UPDATE media SET deleted_at = now() WHERE product_id = $1 AND deleted_at IS NULL`, [productId]);
+  for (const url of validUrls) {
+    const mediaId = crypto.randomUUID();
+    await c.query(
+      `INSERT INTO media (id, shop_id, product_id, status, source_url, original_key, position)
+       VALUES ($2, current_shop_id(), $1, 'pending', $3, $4,
+               (SELECT coalesce(max(position), -1) + 1 FROM media WHERE product_id = $1 AND deleted_at IS NULL))`,
+       [productId, mediaId, url, `staging/${ctx.shopId}/${mediaId}`]);
+    imageState.queued++;
+  }
+  return { changed: true, replaced: [...staleRows, ...oldRows] };
+}
+
+async function activePromotionWarnings(c, productId) {
+  const rows = (await c.query(
+    `SELECT p.id, p.title, p.scope
+       FROM promotions p
+      WHERE p.active = true AND p.starts_at <= now() AND p.ends_at > now()
+        AND (p.scope = 'all' OR EXISTS (
+          SELECT 1 FROM promotion_products pp
+           WHERE pp.promotion_id = p.id AND pp.product_id = $1
+        ))
+      ORDER BY p.starts_at`, [productId])).rows;
+  return rows.map((r) => ({
+    type: 'active_promotion', product_id: productId, promotion_id: r.id,
+    message: `Sản phẩm đang nằm trong khuyến mãi "${r.title}"; đổi giá gốc có thể ảnh hưởng giá khách thấy.`,
+  }));
+}
+
+async function updateImportedProduct(ctx, p, existing, flags, imageState) {
+  const result = await withTenant(ctx.shopId, async (c) => {
+    const target = await readImportTarget(c, existing.product_id, true);
+    if (!target) return { missing: true };
+    const plan = importDiff(existing.product_id, p, target, flags);
+    let changed = false, variantsUpdated = 0, variantsCreated = 0;
+    const warnings = plan.priceChanges.length ? await activePromotionWarnings(c, existing.product_id) : [];
+
+    if (flags.updateContent && (target.product.title !== p.title || (target.product.description ?? null) !== (p.description ?? null))) {
+      await c.query(`UPDATE products SET title = $1, description = $2 WHERE id = $3 AND deleted_at IS NULL`, [p.title, p.description, existing.product_id]);
+      changed = true;
+    }
+    let replacedMedia = [];
+    if (flags.updateContent) {
+      const images = await queueImportImages(c, ctx, existing.product_id, p.images, imageState);
+      changed = images.changed || changed;
+      replacedMedia = images.replaced;
+    }
+
+    for (const change of plan.priceChanges) {
+      const sets = ['price_vnd = $1'];
+      const args = [change.incoming.price];
+      if (change.incoming.compareAt !== null && Number(change.cur.compare_at_vnd ?? -1) !== Number(change.incoming.compareAt)) {
+        sets.push(`compare_at_vnd = $${args.length + 1}`); args.push(change.incoming.compareAt);
+      }
+      args.push(change.cur.variant_id);
+      await c.query(`UPDATE variants SET ${sets.join(', ')} WHERE id = $${args.length}`, args);
+      changed = true; variantsUpdated++;
+    }
+    for (const change of plan.stockChanges) {
+      const result = await applyStockImport(c, ctx, change.cur.variant_id, change.incoming.stock, change.cur);
+      if (result.error) {
+        plan.errors.push({ line: change.incoming.line, title: p.title, error: result.error });
+        continue;
+      }
+      if (result.changed) { changed = true; variantsUpdated++; }
+    }
+
+    if (flags.mode === 'upsert') {
+      const reserved = new Set((await c.query(`SELECT sku FROM variants WHERE shop_id = current_shop_id()`)).rows.map((r) => r.sku));
+      for (const v of plan.newVariants) {
+        v.sku = reserveImportedSku(v.sku, reserved);
+        const links = await ensureVariantOptions(c, existing.product_id, p.axes, v.values);
+        const title = v.values.length ? v.values.join(' / ') : null;
+        const inserted = (await c.query(
+          `INSERT INTO variants (shop_id, product_id, title, sku, price_vnd, compare_at_vnd, weight_gram, position)
+           VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6,
+                   (SELECT coalesce(max(position), -1) + 1 FROM variants WHERE product_id = $1)) RETURNING id`,
+          [existing.product_id, title, v.sku, v.price, v.compareAt, v.weight])).rows[0];
+        for (const [optionId, valueId] of links) {
+          await c.query(
+            `INSERT INTO variant_option_values (shop_id, variant_id, option_id, option_value_id)
+             VALUES (current_shop_id(), $1, $2, $3) ON CONFLICT DO NOTHING`, [inserted.id, optionId, valueId]);
+        }
+        if (v.stock > 0) {
+          await c.query(`INSERT INTO inventory_levels (shop_id, variant_id, on_hand) VALUES (current_shop_id(), $1, $2)`, [inserted.id, v.stock]);
+          await c.query(
+            `INSERT INTO inventory_ledger (shop_id, variant_id, delta, kind, reason, actor_id)
+             VALUES (current_shop_id(), $1, $2, 'receive', 'nhập biến thể mới từ TikTok', $3)`, [inserted.id, v.stock, ctx.user.id]);
+        }
+        await c.query(
+          `INSERT INTO product_source_refs (shop_id, source, kind, external_id, product_id, variant_id, raw_row)
+           VALUES (current_shop_id(), 'tiktok', 'variant', $1, $2, $3, $4)`,
+          [v.sourceVariantId, existing.product_id, inserted.id, v.sourceRawRow ?? null]);
+        changed = true; variantsCreated++;
+      }
+    }
+    for (const incoming of p.variants) {
+      if (!incoming.sourceVariantId) continue;
+      const current = target.variants.find((v) => String(v.external_id) === String(incoming.sourceVariantId));
+      if (current?.source_ref_id) {
+        await c.query(
+          `UPDATE product_source_refs SET raw_row = $1, imported_at = now() WHERE id = $2`,
+          [incoming.sourceRawRow ?? null, current.source_ref_id],
+        );
+      }
+    }
+    await c.query(
+      `UPDATE product_source_refs SET raw_row = $1, imported_at = now()
+        WHERE id = $2`, [p.sourceRawRow ?? null, existing.id]);
+    if (changed && (plan.priceChanges.length || variantsCreated)) {
+      await syncProductPrice(c, existing.product_id);
+    }
+    if (changed) await audit(c, 'product.updated_by_import', {
+      actorId: ctx.user.id, ip: ctx.ip,
+      metadata: { productId: existing.product_id, source: p.source, mode: flags.mode, changes: plan.diffs.slice(0, 100) },
+    });
+    return { ...plan, changed, variantsUpdated, variantsCreated, warnings, replacedMedia };
+  });
+  if (result.replacedMedia?.length) {
+    const cleanup = await purgeReplacedProductMedia(ctx.shopId, result.replacedMedia);
+    if (cleanup.failed) result.warnings.push({
+      type: 'media_cleanup_failed', product_id: existing.product_id,
+      message: `${cleanup.failed} ảnh cũ đã ẩn nhưng chưa dọn được khỏi kho; hệ thống sẽ thử lại khi thay ảnh lần sau.`,
+    });
+  }
+  delete result.replacedMedia;
+  return result;
+}
+
 // ── Handler ────────────────────────────────────────────────────────────────
 export async function importProducts(res, ctx, body) {
   const originalRows = Array.isArray(body.rows) ? body.rows : [];
@@ -451,13 +801,20 @@ export async function importProducts(res, ctx, body) {
   }
 
   const columns = inspectSourceColumns(originalRows, adapted.source) ?? inspectColumns(originalRows);
+  const flags = adapted.source === 'tiktok' ? importFlags(body) : {
+    mode: 'create_only', updateContent: true, updatePrice: false, updateStock: false, priceConfirmed: false,
+  };
+  const imageLimit = imageLimitForRequest(body);
+  if (adapted.source === 'tiktok' && flags.mode !== 'create_only' && flags.updatePrice && !flags.priceConfirmed) {
+    return send(res, 400, { error: 'Cập nhật giá TikTok cần bật xác nhận giá riêng trước khi thực hiện' });
+  }
 
   // XEM TRƯỚC: kiểm + gộp rồi trả kết quả, KHÔNG ghi một dòng nào và KHÔNG tải ảnh.
   // Vì sao đáng có: file 500 dòng nhập sai một lần là 500 sản phẩm rác phải xoá tay. Mọi
   // hàm kiểm ở trên đều THUẦN nên chế độ này gần như miễn phí — chỉ là dừng trước khi ghi.
   if (body.dry_run === true) {
     const errs = [], preview = [];
-    let variants = 0, imgOk = 0, imgBad = 0;
+    let variants = 0, imgOk = 0, imgBad = 0, imgOverflow = 0;
     const sourceIds = [];
     for (const g of groups) {
       const built = buildProduct(g);
@@ -467,22 +824,62 @@ export async function importProducts(res, ctx, body) {
       variants += p.variants.length;
       // Đếm ĐÚNG NHƯ lúc ghi thật: xem trước báo "10 ảnh" rồi lúc nhập ra "7 xếp hàng,
       // 3 sai định dạng" là xem trước nói dối.
-      for (const u of p.images) (looksFetchable(u) ? imgOk++ : imgBad++);
+      for (const u of p.images) {
+        if (!looksFetchable(u)) imgBad++;
+        else if (imgOk >= imageLimit) imgOverflow++;
+        else imgOk++;
+      }
       if (preview.length < 20) {
         preview.push({ title: p.title, slug: p.slug, variants: p.variants.length,
           axes: p.axes.map((a) => a.name), category: p.catPath.join(' > ') });
       }
     }
-    let skippedExisting = 0;
+    let skippedExisting = 0, updated = 0, unchanged = 0, variantsUpdated = 0, variantsCreated = 0;
+    const diffs = [], missingVariants = [], warnings = [];
     if (sourceIds.length) {
       skippedExisting = await withTenant(ctx.shopId, async (c) => (await c.query(
         `SELECT count(*)::int AS n FROM product_source_refs
          WHERE source = 'tiktok' AND kind = 'product' AND external_id = ANY($1::text[])`, [sourceIds])).rows[0]?.n ?? 0);
     }
+    if (adapted.source === 'tiktok' && flags.mode !== 'create_only') {
+      for (const g of groups) {
+        const built = buildProduct(g);
+        if (!built.ok) continue;
+        const p = sourceFields(built.product, adapted);
+        const existing = await findSourceProduct(ctx, p);
+        if (!existing) {
+          if (flags.mode === 'update_only') errs.push({ line: p.line, title: p.title, error: 'không tìm thấy sản phẩm TikTok đã nhập để cập nhật' });
+          continue;
+        }
+        const plan = await withTenant(ctx.shopId, async (c) => {
+          const target = await readImportTarget(c, existing.product_id, false);
+          if (!target) return null;
+          const result = importDiff(existing.product_id, p, target, flags);
+          result.warnings = result.priceChanges.length ? await activePromotionWarnings(c, existing.product_id) : [];
+          return result;
+        });
+        if (!plan) { errs.push({ line: p.line, title: p.title, error: 'sản phẩm nguồn không còn tồn tại' }); continue; }
+        diffs.push(...plan.diffs);
+        errs.push(...plan.errors);
+        warnings.push(...(plan.warnings ?? []));
+        missingVariants.push(...plan.diffs.filter((d) => d.action === 'keep'));
+        if (plan.changed) updated++; else unchanged++;
+        variantsUpdated += plan.priceChanges.length + plan.stockChanges.length;
+        variantsCreated += plan.newVariants.length;
+      }
+    }
+    const existingCount = adapted.source === 'tiktok' && flags.mode !== 'create_only' ? updated + unchanged : skippedExisting;
+    const wouldCreate = groups.length - errs.length - existingCount;
     return send(res, 200, {
-      dry_run: true, rows: originalRows.length, groups: groups.length,
-      created: groups.length - errs.length - skippedExisting, skipped_existing: skippedExisting, variants,
-      images: { queued: imgOk, invalid: imgBad },
+      dry_run: true, import_mode: flags.mode, update_content: flags.updateContent,
+      update_price: flags.updatePrice, update_stock: flags.updateStock, price_confirmed: flags.priceConfirmed,
+      rows: originalRows.length, groups: groups.length,
+      created: Math.max(0, wouldCreate), updated, unchanged,
+      skipped_existing: flags.mode === 'create_only' ? skippedExisting : 0,
+      variants, variants_updated: variantsUpdated, variants_created: variantsCreated,
+      images: { queued: imgOk, invalid: imgBad, skipped: imgOverflow,
+        limit: imageLimit, remaining: Math.max(0, imageLimit - imgOk) },
+      diffs: diffs.slice(0, 500), missing_variants: missingVariants.slice(0, 200), warnings: warnings.slice(0, 100),
       failed: errs.length, errors: errs.slice(0, 100), preview, columns,
       source: adapted.source, axisHints: adapted.axisHints,
     });
@@ -498,26 +895,43 @@ export async function importProducts(res, ctx, body) {
 
   const seenSlug = new Set();
   const errors = [];
-  let created = 0, variantsCreated = 0;
-  let imgQueued = 0, imgInvalid = 0, imgOverflow = 0;
+  let created = 0, updated = 0, unchanged = 0, variantsCreated = 0, variantsUpdated = 0;
+  const diffs = [], missingVariants = [], warnings = [];
+  const imageState = { queued: 0, invalid: 0, overflow: 0, limit: imageLimit };
 
   for (const g of groups) {
     const built = buildProduct(g);
     if (!built.ok) { errors.push({ line: built.line, title: str(g.rows[0].r.title), error: built.error }); continue; }
     const p = built.product;
-    p.source = adapted.source;
-    if (adapted.source === 'tiktok') {
-      p.sourceProductId = p.slug;
-      p.sourceRawRow = adapted.sourceRefs.products.get(p.sourceProductId)?.rawRow ?? null;
-      for (const v of p.variants) {
-        const ref = adapted.sourceRefs.variants.get(v.sku);
-        if (ref) { v.sourceVariantId = ref.externalId; v.sourceRawRow = ref.rawRow; }
-      }
-    }
+    sourceFields(p, adapted);
 
     const existing = await findSourceProduct(ctx, p);
     if (existing) {
-      errors.push({ line: p.line, title: p.title, skipped: true, error: 'sản phẩm từ nguồn này đã nhập trước đó, bỏ qua' });
+      if (flags.mode === 'create_only' || adapted.source !== 'tiktok') {
+        errors.push({ line: p.line, title: p.title, skipped: true, error: 'sản phẩm từ nguồn này đã nhập trước đó, bỏ qua' });
+        continue;
+      }
+      try {
+        const result = await updateImportedProduct(ctx, p, existing, flags, imageState);
+        if (result.missing) {
+          errors.push({ line: p.line, title: p.title, error: 'sản phẩm nguồn không còn tồn tại' });
+        } else {
+          diffs.push(...(result.diffs ?? []));
+          errors.push(...(result.errors ?? []));
+          warnings.push(...(result.warnings ?? []));
+          missingVariants.push(...(result.diffs ?? []).filter((d) => d.action === 'keep'));
+          if (result.changed) updated++; else unchanged++;
+          variantsUpdated += Number(result.variantsUpdated ?? 0);
+          variantsCreated += Number(result.variantsCreated ?? 0);
+        }
+      } catch (err) {
+        errors.push({ line: p.line, title: p.title, error: err.code === '23505' ? conflictMessage(err) : 'lỗi khi cập nhật sản phẩm' });
+      }
+      continue;
+    }
+
+    if (adapted.source === 'tiktok' && flags.mode === 'update_only') {
+      errors.push({ line: p.line, title: p.title, error: 'không tìm thấy sản phẩm TikTok đã nhập để cập nhật' });
       continue;
     }
 
@@ -541,8 +955,8 @@ export async function importProducts(res, ctx, body) {
       created++;
       variantsCreated += p.variants.length;
       for (const url of p.images) {
-        if (!looksFetchable(url)) { imgInvalid++; continue; }
-        if (imgQueued >= IMG_MAX_PER_IMPORT) { imgOverflow++; continue; }
+        if (!looksFetchable(url)) { imageState.invalid++; continue; }
+        if (imageState.queued >= imageState.limit) { imageState.overflow++; continue; }
         // Dòng media 'pending' + source_url CHÍNH LÀ đơn vị công việc của worker — không cần
         // bảng hàng đợi riêng: dòng này đã có shop_id/product_id/position và đã nằm sẵn trong
         // mọi truy vấn hiển thị, nên ảnh hiện ra ngay khi worker chuyển nó sang 'ready'.
@@ -557,8 +971,8 @@ export async function importProducts(res, ctx, body) {
                      (SELECT coalesce(max(position), -1) + 1 FROM media WHERE product_id = $1 AND deleted_at IS NULL))`,
             [productId, url.slice(0, 2000), mediaId, `staging/${ctx.shopId}/${mediaId}`],
           ));
-          imgQueued++;
-        } catch { imgInvalid++; }   // đếm ĐÚNG MỘT lần: bản đầu tăng cả hai biến
+          imageState.queued++;
+        } catch { imageState.invalid++; }   // đếm ĐÚNG MỘT lần: bản đầu tăng cả hai biến
       }
     } catch (err) {
       // withTenant rollback-on-throw ⇒ không để lại sản phẩm thiếu biến thể/thiếu map trục.
@@ -569,13 +983,18 @@ export async function importProducts(res, ctx, body) {
   }
 
   return send(res, 200, {
+    import_mode: flags.mode, update_content: flags.updateContent,
+    update_price: flags.updatePrice, update_stock: flags.updateStock, price_confirmed: flags.priceConfirmed,
     created,
+    updated, unchanged, variants_updated: variantsUpdated, variants_created: variantsCreated,
     skipped_existing: errors.filter((e) => e.skipped).length,
     variants: variantsCreated, groups: groups.length,
     failed: errors.filter((e) => !e.skipped).length, errors: errors.slice(0, 100),
     // queued: worker sẽ tải nền · invalid: URL sai dáng, KHÔNG bao giờ tải được ·
     // skipped: vượt trần số ảnh mỗi lần nhập. Không con số nào im lặng.
-    images: { queued: imgQueued, invalid: imgInvalid, skipped: imgOverflow },
+    diffs: diffs.slice(0, 500), missing_variants: missingVariants.slice(0, 200), warnings: warnings.slice(0, 100),
+    images: { queued: imageState.queued, invalid: imageState.invalid, skipped: imageState.overflow,
+      limit: imageLimit, remaining: Math.max(0, imageLimit - imageState.queued) },
     columns,
     source: adapted.source, axisHints: adapted.axisHints,
   });

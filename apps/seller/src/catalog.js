@@ -114,7 +114,7 @@ export const sellableCount = async (c) => (await c.query(
 // LOẠI biến thể MỒ CÔI (thiếu ánh xạ trục — storefront đã ẩn, không bán được): tính cả
 // chúng thì giá cũ của tổ hợp bỏ đi kéo giá "từ" sai + pool-reuse (basePrice đọc từ
 // products.price_vnd) lây giá khuyến mãi cũ sang tổ hợp mới.
-const syncProductPrice = async (c, productId) => {
+export const syncProductPrice = async (c, productId) => {
   await c.query(
     `UPDATE products p SET price_vnd = sub.min_price
        FROM (SELECT min(v.price_vnd) AS min_price FROM variants v

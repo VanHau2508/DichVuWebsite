@@ -37,6 +37,7 @@ MANIFEST_UNIT_FILES=(
   apps/seller/test/xlsx-guard.test.js
   apps/seller/test/tiktok-weight.test.js
   apps/seller/test/batch-split.test.js
+  apps/seller/test/import-field-owner.test.js
   apps/seller/test/paging.test.js
   apps/signup/test/denylist.test.js
   packages/banner-art/test/unit.test.js
@@ -89,7 +90,7 @@ MANIFEST_UNIT_FILES=(
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=30
+MANIFEST_UNIT_COUNT=31
 MANIFEST_E2E_COUNT=101
 
 manifest_unit_files() {

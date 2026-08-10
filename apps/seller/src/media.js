@@ -445,6 +445,35 @@ async function deleteMedia(res, ctx, _body, params) {
   return send(res, 200, { ok: true });
 }
 
+/**
+ * Dọn dứt điểm các dòng ảnh sản phẩm đã được thay thế: xoá object trước, rồi mới xoá dòng.
+ * Nếu MinIO lỗi, giữ dòng đã xoá mềm để lần thay ảnh sau còn có dấu vết mà thử lại.
+ */
+export async function purgeReplacedProductMedia(shopId, rows) {
+  const removedIds = [];
+  const failedIds = [];
+  for (const row of rows ?? []) {
+    try {
+      if (row.original_key) await minio.removeObject(BUCKET_PRIVATE, row.original_key);
+      if (row.public_key) await minio.removeObject(BUCKET_PUBLIC, row.public_key);
+      removedIds.push(row.id);
+    } catch {
+      failedIds.push(row.id);
+    }
+  }
+  let deleted = 0;
+  if (removedIds.length) {
+    try {
+      deleted = await withTenant(shopId, async (c) => (await c.query(
+        `DELETE FROM media WHERE id = ANY($1::uuid[]) AND deleted_at IS NOT NULL`, [removedIds],
+      )).rowCount);
+    } catch {
+      failedIds.push(...removedIds);
+    }
+  }
+  return { removed: deleted, failed: failedIds.length };
+}
+
 // Kết quả sắp thứ tự ảnh (kéo–thả / đặt ảnh đại diện): order PHẢI là hoán vị đúng
 // của tập id ảnh hiện có (đủ số, đủ tập, không lặp) → không lén thêm/bớt qua reorder.
 async function reorderMedia(res, ctx, body, params) {

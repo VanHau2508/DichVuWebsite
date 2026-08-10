@@ -629,6 +629,8 @@ services:
     volumes:
       # Mount PHẢI khớp CMD (node src/server.js → /app/src) cho mutation testing.
       - ../apps/seller-admin/src:/app/src:ro
+      # Bộ đọc XLSX zero-dep dùng chung với unit test seller; BFF là nơi nhận file và chia lô.
+      - ../apps/seller/src/xlsx-read.js:/app/xlsx-read.js:ro
       # Thư viện preset dùng chung (nút "Đổi giao diện theo ngành") — import '../presets.js'.
       - ../packages/presets/src/index.js:/app/presets.js:ro
       # Redis tối giản dùng chung (image không có packages/) — import '../redis-lite.js'.
@@ -693,6 +695,9 @@ services:
       - ../packages/presets:/work/packages/presets:ro
       - ../apps/storefront/src:/work/apps/storefront/src:ro
       - ../apps/platform/test:/work/apps/platform/test:ro
+      # Fixture XLSX của seller-admin tái dùng bộ dựng ZIP trong seller/src; mount mã nguồn
+      # chỉ cho dbtest để kiểm đúng đường upload BFF mà không nhân bản bộ dựng nhị phân.
+      - ../apps/seller/src:/work/apps/seller/src:ro
       - ../apps/seller/test:/work/apps/seller/test:ro
       - ../apps/seller-admin/test:/work/apps/seller-admin/test:ro
       - ../apps/account/test:/work/apps/account/test:ro

@@ -433,7 +433,7 @@ gì trong `buildProduct`**. Cả phần gộp nhóm, kiểm trục, kiểm trầ
 Adapter là **hàm thuần, không chạm DB/mạng** ⇒ test bằng `node --test` ở mọi commit, giống
 `import-parse.js` đã tách ra vì đúng lý do này.
 
-### 5.2 Migration mới — `0148_product_source_refs.sql`
+### 5.2 Migration mới — `0152_product_source_refs.sql`
 
 ```sql
 CREATE TABLE product_source_refs (
@@ -657,7 +657,7 @@ viết nó với cùng thái độ như `net-guard`, không phải như một h�
 
 | việc | file |
 |---|---|
-| Migration `0148_product_source_refs.sql` | `packages/db/migrations/` |
+| Migration `0152_product_source_refs.sql` | `packages/db/migrations/` |
 | Ghi `product_source_refs` lúc commit | `import.js` |
 | Chặn trùng theo `(source, kind, external_id)` | `import.js` |
 | Màn Xem trước: ô đặt tên trục + bảng tách + nút tắt tách | `seller-admin/src/pages.js` |

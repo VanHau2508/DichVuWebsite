@@ -117,7 +117,7 @@ async function main() {
   const staff = await makeStaff();
   const A = await makeShopOwner(staff, `imp-a-${uniq()}`);
   const a = S(A.shopId, A.cookie);
-  const imp = (rows) => a.post('/products/import', { rows });
+  const imp = (rows, options = {}) => a.post('/products/import', { rows, ...options });
   ok('dựng shop + chủ shop');
 
   // ── 1. Gộp: 6 dòng, 2 trục → 1 SP, 6 biến thể ───────────────────────────
@@ -343,6 +343,125 @@ async function main() {
   r.json?.created === 1 && d4t?.variants?.[0]?.sku === `${collisionSku}-2`
     ? ok('SKU TikTok sinh tự động đụng mã đã có → tự nối -2, sản phẩm vẫn nhập được')
     : bad('SKU TikTok chưa né mã đã có trong shop', JSON.stringify({ result: r.json, sku: d4t?.variants?.[0]?.sku }));
+
+  // ── 8c. Đợt 4: cập nhật giá/tồn theo ref, giữ biến thể vắng mặt ──
+  sect('8c. Đợt 4: upsert giá, tồn qua ledger và không xoá biến thể');
+  const t1Before = (await owner.query(
+    `SELECT v.id, v.sku, v.price_vnd, coalesce(il.on_hand,0) on_hand
+       FROM variants v JOIN product_source_refs r ON r.variant_id=v.id
+       LEFT JOIN inventory_levels il ON il.variant_id=v.id
+      WHERE r.shop_id=$1 AND r.external_id IN ('1731000000000000101','1731000000000000102') ORDER BY r.external_id`, [A.shopId])).rows;
+  const snapshotOrder = (await owner.query(
+    `INSERT INTO orders (shop_id, order_number, total_vnd) VALUES ($1, $2, $3) RETURNING id`,
+    [A.shopId, 900000000 + Math.floor(Math.random() * 90000000), Number(t1Before[0].price_vnd)],
+  )).rows[0];
+  const snapshotLine = (await owner.query(
+    `INSERT INTO order_lines
+       (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty)
+     VALUES ($1, $2, $3, 'Vòng tay TikTok', $4, $5, 1) RETURNING id`,
+    [A.shopId, snapshotOrder.id, t1Before[0].id, t1Before[0].sku, t1Before[0].price_vnd],
+  )).rows[0];
+
+  r = await imp([{ ...tiktokRows[0], price: '440000' }], { import_mode: 'upsert', update_price: true });
+  const priceWithoutConfirm = (await owner.query(`SELECT price_vnd FROM variants WHERE id=$1`, [t1Before[0].id])).rows[0];
+  r.status === 400 && Number(priceWithoutConfirm.price_vnd) === Number(t1Before[0].price_vnd)
+    ? ok('cập nhật giá thiếu xác nhận riêng → từ chối trước khi ghi')
+    : bad('chốt xác nhận giá không hoạt động', JSON.stringify({ result: r.json, after: priceWithoutConfirm }));
+
+  r = await imp(tiktokRows.slice(0, 2).map((x, i) => ({ ...x, price: i === 0 ? '420000' : '430000', quantity: i === 0 ? '45' : '46' })), {
+    import_mode: 'upsert', update_price: true, price_confirmed: true, update_stock: true,
+  });
+  const t1After = (await owner.query(
+    `SELECT v.id, v.price_vnd, coalesce(il.on_hand,0) on_hand,
+            (SELECT count(*) FROM inventory_ledger l WHERE l.variant_id=v.id AND l.kind='adjust' AND l.reason='nhập từ TikTok') adjusts
+       FROM variants v JOIN product_source_refs r ON r.variant_id=v.id
+       LEFT JOIN inventory_levels il ON il.variant_id=v.id
+      WHERE r.shop_id=$1 AND r.external_id IN ('1731000000000000101','1731000000000000102') ORDER BY r.external_id`, [A.shopId])).rows;
+  const t1Product = (await owner.query(`SELECT price_vnd FROM products WHERE id=$1`, [(await owner.query(`SELECT product_id FROM product_source_refs WHERE shop_id=$1 AND external_id=$2`, [A.shopId, '1731000000000000101'])).rows[0].product_id])).rows[0];
+  r.json?.updated === 1 && t1After[0]?.price_vnd == 420000 && t1After[1]?.price_vnd == 430000
+    && t1After.every((x) => Number(x.adjusts) === 1) && Number(t1Product.price_vnd) === 420000
+    ? ok('upsert giá + tồn cập nhật đúng, giá sản phẩm đồng bộ theo min và mỗi biến thể có 1 ledger adjust')
+    : bad('upsert giá/tồn sai', JSON.stringify({ result: r.json, before: t1Before, after: t1After, product: t1Product }));
+  const snapshotAfter = (await owner.query(
+    `SELECT sku_snapshot, unit_price_vnd FROM order_lines WHERE id=$1`, [snapshotLine.id],
+  )).rows[0];
+  snapshotAfter?.sku_snapshot === t1Before[0].sku && Number(snapshotAfter.unit_price_vnd) === Number(t1Before[0].price_vnd)
+    ? ok('đơn cũ giữ nguyên SKU và giá snapshot sau upsert')
+    : bad('upsert làm đổi snapshot của đơn cũ', JSON.stringify(snapshotAfter));
+
+  const t2v = (await owner.query(`SELECT r.variant_id, v.price_vnd FROM product_source_refs r JOIN variants v ON v.id=r.variant_id WHERE r.shop_id=$1 AND r.external_id='1731000000000000201'`, [A.shopId])).rows[0];
+  await owner.query(`UPDATE variants SET compare_at_vnd=580000 WHERE id=$1`, [t2v.variant_id]);
+  r = await imp([{ ...tiktokRows[2], price: '600000', quantity: '10' }], { import_mode: 'upsert', update_price: true, price_confirmed: true });
+  const t2After = (await owner.query(`SELECT price_vnd FROM variants WHERE id=$1`, [t2v.variant_id])).rows[0];
+  r.json?.errors?.some((e) => /giá mới|giá gạch/.test(e.error)) && Number(t2After.price_vnd) === Number(t2v.price_vnd)
+    ? ok('giá mới không vượt compare_at hiện hữu: từ chối và không ghi giá')
+    : bad('khóa compare_at không bắt được', JSON.stringify({ result: r.json, after: t2After }));
+
+  r = await imp([{
+    ...tiktokRows[2], variation_value: '50cm, 50cm', sku_id: '1731000000000000203', price: '570000', quantity: '7',
+  }], { import_mode: 'upsert' });
+  const newVariantRef = (await owner.query(
+    `SELECT v.sku FROM product_source_refs r JOIN variants v ON v.id=r.variant_id
+      WHERE r.shop_id=$1 AND r.external_id='1731000000000000203'`, [A.shopId],
+  )).rows[0];
+  r.json?.variants_created === 1 && newVariantRef?.sku && !/^\d{10,}$/.test(newVariantRef.sku)
+    ? ok('upsert tạo biến thể TikTok mới, giữ SKU đọc được và lưu source ref')
+    : bad('upsert biến thể mới sai', JSON.stringify({ result: r.json, newVariantRef }));
+
+  await owner.query(`UPDATE inventory_levels SET reserved=8 WHERE variant_id=$1`, [t2v.variant_id]);
+  const t2v2 = (await owner.query(`SELECT r.variant_id FROM product_source_refs r WHERE r.shop_id=$1 AND r.external_id='1731000000000000202'`, [A.shopId])).rows[0];
+  r = await imp([
+    { ...tiktokRows[2], quantity: '5' },
+    { ...tiktokRows[3], quantity: '8' },
+  ], { import_mode: 'upsert', update_stock: true });
+  const stockRows = (await owner.query(`SELECT variant_id,on_hand,reserved FROM inventory_levels WHERE variant_id=ANY($1::uuid[]) ORDER BY variant_id`, [[t2v.variant_id, t2v2.variant_id]])).rows;
+  r.json?.errors?.some((e) => /giữ chỗ|giữ/.test(e.error)) && stockRows.some((x) => x.variant_id === t2v.variant_id && Number(x.on_hand) === 10)
+    ? ok('tồn dưới reserved bị từ chối, không ép âm tồn khả dụng')
+    : bad('khóa reserved không bắt được', JSON.stringify({ result: r.json, stockRows }));
+
+  r = await imp([tiktokRows[0]], { import_mode: 'upsert', update_content: true });
+  const t1Refs = (await owner.query(`SELECT count(*)::int n FROM product_source_refs WHERE shop_id=$1 AND product_id=(SELECT product_id FROM product_source_refs WHERE shop_id=$1 AND external_id='1731000000000000101')`, [A.shopId])).rows[0];
+  r.json?.missing_variants?.length === 1 && Number(t1Refs.n) === 3
+    ? ok('biến thể vắng mặt được báo cáo và giữ nguyên, không bị xoá')
+    : bad('xử lý biến thể vắng mặt sai', JSON.stringify({ result: r.json, refs: t1Refs }));
+
+  const protectedVariant = t1Before[0];
+  await owner.query(`INSERT INTO variant_costs (shop_id, variant_id, cost_vnd, updated_by) VALUES ($1,$2,77777,NULL)
+    ON CONFLICT (shop_id,variant_id) DO UPDATE SET cost_vnd=77777`, [A.shopId, protectedVariant.id]);
+  const protectedProduct = (await owner.query(`SELECT product_id FROM product_source_refs WHERE shop_id=$1 AND external_id='1731000000000000101'`, [A.shopId])).rows[0].product_id;
+  r = await imp([{ ...tiktokRows[0], product_name: 'Tên TikTok đã đổi', price: '410000' }], {
+    import_mode: 'upsert', update_content: true, update_price: true, price_confirmed: true,
+  });
+  const protectedAfter = (await owner.query(
+    `SELECT p.slug, v.sku, vc.cost_vnd FROM products p JOIN variants v ON v.id=$2
+       LEFT JOIN variant_costs vc ON vc.variant_id=v.id WHERE p.id=$1`, [protectedProduct, protectedVariant.id])).rows[0];
+  protectedAfter?.slug === t1 && protectedAfter.sku === protectedVariant.sku && Number(protectedAfter.cost_vnd) === 77777
+    ? ok('upsert không ghi đè slug, SKU hay cost_vnd do shop sở hữu')
+    : bad('field ownership bị phá', JSON.stringify({ result: r.json, protectedAfter }));
+
+  const oldMedia = (await owner.query(
+    `INSERT INTO media (shop_id, product_id, status, source_url, original_key, position)
+     VALUES ($1, $2, 'failed', 'https://example.com/old.jpg', $3, 0) RETURNING id`,
+    [A.shopId, protectedProduct, `staging/${A.shopId}/${uniq()}`],
+  )).rows[0];
+  const t5 = '1731000000000000005';
+  r = await imp([
+    { ...tiktokRows[0], main_image: 'https://example.com/replaced.jpg' },
+    { product_id: t5, product_name: 'Sản phẩm mới có ảnh', product_description: '<p>X</p>', category: 'Khác (3)',
+      price: '100000', quantity: '1', parcel_weight: '200', variation_value: 'A', sku_id: '1731000000000000501',
+      main_image: 'https://example.com/new.jpg' },
+  ], { import_mode: 'upsert', update_content: true, image_limit: 1 });
+  const imageBudgetState = (await owner.query(
+    `SELECT
+       count(*) FILTER (WHERE id=$1)::int AS old_left,
+       count(*) FILTER (WHERE product_id=$2 AND source_url='https://example.com/replaced.jpg' AND deleted_at IS NULL)::int AS replacement
+     FROM media WHERE shop_id=$3`, [oldMedia.id, protectedProduct, A.shopId],
+  )).rows[0];
+  r.json?.created === 1 && r.json?.updated === 1 && r.json?.images?.queued === 1
+    && r.json?.images?.skipped === 1 && r.json?.images?.remaining === 0
+    && Number(imageBudgetState.old_left) === 0 && Number(imageBudgetState.replacement) === 1
+    ? ok('tạo mới + cập nhật dùng chung một ngân sách ảnh; ảnh cũ được dọn dứt điểm')
+    : bad('ngân sách hoặc vòng đời ảnh upsert sai', JSON.stringify({ result: r.json, imageBudgetState }));
 
   // ── 9. Cô lập chéo shop ─────────────────────────────────────────────────
   sect('9. Cô lập chéo shop');

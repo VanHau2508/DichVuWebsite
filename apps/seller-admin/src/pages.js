@@ -3440,6 +3440,22 @@ export function renderProductImport(ctx, shopId, result, err) {
     </tbody></table></div>
   </div>` : '';
 
+  const selectedImportMode = ['create_only', 'update_only', 'upsert'].includes(result?.import_mode) ? result.import_mode : 'create_only';
+  const importControls = `<div class="card" style="flex-basis:100%;display:grid;gap:10px">
+    <div><strong>Chế độ nhập</strong><span class="muted" style="margin-left:8px">Chỉ ghép theo mã nguồn TikTok, không ghép theo tên.</span></div>
+    <div class="actions" style="align-items:flex-start;flex-wrap:wrap;gap:12px">
+      <label><input type="radio" name="import_mode" value="create_only"${selectedImportMode === 'create_only' ? ' checked' : ''}> Chỉ tạo mới</label>
+      <label><input type="radio" name="import_mode" value="update_only"${selectedImportMode === 'update_only' ? ' checked' : ''}> Chỉ cập nhật</label>
+      <label><input type="radio" name="import_mode" value="upsert"${selectedImportMode === 'upsert' ? ' checked' : ''}> Upsert</label>
+    </div>
+    <div class="actions" style="align-items:flex-start;flex-wrap:wrap;gap:12px">
+      <label><input type="checkbox" name="update_content" value="1"${result?.update_content !== false ? ' checked' : ''}> Cập nhật tiêu đề, mô tả, ảnh</label>
+      <label><input type="checkbox" name="update_stock" value="1"${result?.update_stock ? ' checked' : ''}> Cập nhật tồn kho (ghi sổ điều chỉnh)</label>
+      <label><input type="checkbox" name="update_price" value="1"${result?.update_price ? ' checked' : ''}> Cập nhật giá bán</label>
+      <label class="muted"><input type="checkbox" name="price_confirmed" value="1"${result?.price_confirmed ? ' checked' : ''}> Tôi xác nhận thay đổi giá có thể ảnh hưởng khuyến mãi</label>
+    </div>
+  </div>`;
+
   let resultCard = '';
   if (result?.dry_run) {
     // XEM TRƯỚC: chưa ghi gì. Phải NÓI RÕ điều đó — một trang tên "kết quả" mà không nói đã
@@ -3449,6 +3465,13 @@ export function renderProductImport(ctx, shopId, result, err) {
       <td class="num">${esc(p.variants)}</td>
       <td class="muted">${p.axes?.length ? esc(p.axes.join(' × ')) : '—'}</td>
       <td class="muted">${esc(p.category || '—')}</td></tr>`).join('');
+    const diffRows = (result.diffs ?? []).map((d) => `<tr>
+      <td><code>${esc(d.external_id || d.product_external_id || '')}</code></td>
+      <td>${esc(d.sku || d.field || '')}</td><td>${esc(d.action)}</td>
+      <td class="muted">${esc(d.from == null ? '—' : d.from)} → ${esc(d.to == null ? '—' : d.to)}</td>
+      <td class="muted">${esc(d.reason || '')}</td></tr>`).join('');
+    const diffTable = diffRows ? `<h2 style="margin:16px 0 6px;font-size:15px">Bảng khác biệt trước khi ghi</h2><div class="tblscroll"><table data-cards><thead><tr><th>Mã nguồn</th><th>SKU/trường</th><th>Hành động</th><th>Hiện tại → file</th><th>Ghi chú</th></tr></thead><tbody>${diffRows}</tbody></table></div>` : '';
+    const warningBox = (result.warnings ?? []).length ? `<p style="color:var(--warn)"><strong>Cảnh báo:</strong> ${(result.warnings ?? []).map((w) => esc(w.message)).join(' ')}</p>` : '';
     resultCard = `<div class="card" style="border-color:var(--indigo)">
       <h2 style="margin-top:0">Xem trước — <span style="color:var(--indigo)">chưa ghi gì vào cửa hàng</span></h2>
       <div class="metrics" style="margin-bottom:12px">
@@ -3456,19 +3479,24 @@ export function renderProductImport(ctx, shopId, result, err) {
         <div class="metric"><div class="l">Sẽ tạo</div><div class="v">${n(result.created)} sản phẩm</div></div>
         ${result.skipped_existing ? `<div class="metric"><div class="l">Đã có, sẽ bỏ qua</div><div class="v">${n(result.skipped_existing)}</div></div>` : ''}
         <div class="metric"><div class="l">Biến thể</div><div class="v">${n(result.variants)}</div></div>
-        <div class="metric"><div class="l">Ảnh sẽ tải</div><div class="v">${n(result.images?.queued)}${result.images?.invalid ? ` <span style="font-size:13px;color:var(--warn)">+${n(result.images.invalid)} sai địa chỉ</span>` : ''}</div></div>
+        <div class="metric"><div class="l">Ảnh sẽ tải</div><div class="v">${n(result.images?.queued)}${result.images?.invalid ? ` <span style="font-size:13px;color:var(--warn)">+${n(result.images.invalid)} sai địa chỉ</span>` : ''}${result.images?.skipped ? ` <span style="font-size:13px;color:var(--warn)">+${n(result.images.skipped)} vượt trần</span>` : ''}</div></div>
+        ${result.updated ? `<div class="metric"><div class="l">Sẽ cập nhật</div><div class="v">${n(result.updated)}</div></div>` : ''}
       </div>
-      ${result.failed ? `<p><strong style="color:var(--warn)">${n(result.failed)} sản phẩm sẽ bị bỏ</strong> — sửa các dòng dưới rồi tải lại.</p>${errTable}` : '<p class="muted">Không có lỗi nào.</p>'}
+      ${result.failed ? `<p><strong style="color:var(--warn)">${n(result.failed)} dòng cần xem lại</strong> — sửa các dòng dưới rồi tải lại.</p>${errTable}` : '<p class="muted">Không có lỗi nào.</p>'}
+      ${warningBox}${diffTable}
       ${rows ? `<h2 style="margin:16px 0 6px;font-size:15px">Sản phẩm sẽ tạo${result.created > (result.preview ?? []).length ? ` (${(result.preview ?? []).length} đầu tiên)` : ''}</h2>
       <div class="tblscroll"><table data-cards><thead><tr><th>Sản phẩm</th><th>Biến thể</th><th>Trục</th><th>Danh mục</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
       <p style="margin:16px 0 0">Ưng ý thì chọn lại tệp ở dưới và bấm <strong>Nhập thật</strong>.</p>
     </div>`;
   } else if (result) {
     const img = result.images ?? { queued: 0, invalid: 0, skipped: 0 };
+    const warningBox = (result.warnings ?? []).length ? `<p style="color:var(--warn)"><strong>Cảnh báo:</strong> ${(result.warnings ?? []).map((w) => esc(w.message)).join(' ')}</p>` : '';
     resultCard = `<div class="card" style="border-color:${result.failed ? 'var(--warn)' : 'var(--good)'}">
       <h2 style="margin-top:0">Đã nhập xong</h2>
       <div class="metrics" style="margin-bottom:12px">
         <div class="metric"><div class="l">Sản phẩm đã tạo</div><div class="v" style="color:var(--good)">${n(result.created)}</div></div>
+        ${result.updated ? `<div class="metric"><div class="l">Sản phẩm cập nhật</div><div class="v" style="color:var(--good)">${n(result.updated)}</div></div>` : ''}
+        ${result.unchanged ? `<div class="metric"><div class="l">Không thay đổi</div><div class="v">${n(result.unchanged)}</div></div>` : ''}
         ${result.skipped_existing ? `<div class="metric"><div class="l">Bỏ qua trùng</div><div class="v">${n(result.skipped_existing)}</div></div>` : ''}
         <div class="metric"><div class="l">Biến thể</div><div class="v">${n(result.variants)}</div></div>
         <div class="metric"><div class="l">Ảnh đang tải nền</div><div class="v">${n(img.queued)}</div></div>
@@ -3476,7 +3504,7 @@ export function renderProductImport(ctx, shopId, result, err) {
       </div>
       ${img.queued ? `<p class="muted" style="margin-top:-4px">Ảnh được tải <strong>ở chế độ nền</strong> và hiện dần trong vài phút — không cần chờ ở trang này.</p>` : ''}
       ${(img.invalid || img.skipped) ? `<p class="muted" style="margin-top:-4px"><strong style="color:var(--warn)">${n(img.invalid)}</strong> địa chỉ ảnh sai định dạng (phải bắt đầu bằng <code>http://</code> hoặc <code>https://</code>) nên không tải được${img.skipped ? `, <strong>${n(img.skipped)}</strong> bỏ qua do vượt trần mỗi lần nhập` : ''}. Sản phẩm vẫn đã tạo — bạn tự tải ảnh lên sau ở trang sản phẩm.</p>` : ''}
-      ${errTable}
+      ${warningBox}${errTable}
       ${result.created ? `<p style="margin-bottom:0"><a class="btn" href="${base}">Xem danh sách sản phẩm →</a></p>` : ''}
     </div>`;
   }
@@ -3493,11 +3521,12 @@ export function renderProductImport(ctx, shopId, result, err) {
       <h2 style="margin-top:0">Tải tệp lên</h2>
       <p class="muted" style="margin-top:-6px">Bấm <strong>Xem trước</strong> để kiểm tra kết quả trước khi ghi — bước này không ghi gì vào cửa hàng.</p>
       <form method="POST" action="${base}/import" enctype="multipart/form-data" class="actions" style="align-items:center;flex-wrap:wrap;gap:10px">
+        ${importControls}
         ${axisControls}
         <input type="file" name="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required>
         <button class="btn" type="submit" name="mode" value="preview">Xem trước</button>
         <button class="btn alt" type="submit" name="mode" value="commit"
-          data-confirm="Ghi THẬT các sản phẩm mới vào cửa hàng. Tiếp tục?">Nhập thật</button>
+          data-confirm="Ghi THẬT sản phẩm mới và các cập nhật đã chọn vào cửa hàng. Tiếp tục?">Nhập thật</button>
       </form>
       <p class="muted" style="font-size:13px;margin-bottom:0">Tối đa 1000 sản phẩm và 10MB mỗi lần. Hệ thống tự chia lô nhưng không bao giờ cắt giữa các biến thể của cùng sản phẩm. Sản phẩm mới mặc định ở trạng thái <strong>nháp</strong>.</p>
     </div>

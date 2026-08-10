@@ -515,8 +515,9 @@ async function main() {
   // bỏ phần đua, KHÔNG nới lỏng khẳng định nào bên dưới.
   const vnDay = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
   const staleKey = `tgstale:${A.shopId}:${vnDay}`;
-  // Full gate kéo dài đủ để sweep định kỳ có thể đang giữ claim. Không được DEL claim đang gửi,
-  // vì chính test sẽ mở khoá giữa chừng và tạo một lần gửi trùng giả.
+  // Làm chậm từ TRƯỚC bước đồng bộ: nếu sweep định kỳ vừa tới shop này, test nhìn thấy
+  // trạng thái claim và chờ nó hoàn tất thay vì xoá khoá giữa lúc Telegram đang nhận tin.
+  tg.delayStaleMs = 1000;
   let staleState = '';
   for (let i = 0; i < 30; i++) {
     staleState = await redisCmd(`GET ${staleKey}`);
@@ -525,8 +526,9 @@ async function main() {
   }
   if (staleState.includes('claim')) throw new Error('stale digest claim không nhả sau 15 giây');
   await redisCmd(`DEL ${staleKey}`);
-  // Giữ phản hồi Telegram 1 giây để hai sweep chắc chắn cùng đi qua chốt trước khi lượt đầu gửi xong.
-  tg.delayStaleMs = 1000;
+  // Sweep định kỳ có thể đã gửi hợp lệ TRƯỚC khi test reset marker. Bỏ hiện trường cũ để
+  // phép đo dưới đây chỉ đếm các contender bắt đầu sau thời điểm reset.
+  tg.sent.length = 0;
   const [st1, stRace] = await Promise.all([
     fetch(`${WORKER}/internal/stale-sweep`, { method: 'POST' }).then((r) => r.json()),
     fetch(`${WORKER}/internal/stale-sweep`, { method: 'POST' }).then((r) => r.json()),

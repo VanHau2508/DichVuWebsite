@@ -6,6 +6,13 @@ import { esc } from './http.js';
 import { PROVINCES } from './provinces.js';
 import { presetChoices } from '../presets.js';
 
+// Trang ĐĂNG KÝ nằm ở site công khai (nentang.vn/signup) chứ KHÔNG phải trên admin — Caddy
+// định tuyến `/signup*` sang service `signup`, còn admin ở tên miền khác. Nên link "chưa có
+// cửa hàng?" bắt buộc là URL TUYỆT ĐỐI; để tương đối là ra 404 ngay trên admin.
+// Mặc định là tên miền thật (đúng cho prod kể cả khi quên khai biến); dev đặt lại bằng
+// PUBLIC_SITE_URL trong compose để bấm thử được qua Caddy cổng 8443.
+export const SIGNUP_LINK = `${String(process.env.PUBLIC_SITE_URL ?? 'https://nentang.vn').replace(/\/+$/, '')}/signup`;
+
 const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + '₫';
 // GIỜ VIỆT NAM, KHÔNG phải giờ của máy chủ. Thiếu `timeZone` thì Intl lấy múi giờ tiến trình —
 // container chạy UTC — nên màn hình in sớm hơn 7 tiếng và 54/395 đơn của một shop thật hiện SAI
@@ -65,6 +72,66 @@ details[open]>.filt-sum::before{content:"▾ "}
   .filt-wrap>.filters{display:flex}
 }
 .authwrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:radial-gradient(52% 42% at 12% 6%,color-mix(in srgb,var(--brand) 11%,transparent),transparent 64%),radial-gradient(46% 40% at 90% 16%,color-mix(in srgb,var(--brand2) 11%,transparent),transparent 62%),var(--surf)}
+/* ══ CỬA VÀO (đăng nhập · quên/đặt lại mật khẩu · MFA) — hai panel ══
+   Bản trước là một thẻ nhỏ giữa màn hình trống: đúng chức năng nhưng không nói gì về sản
+   phẩm, và trên desktop 1440px thì 90% màn hình là nền rỗng. Panel trái dùng ĐEN + teal
+   đúng ngôn ngữ docs/44 mà người bán sẽ thấy ngay sau khi đăng nhập — cửa vào phải báo
+   trước diện mạo bên trong, không phải một trang lạc loài.
+   Không JS: mọi thứ là form + CSS. */
+.au{min-height:100vh;display:grid;grid-template-columns:1.05fr .95fr}
+.au-l{background:var(--ink0);color:#fff;padding:48px 52px;display:flex;flex-direction:column;position:relative;overflow:hidden}
+/* Hai hình thoi cyan/magenta của docs/44 §1: CHỈ trang trí, không bao giờ là điều khiển. */
+.au-l::before,.au-l::after{content:"";position:absolute;width:340px;height:340px;transform:rotate(45deg);border-radius:64px;opacity:.13;pointer-events:none}
+.au-l::before{background:#25F4EE;right:-150px;top:-90px}
+.au-l::after{background:#FE2C55;right:-60px;bottom:-190px}
+.au-brand{display:inline-flex;align-items:center;gap:11px;font-weight:800;font-size:1.12rem;letter-spacing:-.02em;color:#fff;text-decoration:none;position:relative;z-index:1}
+.au-brand i{width:34px;height:34px;border-radius:9px;background:var(--pri);display:grid;place-items:center;font-style:normal;font-weight:800;color:#fff;flex:none}
+.au-mid{margin-top:auto;margin-bottom:auto;padding:40px 0;position:relative;z-index:1}
+.au-mid h2{font-size:clamp(1.7rem,2.6vw,2.4rem);font-weight:800;line-height:1.16;letter-spacing:-.03em;color:#fff;margin:0 0 16px;max-width:15ch}
+.au-mid h2 em{font-style:normal;color:var(--pri)}
+.au-mid p{color:#A7B0B8;font-size:1rem;line-height:1.6;margin:0 0 26px;max-width:42ch}
+.au-pts{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:13px}
+.au-pts li{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:start;color:#DCE3E8;font-size:.95rem;line-height:1.5}
+.au-pts svg{width:19px;height:19px;color:var(--pri);margin-top:2px;flex:none}
+.au-foot{position:relative;z-index:1;color:#7C868F;font-size:.84rem;border-top:1px solid #23262B;padding-top:18px}
+.au-r{background:var(--card);display:flex;align-items:center;justify-content:center;padding:40px 32px;overflow-y:auto}
+.au-box{width:100%;max-width:400px}
+.au-box h1{font-size:1.62rem;font-weight:800;letter-spacing:-.025em;color:var(--ink);margin:0 0 7px}
+.au-box .au-sub{color:var(--mut);font-size:.94rem;line-height:1.55;margin:0 0 26px}
+.au-box label{display:block;font-size:.88rem;font-weight:600;color:var(--ink);margin:0 0 6px}
+.au-box label .rq{color:#E8302F}
+.au-box input{width:100%;min-height:46px;padding:12px 14px;font:inherit;font-size:.97rem;color:var(--ink);background:var(--card);border:1.5px solid var(--bd);border-radius:9px;margin:0 0 16px}
+.au-box input:focus{outline:none;border-color:var(--pri);box-shadow:0 0 0 3px var(--wash)}
+.au-box input:focus-visible{outline:2px solid var(--pri);outline-offset:1px}
+.au-hint{font-size:.82rem;color:var(--mut);margin:-10px 0 16px}
+.au-btn{width:100%;min-height:48px;display:inline-flex;align-items:center;justify-content:center;gap:8px;font:inherit;font-size:1rem;font-weight:700;color:#fff;background:var(--pri);border:0;border-radius:9px;cursor:pointer;text-decoration:none;transition:background .16s ease}
+.au-btn:hover{background:var(--prid)}
+.au-btn:active{background:var(--prip)}
+.au-btn.alt{background:var(--card);color:var(--ink);border:1.5px solid var(--bd)}
+.au-btn.alt:hover{background:var(--surf);border-color:var(--bd2)}
+.au-right{text-align:right;margin:-6px 0 18px}
+.au-right a{font-size:.88rem;font-weight:600;color:var(--pri);text-decoration:none}
+.au-right a:hover{text-decoration:underline}
+.au-alt{display:flex;align-items:center;gap:14px;margin:22px 0;color:var(--faint);font-size:.84rem}
+.au-alt::before,.au-alt::after{content:"";flex:1;height:1px;background:var(--bd)}
+.au-end{text-align:center;margin:22px 0 0;font-size:.9rem;color:var(--mut)}
+.au-end a{color:var(--pri);font-weight:700;text-decoration:none}
+.au-end a:hover{text-decoration:underline}
+.au-back{display:block;text-align:center;margin-top:26px;font-size:.86rem;color:var(--mut);text-decoration:none}
+.au-back:hover{color:var(--pri)}
+.au-ok{width:52px;height:52px;border-radius:14px;background:var(--wash);color:var(--pri);display:grid;place-items:center;margin-bottom:18px}
+.au-ok svg{width:26px;height:26px}
+@media(max-width:900px){
+  .au{grid-template-columns:1fr;min-height:auto}
+  .au-l{padding:28px 24px 30px}
+  .au-l::before,.au-l::after{display:none}
+  .au-mid{margin:0;padding:22px 0 0}
+  .au-mid h2{font-size:1.5rem;max-width:none}
+  .au-mid p{margin-bottom:18px}
+  .au-pts{gap:10px}
+  .au-foot{display:none}
+  .au-r{padding:32px 24px 48px}
+}
 .center{width:100%;max-width:428px;margin:40px auto}
 .authwrap .center{margin:0}
 .center .card{padding:34px 32px;border-radius:var(--r-xl);box-shadow:var(--sh-lg);border:1px solid var(--bd);position:relative;overflow:hidden;margin:0}
@@ -1755,27 +1822,66 @@ export function renderPlatformShopDetail(ctx, shop, { notice = null, err = null,
 
 // `email` điền sẵn khi tới từ luồng tự-đăng-ký (?email=…). Vừa kích hoạt shop xong mà bắt
 // gõ lại email vừa đăng ký 2 phút trước là bước thừa ở đúng lúc người ta hào hứng nhất.
+// ── KHUNG CỬA VÀO: panel trái giới thiệu, panel phải là form ──────────────────
+// Dùng chung cho đăng nhập · MFA · quên/đặt lại mật khẩu · nhận lời mời. Panel trái nói
+// GIÁ TRỊ, panel phải làm VIỆC — người đang vội chỉ nhìn phải, người đang cân nhắc đọc trái.
+//
+// KHÔNG bịa số: bản mẫu tham khảo có dòng "Hơn 1.200 shop đang bán cùng…", nhưng README §1
+// ghi rõ CHƯA CÓ KHÁCH THẬT. Ở đây chỉ nêu NĂNG LỰC đã kiểm được trong mã.
+const AU_TICK = `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M4 10.5l4 4 8-9"/></svg>`;
+const AU_MAIL = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M3 6.5l9 6.5 9-6.5"/></svg>`;
+const AU_PTS = [
+  'Website riêng + tên miền phụ, dựng xong trong vài phút',
+  'Đơn hàng, kho theo biến thể, vận đơn GHN/GHTK một chỗ',
+  'COD và VietQR vào thẳng tài khoản ngân hàng của bạn',
+  'Sao lưu, HTTPS, giám sát — phần kỹ thuật chúng tôi lo',
+];
+
+/** Trang cửa vào hai panel. `body` là nội dung panel phải (đã escape ở nơi gọi). */
+function authSplit(title, body, { heading = 'Bán hàng online<br><em>không cần biết code</em>' } = {}) {
+  return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>${esc(title)}</title><style>${STYLE}</style></head><body>
+<div class="au">
+  <section class="au-l">
+    <a class="au-brand" href="/"><i>N</i>Nền Tảng</a>
+    <div class="au-mid">
+      <h2>${heading}</h2>
+      <p>Nền tảng giúp bạn tạo website bán hàng riêng, quản lý đơn — kho — vận chuyển — tiền ở một chỗ.</p>
+      <ul class="au-pts">${AU_PTS.map((p) => `<li>${AU_TICK}<span>${esc(p)}</span></li>`).join('')}</ul>
+    </div>
+    <p class="au-foot">Dùng thử 14 ngày · Không cần thẻ · Không phí thiết lập</p>
+  </section>
+  <main class="au-r"><div class="au-box">${body}</div></main>
+</div></body></html>`;
+}
+
 // KHÔNG tự cấp phiên: link kích hoạt nằm trong hộp thư, ai đọc được mail sẽ vào thẳng được
 // admin mà không cần biết mật khẩu — đây vẫn phải là hai lớp riêng.
 export function renderLogin(err, email) {
-  return layout('Đăng nhập', {}, `<div class="center"><div class="card"><h1>Đăng nhập quản trị</h1>
+  return authSplit('Đăng nhập', `<h1>Chào mừng trở lại</h1>
+    <p class="au-sub">Đăng nhập để tiếp tục quản lý cửa hàng của bạn.</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <form method="POST" action="/login">
-      <label>Email</label><input name="email" type="email" required autocomplete="username" value="${esc(email ?? '')}"${email ? '' : ' autofocus'}>
-      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password"${email ? ' autofocus' : ''}>
-      <button class="btn" type="submit" style="width:100%;margin-top:14px">Đăng nhập</button>
+      <label for="au-em">Email <span class="rq">*</span></label>
+      <input id="au-em" name="email" type="email" required autocomplete="username" placeholder="ban@email.com" value="${esc(email ?? '')}"${email ? '' : ' autofocus'}>
+      <label for="au-pw">Mật khẩu <span class="rq">*</span></label>
+      <input id="au-pw" name="password" type="password" required autocomplete="current-password"${email ? ' autofocus' : ''}>
+      <p class="au-right"><a href="/forgot">Quên mật khẩu?</a></p>
+      <button class="au-btn" type="submit">Đăng nhập</button>
     </form>
-    <p class="muted" style="font-size:.82rem;margin-top:12px"><a href="/forgot">Quên mật khẩu?</a></p></div></div>`);
+    <p class="au-end">Chưa có cửa hàng? <a href="${esc(SIGNUP_LINK)}">Đăng ký miễn phí</a></p>`);
 }
 
 export function renderMfa(err) {
-  return layout('Xác thực 2 lớp', {}, `<div class="center"><div class="card"><h1>Mã xác thực (MFA)</h1>
-    <p class="muted">Nhập mã 6 số từ ứng dụng xác thực.</p>
+  return authSplit('Xác thực 2 lớp', `<h1>Mã xác thực</h1>
+    <p class="au-sub">Nhập mã 6 số từ ứng dụng xác thực trên điện thoại của bạn.</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <form method="POST" action="/mfa">
-      <label>Mã</label><input name="code" inputmode="numeric" autocomplete="one-time-code" required placeholder="123456">
-      <button class="btn" type="submit" style="width:100%;margin-top:14px">Xác nhận</button>
-    </form></div></div>`);
+      <label for="au-code">Mã xác thực <span class="rq">*</span></label>
+      <input id="au-code" name="code" inputmode="numeric" autocomplete="one-time-code" required placeholder="123456" autofocus>
+      <button class="au-btn" type="submit">Xác nhận</button>
+    </form>
+    <a class="au-back" href="/login">← Quay lại đăng nhập</a>`, { heading: 'Thêm một lớp<br><em>cho chắc chắn</em>' });
 }
 
 // Tổng quan cửa hàng (GĐ2): KPI doanh thu + đơn theo trạng thái + bán chạy.
@@ -4819,35 +4925,40 @@ export function renderInviteDone(kind) {
 
 // ── Quên mật khẩu (CÔNG KHAI — mirror renderInviteAccept: layout({}) → authwrap) ──
 export function renderForgot(err) {
-  return layout('Quên mật khẩu', {}, `<div class="center"><div class="card"><h1>Quên mật khẩu</h1>
-    <p class="muted">Nhập email tài khoản — chúng tôi sẽ gửi link đặt lại mật khẩu.</p>
+  return authSplit('Quên mật khẩu', `<h1>Quên mật khẩu?</h1>
+    <p class="au-sub">Nhập email tài khoản. Chúng tôi gửi link đặt lại vào hộp thư của bạn — đó cũng là cách xác thực bạn đúng là chủ tài khoản.</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <form method="POST" action="/forgot">
-      <label>Email</label><input name="email" type="email" required autocomplete="username">
-      <button class="btn" type="submit" style="width:100%;margin-top:12px">Gửi link đặt lại</button>
+      <label for="au-fe">Email <span class="rq">*</span></label>
+      <input id="au-fe" name="email" type="email" required autocomplete="username" placeholder="ban@email.com" autofocus>
+      <button class="au-btn" type="submit">Gửi link đặt lại</button>
     </form>
-    <p class="muted" style="font-size:.82rem;margin-top:10px"><a href="/login">← Đăng nhập</a></p></div></div>`);
+    <a class="au-back" href="/login">← Quay lại đăng nhập</a>`, { heading: 'Lấy lại quyền vào<br><em>trong một phút</em>' });
 }
 export function renderForgotDone() {
-  // Trung tính: KHÔNG tiết lộ email có tồn tại hay không.
-  return layout('Quên mật khẩu', {}, `<div class="center"><div class="card"><h1>Kiểm tra email</h1>
-    <p class="muted">Nếu email vừa nhập có tài khoản, chúng tôi đã gửi link đặt lại mật khẩu
-      (hết hạn sau 30 phút). Kiểm tra cả mục spam.</p>
-    <a class="btn" href="/login">Về đăng nhập</a></div></div>`);
+  // Trung tính: KHÔNG tiết lộ email có tồn tại hay không (chống dò tài khoản).
+  return authSplit('Quên mật khẩu', `<div class="au-ok">${AU_MAIL}</div>
+    <h1>Kiểm tra hộp thư</h1>
+    <p class="au-sub">Nếu email vừa nhập có tài khoản, chúng tôi đã gửi link đặt lại mật khẩu. Link hết hạn sau <strong>30 phút</strong>. Nhớ xem cả mục spam.</p>
+    <a class="au-btn alt" href="/login">Về trang đăng nhập</a>`, { heading: 'Đã gửi link<br><em>vào email của bạn</em>' });
 }
 export function renderReset(token, err) {
-  return layout('Đặt lại mật khẩu', {}, `<div class="center"><div class="card"><h1>Đặt mật khẩu mới</h1>
+  return authSplit('Đặt lại mật khẩu', `<h1>Đặt mật khẩu mới</h1>
+    <p class="au-sub">Chọn mật khẩu dài và khó đoán. Mọi phiên đăng nhập cũ sẽ bị đăng xuất.</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     <form method="POST" action="/reset">
       <input type="hidden" name="token" value="${esc(token)}">
-      <label>Mật khẩu mới (tối thiểu 10 ký tự)</label><input name="password" type="password" required minlength="10" autocomplete="new-password">
-      <button class="btn" type="submit" style="width:100%;margin-top:12px">Đặt lại mật khẩu</button>
-    </form></div></div>`);
+      <label for="au-np">Mật khẩu mới <span class="rq">*</span></label>
+      <input id="au-np" name="password" type="password" required minlength="10" autocomplete="new-password" autofocus>
+      <p class="au-hint">Tối thiểu 10 ký tự.</p>
+      <button class="au-btn" type="submit">Đặt lại mật khẩu</button>
+    </form>`, { heading: 'Đặt mật khẩu mới<br><em>rồi bán tiếp</em>' });
 }
 export function renderResetDone() {
-  return layout('Đặt lại mật khẩu', {}, `<div class="center"><div class="card"><h1>Đã đổi mật khẩu ✅</h1>
-    <p class="muted">Mật khẩu đã được đặt lại và mọi phiên cũ đã bị đăng xuất. Đăng nhập bằng mật khẩu mới.</p>
-    <a class="btn" href="/login">Đăng nhập</a></div></div>`);
+  return authSplit('Đặt lại mật khẩu', `<div class="au-ok">${AU_TICK}</div>
+    <h1>Đã đổi mật khẩu</h1>
+    <p class="au-sub">Mật khẩu đã được đặt lại và mọi phiên cũ đã bị đăng xuất. Đăng nhập lại bằng mật khẩu mới.</p>
+    <a class="au-btn" href="/login">Đăng nhập</a>`, { heading: 'Xong rồi<br><em>mời bạn vào lại</em>' });
 }
 
 // ── ĐỐI SOÁT COD với hãng (đường tiền: đơn COD giao-qua-hãng, kỳ vọng = tổng − phí hãng) ──

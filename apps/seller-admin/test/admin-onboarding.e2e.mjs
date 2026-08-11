@@ -130,6 +130,89 @@ async function main() {
   homeStaff.status === 200 && homeStaff.body.includes('href="/platform"')
     ? ok('nhân viên nền tảng vẫn thấy màn hình có link Console') : bad('chuyển hướng làm mất đường vào Console', `${homeStaff.status}`);
 
+  sect('1d. Wizard thiết lập nhanh ①: đổi tên KHÔNG được xoá 19 cột còn lại');
+  // Shop RIÊNG cho wizard, không dùng lại A. Hồ sơ mẫu bên dưới đặt ship_fee_vnd, mà mục
+  // "Phí vận chuyển" của checklist đọc đúng cột đó → dùng A thì mục 2 ("vẫn 0/4") đỏ vì một
+  // lý do chẳng liên quan gì tới thứ nó canh. Đây là kiểu đỏ giả tốn nhiều giờ nhất.
+  const C = await makeShopOwner(staff, `ow-${uniq()}`);
+  // ĐÂY là chốt đắt nhất của wizard. PATCH /shops/:id ghi đè CẢ 22 cột trong một câu
+  // UPDATE, nên một wizard gửi lên đúng 3 ô của nó sẽ đặt phí ship, toạ độ gốc giao hàng
+  // và hạn ẩn danh PII về NULL — trả HTTP 200, không log, không ai biết cho tới lúc khách
+  // đặt hàng và thấy phí ship bằng 0.
+  //
+  // ĐO BẰNG DB, không đo bằng chữ trên màn hình: `SELECT *` trước/sau rồi so từng cột. So
+  // theo danh sách cột viết tay thì cột thứ 23 thêm sau này lọt lưới — đúng lớp lỗi cần chặn.
+  // (apps/seller-admin/test/shop-patch.test.js canh HÌNH DẠNG body ở mức mã nguồn; bộ này
+  // canh KẾT QUẢ thật sau khi đi qua validate của seller — cần cả hai, vì body đúng hình mà
+  // seller từ chối một giá trị nào đó thì wizard vẫn hỏng.)
+  const fullProfile = {
+    name: 'Shop gốc', contact_email: 'goc@shop.vn', contact_phone: '0900000000', business_address: '1 Nguyễn Huệ',
+    ship_fee_vnd: '25000', free_ship_threshold_vnd: '500000', low_stock_threshold: '7',
+    max_pending_per_ip: '4', max_pending_per_phone: '2',
+    ship_fee_far_vnd: '45000', ship_extra_per_500g_vnd: '5000', default_weight_gram: '800',
+    ship_from_province: 'TP. Hồ Chí Minh', pii_retention_months: '24',
+    ship_mode: 'distance', ship_origin_lat: '10.7769', ship_origin_lng: '106.7009',
+    ship_base_vnd: '15000', ship_per_km_vnd: '4000', ship_max_km: '25', ship_road_factor: '1.3',
+    ship_over_max_behavior: 'reject',
+  };
+  r = await adm('POST', `/shops/${C.shopId}/settings`, { cookie: C.cookie, origin: OADM, form: fullProfile });
+  const snapShop = async () => (await owner.query('SELECT * FROM shops WHERE id=$1', [C.shopId])).rows[0];
+  const before = await snapShop();
+  Number(before.ship_base_vnd) === 15000 && before.ship_mode === 'distance' && Number(before.pii_retention_months) === 24
+    ? ok('nạp hồ sơ shop "đã dùng thật": ship theo km + hạn ẩn danh PII 24 tháng')
+    : bad('không nạp được hồ sơ đầy đủ — mọi khẳng định sau đây vô nghĩa', JSON.stringify({ base: before.ship_base_vnd, mode: before.ship_mode, pii: before.pii_retention_months }));
+
+  r = await adm('GET', `/shops/${C.shopId}/onboarding`, { cookie: C.cookie });
+  r.status === 200 && /Đặt tên gian hàng/.test(r.body) && /name="name"/.test(r.body) && !r.body.includes('<script')
+    ? ok('bước ① mở được, có ô tên, no-JS') : bad('bước ① sai', `${r.status} ${r.body.slice(0, 160)}`);
+
+  r = await adm('POST', `/shops/${C.shopId}/onboarding`, {
+    cookie: C.cookie, origin: OADM,
+    form: { step: '1', name: 'Shop Minh Anh', contact_phone: '0912345678', business_address: '99 Hai Bà Trưng' },
+  });
+  const after = await snapShop();
+  const WIZ_COLS = new Set(['name', 'contact_phone', 'business_address', 'updated_at']);
+  const collateral = Object.keys(before).filter((k) => !WIZ_COLS.has(k) && String(before[k]) !== String(after[k]));
+  r.status === 303 && r.location === `/shops/${C.shopId}/onboarding?step=2` && collateral.length === 0
+    ? ok(`bước ① lưu xong → sang bước ②, ${Object.keys(before).length - WIZ_COLS.size} cột khác KHÔNG đổi một cột nào`)
+    : bad('bước ① làm đổi cột ngoài phạm vi', `${r.status} → ${r.location} · đổi: ${collateral.join(', ') || '(không)'}`);
+  after.name === 'Shop Minh Anh' && after.contact_phone === '0912345678' && after.business_address === '99 Hai Bà Trưng'
+    && after.contact_email === 'goc@shop.vn'
+    ? ok('ba ô wizard đã lưu; contact_email (wizard KHÔNG hỏi) giữ nguyên')
+    : bad('ô wizard lưu sai', JSON.stringify({ name: after.name, phone: after.contact_phone, addr: after.business_address, email: after.contact_email }));
+  // Tên rỗng phải quay lại bước ① kèm lỗi, và KHÔNG được ghi gì.
+  r = await adm('POST', `/shops/${C.shopId}/onboarding`, { cookie: C.cookie, origin: OADM, form: { step: '1', name: '   ' } });
+  const afterBlank = await snapShop();
+  r.status === 400 && /Cần đặt tên cửa hàng/.test(r.body) && afterBlank.name === 'Shop Minh Anh'
+    ? ok('tên rỗng → 400 + báo lỗi, tên cũ giữ nguyên') : bad('tên rỗng không chặn', `${r.status} name=${afterBlank.name}`);
+
+  sect('1e. Wizard ②: áp mẫu ngành rồi về Tổng quan · CSRF · cô lập chéo shop');
+  r = await adm('GET', `/shops/${C.shopId}/onboarding?step=2`, { cookie: C.cookie });
+  const nPreset = (r.body.match(/name="preset"/g) ?? []).length;
+  r.status === 200 && /Chọn giao diện cửa hàng/.test(r.body) && nPreset === 5 && !r.body.includes('<script')
+    ? ok(`bước ② bày ${nPreset} mẫu ngành, no-JS`) : bad('bước ② sai', `${r.status} nPreset=${nPreset}`);
+  r = await adm('POST', `/shops/${C.shopId}/onboarding`, { cookie: C.cookie, origin: OADM, form: { step: '2', preset: 'fashion' } });
+  const th = (await owner.query('SELECT tokens, layout FROM themes WHERE shop_id=$1', [C.shopId])).rows[0];
+  r.status === 303 && r.location === `/shops/${C.shopId}/overview` && th && Object.keys(th.tokens ?? {}).length > 0
+    ? ok('bước ② áp mẫu "fashion" (theme có tokens) → về Tổng quan') : bad('bước ② không áp được mẫu', `${r.status} → ${r.location} · tokens=${JSON.stringify(th?.tokens ?? null).slice(0, 90)}`);
+  // CSP chặn font ngoài → applyPresetTo phải gỡ font.* khỏi tokens (dùng chung với /theme/preset).
+  !Object.hasOwn(th?.tokens ?? {}, 'font.body') && !Object.hasOwn(th?.tokens ?? {}, 'font.heading')
+    ? ok('tokens KHÔNG mang font.* (CSP chặn font ngoài)') : bad('preset lọt font ngoài vào theme');
+  // Chọn mẫu không tồn tại: quay lại bước ② kèm lỗi, KHÔNG ghi theme rác.
+  r = await adm('POST', `/shops/${C.shopId}/onboarding`, { cookie: C.cookie, origin: OADM, form: { step: '2', preset: 'khong-co-that' } });
+  r.status === 400 && /Chưa chọn mẫu giao diện/.test(r.body) ? ok('preset lạ → 400, không ghi theme') : bad('preset lạ không chặn', `${r.status}`);
+  // CSRF: POST không Origin → 403 và tên KHÔNG đổi.
+  r = await adm('POST', `/shops/${C.shopId}/onboarding`, { cookie: C.cookie, form: { step: '1', name: 'Tên do CSRF đặt' } });
+  const afterCsrf = await snapShop();
+  r.status === 403 && afterCsrf.name === 'Shop Minh Anh' ? ok('POST wizard không Origin → 403, tên không đổi') : bad('CSRF wizard không chặn', `${r.status} name=${afterCsrf.name}`);
+  // Cô lập chéo shop: chủ shop C không được mở wizard của shop B, càng không đổi được tên B.
+  const nameB0 = (await owner.query('SELECT name FROM shops WHERE id=$1', [Bo.shopId])).rows[0]?.name;
+  const gW = await adm('GET', `/shops/${Bo.shopId}/onboarding`, { cookie: C.cookie });
+  r = await adm('POST', `/shops/${Bo.shopId}/onboarding`, { cookie: C.cookie, origin: OADM, form: { step: '1', name: 'A chiếm shop B' } });
+  const nameB1 = (await owner.query('SELECT name FROM shops WHERE id=$1', [Bo.shopId])).rows[0]?.name;
+  gW.status === 403 && r.status === 403 && nameB1 === nameB0
+    ? ok('C mở/ghi wizard của B → 403 cả hai chiều, tên B không đổi') : bad('cô lập chéo shop ở wizard hỏng', `GET=${gW.status} POST=${r.status} name=${nameB1}`);
+
   sect('2. SP nháp / tồn 0 KHÔNG được tick — khách vào chỉ thấy "Hết hàng"');
   // Mục này từng đếm catalog_count: có 1 dòng trong bảng products là ✓, bất kể nháp hay
   // tồn 0. Chủ shop mới thấy "xong rồi" nên không sửa, trong khi storefront ghi "Hết hàng"

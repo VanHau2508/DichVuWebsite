@@ -4,7 +4,7 @@
  */
 import { esc } from './http.js';
 import { PROVINCES } from './provinces.js';
-import { presetChoices } from '../presets.js';
+import { presetChoices, getPreset } from '../presets.js';
 
 // Trang ĐĂNG KÝ nằm ở site công khai (nentang.vn/signup) chứ KHÔNG phải trên admin — Caddy
 // định tuyến `/signup*` sang service `signup`, còn admin ở tên miền khác. Nên link "chưa có
@@ -12,6 +12,13 @@ import { presetChoices } from '../presets.js';
 // Mặc định là tên miền thật (đúng cho prod kể cả khi quên khai biến); dev đặt lại bằng
 // PUBLIC_SITE_URL trong compose để bấm thử được qua Caddy cổng 8443.
 export const SIGNUP_LINK = `${String(process.env.PUBLIC_SITE_URL ?? 'https://nentang.vn').replace(/\/+$/, '')}/signup`;
+// Tên miền nền tảng để in "<slug>.nentang.vn" trong wizard. Lấy HOST (kèm cổng) từ chính
+// PUBLIC_SITE_URL ở trên: dev chạy sau Caddy cổng 8443 nên in "nentang.vn" trần là đưa chủ
+// shop một địa chỉ không mở được. URL hỏng → về mặc định thay vì ném lúc nạp module.
+export const PLATFORM_DOMAIN = (() => {
+  try { return new URL(process.env.PUBLIC_SITE_URL ?? 'https://nentang.vn').host; }
+  catch { return 'nentang.vn'; }
+})();
 
 const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + '₫';
 // GIỜ VIỆT NAM, KHÔNG phải giờ của máy chủ. Thiếu `timeZone` thì Intl lấy múi giờ tiến trình —
@@ -131,6 +138,59 @@ details[open]>.filt-sum::before{content:"▾ "}
   .au-pts{gap:10px}
   .au-foot{display:none}
   .au-r{padding:32px 24px 48px}
+}
+/* Wizard "Thiết lập nhanh" — dùng lại đúng bộ token của .au*, KHÔNG sinh màu mới.
+   Radio ở bước Giao diện cố ý ĐỂ HIỆN (không ẩn rồi tô viền bằng :has()): trình duyệt
+   không có :has() thì người dùng mất hoàn toàn dấu hiệu "tôi đang chọn cái nào" —
+   viền sáng chỉ là phần thưởng thêm, không phải thứ duy nhất báo trạng thái chọn. */
+.wiz{min-height:100vh;background:var(--surf);padding:30px 20px 56px}
+.wiz-top,.wiz-rail,.wiz-card{max-width:760px;margin-left:auto;margin-right:auto}
+.wiz-top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}
+.wiz-brand{display:inline-flex;align-items:center;gap:10px;font-weight:800;font-size:1.05rem;letter-spacing:-.02em;color:var(--ink);text-decoration:none}
+.wiz-brand i{width:30px;height:30px;border-radius:8px;background:var(--pri);display:grid;place-items:center;font-style:normal;font-weight:800;color:#fff;flex:none;font-size:.95rem}
+.wiz-skip{min-height:44px;display:inline-flex;align-items:center;font-size:.88rem;font-weight:600;color:var(--mut);text-decoration:none}
+.wiz-skip:hover{color:var(--pri)}
+.wiz-rail{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
+.wiz-step{display:grid;grid-template-columns:auto 1fr;gap:11px;align-items:center;padding-bottom:12px;border-bottom:3px solid var(--bd)}
+.wiz-step.on{border-bottom-color:var(--pri)}
+.wiz-step.dn{border-bottom-color:var(--good)}
+.wiz-step b{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-size:.92rem;font-weight:700;background:var(--bd);color:var(--mut)}
+.wiz-step.on b{background:var(--pri);color:#fff}
+.wiz-step.dn b{background:var(--good);color:#fff}
+.wiz-step span{font-size:.93rem;font-weight:600;color:var(--mut);line-height:1.3}
+.wiz-step.on span,.wiz-step.dn span{color:var(--ink)}
+.wiz-card{background:var(--card);border:1px solid var(--bd);border-radius:var(--r-xl);padding:32px 32px 28px;box-shadow:var(--sh-lg)}
+.wiz-card h1{font-size:1.5rem;font-weight:800;letter-spacing:-.025em;color:var(--ink);margin:0 0 7px}
+.wiz-sub{color:var(--mut);font-size:.94rem;line-height:1.55;margin:0 0 24px}
+.wiz-card label{display:block;font-size:.88rem;font-weight:600;color:var(--ink);margin:0 0 6px}
+.wiz-card label .rq{color:var(--bad)}
+.wiz-card input,.wiz-card textarea{width:100%;min-height:46px;padding:12px 14px;font:inherit;font-size:.97rem;color:var(--ink);background:var(--card);border:1.5px solid var(--bd);border-radius:9px;margin:0 0 6px}
+.wiz-card textarea{min-height:80px;resize:vertical;line-height:1.5}
+.wiz-card input:focus,.wiz-card textarea:focus{outline:none;border-color:var(--pri);box-shadow:0 0 0 3px var(--wash)}
+.wiz-hint{font-size:.82rem;color:var(--mut);margin:0 0 18px;line-height:1.5}
+.wiz-err{border:1px solid var(--bad);background:var(--badbg);color:var(--bad);border-radius:9px;padding:11px 14px;font-size:.9rem;margin:0 0 18px}
+.wiz-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px;margin:0 0 22px}
+.wiz-pick{display:block;border:1.5px solid var(--bd);border-radius:12px;background:var(--card);overflow:hidden;cursor:pointer}
+.wiz-pick:hover{border-color:var(--bd2)}
+.wiz-pick:has(input:checked){border-color:var(--pri);box-shadow:0 0 0 3px var(--wash)}
+.wiz-sw{display:flex;height:50px}
+.wiz-sw i{flex:1}
+.wiz-pt{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;padding:12px 14px 14px}
+.wiz-pt input{width:auto;min-height:0;margin:3px 0 0;padding:0}
+.wiz-pt b{display:block;font-size:.95rem;font-weight:700;color:var(--ink);margin:0 0 3px}
+.wiz-pt em{display:block;font-style:normal;font-size:.82rem;color:var(--mut);line-height:1.45}
+.wiz-act{display:flex;gap:12px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--bd);padding-top:20px}
+.wiz-btn{min-height:48px;padding:0 26px;display:inline-flex;align-items:center;justify-content:center;gap:8px;font:inherit;font-size:1rem;font-weight:700;color:#fff;background:var(--pri);border:0;border-radius:9px;cursor:pointer;text-decoration:none}
+.wiz-btn:hover{background:var(--prid)}
+.wiz-btn:active{background:var(--prip)}
+.wiz-btn.alt{background:var(--card);color:var(--ink);border:1.5px solid var(--bd)}
+.wiz-btn.alt:hover{background:var(--surf);border-color:var(--bd2)}
+@media(max-width:640px){
+  .wiz{padding:20px 14px 44px}
+  .wiz-card{padding:22px 18px 20px;border-radius:12px}
+  .wiz-rail{gap:10px}
+  .wiz-step span{font-size:.84rem}
+  .wiz-act .wiz-btn{width:100%}
 }
 .center{width:100%;max-width:428px;margin:40px auto}
 .authwrap .center{margin:0}
@@ -1129,6 +1189,94 @@ export function renderPresetConfirm(ctx, slug, preset) {
     </form>`);
 }
 
+/**
+ * Wizard "Thiết lập nhanh" — 2 bước: ① Tên gian hàng → ② Giao diện.
+ *
+ * VÌ SAO CÓ: người vừa đăng ký xong rơi thẳng vào bảng điều khiển 12 mục menu. docs/64
+ * (vai shop ngày-60) và docs/65 (vai lúc sự cố) đều ghi lại cùng một chuyện ở đầu vào:
+ * người mới không biết bấm cái gì TRƯỚC, nên bấm lung tung rồi bỏ dở. Wizard rút đúng
+ * hai việc phải xong trước khi có thể đưa link cửa hàng cho ai xem: **tên** (khách đọc
+ * ở mọi trang, mọi email) và **giao diện** (thứ khách nhìn thấy đầu tiên).
+ *
+ * KHÔNG dùng shell admin (side nav) — cố ý. Menu 12 mục bên cạnh chính là thứ wizard
+ * sinh ra để che đi; để nguyên thì nó lại thành "một trang nữa trong đống trang".
+ *
+ * KHÔNG tự chuyển hướng vào đây. Cổng vào là nút trong checklist Tổng quan. Ép tự động
+ * cần một cột "đã xong wizard" trong DB; đoán bằng dấu hiệu gián tiếp (ví dụ "chưa có
+ * SĐT") thì người CỐ Ý không khai SĐT sẽ bị ném lại vào wizard mỗi lần mở trang — cái
+ * bẫy đó khó chịu hơn hẳn việc phải bấm thêm một nút.
+ *
+ * @param step 1 | 2 — bước đang hiện.
+ * @param shop bản ghi GET /shops/:id (điền sẵn ô, và là NGUỒN cho read-merge-write ở server).
+ */
+export function renderOnboarding(ctx, step, shop, err) {
+  const base = `/shops/${esc(ctx.shopId)}`;
+  const rail = [
+    { n: '1', label: 'Tên gian hàng' },
+    { n: '2', label: 'Giao diện' },
+  ].map((s, i) => {
+    const cls = (i + 1) === step ? 'on' : ((i + 1) < step ? 'dn' : '');
+    return `<div class="wiz-step ${cls}"><b>${(i + 1) < step ? '✓' : esc(s.n)}</b><span>${esc(s.label)}</span></div>`;
+  }).join('');
+
+  let body;
+  if (step === 1) {
+    // Tên gian hàng: ô DUY NHẤT bắt buộc. Hai ô còn lại hiện ở chân trang cửa hàng và trong
+    // email gửi khách — bỏ trống thì khách không có cách nào liên hệ ngoài chờ shop gọi lại.
+    const shopUrl = shop?.slug ? `${esc(shop.slug)}.${esc(PLATFORM_DOMAIN)}` : '';
+    body = `<h1>Đặt tên gian hàng</h1>
+      <p class="wiz-sub">Tên này hiện ở mọi trang khách nhìn thấy, trên hoá đơn và trong email xác nhận đơn. Sửa lại lúc nào cũng được ở <strong>Cài đặt</strong>.</p>
+      ${err ? `<div class="wiz-err">${esc(err)}</div>` : ''}
+      <form method="POST" action="${base}/onboarding">
+        <input type="hidden" name="step" value="1">
+        <label for="wname">Tên cửa hàng <span class="rq">*</span></label>
+        <input id="wname" name="name" required maxlength="120" value="${esc(shop?.name ?? '')}" placeholder="Ví dụ: Cửa hàng Minh Anh">
+        ${shopUrl ? `<p class="wiz-hint">Địa chỉ cửa hàng của bạn: <strong>${shopUrl}</strong> — địa chỉ không đổi theo tên.</p>` : '<div style="height:12px"></div>'}
+        <label for="wphone">Số điện thoại liên hệ</label>
+        <input id="wphone" name="contact_phone" maxlength="30" value="${esc(shop?.contact_phone ?? '')}" placeholder="0912 345 678" inputmode="tel">
+        <p class="wiz-hint">Khách gọi vào số này khi cần hỏi đơn. Để trống thì chân trang cửa hàng không có số nào cả.</p>
+        <label for="waddr">Địa chỉ kinh doanh</label>
+        <textarea id="waddr" name="business_address" maxlength="300" placeholder="Số nhà, đường, phường/xã, quận/huyện, tỉnh/thành">${esc(shop?.business_address ?? '')}</textarea>
+        <p class="wiz-hint">Dùng cho hoá đơn và phần “Liên hệ”. Địa chỉ <em>lấy hàng</em> để tính phí ship khai riêng ở Cài đặt.</p>
+        <div class="wiz-act"><button class="wiz-btn" type="submit">Tiếp tục →</button>
+          <a class="wiz-skip" href="${base}/overview">Để sau</a></div>
+      </form>`;
+  } else {
+    // Bước 2 KHÔNG đi qua màn xác nhận preset (/theme/preset GET): shop mới chưa có banner
+    // hay tuỳ biến nào để mà "giữ lại", nên câu cảnh báo ở màn đó vô nghĩa và chỉ thêm một
+    // cú bấm. Shop đã dùng lâu thì vẫn đi lối cũ qua trang Giao diện.
+    const sw = (t) => ['color.primary', 'color.accent', 'color.hero-bg', 'color.surface']
+      .map((k) => String(t?.[k] ?? ''))
+      .filter((v) => /^#[0-9a-fA-F]{6}$/.test(v))
+      .map((v) => `<i style="background:${esc(v)}"></i>`).join('');
+    const cards = presetChoices().map((p) => {
+      const t = getPreset(p.slug)?.tokens ?? {};
+      return `<label class="wiz-pick"><span class="wiz-sw">${sw(t)}</span>
+        <span class="wiz-pt"><input type="radio" name="preset" value="${esc(p.slug)}" required>
+          <span><b>${esc(p.name)}</b><em>${esc(p.description)}</em></span></span></label>`;
+    }).join('');
+    body = `<h1>Chọn giao diện cửa hàng</h1>
+      <p class="wiz-sub">Chọn mẫu gần với ngành hàng của bạn nhất — nó đặt sẵn <strong>màu sắc, bố cục trang chủ và chữ mẫu</strong>. Đổi mẫu khác hoặc chỉnh tay từng màu lúc nào cũng được ở trang <strong>Giao diện</strong>.</p>
+      ${err ? `<div class="wiz-err">${esc(err)}</div>` : ''}
+      <form method="POST" action="${base}/onboarding">
+        <input type="hidden" name="step" value="2">
+        <div class="wiz-grid">${cards}</div>
+        <div class="wiz-act"><button class="wiz-btn" type="submit">Áp mẫu &amp; vào quản trị →</button>
+          <a class="wiz-btn alt" href="${base}/onboarding?step=1">← Quay lại</a>
+          <a class="wiz-skip" href="${base}/overview">Để sau</a></div>
+      </form>`;
+  }
+
+  return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex"><title>Thiết lập cửa hàng</title><style>${STYLE}</style></head><body>
+<div class="wiz">
+  <div class="wiz-top"><a class="wiz-brand" href="${base}/overview"><i>n</i>Thiết lập cửa hàng</a>
+    <a class="wiz-skip" href="${base}/overview">Bỏ qua, vào quản trị →</a></div>
+  <div class="wiz-rail">${rail}</div>
+  <div class="wiz-card">${body}</div>
+</div></body></html>`;
+}
+
 // Cài đặt / Hồ sơ cửa hàng (shop.write = owner/admin). Tên + liên hệ + địa chỉ.
 /**
  * Dọn ảnh trưng bày không dùng — HAI BƯỚC, không gộp thành một nút.
@@ -1973,6 +2121,8 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap"><h2 style="margin:0">🚀 Hoàn tất thiết lập cửa hàng</h2><span class="muted" style="font-size:.9rem">${done}/${items.length} xong</span></div>
       <div style="height:8px;border-radius:999px;background:#e0e7ff;overflow:hidden;margin:10px 0 4px"><i style="display:block;height:100%;width:${pct}%;background:var(--pri)"></i></div>
       <p class="muted" style="font-size:.85rem;margin:0 0 6px">Cửa hàng đã có thể nhận đơn. Hoàn tất các mục dưới để bán trơn tru — quan trọng nhất là <strong>nhận tiền</strong>.</p>
+      ${setup.canManage ? `<p style="margin:0 0 4px"><a class="btn" href="${base}/onboarding">⚡ Thiết lập nhanh trong 2 bước</a>
+        <span class="muted" style="font-size:.82rem;margin-left:10px">Đặt tên gian hàng và chọn giao diện — khoảng một phút.</span></p>` : ''}
       ${rows}${goLive}</div>`;
   }
   // ── "VIỆC CẦN LÀM" — hộp hành động đầu trang (mẫu màn hình chính TikTok Shop/Shopee) ──

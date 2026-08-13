@@ -30,6 +30,7 @@ MANIFEST_UNIT_FILES=(
   apps/checkout/test/vietqr.test.js
   apps/seller/test/rbac.test.js
   packages/net-guard/test/fetch-image.test.js
+  packages/customer-input/test/phone.test.js
   apps/seller/test/import-amount.test.js
   apps/seller/test/adapter-tiktok.test.js
   apps/seller/test/html-to-text.test.js
@@ -48,6 +49,12 @@ MANIFEST_UNIT_FILES=(
   # Bất biến mức MÃ NGUỒN: form="X" phải có id="X" cùng hàm. E2E không bắt được
   # lớp lỗi này vì chúng POST thẳng body, bỏ qua ngữ nghĩa gom-ô của trình duyệt.
   apps/seller-admin/test/form-attr.test.js
+  # Ba hàng đợi hành động mới (thông báo lỗi, ca giao hàng, yêu cầu khách) phải còn đủ
+  # SSR route/form; riêng return request phải mang request_id xuyên tới màn nhận trả.
+  apps/seller-admin/test/action-queues.test.js
+  # BFF phải giữ nguyên error_code/message/action từ seller ở các đường ghi/đảo tiền,
+  # thay vì làm mọi lỗi nghiệp vụ thành một câu chung không có hành động tiếp theo.
+  apps/seller-admin/test/payment-error-contract.test.js
   # Quy tắc XOÁ ảnh trưng bày. Phần rủi ro nhất của đường dọn rác (xoá nhầm ảnh đang
   # hiển thị) — e2e không dựng nổi ca biên "ảnh vừa tải 5 phút trước", unit dựng được.
   apps/seller/test/media-gc.test.js
@@ -73,6 +80,9 @@ MANIFEST_UNIT_FILES=(
   # compose — một phụ thuộc VÔ HÌNH với Dockerfile. Mất mount thì service chết lúc khởi động;
   # e2e phát hiện được nhưng muộn và mù mờ, bất biến mã nguồn thì chỉ thẳng dòng còn thiếu.
   apps/seller/test/safety-mount.test.js
+  # Hai cổng phát hành phải fail-closed: go/no-go cần full CI, Redis chỉ dọn rl:*;
+  # dependency scan không được coi lỗi Docker/output rỗng là "0 lỗ hổng".
+  apps/seller/test/release-gates.test.js
   # Chuẩn hoá đường dẫn cho ĐO LUỒNG DÙNG. Toàn bộ giá trị của bảng feature_usage nằm ở chỗ
   # `route` phải là MẪU: lọt một id thật là bảng nổ theo số shop. E2E chỉ đi qua vài đường có
   # thật của shop test, còn hình dạng nguy hiểm (slug tiếng Việt, 12 tầng, ký tự lạ) thì không.
@@ -90,8 +100,8 @@ MANIFEST_UNIT_FILES=(
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=31
-MANIFEST_E2E_COUNT=101
+MANIFEST_UNIT_COUNT=35
+MANIFEST_E2E_COUNT=106
 
 manifest_unit_files() {
   shopt -s nullglob

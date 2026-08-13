@@ -282,6 +282,8 @@ services:
       # Công thức CÒN NỢ KHÁCH dùng chung — import '../owed.js'. Con số tiền của khách
       # phải GIỐNG NHAU ở trang quản trị và ở trang tra cứu của chính khách.
       - ../packages/orders/src/owed.js:/app/owed.js:ro
+      # Chuẩn hoá SĐT khách dùng chung cho mọi đường tạo/sửa đơn.
+      - ../packages/customer-input/src/phone.js:/app/phone.js:ro
       # Redis tối giản dùng chung (image không có packages/) — import '../redis-lite.js'.
       - ../packages/redis-lite/src/redis-lite.js:/app/redis-lite.js:ro
     depends_on:
@@ -331,6 +333,8 @@ services:
       # Công thức CÒN NỢ KHÁCH dùng chung — import '../owed.js'. Con số tiền của khách
       # phải GIỐNG NHAU ở trang quản trị và ở trang tra cứu của chính khách.
       - ../packages/orders/src/owed.js:/app/owed.js:ro
+      # Chuẩn hoá SĐT khách dùng chung cho checkout và seller.
+      - ../packages/customer-input/src/phone.js:/app/phone.js:ro
       # Bộ đếm rate-limit DÙNG CHUNG (không copy): gắn thẳng file gốc của auth vào image
       # tối giản này để `import '../ratelimit.js'` giải được. RO. Chỉ luồng dev cần mount.
       - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro
@@ -363,6 +367,8 @@ services:
       # /app/apps/account/src nên '../owed.js' trỏ /app/apps/account/owed.js, không phải /app.
       # Mount sai chỗ thì container chết ngay lúc khởi động với ERR_MODULE_NOT_FOUND.
       - ../packages/orders/src/owed.js:/app/apps/account/owed.js:ro
+      # account để mã ở /app/apps/account/src nên '../phone.js' cũng cần đúng đích riêng.
+      - ../packages/customer-input/src/phone.js:/app/apps/account/phone.js:ro
       - ../apps/account/test:/app/apps/account/test:ro
       - ../packages/auth/src:/app/packages/auth/src:ro
     depends_on:

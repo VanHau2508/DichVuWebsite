@@ -98,6 +98,7 @@ async function main() {
   const staff = await makeStaff();
   const slug = `tc-${uniq()}`;
   const shopId = (await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staff, origin: OO })).json.id;
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [shopId]);
   const host = `${slug}.nentang.vn`;
   const oe = `owner-${uniq()}@shop.vn`, op = 'owner passphrase strong';
   await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email: oe, role: 'owner' }, cookie: staff, origin: OO });
@@ -114,6 +115,9 @@ async function main() {
   const vid = (await S.get(`/products/${pr.json.id}`)).json.variants[0].id;
   await S.post(`/variants/${vid}/inventory/adjust`, { delta: 200, reason: 'nhập' });
   const A = (oid, act, f = {}) => adm('POST', `/shops/${shopId}/orders/${oid}/${act}`, { cookie: ui, form: new URLSearchParams(f) });
+  const markPaid = (oid) => adm('POST', `/shops/${shopId}/orders/${oid}/mark-paid/step-up`, {
+    cookie: ui, form: new URLSearchParams({ password: op }),
+  });
   // Đơn tạo qua API seller: token tra cứu do máy chủ sinh và trả về trong response.
   const datDon = async (pm = 'cod') => (await S.post('/orders', {
     lines: [{ variant_id: vid, qty: 1 }],
@@ -134,7 +138,7 @@ async function main() {
   // ── 1. ĐƠN QR BOM HÀNG — "Đã thanh toán ✓" như chưa có chuyện gì ─────────
   sect('1. Đơn QR bị bom hàng — trước đây khách vẫn thấy "Đã thanh toán ✓"');
   const dBom = await datDon('cod');
-  await A(dBom.id, 'confirm'); await A(dBom.id, 'mark-paid');
+  await A(dBom.id, 'confirm'); await markPaid(dBom.id);
   await A(dBom.id, 'ship', { tracking_number: `TN${uniq()}` });
   await A(dBom.id, 'mark-returned', { restock: 'on' });
   // Đơn QR: shop thử nghiệm chưa gắn ngân hàng nên không đặt QR qua API được — đổi phương
@@ -152,7 +156,7 @@ async function main() {
   // ── 2. ĐƠN QR ĐÃ HOÀN TIỀN — trước đây vẽ lại QR ĐÒI TIỀN ────────────────
   sect('2. Đơn QR đã hoàn tiền — trước đây trang vẽ lại mã QR đòi khách chuyển khoản');
   const dHoan = await datDon('cod');
-  await A(dHoan.id, 'confirm'); await A(dHoan.id, 'mark-paid');
+  await A(dHoan.id, 'confirm'); await markPaid(dHoan.id);
   await adm('POST', `/shops/${shopId}/orders/${dHoan.id}/refund/step-up`,
     { cookie: ui, form: new URLSearchParams({ password: op, reason: 'khách đổi ý, hoàn đủ' }) });
   await owner.query(`UPDATE orders SET payment_method='qr' WHERE id=$1`, [dHoan.id]);
@@ -169,7 +173,7 @@ async function main() {
   // ── 3. ĐƠN HUỶ HOÀN MỘT PHẦN — con số hai bên phải BẰNG NHAU ─────────────
   sect('3. Huỷ đơn, hoàn một phần — số khách thấy phải BẰNG số shop thấy');
   const dMot = await datDon('cod');
-  await A(dMot.id, 'confirm'); await A(dMot.id, 'mark-paid');
+  await A(dMot.id, 'confirm'); await markPaid(dMot.id);
   await A(dMot.id, 'cancel', { reason: 'hết hàng' });
   await adm('POST', `/shops/${shopId}/orders/${dMot.id}/refund/step-up`,
     { cookie: ui, form: new URLSearchParams({ password: op, amount_vnd: '100000', reason: 'trả trước một phần' }) });

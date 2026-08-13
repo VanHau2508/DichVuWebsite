@@ -35,13 +35,18 @@ for pkg in apps/*/package.json packages/*/package.json; do
   dir="$(dirname "$pkg")"
   # Sinh lockfile tạm rồi audit trong container throwaway (không đụng source).
   out="$(docker run --rm -v "$PWD/$dir:/s:ro" -w /tmp node:22-alpine sh -c \
-    "cp /s/package.json . && npm install --package-lock-only --silent >/dev/null 2>&1 && npm audit --omit=dev --audit-level=high 2>&1" 2>/dev/null)"
-  if grep -qiE 'found 0 vulnerabilities|found [0-9]+ (low|moderate) ' <<<"$out" || [ -z "$out" ]; then
+    "cp /s/package.json . && npm install --package-lock-only --silent >/dev/null 2>&1 && npm audit --omit=dev --audit-level=high 2>&1" 2>&1)"
+  audit_rc=$?
+  if [ "$audit_rc" -ne 0 ] && ! grep -qiE 'high|critical' <<<"$out"; then
+    flag "$dir — dependency scan KHÔNG CHẠY ĐƯỢC; không được coi output rỗng/lỗi Docker là sạch"
+    printf '%s\n' "$out" | head -4 | sed 's/^/       /'
+  elif grep -qiE 'found 0 vulnerabilities|found [0-9]+ (low|moderate) ' <<<"$out"; then
     ok "$dir — không lỗ hổng high/critical"
   elif grep -qiE 'high|critical' <<<"$out"; then
     flag "$dir — CÓ lỗ hổng high/critical:"; echo "$out" | grep -iE 'high|critical|severity' | head -4 | sed 's/^/       /'
   else
-    ok "$dir — không lỗ hổng high/critical"
+    flag "$dir — npm audit trả kết quả không nhận diện được; cần kiểm tra thay vì cho qua"
+    printf '%s\n' "$out" | head -4 | sed 's/^/       /'
   fi
 done
 

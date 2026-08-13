@@ -4,7 +4,7 @@
  *
  * Kiểm QUA BFF (form-encoded):
  *  1. Owner: nav có "Nhập hàng" + "Kiểm kê"; tạo NCC qua form → hiện trong danh sách.
- *  2. Tạo phiếu nhập (supplier + slot variant/qty/giá) → 303 → chi tiết; nhận hàng qua trang
+ *  2. Tạo draft rỗng → tìm SKU, thêm/sửa/xoá từng dòng → nhận hàng qua trang
  *     xác nhận → tồn tăng + giá vốn cập nhật (kiểm DB).
  *  3. Kiểm kê scope=all → đếm 1 dòng lệch → chốt → tồn điều chỉnh + ledger 'adjust' (kiểm DB).
  *  4. order_manager: nav KHÔNG có "Nhập hàng"; gõ tay URL → 403 trang lỗi.
@@ -107,25 +107,29 @@ async function main() {
   r.body.includes('Xưởng Bắc') && supId ? ok('NCC "Xưởng Bắc" hiện trong danh sách') : bad('NCC không hiện', r.body.slice(0, 150));
 
   sect('2. Tạo phiếu nhập qua form → chi tiết → nhận hàng → tồn + giá vốn cập nhật');
-  // Form nhiều slot: variant_id[]/qty[]/unit_cost[] song song (mảng cặp cho URLSearchParams).
   r = await adm('POST', `${base}/purchasing/new`, { cookie: cookieA, origin: OADM, form: [
-    ['supplier_id', supId], ['note', 'lô đầu'], ['picker_q', ''],
-    ['variant_id', vid], ['qty', '10'], ['unit_cost', '50000'],
-    ['variant_id', ''], ['qty', ''], ['unit_cost', ''],
+    ['supplier_id', supId], ['note', 'lô đầu'],
   ] });
   const poLoc = r.location ?? '';
-  r.status === 303 && /\/purchasing\/[0-9a-f-]{36}$/.test(poLoc) ? ok('tạo phiếu → 303 chi tiết') : bad('tạo phiếu lỗi', `${r.status} ${poLoc} ${r.body.slice(0, 150)}`);
-  const poId = poLoc.split('/').pop();
-  r = await adm('GET', poLoc, { cookie: cookieA });
+  r.status === 303 && /\/purchasing\/[0-9a-f-]{36}\/edit$/.test(poLoc) ? ok('tạo draft rỗng → 303 trang soạn phiếu') : bad('tạo phiếu lỗi', `${r.status} ${poLoc} ${r.body.slice(0, 150)}`);
+  const poId = poLoc.split('/').at(-2);
+  const detailLoc = `${base}/purchasing/${poId}`;
+  r = await adm('GET', `${poLoc}?q=${encodeURIComponent(sku2)}&offset=0`, { cookie: cookieA });
+  r.body.includes(sku2) && r.body.includes('Tìm và thêm hàng') && (r.body.match(/name="variant_id"/g) ?? []).length <= 20
+    ? ok('picker tìm SKU có phân trang, không render hàng trăm slot') : bad('picker phiếu nhập sai', r.body.slice(0, 250));
+  r = await adm('POST', `${base}/purchasing/${poId}/lines`, { cookie: cookieA, origin: OADM, form: { variant_id: vid, qty: '10', unit_cost: '50000', q: sku2, offset: '0' } });
+  r.status === 303 && r.location?.includes(`q=${encodeURIComponent(sku2)}`)
+    ? ok('thêm dòng → 303 và giữ bộ lọc picker') : bad('thêm dòng/lưu bộ lọc lỗi', `${r.status} ${r.location}`);
+  r = await adm('GET', detailLoc, { cookie: cookieA });
   r.body.includes('Nháp') && r.body.includes('Nhận hàng') && r.body.includes('50.000') ? ok('chi tiết phiếu: badge Nháp + nút Nhận hàng + giá nhập') : bad('chi tiết phiếu thiếu', r.body.match(/Nháp|Nhận hàng/g));
-  r = await adm('GET', `${poLoc}/receive`, { cookie: cookieA });
+  r = await adm('GET', `${detailLoc}/receive`, { cookie: cookieA });
   r.body.includes('Xác nhận nhận hàng') && r.body.includes('không hoàn tác') ? ok('trang xác nhận nhận hàng (preview)') : bad('preview nhận hàng lỗi', r.body.slice(0, 150));
   const before = await onHandOf(A.shopId, vid);
-  r = await adm('POST', `${poLoc}/receive`, { cookie: cookieA, origin: OADM, form: {} });
+  r = await adm('POST', `${detailLoc}/receive`, { cookie: cookieA, origin: OADM, form: {} });
   const after = await onHandOf(A.shopId, vid), cost = await costOf(A.shopId, vid);
   r.status === 303 && after === before + 10 && cost === 50000
     ? ok(`nhận hàng → 303, tồn ${before}→${after}, giá vốn=50.000`) : bad('nhận hàng sai', `${r.status} ${before}→${after} cost=${cost}`);
-  r = await adm('GET', poLoc, { cookie: cookieA });
+  r = await adm('GET', detailLoc, { cookie: cookieA });
   r.body.includes('Đã nhận') ? ok('chi tiết phiếu sau nhận: badge "Đã nhận"') : bad('badge sau nhận sai', r.body.match(/Đã nhận|Nháp/g));
 
   sect('3. Kiểm kê qua form: tạo scope=all → đếm lệch → chốt → tồn điều chỉnh + ledger adjust');
@@ -145,40 +149,39 @@ async function main() {
   r = await adm('GET', stLoc, { cookie: cookieA });
   r.body.includes('Đã chốt') ? ok('phiên sau chốt: badge "Đã chốt"') : bad('badge kiểm kê sai', r.body.match(/Đã chốt|Đang đếm/g));
 
-  sect('3b. Sửa phiếu sau khi LỌC danh sách hàng → KHÔNG được nuốt mất dòng cũ');
-  // Lỗ hợp thành: (a) PATCH /purchase-orders/:id có ngữ nghĩa "thay TOÀN BỘ dòng" — đúng khi
-  // caller gửi ĐỦ tập; (b) mỗi ô chọn chỉ dựng <option> từ danh sách được truyền vào — đúng
-  // cho một picker; (c) danh sách đó lọc theo ?q= (và LIMIT 500) — đúng cho một picker.
-  // Ghép lại: dòng cũ có biến thể KHÔNG nằm trong danh sách đã lọc thì <select> rơi về rỗng,
-  // form vẫn gửi như tập đầy đủ → dòng đó bị DELETE im lặng. Ô SL/Giá nhập vẫn hiện nguyên
-  // nên màn hình trông như còn đủ. Khi hàng về, tồn + giá vốn thiếu đúng phần đã mất.
+  sect('3b. Draft lưu từng dòng: lọc/reload không mất dữ liệu, sửa/xoá chỉ tác động đúng dòng');
   const supB = (await owner.query(`SELECT id FROM suppliers WHERE shop_id=$1 LIMIT 1`, [A.shopId])).rows[0].id;
-  r = await adm('POST', `${base}/purchasing/new`, { cookie: cookieA, origin: OADM, form: [
-    ['supplier_id', supB], ['note', 'phiếu 2 dòng'], ['picker_q', ''],
-    ['variant_id', vid], ['qty', '7'], ['unit_cost', '30000'],
-    ['variant_id', vid2], ['qty', '3'], ['unit_cost', '20000'],
-  ] });
-  const po2 = (r.location ?? '').split('/').pop();
+  r = await adm('POST', `${base}/purchasing/new`, { cookie: cookieA, origin: OADM, form: { supplier_id: supB, note: 'phiếu 2 dòng' } });
+  const po2 = (r.location ?? '').split('/').at(-2);
+  await adm('POST', `${base}/purchasing/${po2}/lines`, { cookie: cookieA, origin: OADM, form: { variant_id: vid, qty: '7', unit_cost: '30000' } });
+  await adm('POST', `${base}/purchasing/${po2}/lines`, { cookie: cookieA, origin: OADM, form: { variant_id: vid2, qty: '3', unit_cost: '20000' } });
   const dem = async () => Number((await owner.query(`SELECT count(*)::int n FROM purchase_order_lines WHERE po_id=$1`, [po2])).rows[0].n);
   (await dem()) === 2 ? ok('phiếu mới có đúng 2 dòng') : bad('không dựng được phiếu 2 dòng', String(await dem()));
-  // Người bán gõ ô "Tìm hàng cho ô chọn" một từ CHỈ khớp SP thứ hai rồi bấm Lọc.
   r = await adm('GET', `${base}/purchasing/${po2}/edit?q=${encodeURIComponent(sku2)}`, { cookie: cookieA });
-  const soOption = (r.body.match(new RegExp(`value="${vid}"`, 'g')) ?? []).length;
-  soOption > 0
-    ? ok('trang Sửa sau khi lọc VẪN có option cho biến thể của dòng cũ (bù vào danh sách)')
-    : bad('lọc làm biến mất option của dòng đang có → sẽ bị xoá khi Lưu');
-  // Gửi form Y HỆT TRÌNH DUYỆT: mỗi <select> gửi giá trị của option ĐANG selected, và gửi
-  // CHUỖI RỖNG khi không option nào selected. Nếu tự gõ variant_id vào form thì test đang
-  // giả định trình duyệt vẫn có option — tức đo nhầm, và mutation sẽ không đỏ.
-  const nhuTrinhDuyet = (html) => [...html.matchAll(/<select name="variant_id"[^>]*>([\s\S]*?)<\/select>/g)]
-    .map((m) => /<option value="([^"]*)" selected>/.exec(m[1])?.[1] ?? '');
-  const chon = nhuTrinhDuyet(r.body);
-  r = await adm('POST', `${base}/purchasing/${po2}/edit`, { cookie: cookieA, origin: OADM, form: [
-    ['supplier_id', supB], ['note', 'sửa ghi chú'], ['picker_q', sku2],
-    ['variant_id', chon[0] ?? ''], ['qty', '7'], ['unit_cost', '30000'],
-    ['variant_id', chon[1] ?? ''], ['qty', '3'], ['unit_cost', '20000'],
-  ] });
-  (await dem()) === 2 ? ok('lưu sau khi lọc → phiếu VẪN đủ 2 dòng') : bad('lưu sau khi lọc làm mất dòng', `còn ${await dem()} dòng`);
+  (await dem()) === 2 && r.body.includes('phiếu 2 dòng') && r.body.includes('Đã có trong phiếu') && r.body.includes(' disabled title="Biến thể này đã có trong phiếu"')
+    ? ok('lọc/reload giữ dữ liệu và SKU đã thêm bị disable') : bad('lọc hoặc trạng thái SKU đã thêm sai', `còn ${await dem()} dòng`);
+  const lines2 = (await owner.query(`SELECT id, variant_id FROM purchase_order_lines WHERE po_id=$1 ORDER BY variant_id`, [po2])).rows;
+  const first = lines2.find((x) => x.variant_id === vid), second = lines2.find((x) => x.variant_id === vid2);
+  r = await adm('POST', `${base}/purchasing/${po2}/lines/${first.id}`, { cookie: cookieA, origin: OADM, form: { variant_id: vid, qty: '9', unit_cost: '31000', q: sku2, offset: '20' } });
+  const firstNow = (await owner.query(`SELECT qty,unit_cost_vnd FROM purchase_order_lines WHERE id=$1`, [first.id])).rows[0];
+  r.status === 303 && r.location?.includes(`q=${encodeURIComponent(sku2)}`) && r.location?.includes('offset=20')
+    && N(firstNow.qty) === 9 && N(firstNow.unit_cost_vnd) === 31000 && (await dem()) === 2
+    ? ok('sửa một dòng giữ dòng còn lại và vị trí picker') : bad('sửa dòng nguyên tử sai', `${JSON.stringify(firstNow)} ${r.location}`);
+  r = await adm('POST', `${base}/purchasing/${po2}/lines/${second.id}/delete`, { cookie: cookieA, origin: OADM, form: { q: sku2, offset: '20' } });
+  r.status === 303 && r.location?.includes(`q=${encodeURIComponent(sku2)}`) && r.location?.includes('offset=20') && (await dem()) === 1
+    ? ok('xoá một dòng giữ vị trí picker, chỉ còn đúng 1 dòng') : bad('xoá dòng nguyên tử sai', `còn ${await dem()} ${r.location}`);
+
+  sect('3c. Phiếu đã đặt là chứng từ chỉ đọc ở BFF');
+  await adm('POST', `${base}/purchasing/${po2}/order`, { cookie: cookieA, origin: OADM, form: {} });
+  r = await adm('GET', `${base}/purchasing/${po2}/edit`, { cookie: cookieA });
+  const orderedCheck = {
+    status: r.status,
+    hasMessage: r.body.includes('chứng từ chỉ đọc'),
+    hasEditor: r.body.includes('Soạn phiếu nhập'),
+    hasEditButton: r.body.includes(`${base}/purchasing/${po2}/edit">Sửa phiếu</a>`),
+  };
+  orderedCheck.status === 409 && orderedCheck.hasMessage && !orderedCheck.hasEditor && !orderedCheck.hasEditButton
+    ? ok('URL /edit của ordered chỉ hiện chi tiết + hướng dẫn') : bad('ordered vẫn render form sửa', JSON.stringify(orderedCheck));
 
   sect('4. RBAC: order_manager không thấy nav Nhập hàng + gõ tay URL → 403');
   const om = await inviteRole(staff, A.shopId, 'order_manager');

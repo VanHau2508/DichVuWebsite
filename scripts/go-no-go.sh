@@ -3,9 +3,9 @@
 # CỔNG GO / NO-GO trước khi chạy khách thật (Ngày 20).
 #   bash scripts/go-no-go.sh
 #
-# Chạy các bộ kiểm ánh xạ tới 15 tiêu chí go-live (docs/01 §7, docs/03), cộng
-# kiểm chứng riêng, rồi in verdict GO / NO-GO / MANUAL cho từng tiêu chí.
-# Chỉ ra GO tổng thể khi mọi tiêu chí TỰ ĐỘNG đạt và không còn NO-GO.
+# Chạy CỔNG CI ĐẦY ĐỦ trước, rồi các bộ kiểm ánh xạ tới 15 tiêu chí go-live
+# (docs/01 §7, docs/03) và kiểm chứng riêng. Không có kết quả full CI của chính lượt
+# này thì script không được phép in GO, dù các bộ con bên dưới đều qua.
 
 set -uo pipefail
 export PATH="$PATH:/c/Program Files/Docker/Docker/resources/bin"
@@ -18,7 +18,9 @@ declare -A R
 nogo=0
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-flush() { $C exec -T redis redis-cli flushall >/dev/null 2>&1; }
+flush() {
+  $C exec -T redis sh -c "redis-cli --scan --pattern 'rl:*' | xargs -r -n 400 redis-cli del > /dev/null" 2>/dev/null
+}
 # suite <key> <mô tả> <lệnh...> — PASS theo EXIT CODE (mọi e2e/script exit 0 khi đạt).
 suite() {
   local key="$1" desc="$2"; shift 2
@@ -32,6 +34,7 @@ printf '%s╔══ GO / NO-GO — nền tảng SaaS multi-tenant ══╗%s\n'
 $C ps --status running -q postgres | grep -q . || { echo "Stack chưa chạy: $C up -d --build" >&2; exit 1; }
 
 printf '\n%sChạy các bộ kiểm...%s\n' "$BLD" "$RST"
+suite full_ci    "toàn bộ unit + DB + e2e + smoke" bash scripts/ci-local.sh
 suite tenant     "cô lập tenant + bất biến schema"   $C exec -T dbtest sh -c 'node --test test/*.test.js'
 suite auth       "đăng nhập + MFA + step-up"          $C exec -T auth node apps/auth/test/e2e.mjs
 suite checkout   "giá server-side + idempotency + suspend" $C exec -T dbtest node apps/checkout/test/e2e.mjs
@@ -88,16 +91,18 @@ row 14 "Ba shop pilot đã chạy UAT"                       "MANUAL"           
 row 15 "Không còn lỗi Critical/High"                     "$(mapd scan)"       "scan + review docs/18"
 
 # tls & auth phụ trợ
+[ "${R[full_ci]}" = PASS ] || nogo=$((nogo+1))
 [ "${R[tls]}" = PASS ] || nogo=$((nogo+1))
 [ "${R[auth]}" = PASS ] || true
 
 printf '\n%s────────────────────────────────────────────%s\n' "$DIM" "$RST"
 if [ "$nogo" -eq 0 ]; then
-  printf '%s%s  VERDICT: GO  %s — mọi tiêu chí tự động ĐẠT.\n' "$BLD" "$GRN" "$RST"
+  printf '%s%s  VERDICT: GO  %s — full CI và mọi tiêu chí tự động ĐẠT.\n' "$BLD" "$GRN" "$RST"
   printf '  Còn lại là quyết định người: #11 (alert on-call), #14 (UAT khách thật).\n'
   printf '  An toàn ra mắt pilot 3-5 khách sáng lập theo docs/03.\n'
   exit 0
 else
   printf '%s%s  VERDICT: NO-GO  %s — %d tiêu chí tự động CHƯA đạt (đỏ ở trên).\n' "$BLD" "$RED" "$RST" "$nogo"
+  [ "${R[full_ci]}" = PASS ] || printf '  Cổng CI đầy đủ chưa qua trong chính lượt go/no-go này.\n'
   exit 1
 fi

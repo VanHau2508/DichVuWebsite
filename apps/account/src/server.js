@@ -22,8 +22,9 @@ import { send, sendHtml, redirect, readForm, parseCookies, sameOrigin, clientIp,
   CUSTOMER_COOKIE, setCustomerCookie, clearCustomerCookie } from './http.js';
 import * as V from './views.js';
 // Công thức CÒN NỢ KHÁCH dùng chung (bind-mount /app/owed.js) — xem packages/orders/src/owed.js.
-import { OWED_SQL, OWED_PAID_SQL, OWED_REFUNDED_SQL } from '../owed.js';
+import { OWED_SQL, OWED_PAID_SQL, OWED_REFUNDED_SQL, paymentSummary } from '../owed.js';
 import { PROVINCES, isProvince } from './provinces.js';
+import { canonPhone } from '../phone.js';
 
 const PORT = Number(process.env.PORT ?? 3062);
 const SESSION_TTL_MS = Number(process.env.CUST_SESSION_TTL_HOURS ?? 720) * 3600_000; // 30 ngày
@@ -37,11 +38,32 @@ const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 // UUID CHẶT (không phải /^[0-9a-f-]{36}$/ lỏng): chuỗi 36 gạch nối lọt regex lỏng rồi rơi
 // xuống Postgres thành 22P02 → 500. Yêu thích (0100) nhận product_id từ form công khai.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const ORDER_REQUEST_TYPES = new Set(['cancel', 'address_change', 'return']);
 // Base URL ảnh public (giống storefront/seller) — thumbnail trong trang Yêu thích.
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
+const safeNonNegativeInt = (value, fallback = 0) => {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= 0 ? n : fallback;
+};
 // Hash "mồi" để login LUÔN tốn ~1 Argon2 dù không có khách (chống enumeration qua timing).
 let DUMMY_HASH = '$argon2id$v=19$m=19456,t=2,p=1$ZmFrZXNhbHRmYWtlc2FsdA$3v8Iih6q6z0Yk3wKQ0Xw0aQ0aQ0aQ0aQ0aQ0aQ0aQ0';
 hashPassword('dummy-' + generateToken()).then((h) => { DUMMY_HASH = h; }).catch(() => {});
+
+// Chỉ cho quay lại đúng các trang công khai hoặc trang account nội bộ. URL tuyệt đối,
+// protocol-relative và ký tự điều khiển đều về dashboard để không biến login thành open redirect.
+function safeLoginNext(value) {
+  const path = String(value ?? '');
+  if (!path.startsWith('/') || path.startsWith('//') || /[\r\n\\]/.test(path)) return '/account';
+  try {
+    const u = new URL(path, 'https://shop.invalid');
+    if (u.origin !== 'https://shop.invalid') return '/account';
+    const accountPage = /^\/account(?:\/orders(?:\/\d+)?|\/points|\/wishlist|\/addresses)?$/.test(u.pathname);
+    if (accountPage || /^\/p\/[a-z0-9-]+$/.test(u.pathname)) {
+      return `${u.pathname}${u.search}`;
+    }
+  } catch {}
+  return '/account';
+}
 
 // ── tenant + phiên ───────────────────────────────────────────────────────────
 async function resolveShop(hostname) {
@@ -86,7 +108,12 @@ async function mintSession(c, customerId, ip, ua) {
 
 // ── handlers ─────────────────────────────────────────────────────────────────
 async function pageLogin(req, res, ctx, q) {
-  return sendHtml(res, 200, V.renderLogin(ctx.shopName, { error: q.get('e') ? 'Email hoặc mật khẩu không đúng.' : null, notice: q.get('bye') ? 'Bạn đã đăng xuất.' : null }));
+  const next = safeLoginNext(q.get('next'));
+  return sendHtml(res, 200, V.renderLogin(ctx.shopName, {
+    error: q.get('e') ? 'Email hoặc mật khẩu không đúng.' : null,
+    notice: q.get('bye') ? 'Bạn đã đăng xuất.' : null,
+    next,
+  }));
 }
 async function pageRegister(req, res, ctx) {
   return sendHtml(res, 200, V.renderRegister(ctx.shopName));
@@ -199,8 +226,9 @@ async function doLogin(req, res, ctx) {
   const f = await readForm(req);
   const email = String(f.email ?? '').trim().toLowerCase();
   const password = String(f.password ?? '');
+  const next = safeLoginNext(f.next);
   const ipRl = await hit(redis, `rl:cust:login:ip:${ctx.shopId}:${ctx.ip}`, { limit: 20, windowSec: 900 }).catch(() => ({ allowed: true }));
-  if (!ipRl.allowed) return sendHtml(res, 429, V.renderLogin(ctx.shopName, { error: 'Quá nhiều lần thử, vui lòng đợi.' }));
+  if (!ipRl.allowed) return sendHtml(res, 429, V.renderLogin(ctx.shopName, { error: 'Quá nhiều lần thử, vui lòng đợi.', next }));
   const acctKey = `rl:cust:login:acctfail:${ctx.shopId}:${email}`;
   const acctRl = await hit(redis, acctKey, { limit: 10, windowSec: 900 }).catch(() => ({ allowed: true }));
   // Tra khách (pre-auth: cid NULL → shop-scoped). verifyPassword LUÔN chạy (DUMMY_HASH nếu vắng).
@@ -208,7 +236,7 @@ async function doLogin(req, res, ctx) {
     `SELECT id, password_hash, status FROM customers WHERE shop_id = current_shop_id() AND lower(email) = $1 AND email IS NOT NULL`, [email])).rows[0] ?? null);
   const okPw = await verifyPassword(cust?.password_hash ?? DUMMY_HASH, password);
   if (!cust || !okPw || cust.status !== 'active' || !acctRl.allowed) {
-    return sendHtml(res, 401, V.renderLogin(ctx.shopName, { error: 'Email hoặc mật khẩu không đúng.' }));
+    return sendHtml(res, 401, V.renderLogin(ctx.shopName, { error: 'Email hoặc mật khẩu không đúng.', next }));
   }
   await resetRate(redis, acctKey).catch(() => {});
   const token = await withCustomer(ctx.shopId, cust.id, async (c) => {
@@ -216,7 +244,7 @@ async function doLogin(req, res, ctx) {
     return mintSession(c, cust.id, ctx.ip, req.headers['user-agent']);
   });
   setCustomerCookie(res, token, Math.floor(SESSION_TTL_MS / 1000));
-  return redirect(res, '/account');
+  return redirect(res, next);
 }
 
 async function doLogout(req, res, ctx) {
@@ -270,10 +298,8 @@ async function pagePoints(req, res, ctx, q) {
     rows: out.rows.slice(0, PAGE), page, hasMore: out.rows.length > PAGE,
   }));
 }
-async function pageOrderDetail(req, res, ctx, q, params) {
-  if (!ctx.customer) return redirect(res, '/account/login');
-  const num = parseInt(params[0], 10);
-  const out = await withCustomer(ctx.shopId, ctx.customer.id, async (c) => {
+async function loadOrderDetail(ctx, num) {
+  return withCustomer(ctx.shopId, ctx.customer.id, async (c) => {
     const o = (await c.query(
       // TIỀN (0146): đã thu / đã hoàn / còn phải hoàn. `owed_vnd` dùng CHUNG biểu thức với
       // trang quản trị và trang tra cứu (packages/orders owed.js) — khách và shop phải đọc
@@ -291,10 +317,124 @@ async function pageOrderDetail(req, res, ctx, q, params) {
     // nút "Tra cứu vận đơn →" trỏ thẳng sang trang hãng, mã đã huỷ thì ra trang trống.
     // Mirror apps/checkout/src/server.js (trang tra cứu đơn) — cùng một lời hứa với khách.
     const shipments = (await c.query(`SELECT carrier, tracking_number, status FROM shipments WHERE order_id = $1 AND tracking_number IS NOT NULL AND status <> 'cancelled' ORDER BY created_at`, [o.id])).rows;
-    return { o, lines, shipments };
+    o.payment_summary = paymentSummary(o);
+    const requests = (await c.query(
+      `SELECT id, request_type, requester_type, status, reason, request_payload,
+              decision_note, resolution_payload, result_return_id,
+              created_at, decided_at, completed_at, updated_at
+         FROM order_requests WHERE order_id = $1 ORDER BY created_at DESC, id DESC`, [o.id],
+    )).rows;
+    const hasActiveShipment = (await c.query(
+      `SELECT 1 FROM shipments WHERE order_id = $1 AND status <> 'cancelled' LIMIT 1`, [o.id],
+    )).rowCount > 0;
+    return { o, lines, shipments, requests, hasActiveShipment };
   });
+}
+
+async function renderOrderDetailPage(res, ctx, num, opts = {}) {
+  const out = await loadOrderDetail(ctx, num);
   if (!out) return sendHtml(res, 404, '<!doctype html><meta charset=utf-8><title>404</title><p>Không tìm thấy đơn.</p>');
-  return sendHtml(res, 200, V.renderOrderDetail(ctx.shopName, out.o, out.lines, out.shipments));
+  return sendHtml(res, opts.statusCode ?? 200, V.renderOrderDetail(ctx.shopName, out.o, out.lines, out.shipments, {
+    requests: out.requests,
+    hasActiveShipment: out.hasActiveShipment,
+    requestError: opts.requestError,
+    requestForm: opts.requestForm,
+    notice: opts.notice,
+    provinces: PROVINCES,
+  }));
+}
+
+async function pageOrderDetail(req, res, ctx, q, params) {
+  if (!ctx.customer) return redirect(res, '/account/login');
+  const num = parseInt(params[0], 10);
+  const notice = q.get('request') === 'created'
+    ? 'Đã gửi yêu cầu cho cửa hàng. Đơn chưa thay đổi cho tới khi cửa hàng chấp thuận.'
+    : q.get('request') === 'existing'
+      ? 'Yêu cầu này đã được gửi trước đó; cửa hàng đang xử lý.'
+      : null;
+  return renderOrderDetailPage(res, ctx, num, { notice });
+}
+
+function parseOrderRequestAddress(f) {
+  const recipientName = String(f.recipient_name ?? '').trim();
+  const phone = canonPhone(f.phone);
+  const line = String(f.line ?? '').trim().slice(0, 300);
+  const province = String(f.province ?? '').trim().slice(0, 60);
+  const district = String(f.district ?? '').trim().slice(0, 60) || null;
+  const ward = String(f.ward ?? '').trim().slice(0, 60) || null;
+  if (!recipientName || recipientName.length > 120 || /[\r\n]/.test(recipientName)) return { error: 'Tên người nhận không hợp lệ.' };
+  if (!phone) return { error: 'Số điện thoại không hợp lệ.' };
+  if (!line) return { error: 'Vui lòng nhập địa chỉ giao hàng.' };
+  if (!province || !isProvince(province)) return { error: 'Vui lòng chọn Tỉnh/Thành phố hợp lệ.' };
+  return { value: { recipient_name: recipientName, phone, line, province, district, ward } };
+}
+
+async function doOrderRequest(req, res, ctx, _q, params) {
+  if (!sameOrigin(req)) return send(res, 403, { error: 'origin' });
+  if (!ctx.customer) return redirect(res, '/account/login');
+  const num = parseInt(params[0], 10);
+  const f = await readForm(req);
+  const requestType = String(f.request_type ?? '');
+  const reason = String(f.reason ?? '').trim().slice(0, 500) || null;
+  const form = { ...f, request_type: requestType, reason: reason ?? '' };
+  const failPage = (message, statusCode = 400) => renderOrderDetailPage(res, ctx, num, {
+    requestError: message, requestForm: form, statusCode,
+  });
+  if (!Number.isInteger(num) || !ORDER_REQUEST_TYPES.has(requestType)) return failPage('Loại yêu cầu không hợp lệ.');
+  if ((requestType === 'cancel' || requestType === 'return') && !reason) {
+    return failPage('Vui lòng nêu lý do để cửa hàng có đủ thông tin xử lý.');
+  }
+  let payload = {};
+  if (requestType === 'address_change') {
+    const parsed = parseOrderRequestAddress(f);
+    if (parsed.error) return failPage(parsed.error);
+    payload = parsed.value;
+  }
+  const rl = await hit(redis, `rl:cust:order-request:${ctx.shopId}:${ctx.customer.id}`, { limit: 20, windowSec: 900 }).catch(() => ({ allowed: true }));
+  if (!rl.allowed) return failPage('Bạn đã gửi quá nhiều yêu cầu. Vui lòng đợi ít phút rồi thử lại.', 429);
+
+  const result = await withCustomer(ctx.shopId, ctx.customer.id, async (c) => {
+    const o = (await c.query(
+      `SELECT id, status FROM orders WHERE order_number = $1 AND customer_id = current_customer_id()`, [num],
+    )).rows[0];
+    if (!o) return { code: 404, error: 'Không tìm thấy đơn.' };
+    const open = (await c.query(
+      `SELECT id FROM order_requests
+        WHERE order_id = $1 AND request_type = $2 AND status IN ('requested','approved') LIMIT 1`,
+      [o.id, requestType],
+    )).rows[0];
+    if (open) return { existing: true };
+    const activeShipment = (await c.query(
+      `SELECT 1 FROM shipments WHERE order_id = $1 AND status <> 'cancelled' LIMIT 1`, [o.id],
+    )).rowCount > 0;
+    if (requestType === 'cancel' && !['pending', 'confirmed'].includes(o.status)) {
+      return { code: 409, error: 'Đơn đã bắt đầu giao hoặc đã kết thúc nên không thể yêu cầu huỷ.' };
+    }
+    if (requestType === 'address_change' && (!['pending', 'confirmed'].includes(o.status) || activeShipment)) {
+      return { code: 409, error: 'Đơn đã bắt đầu giao nên không thể đổi địa chỉ. Vui lòng liên hệ trực tiếp cửa hàng.' };
+    }
+    if (requestType === 'return' && o.status !== 'delivered') {
+      return { code: 409, error: 'Chỉ có thể yêu cầu trả hàng sau khi đơn đã giao thành công.' };
+    }
+    const ins = await c.query(
+      `INSERT INTO order_requests
+         (shop_id, order_id, customer_id, request_type, requester_type, reason, request_payload)
+       VALUES (current_shop_id(), $1, current_customer_id(), $2, 'customer', $3, $4)
+       ON CONFLICT DO NOTHING RETURNING id`, [o.id, requestType, reason, payload],
+    );
+    if (ins.rowCount === 1) {
+      const eventType = requestType === 'return'
+        ? 'return.requested'
+        : `order.${requestType}_requested`;
+      await c.query(
+        `SELECT record_order_event($1, $2, 'buyer', $3, 'account', $4)`,
+        [o.id, eventType, ctx.customer.id, { request_id: ins.rows[0].id, reason }],
+      );
+    }
+    return ins.rowCount === 1 ? { created: true } : { existing: true };
+  });
+  if (result.error) return failPage(result.error, result.code);
+  return redirect(res, `/account/orders/${num}?request=${result.created ? 'created' : 'existing'}`);
 }
 // "Nhận đơn cũ": UPDATE mù gate bằng GUC claim_token_hash (RLS chỉ hiện dòng đúng token).
 async function doClaim(req, res, ctx) {
@@ -316,12 +456,17 @@ async function doClaim(req, res, ctx) {
 async function pageAddresses(req, res, ctx, q) {
   if (!ctx.customer) return redirect(res, '/account/login');
   const editId = q.get('edit');
+  const deleteId = q.get('delete');
   const out = await withCustomer(ctx.shopId, ctx.customer.id, async (c) => {
     const list = (await c.query(`SELECT id, recipient_name, phone, line1, ward, district, province, is_default FROM customer_addresses WHERE customer_id = current_customer_id() ORDER BY is_default DESC, created_at`)).rows;
     const editing = editId ? list.find((a) => a.id === editId) ?? null : null;
-    return { list, editing };
+    const deleting = deleteId ? list.find((a) => a.id === deleteId) ?? null : null;
+    return { list, editing, deleting };
   });
-  return sendHtml(res, 200, V.renderAddresses(ctx.shopName, out.list, PROVINCES, { editing: out.editing }));
+  return sendHtml(res, 200, V.renderAddresses(ctx.shopName, out.list, PROVINCES, {
+    editing: out.editing,
+    deleting: out.deleting,
+  }));
 }
 // ── YÊU THÍCH (0100) ─────────────────────────────────────────────────────────
 // Gắn với TÀI KHOẢN, không phải cookie: yêu thích mà mất khi đổi máy thì vô nghĩa.
@@ -357,31 +502,35 @@ async function wishlistToggle(req, res, ctx) {
 
 async function pageWishlist(req, res, ctx) {
   if (!ctx.customer) return redirect(res, '/account/login?next=%2Faccount%2Fwishlist');
-  const rows = await withCustomer(ctx.shopId, ctx.customer.id, async (c) => (await c.query(
-    // JOIN products: SP bị ẩn/xoá mềm thì KHÔNG hiện (khách bấm vào sẽ 404). Ảnh lấy như
-    // mọi nơi khác: media 'ready' đầu tiên theo position.
-    `SELECT p.id, p.slug, p.title, p.price_vnd, w.created_at,
-            (SELECT m.public_key FROM media m
-              WHERE m.product_id = p.id AND m.status = 'ready' AND m.deleted_at IS NULL
-              ORDER BY m.position, m.created_at LIMIT 1) AS image_key
-       FROM wishlist_items w JOIN products p ON p.id = w.product_id
-      WHERE w.customer_id = current_customer_id() AND p.deleted_at IS NULL AND p.status = 'active'
-      ORDER BY w.created_at DESC LIMIT 100`)).rows);
-  const items = rows.map((r) => ({ ...r, image_url: r.image_key ? `${MEDIA_PUBLIC_BASE}/${r.image_key}` : null }));
+  // Projection hẹp do DB sở hữu: account không cần quyền đọc trực tiếp tồn/options/promo.
+  const rows = await withCustomer(ctx.shopId, ctx.customer.id, async (c) =>
+    (await c.query(`SELECT * FROM current_customer_wishlist()`)).rows);
+  const items = rows.map((r) => ({
+    id: r.product_id,
+    slug: String(r.slug ?? ''),
+    title: String(r.title ?? ''),
+    base_price_vnd: safeNonNegativeInt(r.base_price_vnd),
+    price_vnd: safeNonNegativeInt(r.price_vnd),
+    off_pct: r.off_pct == null ? null : safeNonNegativeInt(r.off_pct, null),
+    available_qty: safeNonNegativeInt(r.available_qty),
+    default_variant_id: UUID_RE.test(String(r.default_variant_id ?? '')) ? r.default_variant_id : null,
+    image_url: r.image_key ? `${MEDIA_PUBLIC_BASE}/${r.image_key}` : null,
+  }));
   return sendHtml(res, 200, V.renderWishlist(ctx.shopName, items));
 }
 
 function parseAddr(f) {
   const a = {
     recipient_name: String(f.recipient_name ?? '').trim().slice(0, 120),
-    phone: String(f.phone ?? '').trim().slice(0, 20),
+    phone: canonPhone(f.phone),
     line1: String(f.line1 ?? '').trim().slice(0, 200),
     ward: String(f.ward ?? '').trim().slice(0, 100) || null,
     district: String(f.district ?? '').trim().slice(0, 100) || null,
     province: String(f.province ?? '').trim() || null,
     is_default: f.is_default === '1' || f.is_default === 'on',
   };
-  if (!a.recipient_name || !a.phone || !a.line1) return { error: 'Vui lòng nhập người nhận, số điện thoại và địa chỉ.' };
+  if (!a.recipient_name || !a.line1) return { error: 'Vui lòng nhập người nhận, số điện thoại và địa chỉ.' };
+  if (!a.phone) return { error: 'Số điện thoại không hợp lệ.' };
   if (a.province && !isProvince(a.province)) return { error: 'Tỉnh/thành không hợp lệ.' };
   return { a };
 }
@@ -425,7 +574,9 @@ async function addressDelete(req, res, ctx) {
   if (!sameOrigin(req)) return send(res, 403, { error: 'origin' });
   if (!ctx.customer) return redirect(res, '/account/login');
   const f = await readForm(req);
-  await withCustomer(ctx.shopId, ctx.customer.id, (c) => c.query(`DELETE FROM customer_addresses WHERE id=$1 AND customer_id = current_customer_id()`, [String(f.id ?? '')])).catch(() => {});
+  const id = String(f.id ?? '');
+  if (f.confirm_delete !== '1' || !UUID_RE.test(id)) return redirect(res, '/account/addresses');
+  await withCustomer(ctx.shopId, ctx.customer.id, (c) => c.query(`DELETE FROM customer_addresses WHERE id=$1 AND customer_id = current_customer_id()`, [id])).catch(() => {});
   return redirect(res, '/account/addresses');
 }
 async function addressDefault(req, res, ctx) {
@@ -458,6 +609,7 @@ const ROUTES = [
   { m: 'GET', re: /^\/account\/orders$/, fn: pageOrders },
   { m: 'GET', re: /^\/account\/points$/, fn: pagePoints },
   { m: 'GET', re: /^\/account\/orders\/(\d+)$/, fn: pageOrderDetail },
+  { m: 'POST', re: /^\/account\/orders\/(\d+)\/requests$/, fn: doOrderRequest },
   { m: 'POST', re: /^\/account\/claim$/, fn: doClaim },
   { m: 'GET', re: /^\/account\/wishlist$/, fn: pageWishlist },
   { m: 'POST', re: /^\/account\/wishlist\/toggle$/, fn: wishlistToggle, auth: false },

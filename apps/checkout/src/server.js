@@ -20,7 +20,7 @@ import crypto from 'node:crypto';
 import pg from 'pg';
 // TỒN AN TOÀN (0140) — công thức "còn bán được online", dùng chung với storefront.
 import { SAFETY_SQL, availOf } from '../safety-stock.js';
-import { OWED_SQL, OWED_PAID_SQL, OWED_REFUNDED_SQL } from '../owed.js';
+import { OWED_SQL, OWED_PAID_SQL, OWED_REFUNDED_SQL, paymentSummary } from '../owed.js';
 import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE, BUYNOW_COOKIE, REF_COOKIE, setBuynowCookie, clearBuynowCookie } from './http.js';
 import { buildVietQR } from './vietqr.js';
 import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
@@ -32,6 +32,7 @@ import { readMultipartAll, ingestReviewImages, MAX_IMAGES } from './review-image
 // Bộ đếm rate-limit DÙNG CHUNG với auth (atomic Lua, FAIL-OPEN khi Redis lỗi). File
 // gắn vào /app/ratelimit.js qua bind-mount trong compose.dev.yml (không copy, không sửa).
 import { hit } from '../ratelimit.js';
+import { canonPhone } from '../phone.js';
 
 const PORT = Number(process.env.PORT ?? 3060);
 // Mặc định phí ship nền tảng (shop chưa cấu hình → dùng số này). Dùng `??` không đủ:
@@ -73,12 +74,6 @@ function verifyChallenge(sig, answer, idemKey) {
   if (![a, b, t].every(Number.isInteger) || formSig(`mc:${a}:${b}:${t}:${idemKey}`) !== mac) return false;
   if (Date.now() - t > FORM_MAX_AGE_MS) return false;
   return Number(String(answer ?? '').trim()) === a + b;
-}
-// Chuẩn hoá SĐT về 1 dạng (chỉ số, +84→0) → '091 234', '+8491...', '0912...' tính là MỘT.
-function canonPhone(p) {
-  let d = String(p ?? '').replace(/\D/g, '');
-  if (d.startsWith('84') && d.length > 9) d = '0' + d.slice(2);
-  return d.length >= 8 ? d : null;
 }
 const imgUrl = (key) => (key ? `${MEDIA_PUBLIC_BASE}/${key}` : null);
 const CART_TTL_DAYS = 30;
@@ -431,7 +426,25 @@ const VARIANT_NOT_ORPHAN_SQL = `NOT EXISTS (
                      WHERE vov.variant_id = v.id AND vov.option_id = po.id))`;
 
 // ── cart handlers (lõi dùng chung JSON + form) ───────────────────────────────
-async function cartAddCore(c, token, variantId, qty) {
+function failInventoryUnavailable(variantId, availableQty, productTitle = null) {
+  const available = Math.max(0, Number(availableQty) || 0);
+  const label = String(productTitle ?? '').trim();
+  const message = available > 0
+    ? `${label || 'Sản phẩm'} chỉ còn ${available}`
+    : `${label || 'Sản phẩm'} đã hết hàng`;
+  fail(422, message, {
+    error_code: 'inventory_unavailable',
+    message,
+    variant_id: variantId,
+    ...(label ? { product_title: label } : {}),
+    available_qty: available,
+    // Giữ tên cũ để client hiện hữu không bị gãy trong một chu kỳ tương thích.
+    available,
+    action: available > 0 ? 'Giảm số lượng hoặc xóa sản phẩm khỏi giỏ' : 'Xóa sản phẩm khỏi giỏ',
+  });
+}
+
+async function cartAddCore(c, token, variantId, qty, demBiChan = []) {
   // RLS: chỉ variant active; kèm chặn biến thể MỒ CÔI (mồ côi == 'ngừng bán').
   const v = (await c.query(
     `SELECT 1 FROM variants v WHERE v.id = $1 AND ${VARIANT_NOT_ORPHAN_SQL}`, [variantId],
@@ -449,9 +462,15 @@ async function cartAddCore(c, token, variantId, qty) {
   const cur = (await c.query(`SELECT qty FROM cart_items WHERE cart_id = $1 AND variant_id = $2`, [cart.id, variantId])).rows[0];
   const newQty = (cur?.qty ?? 0) + qty;
   if (newQty > 1000) fail(422, 'vượt số lượng tối đa 1000 mỗi sản phẩm'); // đối xứng với cartSetQtyCore (cộng dồn không được vượt cap)
-  const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1`, [variantId])).rows[0];
-  const available = lvl ? lvl.on_hand - lvl.reserved : 0;
-  if (newQty > available) fail(422, 'không đủ tồn kho', { available });
+  const lvl = (await c.query(
+    `SELECT il.on_hand, il.reserved, ${SAFETY_SQL} AS safety
+       FROM inventory_levels il WHERE il.variant_id = $1`, [variantId],
+  )).rows[0];
+  const available = lvl ? availOf(Number(lvl.on_hand), Number(lvl.reserved), Number(lvl.safety)) : 0;
+  if (newQty > available) {
+    if (lvl && Number(lvl.on_hand) - Number(lvl.reserved) > 0) demBiChan.push(variantId);
+    failInventoryUnavailable(variantId, available);
+  }
   await c.query(
     `INSERT INTO cart_items (shop_id, cart_id, variant_id, qty) VALUES (current_shop_id(), $1, $2, $3)
      ON CONFLICT (shop_id, cart_id, variant_id) DO UPDATE SET qty = $3`,
@@ -460,15 +479,21 @@ async function cartAddCore(c, token, variantId, qty) {
   return { summary: await summarize(c, cart.id), newToken };
 }
 
-async function cartSetQtyCore(c, token, variantId, qty) {
+async function cartSetQtyCore(c, token, variantId, qty, demBiChan = []) {
   const cart = await findCart(c, token);
   if (!cart) fail(404, 'giỏ hàng không tồn tại');
   if (qty === 0) {
     await c.query(`DELETE FROM cart_items WHERE cart_id = $1 AND variant_id = $2`, [cart.id, variantId]);
   } else {
-    const lvl = (await c.query(`SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1`, [variantId])).rows[0];
-    const available = lvl ? lvl.on_hand - lvl.reserved : 0;
-    if (qty > available) fail(422, 'không đủ tồn kho', { available });
+    const lvl = (await c.query(
+      `SELECT il.on_hand, il.reserved, ${SAFETY_SQL} AS safety
+         FROM inventory_levels il WHERE il.variant_id = $1`, [variantId],
+    )).rows[0];
+    const available = lvl ? availOf(Number(lvl.on_hand), Number(lvl.reserved), Number(lvl.safety)) : 0;
+    if (qty > available) {
+      if (lvl && Number(lvl.on_hand) - Number(lvl.reserved) > 0) demBiChan.push(variantId);
+      failInventoryUnavailable(variantId, available);
+    }
     const n = await c.query(`UPDATE cart_items SET qty = $3 WHERE cart_id = $1 AND variant_id = $2`, [cart.id, variantId, qty]);
     if (n.rowCount === 0) fail(404, 'không có trong giỏ');
   }
@@ -480,7 +505,9 @@ async function addItem(req, res, body, ctx) {  // API JSON
   if (typeof variantId !== 'string' || !UUID_RE.test(variantId)) return send(res, 400, { error: 'variant_id không hợp lệ' });
   if (!isInt(qty) || qty < 1 || qty > 1000) return send(res, 400, { error: 'qty phải là 1..1000' });
   const token = parseCookies(req)[CART_COOKIE];
-  const result = await withTenant(ctx.shopId, (c) => cartAddCore(c, token, variantId, qty));
+  const demBiChan = [];
+  const result = await withTenant(ctx.shopId, (c) => cartAddCore(c, token, variantId, qty, demBiChan))
+    .finally(() => { ghiNhanBiDemChan(ctx.shopId, demBiChan); });
   if (result.newToken) setCartCookie(res, result.newToken, CART_TTL_DAYS * 86400);
   return send(res, 200, result.summary);
 }
@@ -489,16 +516,19 @@ async function addItemForm(req, res, form, ctx) {  // form từ trang sản ph�
   const variantId = String(form.variant_id ?? ''), qty = parseInt(form.qty ?? '1', 10);
   if (!UUID_RE.test(variantId) || !isInt(qty) || qty < 1 || qty > 1000) return sendHtml(res, 400, renderError(await getShopName(ctx.shopId), 'Yêu cầu không hợp lệ.'));
   const buyNow = form.buynow != null && form.buynow !== '';
+  const demBiChan = [];
   try {
     if (buyNow) {
       // "Mua ngay" = giỏ RIÊNG chứa ĐÚNG món này (token=null → giỏ mới), KHÔNG đụng giỏ chính →
       // thanh toán đúng 1 món (kiểu Shopee), giỏ đang có giữ nguyên. → /checkout?bn=1.
-      const result = await withTenant(ctx.shopId, (c) => cartAddCore(c, null, variantId, qty));
+      const result = await withTenant(ctx.shopId, (c) => cartAddCore(c, null, variantId, qty, demBiChan))
+        .finally(() => { ghiNhanBiDemChan(ctx.shopId, demBiChan); });
       setBuynowCookie(res, result.newToken);
       return redirect(res, '/checkout?bn=1');
     }
     const token = parseCookies(req)[CART_COOKIE];
-    const result = await withTenant(ctx.shopId, (c) => cartAddCore(c, token, variantId, qty));
+    const result = await withTenant(ctx.shopId, (c) => cartAddCore(c, token, variantId, qty, demBiChan))
+      .finally(() => { ghiNhanBiDemChan(ctx.shopId, demBiChan); });
     if (result.newToken) setCartCookie(res, result.newToken, CART_TTL_DAYS * 86400);
     return redirect(res, '/cart');
   } catch (err) {
@@ -564,7 +594,9 @@ async function setItemQty(req, res, body, ctx) {  // API JSON
   if (typeof variantId !== 'string' || !UUID_RE.test(variantId)) return send(res, 400, { error: 'variant_id không hợp lệ' });
   if (!isInt(qty) || qty < 0 || qty > 1000) return send(res, 400, { error: 'qty phải là 0..1000' });
   const token = parseCookies(req)[CART_COOKIE];
-  const summary = await withTenant(ctx.shopId, (c) => cartSetQtyCore(c, token, variantId, qty));
+  const demBiChan = [];
+  const summary = await withTenant(ctx.shopId, (c) => cartSetQtyCore(c, token, variantId, qty, demBiChan))
+    .finally(() => { ghiNhanBiDemChan(ctx.shopId, demBiChan); });
   return send(res, 200, summary);
 }
 
@@ -611,8 +643,10 @@ async function updateItemForm(req, res, form, ctx) {  // form giỏ (cập nhậ
   const variantId = String(form.variant_id ?? ''), qty = parseInt(form.qty ?? '', 10);
   if (!UUID_RE.test(variantId) || !isInt(qty) || qty < 0 || qty > 1000) return sendHtml(res, 400, renderError(await getShopName(ctx.shopId), 'Yêu cầu không hợp lệ.'));
   const token = parseCookies(req)[CART_COOKIE];
+  const demBiChan = [];
   try {
-    await withTenant(ctx.shopId, (c) => cartSetQtyCore(c, token, variantId, qty));
+    await withTenant(ctx.shopId, (c) => cartSetQtyCore(c, token, variantId, qty, demBiChan))
+      .finally(() => { ghiNhanBiDemChan(ctx.shopId, demBiChan); });
     return redirect(res, '/cart');
   } catch (err) {
     if (err.statusCode) return sendHtml(res, err.statusCode, renderError(await getShopName(ctx.shopId), err.body?.error ?? 'Không cập nhật được giỏ.'));
@@ -901,7 +935,7 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
         // HẾT SẠCH — ca sau là tính năng làm đúng việc, không phải chi phí. Ghi lại để đếm
         // SAU khi transaction rollback: đếm trong tx thì con số cũng bị cuốn theo `fail`.
         if (lvl && lvl.on_hand - lvl.reserved > 0) demBiChan.push(it.variant_id);
-        fail(422, `hết hàng: ${it.product_title}`, { variant_id: it.variant_id });
+        failInventoryUnavailable(it.variant_id, available, it.product_title);
       }
       await c.query(`UPDATE inventory_levels SET reserved = reserved + $2, updated_at = now() WHERE variant_id = $1`, [it.variant_id, it.qty]);
       // GIÁ HIỆU LỰC = flash sale (0082) nếu đang chạy TẠI now() của tx, không thì giá gốc.
@@ -1068,6 +1102,12 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
         [order.id, ln.variant_id, ln.title, ln.sku, ln.unit, ln.qty, ln.orig, ln.promotion_id],
       );
     }
+    // Timeline là chứng từ cùng transaction với đơn. Nếu reserve/order/outbox rollback thì
+    // event cũng biến mất; không có mốc "đã tạo" trỏ tới một đơn ma.
+    await c.query(
+      `SELECT record_order_event($1, 'order.created', 'buyer', NULL, 'website', $2::jsonb)`,
+      [order.id, JSON.stringify({ order_number: Number(num), total_vnd: total, payment_method: paymentMethod })],
+    );
     // Guard status='active' + kiểm rowCount: lớp phòng thủ THỨ HAI sau FOR UPDATE. Nếu vì
     // lý do nào giỏ đã bị chuyển đổi (đua lọt qua) → 0 dòng → fail, ROLLBACK cả reserve +
     // idempotency (chưa commit) → KHÔNG đẻ đơn trùng.
@@ -1086,7 +1126,7 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       const link = (email && ctx.host) ? `https://${ctx.host}/checkout/success?number=${Number(num)}&token=${lookupToken}` : undefined;
       await c.query(
         `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.created', $1)`,
-        [{ ...(email ? { to: email } : {}), order_number: Number(num), total_vnd: total, customer_name: name, payment_method: paymentMethod, ...(link ? { link } : {}) }],
+        [{ order_id: order.id, ...(email ? { to: email } : {}), order_number: Number(num), total_vnd: total, customer_name: name, payment_method: paymentMethod, ...(link ? { link } : {}) }],
       );
     }
 
@@ -1291,12 +1331,16 @@ async function orderLookup(req, res, _body, ctx, query) {
   if (!Number.isInteger(number) || !token) return send(res, 400, { error: 'thiếu number/token' });
   const data = await withTenant(ctx.shopId, async (c) => {
     const o = (await c.query(
-      `SELECT id, order_number, status, payment_status, payment_method, subtotal_vnd, shipping_vnd, total_vnd, customer_name
-         FROM orders WHERE order_number = $1 AND lookup_token_hash = $2`, [number, hashToken(token)],
+      `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.subtotal_vnd,
+              o.shipping_vnd, o.total_vnd, o.customer_name,
+              ${OWED_PAID_SQL} AS amount_paid_vnd, ${OWED_REFUNDED_SQL} AS refunded_vnd
+         FROM orders o WHERE o.order_number = $1 AND o.lookup_token_hash = $2`, [number, hashToken(token)],
     )).rows[0];
     if (!o) return null;
     const lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, orig_unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
-    return { order_number: o.order_number, status: o.status, payment_status: o.payment_status, payment_method: o.payment_method, subtotal_vnd: Number(o.subtotal_vnd), shipping_vnd: Number(o.shipping_vnd), total_vnd: Number(o.total_vnd), customer_name: o.customer_name, lines };
+    return { order_number: o.order_number, status: o.status, payment_status: o.payment_status,
+      payment_method: o.payment_method, subtotal_vnd: Number(o.subtotal_vnd), shipping_vnd: Number(o.shipping_vnd),
+      total_vnd: Number(o.total_vnd), customer_name: o.customer_name, payment_summary: paymentSummary(o), lines };
   });
   if (!data) return send(res, 404, { error: 'không tìm thấy đơn' });
   return send(res, 200, data);
@@ -1353,6 +1397,7 @@ async function getSuccessPage(req, res, _body, ctx, query) {
     o.amount_paid_vnd = Number(o.amount_paid_vnd);
     o.refunded_vnd = Number(o.refunded_vnd);
     o.owed_vnd = Number(o.owed_vnd); // pg trả bigint dạng chuỗi — để nguyên thì so sánh > 0 sai
+    o.payment_summary = paymentSummary(o);
     o.lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, orig_unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
     // Mã vận đơn (0092) → khách tự tra GHN/GHTK. Chỉ vận đơn ĐÃ có mã và CHƯA HUỶ: trang
     // này in nguyên văn "Đơn đã được gửi qua đơn vị vận chuyển. Theo dõi hành trình bằng mã
@@ -1361,7 +1406,7 @@ async function getSuccessPage(req, res, _body, ctx, query) {
     // mới đúng: trước bản vá cột đó được lấy về rồi KHÔNG ai đọc.)
     o.shipments = (await c.query(`SELECT carrier, tracking_number, status FROM shipments WHERE order_id = $1 AND tracking_number IS NOT NULL AND status <> 'cancelled' ORDER BY created_at`, [o.id])).rows;
     let pay = null;
-    if (o.payment_method === 'qr' && o.payment_status !== 'paid') {
+    if (o.payment_method === 'qr' && o.payment_summary.amount_due_vnd > 0) {
       pay = (await c.query(`SELECT bank_bin, account_number, account_name FROM shop_payment_config WHERE shop_id = current_shop_id()`)).rows[0] ?? null;
       // Webhook đối soát khớp SNAPSHOT qr_account lúc TẠO ĐƠN (payment/server.js).
       // Shop đã ĐỔI tài khoản → vẽ QR theo config MỚI là dụ khách trả vào TK mà webhook
@@ -1378,7 +1423,7 @@ async function getSuccessPage(req, res, _body, ctx, query) {
   if (!data) return sendHtml(res, 404, renderLookup(shopName, 'Không tìm thấy đơn — kiểm tra lại số đơn và mã tra cứu.'));
   let qr = '';
   if (data.pay?.bank_bin && data.pay?.account_number) {
-    qr = await qrSvg(buildVietQR({ bankBin: data.pay.bank_bin, accountNumber: data.pay.account_number, amountVnd: Number(data.o.total_vnd), content: data.o.payment_ref }));
+    qr = await qrSvg(buildVietQR({ bankBin: data.pay.bank_bin, accountNumber: data.pay.account_number, amountVnd: data.o.payment_summary.amount_due_vnd, content: data.o.payment_ref }));
   }
   return sendHtml(res, 200, renderOrder(shopName, data.o, data.pay, qr, justPlaced, token));
 }
@@ -1451,12 +1496,20 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     noteShop(shopId);   // ĐO LUỒNG DÙNG (0141): shop phân giải theo TÊN MIỀN, không có trong đường dẫn
     if (!shopId) return send(res, 404, { error: 'tên miền chưa kết nối' });
 
-    // Shop phải CÒN NHẬN ĐƠN. Đây là nơi kích hoạt policy checkout_shop (0012):
-    // SELECT dưới app_checkout chỉ trả row nếu status NOT IN (suspended,terminated).
-    // Nếu bỏ bước này, shop bị đình chỉ vẫn tạo đơn + sinh QR vào tài khoản của nó
-    // → vô hiệu hoá đòn bẩy đình chỉ (cắt doanh thu). Đọc thật để policy sống.
-    const accepting = await withTenant(shopId, async (c) => (await c.query(`SELECT 1 FROM shops WHERE id = current_shop_id()`)).rowCount > 0);
-    if (!accepting) return send(res, 503, { error: 'cửa hàng tạm ngưng nhận đơn' });
+    // Shop phải CÒN NHẬN ĐƠN. Policy checkout_shop giấu suspended/terminated; onboarding
+    // vẫn hiện để trả đúng 409 shop_not_live thay vì đánh đồng với sự cố 503. Migration
+    // 0160 còn siết policy GHI vào tồn/giỏ/đơn, nên một route mới quên chốt HTTP cũng không
+    // thể tạo đơn trước go-live.
+    const shopState = await withTenant(shopId, async (c) =>
+      (await c.query(`SELECT status FROM shops WHERE id = current_shop_id()`)).rows[0]?.status ?? null);
+    if (!shopState) return send(res, 503, { error: 'cửa hàng tạm ngưng nhận đơn' });
+    if (shopState === 'onboarding') {
+      return send(res, 409, {
+        error: 'shop_not_live',
+        message: 'Cửa hàng đang chuẩn bị mở bán và chưa nhận đơn công khai.',
+        action: 'Vui lòng quay lại sau.',
+      });
+    }
 
     // Route có cờ `multipart` (chỉ gửi-đánh-giá) chấp nhận CẢ HAI kiểu: multipart khi có ảnh,
     // urlencoded khi không. Giữ tương thích ngược — form/HTML đã cache và mọi client cũ vẫn

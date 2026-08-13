@@ -70,6 +70,7 @@ async function makeStaff() {
 async function makeShopOwner(staff, slug) {
   let r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staff, origin: OO });
   const shopId = r.json.id;
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [shopId]);
   const email = `owner-${uniq()}@shop.vn`, password = 'owner passphrase strong';
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role: 'owner' }, cookie: staff, origin: OO });
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
@@ -86,6 +87,7 @@ async function setupProduct(shop, price, stock) {
 async function placeDeliveredOrder(shop, vid, qty, phone) {
   const cart = (await co(shop.host, 'POST', '/cart/items', { body: { variant_id: vid, qty } })).cartToken;
   const r = await co(shop.host, 'POST', '/checkout', { body: { customer: { name: 'Khách Giao', phone }, address: { line: 'HN', province: 'Hà Nội' }, payment_method: 'cod' }, cartToken: cart, idemKey: `d-${uniq()}` });
+  if (!r.json?.order_number) throw new Error(`checkout did not create order: ${r.status} ${r.raw}`);
   const id = (await owner.query('SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2', [shop.shopId, r.json.order_number])).rows[0].id;
   await rq(SELLER, 'POST', `/shops/${shop.shopId}/orders/${id}/confirm`, { cookie: shop.cookie, origin: OS });
   await rq(SELLER, 'POST', `/shops/${shop.shopId}/orders/${id}/ship`, { body: { carrier: 'tay', tracking_number: 'T' + uniq() }, cookie: shop.cookie, origin: OS });
@@ -95,6 +97,9 @@ async function placeDeliveredOrder(shop, vid, qty, phone) {
 }
 const N = (x) => Number(x);
 const refundsOf = async (id) => N((await owner.query(`SELECT coalesce(sum(amount_vnd),0)::bigint s FROM refunds WHERE order_id=$1`, [id])).rows[0].s);
+const refundCountOf = async (id) => N((await owner.query(`SELECT count(*)::int n FROM refunds WHERE order_id=$1`, [id])).rows[0].n);
+const returnsCountOf = async (id) => N((await owner.query(`SELECT count(*)::int n FROM returns WHERE order_id=$1`, [id])).rows[0].n);
+const stockOf = async (shopId, vid) => N((await owner.query(`SELECT on_hand FROM inventory_levels WHERE shop_id=$1 AND variant_id=$2`, [shopId, vid])).rows[0].on_hand);
 const col = async (id, c) => (await owner.query(`SELECT ${c} FROM orders WHERE id=$1`, [id])).rows[0][c];
 
 async function main() {
@@ -104,30 +109,82 @@ async function main() {
   const cookieA = await admLogin(A.email, A.password); // phiên BFF (chưa step-up)
   const id = await placeDeliveredOrder(A, vid, 3, '0901234567'); // 3×100k + ship 30k = 330k, delivered+paid
   const base = `/shops/${A.shopId}/orders/${id}`;
-  const retForm = [['variant_id', vid], ['qty', '1'], ['restock', 'on'], ['reason', 'khách đổi ý']];
+  const requestId = (await owner.query(
+    `INSERT INTO order_requests (shop_id, order_id, request_type, requester_type, reason)
+     VALUES ($1, $2, 'return', 'guest', 'Sản phẩm lỗi') RETURNING id`,
+    [A.shopId, id],
+  )).rows[0].id;
+  const queueBase = `/shops/${A.shopId}/order-requests`;
+  const retForm = [['request_id', requestId], ['variant_id', vid], ['qty', '1'], ['restock', 'on'], ['reason', 'khách đổi ý']];
+  const stepForm = [['request_id', requestId], ['variant_id', vid], ['qty', '1'], ['restock', '1'], ['reason', 'khách đổi ý']];
+  const stockBeforeReturn = await stockOf(A.shopId, vid);
+  const ledgerBefore = N((await owner.query(`SELECT coalesce(max(id),0)::bigint id FROM inventory_ledger`)).rows[0].id);
+
+  sect('Duyệt yêu cầu trả hàng → chuyển thẳng tới form RMA có request_id');
+  let r = await adm('POST', `${queueBase}/${requestId}/approve`, {
+    cookie: cookieA, origin: OADM, form: { order_id: id, note: 'Đã kiểm tra yêu cầu' },
+  });
+  const linkedReturnUrl = `${base}/return?request_id=${requestId}`;
+  const approved = (await owner.query(`SELECT status FROM order_requests WHERE id=$1`, [requestId])).rows[0]?.status;
+  r.status === 303 && r.location === linkedReturnUrl && approved === 'approved'
+    ? ok('approve redirect đúng form có request_id; DB = approved')
+    : bad('approve chưa nối sang RMA', `st=${r.status} loc=${r.location} db=${approved}`);
 
   sect('Nút "Nhận trả hàng" HIỆN trên trang chi tiết đơn ĐÃ GIAO');
-  let r = await adm('GET', base, { cookie: cookieA });
+  r = await adm('GET', base, { cookie: cookieA });
   r.status === 200 && /Nhận trả hàng/.test(r.body) && new RegExp(`${base}/return"`).test(r.body) ? ok('đơn delivered có nút "Nhận trả hàng" → /return') : bad('không thấy nút trả', r.status);
 
   sect('GET form trả liệt kê dòng hàng (đã mua) + action /return');
-  r = await adm('GET', `${base}/return`, { cookie: cookieA });
-  r.status === 200 && /Nhận trả hàng/.test(r.body) && /đã mua 3/.test(r.body) && new RegExp(`value="${vid}"`).test(r.body) && new RegExp(`action="${base}/return"`).test(r.body) ? ok('form trả: dòng "đã mua 3" + hidden variant_id + action đúng') : bad('form trả sai', r.status);
+  r = await adm('GET', linkedReturnUrl, { cookie: cookieA });
+  r.status === 200 && /Nhận trả hàng/.test(r.body) && /đã mua 3/.test(r.body) && new RegExp(`value="${vid}"`).test(r.body) && new RegExp(`action="${base}/return"`).test(r.body) && new RegExp(`name="request_id" value="${requestId}"`).test(r.body) ? ok('form trả giữ đúng hidden request_id') : bad('form trả sai/mất request_id', r.status);
 
   sect('POST trả 1 CHƯA step-up → interstitial mật khẩu GIỮ dữ liệu, chưa tạo phiếu hoàn');
   r = await adm('POST', `${base}/return`, { cookie: cookieA, origin: OADM, form: retForm });
-  const kept = r.body.includes('Xác nhận mật khẩu') && new RegExp(`value="${vid}"`).test(r.body) && /name="qty" value="1"/.test(r.body);
+  const kept = r.body.includes('Xác nhận mật khẩu') && new RegExp(`value="${vid}"`).test(r.body) && /name="qty" value="1"/.test(r.body) && new RegExp(`name="request_id" value="${requestId}"`).test(r.body);
   r.status === 200 && kept && await refundsOf(id) === 0 ? ok('chưa step-up → interstitial giữ dòng (qty=1, vid), chưa hoàn') : bad('interstitial sai/đã hoàn', `st=${r.status} kept=${kept} rv=${await refundsOf(id)}`);
 
   sect('POST step-up SAI mật khẩu → 401 + interstitial lại (giữ input)');
-  r = await adm('POST', `${base}/return/step-up`, { cookie: cookieA, origin: OADM, form: [...retForm.slice(0, 3), ['restock', '1'], ['reason', 'khách đổi ý'], ['password', 'sai roi']] });
-  r.status === 401 && /Mật khẩu không đúng/.test(r.body) && /name="qty" value="1"/.test(r.body) ? ok('sai mật khẩu → 401 + interstitial giữ input') : bad('sai mật khẩu lọt', r.status);
+  r = await adm('POST', `${base}/return/step-up`, { cookie: cookieA, origin: OADM, form: [...stepForm, ['password', 'sai roi']] });
+  r.status === 401 && /Mật khẩu không đúng/.test(r.body) && /name="qty" value="1"/.test(r.body) && new RegExp(`name="request_id" value="${requestId}"`).test(r.body) ? ok('sai mật khẩu → 401 + giữ input/request_id') : bad('sai mật khẩu lọt', r.status);
 
   sect('POST step-up ĐÚNG → nhận trả: hoàn 100k, redirect banner có refund');
-  r = await adm('POST', `${base}/return/step-up`, { cookie: cookieA, origin: OADM, form: [...retForm.slice(0, 1), ['qty', '1'], ['restock', '1'], ['reason', 'khách đổi ý'], ['password', A.password]] });
+  r = await adm('POST', `${base}/return/step-up`, { cookie: cookieA, origin: OADM, form: [...stepForm, ['password', A.password]] });
   const loc = r.location ?? '';
   r.status === 303 && /returned=1/.test(loc) && /refund=100000/.test(loc) && await refundsOf(id) === 100000
     ? ok('step-up đúng → trả 1×A, hoàn 100k, redirect ?returned=1&refund=100000') : bad('trả qua UI sai', `st=${r.status} loc=${loc} rv=${await refundsOf(id)}`);
+
+  sect('RMA hoàn tất request và chỉ ghi một refund/return/restock');
+  const linked = (await owner.query(
+    `SELECT r.status, r.result_return_id, rt.id AS return_id, rt.refund_vnd, rt.restocked
+       FROM order_requests r LEFT JOIN returns rt ON rt.id=r.result_return_id
+      WHERE r.id=$1`, [requestId],
+  )).rows[0];
+  const receiveLedger = (await owner.query(
+    `SELECT count(*)::int n, coalesce(sum(delta),0)::int delta FROM inventory_ledger
+      WHERE id>$1 AND shop_id=$2 AND variant_id=$3 AND kind='receive'`,
+    [ledgerBefore, A.shopId, vid],
+  )).rows[0];
+  linked?.status === 'completed' && linked.result_return_id && linked.result_return_id === linked.return_id
+    && N(linked.refund_vnd) === 100000 && linked.restocked === true
+    && await refundCountOf(id) === 1 && await returnsCountOf(id) === 1
+    && await stockOf(A.shopId, vid) === stockBeforeReturn + 1
+    && N(receiveLedger.n) === 1 && N(receiveLedger.delta) === 1
+    ? ok('request completed + result_return_id; refund/return/restock đúng một lần')
+    : bad('RMA/request linkage sai', JSON.stringify({ linked, receiveLedger, stockBeforeReturn, stockAfter: await stockOf(A.shopId, vid) }));
+
+  sect('Replay request đã completed không nhân đôi tiền hoặc tồn');
+  r = await adm('POST', `${base}/return/step-up`, { cookie: cookieA, origin: OADM, form: [...stepForm, ['password', A.password]] });
+  const replayLedger = (await owner.query(
+    `SELECT count(*)::int n, coalesce(sum(delta),0)::int delta FROM inventory_ledger
+      WHERE id>$1 AND shop_id=$2 AND variant_id=$3 AND kind='receive'`,
+    [ledgerBefore, A.shopId, vid],
+  )).rows[0];
+  r.status === 303 && /refund=100000/.test(r.location ?? '')
+    && await refundCountOf(id) === 1 && await refundsOf(id) === 100000 && await returnsCountOf(id) === 1
+    && await stockOf(A.shopId, vid) === stockBeforeReturn + 1
+    && N(replayLedger.n) === 1 && N(replayLedger.delta) === 1
+    ? ok('replay trả kết quả cũ, không double-refund/double-restock')
+    : bad('replay bị nhân đôi', JSON.stringify({ status: r.status, location: r.location, refunds: await refundCountOf(id), returns: await returnsCountOf(id), stock: await stockOf(A.shopId, vid), replayLedger }));
 
   sect('Chi tiết đơn (banner redirect) hiện card "Lịch sử đổi-trả" + số hoàn + notice');
   r = await adm('GET', `${base}?returned=1&refund=100000&restock=1`, { cookie: cookieA });

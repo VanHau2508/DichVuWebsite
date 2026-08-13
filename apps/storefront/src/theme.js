@@ -1853,6 +1853,10 @@ html.cd-lock{overflow:hidden}
 .cd-bar{height:8px;border-radius:var(--pill);background:color-mix(in srgb,var(--color-primary) 14%,var(--color-bg));overflow:hidden}
 .cd-fill{display:block;height:100%;width:0;border-radius:var(--pill);background:var(--color-primary);transition:width .3s}
 .cd-ship-text{margin:8px 0 0;font-size:.85rem;color:var(--color-muted)}
+.cd-error{margin:12px 20px 0;padding:12px 14px;border:1px solid #fecaca;border-radius:12px;background:#fff7ed;color:#9a3412;font-size:.86rem;line-height:1.45}
+.cd-error[hidden]{display:none}
+.cd-error-fix{display:block;margin-top:8px;border:0;border-radius:999px;padding:7px 12px;background:#9a3412;color:#fff;font:inherit;font-weight:700;cursor:pointer}
+.cd-error-fix[hidden]{display:none}
 .cd-items{flex:1;overflow-y:auto;padding:6px 20px}
 .cd-row{display:flex;gap:12px;align-items:flex-start;padding:14px 0;border-bottom:1px solid var(--color-border)}
 .cd-img{width:64px;height:64px;object-fit:cover;border-radius:10px;border:1px solid var(--color-border);background:var(--color-surface);flex:none}
@@ -1927,6 +1931,7 @@ const DRAWER_SHELL = `<div id="cart-backdrop" hidden></div>
 <aside id="cart-drawer" role="dialog" aria-modal="true" aria-label="Giỏ hàng" hidden>
   <div class="cd-head"><h2>Giỏ hàng</h2><button type="button" id="cd-close" class="cd-close" aria-label="Đóng giỏ hàng">✕</button></div>
   <div class="cd-ship" id="cd-ship" hidden><div class="cd-bar"><span class="cd-fill" id="cd-ship-fill"></span></div><p class="cd-ship-text" id="cd-ship-text"></p></div>
+  <div class="cd-error" id="cd-error" role="status" aria-live="polite" hidden><span id="cd-error-text"></span><button type="button" class="cd-error-fix" id="cd-error-fix" hidden></button></div>
   <div class="cd-items" id="cd-items" aria-live="polite"></div>
   <div class="cd-foot">
     <div class="cd-sub"><span>Tạm tính</span><strong id="cd-subtotal"></strong></div>
@@ -2031,8 +2036,27 @@ function cartScript(nonce) {
   var itemsBox=document.getElementById('cd-items'), subEl=document.getElementById('cd-subtotal'),
       shipZone=document.getElementById('cd-ship'), shipFill=document.getElementById('cd-ship-fill'),
       shipText=document.getElementById('cd-ship-text'), closeBtn=document.getElementById('cd-close'),
-      emptyTpl=document.getElementById('cd-empty-tpl');
+      emptyTpl=document.getElementById('cd-empty-tpl'), errorBox=document.getElementById('cd-error'),
+      errorText=document.getElementById('cd-error-text'), errorFix=document.getElementById('cd-error-fix');
   var lastFocus=null, closing=null;
+
+  function clearCartError(){
+    if(errorBox) errorBox.hidden=true;
+    if(errorText) errorText.textContent='';
+    if(errorFix){ errorFix.hidden=true; errorFix.onclick=null; errorFix.textContent=''; }
+  }
+  function showCartError(d,lineId){
+    if(!errorBox||!errorText) return;
+    var msg=(d&&d.message)||(d&&d.error)||'Không thể cập nhật giỏ hàng. Vui lòng thử lại.';
+    if(d&&d.action) msg+=' '+d.action+'.';
+    errorText.textContent=msg; errorBox.hidden=false;
+    var n=d&&Number.isInteger(Number(d.available_qty))?Math.max(0,Number(d.available_qty)):null;
+    if(errorFix&&lineId&&n!==null){
+      errorFix.textContent=n>0?('Giảm về '+n):'Xóa sản phẩm hết hàng';
+      errorFix.hidden=false;
+      errorFix.onclick=function(){ clearCartError(); update(lineId,n); };
+    }
+  }
 
   function btn(txt,label,cls){ var b=document.createElement('button'); b.type='button'; b.className=cls; b.textContent=txt; b.setAttribute('aria-label',label); return b; }
   // Dựng 1 dòng sản phẩm — CHỈ createElement/textContent/gán thuộc tính (chống XSS lớp 1;
@@ -2055,19 +2079,30 @@ function cartScript(nonce) {
     var busy=false;
     function change(nq){ // khoá nút khi đang gửi (chống double-submit); re-render thay dòng mới
       if(busy) return; busy=true; minus.disabled=plus.disabled=del.disabled=true;
-      update(it.line_id,nq);
+      update(it.line_id,nq).then(function(ok){
+        if(!ok&&document.documentElement.contains(row)){
+          busy=false; minus.disabled=plus.disabled=del.disabled=false;
+        }
+      });
     }
     minus.onclick=function(){ change(Math.max(0,it.qty-1)); };
     plus.onclick=function(){ change(it.qty+1); };
     del.onclick=function(){ change(0); };
     return row;
   }
-  // POST /cart/update form-encoded — ĐÚNG field của form /cart no-JS (variant_id + qty; qty 0 =
-  // xoá). line_id chính là variant_id (checkout /cart/summary). 303 → fetch tự follow, bỏ body.
+  // Drawer dùng JSON để đọc lỗi có cấu trúc ngay tại chỗ. Form /cart/update no-JS vẫn giữ nguyên
+  // làm đường lui đầy đủ khi JavaScript không chạy.
   function update(lineId,qty){
-    var body=new URLSearchParams(); body.set('variant_id',lineId); body.set('qty',String(qty));
-    return fetch('/cart/update',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/x-www-form-urlencoded'},body:body.toString()})
-      .then(refresh,refresh); // kể cả lỗi (422 hết tồn…) vẫn re-fetch → drawer về đúng trạng thái server
+    clearCartError();
+    return fetch('/cart/items',{method:'PATCH',credentials:'same-origin',headers:{'content-type':'application/json','accept':'application/json'},body:JSON.stringify({variant_id:lineId,qty:qty})})
+      .then(function(r){
+        return r.text().then(function(t){
+          var d=null; try{ d=t?JSON.parse(t):null; }catch(e){}
+          if(r.ok){ if(d) render(d); return true; }
+          return refresh().then(function(){ showCartError(d,lineId); return false; });
+        });
+      })
+      .catch(function(){ showCartError({message:'Mạng đang gián đoạn.',action:'Kiểm tra kết nối rồi thử lại'},lineId); return false; });
   }
   function refresh(){ return getSummary().then(function(d){ if(d) render(d); }).catch(function(){}); }
   function render(d){
@@ -2086,6 +2121,7 @@ function cartScript(nonce) {
   }
   function open(){
     if(closing){ clearTimeout(closing); closing=null; }
+    clearCartError();
     lastFocus=document.activeElement;
     backdrop.hidden=false; drawer.hidden=false;
     void drawer.offsetWidth; // ép reflow để transition translateX chạy từ trạng thái đóng
@@ -2870,6 +2906,10 @@ export function renderPage(ctx, doc, { preview = false, canonical = null } = {})
 export function renderMaintenance(shopName) {
   return page('Tạm ngưng', {}, `<main class="center-msg"><h1>Cửa hàng tạm ngưng</h1>
     <p>${esc(shopName)} hiện không nhận đơn. Vui lòng quay lại sau.</p></main>`);
+}
+export function renderPreparing(shopName) {
+  return page('Đang chuẩn bị mở bán', {}, `<main class="center-msg"><h1>Cửa hàng đang chuẩn bị mở bán</h1>
+    <p>${esc(shopName)} đang hoàn tất sản phẩm, thanh toán và vận chuyển. Vui lòng quay lại sau.</p></main>`);
 }
 export function renderNotFound() {
   return page('Không tìm thấy', {}, `<main class="center-msg"><h1>Không tìm thấy trang</h1>

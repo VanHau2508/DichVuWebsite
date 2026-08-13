@@ -83,6 +83,8 @@ async function makeStaff() {
 async function makeShopOwner(staffCookie, slug) {
   let r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staffCookie, origin: OO });
   const shopId = r.json.id;
+  // Bộ shipping kiểm shop đang bán; readiness/onboarding được nghiệm thu ở bộ riêng.
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [shopId]);
   const email = `owner-${uniq()}@shop.vn`, password = 'owner passphrase strong';
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role: 'owner' }, cookie: staffCookie, origin: OO });
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
@@ -112,7 +114,7 @@ async function placeCod(shop, vid, email) {
 // chứng của lỗi "đổi hãng" là worker VẪN ĐI HỎI hãng cũ (bằng token hãng mới) — nhìn kết quả
 // cuối thì hai nguyên nhân "không hỏi" và "hỏi nhưng hãng từ chối" trông y hệt nhau.
 // createDelayMs: giả lập request tạo vận đơn TIMEOUT (CarrierError ambiguous) → claim ở lại.
-const stub = { ghtkMode: 'ok', ghtkStatus: 4, lastCreateBody: null, ghnMode: 'ok', ghtkTrackCalls: 0, ghtkTrackUrls: [], createDelayMs: 0 };
+const stub = { ghtkMode: 'ok', ghtkStatus: 4, ghtkStatusByTracking: new Map(), lastCreateBody: null, ghnMode: 'ok', ghtkTrackCalls: 0, ghtkTrackUrls: [], createDelayMs: 0 };
 function startStubs() {
   const ghtk = http.createServer((req, res) => {
     let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
@@ -135,7 +137,9 @@ function startStubs() {
         // KIỂM TOKEN như hãng thật. Thiếu dòng này thì stub trả 'đã giao' cho BẤT KỲ token
         // nào — nên mọi phép đo về lệch-token đều MÙ, kể cả phép đo của chính bộ test này.
         if (req.headers.token !== 'ghtk-token-cua-shop-a-123') { res.statusCode = 401; return res.end(JSON.stringify({ success: false, message: 'sai token' })); }
-        return res.end(JSON.stringify({ success: true, order: { status: stub.ghtkStatus } }));
+        const tracking = decodeURIComponent(req.url.split('/').pop().split('?')[0]);
+        const status = stub.ghtkStatusByTracking.get(tracking) ?? stub.ghtkStatus;
+        return res.end(JSON.stringify({ success: true, order: { status } }));
       }
       res.statusCode = 404; res.end('{}');
     });
@@ -172,6 +176,11 @@ async function main() {
     del: (p) => rq(SELLER, 'DELETE', `/shops/${shop.shopId}${p}`, { cookie: shop.cookie, origin: OS }),
   });
   const a = S(A);
+  const stepUpA = () => rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
+  const markPaid = async (orderId) => {
+    await stepUpA();
+    return a.post(`/orders/${orderId}/mark-paid`, {});
+  };
   const PICKUP = { name: 'Kho Nhà Xinh', phone: '0901234567', address: '5 Lê Lợi', province: 'TP. Hồ Chí Minh', district: 'Quận 1' };
 
   // ── 1. Kết nối hãng (step-up + token mã hoá) ────────────────────────────────
@@ -234,6 +243,39 @@ async function main() {
   // COD hãng giao xong = shipper ĐÃ THU tiền (0066) → tự 'paid' (trước đây unpaid vĩnh viễn).
   od.payment_status === 'paid'
     ? ok('COD giao xong → payment_status tự PAID (hãng đã thu hộ)') : bad('COD delivered vẫn unpaid', od.payment_status);
+  const codProof = (await owner.query(
+    `SELECT o.amount_paid_vnd, o.total_vnd, s.id AS shipment_id,
+            (SELECT count(*)::int FROM payment_transactions pt
+              WHERE pt.order_id=o.id AND pt.provider='cod'
+                AND pt.provider_event_id='shipment-delivered:' || s.id::text) AS tx_count,
+            (SELECT coalesce(sum(pt.amount_vnd),0)::bigint FROM payment_transactions pt
+              WHERE pt.order_id=o.id AND pt.provider='cod'
+                AND pt.provider_event_id='shipment-delivered:' || s.id::text) AS tx_amount,
+            (SELECT count(*)::int FROM order_events oe
+              WHERE oe.order_id=o.id AND oe.event_type='payment.received'
+                AND oe.payload->>'shipment_id'=s.id::text) AS payment_events,
+            (SELECT count(*)::int FROM order_events oe
+              WHERE oe.order_id=o.id AND oe.event_type='shipment.delivered'
+                AND oe.payload->>'shipment_id'=s.id::text) AS shipment_events
+       FROM orders o
+       JOIN shipments s ON s.order_id=o.id AND s.provider='ghtk'
+      WHERE o.id=$1`, [o1.id])).rows[0];
+  Number(codProof?.amount_paid_vnd) === o1.total
+    && Number(codProof?.tx_count) === 1 && Number(codProof?.tx_amount) === o1.total
+    && Number(codProof?.payment_events) === 1 && Number(codProof?.shipment_events) === 1
+    ? ok('COD delivered → đúng 1 chứng từ + amount_paid + timeline tiền/hàng cùng khớp')
+    : bad('COD paid nhưng sổ/timeline không khớp', JSON.stringify(codProof));
+  // Replay thẳng helper bằng cùng shipment: khóa provider_event_id phải giữ nguyên đúng một chứng từ/event.
+  await owner.query(`SELECT record_cod_delivery_payment($1,$2)`, [o1.id, codProof?.shipment_id]);
+  const codReplay = (await owner.query(
+    `SELECT count(*) FILTER (WHERE provider='cod')::int AS tx_count,
+            (SELECT count(*)::int FROM order_events
+              WHERE order_id=$1 AND event_type='payment.received'
+                AND payload->>'shipment_id'=$2) AS event_count
+       FROM payment_transactions WHERE order_id=$1`, [o1.id, codProof?.shipment_id])).rows[0];
+  codReplay.tx_count === 1 && codReplay.event_count === 1
+    ? ok('replay COD cùng shipment → không double-credit, không nhân timeline')
+    : bad('replay COD nhân chứng từ', JSON.stringify(codReplay));
   const ob = await owner.query(
     `SELECT payload FROM outbox WHERE shop_id=$1 AND topic='order.status_changed' AND payload->>'status'='delivered' AND (payload->>'order_number')::int=$2`,
     [A.shopId, o1.num]);
@@ -317,8 +359,349 @@ async function main() {
     [A.shopId, o2.num]);
   obr2.rows[0].n === 1 ? ok('sweep lần 2 → vẫn đúng 1 outbox (idempotent)') : bad('outbox returned trùng', String(obr2.rows[0].n));
   // Đơn returned là terminal cho đường tiền: không đánh dấu đã nhận tiền được nữa.
-  r = await a.post(`/orders/${o2.id}/mark-paid`, {});
+  r = await markPaid(o2.id);
   r.status === 409 ? ok('mark-paid trên đơn returned → 409') : bad('mark-paid lọt trên đơn returned', r.raw);
+
+  // ── 4c. Một kiện giao + một kiện hoàn → mở ca xử lý đúng một lần ────────────
+  sect('4c. Kết quả kiện trái nhau → resolution case');
+  const oMix = await placeCod(A, vid, `mixed-${uniq()}@mail.vn`);
+  await a.post(`/orders/${oMix.id}/confirm`, {});
+  await markPaid(oMix.id); // đơn trả trước mới được tách nhiều kiện an toàn
+  let odMix = (await a.get(`/orders/${oMix.id}`)).json;
+  const mixLine = odMix.lines[0].order_line_id;
+  await a.post(`/orders/${oMix.id}/ship`, { tracking_number: 'TAY-MIX', lines: [{ order_line_id: mixLine, qty: 1 }] });
+  r = await a.post(`/orders/${oMix.id}/carrier-shipment`, TO);
+  odMix = (await a.get(`/orders/${oMix.id}`)).json;
+  const mixManual = odMix.shipments.find((s) => !s.provider);
+  const mixCarrier = odMix.shipments.find((s) => s.provider === 'ghtk');
+  await owner.query(`UPDATE shipments SET status='delivered' WHERE id=$1`, [mixManual.id]);
+  stub.ghtkStatus = 20;
+  await (await fetch(`${WORKER}/internal/tracking-sweep`, { method: 'POST' })).json();
+  odMix = (await a.get(`/orders/${oMix.id}`)).json;
+  const mixProof = (await owner.query(
+    `SELECT
+       (SELECT count(*)::int FROM order_resolution_cases
+         WHERE order_id=$1 AND status='open' AND kind='mixed_shipment_outcome') AS cases,
+       (SELECT count(*)::int FROM order_events
+         WHERE order_id=$1 AND event_type='resolution.opened') AS events,
+       (SELECT count(*)::int FROM outbox
+         WHERE shop_id=$2 AND topic='order.resolution_required'
+           AND payload->>'order_id'=$1::text) AS outboxes`, [oMix.id, A.shopId])).rows[0];
+  odMix.status === 'shipped'
+    && odMix.shipments.find((s) => s.id === mixManual.id)?.status === 'delivered'
+    && odMix.shipments.find((s) => s.id === mixCarrier.id)?.status === 'returned'
+    && mixProof.cases === 1 && mixProof.events === 1 && mixProof.outboxes === 1
+    ? ok('delivered + returned → giữ order shipped, mở đúng 1 case + timeline + thông báo')
+    : bad('không mở đúng resolution case', JSON.stringify({ status: odMix.status, shipments: odMix.shipments, mixProof }));
+  await (await fetch(`${WORKER}/internal/tracking-sweep`, { method: 'POST' })).json();
+  const mixReplay = (await owner.query(
+    `SELECT
+       (SELECT count(*)::int FROM order_resolution_cases WHERE order_id=$1 AND status='open') AS cases,
+       (SELECT count(*)::int FROM order_events WHERE order_id=$1 AND event_type='resolution.opened') AS events,
+       (SELECT count(*)::int FROM outbox WHERE topic='order.resolution_required' AND payload->>'order_id'=$1::text) AS outboxes`,
+    [oMix.id])).rows[0];
+  mixReplay.cases === 1 && mixReplay.events === 1 && mixReplay.outboxes === 1
+    ? ok('sweep lặp → không nhân case/event/outbox') : bad('resolution bị nhân khi replay', JSON.stringify(mixReplay));
+
+  const mixCase = (await owner.query(
+    `SELECT rc.id, rc.status, rc.required_refund_vnd,
+            cl.id AS case_line_id, cl.ordered_qty, cl.delivered_qty,
+            cl.returned_qty, cl.unresolved_qty
+       FROM order_resolution_cases rc
+       JOIN order_resolution_case_lines cl ON cl.case_id = rc.id
+      WHERE rc.order_id = $1`, [oMix.id],
+  )).rows[0];
+  Number(mixCase.ordered_qty) === 2 && Number(mixCase.delivered_qty) === 1
+    && Number(mixCase.returned_qty) === 1 && Number(mixCase.unresolved_qty) === 0
+    ? ok('snapshot mixed chính xác: đặt 2 / giao 1 / hoàn 1 / chưa rõ 0')
+    : bad('snapshot mixed sai', JSON.stringify(mixCase));
+
+  const shipmentCountAtCaseOpen = Number((await owner.query(
+    `SELECT count(*)::int AS n FROM shipments WHERE order_id=$1`, [oMix.id],
+  )).rows[0].n);
+  r = await a.post(`/orders/${oMix.id}/ship`, { tracking_number: 'TAY-SAU-CASE' });
+  const shipmentCountAfterManualBlock = Number((await owner.query(
+    `SELECT count(*)::int AS n FROM shipments WHERE order_id=$1`, [oMix.id],
+  )).rows[0].n);
+  r.status === 409 && r.json?.error_code === 'mixed_shipment_resolution_active'
+    && shipmentCountAfterManualBlock === shipmentCountAtCaseOpen
+    ? ok('case đang mở → chặn giao tay và không tạo shipment')
+    : bad('giao tay lọt qua active case', `${r.raw} ${shipmentCountAtCaseOpen}→${shipmentCountAfterManualBlock}`);
+  r = await a.post(`/orders/${oMix.id}/carrier-shipment`, TO);
+  const shipmentCountAfterCarrierBlock = Number((await owner.query(
+    `SELECT count(*)::int AS n FROM shipments WHERE order_id=$1`, [oMix.id],
+  )).rows[0].n);
+  r.status === 409 && r.json?.error_code === 'mixed_shipment_resolution_active'
+    && shipmentCountAfterCarrierBlock === shipmentCountAtCaseOpen
+    ? ok('case đang mở → chặn vận đơn hãng trước khi gọi provider')
+    : bad('vận đơn hãng lọt qua active case', `${r.raw} ${shipmentCountAtCaseOpen}→${shipmentCountAfterCarrierBlock}`);
+
+  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
+    financial_action: 'not_required', note: 'chưa nhận hàng hoàn',
+  });
+  r.status === 409 && r.json?.error_code === 'returned_goods_not_received'
+    ? ok('chưa nhận hàng hoàn → không thể chốt giao một phần') : bad('chốt lọt trước khi nhận hàng', r.raw);
+  r = await a.post(`/resolution-cases/${mixCase.id}/resolve`, { resolution: 'refunded_remainder' });
+  r.status === 409 && /safe_workflow/.test(r.json?.error_code ?? '')
+    ? ok('refund/reship không chạy mù, case giữ mở') : bad('unsupported resolution lọt', r.raw);
+
+  r = await a.post(`/resolution-cases/${mixCase.id}/wait-return`, {});
+  r.status === 200 && r.json?.status === 'waiting_return'
+    ? ok('chuyển ca sang waiting_return') : bad('wait-return lỗi', r.raw);
+  await (await fetch(`${WORKER}/internal/tracking-sweep`, { method: 'POST' })).json();
+  const mixWaitingReplay = (await owner.query(
+    `SELECT
+       (SELECT count(*)::int FROM order_resolution_cases WHERE order_id=$1 AND status IN ('open','waiting_return')) AS cases,
+       (SELECT count(*)::int FROM order_events WHERE order_id=$1 AND event_type='resolution.opened') AS events,
+       (SELECT count(*)::int FROM outbox WHERE topic='order.resolution_required' AND payload->>'order_id'=$1::text) AS outboxes`,
+    [oMix.id],
+  )).rows[0];
+  mixWaitingReplay.cases === 1 && mixWaitingReplay.events === 1 && mixWaitingReplay.outboxes === 1
+    ? ok('sweep khi waiting_return → không nhân case/event/outbox') : bad('waiting_return bị nhân case', JSON.stringify(mixWaitingReplay));
+
+  const onHandBeforeReceipt = Number((await owner.query(
+    `SELECT on_hand FROM inventory_levels WHERE shop_id=$1 AND variant_id=$2`, [A.shopId, vid],
+  )).rows[0].on_hand);
+  const receiptKey = `receipt-${uniq()}`;
+  const receiptBody = {
+    idempotency_key: receiptKey,
+    disposition: 'restock',
+    note: 'Kiểm nhận đủ, hàng còn bán được',
+    lines: [{ case_line_id: mixCase.case_line_id, qty: 1 }],
+  };
+  const receiptRowsBeforeOver = (await owner.query(
+    `SELECT
+       (SELECT count(*)::int FROM order_resolution_return_receipts WHERE case_id=$1) AS receipts,
+       (SELECT count(*)::int FROM order_resolution_return_receipt_lines WHERE case_id=$1) AS receipt_lines,
+       (SELECT count(*)::int FROM inventory_ledger WHERE shop_id=$2 AND resolution_receipt_line_id IS NOT NULL) AS ledgers`,
+    [mixCase.id, A.shopId],
+  )).rows[0];
+  r = await a.post(`/resolution-cases/${mixCase.id}/receive-return`, {
+    ...receiptBody,
+    idempotency_key: `over-${uniq()}`,
+    lines: [{ case_line_id: mixCase.case_line_id, qty: 2 }],
+  });
+  const receiptRowsAfterOver = (await owner.query(
+    `SELECT
+       (SELECT count(*)::int FROM order_resolution_return_receipts WHERE case_id=$1) AS receipts,
+       (SELECT count(*)::int FROM order_resolution_return_receipt_lines WHERE case_id=$1) AS receipt_lines,
+       (SELECT count(*)::int FROM inventory_ledger WHERE shop_id=$2 AND resolution_receipt_line_id IS NOT NULL) AS ledgers,
+       (SELECT on_hand FROM inventory_levels WHERE shop_id=$2 AND variant_id=$3) AS on_hand`,
+    [mixCase.id, A.shopId, vid],
+  )).rows[0];
+  r.status === 422 && r.json?.error_code === 'received_qty_exceeds_returned'
+    && Number(receiptRowsAfterOver.receipts) === Number(receiptRowsBeforeOver.receipts)
+    && Number(receiptRowsAfterOver.receipt_lines) === Number(receiptRowsBeforeOver.receipt_lines)
+    && Number(receiptRowsAfterOver.ledgers) === Number(receiptRowsBeforeOver.ledgers)
+    && Number(receiptRowsAfterOver.on_hand) === onHandBeforeReceipt
+    ? ok('nhận quá số hãng hoàn → 422 và rollback receipt/ledger/tồn')
+    : bad('over-receipt để lại side effect', `${r.raw} ${JSON.stringify({ before: receiptRowsBeforeOver, after: receiptRowsAfterOver })}`);
+  r = await a.post(`/resolution-cases/${mixCase.id}/receive-return`, receiptBody);
+  const receiptId = r.json?.receipt_id;
+  const receiptProof = (await owner.query(
+    `SELECT
+       (SELECT on_hand FROM inventory_levels WHERE shop_id=$1 AND variant_id=$2) AS on_hand,
+       (SELECT count(*)::int FROM inventory_ledger il
+          JOIN order_resolution_return_receipt_lines rl ON rl.id=il.resolution_receipt_line_id
+         WHERE rl.receipt_id=$3) AS ledgers`, [A.shopId, vid, receiptId],
+  )).rows[0];
+  r.status === 201 && Number(receiptProof.on_hand) === onHandBeforeReceipt + 1 && receiptProof.ledgers === 1
+    ? ok('restock nhận hàng → tăng tồn + đúng một ledger') : bad('restock receipt sai', `${r.raw} ${JSON.stringify(receiptProof)}`);
+  r = await a.post(`/resolution-cases/${mixCase.id}/receive-return`, receiptBody);
+  const receiptReplayProof = (await owner.query(
+    `SELECT
+       (SELECT on_hand FROM inventory_levels WHERE shop_id=$1 AND variant_id=$2) AS on_hand,
+       (SELECT count(*)::int FROM inventory_ledger il
+          JOIN order_resolution_return_receipt_lines rl ON rl.id=il.resolution_receipt_line_id
+         WHERE rl.receipt_id=$3) AS ledgers`, [A.shopId, vid, receiptId],
+  )).rows[0];
+  r.status === 200 && r.json?.replayed && Number(receiptReplayProof.on_hand) === onHandBeforeReceipt + 1 && receiptReplayProof.ledgers === 1
+    ? ok('replay receipt → không cộng tồn/ledger lần hai') : bad('receipt replay không idempotent', `${r.raw} ${JSON.stringify(receiptReplayProof)}`);
+  r = await a.post(`/resolution-cases/${mixCase.id}/receive-return`, { ...receiptBody, disposition: 'quarantine' });
+  r.status === 409 && r.json?.error_code === 'idempotency_conflict'
+    ? ok('cùng key khác nội dung → idempotency conflict') : bad('idempotency conflict lọt', r.raw);
+
+  // Case riêng cho hàng hỏng: quarantine phải có chứng từ nhận nhưng tuyệt đối không cộng ATS/ledger.
+  const oQuarantine = await placeCod(A, vid, `quarantine-${uniq()}@mail.vn`);
+  await a.post(`/orders/${oQuarantine.id}/confirm`, {});
+  await markPaid(oQuarantine.id);
+  const quarantineOrder = (await a.get(`/orders/${oQuarantine.id}`)).json;
+  const quarantineLine = quarantineOrder.lines[0].order_line_id;
+  await a.post(`/orders/${oQuarantine.id}/ship`, { tracking_number: 'TAY-Q', lines: [{ order_line_id: quarantineLine, qty: 1 }] });
+  const quarantineReturnedShipment = (await owner.query(
+    `INSERT INTO shipments (shop_id, order_id, carrier, tracking_number, status)
+     VALUES ($1,$2,'manual','TRA-Q','returned') RETURNING id`, [A.shopId, oQuarantine.id],
+  )).rows[0];
+  await owner.query(
+    `INSERT INTO shipment_lines (shop_id, shipment_id, order_line_id, variant_id, qty, unit_price_vnd)
+     VALUES ($1,$2,$3,$4,1,250000)`, [A.shopId, quarantineReturnedShipment.id, quarantineLine, vid],
+  );
+  await owner.query(`UPDATE shipments SET status='delivered' WHERE order_id=$1 AND tracking_number='TAY-Q'`, [oQuarantine.id]);
+  await owner.query(`SELECT open_mixed_shipment_resolution($1)`, [oQuarantine.id]);
+  const quarantineCase = (await owner.query(
+    `SELECT rc.id, cl.id AS case_line_id
+       FROM order_resolution_cases rc
+       JOIN order_resolution_case_lines cl ON cl.case_id=rc.id
+      WHERE rc.order_id=$1`, [oQuarantine.id],
+  )).rows[0];
+  const onHandBeforeQuarantine = Number((await owner.query(
+    `SELECT on_hand FROM inventory_levels WHERE shop_id=$1 AND variant_id=$2`, [A.shopId, vid],
+  )).rows[0].on_hand);
+  r = await a.post(`/resolution-cases/${quarantineCase.id}/receive-return`, {
+    idempotency_key: `quarantine-${uniq()}`,
+    disposition: 'quarantine',
+    note: 'Bao bì vỡ, cách ly để kiểm tra',
+    lines: [{ case_line_id: quarantineCase.case_line_id, qty: 1 }],
+  });
+  const quarantineProof = (await owner.query(
+    `SELECT
+       (SELECT on_hand FROM inventory_levels WHERE shop_id=$1 AND variant_id=$2) AS on_hand,
+       (SELECT count(*)::int
+          FROM order_resolution_return_receipts rr
+          JOIN order_resolution_return_receipt_lines rl ON rl.receipt_id=rr.id
+         WHERE rr.id=$3 AND rr.disposition='quarantine') AS receipt_lines,
+       (SELECT count(*)::int FROM inventory_ledger il
+          JOIN order_resolution_return_receipt_lines rl ON rl.id=il.resolution_receipt_line_id
+         WHERE rl.receipt_id=$3) AS ledgers`,
+    [A.shopId, vid, r.json?.receipt_id],
+  )).rows[0];
+  r.status === 201 && Number(quarantineProof.on_hand) === onHandBeforeQuarantine
+    && quarantineProof.receipt_lines === 1 && quarantineProof.ledgers === 0
+    ? ok('quarantine → lưu receipt nhưng không cộng tồn, không tạo ledger')
+    : bad('quarantine làm bẩn tồn/ledger', `${r.raw} ${JSON.stringify(quarantineProof)}`);
+
+  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
+    financial_action: 'not_required', note: 'đơn đã thu tiền nhưng không có phiếu hoàn',
+  });
+  r.status === 409 && r.json?.error_code === 'refund_evidence_required'
+    ? ok('đơn đã thu tiền → bắt buộc bằng chứng refund') : bad('paid case chốt không refund', r.raw);
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
+  const fullRefundBefore = (await owner.query(
+    `SELECT o.status, o.payment_status, rc.status AS case_status,
+            (SELECT count(*)::int FROM refunds WHERE order_id=o.id AND kind <> 'edit_adjustment') AS refunds
+       FROM orders o JOIN order_resolution_cases rc ON rc.order_id=o.id
+      WHERE o.id=$1`, [oMix.id],
+  )).rows[0];
+  r = await a.post(`/orders/${oMix.id}/refund`, { amount_vnd: oMix.total, reason: 'Thử hoàn toàn bộ khi ca còn mở', restock: false });
+  const fullRefundAfter = (await owner.query(
+    `SELECT o.status, o.payment_status, rc.status AS case_status,
+            (SELECT count(*)::int FROM refunds WHERE order_id=o.id AND kind <> 'edit_adjustment') AS refunds
+       FROM orders o JOIN order_resolution_cases rc ON rc.order_id=o.id
+      WHERE o.id=$1`, [oMix.id],
+  )).rows[0];
+  r.status === 409 && r.json?.error_code === 'resolution_full_refund_blocked'
+    && fullRefundAfter.status === 'shipped' && fullRefundAfter.payment_status === 'paid'
+    && ['open', 'waiting_return'].includes(fullRefundAfter.case_status)
+    && fullRefundAfter.refunds === fullRefundBefore.refunds
+    ? ok('active case → chặn full refund, giữ nguyên order/payment/case/refunds')
+    : bad('full refund phá trạng thái active case', `${r.raw} ${JSON.stringify({ before: fullRefundBefore, after: fullRefundAfter })}`);
+
+  r = await a.post(`/orders/${oMix.id}/refund`, { amount_vnd: 1, reason: 'Hoàn thử một phần nhỏ', restock: false });
+  const firstMixRefund = (await owner.query(
+    `SELECT id FROM refunds WHERE order_id=$1 AND kind='refund' ORDER BY created_at DESC, id DESC LIMIT 1`, [oMix.id],
+  )).rows[0];
+  r.status === 200 && r.json?.refund_vnd === 1 && r.json?.status === 'shipped'
+    ? ok('partial refund 1đ → đơn vẫn shipped/paid') : bad('partial refund nhỏ làm sai trạng thái', r.raw);
+  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
+    financial_action: 'handled_separately', refund_id: firstMixRefund.id, note: 'Bằng chứng chưa hoàn đủ',
+  });
+  r.status === 409 && r.json?.error_code === 'refund_amount_insufficient'
+    ? ok('refund luỹ kế chưa đủ snapshot → không thể đóng case') : bad('case đóng khi refund chưa đủ', r.raw);
+
+  const requiredRefund = Number(mixCase.required_refund_vnd);
+  r = await a.post(`/orders/${oMix.id}/refund`, {
+    amount_vnd: requiredRefund - 1,
+    reason: 'Hoàn đủ phần kiện không giao',
+    restock: false,
+  });
+  const mixRefund = (await owner.query(
+    `SELECT id FROM refunds WHERE order_id=$1 AND kind='refund' ORDER BY created_at DESC, id DESC LIMIT 1`, [oMix.id],
+  )).rows[0];
+  r.status === 200 && r.json?.refunded_total_vnd === requiredRefund
+    ? ok('refund cộng dồn đạt đúng required_refund_vnd') : bad('refund cộng dồn sai snapshot', `${r.raw} required=${requiredRefund}`);
+  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
+    financial_action: 'handled_separately', refund_id: mixRefund.id.toUpperCase(), note: 'Đã hoàn tiền kiện không giao',
+  });
+  const resolvedProof = (await owner.query(
+    `SELECT o.status, o.fulfillment_status, rc.status AS case_status,
+            (SELECT count(*)::int FROM order_events WHERE order_id=o.id AND event_type='resolution.completed') AS events
+       FROM orders o JOIN order_resolution_cases rc ON rc.order_id=o.id
+      WHERE o.id=$1`, [oMix.id],
+  )).rows[0];
+  r.status === 200 && resolvedProof.status === 'delivered' && resolvedProof.fulfillment_status === 'partial'
+    && resolvedProof.case_status === 'resolved' && resolvedProof.events === 1
+    ? ok('refund có chứng từ → chốt delivered/partial đúng một event') : bad('accept partial cuối sai', `${r.raw} ${JSON.stringify(resolvedProof)}`);
+  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
+    financial_action: 'handled_separately', refund_id: mixRefund.id, note: 'Đã hoàn tiền kiện không giao',
+  });
+  r.status === 200 && r.json?.replayed
+    ? ok('accept-partial replay cùng nội dung → idempotent') : bad('accept replay lỗi', r.raw);
+  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
+    financial_action: 'handled_separately', refund_id: mixRefund.id, note: 'ghi chú khác',
+  });
+  r.status === 409 && r.json?.error_code === 'resolution_replay_conflict'
+    ? ok('accept-partial replay khác nội dung → conflict') : bad('accept replay conflict lọt', r.raw);
+
+  // Cancelled không được tính là giao/hoàn. Nếu nó để lại qty chưa có kết quả thì detector không
+  // được đóng băng snapshot. Việc nhập lại/gửi bù phải qua đối soát riêng, không được tự suy diễn
+  // "carrier cancelled" là hàng chắc chắn đã về kho.
+  const oThree = await placeCod(A, vid, `three-${uniq()}@mail.vn`);
+  await a.post(`/orders/${oThree.id}/confirm`, {});
+  await markPaid(oThree.id);
+  const threeSetup = await owner.connect();
+  try {
+    await threeSetup.query('BEGIN');
+    await threeSetup.query(`UPDATE order_lines SET qty=3 WHERE order_id=$1`, [oThree.id]);
+    await threeSetup.query(
+      `UPDATE orders SET subtotal_vnd=subtotal_vnd+250000, total_vnd=total_vnd+250000,
+                         amount_paid_vnd=amount_paid_vnd+250000
+        WHERE id=$1`,
+      [oThree.id],
+    );
+    await threeSetup.query(
+      `UPDATE inventory_levels SET reserved=reserved+1 WHERE shop_id=$1 AND variant_id=$2`,
+      [A.shopId, vid],
+    );
+    await threeSetup.query('COMMIT');
+  } catch (e) {
+    await threeSetup.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    threeSetup.release();
+  }
+  const threeOrder = (await a.get(`/orders/${oThree.id}`)).json;
+  const threeLine = threeOrder.lines[0].order_line_id;
+  await a.post(`/orders/${oThree.id}/ship`, { tracking_number: 'THREE-D', lines: [{ order_line_id: threeLine, qty: 1 }] });
+  await owner.query(`UPDATE shipments SET status='delivered' WHERE order_id=$1 AND tracking_number='THREE-D'`, [oThree.id]);
+  const returnedThree = (await owner.query(
+    `INSERT INTO shipments (shop_id, order_id, carrier, tracking_number, status)
+     VALUES ($1,$2,'manual','THREE-R','returned') RETURNING id`, [A.shopId, oThree.id],
+  )).rows[0];
+  await owner.query(
+    `INSERT INTO shipment_lines (shop_id, shipment_id, order_line_id, variant_id, qty, unit_price_vnd)
+     VALUES ($1,$2,$3,$4,1,250000)`, [A.shopId, returnedThree.id, threeLine, vid],
+  );
+  const cancelledThree = (await owner.query(
+    `INSERT INTO shipments (shop_id, order_id, carrier, tracking_number, status, provider, provider_status, synced_at)
+     VALUES ($1,$2,'ghtk','THREE-C','in_transit','ghtk',NULL,NULL) RETURNING id`, [A.shopId, oThree.id],
+  )).rows[0];
+  await owner.query(
+    `INSERT INTO shipment_lines (shop_id, shipment_id, order_line_id, variant_id, qty, unit_price_vnd)
+     VALUES ($1,$2,$3,$4,1,250000)`, [A.shopId, cancelledThree.id, threeLine, vid],
+  );
+  const threeBefore = Number((await owner.query(
+    `SELECT count(*)::int n FROM order_resolution_cases WHERE order_id=$1`, [oThree.id],
+  )).rows[0].n);
+  threeBefore === 0 ? ok('ba kiện: còn một kiện đang bay → chưa mở snapshot') : bad('mở ca quá sớm khi kiện còn bay', String(threeBefore));
+  stub.ghtkStatusByTracking.set('THREE-C', -1);
+  await (await fetch(`${WORKER}/internal/tracking-sweep`, { method: 'POST' })).json();
+  const threeCases = Number((await owner.query(
+    `SELECT count(*)::int n FROM order_resolution_cases WHERE order_id=$1`, [oThree.id],
+  )).rows[0].n);
+  const cancelledState = (await owner.query(`SELECT status FROM shipments WHERE id=$1`, [cancelledThree.id])).rows[0]?.status;
+  threeCases === 0 && cancelledState === 'cancelled'
+    ? ok('kiện cuối cancelled còn qty chưa rõ → chưa mở case sai snapshot') : bad('cancelled làm detector mở ca quá sớm', `${threeCases}/${cancelledState}`);
+  stub.ghtkStatusByTracking.delete('THREE-C');
   stub.ghtkStatus = 4; // trả stub về trạng thái đang giao cho các mục sau
 
   // ── 5. Cô lập chéo shop + validation ────────────────────────────────────────

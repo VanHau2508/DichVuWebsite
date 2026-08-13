@@ -199,4 +199,5 @@ bash scripts/backup-restore-drill.sh  # 11/11 — khôi phục host trắng, RLS
 | Giao diện quản trị **nền tảng** (tạo/khoá shop) trên web | ⚠️ DEV chưa có UI (dùng seed/API); prod dùng API |
 | Cấu hình thanh toán QR trên **UI admin** | ⚠️ Backend có, chưa có trang UI (dùng API) |
 
-**Kiểm tổng thể:** `bash scripts/go-no-go.sh` (chấm 15 tiêu chí → GO/NO-GO).
+**Kiểm tổng thể:** `bash scripts/go-no-go.sh` (chạy full CI trước rồi chấm 15 tiêu chí →
+GO/NO-GO; không được dùng verdict cũ cho release candidate mới).

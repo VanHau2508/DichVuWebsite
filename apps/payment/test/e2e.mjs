@@ -34,6 +34,8 @@ const bad = (m, d) => { fail++; console.log(`  ${R}FAIL${X} ${m}`); if (d) conso
 const sect = (m) => console.log(`\n${B}${m}${X}`);
 const uniq = () => Math.random().toString(36).slice(2, 10);
 const phone = () => '09' + String(Math.floor(Math.random() * 1e8)).padStart(8, '0'); // SĐT numeric duy nhất (tránh trần per-phone)
+const testIp = () => `198.${18 + Math.floor(Math.random() * 2)}.${Math.floor(Math.random() * 256)}.${1 + Math.floor(Math.random() * 254)}`;
+let checkoutClientIp = testIp();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ck = (sc) => { for (const c of sc ?? []) { const m = /^__Host-session=([^;]*)/.exec(c); if (m) return m[1]; } return null; };
 
@@ -52,7 +54,7 @@ const uidOf = async (email) => (await owner.query('SELECT id FROM users WHERE em
 function co(host, method, path, { body, cartToken, idemKey } = {}) {
   return new Promise((resolve, reject) => {
     const data = body !== undefined ? JSON.stringify(body) : null;
-    const headers = { host, origin: `https://${host}` };
+    const headers = { host, origin: `https://${host}`, 'x-forwarded-for': checkoutClientIp };
     if (data) { headers['content-type'] = 'application/json'; headers['content-length'] = Buffer.byteLength(data); }
     if (cartToken) headers['cookie'] = `__Host-cart=${cartToken}`;
     if (idemKey) headers['idempotency-key'] = idemKey;
@@ -71,7 +73,7 @@ function co(host, method, path, { body, cartToken, idemKey } = {}) {
 function coForm(host, path, formObj, cartToken) {
   const data = new URLSearchParams(formObj).toString();
   return new Promise((resolve, reject) => {
-    const headers = { host, origin: `https://${host}`, 'content-type': 'application/x-www-form-urlencoded', 'content-length': Buffer.byteLength(data) };
+    const headers = { host, origin: `https://${host}`, 'x-forwarded-for': checkoutClientIp, 'content-type': 'application/x-www-form-urlencoded', 'content-length': Buffer.byteLength(data) };
     if (cartToken) headers['cookie'] = `__Host-cart=${cartToken}`;
     const req = http.request({ hostname: CO.hostname, port: CO.port, path, method: 'POST', headers }, (res) => {
       let b = ''; res.on('data', (d) => (b += d)); res.on('end', () => resolve({ status: res.statusCode, raw: b, location: res.headers.location }));
@@ -119,6 +121,9 @@ async function makeStaff() {
 async function makeShopOwner(staffCookie, slug) {
   let r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staffCookie, origin: OO });
   const shopId = r.json.id;
+  // Bộ này kiểm đường tiền của một shop đang bán; readiness có bộ e2e riêng canh
+  // onboarding không được nhận đơn công khai.
+  await owner.query(`UPDATE shops SET status = 'active', went_live_at = now() WHERE id = $1`, [shopId]);
   const email = `owner-${uniq()}@shop.vn`, password = 'owner passphrase strong';
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role: 'owner' }, cookie: staffCookie, origin: OO });
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
@@ -137,9 +142,80 @@ async function placeQrOrder(shop, vid, qty = 1, email = null) {
   const cart = (await co(shop.host, 'POST', '/cart/items', { body: { variant_id: vid, qty } })).cartToken;
   const customer = { name: 'Khach', phone: phone(), ...(email ? { email } : {}) };
   const r = await co(shop.host, 'POST', '/checkout', { body: { customer, payment_method: 'qr' }, cartToken: cart, idemKey: `k-${uniq()}` });
-  return { orderNum: r.json?.order_number, ref: r.json?.payment_ref, total: r.json?.total_vnd, qr: r.json?.qr_string, lookupToken: r.json?.lookup_token, status: r.status, raw: r.raw };
+  const orderNum = r.json?.order_number;
+  const orderId = orderNum == null ? null : (await owner.query(
+    `SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2`, [shop.shopId, orderNum],
+  )).rows[0]?.id ?? null;
+  return { orderId, orderNum, ref: r.json?.payment_ref, total: r.json?.total_vnd, qr: r.json?.qr_string, lookupToken: r.json?.lookup_token, status: r.status, raw: r.raw };
 }
 const orderStatus = (host, num, token) => co(host, 'GET', `/checkout/order?number=${num}&token=${encodeURIComponent(token)}`);
+
+// Dựng ma trận bằng SQL chủ sở hữu để tạo được cả dữ liệu legacy/lệch enum mà đường ghi hiện
+// tại không chủ động sinh ra. Mục tiêu là đi qua ĐÚNG predicate PostgreSQL của list/count/export,
+// không lặp lại công thức payment filter trong test rồi tự chứng minh chính mình.
+async function paymentFilterFixtures(shopId) {
+  const marker = `PAY-MATRIX-${uniq()}`;
+  const top = Number((await owner.query(
+    `SELECT coalesce(max(order_number), 0)::bigint AS n FROM orders WHERE shop_id = $1`, [shopId],
+  )).rows[0].n);
+  const cases = [
+    { key: 'zero-total', total: 0, received: 0, status: 'pending', payment: 'unpaid', expected: ['paid'] },
+    { key: 'partial', total: 500000, received: 200000, status: 'confirmed', payment: 'pending', expected: ['pending'] },
+    { key: 'overpaid', total: 500000, received: 550000, status: 'confirmed', payment: 'paid', expected: ['paid'] },
+    // Hai hàng đợi cần-thu loại đơn terminal; nhưng một đơn terminal đã thu đủ hiện vẫn thuộc
+    // bộ lọc lịch sử `paid`. Ý nghĩa sản phẩm này còn chờ chốt, test chỉ ghi lại hành vi hiện tại.
+    { key: 'cancelled-partial', total: 500000, received: 200000, status: 'cancelled', payment: 'pending', expected: [] },
+    { key: 'returned-paid', total: 500000, received: 500000, status: 'returned', payment: 'paid', expected: ['paid'] },
+    // Đơn di cư không biến thành việc cần thu, nhưng vẫn tìm được trong bộ lọc lịch sử đã thu.
+    { key: 'migrated-paid', total: 500000, received: 500000, status: 'delivered', payment: 'paid', migrated: true, expected: ['paid'] },
+    // Enum cũ có thể lệch cache tiền thật: predicate phải ưu tiên amount_paid_vnd/paid_at.
+    { key: 'stale-enum-paid-no-money', total: 500000, received: 0, status: 'pending', payment: 'paid', expected: ['unpaid'] },
+    { key: 'full-refund', total: 500000, received: 500000, refunded: 500000, status: 'refunded', payment: 'refunded', expected: ['refunded'] },
+    // PAYMENT_REFUNDED_SQL hiện là bộ lọc enum, chưa phải bộ lọc ledger. Giữ ca này tường minh
+    // để lần chốt nghĩa sản phẩm sau biết chính xác hợp đồng nào cần đổi cùng lúc.
+    { key: 'full-refund-stale-enum', total: 500000, received: 500000, refunded: 500000, status: 'delivered', payment: 'paid', expected: ['paid'] },
+  ];
+
+  for (let i = 0; i < cases.length; i++) {
+    const x = cases[i];
+    const paidAt = x.received >= x.total && x.received > 0 ? new Date() : null;
+    const fulfilled = ['shipped', 'delivered', 'returned'].includes(x.status) ? 'fulfilled' : 'unfulfilled';
+    const row = (await owner.query(
+      `INSERT INTO orders (
+         shop_id, order_number, status, payment_status, total_vnd, subtotal_vnd,
+         shipping_vnd, discount_vnd, amount_paid_vnd, payment_method,
+         customer_name, customer_phone, paid_at, fulfillment_status, is_migrated, source
+       ) VALUES ($1,$2,$3,$4,$5,$5,0,0,$6,'qr',$7,$8,$9,$10,$11,'manual')
+       RETURNING id`,
+      [shopId, top + 100 + i, x.status, x.payment, x.total, x.received,
+       `${marker} ${x.key}`, `0888${String(i).padStart(6, '0')}`, paidAt, fulfilled, x.migrated === true],
+    )).rows[0];
+    x.id = row.id;
+    x.orderNumber = top + 100 + i;
+    if (x.received > 0 && !x.migrated) {
+      await owner.query(
+        `INSERT INTO payment_transactions (
+           shop_id, order_id, provider, provider_event_id, amount_vnd, status, entry_type, note
+         ) VALUES ($1,$2,'matrix',$3,$4,$5,'credit','fixture ma trận bộ lọc thanh toán')`,
+        [shopId, x.id, `matrix:${marker}:${x.key}`, x.received,
+         x.received >= x.total ? 'received' : 'underpaid'],
+      );
+    }
+    if (x.refunded > 0) {
+      await owner.query(
+        `INSERT INTO refunds (shop_id, order_id, amount_vnd, reason, restock)
+         VALUES ($1,$2,$3,'fixture ma trận bộ lọc thanh toán',false)`,
+        [shopId, x.id, x.refunded],
+      );
+    }
+  }
+  return { marker, cases };
+}
+
+function csvOrderNumbers(raw) {
+  return String(raw ?? '').replace(/^\uFEFF/, '').split(/\r?\n/).slice(1)
+    .filter(Boolean).map((line) => Number(line.split(',', 1)[0])).filter(Number.isFinite);
+}
 
 async function main() {
   const staff = await makeStaff();
@@ -192,7 +268,10 @@ async function main() {
   r = await webhook({ id: `evt-${uniq()}`, transferType: 'in', transferAmount: o2.total - 1000, content: `ck ${o2.ref}`, transactionDate: '2026-07-11 10:05:00' });
   r.status === 200 && r.json.paid === false ? ok('chuyển THIẾU 1000đ → không paid (underpaid)') : bad('thiếu tiền vẫn paid', r.raw);
   r = await orderStatus(A.host, o2.orderNum, o2.lookupToken);
-  r.json?.payment_status === 'unpaid' ? ok('đơn vẫn UNPAID khi thiếu tiền') : bad('thiếu tiền đặt paid', r.raw);
+  r.json?.payment_status === 'pending' ? ok('đơn chuyển PENDING khi đã nhận một phần') : bad('thiếu tiền không hiện trạng thái một phần', r.raw);
+  const partialList = await rq(SELLER, 'GET', `/shops/${A.shopId}/orders?payment=pending`, { cookie: A.cookie });
+  partialList.status === 200 && partialList.json?.orders?.some((o) => o.id === o2.orderId)
+    ? ok('lọc payment=pending tìm đúng đơn SePay đã trả thiếu') : bad('lọc partial không khớp dashboard/sổ tiền', partialList.raw);
   // Đúng đủ tiền sau đó → paid.
   r = await webhook({ id: `evt-${uniq()}`, transferType: 'in', transferAmount: o2.total, content: `ck ${o2.ref}`, transactionDate: '2026-07-11 10:06:00' });
   r.json.paid === true ? ok('sau đó chuyển ĐỦ → paid') : bad('đủ tiền không paid', r.raw);
@@ -321,6 +400,46 @@ async function main() {
   r = await orderStatus(A.host, od.orderNum, od.lookupToken);
   r.json?.payment_status === 'unpaid' ? ok('đơn vẫn UNPAID sau webhook với token đã thu hồi') : bad('token thu hồi vẫn paid', r.raw);
 
+  // ── 9b. Ma trận bộ lọc payment: list + count + export cùng một SQL ───────────
+  sect('9b. Ma trận bộ lọc thanh toán');
+  const matrix = await paymentFilterFixtures(A.shopId);
+  const filters = [
+    { query: 'unpaid', label: 'unpaid' },
+    { query: 'pending', label: 'partial' },
+    { query: 'paid', label: 'paid' },
+    { query: 'refunded', label: 'refunded' },
+  ];
+  const seen = new Map(matrix.cases.map((x) => [x.key, []]));
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
+  for (const f of filters) {
+    const expected = matrix.cases.filter((x) => x.expected.includes(f.query));
+    const params = new URLSearchParams({ q: matrix.marker, payment: f.query, limit: '100' });
+    const list = await rq(SELLER, 'GET', `/shops/${A.shopId}/orders?${params}`, { cookie: A.cookie });
+    const gotIds = (list.json?.orders ?? []).map((x) => x.id).sort();
+    const expectedIds = expected.map((x) => x.id).sort();
+    const countsMatch = Number(list.json?.total) === expected.length
+      && Number(list.json?.counts?.['']) === expected.length;
+    list.status === 200 && JSON.stringify(gotIds) === JSON.stringify(expectedIds) && countsMatch
+      ? ok(`lọc ${f.label}: list + total + tab count khớp ${expected.length} ca`)
+      : bad(`lọc ${f.label} lệch list/count`, JSON.stringify({ expected: expected.map((x) => x.key), gotIds, total: list.json?.total, counts: list.json?.counts }));
+    for (const x of matrix.cases) if (gotIds.includes(x.id)) seen.get(x.key).push(f.query);
+
+    const exportParams = new URLSearchParams({ q: matrix.marker, payment: f.query });
+    const csv = await rq(SELLER, 'GET', `/shops/${A.shopId}/orders/export?${exportParams}`, { cookie: A.cookie });
+    const gotNumbers = csvOrderNumbers(csv.raw).sort((a, b) => a - b);
+    const expectedNumbers = expected.map((x) => x.orderNumber).sort((a, b) => a - b);
+    csv.status === 200 && JSON.stringify(gotNumbers) === JSON.stringify(expectedNumbers)
+      ? ok(`lọc ${f.label}: export CSV dùng cùng tập đơn`)
+      : bad(`lọc ${f.label}: export lệch danh sách`, JSON.stringify({ expectedNumbers, gotNumbers, status: csv.status, raw: csv.raw?.slice(0, 300) }));
+  }
+  for (const x of matrix.cases) {
+    const got = seen.get(x.key).sort();
+    const expected = [...x.expected].sort();
+    JSON.stringify(got) === JSON.stringify(expected)
+      ? ok(`ca ${x.key} → ${expected.join(', ') || 'không thuộc bộ lọc nào'}`)
+      : bad(`ca ${x.key} sai hợp đồng bộ lọc`, JSON.stringify({ expected, got }));
+  }
+
   // ── 10. Mã giảm giá (coupon) — đụng đường tiền: total giảm → QR khớp ───────────
   sect('10. Mã giảm giá (coupon)');
   let cr = await rq(SELLER, 'POST', `/shops/${A.shopId}/coupons`, { body: { code: 'GIAM10', kind: 'percent', value: 10 }, cookie: A.cookie, origin: OS });
@@ -383,6 +502,9 @@ async function main() {
 
   // ── 11. Chống ĐƠN ẢO (griefing) — 3 lớp ────────────────────────────────────
   sect('11. Chống đơn ảo');
+  // Tách budget 120 POST/phút của cổng Redis khỏi các ca payment phía trước.
+  // Giữ nguyên IP này trong toàn mục 11 để cờ same_ip_phones vẫn đo đúng "cùng nguồn".
+  checkoutClientIp = testIp();
   // Lớp 2: trần 8 đơn CHƯA xử lý / 1 SĐT → đơn thứ 9 bị chặn.
   const spamPhone = phone();
   let placed = 0, blocked = false;
@@ -399,10 +521,15 @@ async function main() {
   const rbad = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'X', phone: '1.2.3.4.5.6' }, payment_method: 'cod' }, cartToken: cbadphone, idemKey: `k-${uniq()}` });
   rbad.status === 400 ? ok('SĐT <8 chữ số (rác) → 400, không lọt qua trần theo-SĐT') : bad(`SĐT rác lọt: status=${rbad.status}`, JSON.stringify(rbad.json));
 
-  // Lớp 3: cờ "cùng nguồn" cho chủ shop — đếm SĐT KHÁC NHAU cùng 1 nguồn (đơn e2e cùng IP dbtest,
-  // nhiều SĐT khác nhau → same_ip_phones cao). Đếm SĐT phân biệt (không phải số đơn thô).
+  // Lớp 3: tự dựng thêm hai SĐT khác trên cùng IP, không dựa vào dữ liệu các mục trước.
+  let sourceSeeded = 0;
+  for (let i = 0; i < 2; i++) {
+    const cart = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
+    const seeded = await co(A.host, 'POST', '/checkout', { body: { customer: { name: 'Nguon chung', phone: phone() }, payment_method: 'cod' }, cartToken: cart, idemKey: `k-${uniq()}` });
+    if (seeded.status === 201) sourceSeeded++;
+  }
   const ol = await rq(SELLER, 'GET', `/shops/${A.shopId}/orders`, { cookie: A.cookie });
-  (ol.json?.orders ?? []).some((o) => Number(o.same_ip_phones) >= 3)
+  sourceSeeded === 2 && (ol.json?.orders ?? []).some((o) => Number(o.same_ip_phones) >= 3)
     ? ok('seller trả cờ same_ip_phones (cảnh báo nhiều SĐT cùng nguồn mạng)') : bad('thiếu cờ same_ip_phones', JSON.stringify(ol.json?.orders?.[0]));
 
   // Lớp 1: đơn COD 'pending' quá 7 ngày → worker TỰ HUỶ + trả tồn.

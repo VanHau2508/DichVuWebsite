@@ -9,8 +9,8 @@
  *     2) Consumer: BullMQ → gửi email. Retry + backoff; thất bại hết attempts →
  *        vào 'failed' (dead-letter).
  *
- * Vai trò app_worker CHỈ đụng outbox — payload self-contained nên không cần đọc
- * orders/PII. Bán kính ảnh hưởng cực hẹp.
+ * Vai trò app_worker đọc outbox + ba cột định danh order để nối delivery với timeline; không đọc
+ * tiền hoặc PII của order. Các sweep nghiệp vụ dùng pool/role hẹp riêng.
  *
  * Dev gửi tới Mailpit (bắt SMTP). Prod dùng relay thật (Resend/SES) — KHÔNG tự gửi
  * cổng 25 (VPS VN hay bị chặn).
@@ -93,8 +93,119 @@ const log = makeLog('worker');
 
 const queue = new Queue('email', { connection });
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const deliveryMeta = (topic, payload, shopId, outboxId, channel) => ({
+  outboxId: String(outboxId),
+  shopId: UUID_RE.test(String(shopId ?? '')) ? shopId : null,
+  orderId: UUID_RE.test(String(payload?.order_id ?? '')) ? payload.order_id : null,
+  orderNumber: Number.isSafeInteger(Number(payload?.order_number)) && Number(payload.order_number) > 0 ? Number(payload.order_number) : null,
+  retryOf: UUID_RE.test(String(payload?.retry_of_delivery_id ?? '')) ? payload.retry_of_delivery_id : null,
+  topic, channel,
+});
+const safeDeliveryError = (e) => String(e?.message ?? e ?? 'lỗi không xác định')
+  .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
+  .replace(/(?:\+?84|0)\d{8,10}/g, '[phone]')
+  .replace(/\b(authorization|token|secret|password|api[-_ ]?key)\s*[:=]\s*[^\s,;]+/gi, '$1=[secret]')
+  .replace(/(https?:\/\/[^\s?]+)\?[^\s]+/gi, '$1?[redacted]')
+  .slice(0, 500);
+
+function candidateChannels(topic, payload, shopId) {
+  const out = [];
+  if (payload?.to) out.push('email');
+  if (MESSENGER_URL && topic === 'order.status_changed' && payload?.messenger_psid) out.push('messenger');
+  if (TELEGRAM_ON && shopId && tgMessageFor(topic, payload)) out.push('telegram');
+  return out;
+}
+
+async function queueDeliveryRows(c, row) {
+  for (const channel of candidateChannels(row.topic, row.payload, row.shop_id)) {
+    const m = deliveryMeta(row.topic, row.payload, row.shop_id, row.id, channel);
+    await c.query(
+      `INSERT INTO notification_deliveries
+         (shop_id, outbox_id, order_id, order_number, topic, channel, status, retry_of_delivery_id)
+       VALUES ($1,$2,coalesce($3, (
+         SELECT o.id FROM orders o WHERE o.shop_id = $1 AND o.order_number = $4 LIMIT 1
+       )),$4,$5,$6,'queued',$7)
+       ON CONFLICT (outbox_id, channel) DO NOTHING`,
+      [m.shopId, m.outboxId, m.orderId, m.orderNumber, m.topic, m.channel, m.retryOf],
+    );
+  }
+}
+
+async function startDelivery(meta) {
+  const r = await db.query(
+    `INSERT INTO notification_deliveries
+       (shop_id, outbox_id, order_id, order_number, topic, channel, status, attempts,
+        last_attempt_at, retry_of_delivery_id)
+     VALUES ($1,$2,coalesce($3, (
+       SELECT o.id FROM orders o WHERE o.shop_id = $1 AND o.order_number = $4 LIMIT 1
+     )),$4,$5,$6,'sending',1,now(),$7)
+     ON CONFLICT (outbox_id, channel) DO UPDATE
+       SET status = 'sending', attempts = notification_deliveries.attempts + 1,
+           order_id = coalesce(notification_deliveries.order_id, excluded.order_id),
+           last_attempt_at = now(), updated_at = now(), last_error = NULL, failed_at = NULL
+       WHERE notification_deliveries.status NOT IN ('accepted','failed','skipped','superseded')
+     RETURNING id`,
+    [meta.shopId, meta.outboxId, meta.orderId, meta.orderNumber, meta.topic, meta.channel, meta.retryOf],
+  );
+  return r.rowCount === 1;
+}
+
+async function finishDelivery(meta, status, { error = null, providerMessageId = null } = {}) {
+  const c = await db.connect();
+  try {
+    await c.query('BEGIN');
+    const row = (await c.query(
+      `UPDATE notification_deliveries
+          SET status = $3, provider_message_id = coalesce($4, provider_message_id),
+              last_error = $5,
+              accepted_at = CASE WHEN $3 = 'accepted' THEN now() ELSE accepted_at END,
+              failed_at = CASE WHEN $3 = 'failed' THEN now() ELSE failed_at END,
+              updated_at = now()
+        WHERE outbox_id = $1 AND channel = $2
+        RETURNING id, shop_id, order_id, topic, channel, attempts`,
+      [meta.outboxId, meta.channel, status, providerMessageId, error],
+    )).rows[0];
+    if (row?.order_id && (status === 'accepted' || status === 'failed')) {
+      await c.query(
+        `INSERT INTO order_events
+           (shop_id, order_id, event_type, actor_type, source, payload)
+         VALUES ($1,$2,$3,'system','worker',$4)`,
+        [row.shop_id, row.order_id, status === 'accepted' ? 'notification.sent' : 'notification.failed', {
+          delivery_id: row.id,
+          channel: row.channel,
+          topic: row.topic,
+          attempts: Number(row.attempts),
+          ...(status === 'failed' ? { error: error ?? 'không xác định' } : {}),
+        }],
+      );
+    }
+    await c.query('COMMIT');
+  } catch (e) {
+    await c.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally { c.release(); }
+}
+
+async function runTracked(job, channel, fn) {
+  const { topic, payload, shopId, outboxId } = job.data;
+  const meta = deliveryMeta(topic, payload, shopId, outboxId, channel);
+  if (!(await startDelivery(meta))) return { status: 'already_final' };
+  try {
+    const result = await fn();
+    const status = result?.status === 'skipped' ? 'skipped' : 'accepted';
+    await finishDelivery(meta, status, { providerMessageId: result?.providerMessageId ?? null });
+    return result;
+  } catch (e) {
+    const finalAttempt = Number(job.attemptsMade ?? 0) + 1 >= Number(job.opts?.attempts ?? 1);
+    await finishDelivery(meta, finalAttempt ? 'failed' : 'retrying', { error: safeDeliveryError(e) }).catch(() => {});
+    throw e;
+  }
+}
+
 // ── compose email từ sự kiện ─────────────────────────────────────────────────
-// Payload SELF-CONTAINED (worker không đọc orders). p.link (nếu có) = URL tra cứu đơn.
+// Payload SELF-CONTAINED cho nội dung gửi; worker chỉ nối id timeline bằng shop_id + order_number.
+// p.link (nếu có) = URL tra cứu đơn.
 // Trả {subject, text, html}: text GIỮ NGUYÊN cấu trúc cũ (nodemailer gửi multipart/
 // alternative — client text-only vẫn đọc trọn); html là bản trình bày inline-style.
 const money = (v) => new Intl.NumberFormat('vi-VN').format(Number(v)) + 'đ';
@@ -401,15 +512,19 @@ Vướng ở đâu cứ trả lời email này, chúng tôi hỗ trợ.`,
 // (mailto + one-click RFC 8058). Bounce/complaint handling nằm ở RELAY (Resend/SES dashboard
 // + suppression list của relay) — xem docs/35 mục deliverability.
 async function deliverNotification(topic, payload, outboxId) {
-  if (!payload?.to) return; // không có email → bỏ qua (ZNS sau này dùng payload.phone)
+  if (!payload?.to) return { status: 'skipped' }; // không có email → bỏ qua (ZNS sau này dùng payload.phone)
   // DEDUP theo outboxId (mirror tgsent): queue at-least-once — nếu job gửi email XONG rồi
   // chết/lỗi ở bước sau → retry → KHÔNG gửi email TRÙNG cho khách. Đánh dấu SAU khi
   // sendMail thành công (lỗi relay tạm thời vẫn được thử lại). Redis chung với queue.
   const rc = outboxId ? await queue.client : null;
-  if (rc && (await rc.get(`emailsent:${outboxId}`))) return;
+  if (rc && (await rc.get(`emailsent:${outboxId}`))) return { status: 'accepted' };
   const { subject, text, html } = compose(topic, payload);
-  await transport.sendMail({ from: FROM, to: payload.to, subject, text, ...(html ? { html } : {}) });
+  const info = await transport.sendMail({
+    from: FROM, to: payload.to, subject, text, ...(html ? { html } : {}),
+    messageId: outboxId ? `<outbox-${outboxId}@nentang.vn>` : undefined,
+  });
   if (rc) await rc.set(`emailsent:${outboxId}`, '1', 'EX', 86400);
+  return { status: 'accepted', providerMessageId: String(info?.messageId ?? '').slice(0, 500) || null };
 }
 
 // ── poller: outbox → queue ───────────────────────────────────────────────────
@@ -432,6 +547,7 @@ async function poll() {
         r.topic, { topic: r.topic, payload: r.payload, shopId: r.shop_id, outboxId: String(r.id) },
         { jobId: `ob-${r.id}`, attempts: ATTEMPTS, backoff: { type: 'fixed', delay: BACKOFF_MS }, removeOnComplete: { count: 500 }, removeOnFail: { age: 7 * 24 * 3600, count: 1000 } },
       );
+      await queueDeliveryRows(c, r);
     }
     if (rows.length) await c.query(`UPDATE outbox SET processed_at = now() WHERE id = ANY($1::bigint[])`, [rows.map((r) => r.id)]);
     await c.query('COMMIT');
@@ -759,31 +875,37 @@ async function sweepAffiliateCommissions(batch = 300) {
 // không throw — báo tin hỏng không được kéo email của khách xuống theo.
 const MESSENGER_URL = process.env.MESSENGER_URL ?? '';
 async function deliverMessenger(topic, p, shopId, outboxId) {
-  if (!MESSENGER_URL || topic !== 'order.status_changed' || !p?.messenger_psid) return;
+  if (!MESSENGER_URL || topic !== 'order.status_changed' || !p?.messenger_psid) return { status: 'skipped' };
   const rc = outboxId ? await queue.client : null;
-  if (rc && (await rc.get(`fbsent:${outboxId}`))) return;
+  if (rc && (await rc.get(`fbsent:${outboxId}`))) return { status: 'accepted' };
   const label = { confirmed: 'đã được xác nhận ✅', shipped: 'đang trên đường giao 🚚', delivered: 'đã giao thành công 🎉',
     cancelled: 'đã bị huỷ ❌', refunded: 'đã được hoàn tiền', returned: 'đã hoàn về cửa hàng' }[p.status];
-  if (!label) return;   // trạng thái không đáng làm phiền khách thì im lặng
+  if (!label) return { status: 'skipped' };   // trạng thái không đáng làm phiền khách thì im lặng
   const extra = p.status === 'shipped' && p.tracking_number ? `
 Mã vận đơn: ${p.tracking_number}`
     : p.status === 'cancelled' && p.cancel_reason ? `
 Lý do: ${p.cancel_reason}` : '';
-  try {
-    const r = await fetch(`${MESSENGER_URL}/internal/notify`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ shop_id: shopId, psid: p.messenger_psid, text: `Đơn #${p.order_number} ${label}.${extra}` }),
-    });
-    if (r.ok && rc) await rc.set(`fbsent:${outboxId}`, '1', 'EX', 86400);
-    if (!r.ok) log('warn', 'messenger_notify_failed', { status: r.status, order: p.order_number });
-  } catch (e) {
-    log('warn', 'messenger_notify_error', { message: e.message, order: p.order_number });
-  }
+  const r = await fetch(`${MESSENGER_URL}/internal/notify`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ shop_id: shopId, psid: p.messenger_psid, text: `Đơn #${p.order_number} ${label}.${extra}` }),
+  });
+  if (!r.ok) throw new Error(`messenger từ chối (${r.status})`);
+  if (rc) await rc.set(`fbsent:${outboxId}`, '1', 'EX', 86400);
+  return { status: 'accepted' };
 }
 
 // ── consumer: queue → email ──────────────────────────────────────────────────
 const worker = new Worker('email', async (job) => {
   const { topic, payload, shopId, outboxId } = job.data;
+  const channelErrors = [];
+  const tryChannel = async (channel, fn) => {
+    try { return await runTracked(job, channel, fn); }
+    catch (e) {
+      channelErrors.push({ channel, error: e });
+      log('warn', 'notification_channel_failed', { channel, topic, outboxId, message: safeDeliveryError(e) });
+      return null;
+    }
+  };
   // Banner mặc định (0114): KHÔNG phải email — đi đường riêng và DỪNG tại đây.
   // Rơi xuống deliverNotification sẽ gửi JSON thô tới một địa chỉ không tồn tại.
   if (topic === 'shop.banners_seed') { await seedShopBanners(payload, outboxId); return; }
@@ -793,19 +915,31 @@ const worker = new Worker('email', async (job) => {
   if (topic === 'support.ticket_created') { await deliverSupportAlert(payload, shopId, outboxId); return; }
   // Telegram cho CHỦ SHOP chạy TRƯỚC + ĐỘC LẬP email: nếu email khách lỗi (relay từ chối →
   // throw → retry → dead-letter), chủ shop VẪN nhận "đơn mới". Idempotent theo outboxId +
-  // tự nuốt lỗi (không throw) → không làm fail/nuốt email.
-  await deliverTelegram(topic, payload, shopId, outboxId);
+  // gom lỗi đến CUỐI attempt → email/Messenger vẫn được thử, rồi BullMQ retry riêng kênh chưa xong.
+  if (TELEGRAM_ON && shopId && tgMessageFor(topic, payload)) {
+    await tryChannel('telegram', () => deliverTelegram(topic, payload, shopId, outboxId));
+  }
   // Messenger cũng chạy TRƯỚC + ĐỘC LẬP email, cùng lý do: khách chốt đơn trong chat có
   // thể KHÔNG có email, nên đây là kênh báo duy nhất tới họ.
-  await deliverMessenger(topic, payload, shopId, outboxId);
+  if (MESSENGER_URL && topic === 'order.status_changed' && payload?.messenger_psid) {
+    await tryChannel('messenger', () => deliverMessenger(topic, payload, shopId, outboxId));
+  }
   // Cờ test: email bounce vĩnh viễn → để kiểm dead-letter (chỉ dev/test).
-  if (payload?.to === 'bounce@test.invalid') throw new Error('simulated permanent bounce');
-  await deliverNotification(topic, payload, outboxId);
+  if (payload?.to) {
+    await tryChannel('email', async () => {
+      if (payload.to === 'bounce@test.invalid') throw new Error('simulated permanent bounce');
+      return deliverNotification(topic, payload, outboxId);
+    });
+  }
+  if (channelErrors.length) {
+    // Chỉ đưa tên kênh vào failedReason; lỗi provider đã được làm sạch trong delivery ledger/log.
+    throw new Error(`notification channels failed: ${channelErrors.map((x) => x.channel).join(',')}`);
+  }
   // KHÔNG log địa chỉ email (PII). Log topic + số đơn để truy vết.
   if (payload?.to) log('info', 'email_sent', { topic, order: payload.order_number });
 }, { connection, concurrency: 5 });
 
-worker.on('failed', (job, err) => log('warn', 'email_failed', { id: job?.id, attempts: job?.attemptsMade, message: err.message }));
+worker.on('failed', (job, err) => log('warn', 'email_failed', { id: job?.id, attempts: job?.attemptsMade, message: safeDeliveryError(err) }));
 
 // ── sweep: hết hạn đơn QR/COD chưa trả tiền → RELEASE reserve ────────────────
 // Đơn 'pending'/'unpaid' quá hạn: nhả giữ chỗ + huỷ đơn + hoàn lượt coupon + báo khách.
@@ -915,8 +1049,14 @@ async function sweepExpired() {
         // huỷ (ADR-006) — tách giao dịch theo ĐƠN vẫn giữ nguyên tính chất đó.
         if (o.customer_email) {
           await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.status_changed', $2)`,
-            [o.shop_id, { to: o.customer_email, order_number: Number(o.order_number), status: 'cancelled', reason: 'expired', payment_method: o.payment_method, total_vnd: Number(o.total_vnd) }]);
+            [o.shop_id, { to: o.customer_email, order_id: o.id, order_number: Number(o.order_number), status: 'cancelled', reason: 'expired', payment_method: o.payment_method, total_vnd: Number(o.total_vnd) }]);
         }
+        await c.query(
+          `INSERT INTO order_events
+             (shop_id, order_id, event_type, actor_type, source, payload)
+           VALUES ($1,$2,'order.cancelled','system','worker',$3)`,
+          [o.shop_id, o.id, { reason: 'expired', payment_method: o.payment_method }],
+        );
         await c.query('COMMIT');
         xong++;
       }
@@ -1289,6 +1429,58 @@ async function carrierState(provider, token, ghnShopId, tracking) {
     return { state: st === 5 || st === 6 ? 'delivered' : st === -1 ? 'cancelled' : st === 9 || st === 20 || st === 21 ? 'returned' : 'shipping', raw: String(st) };
   } catch { return null; } finally { clearTimeout(t); }
 }
+
+async function lockTrackingOrder(c, orderId) {
+  // Hai lượt sweep có thể cùng chốt hai kiện khác nhau của một đơn. Khóa order trước shipment
+  // buộc chúng nhìn thấy trạng thái terminal của lượt đã commit, nếu không cả hai có thể cùng
+  // bỏ lỡ tổ hợp delivered + returned và không lượt sau nào còn nhặt hai kiện đó lên nữa.
+  const locked = await c.query(
+    `SELECT id FROM orders WHERE id = $1 FOR UPDATE`,
+    [orderId],
+  );
+  return locked.rowCount === 1;
+}
+
+async function openMixedShipmentResolution(c, shipment) {
+  // app_expiry không được INSERT case/snapshot trực tiếp. Hàm SECURITY DEFINER khóa order,
+  // tự đọc shipment terminal và chỉ mở ca khi mọi số lượng đã được giải thích đầy đủ.
+  const opened = (await c.query(
+    `SELECT open_mixed_shipment_resolution($1) AS result`,
+    [shipment.order_id],
+  )).rows[0]?.result;
+  if (!opened?.opened) return null;
+
+  await c.query(
+    `INSERT INTO order_events
+       (shop_id, order_id, event_type, actor_type, source, payload)
+     VALUES ($1,$2,'resolution.opened','system','worker',$3)`,
+    [opened.shop_id, opened.order_id, {
+      case_id: opened.case_id,
+      kind: 'mixed_shipment_outcome',
+      snapshot_lines: Number(opened.snapshot_lines),
+      delivered_qty: Number(opened.delivered_qty),
+      returned_qty: Number(opened.returned_qty),
+      unresolved_qty: Number(opened.unresolved_qty),
+      required_refund_vnd: Number(opened.required_refund_vnd),
+    }],
+  );
+  await c.query(
+    `INSERT INTO outbox (shop_id, topic, payload)
+     VALUES ($1,'order.resolution_required',$2)`,
+    [opened.shop_id, {
+      order_id: opened.order_id,
+      order_number: Number(shipment.order_number),
+      case_id: opened.case_id,
+      kind: 'mixed_shipment_outcome',
+      delivered_qty: Number(opened.delivered_qty),
+      returned_qty: Number(opened.returned_qty),
+      unresolved_qty: Number(opened.unresolved_qty),
+      required_refund_vnd: Number(opened.required_refund_vnd),
+    }],
+  );
+  return opened.case_id;
+}
+
 // Lô 30 cũ quá NHỎ so với đích 100-1000 shop: 30 vận đơn/10 phút = 4.320 lượt hỏi/ngày, mà
 // một shop bận đã có hàng chục kiện đang đi. Xoay vòng chỉ đảm bảo AI CŨNG tới lượt, không
 // đảm bảo tới lượt KỊP — COD chốt 'paid' khi hãng báo delivered, chậm vòng là chậm tiền về sổ.
@@ -1318,7 +1510,24 @@ async function sweepTracking() {
       `UPDATE shipments SET status = 'cancelled', provider_status = 'claim_expired', synced_at = now()
         WHERE status = 'created' AND provider IS NOT NULL AND tracking_number IS NULL
           AND provider_status IS NULL
-          AND created_at < now() - interval '15 minutes' RETURNING id`);
+          AND created_at < now() - interval '15 minutes'
+        RETURNING id, shop_id, order_id`);
+    for (const expired of gc.rows) {
+      const c = await expiryDb.connect();
+      try {
+        await c.query('BEGIN');
+        const order = (await c.query(
+          `SELECT id, order_number FROM orders WHERE id = $1 FOR UPDATE`, [expired.order_id],
+        )).rows[0];
+        if (order) await openMixedShipmentResolution(c, { ...expired, order_number: order.order_number });
+        await c.query('COMMIT');
+      } catch (e) {
+        await c.query('ROLLBACK').catch(() => {});
+        log('error', 'tracking_claim_resolution_error', { orderId: expired.order_id, message: e.message });
+      } finally {
+        c.release();
+      }
+    }
     if (gc.rowCount) log('info', 'tracking_claims_expired', { n: gc.rowCount });
     // Claim CẦN NGƯỜI XỬ: có mã (finalize_failed) hoặc không rõ (ambiguous). Cả hai đều giữ
     // khoá và chờ shop đối soát trên trang hãng — nêu tên ra log để người vận hành thấy,
@@ -1380,28 +1589,56 @@ async function sweepTracking() {
     try {
       c = await expiryDb.connect();
       await c.query('BEGIN');
+      if (!(await lockTrackingOrder(c, s.order_id))) {
+        await c.query('COMMIT');
+        continue;
+      }
       if (st.state === 'delivered') {
         // SPLIT (0080): đánh dấu KIỆN NÀY delivered TRƯỚC (loại khỏi kiểm "còn kiện chưa giao").
-        await c.query(`UPDATE shipments SET status = 'delivered', provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
+        const shipmentUpdated = await c.query(
+          `UPDATE shipments SET status = 'delivered', provider_status = $2, synced_at = now()
+            WHERE id = $1 AND status = 'in_transit' RETURNING id`, [s.id, st.raw]);
+        if (shipmentUpdated.rowCount !== 1) {
+          await c.query('COMMIT');
+          continue;
+        }
         // Chốt ĐƠN 'delivered' CHỈ khi: mọi dòng gửi đủ (fulfillment='fulfilled') VÀ KHÔNG còn
-        // kiện anh em 'created'/'in_transit'/'returned' (mọi kiện đã delivered/cancelled). COD
-        // unpaid→paid CASE (0066) CƯỠI trên UPDATE có guard → đơn giao MỘT PHẦN KHÔNG paid sớm.
+        // kiện anh em 'created'/'in_transit'/'returned' (mọi kiện đã delivered/cancelled). Tiền COD
+        // đi qua record_cod_delivery_payment: status, cache, chứng từ và timeline cùng transaction.
         const upd = await c.query(
-          `UPDATE orders SET status = 'delivered', delivered_at = now(),
-                  payment_status = CASE WHEN payment_method = 'cod' AND payment_status = 'unpaid' THEN 'paid' ELSE payment_status END,
-                  paid_at = CASE WHEN payment_method = 'cod' AND payment_status = 'unpaid' THEN now() ELSE paid_at END
+          `UPDATE orders SET status = 'delivered', delivered_at = now()
             WHERE id = $1 AND status = 'shipped' AND fulfillment_status = 'fulfilled'
               AND NOT EXISTS (SELECT 1 FROM shipments s2 WHERE s2.order_id = $1 AND s2.status IN ('created','in_transit','returned'))`,
           [s.order_id]);
+        if (upd.rowCount === 1) {
+          await c.query(`SELECT record_cod_delivery_payment($1,$2)`, [s.order_id, s.id]);
+        }
+        await c.query(
+          `INSERT INTO order_events
+             (shop_id, order_id, event_type, actor_type, actor_id, source, payload)
+           VALUES ($1,$2,'shipment.delivered','carrier',$3,'worker',$4)`,
+          [s.shop_id, s.order_id, s.provider, {
+            shipment_id: s.id,
+            tracking_number: s.tracking_number,
+            order_completed: upd.rowCount === 1,
+          }],
+        );
+        await openMixedShipmentResolution(c, s);
         if (upd.rowCount === 1 && s.customer_email) {
           await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.status_changed', $2)`,
-            [s.shop_id, { to: s.customer_email, order_number: Number(s.order_number), status: 'delivered', total_vnd: Number(s.total_vnd), tracking_number: s.tracking_number }]);
+            [s.shop_id, { to: s.customer_email, order_id: s.order_id, order_number: Number(s.order_number), status: 'delivered', total_vnd: Number(s.total_vnd), tracking_number: s.tracking_number }]);
         }
         if (upd.rowCount === 1) { delivered++; log('info', 'tracking_delivered', { order_number: Number(s.order_number), provider: s.provider }); }
       } else if (st.state === 'returned') {
         // Hàng HOÀN (bom hàng): đánh dấu kiện TRƯỚC. KHÔNG cộng lại on_hand (app_expiry cố tình
         // không có quyền — chủ shop tự Điều chỉnh khi nhận hàng thật). Reserve đã trả lúc ship.
-        await c.query(`UPDATE shipments SET status = 'returned', provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
+        const shipmentUpdated = await c.query(
+          `UPDATE shipments SET status = 'returned', provider_status = $2, synced_at = now()
+            WHERE id = $1 AND status = 'in_transit' RETURNING id`, [s.id, st.raw]);
+        if (shipmentUpdated.rowCount !== 1) {
+          await c.query('COMMIT');
+          continue;
+        }
         // SPLIT (0080): chốt ĐƠN 'returned' CHỈ khi MỌI kiện đã returned (không còn created/
         // in_transit/delivered). Trộn delivered+returned → GIỮ 'shipped', shop tự xử (v1).
         const upd = await c.query(
@@ -1413,11 +1650,41 @@ async function sweepTracking() {
         // Gate rowCount===1 (như delivered) → exactly-once dù sweep chạy lặp.
         if (upd.rowCount === 1) {
           await c.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.status_changed', $2)`,
-            [s.shop_id, { order_number: Number(s.order_number), status: 'returned', total_vnd: Number(s.total_vnd), tracking_number: s.tracking_number, reason: 'carrier_returned' }]);
+            [s.shop_id, { order_id: s.order_id, order_number: Number(s.order_number), status: 'returned', total_vnd: Number(s.total_vnd), tracking_number: s.tracking_number, reason: 'carrier_returned' }]);
         }
+        await c.query(
+          `INSERT INTO order_events
+             (shop_id, order_id, event_type, actor_type, actor_id, source, payload)
+           VALUES ($1,$2,'shipment.returned','carrier',$3,'worker',$4)`,
+          [s.shop_id, s.order_id, s.provider, {
+            shipment_id: s.id,
+            tracking_number: s.tracking_number,
+            order_returned: upd.rowCount === 1,
+          }],
+        );
+        await openMixedShipmentResolution(c, s);
         log('warn', 'tracking_returned', { order_number: Number(s.order_number), provider: s.provider, order_changed: upd.rowCount === 1, raw: st.raw });
       } else if (st.state === 'cancelled') {
-        await c.query(`UPDATE shipments SET status = 'cancelled', provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
+        const cancelled = await c.query(
+          `UPDATE shipments SET status = 'cancelled', provider_status = $2, synced_at = now()
+            WHERE id = $1 AND status = 'in_transit' RETURNING id`, [s.id, st.raw],
+        );
+        if (cancelled.rowCount === 1) {
+          // A carrier cancellation is an exception signal, not proof that stock is back.
+          // Keep inventory/shipped quantities unchanged and leave an auditable timeline mark.
+          await c.query(
+            `INSERT INTO order_events
+               (shop_id, order_id, event_type, actor_type, actor_id, source, payload)
+             VALUES ($1,$2,'shipment.cancelled','carrier',$3,'worker',$4)`,
+            [s.shop_id, s.order_id, s.provider, {
+              shipment_id: s.id,
+              tracking_number: s.tracking_number,
+              provider_status: st.raw,
+              requires_reconciliation: true,
+            }],
+          );
+          await openMixedShipmentResolution(c, s);
+        }
         log('warn', 'tracking_exception', { order_number: Number(s.order_number), provider: s.provider, state: st.state, raw: st.raw });
       } else {
         await c.query(`UPDATE shipments SET provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
@@ -2142,6 +2409,7 @@ function tgMessageFor(topic, p) {
   if (topic === 'order.paid') return `💰 Đơn #${p.order_number} ĐÃ THANH TOÁN — ${money(p.total_vnd)}. Chuẩn bị giao hàng.`;
   if (topic === 'order.status_changed' && p.status === 'cancelled') return `❌ Đơn #${p.order_number} đã huỷ${p.reason === 'expired' ? ' (tự huỷ quá hạn)' : ''}.`;
   if (topic === 'order.status_changed' && p.status === 'returned') return `↩️ Đơn #${p.order_number} bị HOÀN (bom hàng) — hàng đang về cửa hàng. Nhận lại hàng rồi cập nhật tồn kho (Điều chỉnh tồn).`;
+  if (topic === 'order.resolution_required') return `⚠️ Đơn #${p.order_number} có kiện giao thành công và kiện bị hoàn. Mở quản trị để chọn cách xử lý, tránh bỏ sót tiền hoặc hàng.`;
   if (topic === 'stock.low') return `📦 ${p.items?.length ?? 0} sản phẩm SẮP HẾT HÀNG (còn ≤ ${p.threshold}). Kiểm kho + nhập thêm.`;
   // Phiếu hỗ trợ đã xử (0108): người bán đang CHỜ tin này, nên Telegram tới ngay là đúng —
   // không bắt họ phải mở email hay đoán xem đã tới lượt mình chưa.
@@ -2157,20 +2425,20 @@ function tgMessageFor(topic, p) {
   return null;
 }
 async function deliverTelegram(topic, payload, shopId, outboxId) {
-  try {
-    if (!TELEGRAM_ON || !expiryDb || !shopId) return;
-    const text = tgMessageFor(topic, payload);
-    if (!text) return;
-    // DEDUP theo outboxId: consumer chạy Telegram TRƯỚC email; nếu email lỗi → job retry →
-    // consumer chạy lại → KHÔNG gửi Telegram TRÙNG. Đánh dấu SAU khi gửi thành công (lỗi gửi
-    // tạm thời vẫn được thử lại qua vòng retry của email). db/queue Redis dùng chung.
-    const rc = outboxId ? await queue.client : null;
-    if (rc && (await rc.get(`tgsent:${outboxId}`))) return;
-    const row = (await expiryDb.query(`SELECT chat_id FROM shop_telegram WHERE shop_id = $1 AND enabled AND chat_id IS NOT NULL`, [shopId])).rows[0];
-    if (!row?.chat_id) return;
-    const sent = await tgSend(row.chat_id, text);
-    if (sent && rc) await rc.set(`tgsent:${outboxId}`, '1', 'EX', 86400);
-  } catch (e) { log('error', 'tg_deliver_error', { message: e.message }); } // KHÔNG throw (không làm fail email)
+  if (!TELEGRAM_ON || !expiryDb || !shopId) return { status: 'skipped' };
+  const text = tgMessageFor(topic, payload);
+  if (!text) return { status: 'skipped' };
+  // DEDUP theo outboxId: consumer chạy Telegram TRƯỚC email; nếu email lỗi → job retry →
+  // consumer chạy lại → KHÔNG gửi Telegram TRÙNG. Đánh dấu SAU khi gửi thành công (lỗi gửi
+  // tạm thời vẫn được thử lại qua vòng retry của email). db/queue Redis dùng chung.
+  const rc = outboxId ? await queue.client : null;
+  if (rc && (await rc.get(`tgsent:${outboxId}`))) return { status: 'accepted' };
+  const row = (await expiryDb.query(`SELECT chat_id FROM shop_telegram WHERE shop_id = $1 AND enabled AND chat_id IS NOT NULL`, [shopId])).rows[0];
+  if (!row?.chat_id) return { status: 'skipped' };
+  const sent = await tgSend(row.chat_id, text);
+  if (!sent) throw new Error('telegram không nhận thông báo');
+  if (rc) await rc.set(`tgsent:${outboxId}`, '1', 'EX', 86400);
+  return { status: 'accepted' };
 }
 
 // ── sweep: SLA ĐƠN Ứ — digest Telegram cho shop có đơn ứ đọng ────────────────
@@ -2532,7 +2800,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       count: Number(counts.failed ?? 0),
       recent: jobs.map((j) => ({
         id: j.id, name: j.name,
-        failedReason: String(j.failedReason ?? '').slice(0, 300), // cắt ngắn — stack SMTP có thể rất dài
+        failedReason: safeDeliveryError(j.failedReason).slice(0, 300), // không trả PII/secret từ relay
         attemptsMade: j.attemptsMade, timestamp: j.timestamp,
       })),
     }));
@@ -2540,8 +2808,34 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   // Retry TOÀN BỘ dead-letter (sau khi sửa SMTP/relay): đưa job failed về 'waiting' để
   // consumer gửi lại. BullMQ v5: Queue#retryJobs xử lý theo lô (Lua) — không kéo từng job.
   if (url.pathname === '/internal/dead-letters/retry' && req.method === 'POST') {
-    const before = Number((await queue.getJobCounts('failed')).failed ?? 0);
-    await queue.retryJobs({ state: 'failed' });
+    const failedJobs = await queue.getFailed(0, -1);
+    const before = failedJobs.length;
+    const outboxIds = failedJobs
+      .map((j) => /^ob-(\d+)$/.exec(String(j.id ?? ''))?.[1])
+      .filter(Boolean);
+    // Delivery 'failed' là terminal để replay job ngẫu nhiên không gửi trùng. Endpoint vận hành này
+    // mở lại ĐÚNG các kênh của outbox đang nằm trong BullMQ dead-letter trước khi đưa job về waiting.
+    if (outboxIds.length) {
+      await db.query(
+        `UPDATE notification_deliveries
+            SET status = 'retrying', failed_at = NULL, updated_at = now()
+          WHERE status = 'failed' AND outbox_id = ANY($1::bigint[])`,
+        [outboxIds],
+      );
+    }
+    try {
+      await queue.retryJobs({ state: 'failed' });
+    } catch (e) {
+      if (outboxIds.length) {
+        await db.query(
+          `UPDATE notification_deliveries
+              SET status = 'failed', failed_at = coalesce(failed_at, now()), updated_at = now()
+            WHERE status = 'retrying' AND outbox_id = ANY($1::bigint[])`,
+          [outboxIds],
+        ).catch(() => {});
+      }
+      throw e;
+    }
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ retried: before }));
   }

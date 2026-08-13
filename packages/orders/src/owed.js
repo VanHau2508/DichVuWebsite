@@ -53,6 +53,34 @@ export const OWED_PAID_SQL = `CASE
     WHEN o.paid_at IS NOT NULL THEN o.total_vnd
     ELSE 0 END`;
 
+/**
+ * Predicate lọc thanh toán dùng chung cho dashboard và danh sách đơn.
+ *
+ * `payment_status` là enum tương thích, nhưng dữ liệu tiền thật nằm ở `amount_paid_vnd`/`paid_at`.
+ * Webhook hoặc dữ liệu legacy có thể cập nhật hai nguồn này lệch nhịp với enum; nếu mỗi màn hình
+ * tự lọc enum thì ô Tổng quan và danh sách sau khi bấm sẽ trả hai tập đơn khác nhau.
+ *
+ * Các biểu thức giả định bảng orders mang bí danh `o`.
+ */
+export const PAYMENT_LIVE_SQL = `o.status NOT IN ('cancelled', 'refunded', 'returned')`;
+// Hai hàng đợi "cần thu" chỉ chứa đơn phát sinh thật trên nền tảng và còn có thể xử lý.
+// Đơn di cư vẫn đọc/lọc theo trạng thái được, nhưng không được biến thành việc cần làm hiện tại.
+export const PAYMENT_ACTIONABLE_SQL = `${PAYMENT_LIVE_SQL} AND NOT o.is_migrated AND o.payment_status <> 'refunded'`;
+// total=0 là đơn đã thanh toán theo paymentSummary; điều kiện > 0 giữ bốn bộ lọc rời nhau.
+export const PAYMENT_UNPAID_SQL = `o.total_vnd > 0 AND (${OWED_PAID_SQL}) <= 0 AND ${PAYMENT_ACTIONABLE_SQL}`;
+export const PAYMENT_PARTIAL_SQL = `(${OWED_PAID_SQL}) > 0 AND (${OWED_PAID_SQL}) < o.total_vnd AND ${PAYMENT_ACTIONABLE_SQL}`;
+export const PAYMENT_PAID_SQL = `(${OWED_PAID_SQL}) >= o.total_vnd AND o.payment_status <> 'refunded'`;
+export const PAYMENT_REFUNDED_SQL = `o.payment_status = 'refunded'`;
+
+export function paymentFilterSql(value) {
+  return {
+    unpaid: PAYMENT_UNPAID_SQL,
+    pending: PAYMENT_PARTIAL_SQL,
+    paid: PAYMENT_PAID_SQL,
+    refunded: PAYMENT_REFUNDED_SQL,
+  }[value] ?? null;
+}
+
 /** Số tiền shop CÓ QUYỀN giữ trên đơn này. */
 export const OWED_ENTITLED_SQL = `CASE WHEN o.status IN ('cancelled', 'returned', 'refunded') THEN 0 ELSE o.total_vnd END`;
 
@@ -76,3 +104,42 @@ export const OWED_REASON_TEXT = {
   hoan_ve_chua_tra: 'Hàng đã về shop nhưng chưa hoàn tiền',
   thu_thua: 'Đã thu nhiều hơn giá trị đơn (đơn bị sửa giảm)',
 };
+
+/**
+ * Tóm tắt thanh toán dùng chung cho seller, checkout và account.
+ *
+ * Đầu vào phải là các số đã đọc bằng OWED_PAID_SQL / OWED_REFUNDED_SQL. Hàm này không tự đọc
+ * payment_status vì enum cũ không biểu diễn được trả một phần, chuyển dư hoặc tiền vào đơn đã chết.
+ * `amount_due_vnd = 0` trên đơn chết cũng là chốt sinh QR: không mời khách trả thêm cho đơn không còn bán.
+ */
+export function paymentSummary({ total_vnd, amount_paid_vnd, refunded_vnd, status }) {
+  const total = Math.max(0, Number(total_vnd) || 0);
+  const received = Math.max(0, Number(amount_paid_vnd) || 0);
+  const refunded = Math.max(0, Number(refunded_vnd) || 0);
+  const netReceived = Math.max(0, received - refunded);
+  const dead = ['cancelled', 'returned', 'refunded'].includes(String(status));
+  // Refund la tien tra RA, khong huy viec khach da thanh toan. Lay netReceived de tinh
+  // amount_due se mo lai QR sau moi lan refund (thu 500k, refund 200k -> moi tra them 200k).
+  // Chi reversal payment transaction moi lam `received` giam va mo lai phan con thieu.
+  const amountDue = dead ? 0 : Math.max(0, total - received);
+  const customerCredit = dead ? netReceived : Math.max(0, netReceived - total);
+
+  let displayState;
+  if (received > 0 && refunded >= received) displayState = 'refunded';
+  else if (dead && customerCredit > 0) displayState = 'refund_due';
+  else if (total === 0) displayState = 'paid';
+  else if (received <= 0) displayState = 'unpaid';
+  else if (received < total) displayState = 'partial';
+  else if (netReceived > total) displayState = 'overpaid';
+  else displayState = 'paid';
+
+  return {
+    total_vnd: total,
+    received_vnd: received,
+    refunded_vnd: refunded,
+    net_received_vnd: netReceived,
+    amount_due_vnd: amountDue,
+    customer_credit_vnd: customerCredit,
+    display_state: displayState,
+  };
+}

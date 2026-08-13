@@ -57,14 +57,23 @@ async function makeStaff() {
   c = await login(email, password);
   return ck((await rq(AUTH, 'POST', '/auth/mfa/verify', { cookie: c, body: { code: totp(key, {}) }, origin: OA })).sc) ?? c;
 }
-const mkShop = async (staff, slug) => { const r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staff, origin: OO }); return { shopId: r.json.id, host: `${slug}.nentang.vn` }; };
+const mkShop = async (staff, slug) => {
+  const r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staff, origin: OO });
+  // Bộ account có đặt đơn tích hợp; dùng shop đã mở bán, readiness được test riêng.
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [r.json.id]);
+  return { shopId: r.json.id, host: `${slug}.nentang.vn` };
+};
 const N = (x) => Number(x);
 // Gọi checkout service với Host shop + cart cookie + cust cookie (đăng nhập).
-function co(host, method, path, { json, cartTok, custTok, idem } = {}) {
+function co(host, method, path, { json, form, cartTok, custTok, idem, origin = `https://${host}` } = {}) {
   return new Promise((resolve, reject) => {
-    const data = json !== undefined ? JSON.stringify(json) : null;
-    const headers = { host, origin: `https://${host}` };
-    if (data != null) { headers['content-type'] = 'application/json'; headers['content-length'] = Buffer.byteLength(data); }
+    const data = form !== undefined ? new URLSearchParams(form).toString() : json !== undefined ? JSON.stringify(json) : null;
+    const headers = { host };
+    if (origin) headers.origin = origin;
+    if (data != null) {
+      headers['content-type'] = form !== undefined ? 'application/x-www-form-urlencoded' : 'application/json';
+      headers['content-length'] = Buffer.byteLength(data);
+    }
     const cks = []; if (cartTok) cks.push(`__Host-cart=${cartTok}`); if (custTok) cks.push(`__Host-cust_session=${custTok}`);
     if (cks.length) headers.cookie = cks.join('; ');
     if (idem) headers['idempotency-key'] = idem;
@@ -113,6 +122,20 @@ async function main() {
   r = await acc(host, 'GET', '/account', { cookie: tok });
   r.status === 200 && r.body.includes(email) ? ok('dashboard hiện email khách') : bad('dashboard lỗi', r.status);
 
+  // next chỉ nhận đường nội bộ đã allowlist. Giữ next khi nhập sai để khách không mất nơi đang xem.
+  r = await acc(host, 'GET', '/account/login?next=%2Fp%2Fsan-pham-dang-xem');
+  r.status === 200 && r.body.includes('name="next" value="/p/san-pham-dang-xem"')
+    ? ok('trang login giữ next nội bộ trong hidden field') : bad('login làm rơi next', r.status);
+  r = await acc(host, 'POST', '/account/login', { origin: O, form: { email, password: 'sai', next: '/p/san-pham-dang-xem' } });
+  r.status === 401 && r.body.includes('name="next" value="/p/san-pham-dang-xem"')
+    ? ok('đăng nhập sai vẫn giữ next để thử lại') : bad('lỗi login làm rơi next', r.status);
+  r = await acc(host, 'POST', '/account/login', { origin: O, form: { email, password: pw, next: '/p/san-pham-dang-xem' } });
+  r.status === 303 && r.location === '/p/san-pham-dang-xem'
+    ? ok('đăng nhập đúng quay lại trang sản phẩm') : bad('đăng nhập không quay lại next', `${r.status} ${r.location}`);
+  r = await acc(host, 'POST', '/account/login', { origin: O, form: { email, password: pw, next: '//evil.example/lay-cookie' } });
+  r.status === 303 && r.location === '/account'
+    ? ok('next protocol-relative bị chặn, không open redirect') : bad('open redirect qua next', `${r.status} ${r.location}`);
+
   sect('3b. Xác minh email + quên/đặt lại mật khẩu (token 1 lần, thu hồi phiên)');
   const outLink = (topic, to) => owner.query(`SELECT payload->>'link' AS l FROM outbox WHERE topic=$1 AND payload->>'to'=$2 ORDER BY id DESC LIMIT 1`, [topic, to]).then((r) => r.rows[0]?.l ?? null);
   // Đăng ký đã tạo outbox verify (mục 2). Lấy link → GET verify → email_verified_at set.
@@ -157,21 +180,52 @@ async function main() {
   sect('6. Lịch sử đơn (RLS chỉ đơn của mình) + chi tiết + nhận đơn cũ');
   const custId = (await owner.query(`SELECT id FROM customers WHERE shop_id=$1 AND lower(email)=lower($2)`, [A.shopId, email])).rows[0].id;
   const otherCust = (await owner.query(`INSERT INTO customers (shop_id,email,password_hash) VALUES ($1,$2,'H') RETURNING id`, [A.shopId, `other-${uniq()}@x.vn`])).rows[0].id;
-  const mkOrder = async (num, custIdOrNull, tokenHash) => (await owner.query(
+  const mkOrder = async (num, custIdOrNull, tokenHash, status = 'delivered') => (await owner.query(
     `INSERT INTO orders (shop_id,order_number,total_vnd,subtotal_vnd,customer_id,lookup_token_hash,customer_name,customer_phone,status,payment_status)
-     VALUES ($1,$2,150000,150000,$3,$4,'Khách','0900','delivered','paid') RETURNING id`, [A.shopId, num, custIdOrNull, tokenHash])).rows[0].id;
+     VALUES ($1,$2,150000,150000,$3,$4,'Khách','0900000000',$5,$6) RETURNING id`,
+    [A.shopId, num, custIdOrNull, tokenHash, status, status === 'delivered' ? 'paid' : 'unpaid'])).rows[0].id;
   const crypto = await import('node:crypto');
   const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
   const gTok = 'guest-token-' + uniq() + uniq();
   await mkOrder(9001, custId, null);          // đơn của mình
   await mkOrder(9002, otherCust, null);       // đơn khách KHÁC cùng shop
   const guestId = await mkOrder(9003, null, sha(gTok)); // đơn vãng lai (claim được)
+  const pendingId = await mkOrder(9004, custId, null, 'pending');
   r = await acc(host, 'GET', '/account/orders', { cookie: tok });
   r.status === 200 && r.body.includes('#9001') && !r.body.includes('#9002') ? ok('lịch sử: thấy đơn của mình (9001), KHÔNG thấy đơn khách khác (9002)') : bad('lịch sử rò đơn người khác', r.body.match(/#900\d/g)?.join());
   r = await acc(host, 'GET', '/account/orders/9001', { cookie: tok });
   r.status === 200 && r.body.includes('Đơn #9001') ? ok('chi tiết đơn 9001 của mình → 200') : bad('chi tiết đơn lỗi', r.status);
   r = await acc(host, 'GET', '/account/orders/9002', { cookie: tok });
   r.status === 404 ? ok('chi tiết đơn 9002 (khách khác) → 404 (IDOR chặn)') : bad('IDOR đọc đơn người khác', r.status);
+
+  sect('6a. Yêu cầu hậu mãi: request-only, chống trùng và IDOR');
+  r = await acc(host, 'POST', '/account/orders/9004/requests', { cookie: tok, form: { request_type: 'cancel', reason: 'Đặt nhầm' } });
+  r.status === 403 ? ok('gửi yêu cầu thiếu Origin → 403 CSRF') : bad('CSRF yêu cầu hậu mãi lọt', r.status);
+  r = await acc(host, 'POST', '/account/orders/9004/requests', { origin: O, cookie: tok, form: { request_type: 'cancel', reason: 'Đặt nhầm sản phẩm' } });
+  let reqRows = (await owner.query(`SELECT request_type,status,reason FROM order_requests WHERE order_id=$1 ORDER BY created_at`, [pendingId])).rows;
+  let pendingStatus = (await owner.query(`SELECT status FROM orders WHERE id=$1`, [pendingId])).rows[0].status;
+  r.status === 303 && /request=created/.test(r.location ?? '') && reqRows.length === 1 && reqRows[0].status === 'requested' && pendingStatus === 'pending'
+    ? ok('yêu cầu huỷ chỉ tạo request, KHÔNG tự huỷ đơn') : bad('request-only bị phá', `${r.status} ${r.location} rows=${JSON.stringify(reqRows)} order=${pendingStatus}`);
+  await acc(host, 'POST', '/account/orders/9004/requests', { origin: O, cookie: tok, form: { request_type: 'cancel', reason: 'Bấm lại' } });
+  reqRows = (await owner.query(`SELECT id FROM order_requests WHERE order_id=$1 AND request_type='cancel'`, [pendingId])).rows;
+  reqRows.length === 1 ? ok('double-submit yêu cầu huỷ → vẫn đúng 1 request mở') : bad('yêu cầu bị nhân đôi', reqRows.length);
+  r = await acc(host, 'POST', '/account/orders/9004/requests', { origin: O, cookie: tok, form: {
+    request_type: 'address_change', recipient_name: 'Người nhận mới', phone: '+84912345678',
+    line: '22 Nguyễn Huệ', ward: 'Bến Nghé', district: 'Quận 1', province: 'TP. Hồ Chí Minh', reason: 'Chuyển chỗ nhận',
+  } });
+  const addrReq = (await owner.query(`SELECT request_payload FROM order_requests WHERE order_id=$1 AND request_type='address_change'`, [pendingId])).rows[0];
+  const unchanged = (await owner.query(`SELECT shipping_address FROM orders WHERE id=$1`, [pendingId])).rows[0].shipping_address;
+  r.status === 303 && addrReq?.request_payload?.phone === '0912345678' && unchanged === null
+    ? ok('đổi địa chỉ chỉ lưu payload chuẩn hoá, chưa sửa đơn') : bad('đổi địa chỉ áp dụng sớm/sai payload', `${r.status} ${JSON.stringify(addrReq)} order=${JSON.stringify(unchanged)}`);
+  r = await acc(host, 'POST', '/account/orders/9001/requests', { origin: O, cookie: tok, form: { request_type: 'return', reason: 'Sản phẩm lỗi đường may' } });
+  const retReq = (await owner.query(`SELECT status FROM order_requests WHERE order_id=(SELECT id FROM orders WHERE shop_id=$1 AND order_number=9001) AND request_type='return'`, [A.shopId])).rows[0];
+  r.status === 303 && retReq?.status === 'requested' ? ok('đơn đã giao → gửi yêu cầu trả hàng, chưa refund/restock') : bad('yêu cầu trả hàng lỗi', `${r.status} ${JSON.stringify(retReq)}`);
+  r = await acc(host, 'GET', '/account/orders/9001', { cookie: tok });
+  r.status === 200 && r.body.includes('Đang chờ cửa hàng') && r.body.includes('Sản phẩm lỗi đường may')
+    ? ok('chi tiết đơn hiển thị lịch sử/trạng thái yêu cầu') : bad('UI không hiện yêu cầu', r.status);
+  r = await acc(host, 'POST', '/account/orders/9002/requests', { origin: O, cookie: tok, form: { request_type: 'return', reason: 'Thử IDOR' } });
+  const leaked = Number((await owner.query(`SELECT count(*)::int AS n FROM order_requests WHERE order_id=(SELECT id FROM orders WHERE shop_id=$1 AND order_number=9002)`, [A.shopId])).rows[0].n);
+  r.status === 404 && leaked === 0 ? ok('không tạo được request trên đơn khách khác (IDOR)') : bad('IDOR request lọt', `${r.status} n=${leaked}`);
   // Claim SAI token → đơn vẫn vãng lai.
   r = await acc(host, 'POST', '/account/claim', { origin: O, cookie: tok, form: { order_number: '9003', token: 'token-sai-hoan-toan' } });
   let own = (await owner.query(`SELECT customer_id FROM orders WHERE id=$1`, [guestId])).rows[0].customer_id;
@@ -191,14 +245,35 @@ async function main() {
     ? ok('2 địa chỉ, ĐÚNG 1 mặc định (đổi sang cái mới)') : bad('nhiều mặc định', JSON.stringify(addrs));
   r = await acc(host, 'GET', '/account/addresses', { cookie: tok });
   r.status === 200 && r.body.includes('12 Lê Lợi') && r.body.includes('Mặc định') ? ok('trang địa chỉ liệt kê + badge mặc định') : bad('trang địa chỉ lỗi');
+  r = await acc(host, 'POST', '/account/addresses/add', { origin: O, cookie: tok, form: { recipient_name: 'Sai SĐT', phone: '1.2.3.4.5.6', line1: 'X', province: 'Hà Nội' } });
+  r.status === 400 && r.body.includes('Số điện thoại không hợp lệ')
+    ? ok('sổ địa chỉ dùng cùng luật SĐT với checkout') : bad('sổ địa chỉ nhận SĐT checkout sẽ chặn', r.status);
+  // Xoá là luồng SSR hai bước: GET chỉ hiển thị đúng địa chỉ của mình, POST phải có marker xác nhận.
+  r = await acc(host, 'GET', `/account/addresses?delete=${addrs[0].id}`, { cookie: tok });
+  let ownAddrCount = N((await owner.query(`SELECT count(*)::int n FROM customer_addresses WHERE customer_id=$1`, [custId])).rows[0].n);
+  r.status === 200 && r.body.includes('Xác nhận xoá địa chỉ') && r.body.includes('12 Lê Lợi') && ownAddrCount === 2
+    ? ok('mở xác nhận xoá chỉ hiển thị, chưa xoá địa chỉ') : bad('GET xác nhận đã xoá/không hiện đúng địa chỉ', `${r.status} n=${ownAddrCount}`);
+  r = await acc(host, 'POST', '/account/addresses/delete', { cookie: tok, form: { id: addrs[0].id, confirm_delete: '1' } });
+  ownAddrCount = N((await owner.query(`SELECT count(*)::int n FROM customer_addresses WHERE customer_id=$1`, [custId])).rows[0].n);
+  r.status === 403 && ownAddrCount === 2 ? ok('xoá địa chỉ thiếu Origin → 403 CSRF') : bad('CSRF xoá địa chỉ lọt', `${r.status} n=${ownAddrCount}`);
+  await acc(host, 'POST', '/account/addresses/delete', { origin: O, cookie: tok, form: { id: addrs[0].id } });
+  ownAddrCount = N((await owner.query(`SELECT count(*)::int n FROM customer_addresses WHERE customer_id=$1`, [custId])).rows[0].n);
+  ownAddrCount === 2 ? ok('POST thiếu xác nhận không xoá địa chỉ') : bad('thiếu marker vẫn xoá địa chỉ', ownAddrCount);
   // IDOR: xoá địa chỉ của khách khác (tạo địa chỉ cho otherCust) → RLS chặn, còn nguyên.
   const otherAddr = (await owner.query(`INSERT INTO customer_addresses (shop_id,customer_id,recipient_name,phone,line1) VALUES ($1,$2,'Khác','09','X') RETURNING id`, [A.shopId, otherCust])).rows[0].id;
-  await acc(host, 'POST', '/account/addresses/delete', { origin: O, cookie: tok, form: { id: otherAddr } });
+  r = await acc(host, 'GET', `/account/addresses?delete=${otherAddr}`, { cookie: tok });
+  r.status === 200 && !r.body.includes(otherAddr) && !r.body.includes('Xác nhận xoá địa chỉ')
+    ? ok('xác nhận không làm lộ địa chỉ khách khác') : bad('GET xác nhận làm lộ địa chỉ khách khác');
+  await acc(host, 'POST', '/account/addresses/delete', { origin: O, cookie: tok, form: { id: otherAddr, confirm_delete: '1' } });
   const stillThere = (await owner.query(`SELECT count(*)::int n FROM customer_addresses WHERE id=$1`, [otherAddr])).rows[0].n;
   N(stillThere) === 1 ? ok('xoá địa chỉ khách khác → RLS chặn, còn nguyên (IDOR)') : bad('xoá được địa chỉ người khác');
-  // Xoá địa chỉ của mình → 0 còn 1.
-  await acc(host, 'POST', '/account/addresses/delete', { origin: O, cookie: tok, form: { id: addrs[0].id } });
-  N((await owner.query(`SELECT count(*)::int n FROM customer_addresses WHERE customer_id=$1`, [custId])).rows[0].n) === 1 ? ok('xoá địa chỉ của mình → còn 1') : bad('xoá địa chỉ mình lỗi');
+  // Xoá địa chỉ của mình → còn 1.
+  await acc(host, 'POST', '/account/addresses/delete', { origin: O, cookie: tok, form: { id: addrs[0].id, confirm_delete: '1' } });
+  ownAddrCount = N((await owner.query(`SELECT count(*)::int n FROM customer_addresses WHERE customer_id=$1`, [custId])).rows[0].n);
+  ownAddrCount === 1 ? ok('xác nhận xoá địa chỉ của mình → còn 1') : bad('xoá địa chỉ mình lỗi');
+  await acc(host, 'POST', '/account/addresses/delete', { origin: O, cookie: tok, form: { id: addrs[0].id, confirm_delete: '1' } });
+  ownAddrCount = N((await owner.query(`SELECT count(*)::int n FROM customer_addresses WHERE customer_id=$1`, [custId])).rows[0].n);
+  ownAddrCount === 1 ? ok('gửi lại xác nhận xoá không ảnh hưởng địa chỉ còn lại') : bad('double-submit xoá nhầm địa chỉ khác', ownAddrCount);
 
   sect('7. Tích hợp checkout: đăng nhập → prefill + đặt đơn tự vào lịch sử (customer_id)');
   // Sản phẩm + tồn cho shop A (owner SQL).
@@ -240,9 +315,57 @@ async function main() {
   /wish=removed/.test(r.location ?? '') && wn === 0 ? ok('bấm lại → BỎ thích (toggle), không tạo dòng thứ hai') : bad('toggle không bỏ được', `${r.location} n=${wn}`);
 
   await acc(host, 'POST', '/account/wishlist/toggle', { origin: O, cookie: tok, form: { product_id: pId, slug: pSlug } });
+  const imageKey = `wishlist/${uniq()}.webp`;
+  await owner.query(
+    `INSERT INTO media (shop_id,product_id,status,original_key,public_key,position)
+     VALUES ($1,$2,'ready',$3,$4,0)`, [A.shopId, pId, `private/${imageKey}`, imageKey]);
+  const promoId = (await owner.query(
+    `INSERT INTO promotions (shop_id,title,kind,value,scope,starts_at,ends_at)
+     VALUES ($1,'Wishlist sale','percent',20,'products',now() - interval '1 hour',now() + interval '1 hour') RETURNING id`,
+    [A.shopId])).rows[0].id;
+  await owner.query(
+    `INSERT INTO promotion_products (shop_id,promotion_id,product_id) VALUES ($1,$2,$3)`,
+    [A.shopId, promoId, pId]);
+  await owner.query(`UPDATE shops SET safety_stock_pct=20 WHERE id=$1`, [A.shopId]);
+  const expectedWishlistAts = N((await owner.query(
+    `SELECT greatest(0, on_hand - reserved - coalesce(safety_stock_qty, ceil(on_hand * 20 / 100.0)::int))::int AS ats
+       FROM inventory_levels WHERE variant_id=$1`, [vId])).rows[0].ats);
   r = await acc(host, 'GET', '/account/wishlist', { cookie: tok });
   r.status === 200 && r.body.includes('Sản phẩm yêu thích') && new RegExp(`/p/${pSlug}`).test(r.body)
     ? ok('trang Yêu thích liệt kê đúng SP đã lưu') : bad('trang yêu thích sai', `${r.status}`);
+  r.body.includes(`/media-public/${imageKey}`) && r.body.includes('72.000₫') && r.body.includes('<del>90.000₫</del>') && r.body.includes('-20%')
+    ? ok('Wishlist projection hiện ảnh + giá sale + giá gốc + phần trăm giảm') : bad('Wishlist thiếu projection giá/ảnh', r.body.slice(r.body.indexOf(pSlug), r.body.indexOf(pSlug) + 900));
+  r.body.includes(`Còn ${expectedWishlistAts} sản phẩm`) && r.body.includes('action="/cart/add"') && r.body.includes(`name="variant_id" value="${vId}"`) && r.body.includes('name="qty" value="1"')
+    ? ok('ATS trừ safety stock và SP phẳng còn hàng có form quick-add SSR') : bad('ATS/quick-add Wishlist sai');
+  let cartPost = await co(host, 'POST', '/cart/add', { origin: null, form: { variant_id: vId, qty: '1' } });
+  cartPost.status === 403 ? ok('quick-add thiếu Origin → checkout chặn CSRF') : bad('quick-add CSRF lọt', cartPost.status);
+  cartPost = await co(host, 'POST', '/cart/add', { form: { variant_id: vId, qty: '1' } });
+  cartPost.status === 303 && cartPost.cartTok ? ok('form quick-add SSR hợp lệ → thêm giỏ và chuyển hướng') : bad('quick-add SSR không hoạt động', cartPost.status);
+
+  // Tồn vật lý vẫn còn nhưng safety override giữ hết 50 → ATS=0: Wishlist phải bỏ form mua.
+  await owner.query(`UPDATE inventory_levels SET safety_stock_qty=50 WHERE variant_id=$1`, [vId]);
+  r = await acc(host, 'GET', '/account/wishlist', { cookie: tok });
+  r.body.includes('Hết hàng') && !r.body.includes(`name="variant_id" value="${vId}"`)
+    ? ok('ATS=0 → hiện hết hàng và không render quick-add stale') : bad('Wishlist vẫn cho mua khi safety stock chặn hết');
+
+  // Nhiều biến thể dù còn hàng vẫn phải về PDP để khách chọn, không tự chọn biến thể đầu.
+  const multiSlug = `chon-loai-${uniq()}`;
+  const multiId = (await owner.query(
+    `INSERT INTO products (shop_id,slug,title,price_vnd,status) VALUES ($1,$2,'SP cần chọn phân loại',120000,'active') RETURNING id`,
+    [A.shopId, multiSlug])).rows[0].id;
+  const multiV1 = (await owner.query(
+    `INSERT INTO variants (shop_id,product_id,sku,price_vnd,position) VALUES ($1,$2,$3,120000,0) RETURNING id`,
+    [A.shopId, multiId, `MULTI-A-${uniq()}`])).rows[0].id;
+  const multiV2 = (await owner.query(
+    `INSERT INTO variants (shop_id,product_id,sku,price_vnd,position) VALUES ($1,$2,$3,125000,1) RETURNING id`,
+    [A.shopId, multiId, `MULTI-B-${uniq()}`])).rows[0].id;
+  await owner.query(
+    `INSERT INTO inventory_levels (shop_id,variant_id,on_hand) VALUES ($1,$2,10),($1,$3,10)`,
+    [A.shopId, multiV1, multiV2]);
+  await acc(host, 'POST', '/account/wishlist/toggle', { origin: O, cookie: tok, form: { product_id: multiId, slug: multiSlug } });
+  r = await acc(host, 'GET', '/account/wishlist', { cookie: tok });
+  r.body.includes('SP cần chọn phân loại') && r.body.includes(`href="/p/${multiSlug}">Chọn phân loại</a>`) && !r.body.includes(`value="${multiV1}"`) && !r.body.includes(`value="${multiV2}"`)
+    ? ok('SP nhiều biến thể → dẫn PDP chọn phân loại, không tự chọn biến thể') : bad('Wishlist tự quick-add SP cần chọn phân loại');
   r = await acc(host, 'GET', '/account/wishlist');
   r.status === 303 ? ok('chưa đăng nhập xem trang Yêu thích → 303 login') : bad('lộ trang yêu thích', String(r.status));
 

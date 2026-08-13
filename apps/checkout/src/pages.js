@@ -408,7 +408,12 @@ function gpsScript(nonce) {
 }
 
 export function renderOrder(shopName, o, pay, qr, justPlaced = false, lookupToken = '') {
-  const paid = o.payment_status === 'paid';
+  const payment = o.payment_summary ?? {
+    received_vnd: Number(o.amount_paid_vnd ?? 0), refunded_vnd: Number(o.refunded_vnd ?? 0),
+    amount_due_vnd: o.payment_status === 'paid' ? 0 : Number(o.total_vnd ?? 0),
+    customer_credit_vnd: 0, display_state: o.payment_status === 'paid' ? 'paid' : 'unpaid',
+  };
+  const paid = payment.amount_due_vnd === 0 && ['paid', 'overpaid'].includes(payment.display_state);
   // ĐƠN ĐÃ ĐÓNG = huỷ / hoàn hàng / hoàn tiền. Trước đây chỉ 'cancelled' được coi là đóng,
   // nên đơn đã trả hàng vẫn chạy tiếp vào nhánh thanh toán bên dưới. Hậu quả đo được:
   //   · đơn QR bị BOM HÀNG giữ payment_status='paid' → khách trả hàng xong vẫn thấy
@@ -425,25 +430,27 @@ export function renderOrder(shopName, o, pay, qr, justPlaced = false, lookupToke
     refunded: 'Đã hoàn tiền', returned: 'Đã hoàn hàng',
   }[o.status] ?? o.status;
   const badgeCls = o.status === 'delivered' ? 'ok' : daDong ? 'cancelled' : 'wait';
-  const head = (o.payment_method === 'qr' && !paid && !daDong) ? '<meta http-equiv="refresh" content="8">' : '';
+  const head = (o.payment_method === 'qr' && payment.amount_due_vnd > 0 && !daDong) ? '<meta http-equiv="refresh" content="8">' : '';
   let payBlock = '';
   if (daDong) {
     payBlock = '';   // khối tiền của đơn đã đóng nằm ở moneyBlock bên dưới
   } else if (o.payment_method === 'qr') {
     payBlock = paid
-      ? `<div class="card"><span class="badge paid">Đã thanh toán ✓</span></div>`
+      ? `<div class="card"><span class="badge paid">Đã thanh toán ✓</span>${payment.customer_credit_vnd > 0
+        ? `<p class="muted">Bạn đã chuyển dư ${money(payment.customer_credit_vnd)}. Cửa hàng sẽ liên hệ để đối soát khoản dư.</p>` : ''}</div>`
       : o.pay_config_changed
       ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg,#fffbeb)"><h2>Thanh toán tạm gián đoạn</h2>
           <p class="muted">Cửa hàng vừa thay đổi thông tin nhận thanh toán nên mã QR của đơn này không còn hiệu lực.
           Vui lòng <strong>liên hệ cửa hàng</strong> để hoàn tất thanh toán — đừng chuyển tiền theo thông tin cũ.</p></div>`
       : `<div class="card"><h2>Chuyển khoản QR</h2>
           <p class="muted">Quét mã trong app ngân hàng, hoặc chuyển thủ công đúng nội dung. Trang tự cập nhật khi nhận được tiền.</p>
+          ${payment.received_vnd > 0 ? `<p><span class="badge paid">Đã nhận ${money(payment.received_vnd)}</span> · Còn ${money(payment.amount_due_vnd)}</p>` : ''}
           ${qr ? `<div class="qrbox">${qr}</div>` : ''}
           <div class="bank">
             <div class="row"><span class="muted">Ngân hàng</span><span>${esc(pay?.bank_name || pay?.bank_bin || '—')}</span></div>
             <div class="row"><span class="muted">Số tài khoản</span><span><strong>${esc(pay?.account_number || '—')}</strong></span></div>
             <div class="row"><span class="muted">Chủ tài khoản</span><span>${esc(pay?.account_name || '—')}</span></div>
-            <div class="row"><span class="muted">Số tiền</span><span><strong>${money(o.total_vnd)}</strong></span></div>
+            <div class="row"><span class="muted">Số tiền còn thiếu</span><span><strong>${money(payment.amount_due_vnd)}</strong></span></div>
             <div class="row"><span class="muted">Nội dung</span><span><strong>${esc(o.payment_ref || '')}</strong></span></div>
           </div>
           <p class="muted" style="margin-top:8px"><span class="badge wait">Đang chờ thanh toán…</span></p></div>`;

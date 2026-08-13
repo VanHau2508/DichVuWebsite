@@ -88,6 +88,8 @@ async function main() {
   const pid = r.json.id;
   const vid = (await rq(SELLER, 'GET', `/shops/${A.shopId}/products/${pid}`, { cookie: A.cookie })).json.variants[0].id;
   await rq(SELLER, 'POST', `/shops/${A.shopId}/variants/${vid}/inventory/adjust`, { body: { delta: 10, reason: 'seed' }, cookie: A.cookie, origin: OS });
+  // Bộ này kiểm batch/low-stock, không kiểm readiness. Kích hoạt fixture như các E2E checkout khác.
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [A.shopId]);
 
   const buy = async () => {
     const cart = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vid, qty: 1 } })).cartToken;
@@ -118,6 +120,24 @@ async function main() {
   r.status === 200 ? ok('đặt ngưỡng sắp hết = 8 + email liên hệ') : bad('settings lỗi', r.raw);
   const st = await rq(SELLER, 'GET', `/shops/${A.shopId}/stats`, { cookie: A.cookie });
   (st.json.low_stock ?? []).length >= 1 ? ok(`tổng quan hiện ${st.json.low_stock.length} biến thể sắp hết`) : bad('thiếu low_stock trong stats', JSON.stringify(st.json.low_stock));
+
+  // Ca phân biệt ATS với tồn vật lý: 10 on_hand, không reserve nhưng giữ an toàn 4 → ATS 6.
+  // Ngưỡng 8 phải bắt được ở cả Tổng quan và danh sách sản phẩm dù on_hand-reserved vẫn là 10.
+  r = await rq(SELLER, 'POST', `/shops/${A.shopId}/products`, { body: { title: `ATS Low ${uniq()}`, slug: `ats-${uniq()}`, price_vnd: 99000, status: 'active', variants: [{ sku: `ATS-${uniq()}`, price_vnd: 99000 }] }, cookie: A.cookie, origin: OS });
+  const atsPid = r.json.id;
+  const atsVid = (await rq(SELLER, 'GET', `/shops/${A.shopId}/products/${atsPid}`, { cookie: A.cookie })).json.variants[0].id;
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/variants/${atsVid}/inventory/adjust`, { body: { delta: 10, reason: 'seed ATS' }, cookie: A.cookie, origin: OS });
+  await rq(SELLER, 'PUT', `/shops/${A.shopId}/variants/${atsVid}/inventory/safety`, { body: { safety_stock_qty: 4 }, cookie: A.cookie, origin: OS });
+  const atsStats = await rq(SELLER, 'GET', `/shops/${A.shopId}/stats`, { cookie: A.cookie });
+  const atsLow = (atsStats.json.low_stock ?? []).find((x) => x.sku?.startsWith('ATS-'));
+  Number(atsLow?.available) === 6
+    ? ok('Tổng quan dùng ATS: tồn thực 10, giữ 4 → còn bán online 6')
+    : bad('Tổng quan vẫn dùng tồn vật lý', JSON.stringify(atsStats.json.low_stock));
+  const atsProducts = await rq(SELLER, 'GET', `/shops/${A.shopId}/products?stock=low&limit=100`, { cookie: A.cookie });
+  const atsProduct = (atsProducts.json.products ?? []).find((p) => p.id === atsPid);
+  Number(atsProduct?.stock) === 6 && Number(atsProduct?.oos_variants) === 0
+    ? ok('lọc Sản phẩm sắp hết khớp Tổng quan và hiển thị ATS 6')
+    : bad('catalog lệch ATS/low-stock', JSON.stringify(atsProduct ?? atsProducts.json));
   const ws = await (await fetch(`${WORKER}/internal/lowstock-sweep`, { method: 'POST' })).json();
   ws.shops >= 1 ? ok(`worker sweep → cảnh báo ${ws.shops} shop`) : bad('sweep không bắn', JSON.stringify(ws));
   const ob = (await owner.query(`SELECT payload FROM outbox WHERE shop_id=$1 AND topic='stock.low' ORDER BY id DESC LIMIT 1`, [A.shopId])).rows[0];

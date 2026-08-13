@@ -14,7 +14,7 @@
  * CHỨNG TỪ: phiếu 'received' = TERMINAL. Mọi mutation (sửa header/dòng, order, receive, cancel)
  * SELECT ... FOR UPDATE rồi guard status DƯỚI khoá (TOCTOU) — như shipOrder "đơn đã giao".
  */
-import { send } from './http.js';
+import { send, parseOffset } from './http.js';
 import { withTenant, audit } from './db.js';
 // Biên ngày giờ VN: DÙNG CHUNG với reports.js/orders.js thay vì chép tay (xem date-range.js).
 import { rangeSql } from './date-range.js';
@@ -134,19 +134,58 @@ function cleanLines(rawLines) {
   return out;
 }
 
+// Validate one line for the atomic line endpoints. PATCH may omit fields and
+// inherit the current line; POST still has to provide a complete line.
+function cleanLine(raw, defaults = {}) {
+  const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const line = {
+    variant_id: input.variant_id === undefined ? defaults.variant_id : input.variant_id,
+    qty: input.qty === undefined ? defaults.qty : input.qty,
+    unit_cost_vnd: input.unit_cost_vnd === undefined ? defaults.unit_cost_vnd : input.unit_cost_vnd,
+  };
+  return cleanLines([line])[0];
+}
+
+async function editablePurchaseOrder(c, poId) {
+  const po = (await c.query(
+    `SELECT id, status FROM purchase_orders WHERE id = $1 FOR UPDATE`, [poId],
+  )).rows[0];
+  if (!po) fail(404, 'không tìm thấy phiếu nhập');
+  if (po.status !== 'draft') {
+    fail(409, po.status === 'ordered'
+      ? 'phiếu đã đánh dấu "Đã đặt" nên không còn sửa được; huỷ phiếu và tạo phiếu mới nếu nhà cung cấp thay đổi'
+      : 'phiếu đã chốt/huỷ, không sửa được');
+  }
+  return po;
+}
+
+// Resolve a variant and take the snapshots used by the purchase document.
+// RLS plus the explicit product join prevents cross-shop/orphan references.
+async function variantSnapshot(c, variantId) {
+  const row = (await c.query(
+    `SELECT v.id, p.title AS product_title, v.title AS variant_title, v.sku
+       FROM variants v JOIN products p ON p.id = v.product_id
+      WHERE v.id = $1 AND p.deleted_at IS NULL AND ${VARIANT_NOT_ORPHAN_SQL}
+      FOR KEY SHARE OF p`,
+    [variantId],
+  )).rows[0];
+  if (!row) fail(400, 'biến thể không hợp lệ, đã bị xoá hoặc không thuộc cửa hàng');
+  return {
+    title_snapshot: row.product_title + (row.variant_title ? ` / ${row.variant_title}` : ''),
+    sku_snapshot: row.sku,
+  };
+}
+
 // Chèn các dòng cho 1 phiếu + snapshot title/sku (chống pool-reuse 0041). Mỗi biến thể phải
 // tồn tại, thuộc shop (RLS), không mồ côi — KHÔNG đòi product active (nhập được cả SP nháp/ẩn).
 async function insertLines(c, poId, lines) {
   for (const l of lines) {
-    const r = await c.query(
+    const snapshot = await variantSnapshot(c, l.variant_id);
+    await c.query(
       `INSERT INTO purchase_order_lines (shop_id, po_id, variant_id, qty, unit_cost_vnd, title_snapshot, sku_snapshot)
-       SELECT current_shop_id(), $1, v.id, $3, $4,
-              p.title || CASE WHEN v.title IS NOT NULL AND v.title <> '' THEN ' / ' || v.title ELSE '' END, v.sku
-         FROM variants v JOIN products p ON p.id = v.product_id
-        WHERE v.id = $2 AND ${VARIANT_NOT_ORPHAN_SQL}`,
-      [poId, l.variant_id, l.qty, l.unit_cost_vnd],
+       VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6)`,
+      [poId, l.variant_id, l.qty, l.unit_cost_vnd, snapshot.title_snapshot, snapshot.sku_snapshot],
     );
-    if (r.rowCount !== 1) fail(400, 'biến thể không hợp lệ hoặc không thuộc cửa hàng');
   }
 }
 
@@ -222,7 +261,7 @@ async function getPurchaseOrder(res, ctx, poId) {
   return send(res, 200, out);
 }
 
-// PATCH — sửa header + (tuỳ chọn) thay TOÀN BỘ dòng. CHỈ khi draft/ordered (guard dưới FOR UPDATE).
+// PATCH — sửa header + (tuỳ chọn) thay TOÀN BỘ dòng. Chỉ phiếu nháp còn được sửa.
 async function updatePurchaseOrder(res, ctx, poId, body) {
   const wantSupplier = body?.supplier_id !== undefined;
   const supplierId = wantSupplier ? String(body.supplier_id) : null;
@@ -235,7 +274,11 @@ async function updatePurchaseOrder(res, ctx, poId, body) {
   await withTenant(ctx.shopId, async (c) => {
     const po = (await c.query(`SELECT status FROM purchase_orders WHERE id = $1 FOR UPDATE`, [poId])).rows[0];
     if (!po) fail(404, 'không tìm thấy phiếu nhập');
-    if (!['draft', 'ordered'].includes(po.status)) fail(409, 'phiếu đã chốt/huỷ, không sửa được');
+    if (po.status !== 'draft') {
+      fail(409, po.status === 'ordered'
+        ? 'phiếu đã đánh dấu "Đã đặt" nên không còn sửa được; huỷ phiếu và tạo phiếu mới nếu nhà cung cấp thay đổi'
+        : 'phiếu đã chốt/huỷ, không sửa được');
+    }
     if (wantSupplier) {
       const sup = (await c.query(`SELECT is_active FROM suppliers WHERE id = $1`, [supplierId])).rows[0];
       if (!sup) fail(404, 'không tìm thấy nhà cung cấp');
@@ -251,6 +294,102 @@ async function updatePurchaseOrder(res, ctx, poId, body) {
     await audit(c, 'purchase_order.updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: { poId, changedLines: wantLines } });
   });
   return send(res, 200, { ok: true });
+}
+
+// Add one line without replacing the rest of the draft. The PO row is locked
+// for the complete transaction so concurrent edits cannot bypass the limit or
+// duplicate-variant check.
+async function addPurchaseOrderLine(res, ctx, poId, body) {
+  const line = cleanLine(body);
+  await withTenant(ctx.shopId, async (c) => {
+    await editablePurchaseOrder(c, poId);
+    const count = Number((await c.query(
+      `SELECT count(*)::int AS n FROM purchase_order_lines WHERE po_id = $1`, [poId],
+    )).rows[0].n);
+    if (count >= MAX_LINES) fail(400, `tối đa ${MAX_LINES} dòng/phiếu nhập`);
+    const exists = (await c.query(
+      `SELECT 1 FROM purchase_order_lines WHERE po_id = $1 AND variant_id = $2`, [poId, line.variant_id],
+    )).rowCount;
+    if (exists) fail(409, 'biến thể đã có trong phiếu (gộp số lượng vào 1 dòng)');
+    const snapshot = await variantSnapshot(c, line.variant_id);
+    const inserted = (await c.query(
+      `INSERT INTO purchase_order_lines
+         (shop_id, po_id, variant_id, qty, unit_cost_vnd, title_snapshot, sku_snapshot)
+       VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6)
+       RETURNING id, variant_id, qty, unit_cost_vnd, title_snapshot, sku_snapshot`,
+      [poId, line.variant_id, line.qty, line.unit_cost_vnd, snapshot.title_snapshot, snapshot.sku_snapshot],
+    )).rows[0];
+    await recomputeSubtotal(c, poId);
+    await audit(c, 'purchase_order.line_added', { actorId: ctx.user.id, ip: ctx.ip, metadata: { poId, lineId: inserted.id, variantId: line.variant_id } });
+    return inserted;
+  }).then((line) => send(res, 201, { ...line, unit_cost_vnd: Number(line.unit_cost_vnd) }));
+}
+
+async function updatePurchaseOrderLine(res, ctx, poId, lineId, body) {
+  if (!UUID_RE.test(lineId)) return send(res, 404, { error: 'không tìm thấy dòng phiếu nhập' });
+  await withTenant(ctx.shopId, async (c) => {
+    // Resolve existence before the status guard so a wrong line/PO is always
+    // a 404, including when the PO itself is already terminal.
+    const exists = await c.query(
+      `SELECT 1 FROM purchase_order_lines WHERE id = $1 AND po_id = $2`, [lineId, poId],
+    );
+    if (exists.rowCount !== 1) fail(404, 'không tìm thấy dòng phiếu nhập');
+    await editablePurchaseOrder(c, poId);
+    const current = (await c.query(
+      `SELECT id, variant_id, qty, unit_cost_vnd, title_snapshot, sku_snapshot FROM purchase_order_lines
+        WHERE id = $1 AND po_id = $2 FOR UPDATE`, [lineId, poId],
+    )).rows[0];
+    if (!current) fail(404, 'không tìm thấy dòng phiếu nhập');
+    const line = cleanLine(body, {
+      variant_id: current.variant_id,
+      qty: Number(current.qty),
+      unit_cost_vnd: Number(current.unit_cost_vnd),
+    });
+    if (line.variant_id !== current.variant_id) {
+      const duplicate = (await c.query(
+        `SELECT 1 FROM purchase_order_lines WHERE po_id = $1 AND variant_id = $2 AND id <> $3`,
+        [poId, line.variant_id, lineId],
+      )).rowCount;
+      if (duplicate) fail(409, 'biến thể đã có trong phiếu (gộp số lượng vào 1 dòng)');
+    }
+    // Keep the document snapshot stable when only qty/cost changes; refresh it
+    // only when the line is intentionally switched to another variant.
+    const snapshot = line.variant_id === current.variant_id
+      ? { title_snapshot: current.title_snapshot, sku_snapshot: current.sku_snapshot }
+      : await variantSnapshot(c, line.variant_id);
+    const updated = (await c.query(
+      `UPDATE purchase_order_lines
+          SET variant_id = $3, qty = $4, unit_cost_vnd = $5,
+              title_snapshot = $6, sku_snapshot = $7
+        WHERE id = $1 AND po_id = $2
+      RETURNING id, variant_id, qty, unit_cost_vnd, title_snapshot, sku_snapshot`,
+      [lineId, poId, line.variant_id, line.qty, line.unit_cost_vnd, snapshot.title_snapshot, snapshot.sku_snapshot],
+    )).rows[0];
+    await recomputeSubtotal(c, poId);
+    await audit(c, 'purchase_order.line_updated', { actorId: ctx.user.id, ip: ctx.ip, metadata: { poId, lineId, variantId: line.variant_id } });
+    return updated;
+  }).then((line) => send(res, 200, { ...line, unit_cost_vnd: Number(line.unit_cost_vnd) }));
+}
+
+async function deletePurchaseOrderLine(res, ctx, poId, lineId) {
+  if (!UUID_RE.test(lineId)) return send(res, 404, { error: 'không tìm thấy dòng phiếu nhập' });
+  await withTenant(ctx.shopId, async (c) => {
+    // Check resource existence before the editable-status guard; this keeps
+    // wrong-line and wrong-PO requests consistently 404.
+    const exists = await c.query(
+      `SELECT 1 FROM purchase_order_lines WHERE id = $1 AND po_id = $2`, [lineId, poId],
+    );
+    if (exists.rowCount !== 1) fail(404, 'không tìm thấy dòng phiếu nhập');
+    await editablePurchaseOrder(c, poId);
+    const deleted = (await c.query(
+      `DELETE FROM purchase_order_lines WHERE id = $1 AND po_id = $2
+       RETURNING id, variant_id`, [lineId, poId],
+    )).rows[0];
+    if (!deleted) fail(404, 'không tìm thấy dòng phiếu nhập');
+    await recomputeSubtotal(c, poId);
+    await audit(c, 'purchase_order.line_deleted', { actorId: ctx.user.id, ip: ctx.ip, metadata: { poId, lineId, variantId: deleted.variant_id } });
+  });
+  return send(res, 200, { ok: true, id: lineId });
 }
 
 // draft → ordered (đánh dấu đã đặt hàng NCC). Guard dưới FOR UPDATE.
@@ -290,14 +429,31 @@ async function receivePurchaseOrder(res, ctx, poId) {
     const po = (await c.query(`SELECT status, po_number FROM purchase_orders WHERE id = $1 FOR UPDATE`, [poId])).rows[0];
     if (!po) fail(404, 'không tìm thấy phiếu nhập');
     if (!['draft', 'ordered'].includes(po.status)) fail(409, 'phiếu đã chốt hoặc đã huỷ');
+    // KEY SHARE on products serializes receive with soft-delete. A legacy row
+    // whose product is already deleted is detected before inventory is touched.
     const lines = (await c.query(
-      `SELECT variant_id, qty, unit_cost_vnd FROM purchase_order_lines WHERE po_id = $1
-        ORDER BY variant_id`, [poId])).rows; // thứ tự variant_id = thứ tự khoá cố định
+      `SELECT l.variant_id, l.qty, l.unit_cost_vnd, p.deleted_at, p.title AS product_title
+         FROM purchase_order_lines l
+         JOIN variants v ON v.id = l.variant_id
+         JOIN products p ON p.id = v.product_id
+        WHERE l.po_id = $1
+        ORDER BY l.variant_id
+        FOR KEY SHARE OF p`, [poId])).rows; // thứ tự variant_id = thứ tự khoá cố định
     if (lines.length === 0) fail(400, 'phiếu chưa có dòng hàng nào để nhận');
+    const deletedProduct = lines.find((ln) => ln.deleted_at != null);
+    if (deletedProduct) return {
+      blocked: true,
+      body: {
+        error: `không thể nhận hàng vì sản phẩm "${deletedProduct.product_title}" đã bị xoá`,
+        error_code: 'purchase_order_product_deleted',
+        action: 'Huỷ phiếu nhập này và tạo phiếu mới với sản phẩm còn hoạt động.',
+        variant_id: deletedProduct.variant_id,
+      },
+    };
     const poNum = Number(po.po_number);
     let received = 0;
     for (const ln of lines) {
-      const qty = ln.qty, buy = Number(ln.unit_cost_vnd);
+      const qty = Number(ln.qty), buy = BigInt(ln.unit_cost_vnd);
       // Khoá tồn + variants (variants: chống lost-update giá vốn với catalog.updateVariant).
       await c.query(`INSERT INTO inventory_levels (shop_id, variant_id) VALUES (current_shop_id(), $1) ON CONFLICT (shop_id, variant_id) DO NOTHING`, [ln.variant_id]);
       const lvl = (await c.query(`SELECT on_hand FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [ln.variant_id])).rows[0];
@@ -305,11 +461,14 @@ async function receivePurchaseOrder(res, ctx, poId) {
         `SELECT vc.cost_vnd FROM variants v LEFT JOIN variant_costs vc ON vc.shop_id = v.shop_id AND vc.variant_id = v.id
           WHERE v.id = $1 FOR UPDATE OF v`, [ln.variant_id])).rows[0];
       const onHandOld = lvl ? Number(lvl.on_hand) : 0;
-      const costOld = costRow && costRow.cost_vnd != null ? Number(costRow.cost_vnd) : null;
+      const costOld = costRow && costRow.cost_vnd != null ? BigInt(costRow.cost_vnd) : null;
       // Bình quân gia quyền di động. NULL / on_hand cũ ≤ 0 = không có cơ sở → lấy giá nhập.
       const newCost = (costOld == null || onHandOld <= 0)
         ? buy
-        : Math.round((onHandOld * costOld + qty * buy) / (onHandOld + qty));
+        // SQL round() với số dương tương đương chia nguyên sau khi cộng nửa mẫu số.
+        // BigInt giữ chính xác cả khi tồn * giá vốn vượt Number.MAX_SAFE_INTEGER.
+        : ((BigInt(onHandOld) * costOld + BigInt(qty) * buy)
+          + BigInt(onHandOld + qty) / 2n) / BigInt(onHandOld + qty);
       // (1) on_hand += qty  (2) đúng 1 dòng ledger 'receive'
       await c.query(`UPDATE inventory_levels SET on_hand = on_hand + $2, updated_at = now() WHERE variant_id = $1`, [ln.variant_id, qty]);
       await c.query(
@@ -320,13 +479,14 @@ async function receivePurchaseOrder(res, ctx, poId) {
         `INSERT INTO variant_costs (shop_id, variant_id, cost_vnd, updated_by)
          VALUES (current_shop_id(), $1, $2, $3)
          ON CONFLICT (shop_id, variant_id) DO UPDATE SET cost_vnd = $2, updated_by = $3, updated_at = now()`,
-        [ln.variant_id, newCost, ctx.user.id]);
+        [ln.variant_id, newCost.toString(), ctx.user.id]);
       received += qty;
     }
     await c.query(`UPDATE purchase_orders SET status = 'received', received_at = now(), received_by = $2, updated_at = now() WHERE id = $1`, [poId, ctx.user.id]);
     await audit(c, 'purchase_order.received', { actorId: ctx.user.id, ip: ctx.ip, metadata: { poId, poNumber: poNum, lines: lines.length, unitsReceived: received } });
     return { po_number: poNum, lines: lines.length, units_received: received };
   });
+  if (summary.blocked) return send(res, 409, summary.body);
   return send(res, 200, { ok: true, ...summary });
 }
 
@@ -335,9 +495,21 @@ async function receivePurchaseOrder(res, ctx, poId) {
 // được cho cả SP nháp/ẩn (nhập trước, bán sau). Kèm giá vốn hiện hành để UI tham chiếu.
 async function listPurchasableVariants(res, ctx, query) {
   const q = (query?.get('q') ?? '').trim().slice(0, 100);
+  // Keep the historical 500-row default for existing admin callers, while
+  // allowing the picker to request smaller pages explicitly.
+  const explicitLimit = query?.has('limit');
+  const limit = explicitLimit
+    ? Math.min(Math.max(parseInt(query.get('limit') ?? '50', 10) || 50, 1), 100)
+    : 500;
+  const offset = parseOffset(query);
   const args = [];
   let filterSql = '';
-  if (q) { args.push('%' + q.replace(/[%_\\]/g, '\\$&') + '%'); filterSql = ` AND (vn_unaccent(p.title) LIKE vn_unaccent($${args.length}) OR v.sku ILIKE $${args.length})`; }
+  if (q) {
+    args.push('%' + q.replace(/[%_\\]/g, '\\$&') + '%');
+    filterSql = ` AND (vn_unaccent(p.title) LIKE vn_unaccent($${args.length})
+                    OR vn_unaccent(coalesce(v.title, '')) LIKE vn_unaccent($${args.length})
+                    OR v.sku ILIKE $${args.length})`;
+  }
   const rows = await withTenant(ctx.shopId, async (c) =>
     (await c.query(
       `SELECT v.id, p.title AS product_title, v.title AS variant_title, v.sku, v.price_vnd,
@@ -347,10 +519,15 @@ async function listPurchasableVariants(res, ctx, query) {
          LEFT JOIN inventory_levels il ON il.variant_id = v.id
          LEFT JOIN variant_costs vc ON vc.shop_id = v.shop_id AND vc.variant_id = v.id
         WHERE ${VARIANT_NOT_ORPHAN_SQL}${filterSql}
-        ORDER BY p.title, v.title NULLS FIRST, v.sku LIMIT 500`, args)).rows);
+        ORDER BY p.title, v.title NULLS FIRST, v.sku, v.id
+        LIMIT ${limit + 1} OFFSET ${offset}`, args)).rows);
+  const hasMore = rows.length > limit;
   return send(res, 200, {
-    variants: rows.map((r) => ({ ...r, price_vnd: Number(r.price_vnd), cost_vnd: r.cost_vnd == null ? null : Number(r.cost_vnd) })),
-    ...(rows.length === 500 ? { truncated: true } : {}),
+    variants: rows.slice(0, limit).map((r) => ({ ...r, price_vnd: Number(r.price_vnd), cost_vnd: r.cost_vnd == null ? null : Number(r.cost_vnd) })),
+    limit,
+    offset,
+    has_more: hasMore,
+    ...(hasMore ? { truncated: true } : {}),
   });
 }
 
@@ -575,6 +752,9 @@ export const PURCHASING_ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/purchase-orders$`), perm: 'inventory.manage', fn: (res, ctx, b, p, q) => listPurchaseOrders(res, ctx, q) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/purchase-orders/${UUID}$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => getPurchaseOrder(res, ctx, p[1]) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/purchase-orders/${UUID}$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => updatePurchaseOrder(res, ctx, p[1], b) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/purchase-orders/${UUID}/lines$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => addPurchaseOrderLine(res, ctx, p[1], b) },
+  { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/purchase-orders/${UUID}/lines/${UUID}$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => updatePurchaseOrderLine(res, ctx, p[1], p[2], b) },
+  { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/purchase-orders/${UUID}/lines/${UUID}$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => deletePurchaseOrderLine(res, ctx, p[1], p[2]) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/purchase-orders/${UUID}/order$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => markOrdered(res, ctx, p[1]) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/purchase-orders/${UUID}/receive$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => receivePurchaseOrder(res, ctx, p[1]) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/purchase-orders/${UUID}/cancel$`), perm: 'inventory.manage', fn: (res, ctx, b, p) => cancelPurchaseOrder(res, ctx, p[1]) },

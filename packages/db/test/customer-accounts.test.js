@@ -168,3 +168,166 @@ describe('0083 RLS cô lập + must-fix', () => {
     } finally { await cleanup(s); }
   });
 });
+
+describe('0172 projection yêu thích', () => {
+  test('cô lập khách/shop, tính đúng giá sale + ATS và không quick-add biến thể mồ côi/đa biến thể', async () => {
+    const tag = randomUUID().slice(0, 8);
+    const shopIds = [];
+    const mkShop = async (key, safety = 20) => {
+      const id = (await owner.query(
+        `INSERT INTO shops (slug,name,status,safety_stock_pct)
+         VALUES ($1,$2,'active',$3) RETURNING id`,
+        [`wish-${key}-${tag}`, `Wish ${key}`, safety],
+      )).rows[0].id;
+      shopIds.push(id);
+      return id;
+    };
+    const mkCustomer = async (shop, key) => (await owner.query(
+      `INSERT INTO customers (shop_id,email,password_hash,status)
+       VALUES ($1,$2,'HASH','active') RETURNING id`,
+      [shop, `${key}-${tag}@x.vn`],
+    )).rows[0].id;
+    const mkProduct = async (shop, key, price) => (await owner.query(
+      `INSERT INTO products (shop_id,slug,title,price_vnd,status)
+       VALUES ($1,$2,$3,$4,'active') RETURNING id`,
+      [shop, `${key}-${tag}`, `SP ${key}`, price],
+    )).rows[0].id;
+    const mkVariant = async (shop, product, key, price, position = 0) => (await owner.query(
+      `INSERT INTO variants (shop_id,product_id,sku,price_vnd,position)
+       VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [shop, product, `${key}-${tag}`, price, position],
+    )).rows[0].id;
+    const wish = (shop, customer, product) => owner.query(
+      `INSERT INTO wishlist_items (shop_id,customer_id,product_id) VALUES ($1,$2,$3)`,
+      [shop, customer, product],
+    );
+    const project = (shop, customer) => ctx(cust, { shop, customer }, async (c) =>
+      (await c.query(`SELECT * FROM current_customer_wishlist()`)).rows);
+
+    const A = await mkShop('a');
+    const B = await mkShop('b');
+    const a1 = await mkCustomer(A, 'a1');
+    const a2 = await mkCustomer(A, 'a2');
+    const b1 = await mkCustomer(B, 'b1');
+
+    try {
+      const flat = await mkProduct(A, 'flat', 100_000);
+      const flatV = await mkVariant(A, flat, 'flat-v', 100_000);
+      await owner.query(
+        `INSERT INTO inventory_levels (shop_id,variant_id,on_hand,reserved)
+         VALUES ($1,$2,10,2)`, [A, flatV]);
+      await owner.query(
+        `INSERT INTO media (shop_id,product_id,status,original_key,public_key,position)
+         VALUES ($1,$2,'pending',$3,NULL,-1),
+                ($1,$2,'ready',$4,$5,0)`,
+        [A, flat, `pending-${tag}`, `private-${tag}`, `ready-${tag}.webp`]);
+      const promo = (await owner.query(
+        `INSERT INTO promotions (shop_id,title,kind,value,scope,starts_at,ends_at,active)
+         VALUES ($1,'Sale wishlist','percent',20,'products',now()-interval '1 hour',now()+interval '1 hour',true)
+         RETURNING id`, [A])).rows[0].id;
+      await owner.query(
+        `INSERT INTO promotion_products (shop_id,promotion_id,product_id) VALUES ($1,$2,$3)`,
+        [A, promo, flat]);
+
+      const override = await mkProduct(A, 'override', 50_000);
+      const overrideV = await mkVariant(A, override, 'override-v', 50_000);
+      await owner.query(
+        `INSERT INTO inventory_levels
+           (shop_id,variant_id,on_hand,reserved,safety_stock_qty)
+         VALUES ($1,$2,10,1,3)`, [A, overrideV]);
+
+      const multi = await mkProduct(A, 'multi', 70_000);
+      const multiV1 = await mkVariant(A, multi, 'multi-1', 70_000, 0);
+      const multiV2 = await mkVariant(A, multi, 'multi-2', 75_000, 1);
+      await owner.query(
+        `INSERT INTO inventory_levels (shop_id,variant_id,on_hand)
+         VALUES ($1,$2,5),($1,$3,4)`, [A, multiV1, multiV2]);
+
+      const orphan = await mkProduct(A, 'orphan', 80_000);
+      const orphanV = await mkVariant(A, orphan, 'orphan-v', 80_000);
+      await owner.query(
+        `INSERT INTO product_options (shop_id,product_id,name) VALUES ($1,$2,'Màu')`,
+        [A, orphan]);
+      await owner.query(
+        `INSERT INTO inventory_levels (shop_id,variant_id,on_hand) VALUES ($1,$2,99)`,
+        [A, orphanV]);
+
+      const onlyA2 = await mkProduct(A, 'a2-only', 60_000);
+      const onlyA2V = await mkVariant(A, onlyA2, 'a2-only-v', 60_000);
+      await owner.query(
+        `INSERT INTO inventory_levels (shop_id,variant_id,on_hand) VALUES ($1,$2,9)`,
+        [A, onlyA2V]);
+
+      const onlyB = await mkProduct(B, 'b-only', 40_000);
+      const onlyBV = await mkVariant(B, onlyB, 'b-only-v', 40_000);
+      await owner.query(
+        `INSERT INTO inventory_levels (shop_id,variant_id,on_hand) VALUES ($1,$2,8)`,
+        [B, onlyBV]);
+
+      for (const product of [flat, override, multi, orphan]) await wish(A, a1, product);
+      await wish(A, a2, onlyA2);
+      await wish(B, b1, onlyB);
+
+      await assert.rejects(
+        () => ctx(cust, { shop: A }, (c) => c.query(`SELECT * FROM current_customer_wishlist()`)),
+        (err) => err?.code === '42501',
+        'thiếu customer context phải fail closed',
+      );
+
+      const rows = await project(A, a1);
+      assert.equal(rows.length, 4, 'a1 chỉ thấy bốn sản phẩm chính mình đã lưu');
+      assert.ok(!rows.some((r) => r.product_id === onlyA2 || r.product_id === onlyB),
+        'không lộ wishlist khách khác hoặc shop khác');
+
+      const byId = new Map(rows.map((r) => [r.product_id, r]));
+      assert.deepEqual({
+        base: Number(byId.get(flat).base_price_vnd),
+        price: Number(byId.get(flat).price_vnd),
+        off: Number(byId.get(flat).off_pct),
+        image: byId.get(flat).image_key,
+        ats: Number(byId.get(flat).available_qty),
+        quick: byId.get(flat).default_variant_id,
+      }, {
+        base: 100_000,
+        price: 80_000,
+        off: 20,
+        image: `ready-${tag}.webp`,
+        ats: 6,
+        quick: flatV,
+      }, 'giá sale, ảnh ready và ATS phần trăm phải khớp storefront/checkout');
+
+      assert.equal(Number(byId.get(override).available_qty), 6,
+        'safety_stock_qty=3 phải thắng safety 20% (=2)');
+      assert.equal(byId.get(override).default_variant_id, overrideV);
+      assert.equal(Number(byId.get(multi).available_qty), 7,
+        'ATS đa biến thể là tổng ATS từng biến thể');
+      assert.equal(byId.get(multi).default_variant_id, null,
+        'đa biến thể không được tự chọn biến thể đầu tiên');
+      assert.equal(Number(byId.get(orphan).available_qty), 0,
+        'biến thể thiếu mapping option không được tính tồn');
+      assert.equal(byId.get(orphan).default_variant_id, null,
+        'biến thể mồ côi không được quick-add');
+
+      assert.deepEqual((await project(A, a2)).map((r) => r.product_id), [onlyA2],
+        'khách thứ hai cùng shop chỉ thấy wishlist của mình');
+      assert.deepEqual((await project(B, b1)).map((r) => r.product_id), [onlyB],
+        'shop B chỉ thấy dữ liệu shop B');
+      assert.deepEqual(await project(B, a1), [],
+        'customer id của shop A không thể đọc wishlist shop B');
+
+      await owner.query(`UPDATE promotions SET active=false WHERE id=$1`, [promo]);
+      const noSale = (await project(A, a1)).find((r) => r.product_id === flat);
+      assert.equal(Number(noSale.price_vnd), 100_000, 'promo tắt phải trả giá gốc');
+      assert.equal(noSale.promotion_id, null);
+      assert.equal(noSale.off_pct, null);
+    } finally {
+      const ids = shopIds;
+      for (const table of [
+        'promotion_products', 'promotions', 'media', 'wishlist_items', 'inventory_levels',
+        'variant_option_values', 'option_values', 'product_options', 'variants', 'products',
+        'customer_sessions', 'customers',
+      ]) await owner.query(`DELETE FROM ${table} WHERE shop_id = ANY($1::uuid[])`, [ids]);
+      await owner.query(`DELETE FROM shops WHERE id = ANY($1::uuid[])`, [ids]);
+    }
+  });
+});

@@ -41,6 +41,12 @@ const inviteTokenOf = async (email) => {
 // Mỗi mục: [tên việc, method, path (sau /shops/:id), body]. Body KHÔNG cần hợp lệ — ta chỉ
 // kiểm cổng step-up, và cổng đó chạy TRƯỚC khi handler đụng tới body.
 const MONEY_OUT_ROUTES = (aff) => [
+  ['ghi nhận tiền COD qua URL legacy (vẫn là bút toán sổ tiền)',
+    'POST', '/orders/00000000-0000-4000-8000-000000000001/mark-paid', {}],
+  ['điều chỉnh khoản thu qua URL legacy (tạo bút toán đảo)',
+    'POST', '/orders/00000000-0000-4000-8000-000000000001/unmark-paid', { reason: 'kiểm tra cổng step-up' }],
+  ['ghi nhận tiền COD hàng loạt qua URL legacy',
+    'POST', '/orders/bulk/mark-paid', { order_ids: ['00000000-0000-4000-8000-000000000001'] }],
   ['ghi phiếu chuyển tiền COD (đóng vĩnh viễn đơn khỏi sổ đối soát)',
     'POST', '/cod/remittances', { amount_vnd: 1000, order_ids: ['00000000-0000-4000-8000-000000000001'] }],
   ['chốt phiếu chi hoa hồng CTV (sổ append-only, không sửa được)',

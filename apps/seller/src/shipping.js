@@ -20,7 +20,7 @@ import { send } from './http.js';
 import { withTenant, audit } from './db.js';
 import { seal, open } from './secretbox.js';
 import { carrierCreate, carrierTest, CarrierError } from './carriers.js';
-import { consumeAndShip } from './orders.js';
+import { activeResolutionCaseForOrder, consumeAndShip } from './orders.js';
 import { can } from './rbac.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
@@ -151,6 +151,14 @@ async function createCarrierShipment(res, ctx, body, params) {
       `SELECT id, status, order_number, customer_email, customer_name, customer_phone,
               total_vnd, payment_method, payment_status FROM orders WHERE id = $1 FOR UPDATE`, [orderId])).rows[0];
     if (!o) return { code: 404 };
+    const activeCase = await activeResolutionCaseForOrder(c, orderId);
+    if (activeCase) return {
+      code: 409,
+      error_code: 'mixed_shipment_resolution_active',
+      error: 'đơn đang có ca giao/hoàn trái trạng thái — không thể tạo thêm vận đơn làm sai snapshot xử lý',
+      action: 'Mở ca giao hàng trên chi tiết đơn, nhận hàng hoàn và chốt cách xử lý trước.',
+      case_id: activeCase.id,
+    };
     const cfg = (await c.query(`SELECT provider, token_enc, ghn_shop_id, pickup, enabled FROM shop_shipping_config WHERE shop_id = current_shop_id()`)).rows[0];
     if (!cfg?.enabled) return { code: 400, error: 'shop chưa kết nối hãng vận chuyển' };
     // SPLIT (0080): tạo vận đơn hãng cho đơn 'confirmed' HOẶC 'shipped'+còn hàng (gửi tiếp
@@ -186,7 +194,12 @@ async function createCarrierShipment(res, ctx, body, params) {
     }
     return { code: 200, cfg, o, lines: remaining.map((s) => ({ title_snapshot: s.title, qty: s.qty, unit_price_vnd: s.unit })), sid };
   });
-  if (claim.code !== 200) return send(res, claim.code, { error: claim.error ?? 'không tìm thấy đơn' });
+  if (claim.code !== 200) return send(res, claim.code, {
+    error: claim.error ?? 'không tìm thấy đơn',
+    ...(claim.error_code ? { error_code: claim.error_code } : {}),
+    ...(claim.action ? { action: claim.action } : {}),
+    ...(claim.case_id ? { case_id: claim.case_id } : {}),
+  });
   const { cfg, o, lines, sid } = claim;
 
   // (2) Gọi hãng NGOÀI transaction (side-effect ngoài, không rollback được).

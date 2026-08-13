@@ -16,6 +16,7 @@
 import crypto from 'node:crypto';
 import { send, parseOffset } from './http.js';
 import { withTenant, audit } from './db.js';
+import { AVAIL_SQL } from '../safety-stock.js';
 
 // Base URL ảnh public (giống storefront) — dựng URL thumbnail cho danh sách SP trong admin.
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
@@ -104,7 +105,7 @@ export const sellableCount = async (c) => (await c.query(
      JOIN variants v ON v.product_id = p.id
      JOIN inventory_levels il ON il.variant_id = v.id
     WHERE p.deleted_at IS NULL AND p.status = 'active'
-      AND il.on_hand - il.reserved > 0`,
+      AND ${AVAIL_SQL} > 0`,
 )).rows[0].n;
 
 // Đồng bộ giá "TỪ" của sản phẩm = min(giá biến thể) — thẻ lưới/sort/lọc storefront đọc
@@ -269,16 +270,14 @@ async function listProducts(res, ctx, _body, _params, query) {
   // (mỗi tab hiện "trong kết quả tìm hiện tại, trạng thái này có bao nhiêu SP"). Thêm status
   // SAU CÙNG nên tham số status luôn là $cuối, khỏi phải đánh số lại (cùng cách orders.js).
   // Lọc SẮP HẾT HÀNG. Ô "Sắp hết hàng" ở Tổng quan bấm vào đây (docs/44 §7).
-  // Dùng ĐÚNG ngưỡng per-shop mà worker cảnh báo tồn đang dùng (low_stock_threshold, mặc
-  // định 5) — nếu hai nơi lệch ngưỡng thì con số ở Tổng quan và danh sách sẽ đá nhau, và
-  // người bán không có cách nào biết bên nào đúng.
+  // Dùng ĐÚNG ngưỡng per-shop và ATS đã trừ vùng đệm như Tổng quan/storefront/checkout.
   // VARIANT_NOT_ORPHAN_SQL: biến thể mồ côi (thiếu giá trị cho một trục) KHÔNG bán được nên
   // không tính là sắp hết — nếu tính, danh sách đầy sản phẩm không ai mua được.
   if (query.get('stock') === 'low') {
     where.push(`EXISTS (SELECT 1 FROM variants v
                           JOIN inventory_levels il ON il.variant_id = v.id
                          WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}
-                           AND (il.on_hand - il.reserved) <= coalesce(
+                           AND ${AVAIL_SQL} <= coalesce(
                                  (SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5))`);
   }
   const countArgs = [...args];
@@ -312,9 +311,8 @@ async function listProducts(res, ctx, _body, _params, query) {
               (SELECT count(*)::int FROM wishlist_items w
                 WHERE w.shop_id = p.shop_id AND w.product_id = p.id) AS wish_count,
               (SELECT count(*)::int FROM variants v WHERE v.product_id = p.id) AS variant_count,
-              -- TỒN "còn bán được" = on_hand - reserved, LOẠI biến thể MỒ CÔI y hệt storefront
-              -- (server.js:538) và checkout — nếu không, admin thấy còn hàng mà khách mua không được.
-              (SELECT coalesce(sum(il.on_hand - il.reserved), 0)::int
+              -- TỒN "còn bán được online" dùng cùng ATS với storefront/checkout và loại biến thể mồ côi.
+              (SELECT coalesce(sum(${AVAIL_SQL}), 0)::int
                  FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
                 WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}) AS stock,
               -- SỐ BIẾN THỂ ĐÃ HẾT. Con số "stock" ở trên là TỔNG — mà khách không mua "tổng",
@@ -324,7 +322,7 @@ async function listProducts(res, ctx, _body, _params, query) {
               (SELECT count(*)::int
                  FROM variants v LEFT JOIN inventory_levels il ON il.variant_id = v.id
                 WHERE v.product_id = p.id AND ${VARIANT_NOT_ORPHAN_SQL}
-                  AND coalesce(il.on_hand - il.reserved, 0) <= 0) AS oos_variants,
+                  AND coalesce(${AVAIL_SQL}, 0) <= 0) AS oos_variants,
               (SELECT m.public_key FROM media m
                  WHERE m.product_id = p.id AND m.status = 'ready' AND m.deleted_at IS NULL
                  ORDER BY m.position, m.created_at LIMIT 1) AS image_key
@@ -500,15 +498,40 @@ async function bulkStatus(res, ctx, body) {
 
 async function deleteProduct(res, ctx, _body, params) {
   const productId = params[1];
-  const n = await withTenant(ctx.shopId, async (c) => {
-    const r = await c.query(
-      `UPDATE products SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`,
+  const out = await withTenant(ctx.shopId, async (c) => {
+    // The row lock serializes deletion with purchase-order line creation, which
+    // takes a KEY SHARE lock on the same product before accepting a variant.
+    const product = (await c.query(
+      `SELECT id FROM products WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
       [productId],
-    );
-    if (r.rowCount === 1) await audit(c, 'product.deleted', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId } });
-    return r.rowCount;
+    )).rows[0];
+    if (!product) return { code: 404 };
+
+    const openPo = (await c.query(
+      `SELECT po.id, po.po_number, po.status
+         FROM purchase_orders po
+         JOIN purchase_order_lines l ON l.shop_id = po.shop_id AND l.po_id = po.id
+         JOIN variants v ON v.shop_id = l.shop_id AND v.id = l.variant_id
+        WHERE v.product_id = $1 AND po.status IN ('draft', 'ordered')
+        ORDER BY po.po_number DESC
+        LIMIT 1`,
+      [productId],
+    )).rows[0];
+    if (openPo) return { code: 409, openPo };
+
+    await c.query(`UPDATE products SET deleted_at = now() WHERE id = $1`, [productId]);
+    await audit(c, 'product.deleted', { actorId: ctx.user.id, ip: ctx.ip, metadata: { productId } });
+    return { code: 200 };
   });
-  if (n !== 1) return send(res, 404, { error: 'không tìm thấy sản phẩm' });
+  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy sản phẩm' });
+  if (out.code === 409) return send(res, 409, {
+    error: `sản phẩm đang nằm trong phiếu nhập #${Number(out.openPo.po_number)} (${out.openPo.status === 'ordered' ? 'đã đặt' : 'nháp'})`,
+    error_code: 'product_has_open_purchase_order',
+    action: 'Nhận hàng hoặc huỷ phiếu nhập trước, sau đó mới xoá sản phẩm.',
+    purchase_order_id: out.openPo.id,
+    purchase_order_number: Number(out.openPo.po_number),
+    purchase_order_status: out.openPo.status,
+  });
   return send(res, 200, { ok: true });
 }
 

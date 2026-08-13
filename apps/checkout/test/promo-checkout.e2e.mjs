@@ -71,6 +71,7 @@ async function main() {
   const slug = `promo-${uniq()}`;
   let r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staff, origin: OO });
   const shopId = r.json.id; HOST = `${slug}.nentang.vn`;
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [shopId]);
   const oe = `owner-${uniq()}@shop.vn`, op = 'owner passphrase strong';
   await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email: oe, role: 'owner' }, cookie: staff, origin: OO });
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(oe), password: op }, origin: OA });
@@ -124,6 +125,7 @@ async function main() {
   const pid4 = await mkPromo(shopId, 'percent', 40); // SP 100k → 60k
   await jsonOrder([[vid, 1]], { phone: '0900000004' });
   o = await lastOrder();
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: op }, cookie: oc, origin: OA });
   await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o.id}/mark-paid`, { cookie: oc, origin: OS });
   const rep = await rq(SELLER, 'GET', `/shops/${shopId}/reports/sales`, { cookie: oc });
   // revenue_goods gồm đơn này (60k) + đơn coupon mục 3 (50k, đã paid? chưa). Chỉ đơn mục 4 paid.

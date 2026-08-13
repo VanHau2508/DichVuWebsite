@@ -115,6 +115,8 @@ async function main() {
   const cookieA = await admLogin(A.email, A.password);
   cookieA ? ok('dựng shop + 2 SP (1 sẽ có cost, 1 không), đăng nhập BFF') : bad('không login BFF');
   const rbase = `/shops/${A.shopId}/reports`;
+  // This suite exercises reporting, not the onboarding/go-live gate.
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [A.shopId]);
 
   sect('1. Nhập giá vốn qua form biến thể BFF → biên gợi ý');
   let r = await adm('POST', `/shops/${A.shopId}/products/${pid}/variants/${vid}/price`, {
@@ -138,8 +140,9 @@ async function main() {
   };
   const o1 = await place(vid, 2, '0901111222');
   const o2 = await place(vid2, 1, '0901111333');
-  await adm('POST', `/shops/${A.shopId}/orders/${o1}/mark-paid`, { cookie: cookieA, origin: OADM });
-  await adm('POST', `/shops/${A.shopId}/orders/${o2}/mark-paid`, { cookie: cookieA, origin: OADM });
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${o1}/mark-paid`, { cookie: A.cookie, origin: OS });
+  await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${o2}/mark-paid`, { cookie: A.cookie, origin: OS });
   r = await adm('GET', `/shops/${A.shopId}/overview`, { cookie: cookieA });
   r.body.includes('Báo cáo') && r.body.includes(`${rbase}`) ? ok('nav + link "Xem báo cáo" hiện với owner') : bad('thiếu nav Báo cáo', '');
   r = await adm('GET', rbase, { cookie: cookieA });

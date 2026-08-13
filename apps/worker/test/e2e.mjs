@@ -81,6 +81,15 @@ async function waitEmail(subjectIncludes, timeout = 10000) {
   }
   return null;
 }
+async function waitValue(fn, timeout = 10000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeout) {
+    const value = await fn();
+    if (value) return value;
+    await sleep(200);
+  }
+  return null;
+}
 const workerStats = async () => (await fetch(`${WORKER}/stats`)).json();
 
 async function makeStaff() {
@@ -101,10 +110,12 @@ async function makeStaff() {
 async function makeShopOwner(staffCookie, slug) {
   let r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staffCookie, origin: OO });
   const shopId = r.json.id;
+  // Bộ worker kiểm đường vận hành của shop đã mở bán; readiness có E2E riêng.
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [shopId]);
   const email = `owner-${uniq()}@shop.vn`, password = 'owner passphrase strong';
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role: 'owner' }, cookie: staffCookie, origin: OO });
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
-  return { shopId, slug, host: `${slug}.nentang.vn`, cookie: await login(email, password) };
+  return { shopId, slug, host: `${slug}.nentang.vn`, cookie: await login(email, password), password };
 }
 async function setupProduct(shop, price, stock) {
   const r = await rq(SELLER, 'POST', `/shops/${shop.shopId}/products`, {
@@ -141,6 +152,21 @@ async function main() {
   const mail1 = await waitEmail(`Xác nhận đơn hàng #${o1.orderNum}`);
   mail1 ? ok('email xác nhận tới Mailpit (outbox pattern hoạt động)') : bad('không nhận được email xác nhận');
   mail1 && mail1.To?.[0]?.Address === buyer ? ok('email gửi đúng địa chỉ người mua') : bad('email sai người nhận');
+  const oid = await orderIdOf(A.shopId, o1.orderNum);
+  const delivery1 = await waitValue(async () => {
+    const row = (await owner.query(
+      `SELECT id, order_id, status, attempts FROM notification_deliveries
+        WHERE shop_id=$1 AND order_number=$2 AND channel='email'
+        ORDER BY created_at DESC LIMIT 1`, [A.shopId, o1.orderNum])).rows[0];
+    return row?.status === 'accepted' ? row : null;
+  });
+  const sentEvents = delivery1 ? Number((await owner.query(
+    `SELECT count(*)::int n FROM order_events
+      WHERE order_id=$1 AND event_type='notification.sent'
+        AND payload->>'delivery_id'=$2`, [oid, delivery1.id])).rows[0].n) : 0;
+  delivery1?.order_id === oid && delivery1.status === 'accepted' && Number(delivery1.attempts) === 1 && sentEvents === 1
+    ? ok('delivery email: queued → sending → accepted, nối đúng order và ghi notification.sent đúng một lần')
+    : bad('delivery ledger/timeline email sai', JSON.stringify({ delivery1, sentEvents, oid }));
   // Đợt 5.4 #15: compose trả thêm HTML (multipart/alternative) — bản text GIỮ NGUYÊN.
   const det1 = mail1 ? await mpDetail(mail1.ID) : null;
   det1?.HTML && det1.HTML.includes('Tra cứu đơn hàng') && /checkout\/success/.test(det1.HTML)
@@ -179,7 +205,6 @@ async function main() {
   // ── 3. Vòng đời đơn + email trạng thái ─────────────────────────────────────
   sect('3. Vòng đời đơn (confirm → ship → deliver)');
   await mpClear();
-  const oid = await orderIdOf(A.shopId, o1.orderNum);
   let r = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oid}/confirm`, { cookie: A.cookie, origin: OS });
   r.status === 200 && r.json.status === 'confirmed' ? ok('confirm đơn → confirmed') : bad('confirm lỗi', r.raw);
   (await waitEmail(`Đơn hàng #${o1.orderNum} — đã được xác nhận`)) ? ok('email "đã được xác nhận"') : bad('không có email confirmed');
@@ -219,6 +244,7 @@ async function main() {
   await mpClear();
   const oc = await placeOrder(A, vid, `cod-${uniq()}@kh.vn`, 1); // COD mặc định, có email
   const oidc = await orderIdOf(A.shopId, oc.orderNum);
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
   r = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oidc}/mark-paid`, { cookie: A.cookie, origin: OS });
   r.status === 200 && r.json.payment_status === 'paid' ? ok('COD mark-paid → payment_status paid') : bad('mark-paid lỗi', r.raw);
   (await payStatus(oidc)) === 'paid' ? ok('đơn COD → paid trong DB') : bad('COD chưa paid trong DB');
@@ -238,11 +264,25 @@ async function main() {
   sect('5. Dead-letter (email bounce vĩnh viễn)');
   const s0 = await workerStats();
   // Ghi thẳng outbox một sự kiện bounce (worker throw → retry → failed).
-  await owner.query(`INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.created', $2)`,
-    [A.shopId, { to: 'bounce@test.invalid', order_number: 999999, total_vnd: 1, customer_name: 'x', payment_method: 'cod' }]);
+  const bounceOutbox = (await owner.query(
+    `INSERT INTO outbox (shop_id, topic, payload) VALUES ($1, 'order.created', $2) RETURNING id`,
+    [A.shopId, { to: 'bounce@test.invalid', order_id: oid, order_number: o1.orderNum, total_vnd: 1, customer_name: 'x', payment_method: 'cod' }])).rows[0].id;
   await sleep(4000); // 3 attempts × 150ms backoff + xử lý
   const s1 = await workerStats();
   s1.failed > s0.failed ? ok(`email bounce → dead-letter (failed ${s0.failed}→${s1.failed}), không kẹt queue`) : bad('bounce không vào dead-letter', JSON.stringify(s1));
+  const failedDelivery = (await owner.query(
+    `SELECT id, status, attempts, last_error FROM notification_deliveries
+      WHERE outbox_id=$1 AND channel='email'`, [bounceOutbox])).rows[0];
+  const failedEvents = failedDelivery ? Number((await owner.query(
+    `SELECT count(*)::int n FROM order_events
+      WHERE order_id=$1 AND event_type='notification.failed'
+        AND payload->>'delivery_id'=$2`, [oid, failedDelivery.id])).rows[0].n) : 0;
+  const deadLetters = await (await fetch(`${WORKER}/internal/dead-letters`)).text();
+  failedDelivery?.status === 'failed' && Number(failedDelivery.attempts) >= 1
+    && failedEvents === 1 && !String(failedDelivery.last_error).includes('bounce@test.invalid')
+    && !deadLetters.includes('bounce@test.invalid')
+    ? ok('delivery thất bại: ghi failed + notification.failed đúng một lần, không lộ email trong DB/API')
+    : bad('delivery failed/timeline/PII sai', JSON.stringify({ failedDelivery, failedEvents, deadLetters: deadLetters.slice(0, 200) }));
 
   // ── 6. Hết hạn đơn QR chưa trả tiền → release reserve (P0-5) ────────────────
   // Đặt đơn (reserve thật qua checkout), rồi ép thành đơn QR-chưa-trả-tiền bằng owner
@@ -442,6 +482,7 @@ async function main() {
   pl?.t === 'a@vidu.vn' ? ok('email gửi đúng contact_email của shop') : bad('sai người nhận', String(pl?.t));
   for (const id of [shopCu, shopMoi, shopCoHang, shopKhongMail]) {
     await owner.query(`DELETE FROM products WHERE shop_id=$1`, [id]);
+    await owner.query(`DELETE FROM notification_deliveries WHERE shop_id=$1`, [id]);
     await owner.query(`DELETE FROM outbox WHERE shop_id=$1`, [id]);
     await owner.query(`DELETE FROM shops WHERE id=$1`, [id]);
   }
@@ -484,14 +525,16 @@ async function main() {
   // 3) Đơn MỚI (không email) → chủ shop vẫn nhận Telegram "đơn mới".
   tg.sent.length = 0;
   const onew = await placeOrder(A, vid, null, 1);
-  await sleep(800); // chờ outbox → worker → deliverTelegram
-  tg.sent.some((mm) => String(mm.chat_id) === CHAT && /Đơn MỚI/i.test(mm.text ?? '') && (mm.text ?? '').includes(`#${onew.orderNum}`))
+  const newOrderTelegram = await waitValue(() => tg.sent.some((mm) => String(mm.chat_id) === CHAT
+    && /Đơn MỚI/i.test(mm.text ?? '') && (mm.text ?? '').includes(`#${onew.orderNum}`)));
+  newOrderTelegram
     ? ok(`đơn mới #${onew.orderNum} (không email) → Telegram chủ shop nhận "Đơn MỚI"`) : bad('không bắn Telegram đơn mới', JSON.stringify(tg.sent).slice(0, 200));
   // 4) Vá MEDIUM: email khách LỖI (bounce) → chủ shop VẪN nhận Telegram "đơn mới" (2 kênh độc lập).
   tg.sent.length = 0;
   const obounce = await placeOrder(A, vid, 'bounce@test.invalid', 1);
-  await sleep(900);
-  tg.sent.some((mm) => String(mm.chat_id) === CHAT && /Đơn MỚI/i.test(mm.text ?? '') && (mm.text ?? '').includes(`#${obounce.orderNum}`))
+  const bouncedOrderTelegram = await waitValue(() => tg.sent.some((mm) => String(mm.chat_id) === CHAT
+    && /Đơn MỚI/i.test(mm.text ?? '') && (mm.text ?? '').includes(`#${obounce.orderNum}`)));
+  bouncedOrderTelegram
     ? ok('email khách lỗi → chủ shop VẪN nhận Telegram "đơn mới" (email không nuốt Telegram)') : bad('email lỗi nuốt mất Telegram', JSON.stringify(tg.sent).slice(0, 200));
   // 5) SLA ĐƠN Ứ (Đợt 5.4 #7): pending >24h + shipped >7 ngày → MỘT digest Telegram/shop/ngày.
   tg.sent.length = 0;

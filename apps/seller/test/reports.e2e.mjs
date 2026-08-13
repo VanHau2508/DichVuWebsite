@@ -64,6 +64,7 @@ async function main() {
   const mkShop = async (slug) => {
     const r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staff, origin: OO });
     const shopId = r.json.id;
+    await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [shopId]);
     const oe = `owner-${uniq()}@shop.vn`, op = 'owner passphrase strong';
     await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email: oe, role: 'owner' }, cookie: staff, origin: OO });
     await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(oe), password: op }, origin: OA });
@@ -71,7 +72,7 @@ async function main() {
   };
   const A = await mkShop(`rpt-${uniq()}`);
   const { shopId, oc, op } = A; HOST = A.host;
-  const stepUp = () => rq(AUTH, 'POST', '/auth/step-up', { body: { password: op }, cookie: oc, origin: OA });
+  const stepUp = (cookie = oc, password = op) => rq(AUTH, 'POST', '/auth/step-up', { body: { password }, cookie, origin: OA });
   const inviteRole = async (role) => {
     const em = `${role}-${uniq()}@shop.vn`, pw = 'member passphrase strong';
     await rq(SELLER, 'POST', `/shops/${shopId}/members/invite`, { body: { email: em, role }, cookie: oc, origin: OS })
@@ -96,7 +97,10 @@ async function main() {
     const r = await co('POST', '/checkout', { json: { customer: { name: 'K', phone }, address: { line: 'x', province: 'Hà Nội' }, payment_method: 'cod' }, cartCookie: cart, idem: `i-${uniq()}` });
     return (await owner.query(`SELECT id, subtotal_vnd, shipping_vnd FROM orders WHERE shop_id=$1 AND order_number=$2`, [shopId, r.json.order_number])).rows[0];
   };
-  const markPaid = (id) => rq(SELLER, 'POST', `/shops/${shopId}/orders/${id}/mark-paid`, { cookie: oc, origin: OS });
+  const markPaid = async (id) => {
+    await stepUp();
+    return rq(SELLER, 'POST', `/shops/${shopId}/orders/${id}/mark-paid`, { cookie: oc, origin: OS });
+  };
   const sales = (qs = '') => rq(SELLER, 'GET', `/shops/${shopId}/reports/sales${qs}`, { cookie: oc });
 
   sect('1. Happy path: 2 đơn paid hôm nay — revenue/COGS/coverage từng đồng');
@@ -230,6 +234,7 @@ async function main() {
   let cartB = (await co('POST', '/cart/items', { json: { variant_id: vX, qty: 1 } })).cartCookie;
   const rB = await co('POST', '/checkout', { json: { customer: { name: 'K', phone: '0900000007' }, address: { line: 'x', province: 'Hà Nội' }, payment_method: 'cod' }, cartCookie: cartB, idem: `b-${uniq()}` });
   const oB = (await owner.query(`SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2`, [B2.shopId, rB.json.order_number])).rows[0];
+  await stepUp(B2.oc, B2.op);
   await rq(SELLER, 'POST', `/shops/${B2.shopId}/orders/${oB.id}/mark-paid`, { cookie: B2.oc, origin: OS });
   const tA = (await sales()).json.totals;
   const tB = (await rq(SELLER, 'GET', `/shops/${B2.shopId}/reports/sales`, { cookie: B2.oc })).json.totals;

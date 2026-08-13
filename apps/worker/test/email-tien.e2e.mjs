@@ -112,6 +112,9 @@ async function main() {
   const vid = (await S.get(`/products/${pr.json.id}`)).json.variants[0].id;
   await S.post(`/variants/${vid}/inventory/adjust`, { delta: 200, reason: 'nhập' });
   const A = (oid, act, f = {}) => adm('POST', `/shops/${shopId}/orders/${oid}/${act}`, { cookie: ui, form: new URLSearchParams(f) });
+  const markPaid = (oid) => adm('POST', `/shops/${shopId}/orders/${oid}/mark-paid/step-up`, {
+    cookie: ui, form: new URLSearchParams({ password: op }),
+  });
   const datDon = async () => {
     const email = `kh-${uniq()}@khach.vn`;
     const o = (await S.post('/orders', {
@@ -128,7 +131,7 @@ async function main() {
   // ── 1. HUỶ ĐƠN ĐÃ THU TIỀN ───────────────────────────────────────────────
   sect('1. Huỷ đơn khách đã trả tiền — email phải nói số tiền sẽ được hoàn');
   const d1 = await datDon();
-  await A(d1.id, 'confirm'); await A(d1.id, 'mark-paid');
+  await A(d1.id, 'confirm'); await markPaid(d1.id);
   await A(d1.id, 'cancel', { reason: 'hết hàng' });
   const m1 = await mpTim(d1.email, 'đã huỷ');
   m1 ? ok(`nhận được email "${m1.subject}"`) : bad('không thấy email huỷ', '');
@@ -142,7 +145,7 @@ async function main() {
   // ── 2. HOÀN MỘT PHẦN RỒI MỚI HUỶ — ca quyết định ─────────────────────────
   sect('2. Hoàn một phần RỒI mới huỷ — bản cũ hứa nguyên tổng đơn');
   const d2 = await datDon();
-  await A(d2.id, 'confirm'); await A(d2.id, 'mark-paid');
+  await A(d2.id, 'confirm'); await markPaid(d2.id);
   await adm('POST', `/shops/${shopId}/orders/${d2.id}/refund/step-up`,
     { cookie: ui, form: new URLSearchParams({ password: op, amount_vnd: '150000', reason: 'trả trước một phần' }) });
   await A(d2.id, 'cancel', { reason: 'khách đổi ý' });
@@ -164,7 +167,7 @@ async function main() {
   // ── 3. BOM HÀNG — trước đây email im lặng về tiền ────────────────────────
   sect('3. Khách trả hàng về (bom hàng) — trước đây email không nhắc tiền một chữ');
   const d3 = await datDon();
-  await A(d3.id, 'confirm'); await A(d3.id, 'mark-paid');
+  await A(d3.id, 'confirm'); await markPaid(d3.id);
   await A(d3.id, 'ship', { tracking_number: `TN${uniq()}` });
   await A(d3.id, 'mark-returned', { restock: 'on' });
   const no3 = await owedCua(d3.id);
@@ -178,7 +181,7 @@ async function main() {
   // ── 4. HOÀN ĐỦ — nói rõ đã xong, không doạ thêm ──────────────────────────
   sect('4. Hoàn đủ tiền — email nói rõ đã xong');
   const d4 = await datDon();
-  await A(d4.id, 'confirm'); await A(d4.id, 'mark-paid');
+  await A(d4.id, 'confirm'); await markPaid(d4.id);
   await adm('POST', `/shops/${shopId}/orders/${d4.id}/refund/step-up`,
     { cookie: ui, form: new URLSearchParams({ password: op, reason: 'hoàn đủ' }) });
   const m4 = await mpTim(d4.email, 'đã hoàn tiền');
@@ -192,7 +195,7 @@ async function main() {
   // ── 5. ĐƠN CÒN SỐNG — không được chèn tiền vào ───────────────────────────
   sect('5. Đơn đang giao — email KHÔNG được mọc thêm đoạn tiền');
   const d5 = await datDon();
-  await A(d5.id, 'confirm'); await A(d5.id, 'mark-paid');
+  await A(d5.id, 'confirm'); await markPaid(d5.id);
   await A(d5.id, 'ship', { tracking_number: `TN${uniq()}` });
   const m5 = await mpTim(d5.email, 'đang trên đường giao');
   m5 ? ok('nhận được email đang giao') : bad('không thấy email giao', '');

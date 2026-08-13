@@ -189,7 +189,19 @@ const LIVE_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered'];
 // Ghi sổ giao dịch + cộng dồn + đánh dấu paid. GIẢ ĐỊNH: context shop đã set, order đã
 // tìm thấy trong shop, tài khoản đã khớp. UNIQUE(provider,event_id) chặn replay.
 async function creditOrder(c, order, { eventId, amount, content, rcvAccount, body }) {
-  const status = amount >= Number(order.total_vnd) ? 'received' : 'underpaid';
+  // Khóa order đã được caller giữ. Vì vậy hai webhook đồng thời không thể cùng đọc một số dư cũ rồi
+  // ghi đè nhau. greatest giữ đúng dữ liệu legacy/fixture chưa có bút toán mở sổ, giống migration 0154.
+  const ledgerBefore = Number((await c.query(
+    `SELECT coalesce(sum(CASE WHEN entry_type = 'credit' THEN amount_vnd ELSE -amount_vnd END), 0)::bigint AS s
+       FROM payment_transactions WHERE order_id = $1`, [order.id],
+  )).rows[0].s);
+  const knownBefore = Math.max(
+    ledgerBefore,
+    Number(order.amount_paid_vnd ?? 0),
+    order.paid_at ? Number(order.total_vnd) : 0,
+  );
+  const cumulative = knownBefore + amount;
+  const status = cumulative >= Number(order.total_vnd) ? 'received' : 'underpaid';
   // Idempotency theo (shop_id, provider, event_id) — per-shop (0036). Replay cùng shop → bỏ qua.
   const ins = await c.query(
     `INSERT INTO payment_transactions (shop_id, order_id, provider, provider_event_id, amount_vnd, status, raw)
@@ -198,35 +210,53 @@ async function creditOrder(c, order, { eventId, amount, content, rcvAccount, bod
     [order.id, eventId, amount, status, body],
   );
   if (ins.rows.length === 0) return { matched: true, duplicate: true }; // replay → idempotent
+
+  // Cache tiền đổi sau MỌI giao dịch hợp lệ, kể cả trả thiếu và tiền vào đơn đã chết. Nếu chỉ cập nhật
+  // khi đủ tiền thì seller/buyer vẫn nhìn 0 trong khi ngân hàng đã nhận một phần thật.
+  await c.query(`UPDATE orders SET amount_paid_vnd = $2 WHERE id = $1`, [order.id, cumulative]);
+  await c.query(
+    `INSERT INTO order_events (shop_id, order_id, event_type, actor_type, actor_id, source, payload)
+     VALUES (current_shop_id(), $1, 'payment.received', 'payment_provider', $2, 'sepay', $3)`,
+    [order.id, String(eventId), {
+      transaction_id: ins.rows[0].id,
+      provider: 'sepay',
+      provider_event_id: String(eventId),
+      amount_vnd: amount,
+      received_vnd: cumulative,
+      entry_status: status,
+      dead_order: DEAD_STATUSES.has(order.status),
+    }],
+  );
   // Đơn KHÔNG còn "sống" (đã huỷ/hết hạn/hoàn) → KHÔNG tự xác nhận lại: tồn kho đã trả, sống
   // lại sẽ oversell + gửi email nhầm. Vẫn ghi giao dịch (tiền đã vào) + đẩy vào hàng đợi đối
   // soát để owner hoàn tiền / xử lý tay.
   if (DEAD_STATUSES.has(order.status)) {
     await persistUnmatched(c, { eventId, amount, content, rcvAccount, reason: 'order_not_live', body });
     log('warn', 'payment_on_dead_order', { ref: order.payment_ref ?? '(n/a)', order_status: order.status, amount });
-    return { matched: true, paid: false, reason: 'order_not_live', order_id: order.id };
+    return { matched: true, paid: false, reason: 'order_not_live', cumulative, order_id: order.id };
   }
-  // Đủ tiền = TỔNG mọi giao dịch của đơn ≥ tổng đơn (khách có thể chuyển nhiều lần).
-  const cumulative = Number((await c.query(`SELECT coalesce(sum(amount_vnd), 0)::bigint AS s FROM payment_transactions WHERE order_id = $1`, [order.id])).rows[0].s);
+  // Trả thiếu vẫn chuyển enum tương thích sang pending; giao diện mới không suy luận từ enum mà dùng
+  // payment_summary. Chỉ mốc vượt từ thiếu sang đủ mới phát biên nhận một lần.
   const enough = cumulative >= Number(order.total_vnd);
-  let paid = false;
-  if (enough && order.payment_status !== 'paid') {
-    // status: CHỈ đẩy pending → confirmed. Đơn đang shipped/delivered mà hạ về confirmed
-    // là đi lùi máy trạng thái (mất mốc đã giao, worker chốt đơn hiểu sai).
-    // amount_paid_vnd = SỐ TIỀN THẬT đã nhận, không phải total: khách chuyển thừa/thiếu thì
-    // sổ phải ghi đúng cái đã vào tài khoản. Sửa đơn/hoàn tiền đọc cột này để tính hoàn.
-    const upd = await c.query(
-      `UPDATE orders SET payment_status = 'paid', paid_at = now(), amount_paid_vnd = $2,
-              status = CASE WHEN status = 'pending' THEN 'confirmed' ELSE status END
-        WHERE id = $1 AND payment_status <> 'paid' AND status = ANY($3)`, [order.id, cumulative, LIVE_STATUSES],
+  const becamePaid = knownBefore < Number(order.total_vnd) && enough;
+  const upd = await c.query(
+    `UPDATE orders
+        SET payment_status = CASE
+              WHEN $2 THEN 'paid'
+              WHEN $3 > 0 THEN 'pending'
+              ELSE 'unpaid'
+            END,
+            paid_at = CASE WHEN $2 THEN coalesce(paid_at, now()) ELSE paid_at END,
+            amount_paid_vnd = $3,
+            status = CASE WHEN $2 AND status = 'pending' THEN 'confirmed' ELSE status END
+      WHERE id = $1 AND status = ANY($4)`, [order.id, enough, cumulative, LIVE_STATUSES],
+  );
+  const paid = becamePaid && upd.rowCount === 1;
+  if (paid && order.customer_email) {
+    await c.query(
+      `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.paid', $1)`,
+      [{ to: order.customer_email, order_id: order.id, order_number: Number(order.order_number), total_vnd: Number(order.total_vnd) }],
     );
-    paid = upd.rowCount === 1;
-    if (paid && order.customer_email) {
-      await c.query(
-        `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.paid', $1)`,
-        [{ to: order.customer_email, order_number: Number(order.order_number), total_vnd: Number(order.total_vnd) }],
-      );
-    }
   }
   log('info', 'payment_processed', { ref: order.payment_ref ?? '(n/a)', amount, cumulative, enough, paid });
   return { matched: true, paid, status, cumulative, order_id: order.id };
@@ -242,7 +272,7 @@ async function persistUnmatched(c, { eventId, amount, content, rcvAccount, reaso
   );
 }
 
-const ORDER_COLS = 'id, shop_id, status, total_vnd, order_number, customer_email, payment_status, payment_ref, qr_account';
+const ORDER_COLS = 'id, shop_id, status, total_vnd, amount_paid_vnd, paid_at, order_number, customer_email, payment_status, payment_ref, qr_account';
 
 // ── Webhook SePay hợp nhất (Authorization: Apikey <key>) ─────────────────────
 // Xác thực bằng HEADER (không để bí mật trên URL). Phân biệt:

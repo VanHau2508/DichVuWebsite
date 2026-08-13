@@ -13,7 +13,8 @@
  */
 import { send } from './http.js';
 import { withTenant } from './db.js';
-import { OWED_SQL } from '../owed.js';
+import { OWED_SQL, PAYMENT_PARTIAL_SQL, PAYMENT_UNPAID_SQL } from '../owed.js';
+import { AVAIL_SQL } from '../safety-stock.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 // Base URL ảnh public (giống storefront) — thumbnail SP bán chạy trên Tổng quan.
@@ -39,8 +40,9 @@ async function stats(res, ctx) {
         count(*) FILTER (WHERE status = 'shipped')   AS n_shipped,
         count(*) FILTER (WHERE status = 'delivered') AS n_delivered,
         count(*) FILTER (WHERE status = 'cancelled') AS n_cancelled,
-        count(*) FILTER (WHERE payment_status <> 'paid' AND status NOT IN ('cancelled', 'refunded', 'returned')) AS n_unpaid
-      FROM orders
+        count(*) FILTER (WHERE ${PAYMENT_UNPAID_SQL}) AS n_unpaid,
+        count(*) FILTER (WHERE ${PAYMENT_PARTIAL_SQL}) AS n_partial
+      FROM orders o
       -- Đơn DI CƯ (0104) bị loại khỏi MỌI con số ở đây: doanh thu, đơn hôm nay, đếm theo
       -- trạng thái, số đơn chưa thu. Chúng là lịch sử từ sàn khác — tính vào là vừa sai
       -- doanh thu vừa đẻ ra "việc cần làm" ma mà người bán không xử lý được.
@@ -96,14 +98,26 @@ async function stats(res, ctx) {
        GROUP BY 1`)).rows;
     const rfMap = new Map(rfByDay.map((r) => [r.day, Number(r.refunded)]));
     for (const s of series) s.revenue = Number(s.revenue) - (rfMap.get(s.day) ?? 0);
-    // Sắp hết hàng (0050): available <= ngưỡng shop (NULL → mặc định 5). Chỉ SP đang bán.
+    // Sắp hết hàng ONLINE: cùng ATS đã trừ vùng đệm với storefront/checkout.
     const low = (await c.query(`
-      SELECT p.title, v.sku, v.title AS variant_title, (il.on_hand - il.reserved)::int AS available
+      SELECT p.title, v.sku, v.title AS variant_title, (${AVAIL_SQL})::int AS available
         FROM variants v
         JOIN products p ON p.id = v.product_id AND p.status = 'active' AND p.deleted_at IS NULL
         JOIN inventory_levels il ON il.variant_id = v.id
-       WHERE (il.on_hand - il.reserved) <= coalesce((SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5)
+       WHERE ${AVAIL_SQL} <= coalesce((SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5)
        ORDER BY available ASC LIMIT 10`)).rows;
+    // Hai trạng thái này đều chặn tạo vận đơn mới để tránh hãng thu COD hai lần. Đưa tối đa
+    // 10 ca mới nhất lên Tổng quan; thao tác phục hồi thật vẫn nằm trong chi tiết từng đơn.
+    const shipmentAttention = (await c.query(`
+      SELECT s.id AS shipment_id, s.order_id, o.order_number, s.provider,
+             s.provider_status, s.tracking_number, s.created_at
+        FROM shipments s
+        JOIN orders o ON o.shop_id = s.shop_id AND o.id = s.order_id
+       WHERE s.status = 'created'
+         AND s.provider_status IN ('ambiguous','finalize_failed')
+         AND NOT o.is_migrated
+       ORDER BY s.created_at DESC, s.id DESC
+       LIMIT 10`)).rows;
     // "VIỆC CẦN LÀM" (hộp hành động kiểu TikTok Shop): 2 tín hiệu còn thiếu so với payload cũ.
     //   - đánh giá CHỜ DUYỆT: khách đã viết nhưng chưa hiện lên storefront → mất social proof.
     //   - TỔNG số biến thể sắp hết: `low` ở trên bị LIMIT 10 (bảng hiển thị), không dùng để
@@ -115,15 +129,25 @@ async function stats(res, ctx) {
            FROM variants v
            JOIN products p ON p.id = v.product_id AND p.status = 'active' AND p.deleted_at IS NULL
            JOIN inventory_levels il ON il.variant_id = v.id
-          WHERE (il.on_hand - il.reserved) <= coalesce((SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5)
+          WHERE ${AVAIL_SQL} <= coalesce((SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5)
         ) AS low_stock_count,
         -- CÒN NỢ KHÁCH: tiền của khách đang nằm trong túi shop. Dùng CHUNG biểu thức với trang
         -- Công nợ và băng đỏ trên đơn (owed.js) — ba nơi hiện cùng một con số thì mới tin được.
         -- Đây là việc cần làm GẤP NHẤT trong hộp này: mọi việc khác chỉ chậm tiền về, việc này
         -- là tiền của người khác đang giữ nhầm.
         (SELECT count(*)::int FROM orders o WHERE ${OWED_SQL} > 0) AS owed_count,
-        (SELECT coalesce(sum(${OWED_SQL}), 0)::bigint FROM orders o WHERE ${OWED_SQL} > 0) AS owed_vnd`)).rows[0];
-    return { k, rf, top, low, series, todo };
+        (SELECT coalesce(sum(${OWED_SQL}), 0)::bigint FROM orders o WHERE ${OWED_SQL} > 0) AS owed_vnd,
+        (SELECT count(*)::int FROM order_resolution_cases WHERE status IN ('open','waiting_return')) AS resolution_cases_open,
+        (SELECT count(*)::int FROM notification_deliveries WHERE status = 'failed') AS notification_failures,
+        (SELECT count(*)::int FROM order_requests WHERE status = 'requested') AS order_requests_pending,
+        (SELECT count(*)::int
+           FROM shipments s
+           JOIN orders o ON o.shop_id = s.shop_id AND o.id = s.order_id
+          WHERE s.status = 'created'
+            AND s.provider_status IN ('ambiguous','finalize_failed')
+            AND NOT o.is_migrated
+        ) AS shipment_attention`)).rows[0];
+    return { k, rf, top, low, shipmentAttention, series, todo };
   });
   const n = (x) => Number(x ?? 0);
   return send(res, 200, {
@@ -134,6 +158,7 @@ async function stats(res, ctx) {
     series: out.series.map((r) => ({ day: r.day, revenue: n(r.revenue) })),
     orders_today: n(out.k.orders_today),
     unpaid: n(out.k.n_unpaid),
+    partial_payments: n(out.k.n_partial),
     status: {
       pending: n(out.k.n_pending), confirmed: n(out.k.n_confirmed), shipped: n(out.k.n_shipped),
       delivered: n(out.k.n_delivered), cancelled: n(out.k.n_cancelled),
@@ -143,16 +168,30 @@ async function stats(res, ctx) {
       image_url: t.image_key ? `${MEDIA_PUBLIC_BASE}/${t.image_key}` : null,
     })),
     low_stock: out.low.map((l) => ({ title: l.title, sku: l.sku, variant_title: l.variant_title, available: n(l.available) })),
+    shipment_attention: out.shipmentAttention.map((s) => ({
+      shipment_id: s.shipment_id,
+      order_id: s.order_id,
+      order_number: s.order_number,
+      provider: s.provider,
+      provider_status: s.provider_status,
+      tracking_number: s.tracking_number,
+      created_at: s.created_at,
+    })),
     // Hộp "Việc cần làm" trên Tổng quan: mỗi số là 1 việc chủ shop phải xử lý HÔM NAY,
     // kèm link tới đúng trang lọc sẵn (mẫu màn hình chính của TikTok Shop / Shopee).
     todo: {
       to_confirm: n(out.k.n_pending),      // đơn mới, chờ xác nhận
       to_ship: n(out.k.n_confirmed),       // đã xác nhận, chờ giao cho hãng vận chuyển
-      unpaid: n(out.k.n_unpaid),           // chưa thu được tiền
+      unpaid: n(out.k.n_unpaid),           // chưa thu được khoản nào
+      partial_payments: n(out.k.n_partial), // đã thu một phần, còn thiếu
       reviews_pending: n(out.todo.reviews_pending),
       low_stock: n(out.todo.low_stock_count),
       owed_count: n(out.todo.owed_count),   // số đơn shop đang giữ tiền của khách
       owed_vnd: n(out.todo.owed_vnd),       // tổng tiền phải trả lại khách
+      resolution_cases: n(out.todo.resolution_cases_open),
+      notification_failures: n(out.todo.notification_failures),
+      order_requests: n(out.todo.order_requests_pending),
+      shipment_attention: n(out.todo.shipment_attention),
     },
   });
 }

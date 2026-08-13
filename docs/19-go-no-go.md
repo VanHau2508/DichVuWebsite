@@ -45,7 +45,9 @@ vẫn 40/40 (rate limit hoạt động bình thường khi Redis lên).
 
 ## 4. Cổng Go/No-Go (`scripts/go-no-go.sh`)
 
-Chạy các bộ kiểm ánh xạ tới 15 tiêu chí + kiểm chứng SQL riêng → in verdict.
+Chạy `scripts/ci-local.sh` đầy đủ trước, sau đó mới chạy các bộ kiểm ánh xạ tới 15 tiêu chí
+và kiểm chứng SQL riêng. Script chỉ được in `GO` khi full CI của chính lượt đó đã qua; việc
+dọn rate-limit chỉ xoá khóa `rl:*`, không xoá toàn bộ dữ liệu Redis.
 
 | # | Tiêu chí | Trạng thái | Nguồn |
 |---|---|---|---|
@@ -65,7 +67,9 @@ Chạy các bộ kiểm ánh xạ tới 15 tiêu chí + kiểm chứng SQL riên
 | 14 | 3 shop pilot đã UAT | **MANUAL** | cần người thật |
 | 15 | Không còn Critical/High | **GO** | security-scan + docs/18 |
 
-**VERDICT: GO** — mọi tiêu chí tự động đạt. Còn lại là quyết định người.
+**Bảng trên là kết quả lịch sử, không phải chứng nhận cho worktree hiện tại.** Mỗi release
+candidate phải chạy lại cổng; chỉ output mới có dòng `VERDICT: GO` sau full CI mới là bằng
+chứng cho chính mã nguồn đang chuẩn bị phát hành. Còn lại là quyết định người.
 
 ## 5. Việc người PHẢI làm trước khi mời khách (không code được)
 

@@ -63,6 +63,7 @@ async function main() {
   const slug = `cost-${uniq()}`;
   let r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staff, origin: OO });
   const shopId = r.json.id; HOST = `${slug}.nentang.vn`;
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [shopId]);
   const oe = `owner-${uniq()}@shop.vn`, op = 'owner passphrase strong';
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email: oe, role: 'owner' }, cookie: staff, origin: OO });
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(oe), password: op }, origin: OA });
@@ -119,8 +120,8 @@ async function main() {
   cart = (await co('POST', '/cart/items', { json: { variant_id: A, qty: 2 } })).cartCookie;
   r = await co('POST', '/checkout', { json: { customer: { name: 'P', phone: '0911000444' }, address: { line: 'x', province: 'Hà Nội' }, payment_method: 'cod' }, cartCookie: cart, idem: `p-${uniq()}` });
   const o2 = await orderBy(r.json.order_number);
-  await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o2}/mark-paid`, { cookie: oc, origin: OS });
   await stepUp();
+  await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o2}/mark-paid`, { cookie: oc, origin: OS });
   r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o2}/edit-paid`, { body: { lines: [{ variant_id: A, qty: 1 }], customer: { name: 'P', phone: '0911000444' } }, cookie: oc, origin: OS });
   const rf1 = (await owner.query(`SELECT kind, amount_vnd FROM refunds WHERE order_id=$1`, [o2])).rows;
   r.status === 200 && rf1.length === 1 && rf1[0].kind === 'edit_adjustment'
@@ -134,8 +135,8 @@ async function main() {
   await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o3}/confirm`, { cookie: oc, origin: OS });
   await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o3}/ship`, { body: { tracking_number: 'T' + uniq() }, cookie: oc, origin: OS });
   await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o3}/deliver`, { cookie: oc, origin: OS });
-  await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o3}/mark-paid`, { cookie: oc, origin: OS });
   await stepUp();
+  await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o3}/mark-paid`, { cookie: oc, origin: OS });
   r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o3}/return`, { body: { lines: [{ variant_id: A, qty: 1 }], restock: true, reason: 'khách trả' }, cookie: oc, origin: OS });
   const rl = (await owner.query(`SELECT rl.unit_cost_vnd FROM return_lines rl JOIN returns rt ON rt.id=rl.return_id WHERE rt.order_id=$1`, [o3])).rows;
   const rf2 = (await owner.query(`SELECT kind FROM refunds WHERE order_id=$1`, [o3])).rows;

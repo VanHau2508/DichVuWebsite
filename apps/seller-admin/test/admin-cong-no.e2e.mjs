@@ -96,7 +96,11 @@ async function makeShop(staff) {
     customer: { name: 'Khách nợ', phone: sdt(), email: `kh-${uniq()}@khach.vn`, address_line: '1 Lê Lợi', province: 'Hà Nội' },
     payment_method: 'cod', idempotency_key: `no-${uniq()}`,
   })).json;
-  const A = (oid, act, f = {}) => adm('POST', `/shops/${shopId}/orders/${oid}/${act}`, { cookie: ui, form: new URLSearchParams(f) });
+  const A = (oid, act, f = {}) => act === 'mark-paid'
+    ? adm('POST', `/shops/${shopId}/orders/${oid}/payments/manual/step-up`, {
+        cookie: ui, form: new URLSearchParams({ password, note: 'fixture công nợ đã nhận tiền' }),
+      })
+    : adm('POST', `/shops/${shopId}/orders/${oid}/${act}`, { cookie: ui, form: new URLSearchParams(f) });
   return { shopId, email, password, api, ui, S, vid, datDon, A };
 }
 

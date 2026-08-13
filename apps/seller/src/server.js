@@ -28,6 +28,9 @@ import { MEDIA_ROUTES, initMedia, mediaPublicUrl } from './media.js';
 import { THEME_ADMIN_ROUTES } from './theme.js';
 import { PAYMENT_CONFIG_ROUTES } from './payment-config.js';
 import { ORDER_ROUTES } from './orders.js';
+import { ORDER_REQUEST_ROUTES } from './order-requests.js';
+import { ORDER_RESOLUTION_ROUTES } from './order-resolutions.js';
+import { NOTIFICATION_DELIVERY_ROUTES } from './notification-deliveries.js';
 import { COD_ROUTES } from './cod.js';
 import { AFFILIATE_ROUTES } from './affiliates.js';
 import { DASHBOARD_ROUTES } from './dashboard.js';
@@ -49,8 +52,9 @@ import { LOYALTY_CONFIG_ROUTES } from './loyalty-config.js';
 import { API_KEY_ROUTES, handleIngest } from './api-keys.js';
 import { MESSENGER_ROUTES } from './messenger-config.js';
 import { BILLING_ROUTES } from './billing.js';
+import { READINESS_ROUTES } from './readiness.js';
 import { isProvince } from './provinces.js';
-import { runReq, makeLog, health, setUsageSink, makeUsageSink } from './obs.js';
+import { runReq, makeLog, health, requestId, setUsageSink, makeUsageSink } from './obs.js';
 import { makeRedis } from '../redis-lite.js';
 
 const MAX_UPLOAD = 10 * 1024 * 1024;
@@ -126,22 +130,6 @@ async function getShop(res, ctx) {
   if (!row) return send(res, 404, { error: 'không tìm thấy' }); // RLS che shop khác
   row.logo_url = mediaPublicUrl(row.logo_key); // BFF hiển thị khỏi phụ thuộc env
   return send(res, 200, row);
-}
-
-// Mở bán (onboarding → active): cột mốc "hoàn tất thiết lập". Shop onboarding VỐN đã bán được
-// (storefront/checkout không chặn) — đây là mốc chủ shop tự đánh dấu + để nền tảng đếm shop active,
-// và vá chuyện self-serve shop kẹt 'onboarding' mãi. Idempotent: chỉ lật khi ĐANG onboarding
-// (không đụng suspended/terminated); gọi lại lúc đã active → trả status hiện tại, không đổi.
-// app_rw UPDATE table-level trên shops (0029/0031) + policy tenant_isolation → tự-shop mới lật được.
-async function activateShop(res, ctx) {
-  const row = await withTenant(ctx.shopId, async (c) => {
-    const upd = await c.query(`UPDATE shops SET status='active' WHERE id=$1 AND status='onboarding' RETURNING status`, [ctx.shopId]);
-    if (upd.rows[0]) return upd.rows[0];
-    const cur = await c.query(`SELECT status FROM shops WHERE id=$1`, [ctx.shopId]);
-    return cur.rows[0];
-  });
-  if (!row) return send(res, 404, { error: 'không tìm thấy' });
-  return send(res, 200, { status: row.status });
 }
 
 // Sửa hồ sơ cửa hàng (shop.write = owner/admin). Tên + liên hệ + địa chỉ hiển thị storefront.
@@ -236,6 +224,264 @@ async function updateShopProfile(res, ctx, body) {
     return { code: 200, body: { ok: true } };
   });
   return send(res, out.code, out.body);
+}
+
+const SETTINGS_SELECT = `
+  SELECT name, contact_email, contact_phone, business_address,
+         ship_fee_vnd, free_ship_threshold_vnd, ship_fee_far_vnd,
+         ship_extra_per_500g_vnd, default_weight_gram, ship_from_province,
+         ship_mode, ship_origin_lat, ship_origin_lng, ship_base_vnd,
+         ship_per_km_vnd, ship_max_km, ship_road_factor, ship_over_max_behavior,
+         low_stock_threshold, max_pending_per_ip, max_pending_per_phone,
+         pii_retention_months
+    FROM shops
+   WHERE id = current_shop_id()
+   FOR UPDATE`;
+
+const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj ?? {}, key);
+const sectionValue = (body, current, key) => hasOwn(body, key) ? body[key] : current[key];
+const settingProblem = (errorCode, message, field, action = 'Kiểm tra lại trường được đánh dấu rồi lưu lại.') => ({
+  errorCode, message, field, action,
+});
+
+function parseSettingInt(raw) {
+  const text = String(raw ?? '').trim();
+  if (text === '') return { value: null };
+  const normalized = text.replace(/[.,\s]/g, '');
+  if (!/^\d+$/.test(normalized)) return { error: true };
+  const value = Number(normalized);
+  return Number.isSafeInteger(value) ? { value } : { error: true };
+}
+
+function parseSettingDecimal(raw) {
+  const text = String(raw ?? '').trim();
+  if (text === '') return { value: null };
+  if (!/^-?\d+(?:\.\d+)?$/.test(text)) return { error: true };
+  const value = Number(text);
+  return Number.isFinite(value) ? { value } : { error: true };
+}
+
+function validateProfileSection(body, current) {
+  const name = String(sectionValue(body, current, 'name') ?? '').trim();
+  if (name.length < 1 || name.length > 200) {
+    return { problem: settingProblem('invalid_shop_name', 'Tên cửa hàng phải có từ 1 đến 200 ký tự.', 'name') };
+  }
+  const email = String(sectionValue(body, current, 'contact_email') ?? '').trim();
+  if (email && !EMAIL_RE.test(email)) {
+    return { problem: settingProblem('invalid_contact_email', 'Email liên hệ không hợp lệ.', 'contact_email') };
+  }
+  if (email.length > 200) {
+    return { problem: settingProblem('contact_email_too_long', 'Email liên hệ không được dài quá 200 ký tự.', 'contact_email') };
+  }
+  const phone = String(sectionValue(body, current, 'contact_phone') ?? '').trim();
+  if (phone.length > 40) {
+    return { problem: settingProblem('contact_phone_too_long', 'Số điện thoại không được dài quá 40 ký tự.', 'contact_phone') };
+  }
+  const address = String(sectionValue(body, current, 'business_address') ?? '').trim();
+  if (address.length > 500) {
+    return { problem: settingProblem('business_address_too_long', 'Địa chỉ không được dài quá 500 ký tự.', 'business_address') };
+  }
+  return { values: { name, email: email || null, phone: phone || null, address: address || null } };
+}
+
+function validateShippingSection(body, current) {
+  const parseIntField = (key, label, max, { min = 0 } = {}) => {
+    const parsed = parseSettingInt(sectionValue(body, current, key));
+    if (parsed.error || (parsed.value != null && (parsed.value < min || parsed.value > max))) {
+      return { problem: settingProblem(`invalid_${key}`, `${label} không hợp lệ.`, key) };
+    }
+    return { value: parsed.value };
+  };
+
+  const shipFee = parseIntField('ship_fee_vnd', 'Phí ship nội miền', 10_000_000);
+  if (shipFee.problem) return shipFee;
+  const freeThreshold = parseIntField('free_ship_threshold_vnd', 'Ngưỡng miễn phí ship', 1_000_000_000);
+  if (freeThreshold.problem) return freeThreshold;
+  const shipFar = parseIntField('ship_fee_far_vnd', 'Phí ship liên miền', 10_000_000);
+  if (shipFar.problem) return shipFar;
+  const extra500 = parseIntField('ship_extra_per_500g_vnd', 'Phụ phí theo cân', 10_000_000);
+  if (extra500.problem) return extra500;
+  const defaultWeight = parseIntField('default_weight_gram', 'Khối lượng mặc định', 50_000, { min: 1 });
+  if (defaultWeight.problem && String(sectionValue(body, current, 'default_weight_gram') ?? '').trim() !== '') return defaultWeight;
+  const defWeight = defaultWeight.value ?? 500;
+
+  const fromProvince = String(sectionValue(body, current, 'ship_from_province') ?? '').trim() || null;
+  if (fromProvince && !isProvince(fromProvince)) {
+    return { problem: settingProblem('invalid_ship_from_province', 'Tỉnh/thành gửi hàng không hợp lệ.', 'ship_from_province') };
+  }
+  if (shipFar.value != null && !fromProvince) {
+    return { problem: settingProblem('ship_origin_province_required', 'Cần chọn tỉnh/thành gửi hàng khi đặt phí liên miền.', 'ship_from_province', 'Chọn tỉnh/thành nơi cửa hàng bàn giao hàng cho đơn vị vận chuyển.') };
+  }
+
+  const shipMode = String(sectionValue(body, current, 'ship_mode') ?? '').trim() || 'region';
+  if (!['region', 'distance'].includes(shipMode)) {
+    return { problem: settingProblem('invalid_ship_mode', 'Chế độ tính phí vận chuyển không hợp lệ.', 'ship_mode') };
+  }
+  const originLat = parseSettingDecimal(sectionValue(body, current, 'ship_origin_lat'));
+  if (originLat.error || (originLat.value != null && (originLat.value < -90 || originLat.value > 90))) {
+    return { problem: settingProblem('invalid_ship_origin_lat', 'Vĩ độ cửa hàng không hợp lệ.', 'ship_origin_lat') };
+  }
+  const originLng = parseSettingDecimal(sectionValue(body, current, 'ship_origin_lng'));
+  if (originLng.error || (originLng.value != null && (originLng.value < -180 || originLng.value > 180))) {
+    return { problem: settingProblem('invalid_ship_origin_lng', 'Kinh độ cửa hàng không hợp lệ.', 'ship_origin_lng') };
+  }
+  if (originLat.value != null && originLng.value != null
+      && !(originLat.value >= 8.0 && originLat.value <= 23.6 && originLng.value >= 102.0 && originLng.value <= 109.6)) {
+    return { problem: settingProblem('ship_origin_outside_vietnam', 'Toạ độ cửa hàng không nằm trong lãnh thổ Việt Nam.', 'ship_origin_lat', 'Kiểm tra lại cặp vĩ độ, kinh độ lấy từ bản đồ.') };
+  }
+
+  const shipBase = parseIntField('ship_base_vnd', 'Phí cơ bản', 10_000_000);
+  if (shipBase.problem) return shipBase;
+  const shipPerKm = parseIntField('ship_per_km_vnd', 'Phí mỗi km', 10_000_000);
+  if (shipPerKm.problem) return shipPerKm;
+  const shipMaxKm = parseIntField('ship_max_km', 'Bán kính giao tối đa', 500, { min: 1 });
+  if (shipMaxKm.problem && String(sectionValue(body, current, 'ship_max_km') ?? '').trim() !== '') return shipMaxKm;
+
+  const roadFactorRaw = sectionValue(body, current, 'ship_road_factor');
+  const roadFactorParsed = parseSettingDecimal(roadFactorRaw);
+  if (roadFactorParsed.error || (roadFactorParsed.value != null && (roadFactorParsed.value < 1 || roadFactorParsed.value > 3))) {
+    return { problem: settingProblem('invalid_ship_road_factor', 'Hệ số đường bộ phải nằm trong khoảng 1.0 đến 3.0.', 'ship_road_factor') };
+  }
+  const roadFactor = roadFactorParsed.value ?? Number(current.ship_road_factor ?? 1.3);
+  const overMax = String(sectionValue(body, current, 'ship_over_max_behavior') ?? '').trim() || 'region';
+  if (!['region', 'reject'].includes(overMax)) {
+    return { problem: settingProblem('invalid_ship_over_max_behavior', 'Cách xử lý đơn ngoài bán kính không hợp lệ.', 'ship_over_max_behavior') };
+  }
+  if (shipMode === 'distance') {
+    if (originLat.value == null || originLng.value == null) {
+      return { problem: settingProblem('ship_coordinates_required', 'Bật ship theo km cần đủ vĩ độ và kinh độ cửa hàng.', 'ship_origin_lat', 'Nhập cặp toạ độ cửa hàng lấy từ Google Maps.') };
+    }
+    if (shipBase.value == null || shipPerKm.value == null || shipMaxKm.value == null) {
+      return { problem: settingProblem('ship_distance_pricing_required', 'Bật ship theo km cần phí cơ bản, phí mỗi km và bán kính tối đa.', 'ship_base_vnd', 'Điền đủ ba giá trị tính phí theo khoảng cách.') };
+    }
+    if (!fromProvince || shipFar.value == null) {
+      return { problem: settingProblem('ship_distance_fallback_required', 'Bật ship theo km cần tỉnh gửi và phí liên miền dự phòng.', 'ship_fee_far_vnd', 'Thiết lập mức phí dùng khi khách không chia sẻ vị trí hoặc ở ngoài bán kính.') };
+    }
+  }
+
+  return { values: {
+    shipFee: shipFee.value,
+    freeThreshold: freeThreshold.value,
+    shipFar: shipFar.value,
+    extra500: extra500.value,
+    defWeight,
+    fromProvince,
+    shipMode,
+    originLat: originLat.value,
+    originLng: originLng.value,
+    shipBase: shipBase.value,
+    shipPerKm: shipPerKm.value,
+    shipMaxKm: shipMaxKm.value,
+    roadFactor,
+    overMax,
+  } };
+}
+
+function validateOperationsSection(body, current) {
+  const parseBounded = (key, label, min, max) => {
+    const parsed = parseSettingInt(sectionValue(body, current, key));
+    if (parsed.error || (parsed.value != null && (parsed.value < min || parsed.value > max))) {
+      return { problem: settingProblem(`invalid_${key}`, `${label} không hợp lệ (${min}–${max}).`, key) };
+    }
+    return { value: parsed.value };
+  };
+  const lowStock = parseBounded('low_stock_threshold', 'Ngưỡng cảnh báo sắp hết hàng', 0, 10_000);
+  if (lowStock.problem) return lowStock;
+  const maxIp = parseBounded('max_pending_per_ip', 'Trần đơn chờ theo nguồn mạng', 1, 200);
+  if (maxIp.problem) return maxIp;
+  const maxPhone = parseBounded('max_pending_per_phone', 'Trần đơn chờ theo số điện thoại', 1, 50);
+  if (maxPhone.problem) return maxPhone;
+  return { values: { lowStock: lowStock.value, maxIp: maxIp.value, maxPhone: maxPhone.value } };
+}
+
+function validatePrivacySection(body, current) {
+  const parsed = parseSettingInt(sectionValue(body, current, 'pii_retention_months'));
+  if (parsed.error || (parsed.value != null && (parsed.value < 6 || parsed.value > 120))) {
+    return { problem: settingProblem('invalid_pii_retention_months', 'Thời hạn ẩn danh phải từ 6 đến 120 tháng, hoặc để trống để giữ nguyên dữ liệu.', 'pii_retention_months') };
+  }
+  return { values: { piiMonths: parsed.value } };
+}
+
+function sendSettingsProblem(res, status, problem) {
+  return send(res, status, {
+    error_code: problem.errorCode,
+    message: problem.message,
+    action: problem.action,
+    field_errors: problem.field ? { [problem.field]: problem.message } : {},
+    request_id: requestId(),
+  });
+}
+
+async function updateShopSettingsSection(res, ctx, body, section) {
+  if (section === 'privacy' && ctx.role !== 'owner') {
+    return sendSettingsProblem(res, 403, settingProblem(
+      'owner_required_for_privacy',
+      'Chỉ chủ cửa hàng được thay đổi thời hạn lưu dữ liệu khách.',
+      null,
+      'Đăng nhập bằng tài khoản chủ cửa hàng để thực hiện thay đổi này.',
+    ));
+  }
+
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const current = (await c.query(SETTINGS_SELECT)).rows[0];
+    if (!current) return { code: 404 };
+
+    let checked;
+    if (section === 'profile') checked = validateProfileSection(body, current);
+    else if (section === 'shipping') checked = validateShippingSection(body, current);
+    else if (section === 'operations') checked = validateOperationsSection(body, current);
+    else checked = validatePrivacySection(body, current);
+    if (checked.problem) return { code: 400, problem: checked.problem };
+
+    const v = checked.values;
+    if (section === 'profile') {
+      await c.query(
+        `UPDATE shops
+            SET name = $1, contact_email = $2, contact_phone = $3, business_address = $4
+          WHERE id = current_shop_id()`,
+        [v.name, v.email, v.phone, v.address],
+      );
+    } else if (section === 'shipping') {
+      await c.query(
+        `UPDATE shops
+            SET ship_fee_vnd = $1, free_ship_threshold_vnd = $2,
+                ship_fee_far_vnd = $3, ship_extra_per_500g_vnd = $4,
+                default_weight_gram = $5, ship_from_province = $6,
+                ship_mode = $7, ship_origin_lat = $8, ship_origin_lng = $9,
+                ship_base_vnd = $10, ship_per_km_vnd = $11, ship_max_km = $12,
+                ship_road_factor = $13, ship_over_max_behavior = $14
+          WHERE id = current_shop_id()`,
+        [v.shipFee, v.freeThreshold, v.shipFar, v.extra500, v.defWeight, v.fromProvince,
+          v.shipMode, v.originLat, v.originLng, v.shipBase, v.shipPerKm, v.shipMaxKm,
+          v.roadFactor, v.overMax],
+      );
+    } else if (section === 'operations') {
+      await c.query(
+        `UPDATE shops
+            SET low_stock_threshold = $1, max_pending_per_ip = $2, max_pending_per_phone = $3
+          WHERE id = current_shop_id()`,
+        [v.lowStock, v.maxIp, v.maxPhone],
+      );
+    } else {
+      await c.query(
+        `UPDATE shops SET pii_retention_months = $1 WHERE id = current_shop_id()`,
+        [v.piiMonths],
+      );
+    }
+
+    await audit(c, `shop.settings_${section}_updated`, {
+      actorId: ctx.user.id,
+      ip: ctx.ip,
+      metadata: { section },
+    });
+    return { code: 200 };
+  });
+
+  if (out.code === 404) {
+    return sendSettingsProblem(res, 404, settingProblem('shop_not_found', 'Không tìm thấy cửa hàng.', null, 'Tải lại trang và chọn lại cửa hàng.'));
+  }
+  if (out.problem) return sendSettingsProblem(res, out.code, out.problem);
+  return send(res, 200, { ok: true, section, request_id: requestId() });
 }
 
 async function listMembers(res, ctx) {
@@ -385,8 +631,12 @@ const ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/whoami$`), perm: null, fn: (res, ctx) => whoami(res, ctx) },
   { m: 'GET', re: new RegExp(`^/shops/${UUID}$`), perm: null, fn: (res, ctx) => getShop(res, ctx) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}$`), perm: 'shop.write', fn: (res, ctx, b) => updateShopProfile(res, ctx, b) },
+  { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/settings/profile$`), perm: 'shop.write', fn: (res, ctx, b) => updateShopSettingsSection(res, ctx, b, 'profile') },
+  { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/settings/shipping$`), perm: 'shop.write', fn: (res, ctx, b) => updateShopSettingsSection(res, ctx, b, 'shipping') },
+  { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/settings/operations$`), perm: 'shop.write', fn: (res, ctx, b) => updateShopSettingsSection(res, ctx, b, 'operations') },
+  { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/settings/privacy$`), perm: 'shop.write', fn: (res, ctx, b) => updateShopSettingsSection(res, ctx, b, 'privacy') },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/require-mfa$`), perm: 'shop.write', fn: (res, ctx, b) => setRequireMfa(res, ctx, b) },
-  { m: 'POST', re: new RegExp(`^/shops/${UUID}/activate$`), perm: 'shop.write', fn: (res, ctx) => activateShop(res, ctx) },
+  ...READINESS_ROUTES,
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/members$`), perm: 'members.read', fn: (res, ctx) => listMembers(res, ctx) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/members/invite$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b) => inviteMember(res, ctx, b) },
   { m: 'PATCH', re: new RegExp(`^/shops/${UUID}/members/${UUID}/role$`), perm: 'members.write', stepUp: true, fn: (res, ctx, b, p) => changeRole(res, ctx, p[1], b) },
@@ -402,6 +652,9 @@ const ROUTES = [
   ...THEME_ADMIN_ROUTES,
   ...PAYMENT_CONFIG_ROUTES,
   ...ORDER_ROUTES,
+  ...ORDER_REQUEST_ROUTES,
+  ...ORDER_RESOLUTION_ROUTES,
+  ...NOTIFICATION_DELIVERY_ROUTES,
   ...COD_ROUTES,
   ...DASHBOARD_ROUTES,
   ...REPORT_ROUTES,

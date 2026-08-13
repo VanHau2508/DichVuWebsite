@@ -74,6 +74,7 @@ async function makeStaff() {
 async function makeShopOwner(staffCookie, slug) {
   let r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staffCookie, origin: OO });
   const shopId = r.json.id;
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [shopId]);
   const email = `owner-${uniq()}@shop.vn`, password = 'owner passphrase strong';
   r = await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role: 'owner' }, cookie: staffCookie, origin: OO });
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
@@ -146,8 +147,9 @@ async function main() {
   // Vẫn đúng 1 khối <script nonce> duy nhất (drawer mở rộng script badge, không thêm khối mới).
   (r.body.match(/<script/g) || []).length === 1
     ? ok('vẫn CHỈ 1 khối <script nonce> duy nhất (badge + drawer chung)') : bad('số khối <script> khác 1', String((r.body.match(/<script/g) || []).length));
-  r.body.includes("fetch('/cart/update'") && r.body.includes("fetch('/cart/add'") && r.body.includes("name==='buynow'")
-    ? ok('script drawer: POST /cart/update + chặn /cart/add trừ Mua ngay (buynow)') : bad('script drawer thiếu logic update/add');
+  r.body.includes("fetch('/cart/items',{method:'PATCH'") && r.body.includes('id="cd-error"')
+    && r.body.includes("fetch('/cart/add'") && r.body.includes("name==='buynow'")
+    ? ok('script drawer: PATCH JSON + lỗi tại chỗ; chặn /cart/add trừ Mua ngay (buynow)') : bad('script drawer thiếu logic update/add');
 
   // ── 2. Chi tiết sản phẩm ───────────────────────────────────────────────────
   sect('2. Chi tiết sản phẩm');

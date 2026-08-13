@@ -78,6 +78,8 @@ async function main() {
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(oe), password: op }, origin: OA });
   const oc = await login(oe, op);
   const ac = ck((await adm('POST', '/login', { form: new URLSearchParams({ email: oe, password: op }) })).sc);
+  // Keep fixture money writes separate so they do not pre-step-up the UI session under test.
+  const acMoney = ck((await adm('POST', '/login', { form: new URLSearchParams({ email: oe, password: op }) })).sc);
   const S = {
     get: (p) => rq(SELLER, 'GET', `/shops/${shopId}${p}`, { cookie: oc }),
     post: (p, b) => rq(SELLER, 'POST', `/shops/${shopId}${p}`, { body: b, cookie: oc, origin: OS }),
@@ -97,12 +99,16 @@ async function main() {
   })).json;
   ac ? ok('dựng shop + đăng nhập API và trang quản trị') : bad('không đăng nhập được quản trị', '');
   const tienCua = async (oid) => Number((await owner.query(`SELECT coalesce(sum(amount_vnd),0)::bigint s FROM refunds WHERE order_id=$1`, [oid])).rows[0].s);
+  const thuTien = (oid, note = 'fixture đã nhận tiền') => adm(
+    'POST', `/shops/${shopId}/orders/${oid}/payments/manual/step-up`,
+    { cookie: acMoney, form: new URLSearchParams({ password: op, note }) },
+  );
 
   // ── 1. ĐƠN TRẢ TRƯỚC BỊ BOM HÀNG ──────────────────────────────────────────
   sect('1. Đơn khách TRẢ TRƯỚC rồi bom hàng — phải ghi được hoàn tiền');
   const dTra = await mkDon('cod');
   await adm('POST', `/shops/${shopId}/orders/${dTra.id}/confirm`, { cookie: ac, form: new URLSearchParams() });
-  await adm('POST', `/shops/${shopId}/orders/${dTra.id}/mark-paid`, { cookie: ac, form: new URLSearchParams() });
+  await thuTien(dTra.id, 'khách đã trả trước');
   await adm('POST', `/shops/${shopId}/orders/${dTra.id}/ship`, { cookie: ac, form: new URLSearchParams({ tracking_number: `TN${uniq()}` }) });
   await adm('POST', `/shops/${shopId}/orders/${dTra.id}/mark-returned`, { cookie: ac, form: new URLSearchParams({ restock: 'on' }) });
   const st = (await owner.query(`SELECT status, payment_status FROM orders WHERE id=$1`, [dTra.id])).rows[0];
@@ -126,7 +132,7 @@ async function main() {
   sect('2. Đơn đã trả hàng qua RMA thì VẪN chặn — nới đúng chỗ, không nới bừa');
   const dRma = await mkDon('cod');
   await adm('POST', `/shops/${shopId}/orders/${dRma.id}/confirm`, { cookie: ac, form: new URLSearchParams() });
-  await adm('POST', `/shops/${shopId}/orders/${dRma.id}/mark-paid`, { cookie: ac, form: new URLSearchParams() });
+  await thuTien(dRma.id, 'khách đã thanh toán đơn RMA');
   await adm('POST', `/shops/${shopId}/orders/${dRma.id}/ship`, { cookie: ac, form: new URLSearchParams({ tracking_number: `TN${uniq()}` }) });
   await adm('POST', `/shops/${shopId}/orders/${dRma.id}/deliver`, { cookie: ac, form: new URLSearchParams() });
   const lines = (await S.get(`/orders/${dRma.id}`)).json.lines ?? [];
@@ -144,17 +150,48 @@ async function main() {
 
   // ── 3. GỠ "ĐÃ NHẬN TIỀN" ──────────────────────────────────────────────────
   sect('3. Bấm nhầm "Đã nhận tiền (COD)" — phải gỡ được, không phải ghi phiếu hoàn khống');
+  const dPartial = await mkDon('cod');
+  await adm('POST', `/shops/${shopId}/orders/${dPartial.id}/confirm`, { cookie: ac, form: new URLSearchParams() });
+  const acPayment = ck((await adm('POST', '/login', { form: new URLSearchParams({ email: oe, password: op }) })).sc);
+  const paymentGate = await adm('POST', `/shops/${shopId}/orders/${dPartial.id}/payments/manual`, {
+    cookie: acPayment, form: new URLSearchParams({ amount_vnd: '100000', note: 'khách chuyển lần 1' }),
+  });
+  paymentGate.status === 200 && /Xác nhận ghi nhận khoản thu/.test(paymentGate.body) && /name="password"/.test(paymentGate.body)
+    ? ok('endpoint sổ tiền v2 buộc owner xác nhận lại mật khẩu') : bad('ghi tiền không đi qua step-up', paymentGate.status);
+  await adm('POST', `/shops/${shopId}/orders/${dPartial.id}/payments/manual/step-up`, {
+    cookie: acPayment, form: new URLSearchParams({ password: op, amount_vnd: '100000', note: 'khách chuyển lần 1' }),
+  });
+  const partialRemaining = Number(dPartial.total_vnd) - 100000;
+  const partialRemainingText = new Intl.NumberFormat('vi-VN').format(partialRemaining) + '₫';
+  const partialPage = await adm('GET', `/shops/${shopId}/orders/${dPartial.id}`, { cookie: acPayment });
+  /Thu một phần/.test(partialPage.body) && /khách chuyển lần 1/.test(partialPage.body) && partialPage.body.includes(partialRemainingText)
+    ? ok(`BFF giữ số tiền + ghi chú: thu 100.000₫, màn hình báo còn ${partialRemainingText}`)
+    : bad('màn hình thanh toán một phần sai', partialPage.status);
+  await adm('POST', `/shops/${shopId}/orders/${dPartial.id}/payments/manual`, {
+    cookie: acPayment, form: new URLSearchParams({ amount_vnd: String(partialRemaining), note: 'khách chuyển lần 2' }),
+  });
+  const partialDone = (await owner.query(`SELECT payment_status, amount_paid_vnd FROM orders WHERE id=$1`, [dPartial.id])).rows[0];
+  partialDone.payment_status === 'paid' && Number(partialDone.amount_paid_vnd) === Number(dPartial.total_vnd)
+    ? ok(`hai khoản cộng dồn 100.000₫ + ${partialRemainingText} → đã thu đủ`) : bad('cộng dồn khoản thu sai', JSON.stringify(partialDone));
+
   const dCod = await mkDon('cod');
   await adm('POST', `/shops/${shopId}/orders/${dCod.id}/confirm`, { cookie: ac, form: new URLSearchParams() });
   let pg1 = await adm('GET', `/shops/${shopId}/orders/${dCod.id}`, { cookie: ac });
-  !/unmark-paid/.test(pg1.body) ? ok('chưa đánh dấu thì KHÔNG hiện nút gỡ (không bày nút bấm vào là 409)') : bad('hiện nút gỡ sai lúc', '');
-  await adm('POST', `/shops/${shopId}/orders/${dCod.id}/mark-paid`, { cookie: ac, form: new URLSearchParams() });
+  !/\/payments\/[0-9a-f-]+\/reverse/.test(pg1.body) ? ok('chưa đánh dấu thì KHÔNG hiện nút điều chỉnh') : bad('hiện nút điều chỉnh sai lúc', '');
+  await thuTien(dCod.id, 'ghi nhận COD để thử điều chỉnh');
   pg1 = await adm('GET', `/shops/${shopId}/orders/${dCod.id}`, { cookie: ac });
-  /unmark-paid/.test(pg1.body) ? ok('sau khi đánh dấu thì hiện nút "Gỡ đã nhận tiền"') : bad('không có đường lùi', '');
-  const rg = await adm('POST', `/shops/${shopId}/orders/${dCod.id}/unmark-paid`, { cookie: ac, form: new URLSearchParams() });
+  /\/payments\/[0-9a-f-]+\/reverse/.test(pg1.body) && /Điều chỉnh ghi nhận/.test(pg1.body)
+    ? ok('sau khi đánh dấu thì hiện đường điều chỉnh đúng chứng từ') : bad('không có đường điều chỉnh', '');
+  const txId = (await owner.query(
+    `SELECT id FROM payment_transactions WHERE order_id=$1 AND provider='manual' AND entry_type='credit' ORDER BY created_at DESC LIMIT 1`,
+    [dCod.id],
+  )).rows[0]?.id;
+  const rg = await adm('POST', `/shops/${shopId}/orders/${dCod.id}/payments/${txId}/reverse`, {
+    cookie: ac, form: new URLSearchParams({ reason: 'nhân viên ghi nhận nhầm' }),
+  });
   const sau = (await owner.query(`SELECT payment_status, amount_paid_vnd, paid_at FROM orders WHERE id=$1`, [dCod.id])).rows[0];
   rg.status === 303 && sau.payment_status === 'unpaid' && Number(sau.amount_paid_vnd) === 0 && sau.paid_at === null
-    ? ok('gỡ xong: chưa thu tiền · đã thu 0₫ · mốc thời gian xoá sạch')
+    ? ok('điều chỉnh xong: chưa thu tiền · số dư 0₫ · chứng từ cũ vẫn còn trong ledger')
     : bad(`gỡ hỏng: ${JSON.stringify(sau)}`, rg.status);
   (await tienCua(dCod.id)) === 0
     ? ok('và KHÔNG đẻ phiếu hoàn khống nào — sổ sách sạch, khác hẳn cách gỡ cũ') : bad('vẫn ghi phiếu hoàn', '');
@@ -163,9 +200,10 @@ async function main() {
   // đổi thẳng phương thức trong DB, vì thứ đang canh là CHỐT CHẶN chứ không phải luồng đặt.
   const dQr = await mkDon('cod');
   await owner.query(`UPDATE orders SET payment_method='qr', payment_status='paid' WHERE id=$1`, [dQr.id]);
-  const rQr = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${dQr.id}/unmark-paid`, { cookie: oc, origin: OS, body: {} });
+  await rq(AUTH, 'POST', '/auth/step-up', { cookie: oc, origin: OA, body: { password: op } });
+  const rQr = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${dQr.id}/unmark-paid`, { cookie: oc, origin: OS, body: { reason: 'không được gỡ giao dịch QR' } });
   rQr.status === 409 ? ok('đơn QR → 409 (tiền vào tài khoản thật, không ai "gỡ" giao dịch ngân hàng)') : bad(`QR gỡ được: ${rQr.status}`, rQr.raw?.slice(0, 120));
-  const rDaHoan = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${dTra.id}/unmark-paid`, { cookie: oc, origin: OS, body: {} });
+  const rDaHoan = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${dTra.id}/unmark-paid`, { cookie: oc, origin: OS, body: { reason: 'đơn đã có phiếu hoàn' } });
   rDaHoan.status === 409 ? ok('đơn ĐÃ CÓ phiếu hoàn → 409 (gỡ ở đó là làm sai sổ chứ không phải sửa sổ)') : bad(`gỡ được đơn đã hoàn: ${rDaHoan.status}`, '');
 
   // ── 4. HỎI LẠI TRƯỚC KHI LÀM THỨ KHÔNG LÙI ĐƯỢC ──────────────────────────
@@ -176,8 +214,8 @@ async function main() {
     ? ok('nút Huỷ đơn hỏi lại, nói rõ khách nhận email ngay') : bad('nút Huỷ vẫn bấm phát ăn ngay', '');
   !/KHÔNG mở lại được/.test(pgHuy.body)
     ? ok('và câu hỏi KHÔNG còn doạ "không mở lại được" — nay mở lại được thật') : bad('câu hỏi nói sai sự thật', '');
-  /data-confirm="Xác nhận ĐÃ CẦM/.test(pgHuy.body)
-    ? ok('nút "Đã nhận tiền (COD)" hỏi lại kèm SỐ TIỀN cụ thể') : bad('nút ghi doanh thu không hỏi lại', '');
+  /data-confirm="Xác nhận đã thực sự nhận khoản tiền này/.test(pgHuy.body) && /name="amount_vnd"[^>]+required/.test(pgHuy.body)
+    ? ok('form nhận tiền hỏi lại và bắt ghi đúng SỐ TIỀN thực nhận') : bad('nút ghi doanh thu không hỏi lại', '');
   const dsDon = await adm('GET', `/shops/${shopId}/orders?status=pending`, { cookie: ac });
   /bulk-ship" data-confirm=/.test(dsDon.body) ? ok('nút GIAO HÀNG LOẠT hỏi lại (một cú bấm = N email cho khách)') : bad('giao hàng loạt không hỏi lại', '');
   /bulk-mark-paid" data-confirm=/.test(dsDon.body) ? ok('nút "Đã nhận tiền" HÀNG LOẠT hỏi lại') : bad('ghi doanh thu hàng loạt không hỏi lại', '');
@@ -223,7 +261,7 @@ async function main() {
   await S.post(`/variants/${vid}/inventory/adjust`, { delta: 5, reason: 'nhập lại sau ca hết hàng ở trên' });
   const dHuyHoan = await mkDon('cod');
   await adm('POST', `/shops/${shopId}/orders/${dHuyHoan.id}/confirm`, { cookie: ac, form: new URLSearchParams() });
-  await adm('POST', `/shops/${shopId}/orders/${dHuyHoan.id}/mark-paid`, { cookie: ac, form: new URLSearchParams() });
+  await thuTien(dHuyHoan.id, 'khách đã trả trước khi huỷ');
   await adm('POST', `/shops/${shopId}/orders/${dHuyHoan.id}/cancel`, { cookie: ac, form: new URLSearchParams({ reason: 'hết hàng, trả lại tiền cho khách' }) });
   // Hoàn MỘT PHẦN cố ý: hoàn ĐỦ thì đơn nhảy sang 'refunded' và chốt trạng thái lại che mất chốt
   // phiếu-hoàn. Hoàn một phần giữ đơn ở 'cancelled' — đúng ca cần canh, và cũng là ca thật (giữ
@@ -241,6 +279,49 @@ async function main() {
   !/reopen/.test(pgHH.body) ? ok('và màn hình KHÔNG bày nút Mở lại ở đó — không mời người ta bấm vào một cái 409') : bad('vẫn hiện nút mở lại', '');
   const rChuaHuy = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${dCod.id}/reopen`, { cookie: oc, origin: OS, body: {} });
   rChuaHuy.status === 409 ? ok('đơn chưa huỷ → 409') : bad(`mở được đơn chưa huỷ: ${rChuaHuy.status}`, '');
+
+  // ── 6. GỬI LẠI THÔNG BÁO THẤT BẠI ───────────────────────────────────────
+  sect('6. Gửi lại email lỗi — chứng từ cũ chỉ được failed → superseded');
+  const retryOrder = (await owner.query(
+    `SELECT order_number, customer_email FROM orders WHERE id = $1`, [dCod.id],
+  )).rows[0];
+  const failedOutbox = (await owner.query(
+    `INSERT INTO outbox (shop_id, topic, payload, processed_at)
+     VALUES ($1, 'order.created', $2, now()) RETURNING id`,
+    [shopId, {
+      to: retryOrder.customer_email,
+      order_id: dCod.id,
+      order_number: Number(retryOrder.order_number),
+    }],
+  )).rows[0].id;
+  const failedDelivery = (await owner.query(
+    `INSERT INTO notification_deliveries
+       (shop_id, outbox_id, order_id, order_number, topic, channel, status,
+        attempts, last_error, failed_at)
+     VALUES ($1,$2,$3,$4,'order.created','email','failed',3,'smtp tạm lỗi',now())
+     RETURNING id`,
+    [shopId, failedOutbox, dCod.id, Number(retryOrder.order_number)],
+  )).rows[0].id;
+  const retryResponse = await S.post(`/notifications/${failedDelivery}/retry`, {});
+  const retryProof = (await owner.query(
+    `SELECT nd.status, nd.superseded_at,
+            ob.payload ->> 'retry_of_delivery_id' AS retry_of_delivery_id
+       FROM notification_deliveries nd
+       LEFT JOIN outbox ob ON ob.id = $2
+      WHERE nd.id = $1`,
+    [failedDelivery, retryResponse.json?.outbox_id ?? null],
+  )).rows[0];
+  retryResponse.status === 202 && retryProof?.status === 'superseded'
+    && retryProof.superseded_at && retryProof.retry_of_delivery_id === failedDelivery
+    ? ok('retry tạo outbox mới rồi đóng delivery cũ thành superseded, giữ đủ chuỗi truy vết')
+    : bad(`retry notification hỏng: HTTP ${retryResponse.status}`, JSON.stringify(retryProof));
+  const arbitraryStatus = await owner.query(
+    `SELECT has_column_privilege('app_rw','notification_deliveries','superseded_at','UPDATE') AS stamp,
+            has_column_privilege('app_rw','notification_deliveries','updated_at','UPDATE') AS updated`,
+  );
+  arbitraryStatus.rows[0].stamp === false && arbitraryStatus.rows[0].updated === false
+    ? ok('seller không còn quyền tự bịa thời điểm superseded/updated_at')
+    : bad('app_rw vẫn sửa được timestamp của delivery', JSON.stringify(arbitraryStatus.rows[0]));
 
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();

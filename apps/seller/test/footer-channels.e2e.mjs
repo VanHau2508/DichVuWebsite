@@ -88,6 +88,7 @@ async function makeStaff() {
 async function makeShopOwner(staffCookie, slug) {
   let r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staffCookie, origin: OO });
   const shopId = r.json.id;
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [shopId]);
   // Tạo shop qua platform đã tự cấp domain <slug>.nentang.vn ĐÃ verify — không tự
   // INSERT vào domains (thiếu verification_token là vỡ NOT NULL, và cũng là đi cửa sau).
   const host = `${slug}.nentang.vn`;

@@ -51,7 +51,7 @@ describe('vai trò database', () => {
     assert.deepEqual(rows.map((r) => r.relname), []);
   });
 
-  for (const table of ['audit_logs', 'inventory_ledger', 'refunds', 'returns', 'return_lines', 'cod_remittances', 'shipment_lines']) {
+  for (const table of ['audit_logs', 'inventory_ledger', 'refunds', 'returns', 'return_lines', 'cod_remittances', 'shipment_lines', 'order_events']) {
     test(`app_rw không sửa/xoá được ${table} (append-only)`, async () => {
       const { rows } = await owner.query(`
         SELECT has_table_privilege('app_rw','${table}','UPDATE') AS upd,
@@ -82,6 +82,296 @@ describe('vai trò database', () => {
     `);
     assert.deepEqual(rows.map((r) => r.table_name), [],
       'app_rw ghi được bảng global → leo thang nền tảng; REVOKE trong migration mới');
+  });
+
+  test('app_rw không được CRUD tenant root hoặc tự đổi lifecycle go-live', async () => {
+    const { rows: [p] } = await owner.query(`
+      SELECT has_table_privilege('app_rw','shops','INSERT') AS ins,
+             has_table_privilege('app_rw','shops','UPDATE') AS table_upd,
+             has_table_privilege('app_rw','shops','DELETE') AS del,
+             has_column_privilege('app_rw','shops','name','UPDATE') AS profile_upd,
+             has_column_privilege('app_rw','shops','status','UPDATE') AS status_upd,
+             has_column_privilege('app_rw','shops','went_live_at','UPDATE') AS live_at_upd
+    `);
+    assert.deepEqual(p, {
+      ins: false,
+      table_upd: false,
+      del: false,
+      profile_upd: true,
+      status_upd: false,
+      live_at_upd: false,
+    });
+  });
+
+  test('projection wishlist là cửa hẹp NOLOGIN và không mở quyền kho cho app_customer', async () => {
+    const { rows: [fn] } = await owner.query(`
+      SELECT r.rolname AS owner, r.rolcanlogin, r.rolsuper, r.rolbypassrls,
+             p.prosecdef, p.proconfig,
+             has_function_privilege('app_customer', p.oid, 'EXECUTE') AS customer_exec,
+             has_function_privilege('app_rw', p.oid, 'EXECUTE') AS rw_exec,
+             has_function_privilege('public', p.oid, 'EXECUTE') AS public_exec
+        FROM pg_proc p
+        JOIN pg_roles r ON r.oid = p.proowner
+       WHERE p.oid = 'current_customer_wishlist()'::regprocedure
+    `);
+    assert.equal(fn.owner, 'app_customer_wishlist');
+    assert.equal(fn.rolcanlogin, false);
+    assert.equal(fn.rolsuper, false);
+    assert.equal(fn.rolbypassrls, false);
+    assert.equal(fn.prosecdef, true);
+    assert.ok((fn.proconfig ?? []).some((v) => v === 'search_path=public, pg_temp'));
+    assert.equal(fn.customer_exec, true);
+    assert.equal(fn.rw_exec, false);
+    assert.equal(fn.public_exec, false);
+
+    for (const table of ['variants', 'inventory_levels', 'product_options',
+      'variant_option_values', 'promotions', 'promotion_products']) {
+      const { rows: [priv] } = await owner.query(`
+        SELECT has_table_privilege('app_customer',$1,'SELECT') AS customer_select,
+               has_table_privilege('app_customer_wishlist',$1,'INSERT') AS projection_insert,
+               has_table_privilege('app_customer_wishlist',$1,'UPDATE') AS projection_update,
+               has_table_privilege('app_customer_wishlist',$1,'DELETE') AS projection_delete
+      `, [table]);
+      assert.deepEqual(priv, {
+        customer_select: false,
+        projection_insert: false,
+        projection_update: false,
+        projection_delete: false,
+      }, `${table}: account không đọc trực tiếp; projection chỉ được đọc`);
+    }
+
+    const { rows: policies } = await owner.query(`
+      SELECT tablename, cmd, qual
+        FROM pg_policies
+       WHERE schemaname = 'public' AND 'app_customer_wishlist' = ANY(roles)
+       ORDER BY tablename, cmd
+    `);
+    assert.deepEqual(policies.map((r) => `${r.tablename}:${r.cmd}`), [
+      'inventory_levels:SELECT',
+      'media:SELECT',
+      'product_options:SELECT',
+      'products:SELECT',
+      'promotion_products:SELECT',
+      'promotions:SELECT',
+      'shops:SELECT',
+      'variant_option_values:SELECT',
+      'variants:SELECT',
+      'wishlist_items:SELECT',
+    ]);
+    assert.ok(policies.every((r) => String(r.qual).includes('current_shop_id()')));
+    assert.ok(String(policies.find((r) => r.tablename === 'wishlist_items')?.qual)
+      .includes('current_customer_id()'));
+  });
+
+  test('cửa hẹp go-live thuộc role NOLOGIN, FORCE RLS và chỉ app_rw được gọi', async () => {
+    const { rows: [fn] } = await owner.query(`
+      SELECT r.rolname AS owner, r.rolcanlogin, r.rolsuper, r.rolbypassrls,
+             p.prosecdef, p.proconfig,
+             has_function_privilege('app_rw', p.oid, 'EXECUTE') AS rw_exec,
+             has_function_privilege('app_signup', p.oid, 'EXECUTE') AS signup_exec
+        FROM pg_proc p
+        JOIN pg_roles r ON r.oid = p.proowner
+       WHERE p.oid = 'activate_current_shop_after_readiness()'::regprocedure
+    `);
+    assert.equal(fn.owner, 'app_go_live');
+    assert.equal(fn.rolcanlogin, false);
+    assert.equal(fn.rolsuper, false);
+    assert.equal(fn.rolbypassrls, false);
+    assert.equal(fn.prosecdef, true);
+    assert.ok((fn.proconfig ?? []).some((v) => v === 'search_path=public, pg_temp'));
+    assert.equal(fn.rw_exec, true);
+    assert.equal(fn.signup_exec, false);
+
+    const { rows: [shopPriv] } = await owner.query(`
+      SELECT has_table_privilege('app_go_live','shops','UPDATE') AS table_upd,
+             has_column_privilege('app_go_live','shops','status','UPDATE') AS status_upd,
+             has_column_privilege('app_go_live','shops','went_live_at','UPDATE') AS live_at_upd,
+             has_column_privilege('app_go_live','shops','name','UPDATE') AS name_upd
+    `);
+    assert.deepEqual(shopPriv, {
+      table_upd: false,
+      status_upd: true,
+      live_at_upd: true,
+      name_upd: false,
+    });
+
+    const { rows: policies } = await owner.query(`
+      SELECT tablename, cmd, qual, with_check
+        FROM pg_policies
+       WHERE schemaname = 'public' AND 'app_go_live' = ANY(roles)
+       ORDER BY tablename, cmd
+    `);
+    assert.deepEqual(policies.map((r) => `${r.tablename}:${r.cmd}`), [
+      'domains:SELECT',
+      'inventory_levels:SELECT',
+      'pages:SELECT',
+      'product_options:SELECT',
+      'products:SELECT',
+      'shops:SELECT',
+      'shops:UPDATE',
+      'variant_option_values:SELECT',
+      'variants:SELECT',
+    ]);
+    assert.ok(policies.every((r) => String(r.qual).includes('current_shop_id()')));
+    assert.ok(!policies.some((r) => /\btrue\b/i.test(`${r.qual} ${r.with_check}`)));
+    assert.ok(String(policies.find((r) => r.tablename === 'shops' && r.cmd === 'UPDATE')?.with_check)
+      .includes("status = 'active'"));
+
+    for (const table of ['domains', 'inventory_levels', 'pages', 'product_options',
+      'products', 'variant_option_values', 'variants']) {
+      const { rows: [priv] } = await owner.query(`
+        SELECT has_table_privilege('app_go_live',$1,'INSERT') AS ins,
+               has_table_privilege('app_go_live',$1,'UPDATE') AS upd,
+               has_table_privilege('app_go_live',$1,'DELETE') AS del
+      `, [table]);
+      assert.deepEqual(priv, { ins: false, upd: false, del: false },
+        `${table}: app_go_live chỉ được đọc tín hiệu readiness`);
+    }
+  });
+
+  test('mixed-shipment detector là cửa hẹp NOLOGIN và worker không được tự ghi case', async () => {
+    const { rows: [fn] } = await owner.query(`
+      SELECT r.rolname AS owner, r.rolcanlogin, r.rolsuper, r.rolbypassrls,
+             p.prosecdef, p.proconfig,
+             has_function_privilege('app_expiry', p.oid, 'EXECUTE') AS expiry_exec,
+             has_function_privilege('app_rw', p.oid, 'EXECUTE') AS rw_exec,
+             has_function_privilege('app_resolution', p.oid, 'EXECUTE') AS resolution_exec,
+             has_function_privilege('public', p.oid, 'EXECUTE') AS public_exec
+        FROM pg_proc p
+        JOIN pg_roles r ON r.oid = p.proowner
+       WHERE p.oid = 'open_mixed_shipment_resolution(uuid)'::regprocedure
+    `);
+    assert.equal(fn.owner, 'app_resolution_detector');
+    assert.equal(fn.rolcanlogin, false);
+    assert.equal(fn.rolsuper, false);
+    assert.equal(fn.rolbypassrls, false);
+    assert.equal(fn.prosecdef, true);
+    assert.ok((fn.proconfig ?? []).some((v) => v === 'search_path=public, pg_temp'));
+    assert.equal(fn.expiry_exec, true);
+    assert.equal(fn.rw_exec, false);
+    assert.equal(fn.resolution_exec, false);
+    assert.equal(fn.public_exec, false);
+
+    for (const table of ['order_resolution_cases', 'order_resolution_case_lines']) {
+      const { rows: [priv] } = await owner.query(`
+        SELECT has_table_privilege('app_expiry',$1,'INSERT') AS expiry_insert,
+               has_table_privilege('app_resolution_detector',$1,'UPDATE') AS detector_update,
+               has_table_privilege('app_resolution_detector',$1,'DELETE') AS detector_delete
+      `, [table]);
+      assert.deepEqual(priv, {
+        expiry_insert: false,
+        detector_update: false,
+        detector_delete: false,
+      }, `${table}: chỉ detector function được append bằng chứng`);
+    }
+
+    const { rows: policies } = await owner.query(`
+      SELECT tablename, cmd
+        FROM pg_policies
+       WHERE schemaname = 'public'
+         AND 'app_resolution_detector' = ANY(roles)
+       ORDER BY tablename, cmd
+    `);
+    assert.deepEqual(policies.map((r) => `${r.tablename}:${r.cmd}`), [
+      'order_lines:SELECT',
+      'order_resolution_case_lines:INSERT',
+      'order_resolution_cases:INSERT',
+      'order_resolution_cases:SELECT',
+      'orders:SELECT',
+      'orders:UPDATE',
+      'shipment_lines:SELECT',
+      'shipments:SELECT',
+    ]);
+
+    const { rows: [lockPolicy] } = await owner.query(`
+      SELECT qual, with_check
+        FROM pg_policies
+       WHERE schemaname = 'public' AND tablename = 'orders'
+         AND policyname = 'resolution_detector_orders_lock'
+         AND cmd = 'UPDATE'
+         AND 'app_resolution_detector' = ANY(roles)
+    `);
+    assert.ok(lockPolicy, 'detector cần policy UPDATE để SELECT ... FOR UPDATE thấy dòng');
+    assert.equal(lockPolicy.qual, 'true');
+    assert.equal(lockPolicy.with_check, 'false');
+  });
+
+  test('required_refund_vnd không thể bị sửa sau khi snapshot case được tạo', async () => {
+    for (const role of ['app_rw', 'app_expiry', 'app_resolution', 'app_resolution_detector']) {
+      const { rows: [priv] } = await owner.query(`
+        SELECT has_column_privilege($1,'order_resolution_cases','required_refund_vnd','UPDATE') AS upd
+      `, [role]);
+      assert.equal(priv.upd, false, `${role}: không được viết lại bằng chứng hoàn tiền`);
+    }
+
+    const { rows: [trigger] } = await owner.query(`
+      SELECT pg_get_triggerdef(t.oid) AS definition
+        FROM pg_trigger t
+       WHERE t.tgrelid = 'order_resolution_cases'::regclass
+         AND t.tgname = 'order_resolution_case_transition_guard'
+         AND NOT t.tgisinternal
+    `);
+    assert.match(trigger.definition, /required_refund_vnd/i);
+  });
+
+  test('snapshot và receipt của resolution là append-only và FORCE RLS', async () => {
+    for (const table of [
+      'order_resolution_case_lines',
+      'order_resolution_return_receipts',
+      'order_resolution_return_receipt_lines',
+    ]) {
+      const { rows: [meta] } = await owner.query(`
+        SELECT c.relrowsecurity AS rls, c.relforcerowsecurity AS force_rls,
+               has_table_privilege('app_rw',$1,'UPDATE') AS rw_update,
+               has_table_privilege('app_rw',$1,'DELETE') AS rw_delete,
+               has_table_privilege('app_expiry',$1,'UPDATE') AS expiry_update,
+               has_table_privilege('app_expiry',$1,'DELETE') AS expiry_delete
+          FROM pg_class c
+         WHERE c.oid = $1::regclass
+      `, [table]);
+      assert.deepEqual(meta, {
+        rls: true,
+        force_rls: true,
+        rw_update: false,
+        rw_delete: false,
+        expiry_update: false,
+        expiry_delete: false,
+      }, `${table}: bằng chứng phải FORCE RLS + append-only`);
+    }
+
+    for (const table of ['order_resolution_return_receipts', 'order_resolution_return_receipt_lines']) {
+      const { rows: [priv] } = await owner.query(`
+        SELECT has_table_privilege('app_rw',$1,'INSERT') AS rw_insert,
+               has_table_privilege('app_expiry',$1,'INSERT') AS expiry_insert,
+               has_table_privilege('app_resolution',$1,'INSERT') AS service_insert
+      `, [table]);
+      assert.deepEqual(priv, { rw_insert: false, expiry_insert: false, service_insert: true },
+        `${table}: chỉ resolution service được append receipt`);
+    }
+  });
+
+  test('resolution evidence cast actor timeline text sang uuid rõ ràng', async () => {
+    const defs = (await owner.query(`
+      SELECT proname, pg_get_functiondef(oid) AS def
+        FROM pg_proc
+       WHERE proname IN (
+         'enforce_resolution_return_receipt',
+         'enforce_order_resolution_completion_evidence'
+       )
+       ORDER BY proname
+    `)).rows;
+    assert.equal(defs.length, 2);
+    for (const row of defs) {
+      assert.match(row.def, /e\.actor_id = NEW\.(received_by|resolved_by)::text/);
+    }
+  });
+
+  test('detector giữ fallback paid_at cho đơn paid legacy có amount_paid_vnd=0', async () => {
+    const { rows: [fn] } = await owner.query(`
+      SELECT pg_get_functiondef('open_mixed_shipment_resolution(uuid)'::regprocedure) AS definition
+    `);
+    assert.match(fn.definition, /amount_paid_vnd\s*>\s*0/i);
+    assert.match(fn.definition, /paid_at\s+IS\s+NOT\s+NULL\s+THEN\s+v_order\.total_vnd/i);
   });
 
   test('app_rw KHÔNG ghi được billing/ledger (tenant nhạy cảm) (P0-3)', async () => {
@@ -186,6 +476,32 @@ describe('Row-Level Security', () => {
         AND (qual IS NULL OR with_check IS NULL)
     `);
     assert.deepEqual(rows.map((r) => `${r.tablename}.${r.policyname}`), []);
+  });
+
+  test('worker chỉ ghi đúng allowlist sự kiện hệ thống vào timeline', async () => {
+    const { rows } = await owner.query(`
+      SELECT policyname, roles, with_check
+      FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = 'order_events'
+        AND ('app_worker' = ANY(roles) OR 'app_expiry' = ANY(roles))
+      ORDER BY policyname
+    `);
+    assert.equal(rows.length, 2, 'mỗi vai worker phải có đúng một policy INSERT');
+
+    const byName = new Map(rows.map((r) => [r.policyname, String(r.with_check ?? '')]));
+    const expiry = byName.get('order_events_expiry') ?? '';
+    const worker = byName.get('order_events_worker') ?? '';
+
+    for (const token of ['order.cancelled', 'resolution.opened', 'shipment.delivered',
+      'shipment.returned', 'shipment.cancelled', 'system', 'carrier', 'worker']) {
+      assert.ok(expiry.includes(token), `policy app_expiry thiếu chốt ${token}`);
+    }
+    for (const token of ['notification.sent', 'notification.failed', 'system', 'worker']) {
+      assert.ok(worker.includes(token), `policy app_worker thiếu chốt ${token}`);
+    }
+    assert.doesNotMatch(expiry, /\btrue\b/i, 'app_expiry không được WITH CHECK(true)');
+    assert.doesNotMatch(worker, /\btrue\b/i, 'app_worker không được WITH CHECK(true)');
+    assert.ok(!worker.includes('payment.received'), 'app_worker không được giả sự kiện tiền');
   });
 
   test('mọi bảng có shop_id đều có ít nhất một policy cho app_rw', async () => {

@@ -6,10 +6,12 @@
  *   1. REFUND  (POST /orders/:id/refund — perm 'refund' owner/admin + step-up):
  *      chỉ đơn ĐÃ TRẢ, idempotent (đã hoàn → 409), pending/confirmed GIẢI PHÓNG reserve,
  *      delivered KHÔNG đụng tồn (chủ shop tự nhập lại), mark-paid không đảo được refund.
- *   2. MARK-PAID-QR (POST /orders/:id/mark-paid-qr — perm 'payment.write' CHỈ owner + step-up):
+ *   2. LEGACY MARK-PAID (POST /orders/:id/mark-paid — perm 'payment.write' CHỈ owner + step-up):
+ *      giữ URL cũ nhưng ghi sổ append-only; admin/order_manager không được dùng.
+ *   3. MARK-PAID-QR (POST /orders/:id/mark-paid-qr — perm 'payment.write' CHỈ owner + step-up):
  *      fallback tay khi feed đối soát vắng; chỉ đơn QR (COD → 409), đã trả → 409,
  *      KHÔNG tự confirm đơn (khác webhook: webhook đặt paid + confirmed).
- *   3. RECONCILE resolve (POST /payment/reconcile/:id/resolve — 'payment.write' + step-up):
+ *   4. RECONCILE resolve (POST /payment/reconcile/:id/resolve — 'payment.write' + step-up):
  *      chỉ đánh dấu resolved_at (KHÔNG gắn đơn, KHÔNG đặt paid — hợp đồng thật),
  *      resolve lần 2 → 409, chéo shop bị RLS chặn → 409, ngoài membership → 404.
  */
@@ -135,13 +137,17 @@ async function main() {
   // ── 1. REFUND — guard trạng thái + step-up + tồn kho ──────────────────────
   sect('1. REFUND (perm refund + step-up)');
   let r = await a.post(`/orders/${o1.id}/mark-paid`, {});
-  r.status === 200 && r.json.payment_status === 'paid' ? ok('mark-paid COD → 200 paid (orders.write, KHÔNG cần step-up)') : bad('mark-paid lỗi', r.raw);
+  r.status === 403 && r.json?.step_up_required === true && r.json?.error === 'step_up_required'
+    ? ok('mark-paid COD CHƯA step-up → 403 step_up_required') : bad('mark-paid không đòi step-up', r.raw);
   r = await a.post(`/orders/${o1.id}/refund`, {});
   r.status === 403 && r.json?.step_up_required === true ? ok('refund CHƯA step-up → 403 step_up_required') : bad('refund không đòi step-up', r.raw);
   r = await a.post(`/orders/${oq.id}/mark-paid-qr`, {});
   r.status === 403 && r.json?.step_up_required === true ? ok('mark-paid-qr CHƯA step-up → 403 step_up_required') : bad('mark-paid-qr không đòi step-up', r.raw);
 
   await stepUp(A.cookie, A.password);
+  r = await a.post(`/orders/${o1.id}/mark-paid`, {});
+  r.status === 200 && r.json.payment_status === 'paid'
+    ? ok('owner + step-up mark-paid COD → 200 paid') : bad('mark-paid sau step-up lỗi', r.raw);
   r = await a.post(`/orders/${o2.id}/refund`, {});
   r.status === 409 && /chỉ hoàn được đơn đã thanh toán/.test(r.json?.error ?? '') ? ok('refund đơn CHƯA TRẢ → 409') : bad('refund đơn chưa trả lọt', r.raw);
 
@@ -254,7 +260,30 @@ async function main() {
   r.status === 404 ? ok('owner B gọi path shop A → 404 (không phải thành viên, không lộ tồn tại)') : bad('membership gate vỡ', r.raw);
 
   // ── 5. HOÀN MỘT PHẦN — bút toán refunds (0070) ────────────────────────────
-  sect('5. HOÀN MỘT PHẦN (bút toán refunds 0070)');
+  sect('5. SỔ THU MỘT PHẦN + ĐIỀU CHỈNH APPEND-ONLY');
+  await stepUp(A.cookie, A.password);
+  const op = await mkOrder(2); // 230.000đ
+  r = await a.post(`/orders/${op.id}/payments/manual`, { amount_vnd: 80000, note: 'khách trả đợt 1' });
+  const tx1 = r.json?.transaction_id;
+  r.status === 200 && r.json?.payment_summary?.display_state === 'partial'
+    && r.json?.payment_summary?.received_vnd === 80000 && r.json?.payment_summary?.amount_due_vnd === 150000 && tx1
+    ? ok('thu 80k/230k → partial, còn đúng 150k và có transaction_id') : bad('thu một phần sai', r.raw);
+  r = await a.post(`/orders/${op.id}/payments/manual`, { amount_vnd: 150000, note: 'khách trả đủ đợt 2' });
+  r.status === 200 && r.json?.payment_summary?.display_state === 'paid'
+    && r.json?.payment_summary?.received_vnd === 230000 && r.json?.payment_summary?.amount_due_vnd === 0
+    ? ok('thu thêm 150k → paid đúng 230k, không còn phải thu') : bad('cộng dồn khoản thu sai', r.raw);
+  r = await a.get(`/orders/${op.id}`);
+  const receivedEvents = (r.json?.timeline ?? []).filter((e) => e.event_type === 'payment.received');
+  r.status === 200 && r.json?.payment_transactions?.length === 2 && receivedEvents.length === 2
+    ? ok('chi tiết đơn trả đủ 2 chứng từ và 2 mốc payment.received') : bad('sổ/timeline thiếu dòng', r.raw);
+  r = await a.post(`/orders/${op.id}/payments/${tx1}/reverse`, { reason: 'nhập nhầm khoản thu đầu tiên' });
+  r.status === 200 && r.json?.payment_summary?.display_state === 'partial'
+    && r.json?.payment_summary?.received_vnd === 150000 && r.json?.payment_summary?.amount_due_vnd === 80000
+    ? ok('reversal khoản 80k → giữ chứng từ cũ, còn phải thu đúng 80k') : bad('reversal sai', r.raw);
+  r = await a.post(`/orders/${op.id}/payments/${tx1}/reverse`, { reason: 'bấm lại cùng điều chỉnh' });
+  r.status === 409 ? ok('reversal cùng giao dịch lần 2 → 409, không trừ hai lần') : bad('double reversal lọt', r.raw);
+
+  sect('6. HOÀN MỘT PHẦN (bút toán refunds 0070)');
   // Hoàn TOÀN BỘ ở mục 1 (o1, total 230000) giờ cũng phải để lại bút toán đủ tổng.
   let rrows = (await owner.query(`SELECT amount_vnd FROM refunds WHERE order_id=$1`, [o1.id])).rows;
   rrows.length === 1 && Number(rrows[0].amount_vnd) === 230000
@@ -304,8 +333,9 @@ async function main() {
   r.status === 409 ? ok('hoàn tiếp sau khi đã lật refunded → 409') : bad('refund sau lật lọt', r.raw);
 
   // ── 6. BULK MARK-PAID COD (gom tiền cuối ngày) ────────────────────────────
-  sect('6. BULK MARK-PAID (chỉ COD, bỏ qua QR/terminal)');
+  sect('7. BULK MARK-PAID (chỉ COD, bỏ qua QR/terminal)');
   const c1 = await mkOrder(1), c2 = await mkOrder(1), q1 = await mkOrder(1, 'qr');
+  await stepUp(A.cookie, A.password);
   r = await a.post('/orders/bulk/mark-paid', { order_ids: [c1.id, c2.id, q1.id] });
   r.status === 200 && r.json.paid === 2 && r.json.skipped === 1
     ? ok('bulk mark-paid [COD,COD,QR] → paid=2, skipped=1 (QR không đi đường tay)') : bad('bulk mark-paid sai', r.raw);

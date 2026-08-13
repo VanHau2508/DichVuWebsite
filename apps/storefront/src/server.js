@@ -17,7 +17,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import pg from 'pg';
-import { renderHome, renderProducts, renderProduct, renderPage, renderSearch, renderBlogList, renderBlogPost, renderMaintenance, renderNotFound } from './theme.js';
+import { renderHome, renderProducts, renderProduct, renderPage, renderSearch, renderBlogList, renderBlogPost, renderMaintenance, renderPreparing, renderNotFound } from './theme.js';
 import { renderLanding } from './landing.js';
 import { renderAbout, renderSupport, renderTerms, renderPrivacy, renderContact, renderBlogList as renderCoBlogList, renderBlogPost as renderCoBlogPost, findPost, companyPaths } from './company.js';
 import { runReq, makeLog, health, setUsageSink, makeUsageSink, noteShop, skipUsage, noteService } from './obs.js';
@@ -27,6 +27,21 @@ import { AVAIL_SQL } from '../safety-stock.js';
 import { hit } from '../ratelimit.js';
 
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
+const SHOP_PREVIEW_COOKIE = '__Host-shop-preview';
+const SHOP_PREVIEW_RE = /^[A-Za-z0-9_-]{40,64}$/;
+
+function cookieValue(req, name) {
+  const raw = String(req.headers.cookie ?? '');
+  for (const part of raw.split(';')) {
+    const at = part.indexOf('=');
+    if (at < 0 || part.slice(0, at).trim() !== name) continue;
+    try { return decodeURIComponent(part.slice(at + 1).trim()); } catch { return null; }
+  }
+  return null;
+}
+
+const SHOP_PREVIEW_BANNER = '<div class="preview-banner" role="status">⚠ XEM TRƯỚC CỬA HÀNG — khách công khai chưa thể thấy nội dung này hoặc đặt hàng.</div>';
+const markShopPreview = (html) => String(html).replace(/<body([^>]*)>/, (open) => `${open}${SHOP_PREVIEW_BANNER}`);
 
 const PORT = Number(process.env.PORT ?? 3050);
 // Base URL ảnh public. Mặc định TƯƠNG ĐỐI (/media-public) → cùng origin với trang shop
@@ -556,17 +571,24 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       return res.end();
     }
 
-    // robots.txt — cho phép index, chặn giỏ/checkout, trỏ sitemap của shop.
+    // robots.txt — shop onboarding chưa công khai thì chặn toàn bộ index. Không chỉ dựa
+    // vào thẻ noindex trong HTML: bot có thể hỏi robots trước khi từng tải trang.
     if (url.pathname === '/robots.txt') {
-      const body = `User-agent: *\nAllow: /\nDisallow: /cart\nDisallow: /checkout\nSitemap: https://${host}/sitemap.xml\n`;
-      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': CACHE_PUBLIC });
+      const live = await withStore(shopId, async (c) =>
+        (await c.query(`SELECT status FROM shops WHERE id = current_shop_id()`)).rows[0]?.status === 'active');
+      const body = live
+        ? `User-agent: *\nAllow: /\nDisallow: /cart\nDisallow: /checkout\nSitemap: https://${host}/sitemap.xml\n`
+        : 'User-agent: *\nDisallow: /\n';
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': live ? CACHE_PUBLIC : 'no-store' });
       return res.end(body);
     }
     // sitemap.xml — trang chủ + danh mục + sản phẩm active + trang nội dung published.
     // RLS (app_store) tự lọc active/published → chỉ URL công khai lọt vào sitemap.
     if (url.pathname === '/sitemap.xml') {
       const sm = await withStore(shopId, async (c) => {
-        if (!(await c.query(`SELECT 1 FROM shops WHERE id = current_shop_id() AND status <> 'suspended'`)).rows[0]) return null;
+        const status = (await c.query(`SELECT status FROM shops WHERE id = current_shop_id()`)).rows[0]?.status;
+        if (!status) return null;
+        if (status !== 'active') return { notLive: true };
         const prods = (await c.query(`SELECT slug FROM products ORDER BY created_at DESC LIMIT 5000`)).rows;
         const cats = (await c.query(`SELECT slug FROM categories ORDER BY position LIMIT ${CAT_MAX}`)).rows;
         const pages = (await c.query(`SELECT p.slug FROM pages p JOIN page_revisions pr ON pr.id = p.published_revision_id LIMIT 1000`)).rows;
@@ -574,6 +596,10 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         return { prods, cats, pages, blog };
       });
       if (!sm) return sendHtml(res, 404, renderNotFound());
+      if (sm.notLive) {
+        res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'no-store', 'x-robots-tag': 'noindex, nofollow' });
+        return res.end('<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>\n');
+      }
       const escXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const loc = (path) => `  <url><loc>${escXml(`https://${host}${path}`)}</loc></url>`;
       // Sitemap là LỜI MỜI, nên chỉ mời vào chỗ có thứ để xem. Shop chưa có gì mà vẫn liệt kê
@@ -602,6 +628,21 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       if (!shop) return { notFound: true }; // terminated/deleted (RLS)
       shop.logo_url = imgUrl(shop.logo_key); // header hiện logo nếu có
       if (shop.status === 'suspended') return { shop, suspended: true };
+
+      // Token xem trước toàn shop: query dùng một lần rồi đổi sang cookie host-only. RLS của
+      // shop_previews buộc đúng tenant + TTL; token shop A trình ở host shop B luôn vô hình.
+      const queryPreview = url.searchParams.get('shop_preview');
+      const cookiePreview = cookieValue(req, SHOP_PREVIEW_COOKIE);
+      const presented = SHOP_PREVIEW_RE.test(queryPreview ?? '') ? queryPreview
+        : (SHOP_PREVIEW_RE.test(cookiePreview ?? '') ? cookiePreview : null);
+      let shopPreview = false;
+      if (shop.status === 'onboarding' && presented) {
+        shopPreview = (await c.query(
+          `SELECT 1 FROM shop_previews WHERE token_hash = $1 AND expires_at > now()`,
+          [hashToken(presented)],
+        )).rowCount === 1;
+      }
+      if (shop.status === 'onboarding' && !shopPreview) return { shop, preparing: true };
 
       const theme = (await c.query(`SELECT tokens, layout FROM themes WHERE shop_id = current_shop_id()`)).rows[0] ?? null;
       // Ảnh tiêu biểu mỗi danh mục = ảnh SP mới nhất trong danh mục — CHỈ khi layout dùng
@@ -632,7 +673,10 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
           ORDER BY p.menu_position, pr.title LIMIT 20`,
       )).rows;
       const hasBlog = Number((await c.query(`SELECT count(*)::int n FROM blog_posts WHERE status = 'published'`)).rows[0].n) > 0;
-      const base = { shop, theme, categories, menu, hasBlog };
+      const base = {
+        shop, theme, categories, menu, hasBlog, shopPreview,
+        shopPreviewToken: shopPreview && queryPreview === presented ? presented : null,
+      };
 
       // ?sort= whitelist (giá trị lạ → 'new' = created_at DESC, hành vi cũ).
       const sortKey = Object.hasOwn(GRID_SORTS, url.searchParams.get('sort') ?? '') ? url.searchParams.get('sort') : 'new';
@@ -995,8 +1039,27 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
 
     if (data.notFound) return sendHtml(res, 404, renderNotFound(), { shopSlug: data.shop?.slug });
     if (data.suspended) return sendHtml(res, 503, renderMaintenance(data.shop.name), { shopSlug: data.shop.slug });
+    if (data.preparing) return sendHtml(res, 200, renderPreparing(data.shop.name), { shopSlug: data.shop.slug, preview: true });
+    // Token không nằm lại trên thanh địa chỉ/referrer: sau khi DB xác thực, đổi sang cookie
+    // host-only rồi redirect về chính URL đã bỏ tham số. Cookie vẫn phải qua RLS ở MỌI request.
+    if (data.shopPreviewToken) {
+      const clean = new URLSearchParams(url.search);
+      clean.delete('shop_preview');
+      res.writeHead(302, {
+        location: url.pathname + (clean.toString() ? `?${clean}` : ''),
+        'cache-control': 'no-store',
+        'set-cookie': `${SHOP_PREVIEW_COOKIE}=${encodeURIComponent(data.shopPreviewToken)}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=900`,
+      });
+      return res.end();
+    }
+    const sendView = (status, html, options = {}) => sendHtml(
+      res,
+      status,
+      data.shopPreview ? markShopPreview(html) : html,
+      { ...options, preview: data.shopPreview || options.preview === true },
+    );
     // Quick-view (Phase 3): JSON public, cache như catalog. TRƯỚC các nhánh render HTML.
-    if (data.quickview) return sendJson(res, 200, quickviewJson(data.quickview), { cache: true });
+    if (data.quickview) return sendJson(res, 200, quickviewJson(data.quickview), { cache: !data.shopPreview });
 
     // origin tuyệt đối của shop (từ host request) → dựng URL tuyệt đối cho og:image,
     // vì bộ quét mạng xã hội KHÔNG hiểu ảnh đường-dẫn-tương-đối (/media-public/...).
@@ -1037,25 +1100,25 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     }
     if (data.page) {
       // Preview → banner cảnh báo + no-store/noindex; published → cache CDN như thường.
-      if (data.preview) return sendHtml(res, 200, renderPage(ctx, data.page, { preview: true, canonical }), { shopSlug: data.shop.slug, preview: true, nonce });
-      return sendHtml(res, 200, renderPage(ctx, data.page, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
+      if (data.preview) return sendView(200, renderPage(ctx, data.page, { preview: true, canonical }), { shopSlug: data.shop.slug, preview: true, nonce });
+      return sendView(200, renderPage(ctx, data.page, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
     }
     // Lưới KHÔNG có kết quả nào (shop chưa có hàng, hoặc lọc/danh mục ra rỗng) → cùng lý lẽ
     // với trang chủ: đừng để công cụ tìm kiếm lập chỉ mục một trang trống. pageInfo.total là
     // TỔNG khớp bộ lọc, đã tính sẵn — không tốn truy vấn thêm.
     if (data.productsPage) {
       const trongLuoi = !(data.pageInfo?.total);
-      return sendHtml(res, 200, renderProducts(ctx, { canonical, prevUrl, nextUrl, catSlug: data.catSlug }),
+      return sendView(200, renderProducts(ctx, { canonical, prevUrl, nextUrl, catSlug: data.catSlug }),
         { shopSlug: data.shop.slug, cache: !trongLuoi, noindex: trongLuoi, nonce });
     }
-    if (data.product) return sendHtml(res, 200, renderProduct(ctx, data.product, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
+    if (data.product) return sendView(200, renderProduct(ctx, data.product, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
     if (data.blog === 'list') {
       const trongBlog = !(data.posts?.length);
-      return sendHtml(res, 200, renderBlogList(ctx, data.posts ?? [], { canonical, prevUrl, nextUrl, blogPage: data.blogPage ?? null }),
+      return sendView(200, renderBlogList(ctx, data.posts ?? [], { canonical, prevUrl, nextUrl, blogPage: data.blogPage ?? null }),
         { shopSlug: data.shop.slug, cache: !trongBlog, noindex: trongBlog, nonce });
     }
-    if (data.blog === 'post') return sendHtml(res, 200, renderBlogPost(ctx, data.post, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
-    if (data.search) return sendHtml(res, 200, renderSearch(ctx, { canonical }), { shopSlug: data.shop.slug, nonce });
+    if (data.blog === 'post') return sendView(200, renderBlogPost(ctx, data.post, { canonical }), { shopSlug: data.shop.slug, cache: true, nonce });
+    if (data.search) return sendView(200, renderSearch(ctx, { canonical }), { shopSlug: data.shop.slug, nonce });
     // Trang chủ là cửa vào mà công cụ tìm kiếm lập chỉ mục. Danh sách SP đã nạp xong ở trên
     // nên phép kiểm này KHÔNG tốn thêm truy vấn nào.
     //
@@ -1064,7 +1127,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     // này: noindex NHẦM một shop đang bán là tự tay cắt nguồn khách của họ, tệ hơn hẳn cái nó
     // định phòng.
     const trong = !(ctx.products?.length);
-    return sendHtml(res, 200, renderHome(ctx, { canonical, prevUrl, nextUrl }),
+    return sendView(200, renderHome(ctx, { canonical, prevUrl, nextUrl }),
       { shopSlug: data.shop.slug, cache: !trong, noindex: trong, nonce });
   } catch (err) {
     log('error', 'render_error', { path: url.pathname, message: err.message, stack: err.stack });

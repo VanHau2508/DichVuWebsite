@@ -9,7 +9,7 @@ a{color:var(--pri)}.wrap{max-width:960px;margin:0 auto;padding:20px 16px}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:20px;margin-bottom:16px}
 h1{font-size:1.4rem;margin:0 0 4px}h2{font-size:1.05rem;margin:0 0 12px}
 label{display:block;font-size:.85rem;color:var(--mut);margin:10px 0 4px}
-input,select{width:100%;padding:9px 11px;border:1px solid var(--bd);border-radius:8px;font-size:1rem;background:#fff}
+input,select,textarea{width:100%;padding:9px 11px;border:1px solid var(--bd);border-radius:8px;font:inherit;background:#fff}
 .btn{display:inline-block;background:var(--pri);color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:1rem;cursor:pointer;text-decoration:none}
 .btn.alt{background:#f3f4f6;color:var(--ink);border:1px solid var(--bd)}
 .btn.sm{padding:6px 11px;font-size:.85rem}.btn.warn{background:#fee2e2;color:var(--bad);border:1px solid #fecaca}
@@ -32,12 +32,13 @@ function layout(title, shopName, body, { back } = {}) {
 const errBox = (e) => e ? `<div class="err">${esc(e)}</div>` : '';
 const okBox = (m) => m ? `<div class="ok">${esc(m)}</div>` : '';
 
-export function renderLogin(shopName, { error, notice } = {}) {
+export function renderLogin(shopName, { error, notice, next = '/account' } = {}) {
   return layout('Đăng nhập', shopName, `
     <h1>Đăng nhập</h1>
     <p class="muted">Tài khoản của bạn tại ${esc(shopName || 'cửa hàng')} — theo dõi đơn hàng & sổ địa chỉ.</p>
     ${okBox(notice)}${errBox(error)}
     <div class="card"><form method="POST" action="/account/login">
+      <input type="hidden" name="next" value="${esc(next)}">
       <label>Email</label><input name="email" type="email" required autocomplete="email">
       <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
       <button class="btn" type="submit" style="width:100%;margin-top:14px">Đăng nhập</button>
@@ -151,17 +152,35 @@ export function renderOrders(shopName, orders, { page = 1, hasMore = false, noti
 // Lưới ảnh + giá, mỗi thẻ có nút bỏ thích (chính endpoint toggle). Rỗng thì mời đi xem
 // hàng thay vì để trang trắng.
 export function renderWishlist(shopName, items) {
-  const cards = items.map((p) => `<div class="wl-card">
+  const cards = items.map((p) => {
+    const href = `/p/${esc(p.slug)}`;
+    const available = Math.max(0, Number(p.available_qty) || 0);
+    const price = Math.max(0, Number(p.price_vnd) || 0);
+    const basePrice = Math.max(price, Number(p.base_price_vnd) || 0);
+    const onSale = basePrice > price;
+    const offPct = onSale && Number.isInteger(Number(p.off_pct)) && Number(p.off_pct) > 0
+      ? Math.min(100, Number(p.off_pct)) : null;
+    const canQuickAdd = !!p.default_variant_id && available > 0;
+    const buyAction = canQuickAdd
+      ? `<form class="wl-buy" method="POST" action="/cart/add">
+          <input type="hidden" name="variant_id" value="${esc(p.default_variant_id)}">
+          <input type="hidden" name="qty" value="1">
+          <button class="btn sm" type="submit">Thêm vào giỏ</button>
+        </form>`
+      : `<a class="btn alt sm wl-choose" href="${href}">${available > 0 ? 'Chọn phân loại' : 'Xem sản phẩm'}</a>`;
+    return `<div class="wl-card">
       <a class="wl-img" href="/p/${esc(p.slug)}">${p.image_url
         ? `<img src="${esc(p.image_url)}" alt="${esc(p.title)}" loading="lazy">`
         : '<span class="wl-ph">Chưa có ảnh</span>'}</a>
-      <a class="wl-name" href="/p/${esc(p.slug)}">${esc(p.title)}</a>
-      <div class="wl-price">${money(p.price_vnd)}</div>
-      <form method="POST" action="/account/wishlist/toggle">
+      <a class="wl-name" href="${href}">${esc(p.title)}</a>
+      <div class="wl-prices"><strong>${money(price)}</strong>${onSale ? `<del>${money(basePrice)}</del>${offPct ? `<span class="wl-sale">-${offPct}%</span>` : ''}` : ''}</div>
+      <div class="wl-stock ${available > 0 ? 'ok-stock' : 'out-stock'}">${available > 0 ? `Còn ${available} sản phẩm` : 'Hết hàng'}</div>
+      <div class="wl-actions">${buyAction}<form class="wl-remove" method="POST" action="/account/wishlist/toggle">
         <input type="hidden" name="product_id" value="${esc(p.id)}">
         <button class="btn alt sm" type="submit">♥ Bỏ thích</button>
-      </form>
-    </div>`).join('');
+      </form></div>
+    </div>`;
+  }).join('');
   return layout('Sản phẩm yêu thích', shopName, `
     <div class="hd"><h1>Sản phẩm yêu thích</h1><a class="btn alt sm" href="/account">← Tài khoản</a></div>
     ${items.length ? `<div class="wl-grid">${cards}</div>`
@@ -169,12 +188,14 @@ export function renderWishlist(shopName, items) {
          <a class="btn sm" href="/products">Xem sản phẩm</a></div>`}
     <style>
       .wl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:14px}
-      .wl-card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:7px}
+      .wl-card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:7px;min-width:0}
       .wl-img{display:block;aspect-ratio:1;background:#f3f4f6;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center}
       .wl-img img{width:100%;height:100%;object-fit:cover}
       .wl-ph{font-size:.78rem;color:#9ca3af}
       .wl-name{font-size:.9rem;font-weight:600;line-height:1.35;color:#111827;text-decoration:none;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-      .wl-price{font-weight:700;margin-top:auto}
+      .wl-prices{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:auto}.wl-prices strong{font-size:1rem}.wl-prices del{font-size:.78rem;color:#9ca3af}.wl-sale{font-size:.72rem;font-weight:700;color:#b91c1c;background:#fee2e2;border-radius:999px;padding:1px 6px}
+      .wl-stock{font-size:.78rem;font-weight:600}.ok-stock{color:#047857}.out-stock{color:#b91c1c}
+      .wl-actions{display:grid;gap:7px}.wl-buy,.wl-remove{margin:0}.wl-buy .btn,.wl-remove .btn,.wl-choose{width:100%;text-align:center}
     </style>`);
 }
 
@@ -187,7 +208,9 @@ const carrierTrackUrl = (c, code) => {
   if (k === 'ghtk') return `https://i.ghtk.vn/?order_code=${encodeURIComponent(code)}`;
   return null;
 };
-export function renderOrderDetail(shopName, o, lines, shipments = []) {
+export function renderOrderDetail(shopName, o, lines, shipments = [], {
+  requests = [], hasActiveShipment = false, requestError, requestForm = {}, notice, provinces = [],
+} = {}) {
   const base = '/account';
   const addr = o.shipping_address && typeof o.shipping_address === 'object' ? o.shipping_address : {};
   const addrStr = [addr.line || addr.line1, addr.ward, addr.district, addr.province].filter(Boolean).join(', ');
@@ -201,6 +224,11 @@ export function renderOrderDetail(shopName, o, lines, shipments = []) {
   // cùng một sự thật phải nói cùng một câu.
   const daDong = ['cancelled', 'refunded', 'returned'].includes(o.status);
   const daTraGi = Number(o.amount_paid_vnd ?? 0) > 0 || Number(o.refunded_vnd ?? 0) > 0;
+  const payment = o.payment_summary ?? {
+    total_vnd: Number(o.total_vnd ?? 0), received_vnd: Number(o.amount_paid_vnd ?? 0),
+    refunded_vnd: Number(o.refunded_vnd ?? 0), amount_due_vnd: Math.max(0, Number(o.total_vnd ?? 0) - Number(o.amount_paid_vnd ?? 0)),
+    customer_credit_vnd: 0, display_state: o.payment_status === 'paid' ? 'paid' : 'unpaid',
+  };
   const moneyBlock = (daDong && daTraGi) ? `<div class="card">
       <h2>Khoản tiền của đơn này</h2>
       <div class="row"><span class="muted">Bạn đã thanh toán</span><span><strong>${money(o.amount_paid_vnd)}</strong></span></div>
@@ -211,9 +239,78 @@ export function renderOrderDetail(shopName, o, lines, shipments = []) {
         : Number(o.refunded_vnd ?? 0) > 0
         ? '<p class="muted" style="margin:10px 0 0">Cửa hàng đã hoàn đủ khoản bạn thanh toán cho đơn này.</p>'
         : '<p class="muted" style="margin:10px 0 0">Đơn này bạn chưa thanh toán khoản nào nên không có gì phải hoàn.</p>'}
+    </div>` : !daDong ? `<div class="card">
+      <h2>Thanh toán</h2>
+      <div class="row"><span class="muted">Tổng đơn</span><span><strong>${money(payment.total_vnd)}</strong></span></div>
+      <div class="row"><span class="muted">Cửa hàng đã nhận</span><span><strong>${money(payment.received_vnd)}</strong></span></div>
+      ${payment.refunded_vnd > 0 ? `<div class="row"><span class="muted">Đã hoàn lại</span><span><strong>${money(payment.refunded_vnd)}</strong></span></div>` : ''}
+      ${payment.amount_due_vnd > 0
+        ? `<div class="row" style="border-top:1px solid var(--bd);padding-top:8px"><span>Còn phải thanh toán</span><span><strong>${money(payment.amount_due_vnd)}</strong></span></div>`
+        : '<p style="margin:10px 0 0"><span class="badge">Đã thanh toán đủ</span></p>'}
+      ${payment.customer_credit_vnd > 0 ? `<p class="muted">Bạn đã thanh toán dư ${money(payment.customer_credit_vnd)}; cửa hàng sẽ đối soát khoản dư.</p>` : ''}
+    </div>` : '';
+  const requestTypeLabel = { cancel: 'Huỷ đơn', address_change: 'Đổi địa chỉ giao', return: 'Trả hàng' };
+  const requestStatusLabel = { requested: 'Đang chờ cửa hàng', approved: 'Đã chấp thuận', completed: 'Đã xử lý', rejected: 'Không chấp thuận' };
+  const requestCards = requests.map((r) => {
+    const p = r.request_payload && typeof r.request_payload === 'object' ? r.request_payload : {};
+    const address = r.request_type === 'address_change'
+      ? `<p class="muted" style="margin:8px 0 0">Địa chỉ đề nghị: ${esc([p.line, p.ward, p.district, p.province].filter(Boolean).join(', '))}<br>${esc(p.recipient_name ?? '')}${p.phone ? ` · ${esc(p.phone)}` : ''}</p>`
+      : '';
+    const next = r.status === 'approved' && r.request_type === 'return'
+      ? '<p class="muted" style="margin:8px 0 0">Cửa hàng đã đồng ý nhận trả. Vui lòng làm theo hướng dẫn của cửa hàng; tồn kho và hoàn tiền chỉ cập nhật sau khi hàng được nhận và kiểm tra.</p>'
+      : '';
+    return `<div style="padding:12px 0;border-top:1px solid var(--bd)">
+      <div class="row"><strong>${esc(requestTypeLabel[r.request_type] ?? r.request_type)}</strong><span class="badge">${esc(requestStatusLabel[r.status] ?? r.status)}</span></div>
+      <p class="muted" style="margin:6px 0 0">Gửi ngày ${dt(r.created_at)}${r.reason ? ` · ${esc(r.reason)}` : ''}</p>
+      ${address}${r.decision_note ? `<p style="margin:8px 0 0"><strong>Phản hồi cửa hàng:</strong> ${esc(r.decision_note)}</p>` : ''}${next}
+    </div>`;
+  }).join('');
+  const openTypes = new Set(requests.filter((r) => ['requested', 'approved'].includes(r.status)).map((r) => r.request_type));
+  const canCancel = ['pending', 'confirmed'].includes(o.status) && !openTypes.has('cancel');
+  const canAddress = ['pending', 'confirmed'].includes(o.status) && !hasActiveShipment && !openTypes.has('address_change');
+  const canReturn = o.status === 'delivered' && !openTypes.has('return');
+  const selectedType = String(requestForm.request_type ?? '');
+  const fv = (name, fallback = '') => esc(requestForm[name] != null && requestForm[name] !== '' ? requestForm[name] : fallback);
+  const selectedProvince = selectedType === 'address_change' && requestForm.province ? String(requestForm.province) : String(addr.province ?? '');
+  const provinceOptions = provinces.map((p) => `<option value="${esc(p)}"${p === selectedProvince ? ' selected' : ''}>${esc(p)}</option>`).join('');
+  const requestForms = [
+    canCancel ? `<details${selectedType === 'cancel' ? ' open' : ''}><summary>Yêu cầu huỷ đơn</summary>
+      <form method="POST" action="${base}/orders/${esc(o.order_number)}/requests" style="margin-top:12px">
+        <input type="hidden" name="request_type" value="cancel">
+        <label>Lý do muốn huỷ</label><textarea name="reason" maxlength="500" required placeholder="Ví dụ: đặt nhầm sản phẩm">${selectedType === 'cancel' ? fv('reason') : ''}</textarea>
+        <button class="btn warn sm" type="submit" style="margin-top:10px">Gửi yêu cầu huỷ</button>
+      </form></details>` : '',
+    canAddress ? `<details${selectedType === 'address_change' ? ' open' : ''}><summary>Yêu cầu đổi địa chỉ giao</summary>
+      <form method="POST" action="${base}/orders/${esc(o.order_number)}/requests" style="margin-top:12px">
+        <input type="hidden" name="request_type" value="address_change">
+        <label>Người nhận</label><input name="recipient_name" maxlength="120" required value="${selectedType === 'address_change' ? fv('recipient_name', o.customer_name ?? '') : esc(o.customer_name ?? '')}">
+        <label>Số điện thoại</label><input name="phone" maxlength="20" inputmode="tel" required value="${selectedType === 'address_change' ? fv('phone', o.customer_phone ?? '') : esc(o.customer_phone ?? '')}">
+        <label>Địa chỉ</label><input name="line" maxlength="300" required value="${selectedType === 'address_change' ? fv('line', addr.line ?? addr.line1 ?? '') : esc(addr.line ?? addr.line1 ?? '')}">
+        <div class="row"><div style="flex:1"><label>Phường/Xã</label><input name="ward" maxlength="60" value="${selectedType === 'address_change' ? fv('ward', addr.ward ?? '') : esc(addr.ward ?? '')}"></div>
+        <div style="flex:1"><label>Quận/Huyện</label><input name="district" maxlength="60" value="${selectedType === 'address_change' ? fv('district', addr.district ?? '') : esc(addr.district ?? '')}"></div></div>
+        <label>Tỉnh/Thành phố</label><select name="province" required><option value="">-- Chọn tỉnh/thành --</option>${provinceOptions}</select>
+        <label>Ghi chú cho cửa hàng (không bắt buộc)</label><textarea name="reason" maxlength="500">${selectedType === 'address_change' ? fv('reason') : ''}</textarea>
+        <button class="btn sm" type="submit" style="margin-top:10px">Gửi địa chỉ mới</button>
+      </form></details>` : '',
+    canReturn ? `<details${selectedType === 'return' ? ' open' : ''}><summary>Yêu cầu trả hàng</summary>
+      <form method="POST" action="${base}/orders/${esc(o.order_number)}/requests" style="margin-top:12px">
+        <input type="hidden" name="request_type" value="return">
+        <label>Lý do trả hàng</label><textarea name="reason" maxlength="500" required placeholder="Mô tả sản phẩm và vấn đề gặp phải">${selectedType === 'return' ? fv('reason') : ''}</textarea>
+        <p class="muted">Gửi yêu cầu không tự hoàn tiền hoặc cộng lại tồn. Cửa hàng sẽ xác nhận và hướng dẫn bước tiếp theo.</p>
+        <button class="btn sm" type="submit">Gửi yêu cầu trả hàng</button>
+      </form></details>` : '',
+  ].filter(Boolean).join('');
+  const requestBlock = (requests.length || requestForms || requestError) ? `<div class="card">
+      <h2>Yêu cầu hỗ trợ đơn hàng</h2>
+      <p class="muted">Bạn gửi yêu cầu trước; cửa hàng sẽ kiểm tra và chấp thuận. Đơn hàng, tiền và tồn kho chưa thay đổi ngay khi bấm gửi.</p>
+      ${errBox(requestError)}
+      ${requestForms ? `<div class="request-actions">${requestForms}</div>` : ''}
+      ${requestCards ? `<div style="margin-top:14px"><strong>Lịch sử yêu cầu</strong>${requestCards}</div>` : ''}
+      <style>.request-actions{display:grid;gap:9px}.request-actions details{border:1px solid var(--bd);border-radius:10px;padding:10px 12px}.request-actions summary{cursor:pointer;font-weight:600}.request-actions textarea{min-height:82px}</style>
     </div>` : '';
   return layout(`Đơn #${o.order_number}`, shopName, `
     <div class="hd"><h1>Đơn #${esc(o.order_number)}</h1><a class="btn alt sm" href="${base}/orders">← Danh sách đơn</a></div>
+    ${okBox(notice)}
     <div class="card"><p class="muted" style="margin:0">Đặt ngày ${dt(o.created_at)} · <span class="badge">${esc(ORDER_ST[o.status] ?? o.status)}</span>${daDong ? '' : ` <span class="badge">${esc(PAY_ST[o.payment_status] ?? o.payment_status)}</span>`}</p></div>
     ${moneyBlock}
     <div class="card"><h2>Sản phẩm</h2>
@@ -225,11 +322,12 @@ export function renderOrderDetail(shopName, o, lines, shipments = []) {
     ${(shipments?.length) ? `<div class="card"><h2>Vận chuyển</h2>
       ${shipments.map((s) => `<div class="row"><span class="muted">${esc(carrierName(s.carrier))}</span><span><strong style="user-select:all">${esc(s.tracking_number)}</strong></span></div>
         ${carrierTrackUrl(s.carrier, s.tracking_number) ? `<a class="btn alt sm" style="margin-top:8px" href="${carrierTrackUrl(s.carrier, s.tracking_number)}" target="_blank" rel="noopener noreferrer">Tra cứu vận đơn ${esc(carrierName(s.carrier))} →</a>` : ''}`).join('')}</div>` : ''}
+    ${requestBlock}
     <div class="card"><h2>Giao đến</h2>
       <p class="muted" style="margin:0">${esc(o.customer_name || '(đã ẩn danh)')} · ${esc(o.customer_phone || '')}<br>${esc(addrStr || '—')}</p></div>`);
 }
 
-export function renderAddresses(shopName, addresses, provinces, { editing, form = {}, error } = {}) {
+export function renderAddresses(shopName, addresses, provinces, { editing, deleting, form = {}, error } = {}) {
   const base = '/account';
   const opts = (sel) => provinces.map((p) => `<option${p === sel ? ' selected' : ''}>${esc(p)}</option>`).join('');
   const cards = addresses.length ? addresses.map((a) => `<div class="card">
@@ -238,8 +336,19 @@ export function renderAddresses(shopName, addresses, provinces, { editing, form 
         <div class="row" style="gap:6px">
           ${a.is_default ? '' : `<form method="POST" action="${base}/addresses/default" style="margin:0"><input type="hidden" name="id" value="${esc(a.id)}"><button class="btn alt sm" type="submit">Đặt mặc định</button></form>`}
           <a class="btn alt sm" href="${base}/addresses?edit=${esc(a.id)}">Sửa</a>
-          <form method="POST" action="${base}/addresses/delete" style="margin:0"><input type="hidden" name="id" value="${esc(a.id)}"><button class="btn warn sm" type="submit">Xoá</button></form>
+          <a class="btn warn sm" href="${base}/addresses?delete=${esc(a.id)}#xac-nhan-xoa" aria-label="Xoá địa chỉ của ${esc(a.recipient_name)}">Xoá</a>
         </div></div></div>`).join('') : '<div class="card"><p class="muted" style="margin:0">Chưa có địa chỉ nào.</p></div>';
+  const deleteConfirm = deleting ? `<section class="card" id="xac-nhan-xoa" aria-labelledby="xac-nhan-xoa-title">
+      <h2 id="xac-nhan-xoa-title">Xác nhận xoá địa chỉ</h2>
+      <p>Bạn sắp xoá địa chỉ của <strong>${esc(deleting.recipient_name)}</strong>. Thao tác này không thể hoàn tác.</p>
+      <p class="muted">${esc(deleting.phone)}<br>${esc([deleting.line1, deleting.ward, deleting.district, deleting.province].filter(Boolean).join(', '))}</p>
+      <form method="POST" action="${base}/addresses/delete">
+        <input type="hidden" name="id" value="${esc(deleting.id)}">
+        <input type="hidden" name="confirm_delete" value="1">
+        <button class="btn warn" type="submit">Xoá địa chỉ này</button>
+        <a class="btn alt" href="${base}/addresses">Huỷ</a>
+      </form>
+    </section>` : '';
   const f = editing || form;
   const formTitle = editing ? 'Sửa địa chỉ' : 'Thêm địa chỉ mới';
   const action = editing ? `${base}/addresses/edit` : `${base}/addresses/add`;
@@ -247,6 +356,7 @@ export function renderAddresses(shopName, addresses, provinces, { editing, form 
     <div class="hd"><h1>Sổ địa chỉ</h1><a class="btn alt sm" href="${base}">← Tài khoản</a></div>
     ${errBox(error)}
     ${cards}
+    ${deleteConfirm}
     <div class="card"><h2>${formTitle}</h2>
       <form method="POST" action="${action}">
         ${editing ? `<input type="hidden" name="id" value="${esc(editing.id)}">` : ''}

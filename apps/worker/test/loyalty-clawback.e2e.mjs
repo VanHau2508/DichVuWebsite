@@ -73,10 +73,11 @@ async function makeStaff() {
 async function makeShopOwner(staff) {
   const slug = `claw-${uniq()}`;
   const shopId = (await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staff, origin: OO })).json.id;
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [shopId]);
   const oe = `owner-${uniq()}@shop.vn`, op = 'owner passphrase strong';
   await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email: oe, role: 'owner' }, cookie: staff, origin: OO });
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(oe), password: op }, origin: OA });
-  return { shopId, host: `${slug}.nentang.vn`, oc: await login(oe, op) };
+  return { shopId, host: `${slug}.nentang.vn`, oc: await login(oe, op), op };
 }
 async function makeCustomer(host, shopId) {
   const email = `kh-${uniq()}@mail.vn`, pw = 'khach manh 2026 xyz';
@@ -120,6 +121,7 @@ async function main() {
   // Đơn ĐÃ TÍCH điểm: đặt (không đổi) → mark-paid → lùi paid_at → earn sweep.
   async function earnedOrder(custTok) {
     const oid = await order({ custTok });
+    await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.op }, cookie: A.oc, origin: OA });
     await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oid}/mark-paid`, { cookie: A.oc, origin: OS });
     await owner.query(`UPDATE orders SET paid_at = now() - interval '1 day' WHERE id=$1`, [oid]);
     await earnSweep();

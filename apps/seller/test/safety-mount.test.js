@@ -15,6 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { paymentFilterSql, paymentSummary } from '../../../packages/orders/src/owed.js';
 
 const ROOT = join(import.meta.dirname, '..', '..', '..');
 const doc = (p) => readFileSync(join(ROOT, p), 'utf8');
@@ -121,6 +122,44 @@ test('service nào import công thức CÒN NỢ KHÁCH thì cả hai compose đ
   }
 });
 
+const PHONE_IMPORT = "from '../phone.js'";
+const PHONE_DICH = { account: '/app/apps/account/phone.js' };
+const phoneMount = (svc) => `../packages/customer-input/src/phone.js:${PHONE_DICH[svc] ?? '/app/phone.js'}:ro`;
+
+test('service nào chuẩn hoá SĐT khách thì cả hai compose đều mount đúng một file dùng chung', () => {
+  const services = [];
+  for (const app of readdirSync(join(ROOT, 'apps'))) {
+    const src = join(ROOT, 'apps', app, 'src');
+    if (!existsSync(src)) continue;
+    if (readdirSync(src).some((f) => f.endsWith('.js') && readFileSync(join(src, f), 'utf8').includes(PHONE_IMPORT))) {
+      services.push(app);
+    }
+  }
+  assert.ok(services.length >= 3,
+    `chỉ thấy ${services.length} service import '../phone.js' — kỳ vọng checkout/seller/account`);
+  for (const compose of ['infra/compose.dev.yml', 'infra/compose.prod.yml']) {
+    const blocks = khoiService(compose);
+    for (const svc of services) {
+      assert.ok(blocks.get(svc)?.includes(phoneMount(svc)),
+        `${compose}: service ${svc} thiếu mount ${phoneMount(svc)}`);
+    }
+  }
+});
+
+test('chuẩn hoá SĐT chỉ có một implementation runtime', () => {
+  assert.match(doc('packages/customer-input/src/phone.js'), /export function canonPhone\b/);
+  for (const path of [
+    'apps/checkout/src/server.js',
+    'apps/seller/src/orders.js',
+    'apps/seller/src/order-requests.js',
+    'apps/account/src/server.js',
+  ]) {
+    const src = doc(path);
+    assert.match(src, /import \{ canonPhone \} from '\.\.\/phone\.js'/, `${path}: chưa import module dùng chung`);
+    assert.doesNotMatch(src, /function canonPhone\b/, `${path}: vẫn giữ bản canonPhone riêng`);
+  }
+});
+
 test('công thức còn-nợ-khách là MỘT bản, xuất đủ các mảnh và không âm', () => {
   const src = doc('packages/orders/src/owed.js');
   for (const name of ['OWED_ENTITLED_SQL', 'OWED_REFUNDED_SQL', 'OWED_SQL', 'OWED_REASON_SQL']) {
@@ -134,6 +173,86 @@ test('công thức còn-nợ-khách là MỘT bản, xuất đủ các mảnh v�
   assert.match(src, /greatest\(0,/, 'công thức không chặn ở 0');
 });
 
+test('payment summary phân biệt trả thiếu, trả dư và tiền nằm trên đơn đã chết', () => {
+  assert.equal(paymentSummary({
+    total_vnd: 0, amount_paid_vnd: 0, refunded_vnd: 0, status: 'pending',
+  }).display_state, 'paid', 'đơn 0đ thuộc paid, không được đồng thời xuất hiện trong unpaid');
+  assert.deepEqual(paymentSummary({
+    total_vnd: 500000, amount_paid_vnd: 200000, refunded_vnd: 0, status: 'pending',
+  }), {
+    total_vnd: 500000, received_vnd: 200000, refunded_vnd: 0, net_received_vnd: 200000,
+    amount_due_vnd: 300000, customer_credit_vnd: 0, display_state: 'partial',
+  });
+  assert.equal(paymentSummary({
+    total_vnd: 500000, amount_paid_vnd: 550000, refunded_vnd: 0, status: 'confirmed',
+  }).display_state, 'overpaid');
+  assert.deepEqual(paymentSummary({
+    total_vnd: 500000, amount_paid_vnd: 200000, refunded_vnd: 0, status: 'cancelled',
+  }), {
+    total_vnd: 500000, received_vnd: 200000, refunded_vnd: 0, net_received_vnd: 200000,
+    amount_due_vnd: 0, customer_credit_vnd: 200000, display_state: 'refund_due',
+  });
+});
+
+test('dashboard và danh sách đơn dùng chung predicate số tiền thực nhận', () => {
+  const dashboard = doc('apps/seller/src/dashboard.js');
+  const orders = doc('apps/seller/src/orders.js');
+  assert.match(dashboard, /PAYMENT_UNPAID_SQL/);
+  assert.match(dashboard, /PAYMENT_PARTIAL_SQL/);
+  assert.match(orders, /paymentFilterSql\(payment\)/);
+  assert.match(paymentFilterSql('unpaid'), /OWED_PAID_SQL|amount_paid_vnd|paid_at/);
+  assert.match(paymentFilterSql('unpaid'), /o\.total_vnd > 0/,
+    'đơn 0đ không được đồng thời khớp unpaid và paid');
+  assert.match(paymentFilterSql('unpaid'), /o\.status NOT IN \('cancelled', 'refunded', 'returned'\)/);
+  assert.match(paymentFilterSql('unpaid'), /NOT o\.is_migrated/,
+    'hàng đợi thu tiền không được chứa đơn lịch sử di cư');
+  assert.match(paymentFilterSql('unpaid'), /o\.payment_status <> 'refunded'/,
+    'bộ lọc refunded phải rời với unpaid');
+  assert.match(paymentFilterSql('pending'), /> 0[\s\S]*< o\.total_vnd/);
+  assert.match(paymentFilterSql('pending'), /o\.status NOT IN \('cancelled', 'refunded', 'returned'\)/);
+  assert.match(paymentFilterSql('pending'), /NOT o\.is_migrated/);
+  assert.match(paymentFilterSql('pending'), /o\.payment_status <> 'refunded'/,
+    'bộ lọc refunded phải rời với partial');
+  assert.doesNotMatch(dashboard, /PAYMENT_(?:UNPAID|PARTIAL)_SQL\}[\s\S]{0,80}status NOT IN/,
+    'dashboard không được chép lại điều kiện đơn sống bên ngoài predicate dùng chung');
+  assert.match(orders, /SELECT count\(\*\)::int n FROM orders o \$\{whereSql\}/);
+  assert.match(orders, /FROM orders o \$\{whereNoStatusSql\}/);
+  assert.match(orders, /SELECT count\(\*\)::int AS n FROM orders o \$\{F\.whereSql\}/);
+  assert.match(orders, /FROM orders o \$\{F\.whereSql\} ORDER BY order_number DESC/);
+  assert.equal(paymentFilterSql('unknown'), null);
+});
+
+test('hoàn tiền trên đơn còn sống không mở lại khoản phải thu từ khách', () => {
+  const partialRefund = paymentSummary({
+    total_vnd: 500000, amount_paid_vnd: 500000, refunded_vnd: 200000, status: 'shipped',
+  });
+  assert.equal(partialRefund.received_vnd, 500000, 'phiếu hoàn không được xoá số tiền đã thu');
+  assert.equal(partialRefund.refunded_vnd, 200000);
+  assert.equal(partialRefund.net_received_vnd, 300000);
+  assert.equal(partialRefund.amount_due_vnd, 0,
+    'đã thu đủ rồi hoàn một phần không có nghĩa là khách phải chuyển lại phần vừa được hoàn');
+
+  const fullRefund = paymentSummary({
+    total_vnd: 500000, amount_paid_vnd: 500000, refunded_vnd: 500000, status: 'shipped',
+  });
+  assert.equal(fullRefund.net_received_vnd, 0);
+  assert.equal(fullRefund.amount_due_vnd, 0,
+    'phiếu hoàn đủ trên đơn chưa đổi trạng thái cũng không được làm QR/số còn thiếu sống lại');
+});
+
+test('tracking khóa order trước khi đổi trạng thái shipment', () => {
+  const src = doc('apps/worker/src/index.js');
+  const sweepAt = src.indexOf('async function sweepTracking()');
+  const txAt = src.indexOf("await c.query('BEGIN');", sweepAt);
+  const lockAt = src.indexOf('await lockTrackingOrder(c, s.order_id)', txAt);
+  const branchAt = src.indexOf("if (st.state === 'delivered')", txAt);
+
+  assert.ok(sweepAt >= 0 && txAt > sweepAt && lockAt > txAt && branchAt > lockAt,
+    'sweep phải khóa order ngay sau BEGIN và trước mọi nhánh đổi shipment');
+  assert.match(src, /async function lockTrackingOrder[\s\S]*?SELECT id FROM orders WHERE id = \$1 FOR UPDATE/,
+    'helper khóa order phải dùng row lock FOR UPDATE');
+});
+
 test('file công thức dùng chung tồn tại và xuất đủ ba thứ', () => {
   const src = doc('packages/inventory/src/safety-stock.js');
   for (const name of ['SAFETY_SQL', 'AVAIL_SQL', 'availOf']) {
@@ -144,4 +263,26 @@ test('file công thức dùng chung tồn tại và xuất đủ ba thứ', () =
   assert.match(src, /AVAIL_SQL = `[^`]*\$\{SAFETY_SQL\}/, 'AVAIL_SQL không dùng lại SAFETY_SQL');
   // Làm tròn LÊN: đệm là vùng chống sai số nên chệch về phía giữ NHIỀU hơn mới đúng ý định.
   assert.match(src, /ceil\(/, 'công thức đệm không làm tròn lên (ceil)');
+});
+
+test('dashboard và catalog dùng ATS cho mọi tín hiệu còn bán được online', () => {
+  const dashboard = doc('apps/seller/src/dashboard.js');
+  const catalog = doc('apps/seller/src/catalog.js');
+
+  assert.match(dashboard, /import \{ AVAIL_SQL \} from '\.\.\/safety-stock\.js'/);
+  assert.match(dashboard, /AS available[\s\S]*?WHERE \$\{AVAIL_SQL\} <=/,
+    'danh sách tồn thấp phải dùng ATS cho cả số hiển thị lẫn điều kiện');
+  assert.match(dashboard, /AS low_stock_count/);
+  assert.doesNotMatch(dashboard, /il\.on_hand\s*-\s*il\.reserved/,
+    'dashboard không được tự tính tồn bán được mà bỏ qua safety stock');
+
+  assert.match(catalog, /import \{ AVAIL_SQL \} from '\.\.\/safety-stock\.js'/);
+  assert.match(catalog, /export const sellableCount[\s\S]*?\$\{AVAIL_SQL\} > 0/);
+  assert.match(catalog, /query\.get\('stock'\) === 'low'[\s\S]*?\$\{AVAIL_SQL\} <=/);
+  assert.match(catalog, /sum\(\$\{AVAIL_SQL\}\)/,
+    'tổng tồn còn bán được online phải cộng ATS từng biến thể');
+  assert.match(catalog, /coalesce\(\$\{AVAIL_SQL\}, 0\) <= 0/,
+    'số biến thể hết hàng phải dựa trên ATS');
+  assert.doesNotMatch(catalog, /il\.on_hand\s*-\s*il\.reserved/,
+    'catalog không được giữ phép tính tồn bán được thứ hai');
 });

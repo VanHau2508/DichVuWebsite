@@ -124,6 +124,7 @@ async function main() {
   const slug = `ss-${uniq()}`;
   let r = await rq(PLATFORM, 'POST', '/ops/shops', { body: { name: slug, slug, plan_code: 'platform' }, cookie: staff, origin: OO });
   const shopId = r.json.id; HOST = `${slug}.nentang.vn`;
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [shopId]);
   const oe = `owner-${uniq()}@shop.vn`, op = 'owner passphrase strong';
   await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email: oe, role: 'owner' }, cookie: staff, origin: OO });
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(oe), password: op }, origin: OA });
@@ -195,13 +196,25 @@ async function main() {
   // ── 3. KHÔNG BÁN QUÁ PHẦN (khẳng định trung tâm) ───────────────────────────
   sect('3. Không bán quá phần');
   r = await datHang(B.vid, 9, 'over');
-  r.status === 422 ? ok('đặt 9 > 8 bán-được → 422 hết hàng') : bad('BÁN QUÁ PHẦN: đặt 9 vẫn qua', r.raw);
+  r.status === 422 && r.cartFailed === true && r.json?.error_code === 'inventory_unavailable'
+    && r.json?.variant_id === B.vid && Number(r.json?.available_qty) === 8 && r.json?.action
+    ? ok('thêm giỏ 9 > 8 → chặn ngay, trả available_qty + hành động rõ ràng')
+    : bad('giỏ nhận quá ATS hoặc lỗi không có hướng xử lý', r.raw);
   let lvl = await lvlOf(B.vid);
   Number(lvl.reserved) === 0 ? ok('đơn bị chặn KHÔNG để lại giữ chỗ rác (reserved = 0)') : bad(`reserved = ${lvl.reserved} sau đơn bị chặn`, '');
   let dem = await demSau(B.vid, 1);
   dem === 1
     ? ok('bộ đếm bị-chặn = 1 (kho còn hàng thật → đúng là chi phí của tính năng)')
     : bad(`bộ đếm bị-chặn = ${dem}, mong 1`, '');
+
+  const BSet = await mkSP('Áo sửa giỏ có đệm', 10);
+  let cartSet = await themGio(BSet.vid, 7);
+  r = await co('PATCH', '/cart/items', { json: { variant_id: BSet.vid, qty: 9 }, cartCookie: cartSet.cartCookie });
+  const kept = await co('GET', '/cart/summary', { cartCookie: cartSet.cartCookie });
+  r.status === 422 && r.json?.error_code === 'inventory_unavailable' && Number(r.json?.available_qty) === 8
+    && kept.status === 200 && Number(kept.json?.items?.[0]?.qty) === 7
+    ? ok('drawer tăng quá ATS → 422 có số còn lại, giỏ giữ nguyên 7')
+    : bad('cập nhật giỏ nuốt lỗi hoặc làm mất dòng cũ', JSON.stringify({ error: r.json, kept: kept.json }));
 
   r = await datHang(B.vid, 8, 'exact');
   r.status === 201 ? ok('đặt đúng 8 = bán-được → 201') : bad('chặn nhầm đơn hợp lệ', r.raw);
@@ -329,6 +342,9 @@ async function main() {
   let html = await sf(`/p/${K.slug}`);
   html.status === 200 && HET.test(html.raw)
     ? ok('đệm nuốt trọn tồn → trang SP hiện HẾT HÀNG (dù kho còn 5)') : bad('trang SP vẫn mời mua', html.raw.slice(0, 300));
+  html.raw.includes('id="cd-error"') && html.raw.includes("fetch('/cart/items',{method:'PATCH'")
+    ? ok('drawer có vùng báo lỗi tại chỗ + cập nhật JSON, no-JS form vẫn giữ riêng')
+    : bad('drawer vẫn nuốt lỗi cập nhật tồn', html.raw.slice(-500));
   r = await datHang(K.vid, 1, 'sfmatch');
   r.status === 422 ? ok('và checkout cũng từ chối → hai bên KHỚP') : bad('storefront và checkout lệch nhau', r.raw);
   await S.put(`/variants/${K.vid}/inventory/safety`, { safety_stock_qty: 1 }); // bán được 4

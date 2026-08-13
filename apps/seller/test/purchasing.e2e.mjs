@@ -114,6 +114,116 @@ async function main() {
   const d = (await rq(SELLER, 'GET', `/shops/${shopId}/purchase-orders/${po1}`, { cookie: oc })).json;
   r.status === 200 && N(d.subtotal_vnd) === (10 * 120000 + 5 * 80000) ? ok('subtotal sau sửa = 1.600.000') : bad('sửa subtotal sai', `${r.status} ${d.subtotal_vnd}`);
 
+  sect('CRUD từng dòng: thêm / sửa / xoá nguyên tử và giữ snapshot');
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders`, { body: { supplier_id: supA, lines: [] }, cookie: oc, origin: OS });
+  const poAtomic = r.json?.id;
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${poAtomic}/lines`, { body: { variant_id: V1, qty: 2, unit_cost_vnd: 1100 }, cookie: oc, origin: OS });
+  const lineA = r.json?.id;
+  r.status === 201 && lineA && N(r.json.unit_cost_vnd) === 1100 ? ok('thêm dòng V1 vào draft') : bad('thêm dòng nguyên tử lỗi', r.raw);
+  r = await rq(SELLER, 'PATCH', `/shops/${shopId}/purchase-orders/${poAtomic}/lines/${lineA}`, { body: { qty: 4, unit_cost_vnd: 1250 }, cookie: oc, origin: OS });
+  r.status === 200 && N(r.json.qty) === 4 && N(r.json.unit_cost_vnd) === 1250 ? ok('sửa qty/giá dòng giữ nguyên line id') : bad('sửa dòng nguyên tử lỗi', r.raw);
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${poAtomic}/lines`, { body: { variant_id: V2, qty: 3, unit_cost_vnd: 2000 }, cookie: oc, origin: OS });
+  const lineB = r.json?.id;
+  r.status === 201 && lineB ? ok('thêm dòng V2 không ảnh hưởng V1') : bad('thêm dòng thứ hai lỗi', r.raw);
+  r = await rq(SELLER, 'PATCH', `/shops/${shopId}/purchase-orders/${poAtomic}/lines/${lineA}`, { body: { variant_id: V2 }, cookie: oc, origin: OS });
+  r.status === 409 ? ok('đổi dòng sang biến thể đã có bị chặn') : bad('đổi sang biến thể trùng phải 409', r.status);
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${poAtomic}/lines`, { body: { variant_id: V2, qty: 1, unit_cost_vnd: 1 }, cookie: oc, origin: OS });
+  r.status === 409 ? ok('thêm biến thể trùng bị chặn') : bad('trùng biến thể phải 409', r.status);
+  r = await rq(SELLER, 'DELETE', `/shops/${shopId}/purchase-orders/${poAtomic}/lines/${lineA}`, { cookie: oc, origin: OS });
+  const atomicDetail = (await rq(SELLER, 'GET', `/shops/${shopId}/purchase-orders/${poAtomic}`, { cookie: oc })).json;
+  r.status === 200 && atomicDetail.lines.length === 1 && atomicDetail.lines[0].id === lineB
+    && N(atomicDetail.subtotal_vnd) === 6000 && atomicDetail.lines[0].title_snapshot && atomicDetail.lines[0].sku_snapshot
+    ? ok('xoá V1 chỉ còn V2, subtotal và snapshot đúng') : bad('xoá dòng nguyên tử lỗi', JSON.stringify(atomicDetail));
+
+  sect('Phiếu đã đặt là snapshot: header và dòng đều bị khoá, tồn không đổi');
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders`, {
+    body: { supplier_id: supA, note: 'đã gửi NCC', lines: [{ variant_id: V1, qty: 2, unit_cost_vnd: 11111 }] },
+    cookie: oc, origin: OS,
+  });
+  const poLocked = r.json?.id;
+  r.status === 201 && poLocked ? ok('tạo phiếu dùng kiểm tra khoá ordered') : bad('không tạo được phiếu kiểm tra ordered', r.raw);
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${poLocked}/order`, { cookie: oc, origin: OS });
+  const lockedBefore = (await rq(SELLER, 'GET', `/shops/${shopId}/purchase-orders/${poLocked}`, { cookie: oc })).json;
+  const lockedLine = lockedBefore?.lines?.[0];
+  const stockBeforeLockTests = { V1: await onHandOf(V1), V2: await onHandOf(V2) };
+  r.status === 200 && lockedBefore?.status === 'ordered' && lockedLine
+    ? ok('draft → ordered, chụp snapshot trước các request sửa') : bad('không chuyển được phiếu sang ordered', `${r.status} ${JSON.stringify(lockedBefore)}`);
+
+  r = await rq(SELLER, 'PATCH', `/shops/${shopId}/purchase-orders/${poLocked}`, {
+    body: { note: 'không được ghi đè sau khi đã đặt' }, cookie: oc, origin: OS,
+  });
+  r.status === 409 ? ok('ordered: PATCH header → 409') : bad('ordered vẫn sửa được header', r.status);
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${poLocked}/lines`, {
+    body: { variant_id: V2, qty: 3, unit_cost_vnd: 22222 }, cookie: oc, origin: OS,
+  });
+  r.status === 409 ? ok('ordered: thêm dòng → 409') : bad('ordered vẫn thêm được dòng', r.status);
+  r = await rq(SELLER, 'PATCH', `/shops/${shopId}/purchase-orders/${poLocked}/lines/${lockedLine.id}`, {
+    body: { qty: 9, unit_cost_vnd: 99999 }, cookie: oc, origin: OS,
+  });
+  r.status === 409 ? ok('ordered: sửa dòng → 409') : bad('ordered vẫn sửa được dòng', r.status);
+  r = await rq(SELLER, 'DELETE', `/shops/${shopId}/purchase-orders/${poLocked}/lines/${lockedLine.id}`, { cookie: oc, origin: OS });
+  r.status === 409 ? ok('ordered: xoá dòng → 409') : bad('ordered vẫn xoá được dòng', r.status);
+
+  const lockedAfter = (await rq(SELLER, 'GET', `/shops/${shopId}/purchase-orders/${poLocked}`, { cookie: oc })).json;
+  const stockAfterLockTests = { V1: await onHandOf(V1), V2: await onHandOf(V2) };
+  const sameLockedLine = lockedAfter?.lines?.length === 1
+    && lockedAfter.lines[0].id === lockedLine.id
+    && lockedAfter.lines[0].variant_id === lockedLine.variant_id
+    && N(lockedAfter.lines[0].qty) === N(lockedLine.qty)
+    && N(lockedAfter.lines[0].unit_cost_vnd) === N(lockedLine.unit_cost_vnd);
+  lockedAfter?.status === 'ordered' && lockedAfter.note === lockedBefore.note
+    && lockedAfter.supplier_id === lockedBefore.supplier_id
+    && N(lockedAfter.subtotal_vnd) === N(lockedBefore.subtotal_vnd) && sameLockedLine
+    ? ok('ordered: dữ liệu header/dòng/subtotal giữ nguyên') : bad('ordered bị đổi dữ liệu sau request bị chặn', JSON.stringify(lockedAfter));
+  stockAfterLockTests.V1 === stockBeforeLockTests.V1 && stockAfterLockTests.V2 === stockBeforeLockTests.V2
+    ? ok('ordered: tồn V1/V2 không đổi sau mọi request sửa')
+    : bad('request sửa ordered làm đổi tồn', `${JSON.stringify(stockBeforeLockTests)} → ${JSON.stringify(stockAfterLockTests)}`);
+
+  sect('Không xoá sản phẩm khi còn phiếu nhập mở');
+  const openPoProduct = await rq(SELLER, 'POST', `/shops/${shopId}/products`, {
+    body: { title: 'Hàng đang nhập', slug: `open-po-${uniq()}`, price_vnd: 45000, status: 'draft', variants: [{ sku: `OPEN-${uniq()}`, price_vnd: 45000 }] },
+    cookie: oc, origin: OS,
+  });
+  const openPoProductId = openPoProduct.json?.id;
+  const openPoVariant = (await rq(SELLER, 'GET', `/shops/${shopId}/products/${openPoProductId}`, { cookie: oc })).json?.variants?.[0]?.id;
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders`, {
+    body: { supplier_id: supA, lines: [{ variant_id: openPoVariant, qty: 4, unit_cost_vnd: 30000 }] }, cookie: oc, origin: OS,
+  });
+  const openPoId = r.json?.id;
+  const openPoStockBefore = await onHandOf(openPoVariant);
+  r = await rq(SELLER, 'DELETE', `/shops/${shopId}/products/${openPoProductId}`, { cookie: oc, origin: OS });
+  const openPoProductAfterBlockedDelete = await rq(SELLER, 'GET', `/shops/${shopId}/products/${openPoProductId}`, { cookie: oc });
+  r.status === 409 && r.json?.error_code === 'product_has_open_purchase_order'
+    && r.json?.purchase_order_id === openPoId && r.json?.action
+    ? ok('phiếu draft chặn xoá sản phẩm và trả hướng xử lý rõ') : bad('vẫn xoá được sản phẩm đang nằm trong phiếu draft', `${r.status} ${r.raw}`);
+  openPoProductAfterBlockedDelete.status === 200 && (await onHandOf(openPoVariant)) === openPoStockBefore
+    ? ok('xoá bị chặn: sản phẩm và tồn giữ nguyên') : bad('xoá bị chặn nhưng dữ liệu/tồn đã đổi', `${openPoProductAfterBlockedDelete.status}/${await onHandOf(openPoVariant)}`);
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${openPoId}/order`, { cookie: oc, origin: OS });
+  r = await rq(SELLER, 'DELETE', `/shops/${shopId}/products/${openPoProductId}`, { cookie: oc, origin: OS });
+  r.status === 409 && r.json?.purchase_order_status === 'ordered'
+    ? ok('phiếu ordered tiếp tục chặn xoá sản phẩm') : bad('vẫn xoá được sản phẩm đang nằm trong phiếu ordered', `${r.status} ${r.raw}`);
+  await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${openPoId}/cancel`, { cookie: oc, origin: OS });
+  r = await rq(SELLER, 'DELETE', `/shops/${shopId}/products/${openPoProductId}`, { cookie: oc, origin: OS });
+  r.status === 200 ? ok('huỷ phiếu mở xong thì xoá mềm sản phẩm được') : bad('đã huỷ phiếu nhưng vẫn không xoá được sản phẩm', `${r.status} ${r.raw}`);
+
+  const legacyDeleted = await rq(SELLER, 'POST', `/shops/${shopId}/products`, {
+    body: { title: 'Legacy đã xoá', slug: `legacy-po-${uniq()}`, price_vnd: 55000, status: 'draft', variants: [{ sku: `LEG-${uniq()}`, price_vnd: 55000 }] },
+    cookie: oc, origin: OS,
+  });
+  const legacyDeletedProductId = legacyDeleted.json?.id;
+  const legacyDeletedVariant = (await rq(SELLER, 'GET', `/shops/${shopId}/products/${legacyDeletedProductId}`, { cookie: oc })).json?.variants?.[0]?.id;
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders`, {
+    body: { supplier_id: supA, lines: [{ variant_id: legacyDeletedVariant, qty: 6, unit_cost_vnd: 40000 }] }, cookie: oc, origin: OS,
+  });
+  const legacyDeletedPo = r.json?.id;
+  await owner.query(`UPDATE products SET deleted_at = now() WHERE id = $1`, [legacyDeletedProductId]);
+  const legacyStockBefore = await onHandOf(legacyDeletedVariant);
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${legacyDeletedPo}/receive`, { cookie: oc, origin: OS });
+  r.status === 409 && r.json?.error_code === 'purchase_order_product_deleted' && r.json?.action
+    ? ok('hàng rào receive chặn dữ liệu legacy có sản phẩm đã xoá') : bad('receive vẫn cộng tồn cho sản phẩm legacy đã xoá', `${r.status} ${r.raw}`);
+  (await onHandOf(legacyDeletedVariant)) === legacyStockBefore
+    ? ok('receive bị chặn không thay đổi tồn legacy') : bad('receive bị chặn nhưng tồn legacy đã đổi', `${legacyStockBefore}→${await onHandOf(legacyDeletedVariant)}`);
+
   sect('draft → ordered → NHẬN: on_hand += qty, 1 ledger receive/dòng, cost = giá nhập (cũ NULL)');
   await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${po1}/order`, { cookie: oc, origin: OS });
   r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${po1}/receive`, { cookie: oc, origin: OS });
@@ -138,6 +248,34 @@ async function main() {
   const h2V1 = await onHandOf(V1), c2V1 = await costOf(V1);
   h2V1 === 20 && c2V1 === 170000 ? ok('V1: on_hand 20, cost bình quân = 170.000') : bad('weighted-avg sai', `on_hand=${h2V1} cost=${c2V1}`);
 
+  sect('Bình quân giá vốn giữ chính xác khi tích tồn × giá vượt Number.MAX_SAFE_INTEGER');
+  const VBig = await mk('BIG', 100000000000, 0);
+  const oldQtyBig = 2_147_009_158;
+  const oldCostBig = 98_765_431_121;
+  const receiveQtyBig = 99_999;
+  const buyCostBig = 99_999_999_025;
+  const expectedCostBig = 98_765_488_619;
+  await owner.query(
+    `INSERT INTO inventory_levels (shop_id, variant_id, on_hand, reserved)
+     VALUES ($1,$2,$3,0)
+     ON CONFLICT (shop_id,variant_id) DO UPDATE SET on_hand=$3,reserved=0,updated_at=now()`,
+    [shopId, VBig, oldQtyBig],
+  );
+  await owner.query(
+    `INSERT INTO inventory_ledger (shop_id,variant_id,delta,kind,reason)
+     VALUES ($1,$2,$3,'adjust','dựng biên số nguyên chính xác')`,
+    [shopId, VBig, oldQtyBig],
+  );
+  await setCost(VBig, oldCostBig);
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders`, {
+    body: { supplier_id: supA, lines: [{ variant_id: VBig, qty: receiveQtyBig, unit_cost_vnd: buyCostBig }] }, cookie: oc, origin: OS,
+  });
+  const poBig = r.json?.id;
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${poBig}/receive`, { cookie: oc, origin: OS });
+  r.status === 200 && (await costOf(VBig)) === expectedCostBig && (await onHandOf(VBig)) === oldQtyBig + receiveQtyBig
+    ? ok('giá vốn biên dùng số nguyên chính xác, không lệch 1đ')
+    : bad('giá vốn biên bị sai do mất chính xác', `${r.status} cost=${await costOf(VBig)} stock=${await onHandOf(VBig)}`);
+
   sect('on_hand cũ ≤ 0 nhưng cost cũ có → lấy giá nhập (không weighted với 0 tồn)');
   const V3 = await mk('ZC', 90000, 0);
   await setCost(V3, 50000); // có cost nhưng on_hand=0
@@ -153,6 +291,13 @@ async function main() {
   r.status === 409 ? ok('huỷ phiếu đã nhận → 409') : bad('huỷ-đã-nhận phải 409', r.status);
   r = await rq(SELLER, 'PATCH', `/shops/${shopId}/purchase-orders/${po1}`, { body: { note: 'sửa sau chốt' }, cookie: oc, origin: OS });
   r.status === 409 ? ok('sửa phiếu đã nhận → 409') : bad('sửa-đã-nhận phải 409', r.status);
+  const receivedLineId = d.lines[0]?.id;
+  r = await rq(SELLER, 'PATCH', `/shops/${shopId}/purchase-orders/${po1}/lines/${receivedLineId}`, { body: { qty: 1 }, cookie: oc, origin: OS });
+  r.status === 409 ? ok('sửa dòng phiếu đã nhận → 409') : bad('sửa dòng đã nhận phải 409', r.status);
+  r = await rq(SELLER, 'DELETE', `/shops/${shopId}/purchase-orders/${po1}/lines/00000000-0000-0000-0000-000000000000`, { cookie: oc, origin: OS });
+  r.status === 404 ? ok('xoá dòng không tồn tại trên phiếu đã nhận → 404') : bad('dòng không tồn tại phải 404 dù phiếu đã nhận', r.status);
+  r = await rq(SELLER, 'DELETE', `/shops/${shopId}/purchase-orders/${po1}/lines/${receivedLineId}`, { cookie: oc, origin: OS });
+  r.status === 409 ? ok('xoá dòng tồn tại trên phiếu đã nhận → 409') : bad('xoá dòng đã nhận phải 409', r.status);
   // Xác nhận on_hand KHÔNG đổi sau các lần bị chặn.
   (await onHandOf(V1)) === 20 ? ok('on_hand V1 vẫn 20 sau các thao tác bị chặn') : bad('on_hand đổi sau khi bị chặn', await onHandOf(V1));
 
@@ -177,6 +322,8 @@ async function main() {
   r.status === 403 ? ok('order_manager GET suppliers → 403') : bad('order_manager phải 403', r.status);
   r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${po1}/receive`, { cookie: omc, origin: OS });
   r.status === 403 ? ok('order_manager receive → 403') : bad('order_manager receive phải 403', r.status);
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/purchase-orders/${poAtomic}/lines`, { body: { variant_id: V1, qty: 1, unit_cost_vnd: 1 }, cookie: omc, origin: OS });
+  r.status === 403 ? ok('order_manager thêm dòng → 403') : bad('order_manager thêm dòng phải 403', r.status);
 
   // ── IDOR chéo-shop ──────────────────────────────────────────────────────────
   sect('IDOR: chủ shop B KHÔNG thấy phiếu/NCC của shop A (RLS)');
@@ -189,16 +336,29 @@ async function main() {
   // B không là thành viên A → truy cập trực tiếp URL của A = 404 ở dispatcher.
   r = await rq(SELLER, 'GET', `/shops/${shopId}/purchase-orders/${po1}`, { cookie: B.oc });
   r.status === 404 ? ok('B gọi URL shop A (không phải thành viên) → 404') : bad('non-member phải 404', r.status);
+  r = await rq(SELLER, 'DELETE', `/shops/${shopId}/purchase-orders/${poAtomic}/lines/${lineB}`, { cookie: B.oc, origin: OS });
+  r.status === 404 ? ok('B xoá dòng phiếu A → 404 (tenant guard)') : bad('IDOR dòng phiếu chéo-shop', r.status);
 
   // ── BIẾN THỂ CÓ THỂ NHẬP (kể cả SP nháp/ẩn) ──────────────────────────────────
   sect('purchasable-variants: gồm cả SP nháp (khác sellable-variants)');
-  const draftP = await rq(SELLER, 'POST', `/shops/${shopId}/products`, { body: { title: 'Nháp', slug: `sp-${uniq()}`, price_vnd: 10000, status: 'draft', variants: [{ sku: `DR-${uniq()}`, price_vnd: 10000 }] }, cookie: oc, origin: OS });
+  const draftP = await rq(SELLER, 'POST', `/shops/${shopId}/products`, { body: { title: 'Nháp', slug: `sp-${uniq()}`, price_vnd: 10000, status: 'draft', variants: [{ title: 'Blue XL', sku: `DR-${uniq()}`, price_vnd: 10000 }] }, cookie: oc, origin: OS });
   const draftVid = (await rq(SELLER, 'GET', `/shops/${shopId}/products/${draftP.json.id}`, { cookie: oc })).json.variants[0].id;
   const pv = await rq(SELLER, 'GET', `/shops/${shopId}/purchasable-variants`, { cookie: oc });
   const sv = await rq(SELLER, 'GET', `/shops/${shopId}/sellable-variants`, { cookie: oc });
   pv.json.variants.some((v) => v.id === draftVid) && !sv.json.variants.some((v) => v.id === draftVid)
     ? ok('SP nháp: có trong purchasable, KHÔNG có trong sellable') : bad('purchasable/sellable lọc sai', `pv=${pv.json.variants.some((v) => v.id === draftVid)} sv=${sv.json.variants.some((v) => v.id === draftVid)}`);
   pv.json.variants.find((v) => v.id === V1)?.cost_vnd === 170000 ? ok('purchasable kèm giá vốn hiện hành (V1=170.000)') : bad('purchasable thiếu cost', JSON.stringify(pv.json.variants.find((v) => v.id === V1)));
+  r = await rq(SELLER, 'GET', `/shops/${shopId}/purchasable-variants?limit=1&offset=0`, { cookie: oc });
+  const page0 = r.json;
+  r.status === 200 && page0.limit === 1 && page0.offset === 0 && page0.variants.length === 1 && page0.has_more === true
+    ? ok('purchasable phân trang trang đầu có has_more') : bad('phân trang trang đầu lỗi', r.raw);
+  r = await rq(SELLER, 'GET', `/shops/${shopId}/purchasable-variants?limit=1&offset=1`, { cookie: oc });
+  const page1 = r.json;
+  r.status === 200 && page1.variants.length === 1 && page1.variants[0].id !== page0.variants[0].id
+    ? ok('purchasable trang kế không trùng dòng') : bad('phân trang bị trùng', r.raw);
+  r = await rq(SELLER, 'GET', `/shops/${shopId}/purchasable-variants?q=Blue%20XL`, { cookie: oc });
+  r.status === 200 && r.json.variants.some((v) => v.id === draftVid)
+    ? ok('tìm purchasable theo tên biến thể') : bad('tìm theo tên biến thể lỗi', r.raw);
 
   // ── KIỂM KÊ ──────────────────────────────────────────────────────────────────
   sect('Kiểm kê: tạo phiên (list) → snapshot system_qty = on_hand hiện tại');

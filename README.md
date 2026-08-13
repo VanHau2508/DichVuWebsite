@@ -3,7 +3,7 @@
 > **Đọc file này trước.** Nó viết cho một người (hoặc một AI) chưa từng thấy kho này, cần hiểu
 > đủ để làm việc mà không phải khám phá lại những thứ đã trả giá để biết.
 >
-> Cập nhật: **2026-08-06.** Nếu bạn sửa gì lớn, sửa luôn file này.
+> Cập nhật: **2026-08-13.** Nếu bạn sửa gì lớn, sửa luôn file này.
 
 ---
 
@@ -63,7 +63,7 @@ e2e). Chỉ được nói "xanh" khi lệnh đầy đủ `exit 0`. Danh sách te
 đám mây và CI máy: `scripts/test-manifest.sh` — thêm/bớt bộ test thì phải sửa con số trong đó
 cùng commit, nếu không cổng đỏ.
 
-Hôm nay: **24 bộ unit · 101 bộ e2e · 88 bất biến DB · 3 smoke.**
+Hôm nay: **35 bộ unit · 106 bộ e2e · 9 bộ DB (115 test theo tổng kết TAP) · 3 smoke.**
 
 ---
 
@@ -108,9 +108,10 @@ quyết định bảo mật — đừng nới cho tiện.
   "tôi không viết GRANT" ≠ "vai đó không có quyền". Bảng mới không dành cho tenant thì phải
   `REVOKE ALL … FROM app_rw` **và** thêm policy chặn.
 - **Migration là BẤT BIẾN.** Runner băm nội dung; sửa file cũ → `DRIFT` → cổng đỏ. Sửa gì cũng
-  bằng file mới. Hiện có **146 tệp**, mới nhất `0147`.
-- **Bất biến schema** (`scripts/`, 88 khẳng định) canh những thứ như "mọi bảng có `shop_id` phải
-  có policy", "không policy nào của `app_rw` dùng biểu thức hằng `true`".
+  bằng file mới. Hiện có **166 tệp**, mới nhất `0172`.
+- **Cổng DB** (`packages/db/test/`, 9 tệp, 115 test theo tổng kết TAP) canh RLS, composite FK,
+  least-privilege, cô lập tenant và các hàng rào nghiệp vụ mới cho go-live, thông báo, yêu cầu
+  hậu mãi/RMA.
 
 ### Giao diện
 
@@ -130,6 +131,7 @@ Mỗi service build từ context riêng nên image **không chứa `packages/`**
 | file | tới service | import |
 |---|---|---|
 | `packages/inventory/src/safety-stock.js` | seller, checkout, storefront | `'../safety-stock.js'` |
+| `packages/customer-input/src/phone.js` | seller, checkout, account | `'../phone.js'` |
 | `packages/orders/src/owed.js` | seller, checkout, account | `'../owed.js'` |
 | `packages/net-guard/…` | seller, worker | hàng rào SSRF |
 | `packages/auth/src/ratelimit.js` | auth, payment, … | bộ đếm rate-limit |
@@ -201,7 +203,7 @@ cư từ sàn khác (CSV + ảnh theo URL).
 shop tự trả tiền thuê bao + ân hạn + khoá · kênh hỗ trợ hai chiều · backup mã hoá + PITR ·
 giám sát + cảnh báo đường tiền · đo luồng dùng tính năng.
 
-**Chất lượng:** ~101 bộ e2e, hàng nghìn khẳng định; kiểm toán tấn công 0 crit/0 high; nhiều đợt
+**Chất lượng:** 106 bộ e2e, hàng nghìn khẳng định; kiểm toán tấn công 0 crit/0 high; nhiều đợt
 săn "lỗi hợp thành" đã vá hàng chục lỗ tiền/kho/quyền.
 
 ---

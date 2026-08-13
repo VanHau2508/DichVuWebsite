@@ -18,15 +18,15 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 
 | số đo | hôm nay | nguồn |
 |---|---:|---|
-| dòng mã ứng dụng | ~38.000 | `apps/*/src/` |
-| dòng test | ~27.800 | `apps/*/test/` |
-| migration | 146 tệp, mới nhất `0147` | `packages/db/migrations/` |
-| bộ unit | 24 | `MANIFEST_UNIT_COUNT` |
-| bộ e2e | 101 | `MANIFEST_E2E_COUNT` |
-| bất biến DB | 6 bộ, ~155 khẳng định | `packages/db/test/` |
+| dòng mã ứng dụng | ~41.200 | `apps/*/src/*.js` |
+| dòng test | ~29.100 | `apps/*/test/*.{js,mjs}` |
+| migration | 166 tệp, mới nhất `0172` | `packages/db/migrations/` |
+| bộ unit | 35 | `MANIFEST_UNIT_COUNT` |
+| bộ e2e | 106 | `MANIFEST_E2E_COUNT` |
+| bất biến DB | 9 bộ, 115 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 72 tệp | `docs/` |
 
-Tỉ lệ test/mã ≈ 0,73 — cao có chủ ý, xem §4.
+Tỉ lệ test/mã ≈ 0,71 — cao có chủ ý, xem §4.
 
 **Toàn bộ mã, chú thích, tài liệu, commit message đều TIẾNG VIỆT.** Giữ nguyên, không dịch sang
 tiếng Anh, không viết chú thích tiếng Anh trong file tiếng Việt.
@@ -90,8 +90,9 @@ docs/                   72 tệp ghi chép   .github/workflows/ci.yml cổng đ�
 | console chủ nền tảng | `apps/platform/src/` |
 | email / Telegram / sweep định kỳ | `apps/worker/src/` |
 | tenant context, khoá kết nối API | `apps/seller/src/db.js` |
-| bất biến schema | `packages/db/test/schema-invariants.test.js` |
+| bất biến schema + least-privilege | `packages/db/test/schema-invariants.test.js` |
 | cô lập tenant (RLS) | `packages/db/test/tenant-isolation.test.js`, `storefront-isolation.test.js` |
+| readiness/go-live, thông báo, yêu cầu hậu mãi/RMA | `packages/db/test/readiness-go-live.test.js`, `packages/db/test/notification-integrity.test.js`, `packages/db/test/order-requests.test.js` |
 
 Thêm bộ test mới → **phải sửa `MANIFEST_UNIT_COUNT` / `MANIFEST_E2E_COUNT` trong
 `scripts/test-manifest.sh` cùng commit**, nếu không cổng đỏ. Nó so **BẰNG**, không phải ≥.
@@ -142,6 +143,7 @@ Mỗi dòng dưới đây từng làm hỏng một thứ có thật. Chi tiết 
 |---|---|---|---|
 | tồn khả dụng `on_hand − reserved − đệm` | `packages/inventory/src/safety-stock.js` | seller, checkout, storefront | `'../safety-stock.js'` |
 | còn nợ khách `greatest(0, đã_thu − đã_hoàn − được_phép_giữ)` | `packages/orders/src/owed.js` | seller, checkout, account | `'../owed.js'` |
+| chuẩn hoá số điện thoại khách | `packages/customer-input/src/phone.js` | seller, checkout, account | `'../phone.js'` |
 | hàng rào SSRF | `packages/net-guard/src/fetch-image.js` | seller, worker | `'../fetch-image.js'` |
 | bộ đếm rate-limit | `packages/auth/src/ratelimit.js` | auth, payment, … | `'../ratelimit.js'` |
 

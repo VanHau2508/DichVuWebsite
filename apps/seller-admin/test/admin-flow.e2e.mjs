@@ -145,6 +145,8 @@ async function main() {
   const A = await makeShopOwner(staff, `adm-${uniq()}`);
   const Bo = await makeShopOwner(staff, `oth-${uniq()}`);
   const vid = await setupProduct(A, 250000, 10);
+  // This suite tests order administration, not onboarding readiness.
+  await owner.query(`UPDATE shops SET status='active', went_live_at=now() WHERE id=$1`, [A.shopId]);
   const o1 = await placeOrder(A, vid); // confirm → ship → deliver
   const o2 = await placeOrder(A, vid); // cancel
   const o3 = await placeOrder(A, vid); // chuyển sai + CSRF
@@ -196,11 +198,20 @@ async function main() {
   r = await adm('POST', `/shops/${A.shopId}/orders/${o1.orderId}/deliver`, { cookie: cookieA, origin: OADM });
   (r.status === 303 && await statusOf(A.shopId, o1.orderId) === 'delivered') ? ok('deliver → 303 + DB delivered') : bad('deliver lỗi', `${r.status} ${await statusOf(A.shopId, o1.orderId)}`);
 
-  // COD thu tiền: đơn o1 đã giao nhưng chưa trả (COD) → nút "Đã nhận tiền" + mark-paid qua BFF.
+  // COD thu tiền: sổ tiền v2 phải giữ đúng khoản qua interstitial mật khẩu của BFF.
   r = await adm('GET', `/shops/${A.shopId}/orders/${o1.orderId}`, { cookie: cookieA });
   r.body.includes('Đã nhận tiền') ? ok('đơn COD chưa trả: hiện nút "Đã nhận tiền"') : bad('thiếu nút mark-paid COD', r.body.slice(0, 200));
-  r = await adm('POST', `/shops/${A.shopId}/orders/${o1.orderId}/mark-paid`, { cookie: cookieA, origin: OADM });
-  (r.status === 303 && await payOf(A.shopId, o1.orderId) === 'paid') ? ok('mark-paid → 303 + DB paid') : bad('mark-paid BFF lỗi', `${r.status} ${await payOf(A.shopId, o1.orderId)}`);
+  r = await adm('POST', `/shops/${A.shopId}/orders/${o1.orderId}/payments/manual`, {
+    cookie: cookieA, origin: OADM, form: { amount_vnd: '280000', note: 'Thu COD sau giao hàng' },
+  });
+  r.status === 200 && r.body.includes('Xác nhận ghi nhận khoản thu')
+    ? ok('ghi nhận tiền → interstitial mật khẩu') : bad('thiếu cổng step-up tiền', `${r.status}`);
+  r = await adm('POST', `/shops/${A.shopId}/orders/${o1.orderId}/payments/manual/step-up`, {
+    cookie: cookieA, origin: OADM,
+    form: { password: A.password, amount_vnd: '280000', note: 'Thu COD sau giao hàng' },
+  });
+  (r.status === 303 && await payOf(A.shopId, o1.orderId) === 'paid')
+    ? ok('step-up ghi nhận tiền → 303 + DB paid') : bad('payment v2 BFF lỗi', `${r.status} ${await payOf(A.shopId, o1.orderId)}`);
   r = await adm('GET', `/shops/${A.shopId}/orders/${o1.orderId}`, { cookie: cookieA });
   !r.body.includes('Đã nhận tiền') ? ok('đơn đã trả: ẩn nút "Đã nhận tiền"') : bad('nút mark-paid vẫn hiện sau khi trả');
 

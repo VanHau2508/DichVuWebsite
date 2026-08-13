@@ -64,6 +64,32 @@ test('phiếu in lấy KIỆN CÒN SỐNG, không phải phần tử đầu danh
   assert.equal(n, 2, `mong đợi 2 chỗ chọn kiện sống (phiếu giao hàng + hoá đơn), thấy ${n}`);
 });
 
+test('worker huỷ vận đơn chỉ chuyển kiện đang in_transit và ghi timeline', () => {
+  const src = readFileSync(join(ROOT, 'apps/worker/src/index.js'), 'utf8');
+  const start = src.indexOf("if (st.state === 'cancelled')");
+  assert.ok(start >= 0, 'không tìm thấy nhánh carrier cancellation');
+  const body = src.slice(start, start + 1800);
+  assert.match(body, /WHERE id = \$1 AND status = 'in_transit' RETURNING id/,
+    'cancellation muộn không được ghi đè kiện đã delivered/returned');
+  assert.match(body, /'shipment\.cancelled'/,
+    'cancellation phải xuất hiện trong timeline');
+  assert.match(body, /requires_reconciliation:\s*true/,
+    'timeline phải báo cần đối soát thay vì tự restock');
+  assert.match(body, /openMixedShipmentResolution\(c, s\)/,
+    'cancellation mới phải đi qua detector resolution hiện có');
+});
+
+test('seller order detail và admin dùng cùng planned_qty khi tính số còn phải giao', () => {
+  const seller = readFileSync(join(ROOT, 'apps/seller/src/orders.js'), 'utf8');
+  const admin = readFileSync(join(ROOT, 'apps/seller-admin/src/pages.js'), 'utf8');
+  assert.match(seller, /AS planned_qty/,
+    'API chi tiết đơn phải trả số lượng claim created');
+  assert.match(admin, /Number\(l\.planned_qty \?\? 0\)/,
+    'SSR không được hiển thị số còn lại chỉ từ shipped_qty');
+  assert.match(admin, /Number\(l\.qty\) - Number\(l\.shipped_qty \?\? 0\) - Number\(l\.planned_qty \?\? 0\)/,
+    'UI phải trừ cả claim đang tạo như backend');
+});
+
 // Đường dẫn CÔNG KHAI của trang nội dung là /pages/<slug>. Sitemap từng phát '/<slug>' trần —
 // mọi URL nộp cho Google đều 404 — và màn "Trang nội dung" của seller-admin cũng in sai y hệt,
 // tức người bán dán link đó lên Facebook là ra 404. Hai nơi, một sự thật.

@@ -148,6 +148,12 @@ async function main() {
     ? ok('đủ 5 loại việc (xác nhận · gửi hàng · thu tiền · đánh giá · tồn kho)') : bad('thiếu loại việc');
   has(new RegExp(`href="/shops/${A.shopId}/orders\\?status=pending"`)) && has(new RegExp(`href="/shops/${A.shopId}/orders\\?status=confirmed"`))
     ? ok('ô việc link tới trang đơn ĐÃ LỌC SẴN đúng trạng thái') : bad('link ô việc sai');
+  has(new RegExp(`href="/shops/${A.shopId}/orders\\?payment=unpaid"`))
+    && has(new RegExp(`href="/shops/${A.shopId}/orders\\?payment=pending"`))
+    && has(new RegExp(`href="/shops/${A.shopId}/resolution-cases\\?status=active"`))
+    && has(new RegExp(`href="/shops/${A.shopId}/notification-deliveries\\?status=failed"`))
+    && has(new RegExp(`href="/shops/${A.shopId}/order-requests\\?status=requested"`))
+    ? ok('ô tiền và hàng đợi mới đều link tới đúng danh sách đã lọc') : bad('thiếu link hàng đợi dashboard');
   // Số thật: 1 chờ xác nhận (o2), 1 chờ gửi (o1 đã confirmed).
   const cellOf = (label) => {
     const m = new RegExp(`<div class="todo-n"[^>]*>(\\d+)</div>\\s*<div class="todo-l">[^<]*${label}`).exec(r.body);
@@ -155,6 +161,11 @@ async function main() {
   };
   cellOf('Đơn chờ xác nhận') === 1 ? ok('đếm "chờ xác nhận" = 1 (khớp dữ liệu thật)') : bad('đếm chờ xác nhận sai', `=${cellOf('Đơn chờ xác nhận')}`);
   cellOf('Đơn chờ gửi hàng') === 1 ? ok('đếm "chờ gửi hàng" = 1 (khớp dữ liệu thật)') : bad('đếm chờ gửi sai', `=${cellOf('Đơn chờ gửi hàng')}`);
+  cellOf('Đơn chưa thu tiền') === 2 ? ok('đếm "chưa thu tiền" chỉ gồm đơn sống chưa nhận khoản nào') : bad('đếm chưa thu sai', `=${cellOf('Đơn chưa thu tiền')}`);
+  cellOf('Đơn thu một phần') === 0 ? ok('đếm "thu một phần" không lẫn đơn unpaid') : bad('đếm thu một phần sai', `=${cellOf('Đơn thu một phần')}`);
+  cellOf('Ca giao hàng cần xử lý') === 0 && cellOf('Thông báo gửi thất bại') === 0 && cellOf('Yêu cầu khách chờ xử lý') === 0
+    ? ok('các hàng đợi resolution/notification/customer request mới đang rỗng đúng fixture')
+    : bad('đếm hàng đợi mới sai');
   !/<script(?![^>]*nonce=)/.test(r.body) ? ok('Tổng quan: không script NÀO thiếu nonce (ADR-011)') : bad('lọt <script> không nonce');
 
   // ── 2. Tab trạng thái ở Đơn hàng ───────────────────────────────────────────
@@ -192,6 +203,7 @@ async function main() {
   !/<span class="stars"/.test(body) ? ok('chưa có đánh giá → KHÔNG hiện 0 sao') : bad('hiện sao khi chưa có đánh giá');
 
   // Thanh toán đơn o1 (3 cái) → sold_count phải thành 3 sau sweep.
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
   await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${o1.orderId}/mark-paid`, { cookie: A.cookie, origin: OS });
   await fetch(`${WORKER}/internal/prodstats-sweep`, { method: 'POST' });
   const sold = (await owner.query('SELECT sold_count FROM products WHERE id=$1', [P.pid])).rows[0].sold_count;

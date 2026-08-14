@@ -29,6 +29,7 @@ const SUMMARY_SQL = `
   SELECT rc.id, rc.order_id, rc.kind, rc.status, rc.resolution, rc.resolution_note,
           rc.resolution_payload, rc.required_refund_vnd, rc.detected_at, rc.resolved_at, rc.resolved_by,
          o.order_number, o.status AS order_status, o.payment_status, o.fulfillment_status,
+         o.fulfillment_adjustment_vnd,
          coalesce(ship.delivered_shipments, 0)::int AS delivered_shipments,
          coalesce(ship.returned_shipments, 0)::int AS returned_shipments,
          coalesce(snap.snapshot_lines, '[]'::jsonb) AS snapshot_lines,
@@ -105,6 +106,7 @@ function normalize(r) {
     restocked_qty: Number(r.restocked_qty),
     quarantined_qty: Number(r.quarantined_qty),
     required_refund_vnd: Number(r.required_refund_vnd ?? 0),
+    fulfillment_adjustment_vnd: Number(r.fulfillment_adjustment_vnd ?? 0),
     snapshot_lines: Array.isArray(r.snapshot_lines) ? r.snapshot_lines.map((line) => ({
       ...line,
       ordered_qty: Number(line.ordered_qty),
@@ -147,7 +149,7 @@ async function loadCaseLocked(c, caseId) {
     `SELECT rc.id, rc.order_id, rc.status, rc.resolution, rc.resolution_note,
             rc.resolution_payload, rc.required_refund_vnd, rc.detected_at,
             o.order_number, o.status AS order_status, o.payment_status, o.fulfillment_status,
-            o.amount_paid_vnd, o.paid_at
+            o.amount_paid_vnd, o.paid_at, o.fulfillment_adjustment_vnd
        FROM order_resolution_cases rc
        JOIN orders o ON o.id = rc.order_id
       WHERE rc.id = $1
@@ -508,11 +510,16 @@ async function acceptPartialDelivery(res, ctx, body, params) {
       [caseId, note, financialAction, refund?.id ?? null, ctx.user.id],
     )).rows[0].result;
     if (completed?.error_code === 'case_not_found') return { code: 404 };
+    const adjustmentVnd = Number((await c.query(
+      `SELECT set_order_partial_fulfillment_adjustment($1) AS amount`,
+      [caseId],
+    )).rows[0].amount);
     await audit(c, 'order.resolution_case_resolved', {
       actorId: ctx.user.id, ip: ctx.ip,
       metadata: {
         case_id: caseId, orderId: row.order_id, resolution: 'accept_partial', financial_action: financialAction,
-        delivered_qty: Number(progress.delivered_qty), returned_qty: Number(progress.returned_qty), note,
+        delivered_qty: Number(progress.delivered_qty), returned_qty: Number(progress.returned_qty),
+        fulfillment_adjustment_vnd: adjustmentVnd, note,
         ...(refund ? { refund_id: refund.id, refund_amount_vnd: Number(refund.amount_vnd) } : {}),
       },
     });
@@ -521,11 +528,12 @@ async function acceptPartialDelivery(res, ctx, body, params) {
       [row.order_id, ctx.user.id, {
         case_id: caseId, resolution: 'accept_partial', financial_action: financialAction,
         delivered_qty: Number(progress.delivered_qty), returned_qty: Number(progress.returned_qty),
-        order_status: 'delivered', fulfillment_status: 'partial', note,
+        order_status: 'delivered', fulfillment_status: 'partial',
+        fulfillment_adjustment_vnd: adjustmentVnd, note,
         ...(refund ? { refund_id: refund.id, refund_amount_vnd: Number(refund.amount_vnd) } : {}),
       }],
     );
-    return { code: 200, replayed: false, row };
+    return { code: 200, replayed: false, row, adjustmentVnd };
   });
 
   if (out.code === 404) return send(res, 404, { error: 'không tìm thấy ca cần xử lý' });
@@ -533,6 +541,7 @@ async function acceptPartialDelivery(res, ctx, body, params) {
   return send(res, 200, {
     ok: true, replayed: out.replayed, status: 'resolved', resolution: 'accept_partial',
     order_id: out.row.order_id, order_status: 'delivered', fulfillment_status: 'partial',
+    fulfillment_adjustment_vnd: out.adjustmentVnd ?? Number(out.row.fulfillment_adjustment_vnd ?? 0),
   });
 }
 

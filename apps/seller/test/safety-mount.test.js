@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { paymentFilterSql, paymentSummary } from '../../../packages/orders/src/owed.js';
+import { computeShipping } from '../../../packages/shipping/src/quote.js';
 
 const ROOT = join(import.meta.dirname, '..', '..', '..');
 const doc = (p) => readFileSync(join(ROOT, p), 'utf8');
@@ -160,6 +161,39 @@ test('chuẩn hoá SĐT chỉ có một implementation runtime', () => {
   }
 });
 
+test('checkout và seller dùng chung một công thức báo giá vận chuyển và đủ bind-mount', () => {
+  const sharedImport = "from '../shipping-quote.js'";
+  const sharedMount = '../packages/shipping/src/quote.js:/app/shipping-quote.js:ro';
+  const services = ['checkout', 'seller'];
+  for (const path of ['apps/checkout/src/server.js', 'apps/seller/src/order-requests.js']) {
+    assert.match(doc(path), /import \{ computeShipping \} from '\.\.\/shipping-quote\.js'/,
+      `${path}: chưa dùng công thức vận chuyển chung`);
+  }
+  assert.doesNotMatch(doc('apps/checkout/src/server.js'), /function computeShipping\b/,
+    'checkout vẫn giữ bản computeShipping riêng');
+  assert.ok(services.every((svc) => doc(`apps/${svc}/src/${svc === 'seller' ? 'order-requests.js' : 'server.js'}`).includes(sharedImport)));
+  for (const compose of ['infra/compose.dev.yml', 'infra/compose.prod.yml']) {
+    const blocks = khoiService(compose);
+    for (const svc of services) {
+      assert.ok(blocks.get(svc)?.includes(sharedMount), `${compose}: ${svc} thiếu mount ${sharedMount}`);
+    }
+  }
+});
+
+test('công thức vận chuyển chung giữ phí vùng, phụ phí cân và chốt ngoài bán kính', () => {
+  const cfg = {
+    fee: 30000, feeFar: 50000, fromRegion: 'nam', threshold: null,
+    extraPer500g: 5000, defaultWeightGram: 500,
+    mode: 'region', base: 10000, perKm: 3000, maxKm: 10, overMax: 'reject',
+  };
+  const items = [{ qty: 2, weight_gram: 600 }];
+  assert.equal(computeShipping(cfg, 200000, items, 'nam', { assumeFarWhenUnknown: true }), 40000);
+  assert.equal(computeShipping(cfg, 200000, items, 'bac', { assumeFarWhenUnknown: true }), 60000);
+  assert.equal(computeShipping({ ...cfg, mode: 'distance' }, 200000, items, 'nam', {
+    assumeFarWhenUnknown: true, coordsValid: true, distanceMeters: 11000,
+  }), null);
+});
+
 test('công thức còn-nợ-khách là MỘT bản, xuất đủ các mảnh và không âm', () => {
   const src = doc('packages/orders/src/owed.js');
   for (const name of ['OWED_ENTITLED_SQL', 'OWED_REFUNDED_SQL', 'OWED_SQL', 'OWED_REASON_SQL']) {
@@ -171,6 +205,8 @@ test('công thức còn-nợ-khách là MỘT bản, xuất đủ các mảnh v�
   // Chặn ở 0: số âm nghĩa là shop trả DƯ, không phải khách nợ shop. Bỏ chặn thì con số âm đó
   // sẽ bị cộng vào một tổng nào đó và ăn mất khoản nợ của đơn khác.
   assert.match(src, /greatest\(0,/, 'công thức không chặn ở 0');
+  assert.match(src, /fulfillment_adjustment_vnd/,
+    'công thức chưa trừ giá trị phần hàng không giao đã được chốt');
 });
 
 test('payment summary phân biệt trả thiếu, trả dư và tiền nằm trên đơn đã chết', () => {
@@ -187,6 +223,17 @@ test('payment summary phân biệt trả thiếu, trả dư và tiền nằm tr�
     total_vnd: 500000, amount_paid_vnd: 550000, refunded_vnd: 0, status: 'confirmed',
   }).display_state, 'overpaid');
   assert.deepEqual(paymentSummary({
+    total_vnd: 1000000, fulfillment_adjustment_vnd: 400000,
+    amount_paid_vnd: 0, refunded_vnd: 0, status: 'delivered',
+  }), {
+    total_vnd: 1000000, received_vnd: 0, refunded_vnd: 0, net_received_vnd: 0,
+    amount_due_vnd: 600000, customer_credit_vnd: 0, display_state: 'unpaid',
+  });
+  assert.equal(paymentSummary({
+    total_vnd: 1000000, fulfillment_adjustment_vnd: 400000,
+    amount_paid_vnd: 1000000, refunded_vnd: 0, status: 'delivered',
+  }).customer_credit_vnd, 400000, 'thu COD theo tổng cũ phải hiện khoản nợ khách của phần không giao');
+  assert.deepEqual(paymentSummary({
     total_vnd: 500000, amount_paid_vnd: 200000, refunded_vnd: 0, status: 'cancelled',
   }), {
     total_vnd: 500000, received_vnd: 200000, refunded_vnd: 0, net_received_vnd: 200000,
@@ -201,14 +248,14 @@ test('dashboard và danh sách đơn dùng chung predicate số tiền thực nh
   assert.match(dashboard, /PAYMENT_PARTIAL_SQL/);
   assert.match(orders, /paymentFilterSql\(payment\)/);
   assert.match(paymentFilterSql('unpaid'), /OWED_PAID_SQL|amount_paid_vnd|paid_at/);
-  assert.match(paymentFilterSql('unpaid'), /o\.total_vnd > 0/,
+  assert.match(paymentFilterSql('unpaid'), /greatest\(0, o\.total_vnd - coalesce\(o\.fulfillment_adjustment_vnd, 0\)\)\) > 0/,
     'đơn 0đ không được đồng thời khớp unpaid và paid');
   assert.match(paymentFilterSql('unpaid'), /o\.status NOT IN \('cancelled', 'refunded', 'returned'\)/);
   assert.match(paymentFilterSql('unpaid'), /NOT o\.is_migrated/,
     'hàng đợi thu tiền không được chứa đơn lịch sử di cư');
   assert.match(paymentFilterSql('unpaid'), /o\.payment_status <> 'refunded'/,
     'bộ lọc refunded phải rời với unpaid');
-  assert.match(paymentFilterSql('pending'), /> 0[\s\S]*< o\.total_vnd/);
+  assert.match(paymentFilterSql('pending'), /> 0[\s\S]*< \(greatest\(0, o\.total_vnd - coalesce\(o\.fulfillment_adjustment_vnd, 0\)\)\)/);
   assert.match(paymentFilterSql('pending'), /o\.status NOT IN \('cancelled', 'refunded', 'returned'\)/);
   assert.match(paymentFilterSql('pending'), /NOT o\.is_migrated/);
   assert.match(paymentFilterSql('pending'), /o\.payment_status <> 'refunded'/,

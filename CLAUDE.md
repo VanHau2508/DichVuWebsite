@@ -20,7 +20,7 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 |---|---:|---|
 | dòng mã ứng dụng | ~41.200 | `apps/*/src/*.js` |
 | dòng test | ~29.100 | `apps/*/test/*.{js,mjs}` |
-| migration | 166 tệp, mới nhất `0172` | `packages/db/migrations/` |
+| migration | 172 tệp, mới nhất `0174` | `packages/db/migrations/` |
 | bộ unit | 35 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 106 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 115 test TAP | `packages/db/test/*.test.js` |

@@ -229,6 +229,7 @@ export function renderOrderDetail(shopName, o, lines, shipments = [], {
     refunded_vnd: Number(o.refunded_vnd ?? 0), amount_due_vnd: Math.max(0, Number(o.total_vnd ?? 0) - Number(o.amount_paid_vnd ?? 0)),
     customer_credit_vnd: 0, display_state: o.payment_status === 'paid' ? 'paid' : 'unpaid',
   };
+  const fulfillmentAdjustment = Math.max(0, Number(o.fulfillment_adjustment_vnd) || 0);
   const moneyBlock = (daDong && daTraGi) ? `<div class="card">
       <h2>Khoản tiền của đơn này</h2>
       <div class="row"><span class="muted">Bạn đã thanh toán</span><span><strong>${money(o.amount_paid_vnd)}</strong></span></div>
@@ -242,6 +243,7 @@ export function renderOrderDetail(shopName, o, lines, shipments = [], {
     </div>` : !daDong ? `<div class="card">
       <h2>Thanh toán</h2>
       <div class="row"><span class="muted">Tổng đơn</span><span><strong>${money(payment.total_vnd)}</strong></span></div>
+      ${fulfillmentAdjustment > 0 ? `<div class="row"><span class="muted">Phần không giao</span><span>−${money(fulfillmentAdjustment)}</span></div>` : ''}
       <div class="row"><span class="muted">Cửa hàng đã nhận</span><span><strong>${money(payment.received_vnd)}</strong></span></div>
       ${payment.refunded_vnd > 0 ? `<div class="row"><span class="muted">Đã hoàn lại</span><span><strong>${money(payment.refunded_vnd)}</strong></span></div>` : ''}
       ${payment.amount_due_vnd > 0

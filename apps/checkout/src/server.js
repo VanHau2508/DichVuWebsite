@@ -21,6 +21,7 @@ import pg from 'pg';
 // TỒN AN TOÀN (0140) — công thức "còn bán được online", dùng chung với storefront.
 import { SAFETY_SQL, availOf } from '../safety-stock.js';
 import { OWED_SQL, OWED_PAID_SQL, OWED_REFUNDED_SQL, paymentSummary } from '../owed.js';
+import { computeShipping } from '../shipping-quote.js';
 import { readJson, readForm, send, sendHtml, redirect, wantsHtml, parseCookies, setCartCookie, sameOrigin, clientIp, CART_COOKIE, BUYNOW_COOKIE, REF_COOKIE, setBuynowCookie, clearBuynowCookie } from './http.js';
 import { buildVietQR } from './vietqr.js';
 import { renderCart, renderCheckout, renderOrder, renderError, renderLookup, qrSvg } from './pages.js';
@@ -265,50 +266,6 @@ function parseCoords(latRaw, lngRaw) {
   const lat = Number(latRaw), lng = Number(lngRaw);
   return (Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) ? { lat, lng } : null;
 }
-// Phí ship 2 bậc vùng (nội miền / liên miền) + phụ phí cân (mỗi 500g vượt 500g đầu).
-// HAI CHẾ ĐỘ một hàm: HIỂN THỊ (assumeFarWhenUnknown=false — chưa rõ tỉnh → ước tính
-// nội miền + ghi chú) và CHỐT ĐƠN (true — không rõ tỉnh → tính LIÊN MIỀN, bảo vệ shop:
-// Origin header giả được bằng curl nên người mua rành kỹ thuật không né được phí xa).
-// items: [{qty, weight_gram}] — weight_gram NULL → dùng cân mặc định của shop.
-// Phụ phí cân: mỗi 500g vượt 500g đầu.
-function weightSurcharge(cfg, items) {
-  if (!(cfg.extraPer500g > 0)) return 0;
-  const grams = items.reduce((s, it) => s + it.qty * (it.weight_gram != null ? Number(it.weight_gram) : cfg.defaultWeightGram), 0);
-  return Math.ceil(Math.max(0, grams - 500) / 500) * cfg.extraPer500g;
-}
-// Phí VÙNG core (2 bậc nội/liên miền + phụ phí cân), KHÔNG freeship — dùng làm SÀN cho distance + path region (0063).
-function regionFeeCore(cfg, items, province, assumeFarWhenUnknown) {
-  let fee = cfg.fee;
-  if (cfg.feeFar != null && cfg.fromRegion) {
-    const to = regionOf(province);
-    fee = to == null ? (assumeFarWhenUnknown ? cfg.feeFar : cfg.fee) : (to === cfg.fromRegion ? cfg.fee : cfg.feeFar);
-  }
-  return fee + weightSurcharge(cfg, items);
-}
-// HAI CHẾ ĐỘ (choke-point phí DUY NHẤT, dùng chung hiển thị + chốt đơn): region (0063) và distance (0089).
-// Trả NULL = NGOÀI VÙNG GIAO (km>max) → caller 422 hard-stop (KHÔNG về 0 = free-ship âm thầm).
-function computeShipping(cfg, subtotal, items, province, { assumeFarWhenUnknown = false, coordsValid = false, distanceMeters = null } = {}) {
-  if (!items.length) return 0;
-  const freeship = cfg.threshold != null && subtotal >= cfg.threshold;
-  // Distance CHỈ khi shop bật + server xác thực coords hợp lệ (trong VN). Client KHÔNG tự chọn chế độ.
-  if (cfg.mode === 'distance' && coordsValid && distanceMeters != null) {
-    const km = Math.ceil(distanceMeters / 1000);                    // ceil → nhích coords vài mét không đổi phí
-    // NGOÀI bán kính giao nội thành: nền tảng TOÀN QUỐC → rơi phí VÙNG (giao qua hãng, KHÔNG per-km
-    // vô lý Cà Mau→Hà Nội); shop CHỈ giao nội thành ('reject') → 422 ngoài-vùng (thắng cả freeship).
-    if (cfg.maxKm != null && km > cfg.maxKm) {
-      if (cfg.overMax === 'reject') return null;
-      return freeship ? 0 : regionFeeCore(cfg, items, province, assumeFarWhenUnknown);
-    }
-    if (freeship) return 0;
-    const fee = cfg.base + km * cfg.perKm + weightSurcharge(cfg, items);
-    // SÀN PHÍ (red-team): không thấp hơn bậc vùng → toạ-độ-giả-sát-shop KHÔNG rẻ hơn khách-xa-trung-thực.
-    return Math.max(fee, regionFeeCore(cfg, items, province, assumeFarWhenUnknown));
-  }
-  // Region mode / distance fallback (no-JS / từ chối GPS / ngoài VN):
-  if (freeship) return 0;
-  return regionFeeCore(cfg, items, province, assumeFarWhenUnknown);
-}
-
 // Giảm giá thực từ coupon theo subtotal. Cap ≤ subtotal (chỉ giảm hàng, không giảm ship,
 // total không âm). percent làm tròn xuống.
 function couponDiscount(cp, subtotal) {
@@ -364,7 +321,7 @@ async function summarize(c, cartId, province = null, coords = null, customerId =
   });
   const cfg = await shopShipping(c);
   const { coordsValid, distanceMeters } = resolveShipDistance(cfg, coords);
-  const shipping = computeShipping(cfg, subtotal, items, province, { coordsValid, distanceMeters }); // HIỂN THỊ: chưa rõ tỉnh → ước tính nội miền
+  const shipping = computeShipping(cfg, subtotal, items, regionOf(province), { coordsValid, distanceMeters }); // HIỂN THỊ: chưa rõ tỉnh → ước tính nội miền
   const outOfRange = shipping === null; // NGOÀI VÙNG GIAO (distance km>max) → total không tính được
   // Cờ cho UI: shop CÓ phí liên miền nhưng CHƯA rõ tỉnh nhận → hiện ghi chú "chưa gồm phụ phí liên miền".
   const feeRegionPending = items.length > 0 && cfg.feeFar != null && cfg.fromRegion != null
@@ -959,7 +916,7 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     const shipCfg = await shopShipping(c);
     const coords = (address?.lat != null && address?.lng != null) ? { lat: address.lat, lng: address.lng } : null;
     const { coordsValid, distanceMeters } = resolveShipDistance(shipCfg, coords);
-    const shipping = computeShipping(shipCfg, subtotal, items, address?.province, { assumeFarWhenUnknown: true, coordsValid, distanceMeters });
+    const shipping = computeShipping(shipCfg, subtotal, items, regionOf(address?.province), { assumeFarWhenUnknown: true, coordsValid, distanceMeters });
     // NGOÀI VÙNG GIAO (distance km>max) → sentinel null → 422 hard-stop TRƯỚC cổng 409 + TRƯỚC total
     // (red-team: null vào 409 → thông điệp sai; vào total → NaN).
     if (shipping === null) fail(422, 'Địa chỉ ngoài vùng giao của cửa hàng', { out_of_range: true });
@@ -1332,7 +1289,7 @@ async function orderLookup(req, res, _body, ctx, query) {
   const data = await withTenant(ctx.shopId, async (c) => {
     const o = (await c.query(
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.subtotal_vnd,
-              o.shipping_vnd, o.total_vnd, o.customer_name,
+              o.shipping_vnd, o.total_vnd, o.fulfillment_adjustment_vnd, o.customer_name,
               ${OWED_PAID_SQL} AS amount_paid_vnd, ${OWED_REFUNDED_SQL} AS refunded_vnd
          FROM orders o WHERE o.order_number = $1 AND o.lookup_token_hash = $2`, [number, hashToken(token)],
     )).rows[0];
@@ -1340,7 +1297,8 @@ async function orderLookup(req, res, _body, ctx, query) {
     const lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, orig_unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
     return { order_number: o.order_number, status: o.status, payment_status: o.payment_status,
       payment_method: o.payment_method, subtotal_vnd: Number(o.subtotal_vnd), shipping_vnd: Number(o.shipping_vnd),
-      total_vnd: Number(o.total_vnd), customer_name: o.customer_name, payment_summary: paymentSummary(o), lines };
+      total_vnd: Number(o.total_vnd), fulfillment_adjustment_vnd: Number(o.fulfillment_adjustment_vnd ?? 0),
+      customer_name: o.customer_name, payment_summary: paymentSummary(o), lines };
   });
   if (!data) return send(res, 404, { error: 'không tìm thấy đơn' });
   return send(res, 200, data);
@@ -1388,6 +1346,7 @@ async function getSuccessPage(req, res, _body, ctx, query) {
       // owed.js): con số shop nhìn thấy và con số KHÁCH nhìn thấy mà lệch nhau thì cuộc gọi
       // khiếu nại tiếp theo bắt đầu bằng hai bên đọc hai màn hình khác nhau.
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.shipping_vnd, o.total_vnd,
+              o.fulfillment_adjustment_vnd,
               ${OWED_PAID_SQL} AS amount_paid_vnd, o.customer_name, o.payment_ref, o.qr_account,
               ${OWED_REFUNDED_SQL} AS refunded_vnd, ${OWED_SQL} AS owed_vnd,
               (SELECT max(r.created_at) FROM refunds r WHERE r.order_id = o.id) AS last_refund_at

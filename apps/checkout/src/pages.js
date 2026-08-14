@@ -413,6 +413,7 @@ export function renderOrder(shopName, o, pay, qr, justPlaced = false, lookupToke
     amount_due_vnd: o.payment_status === 'paid' ? 0 : Number(o.total_vnd ?? 0),
     customer_credit_vnd: 0, display_state: o.payment_status === 'paid' ? 'paid' : 'unpaid',
   };
+  const fulfillmentAdjustment = Math.max(0, Number(o.fulfillment_adjustment_vnd) || 0);
   const paid = payment.amount_due_vnd === 0 && ['paid', 'overpaid'].includes(payment.display_state);
   // ĐƠN ĐÃ ĐÓNG = huỷ / hoàn hàng / hoàn tiền. Trước đây chỉ 'cancelled' được coi là đóng,
   // nên đơn đã trả hàng vẫn chạy tiếp vào nhánh thanh toán bên dưới. Hậu quả đo được:
@@ -468,6 +469,9 @@ export function renderOrder(shopName, o, pay, qr, justPlaced = false, lookupToke
   // ở hai đầu cuộc tranh chấp. KHÔNG hứa ngày giờ cụ thể: nền tảng không biết shop chuyển
   // khoản lúc nào, hứa hộ là hứa thay người khác.
   const daTraGi = Number(o.amount_paid_vnd ?? 0) > 0 || Number(o.refunded_vnd ?? 0) > 0;
+  const partialValueNote = fulfillmentAdjustment > 0
+    ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg,#fffbeb)"><strong>Đơn đã giao một phần.</strong><p class="muted" style="margin:6px 0 0">Giá trị phần không giao ${money(fulfillmentAdjustment)} đã được trừ khỏi số tiền cửa hàng được giữ.</p></div>`
+    : '';
   const moneyBlock = (daDong && daTraGi) ? `<div class="card"${Number(o.owed_vnd ?? 0) > 0 ? ' style="border-color:#fcd34d;background:var(--warnbg,#fffbeb)"' : ''}>
       <h2 style="margin-top:0">Khoản tiền của đơn này</h2>
       <div class="row"><span class="muted">Bạn đã thanh toán</span><span><strong>${money(o.amount_paid_vnd)}</strong></span></div>
@@ -483,7 +487,7 @@ export function renderOrder(shopName, o, pay, qr, justPlaced = false, lookupToke
     <div class="card" style="text-align:center">
       <h1>${justPlaced ? 'Đặt hàng thành công 🎉' : `Đơn hàng #${o.order_number}`}</h1>
       <p>Đơn <strong>#${o.order_number}</strong> · <span class="badge ${badgeCls}">${esc(statusVi)}</span></p></div>
-    ${payBlock}${moneyBlock}
+    ${payBlock}${partialValueNote}${moneyBlock}
     ${(o.shipments?.length) ? `<div class="card"><h2>Vận chuyển</h2>
       <p class="muted" style="margin:0 0 8px">Đơn đã được gửi qua đơn vị vận chuyển. Theo dõi hành trình bằng mã dưới đây:</p>
       ${o.shipments.map((s) => `<div class="row"><span class="muted">${esc(carrierName(s.carrier))}</span><span><strong style="user-select:all">${esc(s.tracking_number)}</strong></span></div>
@@ -492,6 +496,7 @@ export function renderOrder(shopName, o, pay, qr, justPlaced = false, lookupToke
       ${o.lines.map((l) => `<div class="tot"><span class="muted">${esc(l.title_snapshot)} × ${l.qty}${l.orig_unit_price_vnd ? ` <span style="color:#b91c1c">(KM, tiết kiệm ${money((Number(l.orig_unit_price_vnd) - Number(l.unit_price_vnd)) * l.qty)})</span>` : ''}</span><span>${money(Number(l.unit_price_vnd) * l.qty)}</span></div>`).join('')}
       <div class="tot"><span class="muted">Phí giao hàng</span><span>${money(o.shipping_vnd)}</span></div>
       <div class="tot grand"><span>Tổng cộng</span><span>${money(o.total_vnd)}</span></div>
+      ${fulfillmentAdjustment > 0 ? `<div class="tot"><span class="muted">Trừ phần không giao</span><span>−${money(fulfillmentAdjustment)}</span></div><div class="tot grand"><span>Giá trị sau xử lý</span><span>${money(Math.max(0, Number(o.total_vnd) - fulfillmentAdjustment))}</span></div>` : ''}
       <p class="muted" style="margin-top:8px">Giao tới: ${esc(o.customer_name)}</p></div>
     ${lookupToken ? `<div class="card" style="border-color:#93c5fd;background:#eff6ff">
       <h2 style="margin-top:0">📌 Mã tra cứu đơn — hãy lưu lại</h2>

@@ -282,6 +282,8 @@ services:
       # Công thức CÒN NỢ KHÁCH dùng chung — import '../owed.js'. Con số tiền của khách
       # phải GIỐNG NHAU ở trang quản trị và ở trang tra cứu của chính khách.
       - ../packages/orders/src/owed.js:/app/owed.js:ro
+      # Báo giá vận chuyển dùng chung cho checkout và duyệt đổi địa chỉ.
+      - ../packages/shipping/src/quote.js:/app/shipping-quote.js:ro
       # Chuẩn hoá SĐT khách dùng chung cho mọi đường tạo/sửa đơn.
       - ../packages/customer-input/src/phone.js:/app/phone.js:ro
       # Redis tối giản dùng chung (image không có packages/) — import '../redis-lite.js'.
@@ -333,6 +335,8 @@ services:
       # Công thức CÒN NỢ KHÁCH dùng chung — import '../owed.js'. Con số tiền của khách
       # phải GIỐNG NHAU ở trang quản trị và ở trang tra cứu của chính khách.
       - ../packages/orders/src/owed.js:/app/owed.js:ro
+      # Báo giá vận chuyển dùng chung cho checkout và duyệt đổi địa chỉ.
+      - ../packages/shipping/src/quote.js:/app/shipping-quote.js:ro
       # Chuẩn hoá SĐT khách dùng chung cho checkout và seller.
       - ../packages/customer-input/src/phone.js:/app/phone.js:ro
       # Bộ đếm rate-limit DÙNG CHUNG (không copy): gắn thẳng file gốc của auth vào image

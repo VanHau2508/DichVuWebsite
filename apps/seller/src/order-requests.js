@@ -8,8 +8,9 @@
 import { send, parseOffset } from './http.js';
 import { withTenant, audit } from './db.js';
 import { cancelOrderTx } from './orders.js';
-import { isProvince } from './provinces.js';
+import { isProvince, regionOf } from './provinces.js';
 import { canonPhone } from '../phone.js';
+import { computeShipping } from '../shipping-quote.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const TYPES = new Set(['cancel', 'address_change', 'return']);
@@ -28,6 +29,51 @@ function parseAddressPayload(raw) {
   if (!line) return { error: 'thiếu địa chỉ giao hàng' };
   if (!province || !isProvince(province)) return { error: 'tỉnh/thành không hợp lệ' };
   return { value: { recipient_name: recipientName, phone, line, province, district, ward } };
+}
+
+async function quoteAddressChange(c, order, province) {
+  const shop = (await c.query(
+    `SELECT ship_fee_vnd, free_ship_threshold_vnd, ship_fee_far_vnd,
+            ship_extra_per_500g_vnd, default_weight_gram, ship_from_province,
+            ship_mode, ship_base_vnd, ship_per_km_vnd, ship_max_km,
+            ship_over_max_behavior
+       FROM shops WHERE id = current_shop_id()`,
+  )).rows[0] ?? {};
+  if (shop.ship_mode === 'distance' && shop.ship_over_max_behavior === 'reject') {
+    return {
+      errorCode: 'shipping_location_required',
+      message: 'shop chỉ giao trong bán kính nhưng yêu cầu đổi địa chỉ không có vị trí đã xác minh',
+      action: 'Không duyệt mù. Liên hệ khách để xác minh vị trí rồi sửa đơn bằng luồng chỉnh sửa có kiểm tra phí vận chuyển.',
+    };
+  }
+  const items = (await c.query(
+    `SELECT ol.qty, v.weight_gram
+       FROM order_lines ol
+       JOIN variants v ON v.id = ol.variant_id
+      WHERE ol.order_id = $1`,
+    [order.order_id],
+  )).rows;
+  const cfg = {
+    fee: shop.ship_fee_vnd != null ? Number(shop.ship_fee_vnd) : 30000,
+    threshold: shop.free_ship_threshold_vnd != null ? Number(shop.free_ship_threshold_vnd) : null,
+    feeFar: shop.ship_fee_far_vnd != null ? Number(shop.ship_fee_far_vnd) : null,
+    extraPer500g: shop.ship_extra_per_500g_vnd != null ? Number(shop.ship_extra_per_500g_vnd) : 0,
+    defaultWeightGram: Number(shop.default_weight_gram ?? 500),
+    fromRegion: regionOf(shop.ship_from_province),
+    mode: shop.ship_mode ?? 'region',
+    base: shop.ship_base_vnd != null ? Number(shop.ship_base_vnd) : null,
+    perKm: shop.ship_per_km_vnd != null ? Number(shop.ship_per_km_vnd) : null,
+    maxKm: shop.ship_max_km != null ? Number(shop.ship_max_km) : null,
+    overMax: shop.ship_over_max_behavior ?? 'region',
+  };
+  const shipping = computeShipping(
+    cfg,
+    Number(order.subtotal_vnd),
+    items,
+    regionOf(province),
+    { assumeFarWhenUnknown: true },
+  );
+  return { shippingVnd: Number(shipping) };
 }
 
 async function listOrderRequests(res, ctx, _body, _params, query) {
@@ -59,7 +105,8 @@ async function listOrderRequests(res, ctx, _body, _params, query) {
 async function loadLocked(c, requestId) {
   return (await c.query(
     `SELECT r.*, o.order_number, o.status AS order_status, o.payment_status,
-            o.customer_name, o.customer_phone, o.shipping_address
+            o.customer_name, o.customer_phone, o.shipping_address,
+            o.subtotal_vnd, o.shipping_vnd, o.total_vnd, o.amount_paid_vnd, o.paid_at
        FROM order_requests r JOIN orders o ON o.id = r.order_id
       WHERE r.id = $1 FOR UPDATE OF r, o`, [requestId],
   )).rows[0] ?? null;
@@ -138,6 +185,28 @@ async function approveOrderRequest(res, ctx, body, params) {
         return { code: 409, body: { error: note, request_status: 'rejected' } };
       }
       const next = parsed.value;
+      const quote = await quoteAddressChange(c, r, next.province);
+      if (quote.errorCode) return {
+        code: 409,
+        body: { error_code: quote.errorCode, error: quote.message, message: quote.message, action: quote.action },
+      };
+      const previousShipping = Number(r.shipping_vnd ?? 0);
+      const nextShipping = Number(quote.shippingVnd);
+      const shippingDelta = nextShipping - previousShipping;
+      const hasRecordedPayment = Number(r.amount_paid_vnd ?? 0) > 0
+        || r.paid_at != null
+        || ['paid', 'refunded'].includes(r.payment_status);
+      if (shippingDelta !== 0 && hasRecordedPayment) return {
+        code: 409,
+        body: {
+          error_code: 'shipping_fee_change_requires_order_edit',
+          error: `Phí giao hàng thay đổi từ ${previousShipping}đ thành ${nextShipping}đ trên đơn đã ghi nhận tiền.`,
+          message: `Phí giao hàng thay đổi từ ${previousShipping}đ thành ${nextShipping}đ trên đơn đã ghi nhận tiền.`,
+          action: 'Dùng luồng sửa đơn đã thanh toán để ghi nhận khoản thu thêm hoặc hoàn lại có chứng từ; không duyệt địa chỉ trực tiếp.',
+          shipping_vnd: nextShipping,
+          shipping_delta_vnd: shippingDelta,
+        },
+      };
       const previous = {
         recipient_name: r.customer_name,
         phone: r.customer_phone,
@@ -145,26 +214,60 @@ async function approveOrderRequest(res, ctx, body, params) {
       };
       const address = { line: next.line, province: next.province,
         ...(next.district ? { district: next.district } : {}), ...(next.ward ? { ward: next.ward } : {}) };
+      const nextTotal = Number(r.total_vnd) + shippingDelta;
       await c.query(
-        `UPDATE orders SET customer_name = $2, customer_phone = $3, shipping_address = $4 WHERE id = $1`,
-        [r.order_id, next.recipient_name, next.phone, address],
+        `UPDATE orders
+            SET customer_name = $2, customer_phone = $3, shipping_address = $4,
+                shipping_vnd = $5, total_vnd = $6
+          WHERE id = $1`,
+        [r.order_id, next.recipient_name, next.phone, address, nextShipping, nextTotal],
       );
       await c.query(
         `UPDATE order_requests
             SET status = 'completed', decision_note = $2, decided_by = $3,
                 decided_at = now(), completed_at = now(), updated_at = now(),
                 resolution_payload = $4
-          WHERE id = $1`, [r.id, decisionNote, ctx.user.id, { previous, applied: next }],
+          WHERE id = $1`, [r.id, decisionNote, ctx.user.id, {
+          previous,
+          applied: next,
+          previous_shipping_vnd: previousShipping,
+          shipping_vnd: nextShipping,
+          shipping_delta_vnd: shippingDelta,
+        }],
       );
       await audit(c, 'order.address_changed_from_request', {
         actorId: ctx.user.id, ip: ctx.ip,
-        metadata: { request_id: r.id, order_id: r.order_id, order_number: Number(r.order_number), previous, applied: next },
+        metadata: {
+          request_id: r.id,
+          order_id: r.order_id,
+          order_number: Number(r.order_number),
+          previous,
+          applied: next,
+          previous_shipping_vnd: previousShipping,
+          shipping_vnd: nextShipping,
+          shipping_delta_vnd: shippingDelta,
+        },
       });
       await c.query(
         `SELECT record_order_event($1, 'order.address_changed', 'user', $2, 'seller_admin', $3)`,
-        [r.order_id, ctx.user.id, { request_id: r.id }],
+        [r.order_id, ctx.user.id, {
+          request_id: r.id,
+          previous_shipping_vnd: previousShipping,
+          shipping_vnd: nextShipping,
+          shipping_delta_vnd: shippingDelta,
+        }],
       );
-      return { code: 200, body: { ok: true, id: r.id, status: 'completed' } };
+      return {
+        code: 200,
+        body: {
+          ok: true,
+          id: r.id,
+          status: 'completed',
+          shipping_vnd: nextShipping,
+          shipping_delta_vnd: shippingDelta,
+          total_vnd: nextTotal,
+        },
+      };
     }
 
     if (r.order_status !== 'delivered') {

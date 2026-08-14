@@ -201,7 +201,8 @@ async function creditOrder(c, order, { eventId, amount, content, rcvAccount, bod
     order.paid_at ? Number(order.total_vnd) : 0,
   );
   const cumulative = knownBefore + amount;
-  const status = cumulative >= Number(order.total_vnd) ? 'received' : 'underpaid';
+  const payableTotal = Math.max(0, Number(order.total_vnd) - Number(order.fulfillment_adjustment_vnd ?? 0));
+  const status = cumulative >= payableTotal ? 'received' : 'underpaid';
   // Idempotency theo (shop_id, provider, event_id) — per-shop (0036). Replay cùng shop → bỏ qua.
   const ins = await c.query(
     `INSERT INTO payment_transactions (shop_id, order_id, provider, provider_event_id, amount_vnd, status, raw)
@@ -237,8 +238,8 @@ async function creditOrder(c, order, { eventId, amount, content, rcvAccount, bod
   }
   // Trả thiếu vẫn chuyển enum tương thích sang pending; giao diện mới không suy luận từ enum mà dùng
   // payment_summary. Chỉ mốc vượt từ thiếu sang đủ mới phát biên nhận một lần.
-  const enough = cumulative >= Number(order.total_vnd);
-  const becamePaid = knownBefore < Number(order.total_vnd) && enough;
+  const enough = cumulative >= payableTotal;
+  const becamePaid = knownBefore < payableTotal && enough;
   const upd = await c.query(
     `UPDATE orders
         SET payment_status = CASE
@@ -255,7 +256,7 @@ async function creditOrder(c, order, { eventId, amount, content, rcvAccount, bod
   if (paid && order.customer_email) {
     await c.query(
       `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.paid', $1)`,
-      [{ to: order.customer_email, order_id: order.id, order_number: Number(order.order_number), total_vnd: Number(order.total_vnd) }],
+      [{ to: order.customer_email, order_id: order.id, order_number: Number(order.order_number), total_vnd: payableTotal }],
     );
   }
   log('info', 'payment_processed', { ref: order.payment_ref ?? '(n/a)', amount, cumulative, enough, paid });
@@ -272,7 +273,7 @@ async function persistUnmatched(c, { eventId, amount, content, rcvAccount, reaso
   );
 }
 
-const ORDER_COLS = 'id, shop_id, status, total_vnd, amount_paid_vnd, paid_at, order_number, customer_email, payment_status, payment_ref, qr_account';
+const ORDER_COLS = 'id, shop_id, status, total_vnd, fulfillment_adjustment_vnd, amount_paid_vnd, paid_at, order_number, customer_email, payment_status, payment_ref, qr_account';
 
 // ── Webhook SePay hợp nhất (Authorization: Apikey <key>) ─────────────────────
 // Xác thực bằng HEADER (không để bí mật trên URL). Phân biệt:

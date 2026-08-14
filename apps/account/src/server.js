@@ -305,7 +305,8 @@ async function loadOrderDetail(ctx, num) {
       // trang quản trị và trang tra cứu (packages/orders owed.js) — khách và shop phải đọc
       // cùng một con số, nếu không cuộc gọi khiếu nại bắt đầu bằng hai màn hình cãi nhau.
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.subtotal_vnd, o.shipping_vnd,
-              o.discount_vnd, o.total_vnd, ${OWED_PAID_SQL} AS amount_paid_vnd,
+              o.discount_vnd, o.total_vnd, o.fulfillment_adjustment_vnd,
+              ${OWED_PAID_SQL} AS amount_paid_vnd,
               o.customer_name, o.customer_phone, o.shipping_address, o.created_at,
               ${OWED_REFUNDED_SQL} AS refunded_vnd, ${OWED_SQL} AS owed_vnd,
               (SELECT max(r.created_at) FROM refunds r WHERE r.order_id = o.id) AS last_refund_at

@@ -194,6 +194,8 @@ services:
       # Công thức CÒN NỢ KHÁCH dùng chung — import '../owed.js'. Con số tiền của khách
       # phải GIỐNG NHAU ở trang quản trị và ở trang tra cứu của chính khách.
       - ../packages/orders/src/owed.js:/app/owed.js:ro
+      # Báo giá vận chuyển dùng chung cho checkout và duyệt đổi địa chỉ.
+      - ../packages/shipping/src/quote.js:/app/shipping-quote.js:ro
       # Chuẩn hoá SĐT khách dùng chung cho mọi đường tạo/sửa đơn.
       - ../packages/customer-input/src/phone.js:/app/phone.js:ro
       - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
@@ -264,6 +266,8 @@ services:
       # Công thức CÒN NỢ KHÁCH dùng chung — import '../owed.js'. Con số tiền của khách
       # phải GIỐNG NHAU ở trang quản trị và ở trang tra cứu của chính khách.
       - ../packages/orders/src/owed.js:/app/owed.js:ro
+      # Báo giá vận chuyển dùng chung cho checkout và duyệt đổi địa chỉ.
+      - ../packages/shipping/src/quote.js:/app/shipping-quote.js:ro
       # Chuẩn hoá SĐT khách dùng chung cho checkout và seller.
       - ../packages/customer-input/src/phone.js:/app/phone.js:ro
       - ../packages/auth/src/ratelimit.js:/app/ratelimit.js:ro

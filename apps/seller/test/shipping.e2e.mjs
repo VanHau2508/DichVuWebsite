@@ -109,6 +109,30 @@ async function placeCod(shop, vid, email) {
   return { id, num: r.json.order_number, total: Number(r.json.total_vnd) };
 }
 
+async function placeCodMany(shop, lines, email) {
+  let cartToken = null;
+  for (const line of lines) {
+    cartToken = (await co(shop.host, 'POST', '/cart/items', {
+      body: { variant_id: line.variant_id, qty: line.qty }, cartToken,
+    })).cartToken;
+  }
+  const r = await co(shop.host, 'POST', '/checkout', {
+    body: {
+      customer: { name: 'Khách Vận Đơn', phone: phone(), email },
+      address: { line: '12 Nguyễn Huệ, P. Bến Nghé', province: 'TP. Hồ Chí Minh' },
+      payment_method: 'cod',
+    },
+    cartToken,
+    idemKey: `k-${uniq()}`,
+  });
+  if (r.status !== 201) throw new Error(`checkout nhiều dòng lỗi: ${r.raw}`);
+  const id = (await owner.query(
+    `SELECT id FROM orders WHERE shop_id=$1 AND order_number=$2`,
+    [shop.shopId, r.json.order_number],
+  )).rows[0].id;
+  return { id, num: r.json.order_number, total: Number(r.json.total_vnd) };
+}
+
 // ── STUB hãng VC: server giả trong dbtest, hành vi điều khiển bằng biến `mode` ──
 // ghtkTrackCalls: ĐẾM lượt hỏi tra-cứu GHTK. Cần đếm chứ không chỉ kiểm kết quả, vì bằng
 // chứng của lỗi "đổi hãng" là worker VẪN ĐI HỎI hãng cũ (bằng token hãng mới) — nhìn kết quả
@@ -167,7 +191,8 @@ async function main() {
   const A = await makeShopOwner(staff, `shipa-${uniq()}`);
   const Bs = await makeShopOwner(staff, `shipb-${uniq()}`);
   const vid = await setupProduct(A, 250000, 40);
-  ok('dựng 2 shop + sản phẩm + stub GHN/GHTK (9101/9102)');
+  const vid2 = await setupProduct(A, 150000, 20);
+  ok('dựng 2 shop + 2 sản phẩm + stub GHN/GHTK (9101/9102)');
 
   const S = (shop) => ({
     get: (p) => rq(SELLER, 'GET', `/shops/${shop.shopId}${p}`, { cookie: shop.cookie }),
@@ -178,9 +203,54 @@ async function main() {
   const a = S(A);
   const b = S(Bs);
   const stepUpA = () => rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
-  const markPaid = async (orderId) => {
+  const markPaid = async (orderId, body = {}) => {
     await stepUpA();
-    return a.post(`/orders/${orderId}/mark-paid`, {});
+    return a.post(`/orders/${orderId}/mark-paid`, body);
+  };
+  const openMixedCaseFixture = async (orderId, outcomes) => {
+    const lines = (await owner.query(
+      `SELECT id AS order_line_id, variant_id, unit_price_vnd
+         FROM order_lines WHERE order_id=$1 ORDER BY variant_id`,
+      [orderId],
+    )).rows;
+    const delivered = (await owner.query(
+      `INSERT INTO shipments (shop_id, order_id, carrier, tracking_number, status)
+       VALUES ($1,$2,'manual',$3,'delivered') RETURNING id`,
+      [A.shopId, orderId, `FIX-D-${uniq()}`],
+    )).rows[0];
+    const returned = (await owner.query(
+      `INSERT INTO shipments (shop_id, order_id, carrier, tracking_number, status)
+       VALUES ($1,$2,'manual',$3,'returned') RETURNING id`,
+      [A.shopId, orderId, `FIX-R-${uniq()}`],
+    )).rows[0];
+    for (const line of lines) {
+      const outcome = outcomes.get(line.variant_id);
+      if (!outcome) continue;
+      if (outcome.delivered > 0) await owner.query(
+        `INSERT INTO shipment_lines (shop_id, shipment_id, order_line_id, variant_id, qty, unit_price_vnd)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [A.shopId, delivered.id, line.order_line_id, line.variant_id, outcome.delivered, line.unit_price_vnd],
+      );
+      if (outcome.returned > 0) await owner.query(
+        `INSERT INTO shipment_lines (shop_id, shipment_id, order_line_id, variant_id, qty, unit_price_vnd)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [A.shopId, returned.id, line.order_line_id, line.variant_id, outcome.returned, line.unit_price_vnd],
+      );
+    }
+    await owner.query(
+      `UPDATE orders SET status='shipped', fulfillment_status='partial' WHERE id=$1`,
+      [orderId],
+    );
+    await owner.query(`SELECT open_mixed_shipment_resolution($1)`, [orderId]);
+    const caseRows = (await owner.query(
+      `SELECT rc.id, rc.required_refund_vnd, cl.id AS case_line_id, cl.variant_id,
+              cl.delivered_qty, cl.returned_qty, cl.unresolved_qty
+         FROM order_resolution_cases rc
+         JOIN order_resolution_case_lines cl ON cl.case_id=rc.id
+        WHERE rc.order_id=$1 ORDER BY cl.variant_id`,
+      [orderId],
+    )).rows;
+    return { id: caseRows[0]?.id, required_refund_vnd: Number(caseRows[0]?.required_refund_vnd ?? 0), lines: caseRows };
   };
   const PICKUP = { name: 'Kho Nhà Xinh', phone: '0901234567', address: '5 Lê Lợi', province: 'TP. Hồ Chí Minh', district: 'Quận 1' };
 
@@ -520,6 +590,77 @@ async function main() {
     ? ok('hai receive-return đồng thời → chỉ một chứng từ thắng, không double-restock')
     : bad('receive-return concurrent làm trùng tồn/chứng từ', JSON.stringify({ responses: concurrentReceipts.map((x) => [x.status, x.json]), proof: concurrentProof }));
 
+  // Dựng một snapshot bị lệch sau khi receipt đầu đã commit. Dòng thứ hai vẫn tự hợp lệ
+  // nên chỉ chốt aggregate sau khi ghi receipt/ledger mới mới phát hiện lỗi; nhánh này phải
+  // ném ResolutionRollbackError ra ngoài withTenant để rollback toàn bộ side effect.
+  const oRollback = await placeCodMany(A, [
+    { variant_id: vid, qty: 2 },
+    { variant_id: vid2, qty: 2 },
+  ], `rollback-resolution-${uniq()}@mail.vn`);
+  await a.post(`/orders/${oRollback.id}/confirm`, {});
+  const rollbackCase = await openMixedCaseFixture(oRollback.id, new Map([
+    [vid, { delivered: 1, returned: 1 }],
+    [vid2, { delivered: 1, returned: 1 }],
+  ]));
+  const rollbackLine1 = rollbackCase.lines.find((line) => line.variant_id === vid);
+  const rollbackLine2 = rollbackCase.lines.find((line) => line.variant_id === vid2);
+  r = await a.post(`/resolution-cases/${rollbackCase.id}/receive-return`, {
+    idempotency_key: `rollback-seed-${uniq()}`,
+    disposition: 'quarantine',
+    note: 'Dựng receipt hợp lệ trước khi giả lập snapshot lệch',
+    lines: [{ case_line_id: rollbackLine1.case_line_id, qty: 1 }],
+  });
+  if (r.status !== 201) bad('không dựng được receipt nền cho ca rollback', r.raw);
+  await owner.query(
+    `UPDATE order_resolution_case_lines
+        SET returned_qty=0, unresolved_qty=unresolved_qty+1
+      WHERE id=$1`,
+    [rollbackLine1.case_line_id],
+  );
+  const rollbackBefore = (await owner.query(
+    `SELECT
+       (SELECT count(*)::int FROM order_resolution_return_receipts WHERE case_id=$1) AS receipts,
+       (SELECT count(*)::int FROM order_resolution_return_receipt_lines WHERE case_id=$1) AS receipt_lines,
+       (SELECT count(*)::int FROM inventory_ledger il
+          JOIN order_resolution_return_receipt_lines rl ON rl.id=il.resolution_receipt_line_id
+         WHERE rl.case_id=$1) AS ledgers,
+       (SELECT on_hand FROM inventory_levels WHERE shop_id=$2 AND variant_id=$3) AS on_hand`,
+    [rollbackCase.id, A.shopId, vid2],
+  )).rows[0];
+  let rollbackResponse;
+  try {
+    rollbackResponse = await a.post(`/resolution-cases/${rollbackCase.id}/receive-return`, {
+      idempotency_key: `rollback-trigger-${uniq()}`,
+      disposition: 'restock',
+      note: 'Dòng này tự hợp lệ nhưng aggregate case đã lệch',
+      lines: [{ case_line_id: rollbackLine2.case_line_id, qty: 1 }],
+    });
+  } finally {
+    await owner.query(
+      `UPDATE order_resolution_case_lines
+          SET returned_qty=1, unresolved_qty=unresolved_qty-1
+        WHERE id=$1`,
+      [rollbackLine1.case_line_id],
+    );
+  }
+  const rollbackAfter = (await owner.query(
+    `SELECT
+       (SELECT count(*)::int FROM order_resolution_return_receipts WHERE case_id=$1) AS receipts,
+       (SELECT count(*)::int FROM order_resolution_return_receipt_lines WHERE case_id=$1) AS receipt_lines,
+       (SELECT count(*)::int FROM inventory_ledger il
+          JOIN order_resolution_return_receipt_lines rl ON rl.id=il.resolution_receipt_line_id
+         WHERE rl.case_id=$1) AS ledgers,
+       (SELECT on_hand FROM inventory_levels WHERE shop_id=$2 AND variant_id=$3) AS on_hand`,
+    [rollbackCase.id, A.shopId, vid2],
+  )).rows[0];
+  rollbackResponse.status === 409 && rollbackResponse.json?.error_code === 'resolution_inventory_integrity_error'
+    && Number(rollbackAfter.receipts) === Number(rollbackBefore.receipts)
+    && Number(rollbackAfter.receipt_lines) === Number(rollbackBefore.receipt_lines)
+    && Number(rollbackAfter.ledgers) === Number(rollbackBefore.ledgers)
+    && Number(rollbackAfter.on_hand) === Number(rollbackBefore.on_hand)
+    ? ok('aggregate receipt lệch → 409 và rollback receipt/ledger/tồn thật sự')
+    : bad('ResolutionRollbackError không rollback đủ side effect', JSON.stringify({ response: rollbackResponse, before: rollbackBefore, after: rollbackAfter }));
+
   r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
     financial_action: 'not_required', note: 'chưa nhận hàng hoàn',
   });
@@ -726,6 +867,59 @@ async function main() {
   r.status === 409 && r.json?.error_code === 'resolution_replay_conflict'
     ? ok('accept-partial replay khác nội dung → conflict') : bad('accept replay conflict lọt', r.raw);
 
+  // COD chưa thu tiền: sau khi chấp nhận giao một phần, khoản phải thu phải giảm theo
+  // giá trị hàng không giao. Nếu nhân viên vẫn ghi tổng cũ thì phần dư phải hiện thành
+  // nợ khách; nút mặc định chỉ được ghi đúng payable mới.
+  const oPartialCod = await placeCod(A, vid, `partial-cod-${uniq()}@mail.vn`);
+  await a.post(`/orders/${oPartialCod.id}/confirm`, {});
+  const partialCodCase = await openMixedCaseFixture(oPartialCod.id, new Map([
+    [vid, { delivered: 1, returned: 1 }],
+  ]));
+  const partialCodLine = partialCodCase.lines[0];
+  r = await a.post(`/resolution-cases/${partialCodCase.id}/receive-return`, {
+    idempotency_key: `partial-cod-return-${uniq()}`,
+    disposition: 'quarantine',
+    note: 'Hàng hoàn chờ kiểm tra, không tự restock',
+    lines: [{ case_line_id: partialCodLine.case_line_id, qty: 1 }],
+  });
+  if (r.status !== 201) bad('không nhận được hàng hoàn cho ca COD partial', r.raw);
+  r = await a.post(`/resolution-cases/${partialCodCase.id}/accept-partial`, {
+    financial_action: 'not_required',
+    note: 'Đơn COD chưa thu tiền, chỉ thu phần giao thành công',
+  });
+  const fulfillmentAdjustment = Number(r.json?.fulfillment_adjustment_vnd ?? 0);
+  r.status === 200 && partialCodCase.required_refund_vnd === 0 && fulfillmentAdjustment > 0
+    ? ok('COD chưa thu → accept-partial not_required và chốt giá trị hàng không giao')
+    : bad('không chốt được fulfillment adjustment cho COD', r.raw);
+
+  const overpaidCod = await markPaid(oPartialCod.id, { amount_vnd: oPartialCod.total });
+  const overpaidCodDetail = (await a.get(`/orders/${oPartialCod.id}`)).json;
+  overpaidCod.status === 200
+    && Number(overpaidCod.json?.payment_summary?.customer_credit_vnd) === fulfillmentAdjustment
+    && Number(overpaidCodDetail.owed_vnd) === fulfillmentAdjustment
+    && overpaidCod.json?.payment_summary?.display_state === 'overpaid'
+    ? ok('ghi nhầm tổng COD cũ → phần hàng không giao hiện đúng là còn nợ khách')
+    : bad('COD partial vẫn che mất tiền nợ khách', JSON.stringify({ payment: overpaidCod, detail: overpaidCodDetail, fulfillmentAdjustment }));
+
+  await stepUpA();
+  const reversedCod = await a.post(
+    `/orders/${oPartialCod.id}/payments/${overpaidCod.json?.transaction_id}/reverse`,
+    { reason: 'Kiểm thử lại nút thu đúng phần COD còn phải trả' },
+  );
+  const payableCod = oPartialCod.total - fulfillmentAdjustment;
+  const exactCod = await markPaid(oPartialCod.id);
+  const exactCodTx = (await owner.query(
+    `SELECT amount_vnd FROM payment_transactions WHERE id=$1`,
+    [exactCod.json?.transaction_id],
+  )).rows[0];
+  reversedCod.status === 200 && exactCod.status === 200
+    && Number(exactCodTx?.amount_vnd) === payableCod
+    && Number(exactCod.json?.amount_paid_vnd) === payableCod
+    && exactCod.json?.payment_status === 'paid'
+    && Number(exactCod.json?.payment_summary?.customer_credit_vnd) === 0
+    ? ok('nút thu COD mặc định → chỉ ghi payable mới, không tạo tiền dư')
+    : bad('nút thu COD vẫn dùng tổng cũ', JSON.stringify({ reversedCod, exactCod, exactCodTx, payableCod }));
+
   // Cancelled không được tính là giao/hoàn. Nếu nó để lại qty chưa có kết quả thì detector không
   // được đóng băng snapshot. Việc nhập lại/gửi bù phải qua đối soát riêng, không được tự suy diễn
   // "carrier cancelled" là hàng chắc chắn đã về kho.
@@ -820,6 +1014,91 @@ async function main() {
     body: { customer: { name: 'K', phone: phone() }, address: { line: 'x', province: 'Tỉnh Không Tồn Tại' }, payment_method: 'cod' },
     cartToken: cart, idemKey: `k-${uniq()}` });
   r.status === 400 ? ok('province lạ → 400') : bad('không validate province', r.raw);
+
+  // ── 7b. Duyệt đổi địa chỉ phải đi qua cùng công thức phí checkout ───────────
+  sect('7b. Đổi địa chỉ: kiểm vùng giao + tính lại phí');
+  await owner.query(
+    `UPDATE shops
+        SET ship_mode='region', ship_fee_vnd=30000, ship_fee_far_vnd=50000,
+            ship_from_province='TP. Hồ Chí Minh', ship_extra_per_500g_vnd=0,
+            free_ship_threshold_vnd=NULL, ship_over_max_behavior='region'
+      WHERE id=$1`,
+    [A.shopId],
+  );
+  const insertAddressRequest = async (orderId, province) => (await owner.query(
+    `INSERT INTO order_requests
+       (shop_id, order_id, request_type, requester_type, reason, request_payload)
+     VALUES ($1,$2,'address_change','guest','Khách đổi nơi nhận',$3)
+     RETURNING id`,
+    [A.shopId, orderId, {
+      recipient_name: 'Người nhận mới', phone: '0912345678', line: '10 Đường Mới',
+      province, district: 'Quận mới', ward: 'Phường mới',
+    }],
+  )).rows[0].id;
+
+  const addressOrder = await placeCod(A, vid, `address-${uniq()}@mail.vn`);
+  const addressBefore = (await owner.query(
+    `SELECT shipping_vnd, total_vnd FROM orders WHERE id=$1`, [addressOrder.id],
+  )).rows[0];
+  const addressRequest = await insertAddressRequest(addressOrder.id, 'Hà Nội');
+  r = await a.post(`/order-requests/${addressRequest}/approve`, { note: 'Đã kiểm tra địa chỉ mới' });
+  const addressAfter = (await owner.query(
+    `SELECT shipping_vnd, total_vnd, shipping_address FROM orders WHERE id=$1`, [addressOrder.id],
+  )).rows[0];
+  r.status === 200
+    && Number(addressAfter.shipping_vnd) === 50000
+    && Number(addressAfter.total_vnd) === Number(addressBefore.total_vnd) + 20000
+    && addressAfter.shipping_address?.province === 'Hà Nội'
+    ? ok('đơn chưa thu tiền: duyệt địa chỉ mới tính lại phí vùng và tổng đơn trong cùng transaction')
+    : bad('đổi địa chỉ không tính lại phí đúng', JSON.stringify({ response: r, before: addressBefore, after: addressAfter }));
+
+  const paidAddressOrder = await placeCod(A, vid, `address-paid-${uniq()}@mail.vn`);
+  await markPaid(paidAddressOrder.id);
+  const paidAddressBefore = (await owner.query(
+    `SELECT shipping_vnd, total_vnd, shipping_address FROM orders WHERE id=$1`, [paidAddressOrder.id],
+  )).rows[0];
+  const paidAddressRequest = await insertAddressRequest(paidAddressOrder.id, 'Hà Nội');
+  r = await a.post(`/order-requests/${paidAddressRequest}/approve`, { note: 'Không được đổi tiền mù' });
+  const paidAddressAfter = (await owner.query(
+    `SELECT shipping_vnd, total_vnd, shipping_address FROM orders WHERE id=$1`, [paidAddressOrder.id],
+  )).rows[0];
+  r.status === 409 && r.json?.error_code === 'shipping_fee_change_requires_order_edit'
+    && Number(paidAddressAfter.shipping_vnd) === Number(paidAddressBefore.shipping_vnd)
+    && Number(paidAddressAfter.total_vnd) === Number(paidAddressBefore.total_vnd)
+    && JSON.stringify(paidAddressAfter.shipping_address) === JSON.stringify(paidAddressBefore.shipping_address)
+    ? ok('đơn đã thu tiền: phí thay đổi bị chặn, không sửa địa chỉ/tổng mù')
+    : bad('đổi địa chỉ làm sai tiền đơn đã thu', JSON.stringify({ response: r, before: paidAddressBefore, after: paidAddressAfter }));
+
+  await owner.query(
+    `UPDATE shops
+        SET ship_mode='distance', ship_origin_lat=10.7769, ship_origin_lng=106.7009,
+            ship_base_vnd=10000, ship_per_km_vnd=3000, ship_max_km=5,
+            ship_over_max_behavior='reject'
+      WHERE id=$1`,
+    [A.shopId],
+  );
+  const distanceAddressOrder = await placeCod(A, vid, `address-distance-${uniq()}@mail.vn`);
+  const distanceAddressRequest = await insertAddressRequest(distanceAddressOrder.id, 'Hà Nội');
+  const distanceBefore = (await owner.query(
+    `SELECT total_vnd, shipping_address FROM orders WHERE id=$1`, [distanceAddressOrder.id],
+  )).rows[0];
+  r = await a.post(`/order-requests/${distanceAddressRequest}/approve`, { note: 'Thiếu vị trí xác minh' });
+  const distanceAfter = (await owner.query(
+    `SELECT total_vnd, shipping_address FROM orders WHERE id=$1`, [distanceAddressOrder.id],
+  )).rows[0];
+  r.status === 409 && r.json?.error_code === 'shipping_location_required'
+    && Number(distanceAfter.total_vnd) === Number(distanceBefore.total_vnd)
+    && JSON.stringify(distanceAfter.shipping_address) === JSON.stringify(distanceBefore.shipping_address)
+    ? ok('distance + reject: không có vị trí xác minh → fail-closed, không nhận địa chỉ checkout sẽ từ chối')
+    : bad('distance + reject vẫn duyệt địa chỉ mù', JSON.stringify({ response: r, before: distanceBefore, after: distanceAfter }));
+
+  await owner.query(
+    `UPDATE shops
+        SET ship_mode='region', ship_over_max_behavior='region', ship_fee_vnd=30000,
+            ship_fee_far_vnd=NULL, ship_from_province=NULL
+      WHERE id=$1`,
+    [A.shopId],
+  );
 
   // ── 8. ĐỔI HÃNG khi còn kiện đang bay ───────────────────────────────────────
   sect('8. Đổi hãng khi còn kiện đang bay: không được chết ÂM THẦM');

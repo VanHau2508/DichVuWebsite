@@ -2514,6 +2514,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
         : legacyReceived <= 0 ? 'unpaid' : legacyReceived < totalVnd ? 'partial' : fallbackNet > totalVnd ? 'overpaid' : 'paid',
   };
   const paymentView = PAYMENT_DISPLAY[payment.display_state] ?? ['unpaid', payment.display_state ?? 'Chưa rõ'];
+  const fulfillmentAdjustment = Math.max(0, Number(o.fulfillment_adjustment_vnd) || 0);
   const transactions = Array.isArray(o.payment_transactions) ? o.payment_transactions : [];
   const reversedTransactions = new Set(transactions.filter((t) => t.reverses_transaction_id).map((t) => t.reverses_transaction_id));
   const cases = Array.isArray(o.resolution_cases) ? o.resolution_cases : [];
@@ -2672,6 +2673,9 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   }).join('');
   const creditText = Number(payment.customer_credit_vnd) > 0
     ? `<div class="err"><strong>Cần xử lý ${money(payment.customer_credit_vnd)}</strong> khách chuyển dư hoặc shop đang giữ sau khi đơn kết thúc. Không xoá giao dịch; hãy hoàn tiền và ghi bút toán hoàn.</div>` : '';
+  const partialValueText = fulfillmentAdjustment > 0
+    ? `<div class="notice"><strong>Đơn được chốt giao một phần.</strong> Giá trị phần không giao: ${money(fulfillmentAdjustment)}; shop chỉ được giữ tối đa ${money(Math.max(0, Number(payment.total_vnd) - fulfillmentAdjustment))}.</div>`
+    : '';
   const paymentCard = `<div class="card" id="thanh-toan"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
       <h2 style="margin:0">Thanh toán</h2>${badge(paymentView[0], paymentView[1])}
     </div>
@@ -2681,7 +2685,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
       <div class="metric"><div class="l">Đã hoàn</div><div class="v">${money(payment.refunded_vnd)}</div></div>
       <div class="metric"><div class="l">${Number(payment.amount_due_vnd) > 0 ? 'Còn thiếu' : Number(payment.customer_credit_vnd) > 0 ? 'Cần trả khách' : 'Còn thiếu'}</div><div class="v">${money(Number(payment.amount_due_vnd) > 0 ? payment.amount_due_vnd : payment.customer_credit_vnd)}</div></div>
     </div>
-    ${creditText}${manualPaymentForm}
+    ${partialValueText}${creditText}${manualPaymentForm}
     <h3 style="margin-top:18px">Lịch sử giao dịch</h3>
     ${transactionRows ? `<div class="tblscroll"><table data-cards><thead><tr><th>Thời gian</th><th>Số tiền</th><th>Nguồn</th><th>Ghi chú</th><th>Điều chỉnh</th></tr></thead><tbody>${transactionRows}</tbody></table></div>` : '<p class="muted">Chưa có chứng từ thanh toán.</p>'}
   </div>`;

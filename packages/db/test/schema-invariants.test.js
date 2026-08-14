@@ -9,7 +9,7 @@
  */
 import { test, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { owner, closeAll } from './helpers.js';
+import { owner, closeAll, withTenant, sqlstateOf, SQLSTATE } from './helpers.js';
 
 after(closeAll);
 
@@ -372,6 +372,120 @@ describe('vai trò database', () => {
     `);
     assert.match(fn.definition, /amount_paid_vnd\s*>\s*0/i);
     assert.match(fn.definition, /paid_at\s+IS\s+NOT\s+NULL\s+THEN\s+v_order\.total_vnd/i);
+  });
+
+  test('fulfillment adjustment chỉ được ghi qua cửa hẹp resolution và được payment tôn trọng', async () => {
+    const { rows: [column] } = await owner.query(`
+      SELECT is_nullable, column_default
+        FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'orders'
+         AND column_name = 'fulfillment_adjustment_vnd'
+    `);
+    assert.deepEqual(column, { is_nullable: 'NO', column_default: '0' });
+
+    const { rows: [priv] } = await owner.query(`
+      SELECT has_column_privilege('app_payment','orders','fulfillment_adjustment_vnd','UPDATE') AS payment_update,
+             has_column_privilege('app_resolution','orders','fulfillment_adjustment_vnd','UPDATE') AS resolution_update,
+             has_column_privilege('app_checkout','orders','fulfillment_adjustment_vnd','SELECT') AS checkout_read,
+             has_column_privilege('app_customer','orders','fulfillment_adjustment_vnd','SELECT') AS customer_read,
+             has_column_privilege('app_payment','orders','fulfillment_adjustment_vnd','SELECT') AS payment_read
+    `);
+    assert.deepEqual(priv, {
+      payment_update: false,
+      resolution_update: true,
+      checkout_read: true,
+      customer_read: true,
+      payment_read: true,
+    });
+
+    const { rows: [fn] } = await owner.query(`
+      SELECT r.rolname AS owner, r.rolcanlogin, r.rolsuper, r.rolbypassrls,
+             p.prosecdef, p.proconfig,
+             has_function_privilege('app_rw', p.oid, 'EXECUTE') AS rw_exec,
+             has_function_privilege('public', p.oid, 'EXECUTE') AS public_exec,
+             pg_get_functiondef(p.oid) AS definition
+        FROM pg_proc p
+        JOIN pg_roles r ON r.oid = p.proowner
+       WHERE p.oid = 'set_order_partial_fulfillment_adjustment(uuid)'::regprocedure
+    `);
+    assert.equal(fn.owner, 'app_resolution');
+    assert.equal(fn.rolcanlogin, false);
+    assert.equal(fn.rolsuper, false);
+    assert.equal(fn.rolbypassrls, false);
+    assert.equal(fn.prosecdef, true);
+    assert.ok((fn.proconfig ?? []).some((v) => v === 'search_path=public, pg_temp'));
+    assert.equal(fn.rw_exec, true);
+    assert.equal(fn.public_exec, false);
+    assert.match(fn.definition, /fulfillment_adjustment_vnd IN \(0, v_adjustment\)/i);
+
+    const { rows: [lineRead] } = await owner.query(`
+      SELECT has_table_privilege('app_resolution','order_lines','SELECT') AS can_read,
+             qual
+        FROM pg_policies
+       WHERE schemaname='public' AND tablename='order_lines'
+         AND policyname='resolution_service_order_lines_read'
+         AND 'app_resolution' = ANY(roles)
+    `);
+    assert.equal(lineRead.can_read, true);
+    assert.match(lineRead.qual, /shop_id = current_shop_id\(\)/i);
+
+    const { rows: [guard] } = await owner.query(`
+      SELECT pg_get_triggerdef(t.oid) AS trigger_definition,
+             pg_get_functiondef(t.tgfoid) AS function_definition,
+             has_function_privilege('public', t.tgfoid, 'EXECUTE') AS public_exec
+        FROM pg_trigger t
+       WHERE t.tgrelid = 'orders'::regclass
+         AND t.tgname = 'fulfillment_adjustment_write_guard'
+         AND NOT t.tgisinternal
+    `);
+    assert.match(guard.trigger_definition, /BEFORE UPDATE OF fulfillment_adjustment_vnd ON public\.orders/i);
+    assert.match(guard.function_definition, /current_user\s*<>\s*'app_resolution'/i);
+    assert.equal(guard.public_exec, false);
+
+    const { rows: [sample] } = await owner.query(`
+      WITH created_shop AS (
+        INSERT INTO shops (slug, name, status)
+        VALUES ('guard-' || substring(gen_random_uuid()::text, 1, 8), 'Guard test', 'active')
+        RETURNING id
+      )
+      INSERT INTO orders (shop_id, order_number, total_vnd)
+      SELECT id, 1, 1 FROM created_shop
+      RETURNING shop_id, id
+    `);
+    try {
+      const directWriteState = await sqlstateOf(() => withTenant(sample.shop_id, (c) => c.query(
+        `UPDATE orders SET fulfillment_adjustment_vnd = fulfillment_adjustment_vnd + 1 WHERE id = $1`,
+        [sample.id],
+      )));
+      assert.equal(directWriteState, SQLSTATE.INSUFFICIENT_PRIVILEGE,
+        'app_rw có table-level UPDATE legacy nhưng trigger phải chặn ghi cột adjustment trực tiếp');
+    } finally {
+      await owner.query(`DELETE FROM orders WHERE id=$1`, [sample.id]);
+      await owner.query(`DELETE FROM shops WHERE id=$1`, [sample.shop_id]);
+    }
+
+    const { rows: paymentFns } = await owner.query(`
+      SELECT p.proname, r.rolname AS owner, pg_get_functiondef(p.oid) AS definition
+        FROM pg_proc p
+        JOIN pg_roles r ON r.oid = p.proowner
+       WHERE p.oid IN (
+         'record_manual_payment(uuid,bigint,uuid,text)'::regprocedure,
+         'reverse_manual_payment(uuid,uuid,uuid,text)'::regprocedure
+       )
+       ORDER BY p.proname
+    `);
+    assert.equal(paymentFns.length, 2);
+    for (const paymentFn of paymentFns) {
+      assert.equal(paymentFn.owner, 'app_payment');
+      assert.match(paymentFn.definition, /total_vnd\s*-\s*v_order\.fulfillment_adjustment_vnd/i);
+      assert.match(paymentFn.definition, /v_after\s*>=\s*v_payable/i);
+    }
+
+    const { rows: tempPolicies } = await owner.query(`
+      SELECT policyname FROM pg_policies
+       WHERE schemaname = 'public' AND policyname LIKE 'adjustment_0173_owner_%'
+    `);
+    assert.deepEqual(tempPolicies, []);
   });
 
   test('app_rw KHÔNG ghi được billing/ledger (tenant nhạy cảm) (P0-3)', async () => {

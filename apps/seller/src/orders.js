@@ -277,7 +277,8 @@ async function getOrder(res, ctx, _b, params) {
       // trừ lấy từ total và refunded_total. Bản trước làm đúng như vậy và luật đó vừa hụt vừa
       // sai (xem owed.js). Một con số tiền chỉ được có MỘT nơi sinh ra nó.
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.fulfillment_status,
-              o.subtotal_vnd, o.shipping_vnd, o.total_vnd, ${OWED_PAID_SQL} AS amount_paid_vnd,
+              o.subtotal_vnd, o.shipping_vnd, o.total_vnd, o.fulfillment_adjustment_vnd,
+              ${OWED_PAID_SQL} AS amount_paid_vnd,
               o.customer_name, o.customer_phone, o.customer_email, o.shipping_address, o.note, o.created_at,
               o.paid_at, o.shipped_at, o.delivered_at, o.cancelled_at, o.cancel_reason, o.source, o.source_ref, o.return_fee_vnd,
               ${OWED_REFUNDED_SQL} AS refunded_vnd, ${OWED_SQL} AS owed_vnd, ${OWED_REASON_SQL} AS owed_reason
@@ -317,6 +318,7 @@ async function getOrder(res, ctx, _b, params) {
     o.refunded_total_vnd = o.refunds.reduce((s, r) => s + r.amount_vnd, 0);
     o.amount_paid_vnd = Number(o.amount_paid_vnd);
     o.refunded_vnd = Number(o.refunded_vnd);
+    o.fulfillment_adjustment_vnd = Number(o.fulfillment_adjustment_vnd ?? 0);
     o.payment_summary = paymentSummary(o);
     // Sổ tiền chỉ trả trường nghiệp vụ; raw webhook có thể chứa PII/provider payload nên không rời service.
     o.payment_transactions = (await c.query(
@@ -465,7 +467,8 @@ async function bulkMarkPaid(res, ctx, body) {
       const out = await withTenant(ctx.shopId, async (c) => {
         const o = (await c.query(
           `SELECT o.id, o.order_number, o.payment_method, o.payment_status, o.status, o.customer_email,
-                  o.total_vnd, ${OWED_PAID_SQL} AS amount_paid_vnd, ${OWED_REFUNDED_SQL} AS refunded_vnd
+                  o.total_vnd, o.fulfillment_adjustment_vnd,
+                  ${OWED_PAID_SQL} AS amount_paid_vnd, ${OWED_REFUNDED_SQL} AS refunded_vnd
              FROM orders o WHERE o.id = $1 FOR UPDATE`, [orderId],
         )).rows[0];
         if (!o || o.payment_method !== 'cod' || ['cancelled', 'refunded', 'returned'].includes(o.status)) return false;
@@ -483,7 +486,7 @@ async function bulkMarkPaid(res, ctx, body) {
         if (result.became_paid && o.customer_email) {
           await c.query(
             `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.paid', $1)`,
-            [{ to: o.customer_email, order_id: o.id, order_number: Number(o.order_number), total_vnd: Number(o.total_vnd) }],
+            [{ to: o.customer_email, order_id: o.id, order_number: Number(o.order_number), total_vnd: amount }],
           );
         }
         return true;
@@ -784,7 +787,8 @@ async function recordManualPaymentAction(res, ctx, body, params, { requiredMetho
   const out = await withTenant(ctx.shopId, async (c) => {
     const o = (await c.query(
       `SELECT o.id, o.order_number, o.payment_method, o.payment_status, o.status, o.customer_email,
-              o.total_vnd, ${OWED_PAID_SQL} AS amount_paid_vnd, ${OWED_REFUNDED_SQL} AS refunded_vnd
+              o.total_vnd, o.fulfillment_adjustment_vnd,
+              ${OWED_PAID_SQL} AS amount_paid_vnd, ${OWED_REFUNDED_SQL} AS refunded_vnd
          FROM orders o WHERE o.id = $1 FOR UPDATE`, [orderId],
     )).rows[0];
     if (!o) return { code: 404 };
@@ -807,9 +811,10 @@ async function recordManualPaymentAction(res, ctx, body, params, { requiredMetho
       metadata: { orderId, transaction_id: result.transaction_id, amount_vnd: amount, payment_method: o.payment_method },
     });
     if (result.became_paid && o.customer_email) {
+      const payableTotal = Math.max(0, Number(o.total_vnd) - Number(o.fulfillment_adjustment_vnd ?? 0));
       await c.query(
         `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.paid', $1)`,
-        [{ to: o.customer_email, order_id: o.id, order_number: Number(o.order_number), total_vnd: Number(o.total_vnd) }],
+        [{ to: o.customer_email, order_id: o.id, order_number: Number(o.order_number), total_vnd: payableTotal }],
       );
     }
     return { code: 200, result, summary: paymentSummary({
@@ -981,7 +986,7 @@ async function reverseManualPaymentAction(res, ctx, body, params, explicitTransa
   try {
     const out = await withTenant(ctx.shopId, async (c) => {
       const o = (await c.query(
-        `SELECT o.id, o.total_vnd, o.status, ${OWED_PAID_SQL} AS amount_paid_vnd,
+        `SELECT o.id, o.total_vnd, o.fulfillment_adjustment_vnd, o.status, ${OWED_PAID_SQL} AS amount_paid_vnd,
                 ${OWED_REFUNDED_SQL} AS refunded_vnd
            FROM orders o WHERE o.id = $1 FOR UPDATE`, [orderId],
       )).rows[0];

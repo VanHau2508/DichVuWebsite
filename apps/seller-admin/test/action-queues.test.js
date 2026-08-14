@@ -9,7 +9,8 @@ const dashboard = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'se
 
 test('notification queue has SSR render, failed-email retry form, and escaped output helpers', () => {
   assert.match(pages, /export function renderNotificationDeliveries\(/);
-  assert.match(pages, /d\.status === 'failed' && d\.channel === 'email'/);
+  assert.match(pages, /const retry = d\.retryable/);
+  assert.match(pages, /topic_not_retryable:/);
   assert.match(pages, /\$\{base\}\/\$\{esc\(d\.id\)\}\/retry/);
   assert.match(pages, /esc\(d\.last_error\)/);
   assert.match(pages, /\['retrying', 'Đang thử lại'\]/);

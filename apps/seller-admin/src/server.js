@@ -462,7 +462,7 @@ async function notificationDeliveryRetry(req, res, me, cookie, shopId, deliveryI
   if (!isMember(me, shopId)) return denyShop(res, me);
   const r = await sellerApi('POST', `/shops/${shopId}/notification-deliveries/${deliveryId}/retry`, { cookie, body: {} });
   if (r.status === 202) return redirect(res, `/shops/${shopId}/notification-deliveries?status=failed&done=retry`);
-  return redirect(res, `/shops/${shopId}/notification-deliveries?status=failed&error=${encodeURIComponent(r.json?.error ?? 'Không thể gửi lại thông báo.')}`);
+  return redirect(res, `/shops/${shopId}/notification-deliveries?status=failed&error=${encodeURIComponent(r.json?.message ?? r.json?.error ?? 'Không thể gửi lại thông báo.')}`);
 }
 
 async function resolutionCasesPage(res, me, cookie, shopId, q) {

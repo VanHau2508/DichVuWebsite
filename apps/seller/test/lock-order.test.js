@@ -30,6 +30,13 @@ const MIEN_TRU = [
   { khop: "WHERE sl.order_line_id = ol.id AND s.status = 'created'", vi: 'shipOrder: dựng danh sách kiện; vòng khoá nằm ở consumeAndShip và nó đọc shipment_lines ORDER BY variant_id' },
 ];
 
+test('resolution return inventory lock is ordered in SQL', () => {
+  const src = readFileSync(join(ROOT, 'apps/seller/src/order-resolutions.js'), 'utf8');
+  assert.match(src, /FROM unnest\(\$1::uuid\[\]\)[^`]*ORDER BY variants\.variant_id[^`]*ON CONFLICT/s);
+  assert.match(src, /FROM inventory_levels[^`]*variant_id = ANY\(\$1::uuid\[\]\)[^`]*ORDER BY variant_id[^`]*FOR UPDATE/s);
+  assert.doesNotMatch(src, /receiptLines[^\n]*localeCompare/);
+});
+
 const FILE = [
   'apps/seller/src/orders.js',
   'apps/worker/src/index.js',

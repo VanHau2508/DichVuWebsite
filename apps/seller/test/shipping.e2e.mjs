@@ -176,6 +176,7 @@ async function main() {
     del: (p) => rq(SELLER, 'DELETE', `/shops/${shop.shopId}${p}`, { cookie: shop.cookie, origin: OS }),
   });
   const a = S(A);
+  const b = S(Bs);
   const stepUpA = () => rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
   const markPaid = async (orderId) => {
     await stepUpA();
@@ -416,6 +417,37 @@ async function main() {
     ? ok('snapshot mixed chính xác: đặt 2 / giao 1 / hoàn 1 / chưa rõ 0')
     : bad('snapshot mixed sai', JSON.stringify(mixCase));
 
+  const caseBeforeCrossShop = (await owner.query(
+    `SELECT status, resolution, resolution_payload
+       FROM order_resolution_cases WHERE id=$1`, [mixCase.id],
+  )).rows[0];
+  const crossShopResolutionCalls = await Promise.all([
+    b.post(`/resolution-cases/${mixCase.id}/wait-return`, {}),
+    b.post(`/resolution-cases/${mixCase.id}/receive-return`, {
+      idempotency_key: `cross-${uniq()}`,
+      disposition: 'restock',
+      lines: [{ case_line_id: mixCase.case_line_id, qty: 1 }],
+    }),
+    b.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
+      financial_action: 'not_required', note: 'cross-shop must not see this case',
+    }),
+    b.post(`/resolution-cases/${mixCase.id}/resolve`, {
+      resolution: 'accept_partial', financial_action: 'not_required', note: 'cross-shop resolve',
+    }),
+  ]);
+  const caseAfterCrossShop = (await owner.query(
+    `SELECT status, resolution, resolution_payload,
+            (SELECT count(*)::int FROM order_resolution_return_receipts WHERE case_id=$1) AS receipts
+       FROM order_resolution_cases WHERE id=$1`, [mixCase.id],
+  )).rows[0];
+  crossShopResolutionCalls.every((x) => x.status === 404)
+    && caseAfterCrossShop.status === caseBeforeCrossShop.status
+    && caseAfterCrossShop.resolution === caseBeforeCrossShop.resolution
+    && JSON.stringify(caseAfterCrossShop.resolution_payload) === JSON.stringify(caseBeforeCrossShop.resolution_payload)
+    && Number(caseAfterCrossShop.receipts) === 0
+    ? ok('shop B gọi mọi endpoint resolution của shop A → 404, case không đổi')
+    : bad('resolution rò chéo shop', JSON.stringify({ calls: crossShopResolutionCalls.map((x) => [x.status, x.json]), before: caseBeforeCrossShop, after: caseAfterCrossShop }));
+
   const shipmentCountAtCaseOpen = Number((await owner.query(
     `SELECT count(*)::int AS n FROM shipments WHERE order_id=$1`, [oMix.id],
   )).rows[0].n);
@@ -435,6 +467,58 @@ async function main() {
     && shipmentCountAfterCarrierBlock === shipmentCountAtCaseOpen
     ? ok('case đang mở → chặn vận đơn hãng trước khi gọi provider')
     : bad('vận đơn hãng lọt qua active case', `${r.raw} ${shipmentCountAtCaseOpen}→${shipmentCountAfterCarrierBlock}`);
+
+  const oConcurrent = await placeCod(A, vid, `concurrent-return-${uniq()}@mail.vn`);
+  await a.post(`/orders/${oConcurrent.id}/confirm`, {});
+  await markPaid(oConcurrent.id);
+  const concurrentOrder = (await a.get(`/orders/${oConcurrent.id}`)).json;
+  const concurrentLine = concurrentOrder.lines[0].order_line_id;
+  await a.post(`/orders/${oConcurrent.id}/ship`, { tracking_number: 'TAY-CONCURRENT', lines: [{ order_line_id: concurrentLine, qty: 1 }] });
+  const concurrentReturnedShipment = (await owner.query(
+    `INSERT INTO shipments (shop_id, order_id, carrier, tracking_number, status)
+     VALUES ($1,$2,'manual','TRA-CONCURRENT','returned') RETURNING id`, [A.shopId, oConcurrent.id],
+  )).rows[0];
+  await owner.query(
+    `INSERT INTO shipment_lines (shop_id, shipment_id, order_line_id, variant_id, qty, unit_price_vnd)
+     VALUES ($1,$2,$3,$4,1,250000)`, [A.shopId, concurrentReturnedShipment.id, concurrentLine, vid],
+  );
+  await owner.query(`UPDATE shipments SET status='delivered' WHERE order_id=$1 AND tracking_number='TAY-CONCURRENT'`, [oConcurrent.id]);
+  await owner.query(`SELECT open_mixed_shipment_resolution($1)`, [oConcurrent.id]);
+  const concurrentCase = (await owner.query(
+    `SELECT rc.id, cl.id AS case_line_id
+       FROM order_resolution_cases rc
+       JOIN order_resolution_case_lines cl ON cl.case_id=rc.id
+      WHERE rc.order_id=$1`, [oConcurrent.id],
+  )).rows[0];
+  const concurrentOnHandBefore = Number((await owner.query(
+    `SELECT on_hand FROM inventory_levels WHERE shop_id=$1 AND variant_id=$2`, [A.shopId, vid],
+  )).rows[0].on_hand);
+  const concurrentBody = (key) => ({
+    idempotency_key: key,
+    disposition: 'restock',
+    note: 'Hai nhân viên cùng xác nhận một kiện hoàn',
+    lines: [{ case_line_id: concurrentCase.case_line_id, qty: 1 }],
+  });
+  const concurrentReceipts = await Promise.all([
+    a.post(`/resolution-cases/${concurrentCase.id}/receive-return`, concurrentBody(`concurrent-a-${uniq()}`)),
+    a.post(`/resolution-cases/${concurrentCase.id}/receive-return`, concurrentBody(`concurrent-b-${uniq()}`)),
+  ]);
+  const concurrentProof = (await owner.query(
+    `SELECT
+       (SELECT count(*)::int FROM order_resolution_return_receipts WHERE case_id=$1) AS receipts,
+       (SELECT coalesce(sum(qty),0)::int FROM order_resolution_return_receipt_lines WHERE case_id=$1) AS received_qty,
+       (SELECT count(*)::int FROM inventory_ledger il
+          JOIN order_resolution_return_receipt_lines rl ON rl.id=il.resolution_receipt_line_id
+         WHERE rl.case_id=$1) AS ledgers,
+       (SELECT on_hand FROM inventory_levels WHERE shop_id=$2 AND variant_id=$3) AS on_hand`,
+    [concurrentCase.id, A.shopId, vid],
+  )).rows[0];
+  concurrentReceipts.filter((x) => x.status === 201).length === 1
+    && concurrentReceipts.filter((x) => x.status === 422 && x.json?.error_code === 'received_qty_exceeds_returned').length === 1
+    && Number(concurrentProof.receipts) === 1 && Number(concurrentProof.received_qty) === 1
+    && Number(concurrentProof.ledgers) === 1 && Number(concurrentProof.on_hand) === concurrentOnHandBefore + 1
+    ? ok('hai receive-return đồng thời → chỉ một chứng từ thắng, không double-restock')
+    : bad('receive-return concurrent làm trùng tồn/chứng từ', JSON.stringify({ responses: concurrentReceipts.map((x) => [x.status, x.json]), proof: concurrentProof }));
 
   r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
     financial_action: 'not_required', note: 'chưa nhận hàng hoàn',
@@ -706,7 +790,6 @@ async function main() {
 
   // ── 5. Cô lập chéo shop + validation ────────────────────────────────────────
   sect('5. Cô lập + validation');
-  const b = S(Bs);
   r = await b.post(`/orders/${o1.id}/carrier-shipment`, TO);
   r.status === 404 ? ok('shop B tạo vận đơn cho đơn shop A → 404') : bad('rò chéo shop', r.raw);
   const vidB = await setupProduct(Bs, 100000, 5);

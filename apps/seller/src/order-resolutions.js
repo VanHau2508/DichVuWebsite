@@ -8,6 +8,23 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const RESOLUTIONS = new Set(['accept_partial', 'resent', 'refunded_remainder', 'cancelled_remainder', 'other']);
 const FINANCIAL_ACTIONS = new Set(['handled_separately', 'not_required']);
 
+class ResolutionRollbackError extends Error {
+  constructor(result) {
+    super(result.message);
+    this.name = 'ResolutionRollbackError';
+    this.result = result;
+  }
+}
+
+async function withResolutionRollback(shopId, fn) {
+  try {
+    return await withTenant(shopId, fn);
+  } catch (error) {
+    if (error instanceof ResolutionRollbackError) return error.result;
+    throw error;
+  }
+}
+
 const SUMMARY_SQL = `
   SELECT rc.id, rc.order_id, rc.kind, rc.status, rc.resolution, rc.resolution_note,
           rc.resolution_payload, rc.required_refund_vnd, rc.detected_at, rc.resolved_at, rc.resolved_by,
@@ -228,7 +245,7 @@ async function receiveReturnedGoods(res, ctx, body, params) {
   const parsed = parseReceipt(body);
   if (parsed.error) return send(res, 400, { error: parsed.error });
   const input = parsed.value;
-  const out = await withTenant(ctx.shopId, async (c) => {
+  const out = await withResolutionRollback(ctx.shopId, async (c) => {
     const row = await loadCaseLocked(c, caseId);
     if (!row) return { code: 404 };
 
@@ -302,13 +319,24 @@ async function receiveReturnedGoods(res, ctx, body, params) {
     }
 
     if (input.disposition === 'restock') {
-      for (const line of [...receiptLines].sort((a, b) => a.variant_id.localeCompare(b.variant_id) || a.case_line_id.localeCompare(b.case_line_id))) {
-        await c.query(
-          `INSERT INTO inventory_levels (shop_id, variant_id)
-           VALUES (current_shop_id(), $1)
-           ON CONFLICT (shop_id, variant_id) DO NOTHING`, [line.variant_id],
-        );
-        await c.query(`SELECT on_hand FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [line.variant_id]);
+      const variantIds = [...new Set(receiptLines.map((line) => line.variant_id))];
+      await c.query(
+        `INSERT INTO inventory_levels (shop_id, variant_id)
+         SELECT current_shop_id(), variants.variant_id
+           FROM unnest($1::uuid[]) AS variants(variant_id)
+          ORDER BY variants.variant_id
+         ON CONFLICT (shop_id, variant_id) DO NOTHING`,
+        [variantIds],
+      );
+      await c.query(
+        `SELECT variant_id
+           FROM inventory_levels
+          WHERE variant_id = ANY($1::uuid[])
+          ORDER BY variant_id
+          FOR UPDATE`,
+        [variantIds],
+      );
+      for (const line of receiptLines) {
         await c.query(
           `UPDATE inventory_levels SET on_hand = on_hand + $2, updated_at = now() WHERE variant_id = $1`,
           [line.variant_id, line.qty],
@@ -323,11 +351,11 @@ async function receiveReturnedGoods(res, ctx, body, params) {
     }
 
     const progress = await progressOf(c, caseId);
-    if (Number(progress.received_qty) > Number(progress.returned_qty)) return {
+    if (Number(progress.received_qty) > Number(progress.returned_qty)) throw new ResolutionRollbackError({
       code: 409, errorCode: 'resolution_inventory_integrity_error',
       message: 'số hàng đã nhận vượt snapshot hàng hoàn',
-      action: 'Transaction phải được rollback; kiểm tra receipt/ledger trước khi thử lại.',
-    };
+      action: 'Transaction đã rollback; kiểm tra receipt/ledger trước khi thử lại.',
+    });
     const remaining = Number(progress.returned_qty) - Number(progress.received_qty);
     const nextStatus = remaining > 0 ? 'waiting_return' : 'open';
     await c.query(`SELECT set_order_resolution_active_status($1, $2)`, [caseId, nextStatus]);

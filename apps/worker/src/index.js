@@ -2134,7 +2134,15 @@ async function sweepOutboxGc() {
   try {
     const r = await db.query(
       `UPDATE outbox SET payload = payload - 'link' - 'to' - 'customer_name'
-        WHERE processed_at IS NOT NULL AND processed_at < now() - interval '7 days'
+        WHERE processed_at IS NOT NULL
+          AND (
+            processed_at < now() - interval '7 days'
+            OR (
+              jsonb_typeof(payload -> 'retry_pii_expires_at_ms') = 'number'
+              AND (payload ->> 'retry_pii_expires_at_ms')::numeric
+                    <= extract(epoch FROM clock_timestamp()) * 1000
+            )
+          )
           AND (jsonb_exists(payload, 'link') OR jsonb_exists(payload, 'to') OR jsonb_exists(payload, 'customer_name'))`);
     if (r.rowCount) log('info', 'outbox_gc', { n: r.rowCount });
     return { scrubbed: r.rowCount };

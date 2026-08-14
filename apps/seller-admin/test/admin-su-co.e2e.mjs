@@ -24,6 +24,7 @@ const AUTH = process.env.AUTH_URL ?? 'http://auth:3020';
 const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
 const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
 const ADMIN = process.env.ADMIN_URL ?? 'http://seller-admin:3001';
+const WORKER = process.env.WORKER_URL ?? 'http://worker:3080';
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 const OADM = process.env.ADMIN_ORIGIN ?? 'https://admin.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 4 });
@@ -287,7 +288,7 @@ async function main() {
   )).rows[0];
   const failedOutbox = (await owner.query(
     `INSERT INTO outbox (shop_id, topic, payload, processed_at)
-     VALUES ($1, 'order.created', $2, now()) RETURNING id`,
+     VALUES ($1, 'order.created', $2, now() - interval '1 day') RETURNING id`,
     [shopId, {
       to: retryOrder.customer_email,
       order_id: dCod.id,
@@ -315,6 +316,107 @@ async function main() {
     && retryProof.superseded_at && retryProof.retry_of_delivery_id === failedDelivery
     ? ok('retry tạo outbox mới rồi đóng delivery cũ thành superseded, giữ đủ chuỗi truy vết')
     : bad(`retry notification hỏng: HTTP ${retryResponse.status}`, JSON.stringify(retryProof));
+
+  const firstRetryOutbox = (await owner.query(
+    `SELECT payload, processed_at FROM outbox WHERE id=$1`, [retryResponse.json?.outbox_id],
+  )).rows[0];
+  const originalProcessedAt = (await owner.query(
+    `SELECT processed_at FROM outbox WHERE id=$1`, [failedOutbox],
+  )).rows[0]?.processed_at;
+  const expectedRetryExpiry = new Date(originalProcessedAt).getTime() + 7 * 24 * 60 * 60 * 1000;
+  Number(firstRetryOutbox?.payload?.retry_pii_expires_at_ms) === expectedRetryExpiry
+    ? ok('retry kế thừa hạn PII từ outbox gốc, không bắt đầu lại 7 ngày')
+    : bad('retry làm mới sai đồng hồ PII', JSON.stringify({ payload: firstRetryOutbox?.payload, expectedRetryExpiry }));
+
+  await owner.query(`UPDATE outbox SET processed_at=now() WHERE id=$1`, [retryResponse.json?.outbox_id]);
+  const chainedDelivery = (await owner.query(
+    `INSERT INTO notification_deliveries
+       (shop_id, outbox_id, order_id, order_number, topic, channel, status,
+        attempts, last_error, failed_at, retry_of_delivery_id)
+     VALUES ($1,$2,$3,$4,'order.created','email','failed',3,'smtp vẫn lỗi',now(),$5)
+     ON CONFLICT (outbox_id, channel) DO UPDATE
+       SET status='failed', attempts=3, last_error='smtp vẫn lỗi', failed_at=now(),
+           accepted_at=NULL, provider_message_id=NULL
+     RETURNING id`,
+    [shopId, retryResponse.json?.outbox_id, dCod.id, Number(retryOrder.order_number), failedDelivery],
+  )).rows[0].id;
+  const chainedRetry = await S.post(`/notifications/${chainedDelivery}/retry`, {});
+  const chainedExpiry = (await owner.query(
+    `SELECT payload->>'retry_pii_expires_at_ms' AS expiry FROM outbox WHERE id=$1`,
+    [chainedRetry.json?.outbox_id],
+  )).rows[0]?.expiry;
+  chainedRetry.status === 202 && Number(chainedExpiry) === expectedRetryExpiry
+    ? ok('retry nhiều lần vẫn giữ nguyên hạn PII gốc')
+    : bad('chuỗi retry kéo dài retention PII', JSON.stringify({ status: chainedRetry.status, chainedExpiry, expectedRetryExpiry, body: chainedRetry.json }));
+  await owner.query(
+    `UPDATE outbox
+        SET processed_at=now(),
+            payload=jsonb_set(payload, '{retry_pii_expires_at_ms}', to_jsonb($2::bigint))
+      WHERE id=$1`,
+    [chainedRetry.json?.outbox_id, Date.now() - 1000],
+  );
+  await fetch(`${WORKER}/internal/outbox-gc`, { method: 'POST' });
+  const scrubbedByInheritedExpiry = (await owner.query(
+    `SELECT payload ? 'to' AS has_to FROM outbox WHERE id=$1`, [chainedRetry.json?.outbox_id],
+  )).rows[0]?.has_to;
+  scrubbedByInheritedExpiry === false
+    ? ok('GC scrub PII theo hạn gốc dù outbox retry vừa mới processed')
+    : bad('GC không tôn trọng hạn PII kế thừa', String(scrubbedByInheritedExpiry));
+
+  const addFailedDelivery = async (topic, payload, { orderId = null, orderNumber = null, daysOld = 0 } = {}) => {
+    const outboxId = (await owner.query(
+      `INSERT INTO outbox (shop_id, topic, payload, processed_at)
+       VALUES ($1,$2,$3,now() - ($4::text || ' days')::interval) RETURNING id`,
+      [shopId, topic, payload, daysOld],
+    )).rows[0].id;
+    const deliveryId = (await owner.query(
+      `INSERT INTO notification_deliveries
+         (shop_id, outbox_id, order_id, order_number, topic, channel, status,
+          attempts, last_error, failed_at)
+       VALUES ($1,$2,$3,$4,$5,'email','failed',3,'provider từ chối',now()) RETURNING id`,
+      [shopId, outboxId, orderId, orderNumber, topic],
+    )).rows[0].id;
+    return { outboxId, deliveryId };
+  };
+
+  const blockedTopics = ['customer.password_reset', 'customer.email_verify', 'user.invited', 'stock.low'];
+  const blockedDeliveries = [];
+  for (const topic of blockedTopics) {
+    const blocked = await addFailedDelivery(topic, {
+      to: `security-${uniq()}@khach.vn`,
+      link: `https://example.invalid/${topic}?token=secret`,
+    });
+    blockedDeliveries.push({ topic, ...blocked });
+    const blockedRetry = await S.post(`/notifications/${blocked.deliveryId}/retry`, {});
+    blockedRetry.status === 409 && blockedRetry.json?.error_code === 'notification_topic_not_retryable'
+      ? ok(`${topic} không thể bị orders.write kích hoạt gửi lại`)
+      : bad(`${topic} lọt qua allowlist retry`, JSON.stringify(blockedRetry));
+  }
+
+  const scrubbed = await addFailedDelivery('order.paid', {
+    order_id: dCod.id,
+    order_number: Number(retryOrder.order_number),
+    total_vnd: 300000,
+  }, { orderId: dCod.id, orderNumber: Number(retryOrder.order_number), daysOld: 8 });
+  const scrubbedRetry = await S.post(`/notifications/${scrubbed.deliveryId}/retry`, {});
+  scrubbedRetry.status === 409 && scrubbedRetry.json?.error_code === 'notification_recipient_scrubbed'
+    ? ok('payload order đã scrub PII → 409, không dựng lại người nhận từ orders')
+    : bad('payload đã scrub vẫn gửi lại được', JSON.stringify(scrubbedRetry));
+
+  const validFailed = await addFailedDelivery('order.status_changed', {
+    to: retryOrder.customer_email,
+    order_id: dCod.id,
+    order_number: Number(retryOrder.order_number),
+    status: 'confirmed',
+  }, { orderId: dCod.id, orderNumber: Number(retryOrder.order_number) });
+  const deliveryList = await S.get('/notification-deliveries?status=failed&limit=100');
+  const listedValid = deliveryList.json?.deliveries?.find((d) => d.id === validFailed.deliveryId);
+  const listedBlocked = deliveryList.json?.deliveries?.find((d) => d.id === blockedDeliveries[0].deliveryId);
+  listedValid?.retryable === true && listedValid?.retry_block_reason === null
+    && listedBlocked?.retryable === false && listedBlocked?.retry_block_reason === 'topic_not_retryable'
+    ? ok('API trả retryable/reason phía server; UI không tự đoán từ status')
+    : bad('retryable state phía server sai', JSON.stringify({ listedValid, listedBlocked }));
+
   const arbitraryStatus = await owner.query(
     `SELECT has_column_privilege('app_rw','notification_deliveries','superseded_at','UPDATE') AS stamp,
             has_column_privilege('app_rw','notification_deliveries','updated_at','UPDATE') AS updated`,

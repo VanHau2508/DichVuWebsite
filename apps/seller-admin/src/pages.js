@@ -5970,9 +5970,15 @@ export function renderNotificationDeliveries(ctx, shopId, data, filter = {}) {
     const order = d.order_id
       ? `<a href="/shops/${esc(shopId)}/orders/${esc(d.order_id)}">#${esc(d.order_number ?? '')}</a>`
       : (d.order_number != null ? `#${esc(d.order_number)}` : '—');
-    const retry = d.status === 'failed' && d.channel === 'email'
+    const retry = d.retryable
       ? `<form method="POST" action="${base}/${esc(d.id)}/retry" style="display:inline"><button class="btn sm" type="submit">Gửi lại</button></form>`
-      : '<span class="muted">—</span>';
+      : `<span class="muted">${esc({
+        topic_not_retryable: 'Không thuộc email đơn hàng',
+        order_not_found: 'Không còn khớp đơn hàng',
+        recipient_scrubbed: 'Đã xoá dữ liệu người nhận',
+        retry_window_expired: 'Đã hết hạn gửi lại',
+        channel_not_supported: 'Kênh không hỗ trợ gửi lại',
+      }[d.retry_block_reason] ?? '—')}</span>`;
     return `<tr>
       <td>${order}<div class="muted" style="font-size:.82rem">${esc(d.topic ?? '')}</div></td>
       <td>${badge(d.channel ?? 'unknown', d.channel ?? '—')}</td>

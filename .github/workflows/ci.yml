@@ -79,6 +79,14 @@ jobs:
           mapfile -t files < <(manifest_unit_files)
           node --test "${files[@]}"
 
+      # Dựng schema từ DB TRẮNG bằng ĐÚNG runner production. Cổng cũ chưa bao giờ chạy
+      # `migrate`: nó kiểm test trên một DB đã áp migration từ trước, nên không nói gì về
+      # việc máy trắng có dựng nổi schema hay không — đúng thứ production làm mỗi lần deploy.
+      # Cùng MỘT script với scripts/ci-local.sh; hai bản chép tay thì SẼ lệch, đã lệch một lần.
+      # Job này chạy ở mọi push nên nó là cổng nhanh nhất bắt được DRIFT/pending.
+      - name: Migration từ DB trắng (fresh-migration gate)
+        run: bash scripts/fresh-migration-gate.sh
+
       # Quét bảo mật TĨNH ở MỌI commit (dependency/secret/PII/pattern). Fail nếu có phát hiện.
       - name: Quét bảo mật tĩnh (security-scan)
         run: bash scripts/security-scan.sh

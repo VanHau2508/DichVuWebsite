@@ -62,8 +62,15 @@ bash scripts/dev-lan-host.sh   # mở qua LAN (nip.io) để bấm thử trên �
 Windows + Git Bash, đặt trước mọi lệnh docker:
 `export PATH="$PATH:/c/Program Files/Docker/Docker/resources/bin"; export MSYS_NO_PATHCONV=1`
 
-**Cổng gồm 6 bước:** tiền kiểm stack chạy đủ → unit + `manifest_check` → quét bảo mật tĩnh → cô
-lập tenant + bất biến schema → e2e → smoke (edge/readiness/TLS).
+**Cổng gồm 7 bước:** tiền kiểm stack chạy đủ → unit + `manifest_check` → **migration từ DB
+TRẮNG** → quét bảo mật tĩnh → cô lập tenant + bất biến schema → e2e → smoke (edge/readiness/TLS).
+
+Bước "DB trắng" (`scripts/fresh-migration-gate.sh`) chạy **cả ở `--fast`** và là bản DÙNG CHUNG
+với GitHub CI. Nó tự dựng PostgreSQL trắng trong project Compose riêng (tên duy nhất mỗi lượt),
+chạy đúng runner production **không seed**, rồi so ba chiều: số file = `MANIFEST_MIGRATION_COUNT`
+= số dòng thật trong `schema_migrations`, kèm 0 DRIFT / 0 pending. Tự dọn bằng `trap` ở mọi đường
+thoát, kể cả Ctrl-C. **Không chạm DB dev.** Thêm migration thì sửa `MANIFEST_MIGRATION_COUNT`
+trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 172 file / số cao nhất 0174).
 
 Hook `scripts/hooks/pre-push` chạy `--fast` và **chặn push khi đỏ**. Cài một lần cho mỗi bản
 clone: `git config core.hooksPath scripts/hooks`.

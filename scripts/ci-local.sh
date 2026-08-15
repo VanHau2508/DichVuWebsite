@@ -64,6 +64,16 @@ else
   fail "unit ĐỎ — xem /tmp/va-unit.log"
 fi
 
+# CHẠY CẢ Ở --fast, CỐ Ý. Bước này không dùng DB dev, không dùng stack đang chạy: nó tự dựng
+# một PostgreSQL trắng trong project Compose riêng rồi tự dọn. Bỏ nó khỏi --fast là bỏ đúng
+# lớp lỗi mà cổng cũ mù hoàn toàn — schema chỉ dựng được trên máy ĐÃ có sẵn migration.
+step "1b. Migration từ DB TRẮNG (project riêng, tự dọn)"
+if bash scripts/fresh-migration-gate.sh > /tmp/va-fresh.log 2>&1; then
+  pass "$(tail -1 /tmp/va-fresh.log | sed 's/.*PASS[^ ]* //')"
+else
+  fail "fresh-migration ĐỎ:$(printf '\n      %s' "$(tail -6 /tmp/va-fresh.log)")"
+fi
+
 step "2. Quét bảo mật tĩnh (dependency/secret/PII/pattern)"
 if bash scripts/security-scan.sh > /tmp/va-sec.log 2>&1; then
   pass "security-scan sạch"

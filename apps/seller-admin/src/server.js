@@ -3287,12 +3287,12 @@ async function presetConfirmPage(res, me, cookie, shopId, slug) {
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'theme');
   return sendHtml(res, 200, V.renderPresetConfirm(ctx, String(slug), preset));
 }
-async function applyPreset(req, res, me, cookie, shopId) {
-  if (!isMember(me, shopId)) return denyShop(res, me);
-  const f = await readForm(req);
-  const slug = String(f.preset ?? '');
+// Ruột của "áp mẫu ngành" — tách ra vì wizard onboarding (bước ②) áp mẫu bằng ĐÚNG đường
+// này. Chép lại logic giữ-banner ở chỗ thứ hai là cách chắc chắn nhất để một trong hai bản
+// trôi đi rồi có một lối áp mẫu nuốt mất banner của shop.
+async function applyPresetTo(cookie, shopId, slug) {
   const preset = getPreset(slug);
-  if (!preset) return redirect(res, `/shops/${shopId}/theme?ok=0`);
+  if (!preset) return { status: 400, json: { error: 'mẫu không hợp lệ' } };
   // GIỮ ẢNH: trong layout, CHỈ props.slides mang media do shop upload (banner). Logo ở bảng
   // shops (không đụng). Gom slides từ theme HIỆN TẠI theo section-key rồi chép sang layout
   // preset → áp mẫu KHÔNG nuốt banner. Seller validateBannerInLayout kiểm key thuộc shop lần cuối.
@@ -3313,7 +3313,14 @@ async function applyPreset(req, res, me, cookie, shopId) {
   }
   const tokens = { ...preset.tokens };
   delete tokens['font.body']; delete tokens['font.heading']; // CSP chặn font ngoài — giữ Be Vietnam Pro
-  const r = await sellerApi('PUT', `/shops/${shopId}/theme`, { cookie, body: { tokens, layout } });
+  return sellerApi('PUT', `/shops/${shopId}/theme`, { cookie, body: { tokens, layout } });
+}
+async function applyPreset(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  const slug = String(f.preset ?? '');
+  if (!getPreset(slug)) return redirect(res, `/shops/${shopId}/theme?ok=0`);
+  const r = await applyPresetTo(cookie, shopId, slug);
   return redirect(res, r.status === 200 ? `/shops/${shopId}/theme?applied=${slug}` : `/shops/${shopId}/theme?ok=0`);
 }
 async function themeSave(req, res, me, cookie, shopId) {
@@ -3744,6 +3751,49 @@ async function settingsSectionSave(req, res, me, cookie, shopId, section) {
     { section, values: body },
   );
 }
+
+// ── Wizard "Thiết lập nhanh": ① Tên gian hàng → ② Giao diện ───────────────────
+// Wizard chỉ hỏi 3 ô nên PHẢI đi qua endpoint theo NHÓM (/settings/profile), KHÔNG phải
+// PATCH /shops/:id — đường kia ghi đè cả 22 cột và sẽ xoá trắng phí ship, toạ độ gốc giao
+// hàng, hạn ẩn danh PII, trả HTTP 200 và không để lại dòng log nào.
+//
+// Và trong nhóm profile, wizard gửi ĐÚNG 3 khoá nó có ô nhập — BỎ HẲN `contact_email`.
+// Seller phân biệt hai chuyện bằng `sectionValue` (server.js:242):
+//     khoá VẮNG MẶT  → giữ giá trị cũ
+//     khoá = ''      → ghi NULL
+// Nên gửi `contact_email: ''` cho lịch sự là XOÁ email liên hệ của shop, im lặng, ngay ở
+// màn hình đầu tiên người dùng mới nhìn thấy. Bộ apps/seller-admin/test/shop-patch.test.js
+// canh đúng chốt này.
+async function onboardingPage(res, me, cookie, shopId, step, err, patch) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'overview');
+  const r = await sellerApi('GET', `/shops/${shopId}`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được thông tin cửa hàng.'));
+  // patch = giá trị người dùng VỪA GÕ. Render lại sau lỗi mà lấy giá trị từ DB là bắt họ
+  // gõ lại từ đầu — với ô địa chỉ dài thì đó là lý do đủ để bỏ luôn wizard.
+  return sendHtml(res, err ? 400 : 200, V.renderOnboarding(ctx, step === 2 ? 2 : 1, { ...r.json, ...(patch ?? {}) }, err));
+}
+
+async function onboardingSave(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const f = await readForm(req);
+  if (String(f.step ?? '1') === '2') {
+    const slug = String(f.preset ?? '');
+    if (!getPreset(slug)) return onboardingPage(res, me, cookie, shopId, 2, 'Chưa chọn mẫu giao diện.');
+    const r = await applyPresetTo(cookie, shopId, slug);
+    if (r.status !== 200) return onboardingPage(res, me, cookie, shopId, 2, r.json?.error ?? 'Không áp được mẫu giao diện — chọn lại ở trang Giao diện.');
+    return redirect(res, `/shops/${shopId}/overview`);
+  }
+  const patch = {
+    name: String(f.name ?? '').trim(),
+    contact_phone: String(f.contact_phone ?? '').trim(),
+    business_address: String(f.business_address ?? '').trim(),
+  };
+  if (!patch.name) return onboardingPage(res, me, cookie, shopId, 1, 'Cần đặt tên cửa hàng.', patch);
+  const r = await sellerApi('PATCH', `/shops/${shopId}/settings/profile`, { cookie, body: patch });
+  if (r.status !== 200) return onboardingPage(res, me, cookie, shopId, 1, settingsApiError(r), patch);
+  return redirect(res, `/shops/${shopId}/onboarding?step=2`);
+}
 // Bật/tắt "bắt buộc nhân sự dùng 2FA" (0074) — form riêng, owner-only (seller cưỡng chế).
 async function requireMfaSave(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -3951,6 +4001,10 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/resolution-cases$`).exec(p)) && req.method === 'GET') return resolutionCasesPage(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/order-requests$`).exec(p)) && req.method === 'GET') return orderRequestsPage(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/order-requests/${UUID}/(approve|reject)$`).exec(p)) && req.method === 'POST') return orderRequestDecision(req, res, me, cookie, m[1], m[2], m[3]);
+    // Wizard thiết lập nhanh (2 bước). Một route cho cả hai bước: ?step= chọn bước hiện,
+    // hidden `step` trong form chọn nhánh xử lý — POST đi qua cổng sameOrigin chung.
+    if ((m = new RegExp(`^/shops/${UUID}/onboarding$`).exec(p)) && req.method === 'GET') return onboardingPage(res, me, cookie, m[1], Number(url.searchParams.get('step')) === 2 ? 2 : 1, null);
+    if ((m = new RegExp(`^/shops/${UUID}/onboarding$`).exec(p)) && req.method === 'POST') return onboardingSave(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders$`).exec(p)) && req.method === 'GET') return ordersList(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/orders/owed$`).exec(p)) && req.method === 'GET') return owedPage(res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/new$`).exec(p)) && req.method === 'GET') return orderNewPage(res, me, cookie, m[1], null, null, url.searchParams.get('q') ?? '');

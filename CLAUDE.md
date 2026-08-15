@@ -18,13 +18,13 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 
 | số đo | hôm nay | nguồn |
 |---|---:|---|
-| dòng mã ứng dụng | ~41.200 | `apps/*/src/*.js` |
-| dòng test | ~29.100 | `apps/*/test/*.{js,mjs}` |
+| dòng mã ứng dụng | ~42.900 | `apps/*/src/*.js` |
+| dòng test | ~30.900 | `apps/*/test/*.{js,mjs}` |
 | migration | 172 tệp, mới nhất `0174` | `packages/db/migrations/` |
-| bộ unit | 35 | `MANIFEST_UNIT_COUNT` |
+| bộ unit | 36 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 106 | `MANIFEST_E2E_COUNT` |
-| bất biến DB | 9 bộ, 115 test TAP | `packages/db/test/*.test.js` |
-| tài liệu | 72 tệp | `docs/` |
+| bất biến DB | 9 bộ, 116 test TAP | `packages/db/test/*.test.js` |
+| tài liệu | 74 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,71 — cao có chủ ý, xem §4.
 
@@ -76,7 +76,7 @@ clone: `git config core.hooksPath scripts/hooks`.
 apps/<service>/src/     mã service        apps/<service>/test/    test của nó
 packages/               mã DÙNG CHUNG     packages/db/migrations/ toàn bộ SQL
 infra/compose.*.yml     dàn dịch vụ       scripts/                cổng, seed, vận hành
-docs/                   72 tệp ghi chép   .github/workflows/ci.yml cổng đám mây
+docs/                   74 tệp ghi chép   .github/workflows/ci.yml cổng đám mây
 ```
 
 | việc cần sửa | file |
@@ -113,7 +113,13 @@ Mỗi dòng dưới đây từng làm hỏng một thứ có thật. Chi tiết 
   `REVOKE ALL … FROM app_rw` **và** thêm policy chặn.
 - **Migration BẤT BIẾN.** Runner băm nội dung — sửa file cũ → `DRIFT` → cổng đỏ. Sửa gì cũng bằng
   file mới, đánh số tiếp.
-- **17 vai DB `app_*`, mỗi service một vai ít quyền nhất.** Đừng nới cho tiện.
+- **22 vai DB `app_*`, mỗi service một vai ít quyền nhất.** Đừng nới cho tiện. Có vai KHÔNG
+  đăng nhập được, chỉ tồn tại để **sở hữu** một hàm `SECURITY DEFINER` hẹp (`app_resolution`).
+- **GRANT cấp BẢNG cũ vô hiệu hoá mọi tính toán cấp CỘT về sau.** `app_rw` có `UPDATE` cấp bảng
+  trên `orders` từ `0021`, nên `GRANT UPDATE (cột_mới) TO vai_khác` KHÔNG hề chặn được `app_rw`
+  — column grant chỉ THÊM quyền, không thu hẹp. Muốn khoá một cột thì cần **trigger**
+  `BEFORE UPDATE OF <cột>` từ chối mọi `current_user` ngoài vai được phép (`0173`). Review chỉ
+  đọc `GRANT` sẽ trượt lớp lỗi này — nó lộ ra khi chạy trên DB trắng.
 
 ### Giao diện
 
@@ -251,8 +257,9 @@ giá trị nhất khi đọc lại.
 |---|---|
 | kiến trúc, dữ liệu, hạ tầng | `docs/01`, `02`, `03`, `06` |
 | **11 quyết định kiến trúc** — đọc trước khi định làm khác | **`docs/04`** |
-| xác thực & quyền | `07`, `08`, `10`, `29`, `59` |
+| xác thực & quyền | `07`, `08`, `10`, `29`, `59` · **`73` cửa vào + wizard thiết lập đầu tiên** |
 | bán hàng | `11` catalog · `12` kho/ảnh · `13` storefront · `14` checkout · `38` flash sale · `56` biến thể |
+| **thiết kế giao diện** | **`44` bảng điều khiển người bán · `72` cửa hàng công khai** — ngân sách token, thang chữ, nhịp 4px · `73` trang đăng nhập/đăng ký |
 | di cư từ sàn khác | `45` khung chung (Shopify/Haravan) · **`70` TikTok Shop — quyết định + số đo** · `71` brief thi công (tự chứa, đưa cho người ngoài) |
 | tiền | `15`,`16` QR · `37` lãi lỗ · `41` điểm · `49` thuê bao · `51`–`53` săn lỗ tiền · `54` sửa đơn · `55` tiền lạc · `66` công nợ · `67` tranh chấp · `68` email · `69` phí ship |
 | vận hành | `22` bootstrap · `23` backup · `27` observability · `31` CI · `32` test local · `33` sổ tay · `35` go-live · `36` PII |

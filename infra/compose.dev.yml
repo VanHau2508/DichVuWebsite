@@ -627,6 +627,10 @@ services:
       INGEST_URL: https://hooks.localtest/ingest/orders
       # Origin gắn vào request nội bộ: PHẢI thuộc ALLOWED_ORIGINS của auth/seller/platform.
       ADMIN_ORIGIN: https://admin.nentang.vn
+      # Trang ĐĂNG KÝ ở site công khai, KHÔNG phải trên admin (Caddy đưa /signup* sang
+      # service signup). Link "chưa có cửa hàng?" ở /login phải tuyệt đối; thiếu biến này
+      # thì pages.js rơi về https://nentang.vn — đúng cho prod, sai cổng ở dev.
+      PUBLIC_SITE_URL: https://nentang.vn:8443
       # CSRF của chính admin: nhận POST từ Origin admin (prod + host dev).
       # :8443 vì Caddy dev map 8443:443 → trình duyệt gửi Origin có cổng.
       ALLOWED_ORIGINS: https://admin.nentang.vn,https://admin.localtest,https://admin.localtest:8443

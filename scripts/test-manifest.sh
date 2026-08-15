@@ -97,10 +97,16 @@ MANIFEST_UNIT_FILES=(
   # quên cắm thì chốt fail-closed chặn hết và shop trả tiền xong vẫn bị khoá, không lỗi nào
   # hiện ra. E2E chạy trên compose.dev đã cắm đúng nên mù, và không thấy compose.prod.
   apps/payment/test/bank-env.test.js
+  # PATCH /shops/:id ghi đè CẢ 22 cột hồ sơ shop, nên MỌI form sửa một phần phải đi qua
+  # endpoint theo-NHÓM (/settings/:section) chứ không gửi thẳng vài ô lên đường ghi-đè.
+  # Gửi thẳng thì phí ship, toạ độ gốc giao hàng, hạn ẩn danh PII bị xoá trắng — HTTP 200,
+  # không log. Bộ này neo vào chính danh sách cột của seller nên thêm cột thứ 23 mà quên
+  # khai vào một nhóm là đỏ ngay.
+  apps/seller-admin/test/shop-patch.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=35
+MANIFEST_UNIT_COUNT=36
 MANIFEST_E2E_COUNT=106
 
 manifest_unit_files() {

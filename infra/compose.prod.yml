@@ -497,6 +497,10 @@ services:
       INGEST_URL: https://${HOOKS_DOMAIN:-hooks.nentang.vn}/ingest/orders
       # Origin admin gắn vào request nội bộ (backend originAllowed đòi Origin allowlist).
       ADMIN_ORIGIN: https://${ADMIN_DOMAIN:-admin.nentang.vn}
+      # Trang ĐĂNG KÝ ở site công khai, KHÔNG phải trên admin (Caddy đưa /signup* sang
+      # service signup). Link "chưa có cửa hàng?" ở /login phải tuyệt đối; thiếu biến này
+      # thì pages.js rơi về https://nentang.vn — đúng cho prod, sai cổng ở dev.
+      PUBLIC_SITE_URL: https://nentang.vn
       # CSRF của chính admin: chỉ nhận POST từ Origin của mình.
       ALLOWED_ORIGINS: https://${ADMIN_DOMAIN:-admin.nentang.vn}
       # Ảnh SP phục vụ từ CDN → origin thêm vào CSP img-src; PHẢI khớp img-src ở Caddyfile.

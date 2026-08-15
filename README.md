@@ -199,7 +199,7 @@ hồng) · đánh giá có ảnh · hỏi-đáp · yêu thích · tài khoản k
 **Kênh:** cửa hàng riêng theo tên miền · bot Messenger chốt đơn · nhập đơn từ nguồn ngoài · di
 cư từ sàn khác (CSV + ảnh theo URL).
 
-**Vận hành SaaS:** tự đăng ký shop · onboarding có checklist · 4 preset giao diện theo ngành ·
+**Vận hành SaaS:** tự đăng ký shop · onboarding có checklist · 5 preset giao diện theo ngành ·
 shop tự trả tiền thuê bao + ân hạn + khoá · kênh hỗ trợ hai chiều · backup mã hoá + PITR ·
 giám sát + cảnh báo đường tiền · đo luồng dùng tính năng.
 
@@ -296,7 +296,7 @@ khôi phục backup.
 
 ## 11. Bản đồ tài liệu `docs/`
 
-72 tệp. Đọc theo chủ đề, không đọc theo số.
+73 tệp. Đọc theo chủ đề, không đọc theo số.
 
 - **Nền móng:** `01` kiến trúc · `02` mô hình dữ liệu & bảo mật · `03` hạ tầng · **`04` ADR
   (11 quyết định, đọc trước khi định làm khác)** · `06` cô lập tenant.

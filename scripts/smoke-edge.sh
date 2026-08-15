@@ -56,8 +56,9 @@ c=$(code hooks.localtest /shops)
 sect "2. Admin qua edge (admin → seller-admin)"
 c=$(code admin.localtest /login)
 b=$(ci admin.localtest /login)
-{ [ "$c" = "200" ] && grep -q 'Đăng nhập quản trị' <<<"$b"; } \
-  && ok "admin/login → 200 + trang đăng nhập của seller-admin" \
+{ [ "$c" = "200" ] && grep -q '<form method="POST" action="/login">' <<<"$b" \
+    && grep -q 'name="email"' <<<"$b" && grep -q 'name="password"' <<<"$b"; } \
+  && ok "admin/login → 200 + form đăng nhập của seller-admin" \
   || bad "admin không tới seller-admin qua edge" "http=$c"
 
 sect "3. Storefront + checkout qua edge (tách /cart)"

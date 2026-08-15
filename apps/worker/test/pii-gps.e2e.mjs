@@ -101,9 +101,18 @@ async function main() {
   await owner.query(`UPDATE shops SET pii_retention_months = 6 WHERE id=$1`, [A.shopId]);
   await owner.query(`UPDATE orders SET status='delivered', created_at = now() - interval '8 months' WHERE shop_id=$1 AND order_number=$2`, [A.shopId, n1]);
   await owner.query(`UPDATE orders SET status='delivered' WHERE shop_id=$1 AND order_number=$2`, [A.shopId, n2]); // tươi (created_at = now)
-  const sweep = await swp();
-  typeof sweep.anonymized === 'number' && sweep.anonymized >= 1 ? ok(`pii-sweep chạy (ẩn danh ${sweep.anonymized} đơn)`) : bad('sweep không chạy', JSON.stringify(sweep));
-  o1 = await coordsOf(n1);
+  // Sweep dùng SKIP LOCKED: worker khác có thể đang giữ đơn trong khoảnh khắc đầu tiên.
+  // Chờ đúng đơn mục tiêu thay vì coi một lần trả 0 là thất bại vĩnh viễn.
+  let sweep = null, sweepRuns = 0;
+  for (; sweepRuns < 10; sweepRuns++) {
+    sweep = await swp();
+    o1 = await coordsOf(n1);
+    if (o1?.anonymized_at) break;
+    await sleep(150);
+  }
+  typeof sweep?.anonymized === 'number' && o1?.anonymized_at
+    ? ok(`pii-sweep ẩn danh đơn mục tiêu sau ${sweepRuns + 1} lần kiểm tra`)
+    : bad('sweep không chạy', JSON.stringify({ sweep, order: o1 }));
   o1.isnull === true && o1.lat === null && o1.lng === null && o1.customer_name === '(đã ẩn danh)' && o1.customer_phone === null && o1.anonymized_at
     ? ok(`đơn #${n1}: shipping_address=NULL → TOẠ ĐỘ GPS bị xoá + tên sentinel + SĐT NULL + anonymized_at`) : bad('toạ độ GPS SỐNG SÓT qua hạn lưu', JSON.stringify(o1));
   Number(o1.total_vnd) > 0 && o1.status === 'delivered' ? ok('doanh thu + trạng thái đơn GIỮ NGUYÊN (chỉ mất danh tính)') : bad('mất dữ liệu doanh thu', JSON.stringify(o1));

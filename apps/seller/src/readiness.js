@@ -173,7 +173,9 @@ async function goLive(res, ctx) {
   return send(res, out.code, out.body);
 }
 
-async function createPreview(res, ctx) {
+async function createPreview(res, ctx, body) {
+  // Xoay token là hành động TƯỜNG MINH của người dùng, không phải hệ quả của việc bấm lại.
+  const rotate = body?.rotate === true || String(body?.rotate ?? '') === '1';
   const token = genToken();
   const out = await withTenant(ctx.shopId, async (c) => {
     const shop = (await c.query(`SELECT status FROM shops WHERE id = current_shop_id()`)).rows[0];
@@ -187,15 +189,42 @@ async function createPreview(res, ctx) {
     )).rows[0]?.hostname;
     if (!host) return { code: 409, body: { error: 'domain_not_ready' } };
 
-    const row = (await c.query(
+    // KHÔNG xoay token khi link cũ CÒN HIỆU LỰC — trừ khi người dùng bấm "Tạo link mới".
+    //
+    // Bản trước upsert vô điều kiện, nên mỗi POST đều sinh token mới và GIẾT token cũ. Hệ quả
+    // thật: chủ shop bấm "Xem trước", copy link gửi cho đồng nghiệp, rồi bấm lại lần nữa (hoặc
+    // trình duyệt gửi lại form, hoặc double-click, hoặc mạng chậm nên bấm thêm) → link vừa gửi
+    // chết ngay, và không có gì báo cho biết vì sao.
+    //
+    // `WHERE shop_previews.expires_at <= now() OR $4` nằm TRÊN nhánh DO UPDATE nên cả ba ca
+    // đều an toàn mà không cần JavaScript:
+    //   · gửi lặp     → WHERE sai → không ghi → link cũ sống;
+    //   · hai request đồng thời → một câu INSERT..ON CONFLICT là NGUYÊN TỬ, không phải
+    //     check-then-act, nên không có cửa sổ đua;
+    //   · hết hạn thật hoặc bấm "Tạo link mới" → xoay.
+    // Không ghi được thì rowCount = 0 và ta biết đang ở ca "link cũ còn sống".
+    const ins = await c.query(
       `INSERT INTO shop_previews (shop_id, token_hash, created_by, expires_at)
        VALUES (current_shop_id(), $1, $2, now() + ($3 || ' minutes')::interval)
        ON CONFLICT (shop_id) DO UPDATE SET
          token_hash = EXCLUDED.token_hash, created_by = EXCLUDED.created_by,
          created_at = now(), expires_at = EXCLUDED.expires_at
+       WHERE shop_previews.expires_at <= now() OR $4
        RETURNING expires_at`,
-      [hashToken(token), ctx.user.id, String(PREVIEW_TTL_MIN)],
-    )).rows[0];
+      [hashToken(token), ctx.user.id, String(PREVIEW_TTL_MIN), rotate],
+    );
+    if (ins.rowCount === 0) {
+      // Link cũ còn hiệu lực. KHÔNG trả token thô — ta chỉ lưu hash nên không dựng lại được,
+      // và cũng không nên: người bấm lặp đã có link trong tay rồi.
+      const cur = (await c.query(
+        `SELECT expires_at FROM shop_previews WHERE shop_id = current_shop_id()`,
+      )).rows[0];
+      return { code: 200, body: {
+        reused: true, expires_at: cur?.expires_at ?? null,
+        expires_in: cur ? Math.max(0, Math.round((new Date(cur.expires_at) - Date.now()) / 1000)) : 0,
+      } };
+    }
+    const row = ins.rows[0];
     await audit(c, 'shop.preview_created', {
       actorId: ctx.user.id, ip: ctx.ip, metadata: { expires_at: row.expires_at },
     });
@@ -216,5 +245,5 @@ export const READINESS_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/go-live$`), perm: 'shop.write', fn: (res, ctx) => goLive(res, ctx) },
   // Tương thích BFF hiện tại. Cùng handler nên đường cũ không thể bỏ qua readiness.
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/activate$`), perm: 'shop.write', fn: (res, ctx) => goLive(res, ctx) },
-  { m: 'POST', re: new RegExp(`^/shops/${UUID}/preview$`), perm: 'shop.write', fn: (res, ctx) => createPreview(res, ctx) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/preview$`), perm: 'shop.write', fn: (res, ctx, b) => createPreview(res, ctx, b) },
 ];

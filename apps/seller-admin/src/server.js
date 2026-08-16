@@ -332,7 +332,7 @@ async function platformStepUp(req, res, me, cookie, shopId) {
   return platformStatus(res, me, cookie, shopId, action === 'restore' ? 'restore' : 'suspend');
 }
 
-async function overviewPage(res, me, cookie, shopId, live, preview = null, readinessErr = null) {
+async function overviewPage(res, me, cookie, shopId, live, preview = null, readinessErr = null, readinessErrHref = null) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'overview');
   const [r, shopR, readinessR] = await Promise.all([
@@ -355,11 +355,13 @@ async function overviewPage(res, me, cookie, shopId, live, preview = null, readi
   const notice = live === '1' ? '🎉 Cửa hàng đã mở bán chính thức! Chúc bạn nhiều đơn hàng.' : null;
   const render = (renderCtx) => V.renderOverview(
     renderCtx, shopId, r.json, setup, notice, readiness?.status ?? shop?.status ?? null, preview,
-    readinessErr ?? readinessLoadError,
+    readinessErr ?? readinessLoadError, readinessErrHref,
   );
-  // Chỉ mở CSP script khi nút go-live thật sự có data-confirm. Shop chưa sẵn sàng hoặc đã
-  // active vẫn giữ trang thuần SSR/no-JS như trước.
-  if (setup?.canManage && setup.ready) {
+  // Mở CSP script khi màn hình có nút cần data-confirm/chống double-submit. Nút go-live nay
+  // KHÔNG còn `disabled` (disabled thì bàn phím không focus tới được và screen reader không
+  // đọc được lý do), nên nhánh này phủ cả shop chưa sẵn sàng. Trang vẫn chạy đủ khi không có
+  // JS: form submit thẳng, server vẫn là nơi quyết định.
+  if (setup?.canManage) {
     return sendHtmlJs(res, 200, (nonce) => render({ ...ctx, nonce }));
   }
   return sendHtml(res, 200, render(ctx));
@@ -371,16 +373,30 @@ async function activateShop(res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const r = await sellerApi('POST', `/shops/${shopId}/go-live`, { cookie });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/overview?live=1`);
+  // Seller trả kèm `checks`. Nói "còn thiếu bên dưới rồi thử lại" là bắt người dùng tự dò
+  // trong 9 dòng — trên mobile thì phải cuộn. Nêu THẲNG mục thiếu ĐẦU TIÊN và đường tới đó.
+  // Vẫn là server quyết định: `goLive` tự kiểm lại, UI chỉ thôi giấu lý do.
+  const firstMissing = Array.isArray(r.json?.checks)
+    ? r.json.checks.find((c) => c && c.blocking !== false && c.ok !== true)
+    : null;
   const msg = r.json?.error === 'shop_not_ready'
-    ? 'Cửa hàng chưa đủ điều kiện mở bán. Hoàn tất các mục còn thiếu bên dưới rồi thử lại.'
+    ? (firstMissing
+      ? `Chưa mở bán được — còn thiếu: ${firstMissing.title ?? firstMissing.label ?? firstMissing.code}.`
+      : 'Cửa hàng chưa đủ điều kiện mở bán. Hoàn tất các mục còn thiếu bên dưới rồi thử lại.')
     : (r.json?.error ?? 'Không thể mở bán lúc này.');
-  return overviewPage(res, me, cookie, shopId, null, null, msg);
+  return overviewPage(res, me, cookie, shopId, null, null, msg, firstMissing?.action_url ?? null);
 }
 
-async function previewShop(res, me, cookie, shopId) {
+async function previewShop(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
-  const r = await sellerApi('POST', `/shops/${shopId}/preview`, { cookie });
-  if (r.status === 201) return overviewPage(res, me, cookie, shopId, null, r.json, null);
+  // `rotate` chỉ có khi form là nút "Tạo link mới" — tức người dùng CỐ Ý muốn link khác.
+  // Bấm lại nút "Xem trước" (hoặc trình duyệt gửi lại form) KHÔNG mang cờ này, nên seller
+  // giữ nguyên token cũ và link vừa gửi đi không chết. Xem apps/seller/src/readiness.js.
+  const f = await readForm(req);
+  const rotate = String(f.rotate ?? '') === '1';
+  const r = await sellerApi('POST', `/shops/${shopId}/preview`, { cookie, body: { rotate } });
+  // 201 = vừa tạo (có token thô) · 200 = link cũ còn hiệu lực, không xoay (không có token).
+  if (r.status === 201 || r.status === 200) return overviewPage(res, me, cookie, shopId, null, r.json, null);
   const msg = r.json?.error === 'domain_not_ready'
     ? 'Cần xác minh tên miền trước khi tạo link xem trước.'
     : (r.json?.error ?? 'Không tạo được link xem trước.');
@@ -3995,7 +4011,7 @@ async function handle(req, res, url, p) {
     }
     if ((m = new RegExp(`^/shops/${UUID}/overview$`).exec(p)) && req.method === 'GET') return overviewPage(res, me, cookie, m[1], url.searchParams.get('live'));
     if ((m = new RegExp(`^/shops/${UUID}/activate$`).exec(p)) && req.method === 'POST') return activateShop(res, me, cookie, m[1]);
-    if ((m = new RegExp(`^/shops/${UUID}/preview$`).exec(p)) && req.method === 'POST') return previewShop(res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/preview$`).exec(p)) && req.method === 'POST') return previewShop(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/notification-deliveries$`).exec(p)) && req.method === 'GET') return notificationDeliveriesPage(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/notification-deliveries/${UUID}/retry$`).exec(p)) && req.method === 'POST') return notificationDeliveryRetry(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/resolution-cases$`).exec(p)) && req.method === 'GET') return resolutionCasesPage(res, me, cookie, m[1], url.searchParams);

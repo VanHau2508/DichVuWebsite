@@ -826,8 +826,30 @@ const ADMIN_JS = `(function(){
     var b = e.submitter;
     var message = b && b.getAttribute ? b.getAttribute('data-confirm') : '';
     if (!message) message = f.getAttribute('data-confirm');
-    if (message && !window.confirm(message)) e.preventDefault();
+    if (message && !window.confirm(message)) { e.preventDefault(); return; }
   }, true);
+
+  // ── 2b. Nút data-busy: khoá lại sau lần bấm đầu ───────────────────────────
+  // CHỈ là tăng cường trải nghiệm. An toàn THẬT nằm ở server: POST /preview dùng
+  // INSERT..ON CONFLICT có điều kiện nên gửi lặp KHÔNG xoay token và không giết link vừa
+  // tạo, còn go-live thì idempotent (chỉ lật khi đang onboarding). Tắt JS vẫn đúng, chỉ là
+  // người dùng không thấy phản hồi "đang xử lý".
+  //
+  // Gắn ở bubble (không capture) và chạy SAU nhánh xác nhận ở trên: huỷ ở hộp confirm thì
+  // e.defaultPrevented = true, khoá nút lúc đó là kẹt vĩnh viễn một nút vẫn dùng được.
+  document.addEventListener('submit', function(e){
+    var f = e.target, b = e.submitter;
+    if (e.defaultPrevented || !f || f.tagName !== 'FORM' || !b) return;
+    var busy = b.getAttribute && b.getAttribute('data-busy');
+    if (!busy || b.dataset.busyOn) return;
+    b.dataset.busyOn = '1';
+    // disabled trước khi trình duyệt serialize form sẽ LÀM RƠI giá trị nút khỏi body.
+    // Hoãn một nhịp: form đã gửi xong rồi mới khoá.
+    var label = b.textContent;
+    setTimeout(function(){ b.disabled = true; b.textContent = busy; }, 0);
+    // Điều hướng thất bại (mạng đứt, back-forward cache) thì trả nút về dùng được.
+    setTimeout(function(){ if (b.disabled) { b.disabled = false; b.textContent = label; delete b.dataset.busyOn; } }, 15000);
+  });
 
   // ── 3. Bảng → thẻ trên mobile: gán nhãn cột cho từng ô ────────────────────
   // Đọc chữ ở <th> rồi gắn vào data-label của ô cùng cột. Làm ở đây thay vì render
@@ -2111,7 +2133,7 @@ function revenueChart(series) {
       ${bars}${labels}</svg>`;
 }
 
-export function renderOverview(ctx, shopId, s, setup = null, notice = null, shopStatus = null, preview = null, readinessErr = null) {
+export function renderOverview(ctx, shopId, s, setup = null, notice = null, shopStatus = null, preview = null, readinessErr = null, readinessErrHref = null) {
   const base = `/shops/${esc(shopId)}`;
   const st = s?.status ?? {};
   const rev = s?.revenue ?? {};
@@ -2165,12 +2187,36 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
         <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:.95rem">${icon} ${esc(title)}</div><div class="muted" style="font-size:.82rem">${esc(it.label ?? '')}${it.blocking ? '' : ' · Khuyến nghị, không chặn mở bán'}</div></div>
         ${action}</div>`;
     }).join('');
-    const previewBox = preview?.preview_url ? `<div class="notice ok" style="margin-top:12px"><strong>Link xem trước sống khoảng ${Math.round(Number(preview.expires_in ?? 900) / 60)} phút:</strong><br>
-      <a href="${esc(preview.preview_url)}" target="_blank" rel="noopener noreferrer" style="word-break:break-all">${esc(preview.preview_url)}</a></div>` : '';
+    // LINK XEM TRƯỚC — ba trạng thái, và cả ba đều nói ra thành lời.
+    // Trước: một URL thô kèm "sống khoảng 15 phút". Hết hạn thì bấm vào ra đúng màn khách lạ
+    // thấy ("đang chuẩn bị mở bán") — người dùng không phân biệt được "hết hạn" với "hỏng".
+    // `reused` = vừa bấm lại khi link cũ CÒN sống; seller cố ý không xoay token và cũng không
+    // trả lại token thô (chỉ lưu hash), nên ở đây nói rõ link cũ vẫn dùng được.
+    const previewExp = preview?.expires_at
+      ? new Intl.DateTimeFormat('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit' }).format(new Date(preview.expires_at))
+      : null;
+    const previewBox = preview?.preview_url
+      ? `<div class="notice ok" style="margin-top:12px"><strong>Link xem trước${previewExp ? ` — dùng được tới ${esc(previewExp)}` : ''}:</strong><br>
+        <a href="${esc(preview.preview_url)}" target="_blank" rel="noopener noreferrer" style="word-break:break-all">${esc(preview.preview_url)}</a>
+        <div class="muted" style="font-size:.82rem;margin-top:6px">Ai có link cũng xem được cửa hàng trước khi mở bán. Hết hạn thì bấm “Tạo link mới”.</div></div>`
+      : (preview?.reused
+        ? `<div class="notice" style="margin-top:12px">Link xem trước bạn vừa tạo <strong>vẫn còn hiệu lực</strong>${previewExp ? ` tới ${esc(previewExp)}` : ''} — dùng lại link đó.
+           <div class="muted" style="font-size:.82rem;margin-top:6px">Bấm lại không tạo link mới, để không làm chết link bạn vừa gửi đi. Cần link khác thì bấm “Tạo link mới”.</div></div>`
+        : '');
+
+    // Nút KHÔNG dùng `disabled`. `disabled` khiến nút không nhận focus (bàn phím không tới
+    // được) và `title` chỉ hiện khi hover — mobile không có hover, nên người dùng điện thoại
+    // thấy một nút xám không giải thích gì. Nay nút luôn bấm được; server vẫn là nơi quyết
+    // định (goLive tự kiểm lại readiness), và khi từ chối thì BFF nêu MỤC THIẾU ĐẦU TIÊN.
+    const hasPreview = !!(preview?.preview_url || preview?.reused);
     const controls = setup.canManage ? `<div style="border-top:1px solid var(--bd);margin-top:8px;padding-top:14px" class="actions">
-      <form method="POST" action="${base}/preview" style="margin:0"><button class="btn alt" type="submit"${setup.preview_host ? '' : ' disabled title="Cần tên miền đã xác minh"'}>Xem trước cửa hàng</button></form>
-      <form method="POST" action="${base}/activate" style="margin:0"><button class="btn" type="submit"${setup.ready ? ' data-confirm="Mở checkout công khai cho khách ngay bây giờ?"' : ' disabled title="Còn điều kiện bắt buộc chưa đạt"'}>🎉 Mở bán chính thức</button></form>
-      <span class="muted" style="font-size:.82rem">${setup.ready ? 'Đã đủ điều kiện; server sẽ kiểm tra lại khi bấm.' : `Còn ${blockingLeft} mục bắt buộc.`}</span>
+      <form method="POST" action="${base}/preview" style="margin:0">${hasPreview ? '<input type="hidden" name="rotate" value="1">' : ''}
+        <button class="btn alt" type="submit" data-busy="Đang tạo link…">${hasPreview ? 'Tạo link mới' : 'Xem trước cửa hàng'}</button></form>
+      <form method="POST" action="${base}/activate" style="margin:0">
+        <button class="btn" type="submit" data-busy="Đang kiểm tra…"${setup.ready ? ' data-confirm="Mở checkout công khai cho khách ngay bây giờ?"' : ''}>🎉 Mở bán chính thức</button></form>
+      <span class="muted" style="font-size:.82rem">${setup.ready
+        ? 'Đã đủ điều kiện; server sẽ kiểm tra lại khi bấm.'
+        : `Còn ${blockingLeft} mục bắt buộc — bấm để xem còn thiếu gì.`}</span>
     </div>` : '';
     setupCard = `<div class="card" style="border-color:color-mix(in srgb,var(--pri) 35%,var(--bd));background:var(--wash)">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap"><h2 style="margin:0">🚀 Hoàn tất thiết lập cửa hàng</h2><span class="muted" style="font-size:.9rem">${done}/${checks.length} đạt</span></div>
@@ -2178,7 +2224,7 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
       <p class="muted" style="font-size:.85rem;margin:0 0 6px">Khách công khai chưa thể đặt hàng. Hoàn tất các mục bắt buộc, xem trước rồi mới mở checkout.</p>
       ${setup.canManage ? `<p style="margin:0 0 4px"><a class="btn alt" href="${base}/onboarding">⚡ Thiết lập nhanh trong 2 bước</a>
         <span class="muted" style="font-size:.82rem;margin-left:10px">Đặt tên gian hàng và chọn giao diện — khoảng một phút.</span></p>` : ''}
-      ${readinessErr ? `<div class="err">${esc(readinessErr)}</div>` : ''}${rows}${controls}${previewBox}</div>`;
+      ${readinessErr ? `<div class="err">${esc(readinessErr)}${readinessErrHref ? ` <a href="${esc(readinessErrHref)}"><strong>Đi tới mục này →</strong></a>` : ''}</div>` : ''}${rows}${controls}${previewBox}</div>`;
   }
   // ── "VIỆC CẦN LÀM" — hộp hành động đầu trang (mẫu màn hình chính TikTok Shop/Shopee) ──
   // Chủ shop mở trang quản lý là để biết HÔM NAY phải làm gì, không phải để ngắm doanh thu.

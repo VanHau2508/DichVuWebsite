@@ -125,8 +125,26 @@ test('data-confirm chỉ dùng một submit handler và ưu tiên nút submit', 
   const end = src.indexOf('\n})();`;', start);
   assert.ok(start >= 0 && end > start, 'không cắt được ADMIN_JS');
   const adminJs = src.slice(start, end);
-  assert.equal((adminJs.match(/addEventListener\('submit'/g) ?? []).length, 1,
-    'confirm phải đi qua đúng một delegated submit handler');
+  // HAI handler submit, và đó là cố ý: một để hỏi lại (capture, chặn sớm), một để khoá nút
+  // data-busy (bubble, chạy sau). Ràng buộc thật KHÔNG phải "đúng một handler" mà là: chỉ
+  // MỘT handler gọi window.confirm — hai handler cùng hỏi thì người dùng bị hỏi hai lần.
+  const submitHandlers = (adminJs.match(/addEventListener\('submit'/g) ?? []).length;
+  assert.ok(submitHandlers >= 1 && submitHandlers <= 2,
+    `có ${submitHandlers} submit handler — thêm nữa là bắt đầu khó lần ra thứ tự chạy`);
+  assert.equal((adminJs.match(/window\.confirm/g) ?? []).length, 1,
+    'chỉ MỘT chỗ được gọi window.confirm, nếu không người dùng bị hỏi hai lần');
+  // Handler khoá nút phải TÔN TRỌNG nhánh huỷ: huỷ ở hộp confirm mà vẫn khoá nút là kẹt
+  // vĩnh viễn một nút lẽ ra vẫn dùng được.
+  // BỎ CHÚ THÍCH TRƯỚC KHI KHỚP. Đây là lần thứ BA trong kho này một chốt mức mã nguồn đỏ
+  // hoặc xanh nhầm vì chính lời giải thích nằm cạnh mã: bản đầu của dòng dưới vẫn XANH khi
+  // gỡ hẳn `e.defaultPrevented` khỏi handler, vì cụm đó còn nằm trong comment ngay phía trên.
+  const adminCode = adminJs.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+  assert.match(adminCode, /if \(e\.defaultPrevented \|\|/,
+    'handler data-busy phải bỏ qua khi submit đã bị huỷ — khoá nút sau khi người dùng bấm Huỷ là kẹt vĩnh viễn một nút vẫn dùng được');
+  // Và phải hoãn `disabled` sang tick sau: disable trước khi trình duyệt serialize form sẽ
+  // làm RƠI giá trị của nút khỏi body — nút đang mang name/value thì mất luôn ngữ nghĩa.
+  assert.match(adminJs, /setTimeout\(function\(\)\{ b\.disabled = true/,
+    'chỉ được disable nút SAU khi form đã gửi (setTimeout), không phải ngay trong handler');
   assert.doesNotMatch(adminJs, /addEventListener\('click'[\s\S]*?window\.confirm/,
     'click handler riêng sẽ bỏ sót requestSubmit(button) hoặc hỏi hai lần');
   assert.match(adminJs, /var b = e\.submitter;[\s\S]*?b\.getAttribute\('data-confirm'\)[\s\S]*?f\.getAttribute\('data-confirm'\)/,
@@ -139,10 +157,13 @@ test('overview chỉ bật ADMIN_JS khi nút go-live cần confirm', () => {
   const end = src.indexOf('\nasync function activateShop(', start);
   assert.ok(start >= 0 && end > start, 'không cắt được overviewPage');
   const overview = src.slice(start, end);
-  assert.match(overview, /if \(setup\?\.canManage && setup\.ready\)[\s\S]*?sendHtmlJs\([\s\S]*?render\(\{ \.\.\.ctx, nonce \}\)/,
-    'overview sẵn sàng mở bán phải truyền cùng nonce vào CSP và thẻ script');
+  // Điều kiện nay là `canManage` (không còn `&& ready`): nút go-live bỏ `disabled` nên nó
+  // mang data-busy ở MỌI trạng thái, kể cả khi shop chưa đủ điều kiện. `disabled` từng làm
+  // nút không focus được (bàn phím không tới) và `title` chỉ hiện khi hover — mobile mù hẳn.
+  assert.match(overview, /if \(setup\?\.canManage\)[\s\S]*?sendHtmlJs\([\s\S]*?render\(\{ \.\.\.ctx, nonce \}\)/,
+    'chủ shop phải nhận cùng nonce cho CSP và thẻ script');
   assert.match(overview, /return sendHtml\(res, 200, render\(ctx\)\)/,
-    'overview không cần confirm phải giữ đường SSR không script');
+    'người không quản trị được vẫn giữ đường SSR không script');
 });
 
 test('đường tiền legacy và hàng loạt đều qua owner + step-up ở BFF', () => {

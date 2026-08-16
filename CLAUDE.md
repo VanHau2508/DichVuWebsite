@@ -1,5 +1,10 @@
 # CLAUDE.md — sổ tay làm việc cho AI
 
+> **Bắt đầu ở đây.** File này tự nạp khi mở Claude Code trong kho — không cần ai bảo đọc.
+> Nếu bạn đang đọc nó vì được yêu cầu (chat thường + connector GitHub chẳng hạn) thì đọc
+> **§9 trước**: nó nói đang làm tới đâu, bạn đóng vai nào, và câu nào đang chờ người quyết.
+> Tự nạp CHỈ file này — `README.md` và `docs/` phải tự mở.
+
 > **Quan hệ với `README.md`:** README là **bàn giao** — vì sao hệ thống thế này, đã trả giá gì để
 > biết, đang đi đâu. File này là **thao tác** — chạy lệnh nào, sửa file nào, luật nào không được
 > phá. Hai file không chép nhau. Gặp câu hỏi "vì sao" → README hoặc `docs/`.

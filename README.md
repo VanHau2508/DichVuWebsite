@@ -296,7 +296,7 @@ khôi phục backup.
 
 ## 11. Bản đồ tài liệu `docs/`
 
-73 tệp. Đọc theo chủ đề, không đọc theo số.
+75 tệp. Đọc theo chủ đề, không đọc theo số.
 
 - **Nền móng:** `01` kiến trúc · `02` mô hình dữ liệu & bảo mật · `03` hạ tầng · **`04` ADR
   (11 quyết định, đọc trước khi định làm khác)** · `06` cô lập tenant.
@@ -315,6 +315,8 @@ khôi phục backup.
 - **Bài học phương pháp (đọc nếu muốn hiểu *vì sao* kho này khắt khe):** `61` "không biết ≠ chưa
   xảy ra" · `62` tồn an toàn · `63` đo luồng dùng · **`64` vai shop ngày-60 · `65` vai shop lúc
   có sự cố**.
+- **Trải nghiệm & thiết kế:** `72` design system storefront · `73` cửa vào và thiết lập đầu tiên
+  · `74` onboarding, preview và go-live.
 
 ---
 

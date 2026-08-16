@@ -5,6 +5,7 @@
  * Kiểm: shop mới (onboarding) hiện checklist readiness từ seller · preview có TTL · nút "Mở bán"
  * chỉ hoạt động khi đủ điều kiện server-side · ẩn checklist sau go-live · cô lập chéo shop · CSRF.
  */
+import http from 'node:http';
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
@@ -12,6 +13,7 @@ import { base32Decode } from '../../../packages/auth/src/base32.js';
 const AUTH = process.env.AUTH_URL ?? 'http://auth:3020';
 const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
 const ADMIN = process.env.ADMIN_URL ?? 'http://seller-admin:3001';
+const STORE = new URL(process.env.STOREFRONT_URL ?? 'http://storefront:3050');
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest';
 const OADM = process.env.ADMIN_ORIGIN ?? 'https://admin.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 4 });
@@ -43,6 +45,20 @@ async function adm(method, path, { cookie, origin, form } = {}) {
   const r = await fetch(ADMIN + path, { method, headers: h, redirect: 'manual', body: form !== undefined ? new URLSearchParams(form).toString() : undefined });
   const t = await r.text();
   return { status: r.status, location: r.headers.get('location'), csp: r.headers.get('content-security-policy'), body: t };
+}
+function sf(host, path = '/') {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: STORE.hostname, port: STORE.port, path, method: 'GET', headers: { host } },
+      (res) => {
+        let body = '';
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => resolve({ status: res.statusCode, body }));
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
 }
 const login = async (email, password) => ck((await rq(AUTH, 'POST', '/auth/login', { body: { email, password }, origin: OA })).sc);
 const uidOf = async (email) => (await owner.query('SELECT id FROM users WHERE email=$1', [email])).rows[0]?.id ?? null;
@@ -250,8 +266,8 @@ async function main() {
   await adm('POST', `/shops/${A.shopId}/products`, { cookie: A.cookie, origin: OADM, form: { title: 'SP nháp', price_vnd: '100000', status: 'draft', stock: '10' } });
   await adm('POST', `/shops/${A.shopId}/products`, { cookie: A.cookie, origin: OADM, form: { title: 'SP hết hàng', price_vnd: '100000', status: 'active', stock: '0' } });
   r = await adm('GET', OV, { cookie: A.cookie });
-  const prog0 = r.body.match(/(\d+)\/9 đạt/)?.[1];
-  prog0 === '2' ? ok('2 SP (nháp / tồn 0) → vẫn 2/9, KHÔNG tick nhầm catalog') : bad('tick nhầm SP chưa bán được', `prog=${prog0}`);
+  const prog0 = r.body.match(/(\d+)\/8 đạt/)?.[1];
+  prog0 === '2' ? ok('2 SP (nháp / tồn 0) → vẫn 2/8, KHÔNG tick nhầm catalog') : bad('tick nhầm SP chưa bán được', `prog=${prog0}`);
 
   sect('3. SP đang bán + còn tồn → catalog đạt; vẫn chưa được mở bán');
   // KHÔNG gửi slug/sku: bỏ trống thì seller tự sinh (bỏ dấu tên SP). Test đi đúng đường
@@ -260,9 +276,9 @@ async function main() {
   r.status === 303 ? ok('tạo SP không cần gõ slug/SKU') : bad('tạo SP tối giản lỗi', String(r.status));
   await owner.query(`INSERT INTO shop_payment_config (shop_id, bank_bin, account_number, account_name, qr_enabled) VALUES ($1,'970436','0123456789','SHOP TEST',true) ON CONFLICT (shop_id) DO UPDATE SET qr_enabled=true, bank_bin=EXCLUDED.bank_bin, account_number=EXCLUDED.account_number`, [A.shopId]);
   r = await adm('GET', OV, { cookie: A.cookie });
-  const prog = r.body.match(/(\d+)\/9 đạt/)?.[1];
-  prog === '3' && /Còn 5 mục bắt buộc/.test(r.body)
-    ? ok('SP bán được → 3/9; các điều kiện vận hành còn thiếu vẫn chặn go-live')
+  const prog = r.body.match(/(\d+)\/8 đạt/)?.[1];
+  prog === '3' && /Còn 4 mục bắt buộc/.test(r.body)
+    ? ok('SP bán được → 3/8; bốn điều kiện vận hành còn thiếu vẫn chặn go-live')
     : bad('tín hiệu không phản ánh', `prog=${prog}`);
   // Tồn PHẢI vào kho thật, không phải chỉ hiện trên form.
   const onHand = (await owner.query(
@@ -273,8 +289,10 @@ async function main() {
   sect('4. Server chặn mở bán sớm, sau đó hoàn tất shipping/contact/policy + preview');
   r = await adm('POST', `/shops/${A.shopId}/activate`, { cookie: A.cookie, origin: OADM });
   r.status === 200 && (await statusOf(A.shopId)) === 'onboarding'
-    && /chưa đủ điều kiện mở bán/i.test(r.body) && /Còn 5 mục bắt buộc/.test(r.body)
-    ? ok('giả POST trực tiếp vẫn bị seller kiểm tra readiness và giữ onboarding')
+    && /còn thiếu: Chưa cấu hình phí\/phương thức vận chuyển/.test(r.body)
+    && new RegExp(`href="/shops/${A.shopId}/settings#phi-ship"`).test(r.body)
+    && /Còn 4 mục bắt buộc/.test(r.body)
+    ? ok('giả POST trực tiếp vẫn bị seller giữ onboarding và chỉ đúng mục shipping cần sửa')
     : bad('go-live mở sớm hoặc không giải thích mục còn thiếu', `${r.status} st=${await statusOf(A.shopId)}`);
 
   r = await adm('POST', `/shops/${A.shopId}/settings`, {
@@ -290,17 +308,21 @@ async function main() {
   r = await adm('GET', OV, { cookie: A.cookie });
   const nonceHeader = /script-src 'nonce-([^']+)'/.exec(r.csp ?? '')?.[1];
   const nonceTag = /<script nonce="([^"]+)"/.exec(r.body)?.[1];
-  /8\/9 đạt/.test(r.body) && /Khuyến nghị, không chặn mở bán/.test(r.body)
+  /7\/8 đạt/.test(r.body) && /Khuyến nghị, không chặn mở bán/.test(r.body)
     && /data-confirm="Mở checkout công khai cho khách ngay bây giờ\?"/.test(r.body)
     && !/Mở bán chính thức" disabled/.test(r.body)
     && nonceHeader && nonceHeader === nonceTag
-    ? ok('8 mục bắt buộc đạt; nút go-live được bật và confirm có CSP nonce hợp lệ')
+    ? ok('7/8 mục đạt; MFA chỉ cảnh báo, nút go-live hoạt động và confirm có CSP nonce hợp lệ')
     : bad('UI/confirm chưa phản ánh readiness hoàn chỉnh', `csp=${nonceHeader ?? 'thiếu'} script=${nonceTag ?? 'thiếu'} ${r.body.slice(0, 500)}`);
 
   r = await adm('POST', `/shops/${A.shopId}/preview`, { cookie: A.cookie, origin: OADM });
-  r.status === 200 && /Link xem trước sống khoảng 15 phút/.test(r.body)
-    && new RegExp(`https:\\/\\/[^\"<]+\\?shop_preview=`).test(r.body)
-    ? ok('preview shop tạo link có TTL trước khi mở bán') : bad('preview shop lỗi', `${r.status} ${r.body.slice(0, 240)}`);
+  const previewLabel = /Link xem trước/.test(r.body);
+  const previewExpiry = /dùng được tới/.test(r.body);
+  const previewUrl = new RegExp(`https:\\/\\/[^\"<]+\\?shop_preview=`).test(r.body);
+  const previewAt = r.body.indexOf('Link xem trước');
+  r.status === 200 && previewLabel && previewExpiry && previewUrl
+    ? ok('preview shop tạo link có TTL trước khi mở bán')
+    : bad('preview shop lỗi', `status=${r.status} label=${previewLabel} expiry=${previewExpiry} url=${previewUrl} ${r.body.slice(Math.max(0, previewAt - 80), previewAt + 420)}`);
 
   sect('5. Mở bán: onboarding → active + redirect live=1');
   r = await adm('POST', `/shops/${A.shopId}/activate`, { cookie: A.cookie, origin: OADM });
@@ -364,8 +386,9 @@ async function main() {
   const tokenOf = async (sid) => (await owner.query('SELECT token_hash, expires_at FROM shop_previews WHERE shop_id=$1', [sid])).rows[0] ?? null;
   // Cần tên miền đã xác minh; dựng thẳng bằng owner pool cho gọn.
   await owner.query(
-    `INSERT INTO domains (shop_id, hostname, is_primary, verified_at) VALUES ($1,$2,true,now())
-     ON CONFLICT DO NOTHING`, [P.shopId, `pv-${uniq()}.localtest`],
+    `INSERT INTO domains (shop_id, hostname, verification_token, is_primary, verified_at)
+     VALUES ($1,$2,$3,true,now()) ON CONFLICT DO NOTHING`,
+    [P.shopId, `pv-${uniq()}.localtest`, `verify-${uniq()}`],
   );
 
   // (a) no-JS: form thuần, không script nào trên đường đi.
@@ -406,7 +429,13 @@ async function main() {
     ? ok('rotate lặp: vẫn đúng 1 dòng, không trạng thái mồ côi') : bad('rotate lặp sinh trạng thái lạ', `n=${nRows2}`);
 
   // (e) HẾT HẠN: overview phải NÓI RA sau khi tải lại, không quên như trước.
-  await owner.query(`UPDATE shop_previews SET expires_at = now() - interval '1 minute' WHERE shop_id=$1`, [P.shopId]);
+  await owner.query(
+    `UPDATE shop_previews
+        SET created_at = now() - interval '20 minutes',
+            expires_at = now() - interval '1 minute'
+      WHERE shop_id=$1`,
+    [P.shopId],
+  );
   r = await adm('GET', `${PV}/overview`, { cookie: P.cookie });
   /đã hết hạn/.test(r.body)
     ? ok('tải lại sau khi hết hạn → giao diện nói "đã hết hạn"') : bad('overview quên trạng thái preview sau reload');
@@ -450,13 +479,17 @@ async function main() {
   sect('10d. renderPreparing chỉ dùng liên hệ CÔNG KHAI của shop');
   const ownerEmail = P.email;
   await owner.query(`UPDATE shops SET contact_email='lienhe@shop.vn', contact_phone='0900111222' WHERE id=$1`, [P.shopId]);
-  const host = (await owner.query('SELECT hostname FROM domains WHERE shop_id=$1 LIMIT 1', [P.shopId])).rows[0]?.hostname;
+  const host = (await owner.query(
+    `SELECT hostname FROM domains
+      WHERE shop_id=$1 AND verified_at IS NOT NULL
+      ORDER BY is_primary DESC, created_at LIMIT 1`,
+    [P.shopId],
+  )).rows[0]?.hostname;
   if (host) {
-    const sf = await fetch(`${process.env.STOREFRONT_URL ?? 'http://storefront:3000'}/`, { headers: { host } })
-      .then(async (x) => ({ status: x.status, body: await x.text() })).catch(() => ({ status: 0, body: '' }));
-    sf.status === 200 && !sf.body.includes(ownerEmail)
-      ? ok('màn "đang chuẩn bị" KHÔNG chứa email tài khoản chủ shop') : bad('lộ PII owner ra storefront', sf.body.slice(0, 200));
-    sf.body.includes('lienhe@shop.vn')
+    const storefront = await sf(host).catch(() => ({ status: 0, body: '' }));
+    storefront.status === 200 && !storefront.body.includes(ownerEmail)
+      ? ok('màn "đang chuẩn bị" KHÔNG chứa email tài khoản chủ shop') : bad('lộ PII owner ra storefront', storefront.body.slice(0, 200));
+    storefront.body.includes('lienhe@shop.vn')
       ? ok('dùng đúng liên hệ công khai của cửa hàng') : bad('không hiện liên hệ công khai');
   }
 

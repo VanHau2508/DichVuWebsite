@@ -252,6 +252,7 @@ async function createPreview(res, ctx, body) {
       body: {
         preview_url: `https://${host}/?shop_preview=${encodeURIComponent(token)}`,
         token,
+        expires_at: row.expires_at,
         expires_in: PREVIEW_TTL_MIN * 60,
       },
     };

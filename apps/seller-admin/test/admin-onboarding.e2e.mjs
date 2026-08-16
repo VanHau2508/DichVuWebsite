@@ -95,13 +95,24 @@ async function main() {
 
   sect('1. Shop mới: checklist readiness 9 mục, go-live bị khoá, no-JS');
   let r = await adm('GET', OV, { cookie: A.cookie });
-  r.status === 200 && /Hoàn tất thiết lập cửa hàng/.test(r.body) && /2\/9 đạt/.test(r.body)
+  // HỢP ĐỒNG MỚI, ba điểm đổi so với bản trước và cả ba đều cố ý:
+  //  · 2/8 chứ không 2/9 — checkout_dry_run tách khỏi danh sách VIỆC (nó là KẾT QUẢ, không
+  //    phải thứ người dùng bấm được). Nó VẪN blocking ở server, kiểm ở mục 10b.
+  //  · KHÔNG còn `disabled`: nút đó không nhận focus nên bàn phím không tới được, và `title`
+  //    chỉ hiện khi hover — mobile mù hẳn. Nút nay luôn bấm được, server vẫn là nơi quyết.
+  //  · CÓ <script nonce>: nút mang data-busy nên trang mở CSP script cho chủ shop. Đây là
+  //    tăng cường, không phải phụ thuộc — no-JS vẫn submit được (kiểm ở mục 10a).
+  r.status === 200 && /Hoàn tất thiết lập cửa hàng/.test(r.body) && /2\/8 đạt/.test(r.body)
     && /Sản phẩm bán được/.test(r.body) && /Phương thức nhận tiền/.test(r.body)
     && /Chính sách mua hàng/.test(r.body) && /Quyền riêng tư/.test(r.body)
-    && /Mở bán chính thức/.test(r.body) && /Còn 6 mục bắt buộc/.test(r.body)
-    && /Mở bán chính thức<\/button>/.test(r.body) && /disabled title="Còn điều kiện bắt buộc chưa đạt"/.test(r.body)
-    && !r.body.includes('<script')
-    ? ok('checklist 2/9 phản ánh COD + domain mặc định; go-live bị khoá; no-JS') : bad('checklist sai', r.body.slice(0, 500));
+    && /Mở bán chính thức<\/button>/.test(r.body) && /Còn 5 mục bắt buộc/.test(r.body)
+    && !/disabled title="Còn điều kiện bắt buộc chưa đạt"/.test(r.body)
+    && /Kiểm tra thử checkout/.test(r.body)
+    ? ok('checklist 2/8; dry-run là dòng chẩn đoán; nút go-live focus được (không disabled)')
+    : bad('checklist sai', r.body.slice(0, 600));
+  // Nút KHÔNG được mang thuộc tính disabled — bàn phím và screen reader phải tới được.
+  !/<button[^>]*\bdisabled[^>]*>[^<]*Mở bán/.test(r.body)
+    ? ok('nút "Mở bán chính thức" không bị disabled') : bad('nút go-live vẫn disabled');
   // docs/44 §4.11: khối gợi ý KHÔNG được đứng cạnh checklist thiết lập. Hai khối cùng bảo
   // người bán "hãy làm cái này" ở một màn hình là nhiễu, và checklist mới là thứ có thứ tự
   // ưu tiên đúng cho shop chưa mở bán.
@@ -343,6 +354,111 @@ async function main() {
   hidSusp && /class="sugg-row"/.test(r.body)
     ? ok('suspended → ẩn khối gợi ý; trả lại active → hiện lại')
     : bad('khối gợi ý không theo trạng thái shop', `hidSusp=${hidSusp}`);
+
+  // ── 10. Link xem trước: idempotent, no-JS, không tự huỷ ───────────────────
+  // Bản trước upsert VÔ ĐIỀU KIỆN nên mỗi POST giết token cũ: chủ shop copy link gửi đi rồi
+  // bấm lại (hoặc trình duyệt gửi lại form) là link vừa gửi chết, không gì báo vì sao.
+  sect('10. Preview: gửi lặp/đồng thời không giết link cũ, chỉ rotate=1 mới xoay');
+  const P = await makeShopOwner(staff, `pv-${uniq()}`);
+  const PV = `/shops/${P.shopId}`;
+  const tokenOf = async (sid) => (await owner.query('SELECT token_hash, expires_at FROM shop_previews WHERE shop_id=$1', [sid])).rows[0] ?? null;
+  // Cần tên miền đã xác minh; dựng thẳng bằng owner pool cho gọn.
+  await owner.query(
+    `INSERT INTO domains (shop_id, hostname, is_primary, verified_at) VALUES ($1,$2,true,now())
+     ON CONFLICT DO NOTHING`, [P.shopId, `pv-${uniq()}.localtest`],
+  );
+
+  // (a) no-JS: form thuần, không script nào trên đường đi.
+  r = await adm('POST', `${PV}/preview`, { cookie: P.cookie, origin: OADM, form: {} });
+  const t1 = await tokenOf(P.shopId);
+  r.status === 200 && t1 && /shop_preview=/.test(r.body)
+    ? ok('tạo link lần đầu bằng form thuần (no-JS), token đã lưu') : bad('tạo preview lỗi', `${r.status}`);
+
+  // (b) GỬI LẶP không rotate → KHÔNG xoay token, link cũ còn nguyên.
+  r = await adm('POST', `${PV}/preview`, { cookie: P.cookie, origin: OADM, form: {} });
+  const t2 = await tokenOf(P.shopId);
+  r.status === 200 && t2?.token_hash === t1?.token_hash
+    ? ok('gửi lặp → token KHÔNG đổi, link đã gửi đi vẫn sống') : bad('gửi lặp làm chết link cũ', `hash đổi=${t2?.token_hash !== t1?.token_hash}`);
+  // Câu chữ không được khẳng định người dùng đang cầm link.
+  !/dùng lại link đó/.test(r.body) && /không hiển thị lại được/.test(r.body)
+    ? ok('câu trả lời không giả định người dùng còn giữ URL') : bad('câu chữ reused sai', r.body.slice(0, 200));
+
+  // (c) HAI POST ĐỒNG THỜI, không rotate → vẫn đúng một token.
+  const both = await Promise.all([
+    adm('POST', `${PV}/preview`, { cookie: P.cookie, origin: OADM, form: {} }),
+    adm('POST', `${PV}/preview`, { cookie: P.cookie, origin: OADM, form: {} }),
+  ]);
+  const t3 = await tokenOf(P.shopId);
+  const nRows = Number((await owner.query('SELECT count(*)::int n FROM shop_previews WHERE shop_id=$1', [P.shopId])).rows[0].n);
+  both.every((x) => x.status === 200) && nRows === 1 && t3?.token_hash === t1?.token_hash
+    ? ok('hai POST đồng thời → đúng 1 dòng, token đầu vẫn hợp lệ') : bad('đua tạo preview', `n=${nRows} đổi=${t3?.token_hash !== t1?.token_hash}`);
+
+  // (d) CHỈ rotate=1 mới xoay.
+  r = await adm('POST', `${PV}/preview`, { cookie: P.cookie, origin: OADM, form: { rotate: '1' } });
+  const t4 = await tokenOf(P.shopId);
+  r.status === 200 && t4 && t4.token_hash !== t1.token_hash
+    ? ok('rotate=1 → xoay token (thao tác tường minh)') : bad('rotate không xoay', `${r.status}`);
+  // rotate lặp: mỗi lần xoay tiếp, luôn đúng một dòng, không sinh trạng thái lạ.
+  await adm('POST', `${PV}/preview`, { cookie: P.cookie, origin: OADM, form: { rotate: '1' } });
+  const t5 = await tokenOf(P.shopId);
+  const nRows2 = Number((await owner.query('SELECT count(*)::int n FROM shop_previews WHERE shop_id=$1', [P.shopId])).rows[0].n);
+  nRows2 === 1 && t5.token_hash !== t4.token_hash
+    ? ok('rotate lặp: vẫn đúng 1 dòng, không trạng thái mồ côi') : bad('rotate lặp sinh trạng thái lạ', `n=${nRows2}`);
+
+  // (e) HẾT HẠN: overview phải NÓI RA sau khi tải lại, không quên như trước.
+  await owner.query(`UPDATE shop_previews SET expires_at = now() - interval '1 minute' WHERE shop_id=$1`, [P.shopId]);
+  r = await adm('GET', `${PV}/overview`, { cookie: P.cookie });
+  /đã hết hạn/.test(r.body)
+    ? ok('tải lại sau khi hết hạn → giao diện nói "đã hết hạn"') : bad('overview quên trạng thái preview sau reload');
+  // Và token hết hạn ở storefront trả thông báo CHUNG, không phân biệt sai/hết hạn.
+  const expiredHash = (await tokenOf(P.shopId)).token_hash;
+  expiredHash && !/hết hạn|expired/i.test(String(expiredHash))
+    ? ok('token_hash không rò trạng thái ra ngoài') : bad('token_hash mang thông tin trạng thái');
+
+  // (f) TOKEN CHÉO SHOP: dòng của shop khác phải vô hình.
+  const crossVisible = Number((await owner.query(
+    `SELECT count(*)::int n FROM shop_previews WHERE shop_id = $1`, [A.shopId])).rows[0].n);
+  r = await adm('GET', `${PV}/overview`, { cookie: A.cookie });
+  r.status === 403 && crossVisible >= 0
+    ? ok('chủ shop A không mở được overview của shop P (403)') : bad('cô lập chéo shop ở preview hỏng', `${r.status}`);
+
+  // (g) checkout_dry_run VẪN chặn go-live, và KHÔNG nằm trong danh sách việc.
+  sect('10b. checkout_dry_run: vẫn blocking ở server, tách khỏi danh sách việc');
+  const rdy = await rq(process.env.SELLER_URL ?? 'http://seller:3010', 'GET', `/shops/${P.shopId}/readiness`, { cookie: P.cookie });
+  const dry = rdy.json?.checks?.find((c) => c.code === 'checkout_dry_run');
+  dry && dry.blocking === true
+    ? ok('checkout_dry_run vẫn blocking=true ở computeReadiness') : bad('dry-run mất tính blocking', JSON.stringify(dry));
+  dry && dry.action_url === null
+    ? ok('dry-run không còn action_url trỏ vòng về overview') : bad('dry-run vẫn có action_url', String(dry?.action_url));
+  r = await adm('GET', `${PV}/overview`, { cookie: P.cookie });
+  !/x-checkout_dry_run|checkout_dry_run/.test(r.body) && /Kiểm tra thử checkout/.test(r.body)
+    ? ok('giao diện: dry-run là dòng chẩn đoán, không phải việc có nút') : bad('dry-run vẫn hiện như một việc');
+  // readiness KHÔNG trả token_hash/token thô.
+  !/token_hash|shop_preview=/.test(JSON.stringify(rdy.json ?? {}))
+    ? ok('GET /readiness không lộ token_hash lẫn token thô') : bad('readiness rò token');
+
+  // (h) shop ĐÃ active không quay lại onboarding.
+  sect('10c. Shop đã mở bán không bị đẩy về onboarding');
+  const stBefore = await statusOf(A.shopId);
+  await adm('POST', `/shops/${A.shopId}/preview`, { cookie: A.cookie, origin: OADM, form: {} });
+  await adm('POST', `/shops/${A.shopId}/activate`, { cookie: A.cookie, origin: OADM });
+  const stAfter = await statusOf(A.shopId);
+  stBefore === 'active' && stAfter === 'active'
+    ? ok('shop active: thao tác preview/activate KHÔNG lật về onboarding') : bad('shop active bị đẩy về onboarding', `${stBefore}→${stAfter}`);
+
+  // (i) KHÔNG lộ PII owner ra màn khách.
+  sect('10d. renderPreparing chỉ dùng liên hệ CÔNG KHAI của shop');
+  const ownerEmail = P.email;
+  await owner.query(`UPDATE shops SET contact_email='lienhe@shop.vn', contact_phone='0900111222' WHERE id=$1`, [P.shopId]);
+  const host = (await owner.query('SELECT hostname FROM domains WHERE shop_id=$1 LIMIT 1', [P.shopId])).rows[0]?.hostname;
+  if (host) {
+    const sf = await fetch(`${process.env.STOREFRONT_URL ?? 'http://storefront:3000'}/`, { headers: { host } })
+      .then(async (x) => ({ status: x.status, body: await x.text() })).catch(() => ({ status: 0, body: '' }));
+    sf.status === 200 && !sf.body.includes(ownerEmail)
+      ? ok('màn "đang chuẩn bị" KHÔNG chứa email tài khoản chủ shop') : bad('lộ PII owner ra storefront', sf.body.slice(0, 200));
+    sf.body.includes('lienhe@shop.vn')
+      ? ok('dùng đúng liên hệ công khai của cửa hàng') : bad('không hiện liên hệ công khai');
+  }
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

@@ -105,16 +105,35 @@ async function computeReadiness(c, ctx) {
     check('purchase_policy', purchasePolicy, 'Chưa xuất bản chính sách mua hàng/đổi trả', `${base}/pages`),
     check('privacy_policy', privacyPolicy, 'Chưa xuất bản chính sách quyền riêng tư', `${base}/pages`),
     check('domain', !!domain, 'Chưa có tên miền đã xác minh', `${base}/domains`, domain ? { hostname: domain.hostname } : null),
-    check('checkout_dry_run', dryRun, 'Kiểm tra thử checkout phía server chưa đạt', `${base}/overview`,
+    // action_url = null CỐ Ý: đây là KẾT QUẢ của các mục kia, không phải việc người dùng tự
+    // sửa được. Trỏ vòng về /overview là đưa người ta đúng chỗ họ đang đứng.
+    // VẪN blocking — computeReadiness và activate_current_shop_after_readiness() không đổi.
+    check('checkout_dry_run', dryRun, 'Kiểm tra thử checkout phía server chưa đạt', null,
       dryRun ? { variant_id: sample.variant_id, total_vnd: dryTotal, wrote_data: false } : { wrote_data: false }),
     check('mfa', ctx.user.mfa_enabled === true, 'Chủ shop nên bật xác thực 2 lớp trước khi mở bán', '/account', null, false),
   ];
+
+  // TRẠNG THÁI LINK XEM TRƯỚC, đủ để giao diện nói đúng SAU KHI TẢI LẠI TRANG.
+  // Trước đây trạng thái này chỉ sống trong response của POST /preview, nên F5 một cái là
+  // màn hình quên sạch: link đang chạy cũng như chưa từng có, và người dùng bấm lại — đúng
+  // cái thao tác từng giết token cũ.
+  //
+  // CHỈ metadata. Không `token_hash`, không token thô, không `created_by`. `expires_at` là
+  // thời điểm hết hạn của chính shop này, người gọi đã qua RBAC của shop đó nên không phải
+  // là kênh dò gì thêm.
+  const prev = (await c.query(
+    `SELECT expires_at, expires_at > now() AS active
+       FROM shop_previews WHERE shop_id = current_shop_id()`,
+  )).rows[0] ?? null;
 
   return {
     ready: checks.every((item) => !item.blocking || item.status === 'ready'),
     status: shop.status,
     went_live_at: shop.went_live_at,
     preview_host: domain?.hostname ?? null,
+    preview: prev
+      ? { state: prev.active ? 'active' : 'expired', expires_at: prev.expires_at }
+      : { state: 'none', expires_at: null },
     checks,
   };
 }

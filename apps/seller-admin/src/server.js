@@ -346,6 +346,11 @@ async function overviewPage(res, me, cookie, shopId, live, preview = null, readi
   const readinessLoadError = readinessR.status === 200
     ? null
     : 'Chưa tải được kiểm tra điều kiện mở bán. Vui lòng tải lại trước khi mở checkout.';
+  // `preview` từ POST chỉ sống trong ĐÚNG response đó. Sau F5 nó là null, nên trạng thái
+  // link phải đến từ GET /readiness. Response POST (có URL thô) đè lên khi có.
+  const previewView = preview ?? (readiness?.preview?.state && readiness.preview.state !== 'none'
+    ? { persisted: readiness.preview.state, expires_at: readiness.preview.expires_at }
+    : null);
   const setup = readiness?.status === 'onboarding' ? {
     ...readiness,
     canManage: ctx.role === 'owner' || ctx.role === 'admin',
@@ -354,7 +359,7 @@ async function overviewPage(res, me, cookie, shopId, live, preview = null, readi
   } : null;
   const notice = live === '1' ? '🎉 Cửa hàng đã mở bán chính thức! Chúc bạn nhiều đơn hàng.' : null;
   const render = (renderCtx) => V.renderOverview(
-    renderCtx, shopId, r.json, setup, notice, readiness?.status ?? shop?.status ?? null, preview,
+    renderCtx, shopId, r.json, setup, notice, readiness?.status ?? shop?.status ?? null, previewView,
     readinessErr ?? readinessLoadError, readinessErrHref,
   );
   // Mở CSP script khi màn hình có nút cần data-confirm/chống double-submit. Nút go-live nay
@@ -376,15 +381,36 @@ async function activateShop(res, me, cookie, shopId) {
   // Seller trả kèm `checks`. Nói "còn thiếu bên dưới rồi thử lại" là bắt người dùng tự dò
   // trong 9 dòng — trên mobile thì phải cuộn. Nêu THẲNG mục thiếu ĐẦU TIÊN và đường tới đó.
   // Vẫn là server quyết định: `goLive` tự kiểm lại, UI chỉ thôi giấu lý do.
-  const firstMissing = Array.isArray(r.json?.checks)
-    ? r.json.checks.find((c) => c && c.blocking !== false && c.ok !== true)
-    : null;
-  const msg = r.json?.error === 'shop_not_ready'
-    ? (firstMissing
-      ? `Chưa mở bán được — còn thiếu: ${firstMissing.title ?? firstMissing.label ?? firstMissing.code}.`
-      : 'Cửa hàng chưa đủ điều kiện mở bán. Hoàn tất các mục còn thiếu bên dưới rồi thử lại.')
-    : (r.json?.error ?? 'Không thể mở bán lúc này.');
-  return overviewPage(res, me, cookie, shopId, null, null, msg, firstMissing?.action_url ?? null);
+  //
+  // HỢP ĐỒNG: mỗi check là { code, status: 'ready'|'missing'|'warning', blocking, label,
+  // action_url }. KHÔNG có `ok`, KHÔNG có `title`. Bản đầu của đoạn này dùng `c.ok !== true`
+  // — mà `ok` luôn undefined nên điều kiện LUÔN đúng và `find` trả về mục ĐẦU TIÊN bất kể
+  // trạng thái: catalog/payment đã xong vẫn bị chỉ là "còn thiếu". Đó là loại lỗi tệ hơn cả
+  // câu chung chung cũ, vì nó SAI một cách tự tin.
+  const checks = Array.isArray(r.json?.checks) ? r.json.checks : [];
+  // checkout_dry_run là KẾT QUẢ của các mục kia, không phải việc người dùng tự làm — tách
+  // riêng để không bao giờ nói "bạn còn thiếu: kiểm tra thử checkout".
+  const actionable = checks.filter((c) => c && c.code !== 'checkout_dry_run');
+  const firstMissing = actionable.find((c) => c.blocking !== false && c.status !== 'ready') ?? null;
+  const dryRunFailed = checks.some((c) => c?.code === 'checkout_dry_run' && c.status !== 'ready');
+  let msg, href = null;
+  if (r.json?.error !== 'shop_not_ready') {
+    msg = r.json?.error ?? 'Không thể mở bán lúc này.';
+  } else if (firstMissing) {
+    msg = `Chưa mở bán được — còn thiếu: ${firstMissing.label ?? firstMissing.code}.`;
+    href = firstMissing.action_url ?? null;
+  } else if (dryRunFailed) {
+    // Mọi việc người dùng làm được đã xong mà dry-run vẫn hỏng ⇒ lỗi hệ thống/cấu hình.
+    // Nói đúng bản chất và đưa mã hỗ trợ, KHÔNG đẩy về một trang họ đang đứng như thể còn
+    // việc phải làm.
+    msg = 'Các mục thiết lập đã đủ nhưng kiểm tra thử checkout phía máy chủ chưa đạt. '
+      + 'Đây là lỗi hệ thống hoặc cấu hình, không phải việc bạn còn thiếu. '
+      + 'Thử lại sau ít phút; nếu vẫn vậy, gửi mã hỗ trợ này cho chúng tôi: '
+      + `${r.json?.request_id ?? shopId.slice(0, 8)}.`;
+  } else {
+    msg = 'Cửa hàng chưa đủ điều kiện mở bán. Hoàn tất các mục còn thiếu bên dưới rồi thử lại.';
+  }
+  return overviewPage(res, me, cookie, shopId, null, null, msg, href);
 }
 
 async function previewShop(req, res, me, cookie, shopId) {

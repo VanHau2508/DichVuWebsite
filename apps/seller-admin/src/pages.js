@@ -2169,7 +2169,13 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
       contact: ['☎', 'Thông tin liên hệ'], purchase_policy: ['📄', 'Chính sách mua hàng'], privacy_policy: ['🔒', 'Quyền riêng tư'],
       domain: ['🌐', 'Tên miền cửa hàng'], checkout_dry_run: ['✓', 'Kiểm tra checkout'], mfa: ['🛡', 'Bảo mật chủ shop'],
     };
-    const checks = Array.isArray(setup.checks) ? setup.checks : [];
+    const allChecks = Array.isArray(setup.checks) ? setup.checks : [];
+    // checkout_dry_run KHÔNG phải việc người dùng làm — nó là KẾT QUẢ của các mục kia. Để nó
+    // trong danh sách nghĩa là tiến độ đứng ở 8/9 mà không có nút nào bấm được, và người dùng
+    // đi tìm "việc" thứ chín không tồn tại. Nó VẪN blocking ở server và ở
+    // activate_current_shop_after_readiness(); chỉ đổi chỗ hiển thị.
+    const dryRunCheck = allChecks.find((it) => it.code === 'checkout_dry_run') ?? null;
+    const checks = allChecks.filter((it) => it.code !== 'checkout_dry_run');
     const done = checks.filter((it) => it.status === 'ready').length;
     const blockingLeft = checks.filter((it) => it.blocking && it.status !== 'ready').length;
     const pct = checks.length ? Math.round((done / checks.length) * 100) : 0;
@@ -2187,6 +2193,21 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
         <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:.95rem">${icon} ${esc(title)}</div><div class="muted" style="font-size:.82rem">${esc(it.label ?? '')}${it.blocking ? '' : ' · Khuyến nghị, không chặn mở bán'}</div></div>
         ${action}</div>`;
     }).join('');
+    // DÒNG CHẨN ĐOÁN CHECKOUT — không phải một "việc", nên không có nút "Đi tới".
+    // Khi mọi việc người dùng làm được đã xong mà nó vẫn hỏng thì đó là lỗi hệ thống/cấu
+    // hình: nói đúng bản chất và đưa mã hỗ trợ, thay vì để người ta đi tìm việc thứ chín.
+    const dryOk = dryRunCheck?.status === 'ready';
+    const dryBlocked = dryRunCheck && !dryOk;
+    const allActionableDone = blockingLeft === 0;
+    const dryRunBox = !dryRunCheck ? '' : `<div style="display:flex;align-items:flex-start;gap:12px;padding:11px 0;border-top:1px solid var(--bd)">
+      <span style="flex:0 0 auto;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:.9rem;background:${dryOk ? 'var(--goodbg)' : dryBlocked && allActionableDone ? 'var(--badbg)' : 'var(--row)'};color:${dryOk ? 'var(--good)' : dryBlocked && allActionableDone ? 'var(--bad)' : 'var(--mut)'}">${dryOk ? '✓' : '⚙'}</span>
+      <div style="flex:1;min-width:0"><div style="font-weight:600;font-size:.95rem">Kiểm tra thử checkout <span class="muted" style="font-weight:400">· máy chủ tự chạy</span></div>
+        <div class="muted" style="font-size:.82rem">${dryOk
+          ? 'Máy chủ dựng thử một đơn (chỉ đọc, không tạo dữ liệu) và tính được tiền — cửa hàng bán được.'
+          : allActionableDone
+            ? 'Các mục trên đã đủ nhưng máy chủ vẫn chưa dựng thử được đơn. <strong>Đây là lỗi hệ thống hoặc cấu hình, không phải việc bạn còn thiếu.</strong> Thử lại sau ít phút; nếu vẫn vậy hãy báo chúng tôi kèm mã cửa hàng.'
+            : 'Tự chuyển sang đạt khi các mục trên đã đủ. Đây là kết quả, không phải việc bạn cần làm.'}</div></div></div>`;
+
     // LINK XEM TRƯỚC — ba trạng thái, và cả ba đều nói ra thành lời.
     // Trước: một URL thô kèm "sống khoảng 15 phút". Hết hạn thì bấm vào ra đúng màn khách lạ
     // thấy ("đang chuẩn bị mở bán") — người dùng không phân biệt được "hết hạn" với "hỏng".
@@ -2199,19 +2220,27 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
       ? `<div class="notice ok" style="margin-top:12px"><strong>Link xem trước${previewExp ? ` — dùng được tới ${esc(previewExp)}` : ''}:</strong><br>
         <a href="${esc(preview.preview_url)}" target="_blank" rel="noopener noreferrer" style="word-break:break-all">${esc(preview.preview_url)}</a>
         <div class="muted" style="font-size:.82rem;margin-top:6px">Ai có link cũng xem được cửa hàng trước khi mở bán. Hết hạn thì bấm “Tạo link mới”.</div></div>`
-      : (preview?.reused
-        ? `<div class="notice" style="margin-top:12px">Link xem trước bạn vừa tạo <strong>vẫn còn hiệu lực</strong>${previewExp ? ` tới ${esc(previewExp)}` : ''} — dùng lại link đó.
-           <div class="muted" style="font-size:.82rem;margin-top:6px">Bấm lại không tạo link mới, để không làm chết link bạn vừa gửi đi. Cần link khác thì bấm “Tạo link mới”.</div></div>`
-        : '');
+      : (preview?.reused || preview?.persisted === 'active'
+        // KHÔNG nói "dùng lại link đó". Câu ấy giả định người dùng ĐANG CẦM link — sai khi
+        // response đầu bị mất (mạng đứt, đóng tab), khi hai POST chạy đồng thời, hoặc khi
+        // người bấm lần này khác người bấm lần đầu. Nói đúng thứ hệ thống BIẾT: có một link
+        // còn hiệu lực, và vì chỉ lưu hash nên không hiện lại được.
+        ? `<div class="notice" style="margin-top:12px">Đang có <strong>một link xem trước còn hiệu lực</strong>${previewExp ? ` tới ${esc(previewExp)}` : ''}.
+           <div class="muted" style="font-size:.82rem;margin-top:6px">Hệ thống <strong>không hiển thị lại được</strong> link đó — chỉ lưu bản băm, không lưu link. Nếu bạn không còn giữ link, bấm “Tạo link mới”: <strong>link cũ sẽ hết hiệu lực ngay</strong>.</div></div>`
+        : (preview?.persisted === 'expired'
+          ? `<div class="notice" style="margin-top:12px">Link xem trước trước đó <strong>đã hết hạn</strong>${previewExp ? ` lúc ${esc(previewExp)}` : ''}.
+             <div class="muted" style="font-size:.82rem;margin-top:6px">Bấm “Tạo link mới” để có link dùng được.</div></div>`
+          : ''));
 
     // Nút KHÔNG dùng `disabled`. `disabled` khiến nút không nhận focus (bàn phím không tới
     // được) và `title` chỉ hiện khi hover — mobile không có hover, nên người dùng điện thoại
     // thấy một nút xám không giải thích gì. Nay nút luôn bấm được; server vẫn là nơi quyết
     // định (goLive tự kiểm lại readiness), và khi từ chối thì BFF nêu MỤC THIẾU ĐẦU TIÊN.
-    const hasPreview = !!(preview?.preview_url || preview?.reused);
+    const hasPreview = !!(preview?.preview_url || preview?.reused || preview?.persisted);
+    const rotateWarn = preview?.persisted === 'active' || preview?.reused || preview?.preview_url;
     const controls = setup.canManage ? `<div style="border-top:1px solid var(--bd);margin-top:8px;padding-top:14px" class="actions">
       <form method="POST" action="${base}/preview" style="margin:0">${hasPreview ? '<input type="hidden" name="rotate" value="1">' : ''}
-        <button class="btn alt" type="submit" data-busy="Đang tạo link…">${hasPreview ? 'Tạo link mới' : 'Xem trước cửa hàng'}</button></form>
+        <button class="btn alt" type="submit" data-busy="Đang tạo link…"${rotateWarn ? ' data-confirm="Tạo link mới sẽ làm LINK CŨ HẾT HIỆU LỰC ngay. Tiếp tục?"' : ''}>${hasPreview ? 'Tạo link mới' : 'Xem trước cửa hàng'}</button></form>
       <form method="POST" action="${base}/activate" style="margin:0">
         <button class="btn" type="submit" data-busy="Đang kiểm tra…"${setup.ready ? ' data-confirm="Mở checkout công khai cho khách ngay bây giờ?"' : ''}>🎉 Mở bán chính thức</button></form>
       <span class="muted" style="font-size:.82rem">${setup.ready
@@ -2224,7 +2253,7 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
       <p class="muted" style="font-size:.85rem;margin:0 0 6px">Khách công khai chưa thể đặt hàng. Hoàn tất các mục bắt buộc, xem trước rồi mới mở checkout.</p>
       ${setup.canManage ? `<p style="margin:0 0 4px"><a class="btn alt" href="${base}/onboarding">⚡ Thiết lập nhanh trong 2 bước</a>
         <span class="muted" style="font-size:.82rem;margin-left:10px">Đặt tên gian hàng và chọn giao diện — khoảng một phút.</span></p>` : ''}
-      ${readinessErr ? `<div class="err">${esc(readinessErr)}${readinessErrHref ? ` <a href="${esc(readinessErrHref)}"><strong>Đi tới mục này →</strong></a>` : ''}</div>` : ''}${rows}${controls}${previewBox}</div>`;
+      ${readinessErr ? `<div class="err">${esc(readinessErr)}${readinessErrHref ? ` <a href="${esc(readinessErrHref)}"><strong>Đi tới mục này →</strong></a>` : ''}</div>` : ''}${rows}${dryRunBox}${controls}${previewBox}</div>`;
   }
   // ── "VIỆC CẦN LÀM" — hộp hành động đầu trang (mẫu màn hình chính TikTok Shop/Shopee) ──
   // Chủ shop mở trang quản lý là để biết HÔM NAY phải làm gì, không phải để ngắm doanh thu.

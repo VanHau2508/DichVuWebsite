@@ -1039,7 +1039,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
 
     if (data.notFound) return sendHtml(res, 404, renderNotFound(), { shopSlug: data.shop?.slug });
     if (data.suspended) return sendHtml(res, 503, renderMaintenance(data.shop.name), { shopSlug: data.shop.slug });
-    if (data.preparing) return sendHtml(res, 200, renderPreparing(data.shop.name), { shopSlug: data.shop.slug, preview: true });
+    if (data.preparing) return sendHtml(res, 200, renderPreparing(data.shop.name, { contact_email: data.shop.contact_email, contact_phone: data.shop.contact_phone }), { shopSlug: data.shop.slug, preview: true });
     // Token không nằm lại trên thanh địa chỉ/referrer: sau khi DB xác thực, đổi sang cookie
     // host-only rồi redirect về chính URL đã bỏ tham số. Cookie vẫn phải qua RLS ở MỌI request.
     if (data.shopPreviewToken) {

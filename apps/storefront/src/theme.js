@@ -2907,9 +2907,27 @@ export function renderMaintenance(shopName) {
   return page('Tạm ngưng', {}, `<main class="center-msg"><h1>Cửa hàng tạm ngưng</h1>
     <p>${esc(shopName)} hiện không nhận đơn. Vui lòng quay lại sau.</p></main>`);
 }
-export function renderPreparing(shopName) {
+/**
+ * Màn khách lạ thấy khi shop chưa mở bán.
+ *
+ * CHỈ dùng liên hệ CÔNG KHAI của cửa hàng — `shops.contact_email` / `shops.contact_phone`,
+ * đúng hai ô chủ shop tự khai ở Cài đặt để in lên chân trang cho khách. TUYỆT ĐỐI KHÔNG lấy
+ * gì từ bảng `users`: email/SĐT tài khoản chủ shop là PII nội bộ, không phải thông tin cửa
+ * hàng, và storefront không có lý do nào để chạm vào đó. Truy vấn ở server.js:626 cũng cố ý
+ * không join sang `users`.
+ *
+ * Không nêu lý do cụ thể vì sao chưa mở bán: khách không cần biết shop còn thiếu chính sách
+ * đổi trả hay chưa gắn ngân hàng.
+ */
+export function renderPreparing(shopName, contact = {}) {
+  const email = String(contact.contact_email ?? '').trim();
+  const phone = String(contact.contact_phone ?? '').trim();
+  const lines = [];
+  if (phone) lines.push(`<a href="tel:${esc(phone.replace(/[^\d+]/g, ''))}">${esc(phone)}</a>`);
+  if (email) lines.push(`<a href="mailto:${esc(email)}">${esc(email)}</a>`);
   return page('Đang chuẩn bị mở bán', {}, `<main class="center-msg"><h1>Cửa hàng đang chuẩn bị mở bán</h1>
-    <p>${esc(shopName)} đang hoàn tất sản phẩm, thanh toán và vận chuyển. Vui lòng quay lại sau.</p></main>`);
+    <p>${esc(shopName)} đang hoàn tất những bước cuối. Vui lòng quay lại sau.</p>
+    ${lines.length ? `<p>Cần hỗ trợ ngay? Liên hệ cửa hàng: ${lines.join(' · ')}</p>` : ''}</main>`);
 }
 export function renderNotFound() {
   return page('Không tìm thấy', {}, `<main class="center-msg"><h1>Không tìm thấy trang</h1>

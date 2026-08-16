@@ -384,12 +384,25 @@ Ba hệ quả thao tác, cả ba đã thành chốt:
   có vai nào để đối chiếu — nhưng vẫn phải KHAI, để link ngoài mới không lọt tự do.
 - **Trang 403 phải nêu tên màn hình người ta MỞ ĐƯỢC**, không chỉ nói "không tải được".
 
-Câu hỏi **còn treo, chờ chủ dự án quyết**: `GET /stats` chỉ đòi `orders.read` nhưng trả
-`low_stock` + `top_products` (tên SP, SKU, doanh thu) cho vai không có `catalog.read`. Ba
-phương án: giữ nguyên · gác ở giao diện · gác ở API. Khuyến nghị hiện tại là **giữ nguyên**,
-vì Tổng quan đã cho `order_manager` xem doanh thu trong khi `/reports` là owner/admin — gác
-catalog theo `catalog.read` thì cùng logic phải gác doanh thu theo `reports.read`, và đó là
-một lát cắt riêng cần đo lại, không phải phần đuôi của lát cắt này. **Đừng tự chọn.**
+### Quyết định đã KHOÁ cho phạm vi hiện tại — `/stats` và dữ liệu catalog
+
+Chủ dự án đã chốt ở workflow 2. Đây **không còn là câu hỏi mở**; đừng mở lại trong một lát
+cắt khác.
+
+- `low_stock` và `top_products` là **thông tin vận hành chung** trên Tổng quan.
+- Vai mở được Tổng quan bằng `orders.read` **tiếp tục xem được** số liệu đó.
+- Chỉ ẩn **lối đi / nút** dẫn tới trang hoặc thao tác mà vai đó không có quyền.
+- **Không** gác lại ở giao diện. **Không** cắt trường khỏi `GET /stats`.
+- **Không** đổi seller API hay RBAC trong phạm vi hiện tại.
+
+Lý do giữ nguyên, để người sau khỏi suy lại: Tổng quan vốn đã cho `order_manager` xem doanh
+thu trong khi `/reports` là owner/admin. Gác catalog theo `catalog.read` thì cùng logic phải
+gác doanh thu theo `reports.read` — tức thiết kế lại xem mỗi vai thấy gì trên bảng điều khiển,
+một lát cắt riêng, không phải phần đuôi của lát cắt này.
+
+**Nếu sau pilot** phát hiện tên sản phẩm / SKU / doanh thu cần được coi là dữ liệu catalog hay
+report MẬT, thì đó là một **quyết định sản phẩm mới**: phải đo lại toàn bộ dashboard, không tự
+thay trong một lát cắt khác.
 
 ### 9.4 Bắt đầu một phiên mới thế nào
 

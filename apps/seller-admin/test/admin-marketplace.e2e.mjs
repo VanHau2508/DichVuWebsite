@@ -368,6 +368,25 @@ async function main() {
   new RegExp(`href="/shops/${A.shopId}/settings"`).test(ownerLow)
     ? ok('owner vẫn có lối chỉnh ngưỡng tồn từ đúng thẻ cảnh báo')
     : bad('lọc quyền cắt nhầm lối Cài đặt của owner', ownerLow.slice(0, 320));
+  // Thẻ gợi ý "Có thể bạn chưa dùng" mở cho owner||admin, nhưng DOMAIN_ROLES chỉ có `owner`.
+  // `admin` từng được mời bấm "Tên miền riêng" rồi rơi vào màn từ chối của renderDomains —
+  // lối cụt, cùng lớp lỗi với ô Đánh giá/Sắp hết hàng, chỉ nằm ở một thẻ khác nên chốt cũ
+  // không thấy. Ca này KHÔNG dựng được bằng owner: phải là admin thật.
+  const ad = await addMember(staff, A.shopId, 'admin');
+  const adOv = await adm('GET', `/shops/${A.shopId}/overview`, { cookie: ad.cookie });
+  const suggBlock = (body) => {
+    const s = body.indexOf('Có thể bạn chưa dùng');
+    return s < 0 ? '' : body.slice(s, body.indexOf('</div>', body.indexOf('sugg-row', s)) + 6);
+  };
+  const adSugg = suggBlock(adOv.body), ownerSugg = suggBlock(ownerOv.body);
+  adOv.status === 200 && adSugg && !new RegExp(`href="/shops/${A.shopId}/domains"`).test(adSugg)
+    ? ok('admin KHÔNG còn được mời bấm "Tên miền riêng" (DOMAIN_ROLES chỉ owner)')
+    : bad('thẻ gợi ý vẫn dẫn admin vào trang chỉ owner mở được', adSugg.slice(0, 320));
+  /Nhập hàng &amp; kiểm kê|Nhập hàng & kiểm kê/.test(adSugg)
+    ? ok('admin vẫn thấy các gợi ý thuộc quyền của mình — lọc không cắt nhầm')
+    : bad('lọc quyền cắt sạch thẻ gợi ý của admin', adSugg.slice(0, 320));
+  new RegExp(`href="/shops/${A.shopId}/domains"`).test(ownerSugg)
+    ? ok('owner vẫn thấy gợi ý "Tên miền riêng"') : bad('cắt nhầm gợi ý của owner', ownerSugg.slice(0, 320));
   // Chứng minh tiền đề: hai trang đó THẬT SỰ từ chối vai này. Không có bước này thì khẳng
   // định trên chỉ nói "ô bị ẩn", không nói được "ẩn vì đúng lý do".
   const omRv = await adm('GET', `/shops/${A.shopId}/reviews?status=pending`, { cookie: om.cookie });

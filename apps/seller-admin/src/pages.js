@@ -2214,12 +2214,20 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
     const done = checks.filter((it) => it.status === 'ready').length;
     const blockingLeft = checks.filter((it) => it.blocking && it.status !== 'ready').length;
     const pct = checks.length ? Math.round((done / checks.length) * 100) : 0;
+    // MỘT allowlist cho MỌI link readiness động, không phải hai bản chép tay. `action_url` đến
+    // từ hợp đồng readiness của seller — không phải người dùng gõ, nhưng nó là chuỗi đi qua ba
+    // service, và "không phải input người dùng" là câu người ta nói ngay trước mỗi lần nó hoá
+    // ra là input người dùng. Hai chỗ dùng: nút "Đi tới" của từng mục, và link "Đi tới mục
+    // này →" của thông báo lỗi go-live. Bản trước chỉ gác chỗ thứ nhất.
+    const noiBo = (h) => {
+      const s = String(h ?? '');
+      return s === '/account' || s.startsWith(`${base}/`) ? s : '';
+    };
     const rows = checks.map((it) => {
       const ok = it.status === 'ready';
       const warning = it.status === 'warning';
       const [icon, title] = meta[it.code] ?? ['•', it.code];
-      const href = String(it.action_url ?? '');
-      const safeHref = href === '/account' || href.startsWith(`${base}/`) ? href : '';
+      const safeHref = noiBo(it.action_url);
       const action = ok ? '<span class="muted" style="font-size:.82rem">Đã xong</span>'
         : !setup.canManage ? '<span class="muted" style="font-size:.82rem">Cần chủ shop</span>'
           : safeHref ? `<a class="btn alt sm" href="${esc(safeHref)}">Đi tới</a>` : '';
@@ -2288,7 +2296,7 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
       <p class="muted" style="font-size:.85rem;margin:0 0 6px">Khách công khai chưa thể đặt hàng. Hoàn tất các mục bắt buộc, xem trước rồi mới mở checkout.</p>
       ${setup.canManage ? `<p style="margin:0 0 4px"><a class="btn alt" href="${base}/onboarding">⚡ Thiết lập nhanh trong 2 bước</a>
         <span class="muted" style="font-size:.82rem;margin-left:10px">Đặt tên gian hàng và chọn giao diện — khoảng một phút.</span></p>` : ''}
-      ${readinessErr ? `<div class="err">${esc(readinessErr)}${readinessErrHref ? ` <a href="${esc(readinessErrHref)}"><strong>Đi tới mục này →</strong></a>` : ''}</div>` : ''}${rows}${dryRunBox}${controls}${previewBox}</div>`;
+      ${readinessErr ? `<div class="err">${esc(readinessErr)}${noiBo(readinessErrHref) ? ` <a href="${esc(noiBo(readinessErrHref))}"><strong>Đi tới mục này →</strong></a>` : ''}</div>` : ''}${rows}${dryRunBox}${controls}${previewBox}</div>`;
   }
   // ── "VIỆC CẦN LÀM" — hộp hành động đầu trang (mẫu màn hình chính TikTok Shop/Shopee) ──
   // Chủ shop mở trang quản lý là để biết HÔM NAY phải làm gì, không phải để ngắm doanh thu.
@@ -2414,10 +2422,18 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   // Nút pill THÍCH ỨNG: còn việc tồn → dẫn thẳng tới việc đầu tiên đang có (đúng danh sách
   // đã lọc vừa làm ở lô trước); sạch việc → mời thêm sản phẩm. Một dải hero nói y hệt nhau
   // ở mọi trạng thái thì chỉ là trang trí; nói khác nhau thì nó mới có việc để làm.
+  //
+  // NHÁNH SẠCH-VIỆC cũng phải theo quyền. `firstOpen` lấy từ TODO nên đã lọc rồi, nhưng nhánh
+  // dự phòng "+ Thêm sản phẩm" trỏ `/products/new` — cần `catalog.write`. Vai `order_manager`
+  // vào một ngày không còn việc tồn đọng thì nút to nhất trên trang dẫn thẳng vào 403. Lỗi
+  // này sống được lâu vì nó CHỈ hiện khi mọi ô đều bằng 0 — trạng thái mà không fixture nào
+  // dựng, và mọi bộ e2e thì đăng nhập bằng owner.
   const firstOpen = TODO.find((x) => x.n > 0);
   const cta = firstOpen
     ? { href: firstOpen.href, label: `${firstOpen.label} (${firstOpen.n})` }
-    : { href: `${base}/products/new`, label: '+ Thêm sản phẩm' };
+    : CATALOG_ROLES.has(ctx.role)
+      ? { href: `${base}/products/new`, label: '+ Thêm sản phẩm' }
+      : { href: `${base}/orders`, label: 'Xem đơn hàng' };
   // Hình thoi trang trí — toạ độ cố định, KHÔNG ngẫu nhiên: dải hero nhảy chỗ mỗi lần tải
   // trang là nhiễu thị giác, và sẽ làm mọi ảnh chụp so sánh trở nên vô dụng.
   const DOTS = [
@@ -2443,14 +2459,21 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   // Giới hạn owner/admin: mọi đường dẫn dưới đây đều cần quyền cấu hình, hiện cho nhân
   // viên bán hàng chỉ tổ dẫn họ tới trang 403.
   const canCfg = ctx.role === 'owner' || ctx.role === 'admin';
+  // `canCfg` (owner||admin) KHÔNG đủ cho mọi thẻ ở đây — đó là lỗi đã đo được: `DOMAIN_ROLES`
+  // chỉ có `owner`, nên `admin` được mời bấm "Tên miền riêng" rồi rơi vào màn từ chối của
+  // `renderDomains`. Lối cụt, không phải rò dữ liệu, nhưng vẫn là đúng thứ luật §9.3 cấm.
+  //
+  // Mỗi thẻ nay khai `see:` riêng, kể cả bốn thẻ hôm nay không đổi hành vi (Set của chúng đều
+  // phủ owner+admin). Khai đủ để chốt manifest đối chiếu được TỪNG đích với rbac.js — thẻ
+  // không khai chính sách là thẻ không ai kiểm.
   const SUGG = [
-    { t: 'Khuyến mãi & flash sale', d: 'Đặt lịch giảm giá tự động theo khung giờ — giá về đúng cũ khi hết hạn, không phải sửa tay.', href: `${base}/promotions` },
-    { t: 'Tên miền riêng', d: 'Trỏ tên miền của bạn về cửa hàng, có HTTPS tự động.', href: `${base}/domains` },
-    { t: 'Giá vốn & báo cáo lãi', d: 'Nhập giá vốn từng biến thể để báo cáo hiện LÃI THẬT, không chỉ doanh thu.', href: `${base}/reports` },
-    { t: 'Nhập hàng & kiểm kê', d: 'Phiếu nhập tính giá vốn bình quân, kiểm kê 2 lượt đối chiếu tồn thực tế.', href: `${base}/purchasing` },
-    { t: 'Khách hàng', d: 'Xem lịch sử mua của từng khách, ghi chú riêng để chăm sóc lại.', href: `${base}/customers` },
-  ];
-  const suggCard = (shopStatus === 'active' && canCfg) ? `<div class="card">
+    { see: CATALOG_ROLES, t: 'Khuyến mãi & flash sale', d: 'Đặt lịch giảm giá tự động theo khung giờ — giá về đúng cũ khi hết hạn, không phải sửa tay.', href: `${base}/promotions` },
+    { see: DOMAIN_ROLES, t: 'Tên miền riêng', d: 'Trỏ tên miền của bạn về cửa hàng, có HTTPS tự động.', href: `${base}/domains` },
+    { see: REPORT_ROLES, t: 'Giá vốn & báo cáo lãi', d: 'Nhập giá vốn từng biến thể để báo cáo hiện LÃI THẬT, không chỉ doanh thu.', href: `${base}/reports` },
+    { see: INVENTORY_ROLES, t: 'Nhập hàng & kiểm kê', d: 'Phiếu nhập tính giá vốn bình quân, kiểm kê 2 lượt đối chiếu tồn thực tế.', href: `${base}/purchasing` },
+    { see: ORDER_ROLES, t: 'Khách hàng', d: 'Xem lịch sử mua của từng khách, ghi chú riêng để chăm sóc lại.', href: `${base}/customers` },
+  ].filter((x) => x.see.has(ctx.role));
+  const suggCard = (shopStatus === 'active' && canCfg && SUGG.length) ? `<div class="card">
       <h2 style="margin:0 0 4px">Có thể bạn chưa dùng</h2>
       <p class="muted" style="margin:0 0 14px;font-size:13px">Những phần này đã nằm trong gói của bạn.</p>
       <div class="sugg-row">${SUGG.map((x) => `<a class="sugg-card" href="${x.href}">

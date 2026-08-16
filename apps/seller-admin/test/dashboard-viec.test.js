@@ -46,10 +46,16 @@ function thanRenderOverview() {
 
 // Set vai trong pages.js → QUYỀN mà trang đích thật sự đòi ở seller. Đây là chỗ hai bên gặp
 // nhau: gán nhầm Set cho một ô nghĩa là hứa một quyền mà vai đó không có.
+// `catalog.read` đại diện cho CATALOG_ROLES dù `/products/new` thật ra cần `catalog.write`:
+// hai quyền đó do đúng cùng một bộ vai nắm ({owner, admin, catalog_manager}), nên đối chiếu
+// bằng quyền nào cũng bắt được cùng một lớp lỗi. Tách ra chỉ khi hai bộ vai bắt đầu khác nhau.
 const SET_QUYEN = {
   ORDER_ROLES: 'orders.read',
   CATALOG_ROLES: 'catalog.read',
   CONTENT_ROLES: 'content.write',
+  DOMAIN_ROLES: 'domain.write',
+  REPORT_ROLES: 'reports.read',
+  INVENTORY_ROLES: 'inventory.manage',
 };
 
 function vaiTrongSet(ten) {
@@ -180,4 +186,155 @@ test('landingPath không đẩy vai thiếu orders.read vào Tổng quan', () =>
   const server = boChuThich(rd('apps/seller-admin/src/server.js'));
   assert.match(server, /redirect\(res, V\.landingPath\(mems\[0\]\.shop_id, mems\[0\]\.role\)\.href\)/, 'đăng nhập vẫn đẩy thẳng /overview cho mọi vai');
   assert.match(server, /if \(r\.status === 403\) \{/, 'overviewPage không còn nhánh 403 riêng → vai thiếu quyền lại thấy câu "không tải được", tưởng hệ thống hỏng');
+});
+
+// ───────────────────────────────────────────────────────────────────────────────
+// MANIFEST LỐI ĐI CỦA TỔNG QUAN
+//
+// VÌ SAO CẦN, dù đã có ba chốt ở trên. Ba chốt kia canh TỪNG TRƯỜNG HỢP đã biết. Chúng
+// không hề biết trang có bao nhiêu lối đi, nên thêm một link mới KHÔNG gác thì cả bộ vẫn
+// xanh — đã đo: chèn `<a href="${base}/members">` vào giữa renderOverview, 7/7 test qua.
+// Và lớp lỗi này KHÔNG phải giả định: chính lần liệt kê đầu tiên đã lôi ra ba lỗi live —
+// thẻ gợi ý "Tên miền riêng" (DOMAIN_ROLES chỉ owner, mà thẻ hiện cho cả admin), nút hero
+// dự phòng "+ Thêm sản phẩm" (`/products/new` cần catalog.write, hiện cho order_manager khi
+// hết việc tồn đọng), và `readinessErrHref` không đi qua allowlist như `safeHref`.
+//
+// CÁCH CHUẨN HOÁ ĐÍCH — cố ý THU QUÁ TAY chứ không thu thiếu:
+//   1. Rút MỌI `${base}/…` trong thân hàm, bất kể vị trí cú pháp. Bắt theo `href=` là không
+//      đủ: link chi tiết đơn được gán vào biến `href` rồi mới render, nên cách cũ bỏ sót nó.
+//      `action=` của form cũng vào manifest — form POST cũng là một lối đi.
+//   2. Bỏ query và fragment: `?status=…`, `#shipment-attention` không đổi TRANG đích.
+//   3. Mọi `${…}` còn lại trong path → `:id`, để `/orders/${esc(item.order_id)}` và
+//      `/orders/${x}` gộp về đúng một đích `/orders/:id`.
+//   4. Đòi ít nhất một ký tự sau `${base}/` — nếu không, biểu thức allowlist
+//      `s.startsWith(`${base}/`)` bị đếm nhầm thành một đích.
+//
+// So BẰNG, không phải ⊇ — cùng kỷ luật với MANIFEST_*_COUNT: thêm lối đi thì phải khai
+// chính sách quyền của nó trong CÙNG commit, và người review thấy dòng mới trong diff.
+const CHUAN_HOA = (p) => p.split('?')[0].split('#')[0].replace(/\$\{[^}]*\}/g, ':id');
+function dichNoiBo(than) {
+  const out = new Map();
+  for (const m of than.matchAll(/\$\{base\}(\/[^`"'\s>]+)/g)) {
+    const n = CHUAN_HOA(m[1]);
+    out.set(n, (out.get(n) ?? 0) + 1);
+  }
+  return out;
+}
+
+// Chính sách của TỪNG đích. Giá trị là một trong ba dạng:
+//   · tên Set vai  → phải xuất hiện trong vòng 2 dòng quanh đích, VÀ được đối chiếu với
+//                    ma trận quyền thật của seller (test "Set vai … khớp ma trận quyền").
+//   · 'canManage'  → gác bằng `setup.canManage` (owner/admin), phải có trong vòng 2 dòng.
+//   · 'trang'      → gác ở MỨC TRANG: cả /overview đã 403 với vai ngoài ORDER_ROLES (BFF
+//                    overviewPage), nên không cần gác lại từng link. KHÔNG có chốt tĩnh cho
+//                    dạng này, nên số lượng bị khoá cứng ở SO_DICH_TRANG bên dưới — dán nhãn
+//                    'trang' cho một đích mới là việc phải cố ý và người review thấy.
+const CHINH_SACH_DICH = {
+  '/orders': 'ORDER_ROLES',
+  '/orders/owed': 'ORDER_ROLES',
+  '/orders/:id': 'trang',
+  '/order-requests': 'ORDER_ROLES',
+  '/resolution-cases': 'ORDER_ROLES',
+  '/notification-deliveries': 'ORDER_ROLES',
+  '/customers': 'ORDER_ROLES',
+  '/overview': 'trang',
+  '/reviews': 'CONTENT_ROLES',
+  '/settings': 'CONTENT_ROLES',
+  '/products': 'CATALOG_ROLES',
+  '/products/new': 'CATALOG_ROLES',
+  '/promotions': 'CATALOG_ROLES',
+  '/domains': 'DOMAIN_ROLES',
+  '/reports': 'REPORT_ROLES',
+  '/purchasing': 'INVENTORY_ROLES',
+  '/onboarding': 'canManage',
+  '/preview': 'canManage',
+  '/activate': 'canManage',
+};
+const SO_DICH_TRANG = 2;
+
+// Biểu thức href KHÔNG phải `${base}/…`. Mỗi cái phải khai rõ nó là gì — thêm một tầng gián
+// tiếp mới (`href="${abc.href}"` chẳng hạn) là mở một lối đi mà manifest trên không thấy.
+const HREF_GIAN_TIEP = {
+  '${x.href}': 'render ô TODO và thẻ SUGG — cả hai mảng đã .filter(see.has(ctx.role))',
+  '${href}': 'render dòng vận đơn — biến cục bộ dựng từ `${base}/orders/…`, đã có trong manifest',
+  '${cta.href}': 'nút hero — lấy từ TODO đã lọc, hoặc nhánh dự phòng gác bằng CATALOG_ROLES',
+  '${esc(safeHref)}': 'link readiness động — đi qua allowlist noiBo()',
+  '${esc(noiBo(readinessErrHref))}': 'link lỗi go-live động — đi qua CÙNG allowlist noiBo()',
+};
+// Link NGOÀI: tách hẳn khỏi manifest nội bộ. Đây là URL tuyệt đối tới tên miền của chính
+// shop (storefront), không phải đường trong seller-admin, nên KHÔNG có "vai" nào để đối
+// chiếu — đem nó vào bảng chính sách quyền là so sai loại.
+const HREF_NGOAI = { '${esc(preview.preview_url)}': 'link xem trước storefront — tuyệt đối, mở tab mới' };
+
+test('manifest lối đi: mọi đích nội bộ của Tổng quan đều đã khai chính sách quyền', () => {
+  const than = thanRenderOverview();
+  const thay = [...dichNoiBo(than).keys()].sort();
+  const khai = Object.keys(CHINH_SACH_DICH).sort();
+  assert.deepEqual(thay, khai,
+    'lối đi trên Tổng quan lệch manifest — thêm link mới thì khai chính sách của nó vào CHINH_SACH_DICH trong CÙNG commit, đừng xoá dòng cho hết đỏ');
+  assert.equal(Object.values(CHINH_SACH_DICH).filter((v) => v === 'trang').length, SO_DICH_TRANG,
+    "số đích dán nhãn 'trang' đổi — nhãn này KHÔNG có chốt tĩnh nào, nên nó phải hiếm và phải cố ý");
+  for (const [dich, cs] of Object.entries(CHINH_SACH_DICH)) {
+    if (cs === 'trang' || cs === 'canManage') continue;
+    assert.ok(SET_QUYEN[cs], `đích ${dich} khai Set "${cs}" chưa có trong SET_QUYEN → không ai đối chiếu nó với rbac.js`);
+  }
+});
+
+test('manifest lối đi: mỗi đích có điều kiện gác NGAY CẠNH nó trong mã', () => {
+  const than = thanRenderOverview();
+  const dong = than.split('\n');
+  const viPham = [];
+  for (const [dich, cs] of Object.entries(CHINH_SACH_DICH)) {
+    if (cs === 'trang') continue;
+    const canCo = cs === 'canManage' ? 'setup.canManage' : cs;
+    // Cửa sổ 6 dòng TRƯỚC + chính dòng đó. Ban đầu tôi để 2 và nó đỏ ở `/activate`: form đó
+    // nằm 3 dòng dưới `const controls = setup.canManage ? …`, tức gác ĐÚNG mà cửa sổ hẹp quá.
+    //
+    // ĐÁNH ĐỔI, nói thẳng: đây là kiểm KHOẢNG CÁCH, không phải kiểm phạm vi khối. Cửa sổ rộng
+    // có thể nhận nhầm điều kiện của khối liền kề và cho qua một link thật ra không gác. Thứ
+    // bù lại không phải regex khéo hơn mà là MA TRẬN ĐỘT BIẾN: gỡ gác của từng đích rồi chạy
+    // lại, chốt phải đỏ. Đã chạy cho /settings, /domains, /products/new và cả ca thêm link
+    // mới — kết quả ghi trong docs. Sửa cửa sổ này thì chạy lại ma trận đó.
+    const dat = dong.some((d, k) => {
+      if (!new RegExp(`\\$\\{base\\}${dich.replace(/[/:]/g, '\\$&')}(?![a-z-])`).test(d)) return false;
+      return dong.slice(Math.max(0, k - 6), k + 1).some((x) => x.includes(canCo));
+    });
+    if (!dat) viPham.push(`${dich} → không thấy "${canCo}" trong 2 dòng quanh nó`);
+  }
+  assert.deepEqual(viPham, [], 'lối đi mất điều kiện gác → vai thiếu quyền lại được mời bấm vào trang sẽ từ chối');
+});
+
+test('manifest lối đi: link gián tiếp và link NGOÀI đều đã khai, không trộn vào bảng quyền', () => {
+  const than = thanRenderOverview();
+  const ngoaiBase = [...than.matchAll(/href[=:]\s*["`]([^"`]*)["`]/g)]
+    .map((m) => m[1]).filter((h) => !h.startsWith('${base}'));
+  const chuaKhai = [...new Set(ngoaiBase)]
+    .filter((h) => !HREF_GIAN_TIEP[h] && !HREF_NGOAI[h]);
+  assert.deepEqual(chuaKhai, [],
+    'có href không phải ${base}/… và chưa khai — đó là một lối đi manifest nội bộ KHÔNG nhìn thấy');
+  // Link ngoài KHÔNG được lọt vào bảng chính sách quyền: nó trỏ ra tên miền storefront của
+  // shop, không có vai nào để đối chiếu. Nhầm loại ở đây là kết luận sai "link vượt quyền".
+  for (const h of Object.keys(HREF_NGOAI)) {
+    assert.ok(ngoaiBase.includes(h), `không còn thấy link ngoài ${h} — mốc chết`);
+    assert.ok(!Object.keys(CHINH_SACH_DICH).some((d) => h.includes(d)),
+      `link ngoài ${h} bị đem vào bảng chính sách quyền nội bộ`);
+  }
+  assert.match(than, /href="\$\{esc\(preview\.preview_url\)\}"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/,
+    'link xem trước ra ngoài phải mở tab mới kèm noopener');
+});
+
+test('manifest lối đi: MỌI link readiness động đi qua CÙNG một allowlist', () => {
+  const than = thanRenderOverview();
+  assert.match(than, /const noiBo = \(h\) => \{[\s\S]{0,200}?startsWith\(`\$\{base\}\/`\)/,
+    'allowlist noiBo biến mất hoặc đổi hình dạng — mốc chết');
+  assert.match(than, /s === '\/account' \|\| s\.startsWith\(`\$\{base\}\/`\)/,
+    'allowlist nới ra ngoài "/account + đường trong shop này"');
+  assert.match(than, /const safeHref = noiBo\(it\.action_url\)/,
+    'nút "Đi tới" của checklist không còn đi qua allowlist chung');
+  // readinessErrHref TỪNG chỉ được esc() mà không qua allowlist — hai chỗ cùng nguồn dữ liệu
+  // (action_url của readiness) mà chỉ một chỗ được gác.
+  for (const m of than.matchAll(/href="\$\{[^"]*readinessErrHref[^"]*\}"/g)) {
+    assert.match(m[0], /noiBo\(readinessErrHref\)/,
+      'readinessErrHref render thẳng, không qua allowlist noiBo — hai link cùng nguồn mà gác một nửa');
+  }
 });

@@ -341,10 +341,16 @@ async function main() {
   const om = await addMember(staff, A.shopId, 'order_manager');
   const omOv = await adm('GET', `/shops/${A.shopId}/overview`, { cookie: om.cookie });
   omOv.status === 200 ? ok('order_manager mở được Tổng quan') : bad('order_manager không mở được Tổng quan', String(omOv.status));
-  !/Đánh giá chờ duyệt/.test(omOv.body) && !/Sắp hết hàng/.test(omOv.body)
+  // Chỉ xét các ô trong lưới TODO. Trang còn một card tồn thấp lịch sử ở phần báo cáo phía
+  // dưới; tìm chữ trên toàn HTML sẽ kết luận nhầm rằng ô TODO vẫn hiện dù `.filter(see)` đã
+  // bỏ nó. Chốt vào đúng bề mặt người dùng đang kiểm, không dựa vào nhãn có thể xuất hiện ở
+  // một khối khác.
+  const omTodo = [...omOv.body.matchAll(/<a class="todo-cell[^"]*"[^>]*>[\s\S]*?<\/a>/g)]
+    .map((m) => m[0]).join('\n');
+  !/Đánh giá chờ duyệt/.test(omTodo) && !/Sắp hết hàng/.test(omTodo)
     ? ok('order_manager KHÔNG thấy ô "Đánh giá chờ duyệt" và "Sắp hết hàng"')
     : bad('lưới việc vẫn mời vai thiếu quyền bấm vào trang sẽ 403');
-  /Đơn chờ xác nhận/.test(omOv.body)
+  /Đơn chờ xác nhận/.test(omTodo)
     ? ok('order_manager vẫn thấy đủ ô đơn hàng thuộc phạm vi của mình') : bad('lọc quyền cắt nhầm ô đơn hàng');
   // Chứng minh tiền đề: hai trang đó THẬT SỰ từ chối vai này. Không có bước này thì khẳng
   // định trên chỉ nói "ô bị ẩn", không nói được "ẩn vì đúng lý do".
@@ -377,16 +383,16 @@ async function main() {
   const demDong = (b) => (b.match(/<td><a href="\/shops\/[^"]*\/orders\/[^"]*">#/g) ?? []).length;
   const dsTran = await adm('GET', `/shops/${A.shopId}/orders?status=cancelled`, { cookie: A.cookie });
   const dsLoc = await adm('GET', `/shops/${A.shopId}/orders?status=cancelled&migrated=0`, { cookie: A.cookie });
-  demDong(dsTran) === 1 && demDong(dsLoc) === 0
+  demDong(dsTran.body) === 1 && demDong(dsLoc.body) === 0
     ? ok('danh sách trần vẫn TRA CỨU được đơn di cư (1 dòng), còn link từ Tổng quan mở ra 0 dòng — khớp con số')
-    : bad('bộ lọc migrated không khớp con số trên Tổng quan', `trần=${demDong(dsTran)} lọc=${demDong(dsLoc)}`);
+    : bad('bộ lọc migrated không khớp con số trên Tổng quan', `trần=${demDong(dsTran.body)} lọc=${demDong(dsLoc.body)}`);
   /Đang lọc:/.test(dsLoc.body) && /Không gồm đơn nhập từ sàn cũ/.test(dsLoc.body) && /Xoá bộ lọc/.test(dsLoc.body)
     ? ok('trang nói rõ đang lọc gì và có lối xoá — không để người bán nhìn tập hẹp mà tưởng là tất cả')
     : bad('lọc im lặng, không có chip "đang lọc"');
   const dsRac = await adm('GET', `/shops/${A.shopId}/orders?status=cancelled&migrated=xyz`, { cookie: A.cookie });
-  demDong(dsRac) === 1 && !/Đang lọc:/.test(dsRac.body)
+  demDong(dsRac.body) === 1 && !/Đang lọc:/.test(dsRac.body)
     ? ok('giá trị migrated rác bị bỏ qua như mọi bộ lọc khác (không vỡ trang, không chip giả)')
-    : bad('migrated rác không được chuẩn hoá', `${demDong(dsRac)} dòng`);
+    : bad('migrated rác không được chuẩn hoá', `${demDong(dsRac.body)} dòng`);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

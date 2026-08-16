@@ -202,6 +202,20 @@ Những lỗi này **không nằm ở sản phẩm mà ở cách kiểm chứng*
   lý do không liên quan (`ci-local.sh` đã làm sẵn — nhớ khi chạy tay nhiều bộ).
 - Log e2e cũ nằm lại `/tmp/va-e2e-*.log` từng bị đọc nhầm thành hiện trường lần chạy này. Bất
   biến hiện tại: **còn tệp sau khi chạy xong ⇒ bộ đó đỏ TRONG chính lần này.**
+- **Khẳng định trên TOÀN văn bản thay vì trên bề mặt đang kiểm.** Khẳng định "vai này không
+  thấy ô Sắp hết hàng" đem `/Sắp hết hàng/` quét cả trang — mà trang còn một thẻ tồn thấp
+  khác ngoài lưới, nên nó đỏ dù lưới đã lọc đúng. Lần này đỏ giả; cùng lỗi ở chiều ngược lại
+  là **xanh giả**. Cắt đúng khối rồi mới khớp (`<a class="todo-cell"…>` chẳng hạn).
+- **`[^{}]*` KHÔNG băng qua `${…}` trong template literal.** Regex kiểu
+  `/\{[^{}]*label: 'X'[^{}]*\}/` để cắt một phần tử mảng sẽ khớp RỖNG ngay khi phần tử đó
+  chứa `${base}` — và `assert.match('', …)` thì báo lỗi mơ hồ, còn `assert.doesNotMatch` thì
+  XANH GIẢ. Mỗi phần tử một dòng thì cắt theo DÒNG, đừng cắt theo cặp ngoặc.
+- **Chốt mức mã nguồn đếm CHỖ VIẾT, không đếm thứ đã render.** Lưới năm thẻ trạng thái là
+  MỘT `.map()` — chốt đòi "≥7 link" sẽ đỏ dù mã đúng.
+- **Mọi bộ e2e đều đăng nhập bằng `owner`** — vai có sẵn mọi quyền. Nghĩa là NHÁNH THIẾU
+  QUYỀN của giao diện gần như chưa từng được đi qua: vai `catalog_manager` gặp trang lỗi ngay
+  sau khi đăng nhập suốt một thời gian dài mà 106 bộ e2e vẫn xanh. Đụng tới quyền thì phải
+  `addMember(staff, shopId, '<vai>')` rồi đăng nhập lại bằng vai đó, không suy từ bảng quyền.
 
 ---
 
@@ -253,6 +267,9 @@ giá trị nhất khi đọc lại.
   đạt ngưỡng.
 - **Nới quyền của một vai `app_*`** — luôn có cách khác, và cách khác thường đúng hơn.
 - **Đề xuất deploy** — chưa triển khai là lựa chọn có chủ ý.
+- **Vai nào thấy gì trên Tổng quan** — câu đang treo, chi tiết ở §9.3. Dấu hiệu chung để
+  nhận ra loại này: khi có **ba phương án đều code được và khác nhau ở hậu quả kinh doanh**,
+  thì đó là quyết định đội lốt thi công. Ai gõ trước là người chọn — nên đừng gõ, hãy hỏi.
 
 ---
 
@@ -271,3 +288,82 @@ giá trị nhất khi đọc lại.
 | tiền | `15`,`16` QR · `37` lãi lỗ · `41` điểm · `49` thuê bao · `51`–`53` săn lỗ tiền · `54` sửa đơn · `55` tiền lạc · `66` công nợ · `67` tranh chấp · `68` email · `69` phí ship |
 | vận hành | `22` bootstrap · `23` backup · `27` observability · `31` CI · `32` test local · `33` sổ tay · `35` go-live · `36` PII |
 | **vì sao kho này khắt khe** | `61` "không biết ≠ chưa xảy ra" · `62` tồn an toàn · `63` đo luồng dùng · `64` vai ngày-60 · `65` vai lúc sự cố |
+
+---
+
+## 9. Đang làm gì — đọc trước khi nhận việc
+
+> Mục này là thứ DUY NHẤT trong file thay đổi mỗi lát cắt. **Đóng một lát cắt thì cập nhật
+> mục này trong cùng commit**, y như các con số ở §0. Phần trên file là hệ thống, mục này là
+> hiện trạng — đừng trộn hai thứ.
+
+### 9.1 Ai làm gì
+
+Ba bên, và ranh giới KHÔNG phải "thiết kế / code" mà là **đo + quyết / dựng + kiểm**:
+
+| việc | ai |
+|---|---|
+| đi đo (grep xuyên hệ thống, tự đóng vai từng vai), ra bản đồ + defect **có số đo** | Claude |
+| chọn giữa các phương án **cùng đúng** | chủ dự án |
+| viết code, viết test, chạy Docker/CI, vá lỗi dang dở | Codex |
+| review diff trước khi merge | Claude |
+
+Hai luật giữ cho nó không hỏng:
+
+1. **Việc có hơn một đáp án đúng thì về tay chủ dự án, không về tay người gõ trước.** Ba
+   phương án đều code được nghĩa là đang có một quyết định kinh doanh đội lốt thi công.
+2. **Người viết code không phải người duy nhất tuyên bố xanh.**
+
+Lý do có luật 2, đo được ở chính kho này: test do cùng tác giả với mã thường mã hoá *hành vi*
+chứ không mã hoá *hậu quả*. Vòng chéo Claude↔Codex đã bắt lỗi **theo cả hai chiều** — Codex
+tìm ra bug sản phẩm của Claude (`expires_at` thiếu trong response tạo preview), Claude tìm ra
+lỗi contract của Codex (`c.ok !== true` trong khi readiness dùng `status`).
+
+### 9.2 Phương pháp một lát cắt
+
+Bảy workflow, làm **dọc từng cái**, không redesign cả hệ thống một lượt:
+
+`onboarding/go-live` → **`bảng điều khiển "việc cần làm"`** → `chi tiết đơn` →
+`đa kiện/ca xử lý` → `checkout mobile của khách` → `catalog + nhập từ sàn` → `cài đặt`
+
+Mỗi lát cắt đi đủ đường: **UI → route/BFF → API seller → giao dịch nghiệp vụ → DB/outbox →
+worker/provider → trạng thái quay lại UI.** Lập bản đồ đó **trước khi đụng UI** — giá trị nằm
+ở bước đo, không ở bước gõ. Lát cắt "bảng điều khiển" ra ba lỗi có thật (vai `catalog_manager`
+đăng nhập là gặp trang lỗi · hai ô dẫn thẳng vào 403 · thẻ trạng thái đếm một tập mở ra tập
+khác) — cả ba đến từ ~20 lệnh grep chỉ-đọc, không đến từ việc nhìn màn hình.
+
+Ràng buộc cố định của mọi lát cắt frontend: **giữ SSR và đường không-JS** (JS chỉ là tăng
+cường, không phải điều kiện) · không chuyển SPA · không viết lại trọn `pages.js`/`server.js` ·
+dùng được ở 360px, bằng bàn phím, có focus, Esc, đọc màn hình · mọi thao tác GHI phải chịu
+được bấm-lặp và gửi-lại · lỗi phải nói *chuyện gì xảy ra / làm gì tiếp / thử lại được không* ·
+**không hiện nút khi vai không có quyền hoặc trạng thái nghiệp vụ không cho phép** · không đưa
+secret, payload webhook thô hay PII nội bộ ra giao diện · **không để frontend thành nguồn
+quyết định giá, tiền, tồn hay quyền**.
+
+### 9.3 Luật giao diện rút ra từ lát cắt bảng điều khiển
+
+> **Ẩn LỐI ĐI mà vai không mở được. Không ẩn SỐ LIỆU mà API đã trả.**
+
+Ô/nút dẫn tới trang sẽ 403 thì phải ẩn — gác bằng **chính các Set mà `sideNav` dùng**
+(`ORDER_ROLES`/`CATALOG_ROLES`/`CONTENT_ROLES` trong `pages.js`), đừng chép Set mới, hai bản
+sẽ trôi và trôi về phía nguy hiểm: nav giấu mục, lưới vẫn mời bấm. Bảng số liệu mà `/stats`
+đã trả thì không ẩn — ẩn ở giao diện trong khi API vẫn trả là bày trò, không phải phân quyền.
+
+Câu hỏi **còn treo, chờ chủ dự án quyết**: `GET /stats` chỉ đòi `orders.read` nhưng trả
+`low_stock` + `top_products` (tên SP, SKU, doanh thu) cho vai không có `catalog.read`. Ba
+phương án: giữ nguyên · gác ở giao diện · gác ở API. Khuyến nghị hiện tại là **giữ nguyên**,
+vì Tổng quan đã cho `order_manager` xem doanh thu trong khi `/reports` là owner/admin — gác
+catalog theo `catalog.read` thì cùng logic phải gác doanh thu theo `reports.read`, và đó là
+một lát cắt riêng cần đo lại, không phải phần đuôi của lát cắt này. **Đừng tự chọn.**
+
+### 9.4 Bắt đầu một phiên mới thế nào
+
+Không cần dán lại bối cảnh. Đọc file này, rồi:
+
+```bash
+git log --oneline -8            # lát cắt nào vừa đóng
+git branch -r | grep -E 'claude/|codex/'   # nhánh nào đang dở
+```
+
+Nhánh đặt tên theo việc (`claude/ux-…`, `codex/…-fix`), **merge vào `main` bằng fast-forward**
+sau khi full CI exit 0. Không merge thẳng khi cổng chưa xanh, kể cả khi diff trông vô hại.

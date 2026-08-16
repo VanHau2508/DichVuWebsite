@@ -352,6 +352,22 @@ async function main() {
     : bad('lưới việc vẫn mời vai thiếu quyền bấm vào trang sẽ 403');
   /Đơn chờ xác nhận/.test(omTodo)
     ? ok('order_manager vẫn thấy đủ ô đơn hàng thuộc phạm vi của mình') : bad('lọc quyền cắt nhầm ô đơn hàng');
+  // Chính sách đã chọn: tổng hợp tồn thấp là thông tin vận hành chung trên Tổng quan, nhưng
+  // lối sửa ngưỡng chỉ dành cho owner/admin. Giữ dữ liệu, ẩn hành động không có quyền.
+  const lowStockBlock = (body) => {
+    const start = body.indexOf('<h2 style="margin-top:0">⚠ Sắp hết hàng</h2>');
+    return start < 0 ? '' : body.slice(start, body.indexOf('</div>', start) + 6);
+  };
+  const omLow = lowStockBlock(omOv.body);
+  omLow && /Ngưỡng cảnh báo do chủ shop hoặc quản trị viên cấu hình/.test(omLow)
+    && !new RegExp(`href="/shops/${A.shopId}/settings"`).test(omLow)
+    ? ok('order_manager thấy số tồn thấp nhưng KHÔNG bị mời vào Cài đặt không có quyền')
+    : bad('thẻ tồn thấp vẫn dẫn order_manager vào lối cụt', omLow.slice(0, 320));
+  const ownerOv = await adm('GET', `/shops/${A.shopId}/overview`, { cookie: A.cookie });
+  const ownerLow = lowStockBlock(ownerOv.body);
+  new RegExp(`href="/shops/${A.shopId}/settings"`).test(ownerLow)
+    ? ok('owner vẫn có lối chỉnh ngưỡng tồn từ đúng thẻ cảnh báo')
+    : bad('lọc quyền cắt nhầm lối Cài đặt của owner', ownerLow.slice(0, 320));
   // Chứng minh tiền đề: hai trang đó THẬT SỰ từ chối vai này. Không có bước này thì khẳng
   // định trên chỉ nói "ô bị ẩn", không nói được "ẩn vì đúng lý do".
   const omRv = await adm('GET', `/shops/${A.shopId}/reviews?status=pending`, { cookie: om.cookie });

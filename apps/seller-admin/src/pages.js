@@ -2487,7 +2487,9 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
         ${s.low_stock.map((l) => `<tr><td>${esc(l.title)}${l.variant_title ? ` <span class="muted">${esc(l.variant_title)}</span>` : ''} <span class="muted" style="font-size:.8rem">${esc(l.sku ?? '')}</span></td>
           <td class="num right"><strong style="color:${l.available <= 0 ? '#b91c1c' : '#b45309'}">${esc(l.available)}</strong></td></tr>`).join('')}
       </tbody></table>
-      <p class="muted" style="font-size:.82rem;margin-bottom:0">Chỉnh ngưỡng cảnh báo trong <a href="${base}/settings">Cài đặt</a>. Email nhắc gửi hằng ngày nếu shop có email liên hệ.</p></div>` : ''}
+      <p class="muted" style="font-size:.82rem;margin-bottom:0">${CONTENT_ROLES.has(ctx.role)
+        ? `Chỉnh ngưỡng cảnh báo trong <a href="${base}/settings">Cài đặt</a>.`
+        : 'Ngưỡng cảnh báo do chủ shop hoặc quản trị viên cấu hình.'} Email nhắc gửi hằng ngày nếu shop có email liên hệ.</p></div>` : ''}
     ${suggCard}
     ${REPORT_ROLES.has(ctx.role) ? `<p style="margin-top:4px"><a class="btn alt sm" href="${base}/reports">Xem báo cáo lợi nhuận chi tiết →</a></p>` : ''}
     <p class="muted" style="font-size:.82rem">Doanh thu ghi tại <strong>ngày thanh toán</strong> (đơn đã từng thu tiền), hoàn tiền trừ tại ngày phiếu; mốc ngày theo giờ Việt Nam.</p>`);

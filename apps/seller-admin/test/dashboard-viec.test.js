@@ -119,6 +119,19 @@ test('hai ô từng dẫn vào 403 nay gắn đúng Set vai', () => {
   assert.match(danhGia, /\/reviews\?status=pending/, 'link đánh giá dựa vào mặc định của seller → đổi mặc định là con số dẫn sai mà không lỗi nào hiện ra');
 });
 
+test('thẻ tồn thấp giữ dữ liệu vận hành nhưng chỉ vai cấu hình được mới thấy link settings', () => {
+  const than = thanRenderOverview();
+  const moc = than.indexOf('⚠ Sắp hết hàng</h2>');
+  assert.ok(moc > 0, 'không tìm thấy thẻ tồn thấp — mốc chết');
+  const khoi = than.slice(moc, than.indexOf("</div>` : ''}", moc));
+  assert.match(khoi, /CONTENT_ROLES\.has\(ctx\.role\)/,
+    'link Cài đặt tồn thấp không gác bằng cùng Set với sideNav');
+  assert.match(khoi, /Ngưỡng cảnh báo do chủ shop hoặc quản trị viên cấu hình/,
+    'vai thiếu quyền bị mất cả lời giải thích ai là người cấu hình ngưỡng');
+  assert.match(khoi, /href="\$\{base\}\/settings"/,
+    'owner/admin mất lối chỉnh ngưỡng từ thẻ tồn thấp');
+});
+
 test('mọi link đơn hàng ĐI TỪ Tổng quan mang theo migrated=0', () => {
   const than = thanRenderOverview();
   // Chỉ xét link LỌC THEO TRẠNG THÁI: đó là các link mà con số đi kèm được đếm với

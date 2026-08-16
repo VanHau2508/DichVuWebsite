@@ -221,6 +221,16 @@ Những lỗi này **không nằm ở sản phẩm mà ở cách kiểm chứng*
   QUYỀN của giao diện gần như chưa từng được đi qua: vai `catalog_manager` gặp trang lỗi ngay
   sau khi đăng nhập suốt một thời gian dài mà 106 bộ e2e vẫn xanh. Đụng tới quyền thì phải
   `addMember(staff, shopId, '<vai>')` rồi đăng nhập lại bằng vai đó, không suy từ bảng quyền.
+- **Sửa `src` xong mà quên `restart` container ⇒ ĐỎ GIẢ trông y hệt lỗi sản phẩm.** `src` của
+  các service (trừ worker) có bind-mount nên tệp trên đĩa đổi ngay, **nhưng tiến trình Node đã
+  nạp module vào bộ nhớ lúc khởi động** — nó vẫn chạy mã cũ. Đã đốt một lượt e2e vì chuyện này.
+  `docker compose -f infra/compose.dev.yml restart seller-admin` là đủ; **không cần rebuild**
+  (rebuild cũng chữa được, chỉ là chậm hơn nhiều lần và làm người ta tưởng nguyên nhân là image).
+- **Chốt "khoảng cách" khác chốt "phạm vi khối".** Bất biến mã nguồn kiểu "điều kiện gác phải
+  nằm trong N dòng quanh link" là kiểm KHOẢNG CÁCH: cửa sổ hẹp quá thì đỏ giả (form `/activate`
+  nằm 3 dòng dưới điều kiện của nó), rộng quá thì nhận nhầm điều kiện của khối bên cạnh. Không
+  có regex nào chữa được chuyện đó — thứ bù lại là **ma trận đột biến**, chạy lại mỗi khi sửa
+  cửa sổ.
 
 ---
 
@@ -328,14 +338,25 @@ lỗi contract của Codex (`c.ok !== true` trong khi readiness dùng `status`).
 
 Bảy workflow, làm **dọc từng cái**, không redesign cả hệ thống một lượt:
 
-`onboarding/go-live` → **`bảng điều khiển "việc cần làm"`** → `chi tiết đơn` →
-`đa kiện/ca xử lý` → `checkout mobile của khách` → `catalog + nhập từ sàn` → `cài đặt`
+~~`onboarding/go-live`~~ → ~~`bảng điều khiển "việc cần làm"`~~ → **`chi tiết đơn` ← tiếp theo**
+→ `đa kiện/ca xử lý` → `checkout mobile của khách` → `catalog + nhập từ sàn` → `cài đặt`
 
 Mỗi lát cắt đi đủ đường: **UI → route/BFF → API seller → giao dịch nghiệp vụ → DB/outbox →
 worker/provider → trạng thái quay lại UI.** Lập bản đồ đó **trước khi đụng UI** — giá trị nằm
-ở bước đo, không ở bước gõ. Lát cắt "bảng điều khiển" ra ba lỗi có thật (vai `catalog_manager`
+ở bước đo, không ở bước gõ.
+
+Bằng chứng cho câu trên, từ lát cắt "bảng điều khiển": **sáu** lỗi có thật, không lỗi nào tìm
+ra bằng cách nhìn màn hình. Ba cái đầu đến từ ~20 lệnh grep chỉ-đọc — vai `catalog_manager`
 đăng nhập là gặp trang lỗi · hai ô dẫn thẳng vào 403 · thẻ trạng thái đếm một tập mở ra tập
-khác) — cả ba đến từ ~20 lệnh grep chỉ-đọc, không đến từ việc nhìn màn hình.
+khác. **Ba cái sau chỉ lộ ra khi LIỆT KÊ ĐỦ** lối đi của trang thay vì soi từng chỗ nghi ngờ:
+thẻ gợi ý "Tên miền riêng" mở cho `admin` trong khi `DOMAIN_ROLES` chỉ có `owner` · nút hero
+dự phòng trỏ `/products/new` cho mọi vai (chỉ hiện khi mọi ô bằng 0 — trạng thái không fixture
+nào dựng) · `readinessErrHref` không đi qua allowlist trong khi `safeHref` cùng nguồn thì có.
+
+Bài học rút ra và đã thành chốt: **vá từng trường hợp thì trường hợp thứ tư vẫn nằm đó.**
+`apps/seller-admin/test/dashboard-viec.test.js` giữ một MANIFEST LỐI ĐI — rút mọi `${base}/…`
+trong `renderOverview` bất kể vị trí cú pháp, chuẩn hoá bỏ query/fragment và đổi `${…}` thành
+`:id`, rồi so **BẰNG** với bảng chính sách quyền. Thêm link mới mà không khai chính sách là ĐỎ.
 
 Ràng buộc cố định của mọi lát cắt frontend: **giữ SSR và đường không-JS** (JS chỉ là tăng
 cường, không phải điều kiện) · không chuyển SPA · không viết lại trọn `pages.js`/`server.js` ·
@@ -350,9 +371,18 @@ quyết định giá, tiền, tồn hay quyền**.
 > **Ẩn LỐI ĐI mà vai không mở được. Không ẩn SỐ LIỆU mà API đã trả.**
 
 Ô/nút dẫn tới trang sẽ 403 thì phải ẩn — gác bằng **chính các Set mà `sideNav` dùng**
-(`ORDER_ROLES`/`CATALOG_ROLES`/`CONTENT_ROLES` trong `pages.js`), đừng chép Set mới, hai bản
-sẽ trôi và trôi về phía nguy hiểm: nav giấu mục, lưới vẫn mời bấm. Bảng số liệu mà `/stats`
-đã trả thì không ẩn — ẩn ở giao diện trong khi API vẫn trả là bày trò, không phải phân quyền.
+(`ORDER_ROLES`/`CATALOG_ROLES`/`CONTENT_ROLES`/`DOMAIN_ROLES`/`REPORT_ROLES`/`INVENTORY_ROLES`
+trong `pages.js`), đừng chép Set mới, hai bản sẽ trôi và trôi về phía nguy hiểm: nav giấu mục,
+lưới vẫn mời bấm. Bảng số liệu mà `/stats` đã trả thì không ẩn — ẩn ở giao diện trong khi API
+vẫn trả là bày trò, không phải phân quyền.
+
+Ba hệ quả thao tác, cả ba đã thành chốt:
+- **Link động phải qua allowlist**, và phải là **CÙNG MỘT** allowlist. `safeHref` và
+  `readinessErrHref` cùng đọc `action_url` của readiness mà chỉ một chỗ được gác — nay cả hai
+  đi qua `noiBo()`. Hai bản chép tay thì sẽ trôi, kể cả khi hôm nay giống hệt nhau.
+- **Link NGOÀI tách khỏi bảng quyền.** `preview_url` trỏ ra tên miền storefront của shop, không
+  có vai nào để đối chiếu — nhưng vẫn phải KHAI, để link ngoài mới không lọt tự do.
+- **Trang 403 phải nêu tên màn hình người ta MỞ ĐƯỢC**, không chỉ nói "không tải được".
 
 Câu hỏi **còn treo, chờ chủ dự án quyết**: `GET /stats` chỉ đòi `orders.read` nhưng trả
 `low_stock` + `top_products` (tên SP, SKU, doanh thu) cho vai không có `catalog.read`. Ba

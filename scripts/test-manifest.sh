@@ -103,10 +103,15 @@ MANIFEST_UNIT_FILES=(
   # không log. Bộ này neo vào chính danh sách cột của seller nên thêm cột thứ 23 mà quên
   # khai vào một nhóm là đỏ ngay.
   apps/seller-admin/test/shop-patch.test.js
+  # Hộp "Việc cần làm": mỗi ô phải DẪN TỚI thứ nó ĐẾM, và chỉ hiện cho vai mở được trang đích.
+  # Hai lớp lỗi vô hình với e2e: mọi bộ e2e đăng nhập bằng owner (đủ mọi quyền) nên không bộ
+  # nào đi qua nhánh thiếu quyền; và chênh lệch đơn di cư chỉ lộ khi shop đã nhập từ sàn cũ.
+  # Bộ này còn đối chiếu Set vai của sideNav với ma trận quyền THẬT trong apps/seller/src/rbac.js.
+  apps/seller-admin/test/dashboard-viec.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=36
+MANIFEST_UNIT_COUNT=37
 MANIFEST_E2E_COUNT=106
 # Số FILE migration, KHÔNG phải số thứ tự cao nhất. Dãy có khoảng trống (0157 chẳng hạn)
 # nên hôm nay là 172 file trong khi file mới nhất mang số 0174 — suy số lượng từ số thứ tự

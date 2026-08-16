@@ -106,6 +106,14 @@ async function makeShopOwner(staffCookie, slug) {
   await owner.query(`UPDATE shops SET status='active' WHERE id=$1`, [shopId]);
   return { shopId, slug, host: `${slug}.nentang.vn`, email, password, cookie: await login(email, password) };
 }
+// Mời thêm một thành viên ở vai KHÁC owner. Cần vì mọi bộ e2e hiện có đều đăng nhập bằng
+// owner — vai có sẵn mọi quyền — nên không bộ nào đi qua nhánh thiếu quyền của giao diện.
+async function addMember(staffCookie, shopId, role) {
+  const email = `m-${uniq()}@shop.vn`, password = 'member passphrase strong';
+  await rq(PLATFORM, 'POST', `/ops/shops/${shopId}/invitations`, { body: { email, role }, cookie: staffCookie, origin: OO });
+  await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
+  return { email, password, cookie: await login(email, password) };
+}
 async function setupProduct(shop, title, price, stock) {
   const r = await rq(SELLER, 'POST', `/shops/${shop.shopId}/products`, {
     body: { title, slug: `sp-${uniq()}`, price_vnd: price, status: 'active', variants: [{ sku: `S-${uniq()}`, price_vnd: price }] },
@@ -146,8 +154,12 @@ async function main() {
   r.status === 200 && has(/Việc cần làm/) ? ok('hộp "Việc cần làm" hiện trên Tổng quan') : bad('không thấy hộp Việc cần làm', String(r.status));
   has(/Đơn chờ xác nhận/) && has(/Đơn chờ gửi hàng/) && has(/Đánh giá chờ duyệt/) && has(/Sắp hết hàng/)
     ? ok('đủ 5 loại việc (xác nhận · gửi hàng · thu tiền · đánh giá · tồn kho)') : bad('thiếu loại việc');
-  has(new RegExp(`href="/shops/${A.shopId}/orders\\?status=pending"`)) && has(new RegExp(`href="/shops/${A.shopId}/orders\\?status=confirmed"`))
-    ? ok('ô việc link tới trang đơn ĐÃ LỌC SẴN đúng trạng thái') : bad('link ô việc sai');
+  // `&migrated=0` là phần BẮT BUỘC của link, không phải trang trí: con số trên ô được
+  // dashboard.js đếm với `WHERE NOT is_migrated`, còn danh sách đơn mặc định KHÔNG lọc cờ đó
+  // (đơn nhập từ sàn cũ phải tra cứu được — 0104). Thiếu nó là ô đếm một tập, mở ra tập khác.
+  has(new RegExp(`href="/shops/${A.shopId}/orders\\?status=pending&migrated=0"`))
+    && has(new RegExp(`href="/shops/${A.shopId}/orders\\?status=confirmed&migrated=0"`))
+    ? ok('ô việc link tới trang đơn ĐÃ LỌC SẴN đúng trạng thái, không kể đơn di cư') : bad('link ô việc sai');
   has(new RegExp(`href="/shops/${A.shopId}/orders\\?payment=unpaid"`))
     && has(new RegExp(`href="/shops/${A.shopId}/orders\\?payment=pending"`))
     && has(new RegExp(`href="/shops/${A.shopId}/resolution-cases\\?status=active"`))
@@ -315,6 +327,66 @@ async function main() {
   pdp2 = await sf(A.host, `/p/${P2.slug}`);
   !/<script>alert\(1\)/.test(pdp2) && !/onload="alert\(2\)/.test(pdp2)
     ? ok('tiêu đề/mô tả SEO độc bị escape (không thoát thuộc tính)') : bad('XSS QUA Ô SEO!');
+
+  // ── 11. Lưới việc: LỌC THEO VAI, và con số dẫn tới ĐÚNG tập nó đếm ─────────
+  //
+  // Đặt CUỐI cùng có chủ ý: mục này lật cờ is_migrated của một đơn có thật, mà mục 1–3 đang
+  // khẳng định số đếm trên hộp việc và trên tab. Chạy trước là làm hỏng chứng cứ của chúng.
+  sect('11. Việc cần làm: lọc theo vai + con số khớp danh sách sau khi bấm');
+
+  // (a) VAI. `order_manager` chỉ có orders.read/write. Trang /reviews đòi content.write và
+  // /products đòi catalog.read, nên hai ô đó với họ là hai cái nút dẫn thẳng vào 403 — trong
+  // khi thanh điều hướng đã giấu đúng hai mục ấy. Đây là ca không bộ e2e nào từng đi qua:
+  // mọi bộ đều đăng nhập bằng owner, vai có sẵn mọi quyền.
+  const om = await addMember(staff, A.shopId, 'order_manager');
+  const omOv = await adm('GET', `/shops/${A.shopId}/overview`, { cookie: om.cookie });
+  omOv.status === 200 ? ok('order_manager mở được Tổng quan') : bad('order_manager không mở được Tổng quan', String(omOv.status));
+  !/Đánh giá chờ duyệt/.test(omOv.body) && !/Sắp hết hàng/.test(omOv.body)
+    ? ok('order_manager KHÔNG thấy ô "Đánh giá chờ duyệt" và "Sắp hết hàng"')
+    : bad('lưới việc vẫn mời vai thiếu quyền bấm vào trang sẽ 403');
+  /Đơn chờ xác nhận/.test(omOv.body)
+    ? ok('order_manager vẫn thấy đủ ô đơn hàng thuộc phạm vi của mình') : bad('lọc quyền cắt nhầm ô đơn hàng');
+  // Chứng minh tiền đề: hai trang đó THẬT SỰ từ chối vai này. Không có bước này thì khẳng
+  // định trên chỉ nói "ô bị ẩn", không nói được "ẩn vì đúng lý do".
+  const omRv = await adm('GET', `/shops/${A.shopId}/reviews?status=pending`, { cookie: om.cookie });
+  const omSp = await adm('GET', `/shops/${A.shopId}/products?stock=low`, { cookie: om.cookie });
+  omRv.status === 403 && omSp.status === 403
+    ? ok('và đúng là hai trang đó trả 403 cho order_manager (ẩn vì có lý do, không phải tuỳ tiện)')
+    : bad('tiền đề sai — trang đích không hề chặn vai này', `reviews=${omRv.status} products=${omSp.status}`);
+
+  // (b) VAI KHÔNG CÓ orders.read. `catalog_manager` từng bị đẩy thẳng tới /overview sau khi
+  // đăng nhập → 403 → trang lỗi, mà sideNav cũng ẩn "Tổng quan" khỏi họ nên không còn mục nào
+  // để bấm lùi. Đăng nhập xong là gặp lỗi, mọi lần.
+  const cm = await addMember(staff, A.shopId, 'catalog_manager');
+  const cmHome = await adm('GET', '/', { cookie: cm.cookie });
+  cmHome.status === 303 && (cmHome.location ?? '').endsWith(`/shops/${A.shopId}/products`)
+    ? ok('catalog_manager đăng nhập → vào thẳng Quản lý sản phẩm, không bị ném vào Tổng quan')
+    : bad('vai thiếu orders.read vẫn bị đẩy vào Tổng quan', `${cmHome.status} → ${cmHome.location}`);
+  const cmOv = await adm('GET', `/shops/${A.shopId}/overview`, { cookie: cm.cookie });
+  cmOv.status === 403 && /không xem được Tổng quan/.test(cmOv.body)
+    && new RegExp(`href="/shops/${A.shopId}/products"`).test(cmOv.body)
+    ? ok('vào thẳng URL Tổng quan → nói đúng lý do và chỉ ra màn hình họ mở được')
+    : bad('trang 403 vẫn nói như hệ thống hỏng', `${cmOv.status} ${cmOv.body.slice(0, 200)}`);
+
+  // (c) CON SỐ DẪN TỚI ĐÚNG TẬP. Biến đơn đã huỷ (o3) thành đơn nhập từ sàn cũ: Tổng quan
+  // phải thôi đếm nó, và link từ Tổng quan phải mở ra đúng tập đã thôi đếm đó.
+  await owner.query('UPDATE orders SET is_migrated=true WHERE id=$1', [o3.orderId]);
+  const ovM = await adm('GET', `/shops/${A.shopId}/overview`, { cookie: A.cookie });
+  const theHuy = /<div class="l"><span class="sdot"[^>]*><\/span>Đã huỷ<\/div><div class="v">(\d+)<\/div>/.exec(ovM.body)?.[1];
+  theHuy === '0' ? ok('Tổng quan thôi đếm đơn di cư (thẻ "Đã huỷ" = 0)') : bad('Tổng quan vẫn đếm đơn di cư', `=${theHuy}`);
+  const demDong = (b) => (b.match(/<td><a href="\/shops\/[^"]*\/orders\/[^"]*">#/g) ?? []).length;
+  const dsTran = await adm('GET', `/shops/${A.shopId}/orders?status=cancelled`, { cookie: A.cookie });
+  const dsLoc = await adm('GET', `/shops/${A.shopId}/orders?status=cancelled&migrated=0`, { cookie: A.cookie });
+  demDong(dsTran) === 1 && demDong(dsLoc) === 0
+    ? ok('danh sách trần vẫn TRA CỨU được đơn di cư (1 dòng), còn link từ Tổng quan mở ra 0 dòng — khớp con số')
+    : bad('bộ lọc migrated không khớp con số trên Tổng quan', `trần=${demDong(dsTran)} lọc=${demDong(dsLoc)}`);
+  /Đang lọc:/.test(dsLoc.body) && /Không gồm đơn nhập từ sàn cũ/.test(dsLoc.body) && /Xoá bộ lọc/.test(dsLoc.body)
+    ? ok('trang nói rõ đang lọc gì và có lối xoá — không để người bán nhìn tập hẹp mà tưởng là tất cả')
+    : bad('lọc im lặng, không có chip "đang lọc"');
+  const dsRac = await adm('GET', `/shops/${A.shopId}/orders?status=cancelled&migrated=xyz`, { cookie: A.cookie });
+  demDong(dsRac) === 1 && !/Đang lọc:/.test(dsRac.body)
+    ? ok('giá trị migrated rác bị bỏ qua như mọi bộ lọc khác (không vỡ trang, không chip giả)')
+    : bad('migrated rác không được chuẩn hoá', `${demDong(dsRac)} dòng`);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

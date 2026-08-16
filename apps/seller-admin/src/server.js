@@ -106,7 +106,9 @@ async function dashboard(res, me, cookie) {
   // TRỪ nhân viên nền tảng: link vào Console CHỈ có ở màn hình này, chuyển hướng họ đi là
   // giấu mất đường vào console của chính người vận hành nền tảng.
   // Không gọi API lấy tên shop trước khi chuyển — chuyển rồi thì tên đó không dùng tới.
-  if (mems.length === 1 && staff.status !== 200) return redirect(res, `/shops/${mems[0].shop_id}/overview`);
+  // Đích TÙY VAI (V.landingPath): `catalog_manager` không có `orders.read` nên /overview trả
+  // 403 cho họ — đẩy thẳng tới đó là bắt một vai có thật gặp trang lỗi mỗi lần đăng nhập.
+  if (mems.length === 1 && staff.status !== 200) return redirect(res, V.landingPath(mems[0].shop_id, mems[0].role).href);
   const shops = [];
   for (const mem of mems) {
     const r = await sellerApi('GET', `/shops/${mem.shop_id}`, { cookie });
@@ -340,6 +342,16 @@ async function overviewPage(res, me, cookie, shopId, live, preview = null, readi
     sellerApi('GET', `/shops/${shopId}`, { cookie }).catch(() => ({ status: 0 })),
     sellerApi('GET', `/shops/${shopId}/readiness`, { cookie }).catch(() => ({ status: 0 })),
   ]);
+  // 403 ở đây KHÔNG phải sự cố — nó là câu trả lời đúng cho vai không có `orders.read`
+  // (`catalog_manager`). Câu chung "Không tải được số liệu tổng quan" nói như thể hệ thống
+  // hỏng và sẽ khá hơn nếu tải lại; người dùng sẽ F5 mãi. Nói đúng bản chất, và đưa tên màn
+  // hình họ MỞ ĐƯỢC — sideNav đã ẩn "Tổng quan" khỏi vai này nên không còn lối nào khác.
+  if (r.status === 403) {
+    const to = V.landingPath(shopId, ctx.role);
+    return sendHtml(res, 403, V.renderError(ctx,
+      'Vai của bạn ở cửa hàng này không xem được Tổng quan (màn hình này cần quyền đọc đơn hàng).',
+      to.href === '/' ? null : to));
+  }
   if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được số liệu tổng quan.'));
   const shop = shopR.status === 200 ? shopR.json : null;
   const readiness = readinessR.status === 200 ? readinessR.json : null;
@@ -444,9 +456,14 @@ async function ordersList(res, me, cookie, shopId, q) {
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   const payment = ['unpaid', 'pending', 'paid', 'refunded'].includes(q.get('payment')) ? q.get('payment') : '';
   const source = ['web', 'manual', 'facebook', 'zalo', 'tiktok', 'other'].includes(q.get('source')) ? q.get('source') : '';
+  // Đơn DI CƯ: '0' = bỏ đơn nhập từ sàn cũ, '1' = chỉ đơn đó, '' = không lọc (mặc định, để
+  // tra cứu lịch sử khách vẫn ra đủ). Giá trị lạ rơi về '' như mọi bộ lọc khác trên trang này
+  // — link cũ hoặc URL người dùng sửa tay không được làm vỡ danh sách.
+  const migrated = ['0', '1'].includes((q.get('migrated') ?? '').trim()) ? q.get('migrated').trim() : '';
   if (status) qs.set('status', status);
   if (source) qs.set('source', source);
   if (payment) qs.set('payment', payment);
+  if (migrated) qs.set('migrated', migrated);
   if (search) qs.set('q', search);
   if (from) qs.set('from', from);
   if (to) qs.set('to', to);
@@ -472,7 +489,7 @@ async function ordersList(res, me, cookie, shopId, q) {
     ?? bo(soOk('bulkpay_ok'), soOk('bulkpay_skip'), 'ghi nhận đã thu tiền')
     ?? bo(soOk('bulkship_ok'), soOk('bulkship_skip'), 'chuyển sang đang giao');
   const actionError = String(q.get('error') ?? '').trim().slice(0, 500) || null;
-  return sendHtmlJs(res, 200, (nonce) => V.renderOrders({ ...ctx, nonce }, shopId, r.json, { status, payment, source, q: search, from, to, limit, offset, bulk, actionError }));
+  return sendHtmlJs(res, 200, (nonce) => V.renderOrders({ ...ctx, nonce }, shopId, r.json, { status, payment, source, migrated, q: search, from, to, limit, offset, bulk, actionError }));
 }
 
 // ── Tạo đơn thủ công (nhân viên chốt đơn Facebook/Zalo rồi gõ vào) ─────────────
@@ -1269,7 +1286,7 @@ async function apiKeyRevoke(res, me, cookie, shopId, keyId) {
 // Form hàng loạt mang sẵn bộ lọc ở hidden; hàm này chỉ việc trả lại đúng nó.
 function veLai(shopId, params, them) {
   const sp = new URLSearchParams();
-  for (const k of ['status', 'q', 'from', 'to', 'source', 'payment', 'limit', 'offset']) {
+  for (const k of ['status', 'q', 'from', 'to', 'source', 'payment', 'migrated', 'limit', 'offset']) {
     const v = (params.get(k) ?? '').trim();
     if (v) sp.set(k, v);
   }
@@ -2850,6 +2867,10 @@ function ordersExportFields(f) {
     // gửi lên, BFF vẫn nuốt — xuất ra MỌI đơn thay vì đơn đang lọc, tức phát tán SĐT + địa chỉ
     // khách vượt xa phạm vi người bán định lấy, và với shop lớn còn đâm thẳng vào trần 413.
     payment: ['unpaid', 'pending', 'paid', 'refunded'].includes(f.payment) ? f.payment : '',
+    // migrated: cùng lý do với payment. Người bán xuất CSV từ màn "Đã giao" đi vào từ Tổng
+    // quan đang xem tập KHÔNG gồm đơn di cư; nuốt trường này là file xuất ra rộng hơn thứ
+    // họ nhìn thấy trên màn hình.
+    migrated: ['0', '1'].includes(String(f.migrated ?? '')) ? String(f.migrated) : '',
   };
 }
 async function doOrdersExport(res, me, cookie, shopId, fields) {

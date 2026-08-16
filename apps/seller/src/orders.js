@@ -171,6 +171,19 @@ function buildOrderFilter(query) {
   // tham số trên URL, người dùng sửa tay hoặc link cũ không được làm vỡ trang danh sách.
   const src = (query.get('source') ?? '').trim();
   if (ORDER_SOURCES.has(src)) { args.push(src); where.push(`source = $${args.length}`); }
+  // Lọc ĐƠN DI CƯ (0104). `migrated=0` bỏ đơn nhập từ sàn cũ, `migrated=1` chỉ lấy đơn đó.
+  //
+  // VÌ SAO PHẢI CÓ. Tổng quan đếm trạng thái đơn với `WHERE NOT is_migrated` (dashboard.js) —
+  // cố ý, vì đơn di cư là lịch sử sàn khác, không phải việc cần làm. Nhưng danh sách này KHÔNG
+  // hề lọc cờ đó, nên thẻ "Đã giao 40" mở ra 40 + toàn bộ đơn vừa nhập từ TikTok. Đúng lớp lỗi
+  // mà `payment=unpaid` và `stock=low` đã vá: con số dẫn tới một tập KHÁC tập nó đếm, và người
+  // bán học được rằng số trên Tổng quan không đáng tin.
+  //
+  // Mặc định KHÔNG lọc: đơn di cư vào hệ thống để TRA CỨU (0104), nên gõ tay số điện thoại
+  // khách vẫn phải ra đủ lịch sử. Chỉ đường đi TỪ Tổng quan mới mang cờ này.
+  const migrated = (query.get('migrated') ?? '').trim();
+  if (migrated === '0') where.push('NOT o.is_migrated');
+  else if (migrated === '1') where.push('o.is_migrated');
   // Lọc theo TÌNH TRẠNG THANH TOÁN. Ô "Đơn chưa thu tiền" ở Tổng quan bấm vào đây —
   // docs/44 §7: bấm vào con số phải ra ĐÚNG danh sách đã lọc, không phải danh sách đầy đủ.
   // Ô báo "3 đơn chưa thu" mà mở ra 400 đơn thì tệ hơn không có link: người bán mất niềm
@@ -190,7 +203,8 @@ function buildOrderFilter(query) {
     args, countArgs, whereNoStatusSql,
     whereSql: where.length ? 'WHERE ' + where.join(' AND ') : '',
     status: ORDER_STATUSES.includes(status) ? status : '',
-    payment: PAYMENT_STATUSES.includes(payment) ? payment : '', from, to, q,
+    payment: PAYMENT_STATUSES.includes(payment) ? payment : '',
+    migrated: migrated === '0' || migrated === '1' ? migrated : '', from, to, q,
   };
 }
 

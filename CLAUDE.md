@@ -18,10 +18,10 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 
 | số đo | hôm nay | nguồn |
 |---|---:|---|
-| dòng mã ứng dụng | ~42.900 | `apps/*/src/*.js` |
-| dòng test | ~30.900 | `apps/*/test/*.{js,mjs}` |
+| dòng mã ứng dụng | ~43.200 | `apps/*/src/*.js` |
+| dòng test | ~31.400 | `apps/*/test/*.{js,mjs}` |
 | migration | 172 tệp, mới nhất `0174` | `packages/db/migrations/` |
-| bộ unit | 36 | `MANIFEST_UNIT_COUNT` |
+| bộ unit | 37 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 106 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 116 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 75 tệp | `docs/` |

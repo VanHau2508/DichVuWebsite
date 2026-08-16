@@ -35,7 +35,7 @@ const MIEN_TRU = {
 test('buildOrderFilter đọc đúng bộ trường ta nghĩ (mốc nhận dạng còn sống)', () => {
   const src = rd('apps/seller/src/orders.js');
   const doc = [...src.matchAll(/query\.get\('([a-z_]+)'\)/g)].map((m) => m[1]);
-  for (const f of ['q', 'from', 'to', 'source', 'payment', 'status']) {
+  for (const f of ['q', 'from', 'to', 'source', 'payment', 'status', 'migrated']) {
     assert.ok(doc.includes(f), `buildOrderFilter không còn đọc "${f}" — mốc chết, sửa lại bộ test`);
   }
 });
@@ -55,7 +55,7 @@ test('form Lọc / tab trạng thái / phân trang / nút Xuất CSV đều mang
     { ten: 'hidden của nút Xuất CSV', doan: /const exportBtn = [\s\S]*?Xuất CSV<\/button><\/form>/.exec(than)?.[0] },
     { ten: 'form Lọc', doan: /<form method="GET"[\s\S]*?<\/form>/.exec(than)?.[0] },
   ];
-  const CAN = ['status', 'q', 'from', 'to', 'source', 'payment'];
+  const CAN = ['status', 'q', 'from', 'to', 'source', 'payment', 'migrated'];
   const viPham = [];
   for (const n of NOI) {
     if (!n.doan) { viPham.push(`${n.ten} — KHÔNG tìm thấy trong renderOrders (mốc chết, sửa bộ test)`); continue; }
@@ -73,7 +73,7 @@ test('BFF ordersExportFields chuyển tiếp ĐỦ trường xuống seller', ()
   const i = s.indexOf('function ordersExportFields(');
   assert.ok(i > 0, 'không tìm thấy ordersExportFields — mốc chết');
   const than = s.slice(i, s.indexOf('\n}', i) + 2);
-  const thieu = ['status', 'q', 'from', 'to', 'source', 'payment']
+  const thieu = ['status', 'q', 'from', 'to', 'source', 'payment', 'migrated']
     .filter((f) => !new RegExp(`^\\s*${f}:`, 'm').test(than));
   assert.deepEqual(thieu, [], 'BFF nuốt trường lọc → xuất ra cả đơn ngoài bộ lọc');
 });

@@ -545,6 +545,28 @@ const badge = (kind, label) => `<span class="badge ${esc(kind)}">${esc(label)}</
 const CATALOG_ROLES = new Set(['owner', 'admin', 'catalog_manager']);
 const ORDER_ROLES = new Set(['owner', 'admin', 'order_manager']);
 const CONTENT_ROLES = new Set(['owner', 'admin']);
+
+/**
+ * MÀN HÌNH ĐẦU TIÊN sau khi đăng nhập, theo vai.
+ *
+ * Trước đây mọi vai đều bị đẩy thẳng tới `/overview`. `catalog_manager` (chỉ catalog.read/write)
+ * không có `orders.read`, mà `/overview` gọi `GET /stats` vốn đòi đúng quyền đó → 403 → trang
+ * lỗi. Tệ hơn: sideNav cũng ẩn "Tổng quan" khỏi vai này (ORDER_ROLES), nên họ đứng trên một
+ * trang lỗi mà trong thanh điều hướng KHÔNG có mục nào tương ứng — không có gì để bấm lùi.
+ * Đăng nhập xong là gặp lỗi, mọi lần.
+ *
+ * Neo vào CHÍNH các Set mà sideNav dùng: một nguồn thì không trôi được. Thứ tự phản ánh thứ
+ * tự trong nav — vai nào cũng vào đúng mục đầu tiên họ nhìn thấy ở đó.
+ */
+export function landingPath(shopId, role) {
+  const base = `/shops/${shopId}`;
+  if (ORDER_ROLES.has(role)) return { href: `${base}/overview`, label: 'Tổng quan' };
+  if (CATALOG_ROLES.has(role)) return { href: `${base}/products`, label: 'Quản lý sản phẩm' };
+  // Vai lạ (thêm vai mới mà quên khai ở đây): về màn chọn cửa hàng thay vì đoán bừa một
+  // trang họ có thể không mở được — lặp lại đúng lỗi đang vá. Nhãn đi kèm href để nơi gọi
+  // không phải chép lại tên màn hình lần nữa.
+  return { href: '/', label: 'Bảng điều khiển' };
+}
 const MEMBER_READ_ROLES = new Set(['owner', 'admin']); // xem nhân sự; SỬA chỉ owner (seller cưỡng chế)
 const EXPORT_ROLES = new Set(['owner']); // xuất dữ liệu: CHỈ chủ shop (seller cưỡng chế perm 'export')
 const REPORT_ROLES = new Set(['owner', 'admin']); // báo cáo lãi: owner/admin (seller cưỡng chế 'reports.read' — ẩn nav chỉ là mỹ quan)
@@ -718,7 +740,10 @@ function sideNav(ctx) {
     { title: 'Sản phẩm', icon: IC_BOX, items: [
       [`${base}/products`, 'Quản lý sản phẩm', 'products', CATALOG_ROLES.has(R)],
       [`${base}/categories`, 'Danh mục', 'categories', CATALOG_ROLES.has(R)],
-      [`${base}/reviews`, 'Đánh giá', 'reviews', CONTENT_ROLES.has(R)],
+      // `?status=pending` tường minh, cùng lý do với ô "Đánh giá chờ duyệt" ở Tổng quan: link
+      // trần ăn may vào mặc định `status='pending'` của seller/reviews.js. Mục "Thông báo lỗi"
+      // ngay dưới đã nêu bộ lọc của nó từ trước — chỗ này là chỗ duy nhất còn sót.
+      [`${base}/reviews?status=pending`, 'Đánh giá', 'reviews', CONTENT_ROLES.has(R)],
       [`${base}/questions`, 'Hỏi đáp', 'questions', CONTENT_ROLES.has(R)],
     ] },
     { title: 'Kho vận', icon: IC_WAREHOUSE, items: [
@@ -2151,7 +2176,17 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
     { k: 'pending', label: 'Chờ xác nhận', c: 'var(--warn)' }, { k: 'confirmed', label: 'Đã xác nhận', c: 'var(--pri)' },
     { k: 'shipped', label: 'Đang giao', c: 'var(--indigo)' }, { k: 'delivered', label: 'Đã giao', c: 'var(--good)' }, { k: 'cancelled', label: 'Đã huỷ', c: 'var(--bad)' },
   ];
-  const statusCards = S.map((x) => `<a class="metric" style="text-decoration:none;color:inherit;display:block" href="${base}/orders?status=${x.k}">
+  // `migrated=0` KHÔNG thừa. Con số trên các ô này đến từ dashboard.js, vốn đếm với
+  // `WHERE NOT is_migrated` — đơn nhập từ sàn cũ là lịch sử, không phải việc cần làm (0104).
+  // Danh sách đơn thì mặc định KHÔNG lọc cờ đó, vì tra cứu lịch sử khách phải ra đủ. Không
+  // mang bộ lọc theo thì ô "Đã giao 40" mở ra 40 + toàn bộ đơn vừa nhập từ TikTok, và người
+  // bán học được rằng con số trên Tổng quan không dẫn tới tập nó đang đếm.
+  //
+  // Hôm nay chỉ `delivered`/`cancelled`/`refunded` lệch thật (O_STATUS ở import.js chỉ sinh
+  // ba trạng thái đó, chuỗi lạ rơi về 'delivered'), nhưng gắn cho CẢ NĂM ô: một quy tắc đồng
+  // nhất sống sót được khi đường nhập nhận thêm trạng thái chưa-xong, còn quy tắc "chỉ hai ô
+  // này" thì phải nhớ để sửa, và sẽ không ai nhớ.
+  const statusCards = S.map((x) => `<a class="metric" style="text-decoration:none;color:inherit;display:block" href="${base}/orders?status=${x.k}&migrated=0">
       <div class="l"><span class="sdot" style="background:${x.c}"></span>${esc(x.label)}</div><div class="v">${esc(st[x.k] ?? 0)}</div></a>`).join('');
   const top = (s?.top_products ?? []);
   const maxTop = Math.max(...top.map((t) => Number(t.revenue) || 0), 1);
@@ -2269,44 +2304,89 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   // Màu lấy từ TOKEN (docs/44 §2: "không được sinh thêm màu ngoài danh sách này"). Bộ hex
   // cứng cũ (#b45309/#1d4ed8/#7c3aed…) là tàn dư của bảng màu xanh-tím trước đây — để lại
   // thì lưới này là mảng duy nhất trong admin không theo hệ.
+  //
+  // `see`: Ô CHỈ HIỆN KHI VAI ĐÓ MỞ ĐƯỢC TRANG ĐÍCH. Dùng ĐÚNG các Set mà sideNav dùng —
+  // chép ra một danh sách riêng thì hai bên sẽ trôi, và trôi về đúng phía nguy hiểm: nav giấu
+  // mục, lưới vẫn mời bấm. Đo được trước khi vá: vai `order_manager` (chỉ orders.read/write)
+  // thấy "Đánh giá chờ duyệt" → /reviews cần content.write → 403, và "Sắp hết hàng" →
+  // /products cần catalog.read → 403. Hai ô dẫn thẳng vào tường, trong khi sidebar đã giấu
+  // đúng hai mục đó khỏi họ.
+  //
+  // `tier`: xếp theo AI ĐANG CHỜ, không theo bảng nào đẹp.
+  //   1 = tiền/người đang chờ mình  · 2 = dòng đơn hằng ngày · 3 = giữ cửa hàng chạy.
+  // Mười một ô đồng hạng thì mắt rơi vào ô có số to nhất, mà số to nhất thường là "Sắp hết
+  // hàng" — việc ít gấp nhất trong danh sách.
   const TODO = [
     // ĐỨNG ĐẦU, và cố ý đứng trước cả đơn chờ xác nhận: mọi ô khác chỉ là tiền của shop về
     // CHẬM, ô này là tiền của NGƯỜI KHÁC đang nằm trong túi shop. Nhãn mang theo SỐ TIỀN vì
     // số đơn không nói lên mức độ — 1 đơn nợ 20 triệu gấp gáp hơn 11 đơn nợ 500 nghìn.
-    { n: Number(td.owed_count ?? 0), label: `Còn nợ khách${Number(td.owed_vnd ?? 0) > 0 ? ` · ${money(td.owed_vnd)}` : ''}`, href: `${base}/orders/owed`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '↩' },
-    { n: Number(td.to_confirm ?? 0), label: 'Đơn chờ xác nhận', href: `${base}/orders?status=pending`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '🕐' },
-    { n: Number(td.to_ship ?? 0), label: 'Đơn chờ gửi hàng', href: `${base}/orders?status=confirmed`, tone: 'var(--indigo)', bg: 'var(--indigobg)', bd: 'var(--indigo)', icon: '📦' },
-    { n: Number(td.shipment_attention ?? 0), label: 'Vận đơn cần xử lý', href: `${base}/overview#shipment-attention`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '🚚' },
-    { n: Number(td.unpaid ?? 0), label: 'Đơn chưa thu tiền', href: `${base}/orders?payment=unpaid`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '💰' },
-    { n: Number(td.partial_payments ?? 0), label: 'Đơn thu một phần', href: `${base}/orders?payment=pending`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '◐' },
-    { n: Number(td.resolution_cases ?? 0), label: 'Ca giao hàng cần xử lý', href: `${base}/resolution-cases?status=active`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '↔' },
-    { n: Number(td.notification_failures ?? 0), label: 'Thông báo gửi thất bại', href: `${base}/notification-deliveries?status=failed`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '✉' },
-    { n: Number(td.order_requests ?? 0), label: 'Yêu cầu khách chờ xử lý', href: `${base}/order-requests?status=requested`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '↩' },
-    { n: Number(td.reviews_pending ?? 0), label: 'Đánh giá chờ duyệt', href: `${base}/reviews`, tone: 'var(--pri)', bg: 'var(--wash)', bd: 'var(--pri)', icon: '⭐' },
-    { n: Number(td.low_stock ?? 0), label: 'Sắp hết hàng', href: `${base}/products?stock=low`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '⚠' },
-  ];
+    { tier: 1, see: ORDER_ROLES, n: Number(td.owed_count ?? 0), label: `Còn nợ khách${Number(td.owed_vnd ?? 0) > 0 ? ` · ${money(td.owed_vnd)}` : ''}`, href: `${base}/orders/owed`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '↩' },
+    { tier: 1, see: ORDER_ROLES, n: Number(td.order_requests ?? 0), label: 'Yêu cầu khách chờ xử lý', href: `${base}/order-requests?status=requested`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '↩' },
+    { tier: 1, see: ORDER_ROLES, n: Number(td.resolution_cases ?? 0), label: 'Ca giao hàng cần xử lý', href: `${base}/resolution-cases?status=active`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '↔' },
+    { tier: 1, see: ORDER_ROLES, n: Number(td.shipment_attention ?? 0), label: 'Vận đơn cần xử lý', href: `${base}/overview#shipment-attention`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '🚚' },
+    // `migrated=0` khớp với dashboard.js (`WHERE NOT is_migrated`) — cùng lý do đã ghi ở
+    // statusCards. Ô tiền (unpaid/partial) KHÔNG cần: PAYMENT_ACTIONABLE_SQL trong owed.js
+    // đã mang sẵn `NOT o.is_migrated`, nên đếm và danh sách vốn đã cùng một tập.
+    { tier: 2, see: ORDER_ROLES, n: Number(td.to_confirm ?? 0), label: 'Đơn chờ xác nhận', href: `${base}/orders?status=pending&migrated=0`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '🕐' },
+    { tier: 2, see: ORDER_ROLES, n: Number(td.to_ship ?? 0), label: 'Đơn chờ gửi hàng', href: `${base}/orders?status=confirmed&migrated=0`, tone: 'var(--indigo)', bg: 'var(--indigobg)', bd: 'var(--indigo)', icon: '📦' },
+    { tier: 2, see: ORDER_ROLES, n: Number(td.unpaid ?? 0), label: 'Đơn chưa thu tiền', href: `${base}/orders?payment=unpaid`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '💰' },
+    { tier: 2, see: ORDER_ROLES, n: Number(td.partial_payments ?? 0), label: 'Đơn thu một phần', href: `${base}/orders?payment=pending`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '◐' },
+    { tier: 3, see: ORDER_ROLES, n: Number(td.notification_failures ?? 0), label: 'Thông báo gửi thất bại', href: `${base}/notification-deliveries?status=failed`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '✉' },
+    // `?status=pending` TƯỜNG MINH. Trước đây link trần ăn may vào mặc định `status='pending'`
+    // ở seller/reviews.js — đổi mặc định là con số dẫn tới danh sách khác mà không lỗi nào
+    // hiện ra. Đúng lớp lỗi mà `payment=unpaid` và `stock=low` đã phải vá một lần rồi.
+    { tier: 3, see: CONTENT_ROLES, n: Number(td.reviews_pending ?? 0), label: 'Đánh giá chờ duyệt', href: `${base}/reviews?status=pending`, tone: 'var(--pri)', bg: 'var(--wash)', bd: 'var(--pri)', icon: '⭐' },
+    { tier: 3, see: CATALOG_ROLES, n: Number(td.low_stock ?? 0), label: 'Sắp hết hàng', href: `${base}/products?stock=low`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '⚠' },
+  ].filter((x) => x.see.has(ctx.role));
+  // Đếm trên các ô CÒN LẠI sau khi lọc quyền. Cộng cả ô đã ẩn thì câu "7 việc đang chờ bạn"
+  // nói về việc người này không thấy và không làm được — một con số không hành động được.
   const openWork = TODO.reduce((a, x) => a + x.n, 0);
   // "Không còn việc tồn đọng — cửa hàng đang chạy êm" là câu ĐÚNG cho shop đang chạy, và
   // là lời nói dối cho shop vừa mở: 0 việc vì 0 khách, mà 0 khách vì chưa có gì để bán.
   // Câu đầu tiên chủ shop mới đọc phải nói đúng tình trạng, không phải trấn an.
   // setup chỉ khác null khi shop còn 'onboarding'; setup.products = có SP đang bán + còn tồn.
   const notSellable = !!setup && !setup.products;
-  const todoCells = TODO.map((x) => {
+  const todoCell = (x) => {
     const on = x.n > 0;
     return `<a class="todo-cell${on ? ' on' : ''}" href="${x.href}"
       style="${on ? `background:${x.bg};border-color:${x.bd}` : ''}"
       aria-label="${esc(x.label)}: ${x.n}">
       <div class="todo-n" style="${on ? `color:${x.tone}` : ''}">${esc(x.n)}</div>
       <div class="todo-l">${x.icon} ${esc(x.label)}</div></a>`;
+  };
+  // BA NHÓM, mỗi nhóm nói rõ AI ĐANG CHỜ. Đây là phần biến khối này từ mười một con số xếp
+  // cạnh nhau thành một thứ tự làm việc: đọc từ trên xuống đúng bằng thứ tự nên xử lý, và bỏ
+  // qua được CẢ NHÓM khi chưa tới lượt. Không phân nhóm thì mắt rơi vào ô có SỐ TO NHẤT, mà
+  // số to nhất gần như luôn là "Sắp hết hàng" — việc ít gấp nhất trong cả danh sách.
+  // Nhóm rỗng (vai không thấy ô nào trong nhóm) thì bỏ hẳn cả tiêu đề, không để đầu đề trơ.
+  const NHOM = [
+    [1, 'Khách đang chờ bạn', 'Tiền của khách hoặc yêu cầu khách đã gửi. Chậm ở đây mất niềm tin, không chỉ mất thời gian.'],
+    [2, 'Đơn hàng hôm nay', 'Dòng chảy bình thường: xác nhận, gửi hàng, thu tiền.'],
+    // Câu mô tả KHÔNG được kể tên những việc trong nhóm: nhóm này lọc theo vai, nên
+    // `order_manager` chỉ còn đúng ô "Thông báo gửi thất bại" mà lại đọc một câu nhắc tới
+    // tồn kho và đánh giá — hai thứ họ không nhìn thấy và không mở được. Nói chung, đúng cho
+    // mọi vai. Thấy được lỗi này khi render thử ba vai, không chốt mã nguồn nào bắt nổi.
+    [3, 'Giữ cửa hàng chạy', 'Không gấp trong ngày, nhưng bỏ lâu thì hỏng âm thầm — không có ai báo.'],
+  ];
+  const todoGroups = NHOM.map(([t, ten, mo]) => {
+    const cells = TODO.filter((x) => x.tier === t);
+    if (!cells.length) return '';
+    const con = cells.reduce((a, x) => a + x.n, 0);
+    return `<div style="margin-top:18px">
+      <div style="font-weight:600;font-size:.92rem">${esc(ten)}${con > 0 ? ` <span class="muted" style="font-weight:400">· ${esc(con)} việc</span>` : ''}</div>
+      <div class="muted" style="font-size:.8rem;margin-top:2px">${esc(mo)}</div>
+      <div class="todo-grid" style="margin-top:10px">${cells.map(todoCell).join('')}</div></div>`;
   }).join('');
-  const todoCard = `<div class="card">
+  // Vai không thấy ô nào thì KHÔNG dựng khối rỗng: một tiêu đề "Việc cần làm" với vùng trống
+  // bên dưới đọc như trang hỏng, chứ không như "phần này không dành cho bạn".
+  const todoCard = !TODO.length ? '' : `<div class="card">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
       <h2 style="margin:0">Việc cần làm</h2>
       ${openWork > 0 ? `<span class="muted" style="font-size:.88rem">${esc(openWork)} việc đang chờ bạn</span>`
         : notSellable ? '<span class="muted" style="font-size:.88rem">Chưa có đơn — cửa hàng chưa bán được</span>'
         : '<span class="muted" style="font-size:.88rem">✓ Không còn việc tồn đọng</span>'}
     </div>
-    <div class="todo-grid">${todoCells}</div></div>`;
+    ${todoGroups}</div>`;
 
   // Không dựng bộ lọc giả cho shipments: mỗi dòng dẫn tới đúng chi tiết đơn, nơi đã có hai
   // thao tác đối soát an toàn (xác nhận hãng đã tạo hoặc mở khoá sau khi kiểm tra portal).
@@ -2744,13 +2824,13 @@ export function renderOrders(ctx, shopId, data, filter) {
   // `limit` cũng phải đi theo: chọn 100 dòng rồi bấm "Sau →" mà rơi về 20 thì người bán mất
   // chỗ đang đứng và phải chọn lại — đúng kiểu mất-bộ-lọc mà chú thích trên đang nói tới.
   const limQ = filter.limit && filter.limit !== 20 ? `&limit=${esc(filter.limit)}` : '';
-  const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}${limQ}&offset=${o}`;
+  const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}&migrated=${esc(filter.migrated ?? '')}${limQ}&offset=${o}`;
   // TAB trạng thái kèm SỐ ĐẾM (thay <select> cũ) — mẫu quen thuộc của TikTok Shop/Shopee:
   // nhìn là biết "còn 12 đơn chờ xác nhận", bấm 1 phát là lọc. Số đếm tôn trọng ô tìm kiếm
   // + khoảng ngày đang áp (nhưng không tính chính mệnh đề trạng thái) nên luôn khớp kết quả.
   // Giữ nguyên q/from/to khi đổi tab để không mất bộ lọc người dùng đang xem.
   const cnts = data.counts ?? {};
-  const keep = `&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}${limQ}`;
+  const keep = `&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}&migrated=${esc(filter.migrated ?? '')}${limQ}`;
   const statusTabs = `<div class="stabs" role="tablist" aria-label="Lọc theo trạng thái">${
     STATUSES.map((s) => {
       const on = (filter.status ?? '') === s;
@@ -2759,6 +2839,30 @@ export function renderOrders(ctx, shopId, data, filter) {
       return `<a class="stab${on ? ' on' : ''}" href="?status=${esc(s)}${keep}"${on ? ' aria-current="page"' : ''}>${esc(label)}${
         n != null ? `<span class="cnt">${esc(n)}</span>` : ''}</a>`;
     }).join('')}</div>`;
+  // CHIP "ĐANG LỌC" cho các bộ lọc KHÔNG có ô nhập trong form Lọc — chúng chỉ tới từ link
+  // trên Tổng quan. Không nói ra thì người bán nhìn một tập hẹp mà tưởng là toàn bộ đơn, và
+  // không có lối quay ra ngoài việc sửa URL. `payment` đã có chip từ trước; `migrated` là chỗ
+  // thứ hai cùng dạng nên dùng chung một khuôn thay vì chép thêm một nhánh nữa.
+  //
+  // Mỗi chip xoá ĐÚNG CHÍNH NÓ và giữ các bộ lọc còn lại. Bản trước dựng lại href từ đúng
+  // hai trường (status + q) nên bấm "Xoá bộ lọc" ở màn "chưa thu tiền" là mất luôn khoảng
+  // ngày và nguồn đơn người bán vừa chọn — một cú xoá rộng hơn thứ họ định xoá.
+  const chipHref = (bo) => `?${new URLSearchParams(Object.entries({
+    status: filter.status, q: filter.q, from: filter.from, to: filter.to,
+    source: filter.source, payment: filter.payment, migrated: filter.migrated,
+  }).filter(([k, v]) => k !== bo && v)).toString()}`;
+  // Nhãn nói theo NGHIỆP VỤ, không theo tên tham số: "migrated=0" không nói được gì với
+  // người bán, còn "không gồm đơn nhập từ sàn cũ" thì giải thích luôn vì sao số ở đây khác
+  // số họ vừa thấy ở nơi khác.
+  const MIGRATED_LABEL = { 0: 'Không gồm đơn nhập từ sàn cũ', 1: 'Chỉ đơn nhập từ sàn cũ' };
+  const chips = [
+    filter.payment ? [PAYMENT_LABEL[filter.payment] ?? filter.payment, chipHref('payment')] : null,
+    filter.migrated ? [MIGRATED_LABEL[filter.migrated], chipHref('migrated')] : null,
+  ].filter(Boolean);
+  const filterChips = chips.length
+    ? `<p class="muted" style="margin:0 0 10px">Đang lọc: ${chips.map(([lbl, href]) =>
+      `<strong>${esc(lbl)}</strong> <a href="${esc(href)}">Xoá bộ lọc</a>`).join(' · ')}</p>`
+    : '';
   // Xuất CSV theo ĐÚNG bộ lọc đang xem — hidden mang nguyên status/q/from/to sang POST.
   // Chỉ chủ shop (EXPORT_ROLES) thấy nút: file chứa SĐT + địa chỉ khách hàng loạt.
   // Form Lọc bên dưới mang `payment` ở dạng hidden: đây là chỗ THỨ NĂM từng đánh rơi nó.
@@ -2773,6 +2877,7 @@ export function renderOrders(ctx, shopId, data, filter) {
         <input type="hidden" name="to" value="${esc(filter.to ?? '')}">
         <input type="hidden" name="source" value="${esc(filter.source ?? '')}">
         <input type="hidden" name="payment" value="${esc(filter.payment ?? '')}">
+        <input type="hidden" name="migrated" value="${esc(filter.migrated ?? '')}">
         <button class="btn alt" type="submit">⬇ Xuất CSV</button></form>` : '';
   return layout('Đơn hàng', ctx, `<div class="toolbar"><h1 style="margin:0">Đơn hàng</h1>
       <span class="actions">${exportBtn}<a class="btn" href="/shops/${esc(shopId)}/orders/new">+ Tạo đơn</a></span></div>
@@ -2787,6 +2892,7 @@ export function renderOrders(ctx, shopId, data, filter) {
       <form method="GET" class="filters">
       <input type="hidden" name="status" value="${esc(filter.status ?? '')}">
       <input type="hidden" name="payment" value="${esc(filter.payment ?? '')}">
+      <input type="hidden" name="migrated" value="${esc(filter.migrated ?? '')}">
       <div style="flex:1 1 200px"><label>Tìm (mã đơn / tên / SĐT)</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="123, Nguyễn…, 09…"></div>
       <div><label>Từ ngày</label><input type="date" name="from" value="${esc(filter.from ?? '')}"></div>
       <div><label>Đến ngày</label><input type="date" name="to" value="${esc(filter.to ?? '')}"></div>
@@ -2799,12 +2905,12 @@ export function renderOrders(ctx, shopId, data, filter) {
            thì người bán thấy trang trống và không hiểu vì sao, cũng không có lối quay ra. -->
       ${filter.actionError ? `<div class="err">${esc(filter.actionError)}</div>` : ''}
       ${filter.bulk ? `<p class="ok" style="margin:0 0 10px">${esc(filter.bulk)}</p>` : ''}
-      ${filter.payment ? `<p class="muted" style="margin:0 0 10px">Đang lọc: <strong>${esc(PAYMENT_LABEL[filter.payment] ?? filter.payment)}</strong> · <a href="?${esc(new URLSearchParams({ ...(filter.status ? { status: filter.status } : {}), ...(filter.q ? { q: filter.q } : {}) }).toString())}">Xoá bộ lọc</a></p>` : ''}
+      ${filterChips}
       ${orders.length ? `
       <form id="bulkf" method="POST" action="/shops/${esc(shopId)}/orders/bulk-confirm" class="actions" style="margin-bottom:10px">
         <!-- Bộ lọc đang xem đi kèm để làm xong còn QUAY VỀ ĐÚNG CHỖ ĐANG ĐỨNG (xem veLai ở BFF).
              Thiếu mấy dòng này là người bán bị đá về tab "Tất cả" sau mỗi lượt hàng loạt. -->
-        ${['status', 'q', 'from', 'to', 'source', 'payment'].map((k) => `<input type="hidden" name="${k}" value="${esc(filter[k] ?? '')}">`).join('')}
+        ${['status', 'q', 'from', 'to', 'source', 'payment', 'migrated'].map((k) => `<input type="hidden" name="${k}" value="${esc(filter[k] ?? '')}">`).join('')}
         <input type="hidden" name="limit" value="${esc(filter.limit ?? '')}">
         <input type="hidden" name="offset" value="${esc(filter.offset ?? '')}">
         <button class="btn sm" type="submit">✓ Xác nhận các đơn đã chọn</button>
@@ -6404,8 +6510,13 @@ export function renderOrderRequests(ctx, shopId, data, filter = {}) {
       ${queuePager(base, filter, data.total ?? 0)}</div>`);
 }
 
-export function renderError(ctx, msg) {
-  return layout('Lỗi', ctx, `<div class="card"><h1>Rất tiếc</h1><p class="err">${esc(msg)}</p><a class="btn alt" href="/">Về bảng điều khiển</a></div>`);
+// `action` (tuỳ chọn) = { href, label }: lối đi TIẾP, không phải lối lùi. Trang lỗi chỉ có
+// "Về bảng điều khiển" là đủ khi lỗi là tạm thời; khi lỗi là "vai của bạn không mở được màn
+// này" thì thứ người dùng cần là màn hình họ mở ĐƯỢC, nói tên ra hẳn.
+export function renderError(ctx, msg, action = null) {
+  return layout('Lỗi', ctx, `<div class="card"><h1>Rất tiếc</h1><p class="err">${esc(msg)}</p>${
+    action ? `<a class="btn" href="${esc(action.href)}">${esc(action.label)}</a> ` : ''
+  }<a class="btn alt" href="/">Về bảng điều khiển</a></div>`);
 }
 
 // ── Cộng tác viên (CTV / affiliate) — docs/51 ────────────────────────────────

@@ -544,6 +544,45 @@ a:focus-visible,.btn:focus-visible,.shop-card:focus-visible,.metric:focus-visibl
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}html{scroll-behavior:auto}}`;
 
 const badge = (kind, label) => `<span class="badge ${esc(kind)}">${esc(label)}</span>`;
+
+/**
+ * BẢNG ĐỔ THÀNH THẺ Ở MOBILE — nhãn sinh Ở SERVER.
+ *
+ * VÌ SAO. Bản trước card-hoá bằng JavaScript: ADMIN_JS đọc `thead th` rồi gán `data-label`
+ * cho từng `td`. CSS chỉ có `table.cards`, không có `[data-cards]`. Tắt JS là mọi bảng render
+ * nguyên nhiều cột. Đo bằng Chromium ở 360px trên trang chi tiết đơn có ca xử lý:
+ *   JS bật  385/360 (tràn 25px)   ·   JS tắt  572/360 (tràn 212px)
+ * Vi phạm cùng lúc hai ràng buộc cố định: "JS chỉ là tăng cường" và "dùng được ở 360px".
+ *
+ * VÌ SAO KHÔNG SỬA BẰNG CSS. `content: attr()` chỉ đọc được thuộc tính của CHÍNH phần tử đó;
+ * không có cách nào để CSS lấy chữ từ `th` tương ứng. Nhãn buộc phải do server phát ra.
+ *
+ * HỢP ĐỒNG
+ *   head: [{ html, label }]   label='' → cột không sinh ::before (ô checkbox/nút)
+ *                             label bỏ trống → lấy từ chính `html` sau khi bỏ thẻ
+ *   rows: [[{ html, label?, colspan? }]]  label mặc định theo CHỈ SỐ cột trong head
+ *                             colspan > 1 → KHÔNG gán nhãn (chỉ số cột không xác định)
+ *   foot: [[{ html, colspan? }]]          KHÔNG card-hoá, giữ nguyên dạng hàng
+ *
+ * Nhãn suy theo CHỈ SỐ nên không thể chép tay lệch: thêm một cột vào `head` mà quên sửa
+ * `rows` thì lệch lộ ra ngay ở chính hàng đó, không âm thầm mất nhãn.
+ */
+const stripTags = (h) => String(h ?? '').replace(/<[^>]*>/g, '').trim();
+function tblCards({ head = [], rows = [], foot = [], cls = '' } = {}) {
+  const labels = head.map((h) => (h.label !== undefined ? h.label : stripTags(h.html)));
+  const th = head.map((h) => `<th${h.cls ? ` class="${esc(h.cls)}"` : ''}>${h.html ?? ''}</th>`).join('');
+  const body = rows.map((cells) => `<tr>${cells.map((c, i) => {
+    const span = Number(c.colspan) > 1 ? ` colspan="${esc(c.colspan)}"` : '';
+    // Ô spanning nhiều cột không thuộc về một tiêu đề nào → không gán nhãn, thay vì gán sai.
+    const lab = span || c.label === '' ? '' : ` data-label="${esc(c.label ?? labels[i] ?? '')}"`;
+    return `<td${c.cls ? ` class="${esc(c.cls)}"` : ''}${span}${lab}>${c.html ?? ''}</td>`;
+  }).join('')}</tr>`).join('');
+  const tf = foot.length ? `<tfoot>${foot.map((cells) => `<tr>${cells.map((c) => {
+    const span = Number(c.colspan) > 1 ? ` colspan="${esc(c.colspan)}"` : '';
+    return `<td${c.cls ? ` class="${esc(c.cls)}"` : ''}${span}>${c.html ?? ''}</td>`;
+  }).join('')}</tr>`).join('')}</tfoot>` : '';
+  return `<table data-cards${cls ? ` class="${esc(cls)}"` : ''}><thead><tr>${th}</tr></thead><tbody>${body}</tbody>${tf}</table>`;
+}
 // Vai trò nào thấy tab nào (backend mới là nơi cưỡng chế; đây chỉ để ẩn/hiện cho gọn).
 
 /**
@@ -3283,14 +3322,15 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     return `<div class="stack" style="min-width:230px">${wait}${receive}${accept}${blocked}</div>`;
   };
   const resolutionCard = cases.length ? `<div class="card"><h2>Ca giao hàng cần xử lý</h2>
-    <table data-cards><thead><tr><th>Phát hiện</th><th>Kết quả kiện</th><th>Trạng thái</th><th>Quyết định</th></tr></thead><tbody>
-      ${cases.map((c) => `<tr>
-        <td class="muted">${dt(c.detected_at)}</td>
-        <td>Đã giao ${esc(c.delivered_shipments)} kiện / ${esc(c.delivered_qty)} SP<br><span class="muted">Hoàn về ${esc(c.returned_shipments)} kiện / ${esc(c.returned_qty)} SP</span>${Number(c.required_refund_vnd) > 0 ? `<br><span class="muted">Cần hoàn phần không giao: ${money(c.required_refund_vnd)}</span>` : ''}</td>
-        <td>${badge(['open', 'waiting_return'].includes(c.status) ? 'pending' : 'delivered', c.status === 'waiting_return' ? 'Đang chờ hàng hoàn' : c.status === 'open' ? 'Đang chờ shop xử lý' : 'Đã chốt')}<br><span class="muted">Đã nhận ${esc(c.received_return_qty)}/${esc(c.returned_qty)} SP hoàn</span></td>
-        <td>${c.resolution ? esc(resolutionName[c.resolution] ?? c.resolution) : '<span class="muted">Chưa có quyết định</span>'}${c.resolution_note ? `<br><span class="muted">${esc(c.resolution_note)}</span>` : ''}${resolutionActions(c)}</td>
-      </tr>`).join('')}
-    </tbody></table>
+    ${tblCards({
+    head: [{ html: 'Phát hiện' }, { html: 'Kết quả kiện' }, { html: 'Trạng thái' }, { html: 'Quyết định' }],
+    rows: cases.map((c) => [
+      { cls: 'muted', html: dt(c.detected_at) },
+      { html: `Đã giao ${esc(c.delivered_shipments)} kiện / ${esc(c.delivered_qty)} SP<br><span class="muted">Hoàn về ${esc(c.returned_shipments)} kiện / ${esc(c.returned_qty)} SP</span>${Number(c.required_refund_vnd) > 0 ? `<br><span class="muted">Cần hoàn phần không giao: ${money(c.required_refund_vnd)}</span>` : ''}` },
+      { html: `${badge(['open', 'waiting_return'].includes(c.status) ? 'pending' : 'delivered', c.status === 'waiting_return' ? 'Đang chờ hàng hoàn' : c.status === 'open' ? 'Đang chờ shop xử lý' : 'Đã chốt')}<br><span class="muted">Đã nhận ${esc(c.received_return_qty)}/${esc(c.returned_qty)} SP hoàn</span>` },
+      { html: `${c.resolution ? esc(resolutionName[c.resolution] ?? c.resolution) : '<span class="muted">Chưa có quyết định</span>'}${c.resolution_note ? `<br><span class="muted">${esc(c.resolution_note)}</span>` : ''}${resolutionActions(c)}` },
+    ]),
+  })}
     ${activeCases.length ? '<p class="muted">Hệ thống chỉ nhập lại tồn sau khi shop xác nhận hàng đã về; phần tiền phải có phiếu hoàn trước khi chốt đơn đã thanh toán.</p>' : ''}
   </div>` : '';
 

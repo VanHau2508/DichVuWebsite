@@ -134,3 +134,16 @@ test('refund idempotency được khoá ở DB và replay chạy trước guard 
   assert.match(refund, /idempotency_key_reused/);
   assert.match(refund, /refund_in_progress/);
 });
+
+test('mọi SELECT/UPDATE idempotency_keys của seller đều gác theo tenant', () => {
+  // idempotency_keys là bảng legacy chưa bật RLS. Chốt này đọc đúng các SQL template
+  // của seller để một truy vấn mới chỉ WHERE key=$1 không thể lọt qua review lần nữa.
+  const queries = [...sellerOrders.matchAll(/c\.query\(\s*`([^`]*\bidempotency_keys\b[^`]*)`/g)]
+    .map((m) => m[1])
+    .filter((sql) => /^\s*(SELECT|UPDATE|DELETE)\b/.test(sql));
+  assert.equal(queries.length, 5, 'đang có đúng 5 đường đọc/cập nhật idempotency key trong seller');
+  for (const sql of queries) {
+    assert.match(sql, /shop_id\s*=\s*current_shop_id\(\)/,
+      `truy vấn idempotency_keys thiếu tenant scope:\n${sql}`);
+  }
+});

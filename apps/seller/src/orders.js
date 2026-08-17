@@ -1089,7 +1089,8 @@ async function reverseManualPayment(res, ctx, body, params) {
 async function refundIdempotency(c, dbKey, fingerprint) {
   const ex = (await c.query(
     `SELECT request_hash, status, response_code, response_body
-       FROM idempotency_keys WHERE key = $1`, [dbKey],
+       FROM idempotency_keys
+      WHERE key = $1 AND shop_id = current_shop_id()`, [dbKey],
   )).rows[0];
   if (!ex) return null;
   if (ex.request_hash !== fingerprint) return {
@@ -1224,7 +1225,9 @@ async function refundOrder(res, ctx, body, params) {
       await audit(c, 'order.refund_partial', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, amount_vnd: amount, refunded_total_vnd: refundedTotal, ...(reason ? { reason } : {}) } });
       const result = { ok: true, status: o.status, payment_status: 'paid', refund_vnd: amount, refunded_total_vnd: refundedTotal };
       await c.query(
-        `UPDATE idempotency_keys SET status = 'completed', response_code = 200, response_body = $2 WHERE key = $1`,
+        `UPDATE idempotency_keys
+            SET status = 'completed', response_code = 200, response_body = $2
+          WHERE key = $1 AND shop_id = current_shop_id()`,
         [dbKey, result],
       );
       return { code: 200, result };
@@ -1253,7 +1256,9 @@ async function refundOrder(res, ctx, body, params) {
     await statusEvent(c, o); // email báo khách: trạng thái = refunded
     const result = { ok: true, status: 'refunded', payment_status: 'refunded', refund_vnd: amount, refunded_total_vnd: refundedTotal };
     await c.query(
-      `UPDATE idempotency_keys SET status = 'completed', response_code = 200, response_body = $2 WHERE key = $1`,
+      `UPDATE idempotency_keys
+          SET status = 'completed', response_code = 200, response_body = $2
+        WHERE key = $1 AND shop_id = current_shop_id()`,
       [dbKey, result],
     );
     return { code: 200, result };
@@ -1393,7 +1398,11 @@ export async function createManualOrder(res, ctx, body) {
        ON CONFLICT (shop_id, key) DO NOTHING RETURNING key`, [idemKey, requestHash],
     );
     if (claim.rows.length === 0) {
-      const ex = (await c.query(`SELECT request_hash, status, response_code, response_body FROM idempotency_keys WHERE key = $1`, [idemKey])).rows[0];
+      const ex = (await c.query(
+        `SELECT request_hash, status, response_code, response_body
+           FROM idempotency_keys
+          WHERE key = $1 AND shop_id = current_shop_id()`, [idemKey],
+      )).rows[0];
       if (!ex || ex.request_hash !== requestHash) fail(422, 'idempotency_key dùng lại với nội dung khác');
       if (ex.status === 'completed') return { code: ex.response_code, body: ex.response_body };
       fail(409, 'đơn đang được xử lý, thử lại');
@@ -1496,7 +1505,11 @@ export async function createManualOrder(res, ctx, body) {
     }, ctx.apiKeyId ? 'api' : 'seller_admin');
 
     const response = { id: order.id, order_number: Number(num), subtotal_vnd: subtotal, shipping_vnd: shipping, total_vnd: total, status: 'pending', payment_method: paymentMethod, ...(paymentRef ? { payment_ref: paymentRef } : {}) };
-    await c.query(`UPDATE idempotency_keys SET status = 'completed', response_code = 201, response_body = $2 WHERE key = $1`, [idemKey, response]);
+    await c.query(
+      `UPDATE idempotency_keys
+          SET status = 'completed', response_code = 201, response_body = $2
+        WHERE key = $1 AND shop_id = current_shop_id()`, [idemKey, response],
+    );
     return { code: 201, body: response };
   });
   return send(res, out.code, out.body);

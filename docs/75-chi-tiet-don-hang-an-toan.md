@@ -74,8 +74,9 @@ payload `shipment.returned`:
 
 ## Kiểm chứng
 
-- Unit: `235/235`.
-- DB invariant: `116/116`; kiểm thêm kiểu cột và định nghĩa partial unique index.
+- Unit: `236/236`.
+- DB invariant: `117/117`; kiểm thêm kiểu cột, định nghĩa partial unique index và
+  cô lập idempotency key trùng giữa hai shop.
 - Fresh migration: `173` migration, `0 DRIFT`, `0 pending`.
 - E2E: `106/106` suite; các bộ trọng tâm gồm money `64/64`, shipping `96/96`, bom hàng
   `5/5`, sự cố SSR `46/46`, công nợ `27/27`.
@@ -84,4 +85,3 @@ payload `shipment.returned`:
 Các ca quyết định: tuần tự và đồng thời cùng key chỉ một phiếu; cùng key khác amount/order bị
 chặn; key khác cùng amount vẫn là hai lần hoàn hợp lệ; replay sau khi đơn đã `refunded` trả
 `200 replayed`; bấm lặp hoàn-về không đổi tồn, ledger, audit, timeline hoặc outbox.
-

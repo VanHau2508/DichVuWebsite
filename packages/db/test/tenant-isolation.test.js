@@ -151,6 +151,45 @@ describe('GHI — WITH CHECK phải chặn', () => {
 
     await owner.query('UPDATE products SET price_vnd = 250000 WHERE id = $1', [A.productId]);
   });
+
+  test('idempotency key trùng giữa hai shop chỉ đọc và cập nhật dòng tenant hiện tại', async () => {
+    // Bảng legacy này chưa bật RLS, nên mọi câu SELECT/UPDATE của app_rw phải tự mang
+    // shop_id = current_shop_id(). Dùng CÙNG key ở hai shop để biến thiếu predicate thành
+    // lỗi thấy ngay: đọc ra 2 dòng hoặc UPDATE cả chứng từ của shop B.
+    const key = `tenant-shared-${randomUUID()}`;
+    await owner.query(
+      `INSERT INTO idempotency_keys (shop_id, key, request_hash, status)
+       VALUES ($1, $3, 'hash-a', 'in_progress'), ($2, $3, 'hash-b', 'in_progress')`,
+      [A.id, B.id, key],
+    );
+
+    const seen = await withTenant(A.id, (c) => c.query(
+      `SELECT shop_id, request_hash
+         FROM idempotency_keys
+        WHERE key = $1 AND shop_id = current_shop_id()`, [key],
+    ));
+    assert.equal(seen.rowCount, 1);
+    assert.equal(seen.rows[0].shop_id, A.id);
+    assert.equal(seen.rows[0].request_hash, 'hash-a');
+
+    const changed = await withTenant(A.id, (c) => c.query(
+      `UPDATE idempotency_keys
+          SET status = 'completed', response_code = 200, response_body = '{"shop":"a"}'::jsonb
+        WHERE key = $1 AND shop_id = current_shop_id()`, [key],
+    ));
+    assert.equal(changed.rowCount, 1, 'chỉ chứng từ của shop A được cập nhật');
+
+    const { rows } = await owner.query(
+      `SELECT shop_id, status, response_body FROM idempotency_keys
+        WHERE key = $1 ORDER BY shop_id`, [key],
+    );
+    const a = rows.find((r) => r.shop_id === A.id);
+    const b = rows.find((r) => r.shop_id === B.id);
+    assert.equal(a.status, 'completed');
+    assert.deepEqual(a.response_body, { shop: 'a' });
+    assert.equal(b.status, 'in_progress', 'shop B phải nguyên vẹn');
+    assert.equal(b.response_body, null);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

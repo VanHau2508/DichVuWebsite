@@ -4,6 +4,7 @@
 // (cạm bẫy re-cost); RMA copy cost vào return_lines + kind='rma'; edit-paid kind=
 // 'edit_adjustment'; refund thường kind='refund'.
 import http from 'node:http';
+import crypto from 'node:crypto';
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
@@ -145,7 +146,7 @@ async function main() {
 
   sect('Refund thường: kind mặc định = refund');
   await stepUp();
-  r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o3}/refund`, { body: { amount_vnd: 10000, reason: 'thiện chí' }, cookie: oc, origin: OS });
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o3}/refund`, { body: { amount_vnd: 10000, reason: 'thiện chí', idempotency_key: crypto.randomUUID() }, cookie: oc, origin: OS });
   const rf3 = (await owner.query(`SELECT kind FROM refunds WHERE order_id=$1 AND reason='thiện chí'`, [o3])).rows;
   r.status === 200 && rf3[0]?.kind === 'refund' ? ok('refund thường → kind=refund') : bad('kind refund sai', `${r.status} ${JSON.stringify(rf3)}`);
 

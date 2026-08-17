@@ -5,6 +5,7 @@
 // by_product NULL-cost → '—' + NULLS LAST · validate ngày thật/khoảng · RBAC 403 ·
 // export CSV step-up + số âm không bị apostrophe · cô lập tenant · bất biến Σ.
 import http from 'node:http';
+import crypto from 'node:crypto';
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
@@ -134,7 +135,7 @@ async function main() {
   // Đơn o2 (100k+ship) lùi paid_at về HÔM QUA → hoàn TOÀN BỘ hôm nay.
   await owner.query(`UPDATE orders SET paid_at = paid_at - interval '1 day' WHERE id=$1`, [o2.id]);
   await stepUp();
-  r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o2.id}/refund`, { body: {}, cookie: oc, origin: OS });
+  r = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${o2.id}/refund`, { body: { idempotency_key: crypto.randomUUID() }, cookie: oc, origin: OS });
   const o2st = (await owner.query(`SELECT payment_status, paid_at FROM orders WHERE id=$1`, [o2.id])).rows[0];
   r.status === 200 && o2st.payment_status === 'refunded' && o2st.paid_at !== null
     ? ok('hoàn toàn bộ → payment_status=refunded nhưng GIỮ paid_at') : bad('refund setup sai', `${r.status} ${JSON.stringify(o2st)}`);

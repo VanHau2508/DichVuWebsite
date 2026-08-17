@@ -29,6 +29,8 @@ import { can, ROLES } from '../../seller/src/rbac.js';
 const ROOT = join(import.meta.dirname, '..', '..', '..');
 const rd = (p) => readFileSync(join(ROOT, p), 'utf8');
 const pages = rd('apps/seller-admin/src/pages.js');
+const roles = rd('apps/seller-admin/src/roles.js');
+const roleSources = `${roles}\n${pages}`;
 
 // Bỏ chú thích TRƯỚC khi khớp. Chú thích ở kho này thường dài hơn mã và nhắc lại nguyên văn
 // chuỗi đang canh, nên chốt mức mã nguồn khớp trúng lời giải thích rồi báo XANH trong khi mã
@@ -56,11 +58,13 @@ const SET_QUYEN = {
   DOMAIN_ROLES: 'domain.write',
   REPORT_ROLES: 'reports.read',
   INVENTORY_ROLES: 'inventory.manage',
+  REFUND_ROLES: 'refund',
+  PAYMENT_ROLES: 'payment.write',
 };
 
 function vaiTrongSet(ten) {
-  const m = new RegExp(`const ${ten} = new Set\\(\\[([^\\]]*)\\]\\)`).exec(pages);
-  assert.ok(m, `không tìm thấy ${ten} trong pages.js — mốc chết`);
+  const m = new RegExp(`const ${ten} = new Set\\(\\[([^\\]]*)\\]\\)`).exec(roleSources);
+  assert.ok(m, `không tìm thấy ${ten} trong roles.js/pages.js — mốc chết`);
   return [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]);
 }
 

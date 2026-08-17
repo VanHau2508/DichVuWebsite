@@ -4,6 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const server = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'server.js'), 'utf8');
+const pages = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'pages.js'), 'utf8');
+const sellerOrders = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'seller', 'src', 'orders.js'), 'utf8');
+const migration = fs.readFileSync(path.join(import.meta.dirname, '..', '..', '..', 'packages', 'db', 'migrations', '0175_refund_idempotency.sql'), 'utf8');
 
 function thanHam(ten, tenHamSau) {
   const batDau = server.indexOf(`async function ${ten}(`);
@@ -37,4 +40,97 @@ test('xác nhận QR và hoàn tiền giữ nguyên message cùng action của s
   assert.match(hoanTien, /paymentApiError\(r, 'Không hoàn tiền được\.'\)/);
   assert.doesNotMatch(qr, /r\.json\?\.error \?\?/);
   assert.doesNotMatch(hoanTien, /r\.json\?\.error \?\?/);
+});
+
+test('refund luôn qua hai POST SSR và giữ nguyên idempotency key khi thử lại', () => {
+  const chuanBi = thanHam('refundConfirm', 'refundExecute');
+  const execStart = server.indexOf('async function refundExecute(');
+  const execEnd = server.indexOf('\nfunction readReturnBody(', execStart);
+  assert.ok(execStart >= 0 && execEnd > execStart, 'phải tìm thấy thân hàm refundExecute');
+  const thucThi = server.slice(execStart, execEnd);
+  const goiSeller = thanHam('doRefund', 'refundConfirm');
+  assert.match(chuanBi, /idempotency_key:\s*crypto\.randomUUID\(\)/,
+    'POST đầu phải sinh UUID ở server');
+  assert.match(chuanBi, /renderRefundConfirm/);
+  assert.doesNotMatch(chuanBi, /sellerApi\(|doRefund\(/,
+    'POST đầu chỉ được render xác nhận, chưa được ghi refund');
+  assert.match(thucThi, /UUID_RE\.test\(vals\.idempotency_key\)/);
+  assert.match(thucThi, /return doRefund\([^;]*vals\)/s,
+    'POST cuối phải chuyển đúng object chứa key sang seller');
+  assert.match(goiSeller, /body = \{ idempotency_key: vals\.idempotency_key \}/);
+  assert.match(goiSeller, /renderRefundConfirm\([^;]*vals/s,
+    'seller lỗi phải render lại confirmation với cùng key, không quay về form sinh key mới');
+  assert.doesNotMatch(goiSeller, /parseVnd\(vals\.amount_vnd\)/,
+    'không được biến amount rác thành null/toàn bộ bằng parseVnd');
+
+  const renderStart = pages.indexOf('export function renderRefundConfirm(');
+  const renderEnd = pages.indexOf('\nexport function renderInviteAccept(', renderStart);
+  const render = pages.slice(renderStart, renderEnd);
+  assert.match(render, /action="\$\{base\}\/refund\/confirm"/);
+  assert.match(render, /name="idempotency_key"/);
+  assert.match(render, /name="reason"/);
+  assert.match(render, /data-busy=/);
+  assert.match(render, /requirePassword \? '<label>Mật khẩu/,
+    'step-up còn hạn không được hỏi lại mật khẩu');
+  assert.match(server, /\/refund\$`\)\.exec\(p\)\) && req\.method === 'POST'\) return refundConfirm/);
+  assert.match(server, /\/refund\/confirm\$`\)\.exec\(p\)\) && req\.method === 'POST'\) return refundExecute/);
+  assert.doesNotMatch(server, /\/refund\/step-up/,
+    'route cũ cho phép bỏ qua trang xác nhận không được quay lại');
+});
+
+test('chi tiết đơn fail-closed khi thiếu payment_summary và không dựng công thức thứ hai', () => {
+  const start = pages.indexOf('export function renderOrderDetail(');
+  const end = pages.indexOf('\nexport function renderOrderEdit(', start);
+  const detail = pages.slice(start, end);
+  assert.match(detail, /PAYMENT_SUMMARY_MISSING/);
+  assert.doesNotMatch(detail, /legacyReceived|fallbackRefunded|fallbackNet/,
+    'không được khôi phục công thức tiền legacy trong view');
+  assert.match(detail, /const editable = paymentReady/,
+    'form sửa đơn thường cũng thay tổng tiền nên phải ẩn khi summary lỗi');
+  for (const action of ['editPaidAction', 'returnAction', 'canRecordManual', 'canReverse', 'refundAction']) {
+    const line = detail.split('\n').find((l) => l.includes(`const ${action} =`)) ?? '';
+    assert.match(line, /paymentReady/, `${action} phải biến mất khi summary lỗi`);
+  }
+  assert.match(detail, /\['cancelled', 'Không tải được'\]/,
+    'không được nói sai là chưa thanh toán khi summary bị thiếu');
+});
+
+test('workflow đơn dùng role semantic, bảng cuộn và hướng dẫn tồn hoàn về an toàn', () => {
+  const start = pages.indexOf('export function renderOrderDetail(');
+  const end = pages.indexOf('\nexport function renderOrderEdit(', start);
+  const detail = pages.slice(start, end);
+  assert.match(detail, /const editPaidAction = \([^\n]*REFUND_ROLES\.has\(ctx\.role\)\)/);
+  assert.match(detail, /const returnAction = \([^\n]*REFUND_ROLES\.has\(ctx\.role\)\)/);
+  assert.match(detail, /if \(o\.status === 'shipped'[^\n]*ORDER_ROLES\.has\(ctx\.role\)\)/);
+  assert.match(detail, /const canRecordManual = [^\n]*PAYMENT_ROLES\.has\(ctx\.role\)/);
+  assert.match(detail, /const canReverse = [\s\S]*?PAYMENT_ROLES\.has\(ctx\.role\);/);
+  assert.match(detail, /const refundAction = \([^\n]*REFUND_ROLES\.has\(ctx\.role\)\)/);
+  assert.match(detail, /const canResolveOrder = ORDER_ROLES\.has\(ctx\.role\);/);
+  assert.match(detail, /const canReceiveReturn = INVENTORY_ROLES\.has\(ctx\.role\);/);
+  assert.equal((server.match(/if \(!REFUND_ROLES\.has\(roleFor\(me, shopId\)\)\)/g) ?? []).length, 2,
+    'cả POST chuẩn bị và POST cuối của BFF phải dùng đúng REFUND_ROLES');
+  assert.ok((detail.match(/<div class="tblscroll"><table data-cards>/g) ?? []).length >= 3,
+    'ba bảng chi tiết đơn phải cuộn trong khối, không đẩy body ở 360px');
+  assert.match(detail, /<td\$\{canReverse \? ' class="stack"' : ''\}>\$\{reverseForm\}<\/td>/,
+    'form điều chỉnh tiền phải dùng ô stack để không giữ min-width 220px trong cột mobile hẹp');
+  assert.match(detail, /grid-template-columns:minmax\(125px,auto\) minmax\(0,1fr\)/,
+    'cột nội dung timeline phải được phép co nhỏ trong grid mobile');
+  assert.match(detail, /<div style="min-width:0;overflow-wrap:anywhere"><strong>/,
+    'mã sự kiện dài trong timeline phải xuống dòng thay vì đẩy body ngang');
+  assert.match(detail, /Hàng đã được nhập lại tồn[\s\S]*?Không cộng tồn thủ công lần nữa/);
+  assert.match(detail, /title_snapshot[\s\S]*?sku_snapshot/,
+    'phiếu nhận hàng hoàn phải dùng tên và SKU, không bắt người dùng đọc UUID');
+});
+
+test('refund idempotency được khoá ở DB và replay chạy trước guard trạng thái', () => {
+  assert.match(migration, /CREATE UNIQUE INDEX refunds_idem_uq[\s\S]*?ON refunds \(shop_id, idempotency_key\)[\s\S]*?WHERE idempotency_key IS NOT NULL/);
+  const start = sellerOrders.indexOf('async function refundOrder(');
+  const end = sellerOrders.indexOf('\nconst confirmOrder =', start);
+  const refund = sellerOrders.slice(start, end);
+  const replay = refund.indexOf('let idem = await refundIdempotency');
+  const paymentGuard = refund.indexOf("if (o.payment_status !== 'paid')");
+  assert.ok(replay >= 0 && paymentGuard > replay,
+    'replay phải chạy trước payment_status để đơn đã refunded vẫn trả 200 replayed');
+  assert.match(refund, /idempotency_key_reused/);
+  assert.match(refund, /refund_in_progress/);
 });

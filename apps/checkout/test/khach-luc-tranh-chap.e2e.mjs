@@ -59,6 +59,18 @@ async function adm(method, path, { cookie, form } = {}) {
   const r = await fetch(ADMIN + path, { method, headers: h, redirect: 'manual', body: form !== undefined ? String(form) : undefined });
   return { status: r.status, loc: r.headers.get('location'), body: await r.text(), sc: r.headers.getSetCookie() };
 }
+async function adminRefund(shopId, oid, { cookie, password, amount_vnd = '', reason = '' }) {
+  const prepare = await adm('POST', `/shops/${shopId}/orders/${oid}/refund`, {
+    cookie, form: new URLSearchParams({ amount_vnd, reason }),
+  });
+  const key = (prepare.body.match(/name="idempotency_key" value="([0-9a-f-]{36})"/) ?? [])[1];
+  if (!key) return { prepare, result: { status: 0, body: 'confirmation thiếu idempotency_key' } };
+  const final = { amount_vnd, reason, idempotency_key: key };
+  if (/name="password"/.test(prepare.body)) final.password = password;
+  return { prepare, result: await adm('POST', `/shops/${shopId}/orders/${oid}/refund/confirm`, {
+    cookie, form: new URLSearchParams(final),
+  }), key };
+}
 // Trang khách phải gọi qua http.request: fetch của Node CẤM đặt header Host (forbidden
 // header), nên shop được phân giải theo tên miền sẽ không bao giờ khớp — mất nửa giờ vì nó.
 function byHost(hostname, port, path, host, { cookie, method = 'GET', form, origin } = {}) {
@@ -157,8 +169,7 @@ async function main() {
   sect('2. Đơn QR đã hoàn tiền — trước đây trang vẽ lại mã QR đòi khách chuyển khoản');
   const dHoan = await datDon('cod');
   await A(dHoan.id, 'confirm'); await markPaid(dHoan.id);
-  await adm('POST', `/shops/${shopId}/orders/${dHoan.id}/refund/step-up`,
-    { cookie: ui, form: new URLSearchParams({ password: op, reason: 'khách đổi ý, hoàn đủ' }) });
+  await adminRefund(shopId, dHoan.id, { cookie: ui, password: op, reason: 'khách đổi ý, hoàn đủ' });
   await owner.query(`UPDATE orders SET payment_method='qr' WHERE id=$1`, [dHoan.id]);
   const st = (await owner.query(`SELECT status, payment_status FROM orders WHERE id=$1`, [dHoan.id])).rows[0];
   st.payment_status === 'refunded'
@@ -175,8 +186,7 @@ async function main() {
   const dMot = await datDon('cod');
   await A(dMot.id, 'confirm'); await markPaid(dMot.id);
   await A(dMot.id, 'cancel', { reason: 'hết hàng' });
-  await adm('POST', `/shops/${shopId}/orders/${dMot.id}/refund/step-up`,
-    { cookie: ui, form: new URLSearchParams({ password: op, amount_vnd: '100000', reason: 'trả trước một phần' }) });
+  await adminRefund(shopId, dMot.id, { cookie: ui, password: op, amount_vnd: '100000', reason: 'trả trước một phần' });
   p = await xemTraCuu(dMot);
   const noShop = await owedCuaShop(dMot.id);
   const soTrenTrang = (p.body.match(/Cửa hàng còn phải hoàn<\/span><span><strong>([^<]*)/) ?? [])[1];

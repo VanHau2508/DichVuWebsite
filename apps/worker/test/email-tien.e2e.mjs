@@ -57,6 +57,18 @@ async function adm(method, path, { cookie, form } = {}) {
   const r = await fetch(ADMIN + path, { method, headers: h, redirect: 'manual', body: form !== undefined ? String(form) : undefined });
   return { status: r.status, loc: r.headers.get('location'), body: await r.text(), sc: r.headers.getSetCookie() };
 }
+async function adminRefund(shopId, oid, { cookie, password, amount_vnd = '', reason = '' }) {
+  const prepare = await adm('POST', `/shops/${shopId}/orders/${oid}/refund`, {
+    cookie, form: new URLSearchParams({ amount_vnd, reason }),
+  });
+  const key = (prepare.body.match(/name="idempotency_key" value="([0-9a-f-]{36})"/) ?? [])[1];
+  if (!key) return { prepare, result: { status: 0, body: 'confirmation thiếu idempotency_key' } };
+  const final = { amount_vnd, reason, idempotency_key: key };
+  if (/name="password"/.test(prepare.body)) final.password = password;
+  return { prepare, result: await adm('POST', `/shops/${shopId}/orders/${oid}/refund/confirm`, {
+    cookie, form: new URLSearchParams(final),
+  }), key };
+}
 const login = async (e, p) => ck((await rq(AUTH, 'POST', '/auth/login', { body: { email: e, password: p }, origin: OA })).sc);
 const uidOf = async (e) => (await owner.query('SELECT id FROM users WHERE email=$1', [e])).rows[0]?.id ?? null;
 
@@ -146,8 +158,7 @@ async function main() {
   sect('2. Hoàn một phần RỒI mới huỷ — bản cũ hứa nguyên tổng đơn');
   const d2 = await datDon();
   await A(d2.id, 'confirm'); await markPaid(d2.id);
-  await adm('POST', `/shops/${shopId}/orders/${d2.id}/refund/step-up`,
-    { cookie: ui, form: new URLSearchParams({ password: op, amount_vnd: '150000', reason: 'trả trước một phần' }) });
+  await adminRefund(shopId, d2.id, { cookie: ui, password: op, amount_vnd: '150000', reason: 'trả trước một phần' });
   await A(d2.id, 'cancel', { reason: 'khách đổi ý' });
   const no2 = await owedCua(d2.id);
   const m2 = await mpTim(d2.email, 'đã huỷ');
@@ -182,8 +193,7 @@ async function main() {
   sect('4. Hoàn đủ tiền — email nói rõ đã xong');
   const d4 = await datDon();
   await A(d4.id, 'confirm'); await markPaid(d4.id);
-  await adm('POST', `/shops/${shopId}/orders/${d4.id}/refund/step-up`,
-    { cookie: ui, form: new URLSearchParams({ password: op, reason: 'hoàn đủ' }) });
+  await adminRefund(shopId, d4.id, { cookie: ui, password: op, reason: 'hoàn đủ' });
   const m4 = await mpTim(d4.email, 'đã hoàn tiền');
   m4 ? ok(`nhận được email "${m4.subject}"`) : bad('không thấy email hoàn tiền', '');
   if (m4) {

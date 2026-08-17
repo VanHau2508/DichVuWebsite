@@ -52,6 +52,8 @@ const SUMMARY_SQL = `
                'id', cl.id,
                'order_line_id', cl.order_line_id,
                'variant_id', cl.variant_id,
+               'title_snapshot', ol.title_snapshot,
+               'sku_snapshot', ol.sku_snapshot,
                'ordered_qty', cl.ordered_qty,
                'delivered_qty', cl.delivered_qty,
                'returned_qty', cl.returned_qty,
@@ -71,6 +73,9 @@ const SUMMARY_SQL = `
              sum(cl.returned_qty)::int AS returned_qty,
              sum(cl.unresolved_qty)::int AS unresolved_qty
         FROM order_resolution_case_lines cl
+        LEFT JOIN order_lines ol
+          ON ol.shop_id = cl.shop_id AND ol.order_id = cl.order_id
+         AND ol.id = cl.order_line_id AND ol.variant_id = cl.variant_id
        WHERE cl.case_id = rc.id
     ) snap ON true
     LEFT JOIN LATERAL (

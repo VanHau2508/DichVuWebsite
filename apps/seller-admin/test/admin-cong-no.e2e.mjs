@@ -54,6 +54,18 @@ async function adm(method, path, { cookie, form } = {}) {
   const r = await fetch(ADMIN + path, { method, headers: h, redirect: 'manual', body: form !== undefined ? String(form) : undefined });
   return { status: r.status, loc: r.headers.get('location'), body: await r.text(), sc: r.headers.getSetCookie() };
 }
+async function adminRefund(shopId, oid, { cookie, password, amount_vnd = '', reason = '' }) {
+  const prepare = await adm('POST', `/shops/${shopId}/orders/${oid}/refund`, {
+    cookie, form: new URLSearchParams({ amount_vnd, reason }),
+  });
+  const key = (prepare.body.match(/name="idempotency_key" value="([0-9a-f-]{36})"/) ?? [])[1];
+  if (!key) return { prepare, result: { status: 0, body: 'confirmation thiếu idempotency_key' } };
+  const final = { amount_vnd, reason, idempotency_key: key };
+  if (/name="password"/.test(prepare.body)) final.password = password;
+  return { prepare, result: await adm('POST', `/shops/${shopId}/orders/${oid}/refund/confirm`, {
+    cookie, form: new URLSearchParams(final),
+  }), key };
+}
 const login = async (e, p) => ck((await rq(AUTH, 'POST', '/auth/login', { body: { email: e, password: p }, origin: OA })).sc);
 const uidOf = async (e) => (await owner.query('SELECT id FROM users WHERE email=$1', [e])).rows[0]?.id ?? null;
 
@@ -181,20 +193,17 @@ async function main() {
   cn = await congNo();
   cn.orders.some((o) => o.id === dSua.id && o.owed_vnd === noSua) ? ok('và nó có mặt trong danh sách công nợ') : bad('lọt khỏi danh sách', '');
   // Trả nốt cho đơn này để các phần sau đếm trên nền sạch.
-  await adm('POST', `/shops/${s.shopId}/orders/${dSua.id}/refund/step-up`,
-    { cookie: s.ui, form: new URLSearchParams({ password: s.password, reason: 'trả nốt' }) });
+  await adminRefund(s.shopId, dSua.id, { cookie: s.ui, password: s.password, reason: 'trả nốt' });
   (await oCua(dSua.id)) === 0 ? ok('hoàn nốt → về 0, dọn nền cho các phần sau') : bad('còn nợ sau khi hoàn đủ', '');
 
   // ── 3. HOÀN MỘT PHẦN RỒI HOÀN ĐỦ ─────────────────────────────────────────
   sect('3. Trả tiền dần — nợ phải tụt theo, và tự rời danh sách khi trả xong');
   const nua = Math.floor(Number(dHuy.total_vnd) / 2);
-  await adm('POST', `/shops/${s.shopId}/orders/${dHuy.id}/refund/step-up`,
-    { cookie: s.ui, form: new URLSearchParams({ password: s.password, amount_vnd: String(nua), reason: 'trả trước một nửa' }) });
+  await adminRefund(s.shopId, dHuy.id, { cookie: s.ui, password: s.password, amount_vnd: String(nua), reason: 'trả trước một nửa' });
   cn = await congNo();
   const conLai = cn.orders.find((o) => o.id === dHuy.id)?.owed_vnd;
   conLai === Number(dHuy.total_vnd) - nua ? ok(`hoàn ${nua}₫ → còn nợ ${conLai}₫, vẫn nằm trong danh sách`) : bad(`còn nợ sai: ${conLai}`, '');
-  await adm('POST', `/shops/${s.shopId}/orders/${dHuy.id}/refund/step-up`,
-    { cookie: s.ui, form: new URLSearchParams({ password: s.password, reason: 'trả nốt' }) });
+  await adminRefund(s.shopId, dHuy.id, { cookie: s.ui, password: s.password, reason: 'trả nốt' });
   cn = await congNo();
   !cn.orders.some((o) => o.id === dHuy.id) && cn.count === 1
     ? ok('trả đủ → đơn TỰ RỜI danh sách (đây là hàng đợi việc, không phải kho lưu trữ)') : bad(`vẫn còn: ${JSON.stringify({ n: cn.count })}`, '');
@@ -206,8 +215,7 @@ async function main() {
   const dGiao = await s.datDon();
   await s.A(dGiao.id, 'confirm'); await s.A(dGiao.id, 'mark-paid');
   await s.A(dGiao.id, 'ship', { tracking_number: `TN${uniq()}` }); await s.A(dGiao.id, 'deliver');
-  await adm('POST', `/shops/${s.shopId}/orders/${dGiao.id}/refund/step-up`,
-    { cookie: s.ui, form: new URLSearchParams({ password: s.password, amount_vnd: '50000', reason: 'xin lỗi giao chậm' }) });
+  await adminRefund(s.shopId, dGiao.id, { cookie: s.ui, password: s.password, amount_vnd: '50000', reason: 'xin lỗi giao chậm' });
   cn = await congNo();
   !cn.orders.some((o) => o.id === dGiao.id)
     ? ok('shop trả DƯ thì đó là quà, không phải nợ — không lọt vào danh sách') : bad('tính nhầm thành nợ', '');

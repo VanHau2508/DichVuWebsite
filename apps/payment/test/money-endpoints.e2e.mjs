@@ -15,6 +15,7 @@
  *      chỉ đánh dấu resolved_at (KHÔNG gắn đơn, KHÔNG đặt paid — hợp đồng thật),
  *      resolve lần 2 → 409, chéo shop bị RLS chặn → 409, ngoài membership → 404.
  */
+import crypto from 'node:crypto';
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
@@ -36,6 +37,7 @@ const sect = (m) => console.log(`\n${B}${m}${X}`);
 const uniq = () => Math.random().toString(36).slice(2, 10);
 const phone = () => '09' + String(Math.floor(Math.random() * 1e8)).padStart(8, '0');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const refundBody = (body = {}, key = crypto.randomUUID()) => ({ ...body, idempotency_key: key });
 const ck = (sc) => { for (const c of sc ?? []) { const m = /^__Host-session=([^;]*)/.exec(c); if (m) return m[1]; } return null; };
 
 async function rq(base, method, path, { body, cookie, origin } = {}) {
@@ -148,22 +150,22 @@ async function main() {
   r = await a.post(`/orders/${o1.id}/mark-paid`, {});
   r.status === 200 && r.json.payment_status === 'paid'
     ? ok('owner + step-up mark-paid COD → 200 paid') : bad('mark-paid sau step-up lỗi', r.raw);
-  r = await a.post(`/orders/${o2.id}/refund`, {});
+  r = await a.post(`/orders/${o2.id}/refund`, refundBody());
   r.status === 409 && /chỉ hoàn được đơn đã thanh toán/.test(r.json?.error ?? '') ? ok('refund đơn CHƯA TRẢ → 409') : bad('refund đơn chưa trả lọt', r.raw);
 
   let before = await invOf(vid);
-  r = await a.post(`/orders/${o1.id}/refund`, {});
+  const o1RefundKey = crypto.randomUUID();
+  r = await a.post(`/orders/${o1.id}/refund`, refundBody({}, o1RefundKey));
   r.status === 200 && r.json.status === 'refunded' && r.json.payment_status === 'refunded'
     ? ok('refund đơn pending+paid → 200 status=refunded payment=refunded') : bad('refund lỗi', r.raw);
   inv = await invOf(vid);
   Number(inv.reserved) === Number(before.reserved) - 2 && Number(inv.on_hand) === Number(before.on_hand)
     ? ok('refund từ pending → GIẢI PHÓNG reserve (−2), on_hand nguyên') : bad(`tồn sau refund: ${inv.on_hand}/${inv.reserved} (trước ${before.on_hand}/${before.reserved})`);
-  // Hợp đồng thật: sau refund payment_status='refunded' nên guard "chưa paid"
-  // (orders.js:335) bắn TRƯỚC guard "đã hoàn" (336 — nhánh chết) → message là
-  // 'chỉ hoàn được đơn đã thanh toán'. Vẫn 409 idempotent, chỉ khác lời báo.
-  r = await a.post(`/orders/${o1.id}/refund`, {});
-  r.status === 409 && /chỉ hoàn được đơn đã thanh toán|đã hoàn tiền/.test(r.json?.error ?? '')
-    ? ok('refund LẦN 2 → 409 (idempotent-guard; message qua nhánh "chưa paid")') : bad('refund double lọt', r.raw);
+  r = await a.post(`/orders/${o1.id}/refund`, refundBody({}, o1RefundKey));
+  r.status === 200 && r.json?.replayed === true && r.json?.status === 'refunded'
+    ? ok('refund LẦN 2 cùng key → 200 replayed dù đơn đã lật refunded') : bad('refund replay sau full sai', r.raw);
+  r = await a.post(`/orders/${o1.id}/refund`, refundBody());
+  r.status === 409 ? ok('refund LẦN 2 với key mới → 409') : bad('refund key mới sau full lọt', r.raw);
   r = await a.post(`/orders/${o1.id}/mark-paid`, {});
   r.status === 409 ? ok('mark-paid đơn ĐÃ HOÀN → 409 (không đảo ngược được refund)') : bad('mark-paid đảo được refund — LỖ HỔNG', r.raw);
 
@@ -175,7 +177,7 @@ async function main() {
   inv = await invOf(vid);
   r.status === 200 && Number(inv.on_hand) === 18 ? ok('vòng đời confirm→ship→deliver→paid (ship consume on_hand −2)') : bad(`vòng đời lỗi: ${r.status} on_hand=${inv.on_hand}`, r.raw);
   before = inv;
-  r = await a.post(`/orders/${o3.id}/refund`, {});
+  r = await a.post(`/orders/${o3.id}/refund`, refundBody());
   r.status === 200 && r.json.status === 'refunded' ? ok('refund đơn DELIVERED+paid → 200') : bad('refund delivered lỗi', r.raw);
   inv = await invOf(vid);
   Number(inv.on_hand) === Number(before.on_hand) && Number(inv.reserved) === Number(before.reserved)
@@ -187,14 +189,14 @@ async function main() {
   const adm = await inviteMember(A.shopId, A.cookie, 'admin');
   r = await a.post(`/orders/${o4.id}/mark-paid`, {});
   r.status === 200 ? ok('chuẩn bị: o4 COD mark-paid → 200') : bad('mark-paid o4 lỗi', r.raw);
-  r = await a.post(`/orders/${o4.id}/refund`, {}, om.cookie);
+  r = await a.post(`/orders/${o4.id}/refund`, refundBody(), om.cookie);
   r.status === 403 && r.json?.required === 'refund' && !r.json?.step_up_required
     ? ok('order_manager refund → 403 không đủ quyền (perm refund chỉ owner/admin)') : bad('order_manager refund sai', r.raw);
-  r = await a.post(`/orders/${o4.id}/refund`, {}, adm.cookie);
+  r = await a.post(`/orders/${o4.id}/refund`, refundBody(), adm.cookie);
   r.status === 403 && r.json?.step_up_required === true ? ok('admin CÓ perm nhưng chưa step-up → 403 step_up_required') : bad('admin refund thiếu gác', r.raw);
   await stepUp(adm.cookie, adm.password);
   before = await invOf(vid);
-  r = await a.post(`/orders/${o4.id}/refund`, {}, adm.cookie);
+  r = await a.post(`/orders/${o4.id}/refund`, refundBody(), adm.cookie);
   inv = await invOf(vid);
   r.status === 200 && Number(inv.reserved) === Number(before.reserved) - 1
     ? ok('admin + step-up refund → 200 (rbac.js: admin có refund), reserve −1') : bad('admin refund lỗi', r.raw);
@@ -216,7 +218,7 @@ async function main() {
   r = await a.post(`/orders/${oq.id}/mark-paid`, {});
   r.status === 409 && /chỉ đơn COD/.test(r.json?.error ?? '') ? ok('mark-paid (COD) trên đơn QR → 409 (hai đường không giẫm nhau)') : bad('QR lọt mark-paid COD', r.raw);
   before = await invOf(vid);
-  r = await a.post(`/orders/${oq.id}/refund`, {});
+  r = await a.post(`/orders/${oq.id}/refund`, refundBody());
   inv = await invOf(vid);
   r.status === 200 && Number(inv.reserved) === Number(before.reserved) - 1
     ? ok('refund đơn QR vừa xác nhận tay → 200, reserve −1 (đường QR hoàn được như COD)') : bad('refund QR lỗi', r.raw);
@@ -293,15 +295,23 @@ async function main() {
   const o5 = await mkOrder(2); // total = 2×100000 + 30000 ship = 230000
   r = await a.post(`/orders/${o5.id}/mark-paid`, {});
   r.status === 200 ? ok('chuẩn bị: o5 COD mark-paid → 200') : bad('mark-paid o5 lỗi', r.raw);
-  r = await a.post(`/orders/${o5.id}/refund`, { amount_vnd: 'abc' });
+  r = await a.post(`/orders/${o5.id}/refund`, refundBody({ amount_vnd: 'abc' }));
   r.status === 400 && /không hợp lệ/.test(r.json?.error ?? '') ? ok('amount rác → 400') : bad('amount rác lọt', r.raw);
-  r = await a.post(`/orders/${o5.id}/refund`, { amount_vnd: -5 });
+  r = await a.post(`/orders/${o5.id}/refund`, refundBody({ amount_vnd: -5 }));
   r.status === 400 ? ok('amount âm → 400') : bad('amount âm lọt', r.raw);
 
   before = await invOf(vid);
-  r = await a.post(`/orders/${o5.id}/refund`, { amount_vnd: 100000, reason: 'khách trả 1 món' });
+  const partialKey = crypto.randomUUID();
+  const partialPayload = { amount_vnd: 100000, reason: 'khách trả 1 món' };
+  r = await a.post(`/orders/${o5.id}/refund`, refundBody(partialPayload, partialKey));
   r.status === 200 && r.json.payment_status === 'paid' && r.json.refund_vnd === 100000 && r.json.refunded_total_vnd === 100000
     ? ok('hoàn MỘT PHẦN 100k → 200, đơn GIỮ paid, refunded_total=100k') : bad('hoàn một phần lỗi', r.raw);
+  const replayPartial = await a.post(`/orders/${o5.id}/refund`, refundBody(partialPayload, partialKey));
+  replayPartial.status === 200 && replayPartial.json?.replayed === true && replayPartial.json?.refunded_total_vnd === 100000
+    ? ok('partial gửi tuần tự cùng key → replay đúng response, không cộng lần hai') : bad('partial replay sai', replayPartial.raw);
+  const diffAmount = await a.post(`/orders/${o5.id}/refund`, refundBody({ ...partialPayload, amount_vnd: 90000 }, partialKey));
+  diffAmount.status === 409 && diffAmount.json?.error_code === 'idempotency_key_reused'
+    ? ok('cùng key khác amount → 409 idempotency_key_reused') : bad('cùng key khác amount lọt', diffAmount.raw);
   row = await orderRow(o5.id);
   row.payment_status === 'paid' && row.status === 'pending'
     ? ok('DB: đơn vẫn paid + pending sau hoàn một phần') : bad(`DB sai sau partial: ${JSON.stringify(row)}`);
@@ -315,12 +325,13 @@ async function main() {
   r.status === 200 && (r.json.refunds ?? []).length === 1 && r.json.refunded_total_vnd === 100000
     ? ok('getOrder trả refunds[] + refunded_total_vnd') : bad('getOrder thiếu refunds', r.raw);
 
-  r = await a.post(`/orders/${o5.id}/refund`, { amount_vnd: 200000 });
+  r = await a.post(`/orders/${o5.id}/refund`, refundBody({ amount_vnd: 200000 }));
   r.status === 422 && /vượt quá/.test(r.json?.error ?? '')
     ? ok('hoàn vượt số còn lại (100k+200k > 230k) → 422 tiếng Việt') : bad('over-refund lọt', r.raw);
 
   before = await invOf(vid);
-  r = await a.post(`/orders/${o5.id}/refund`, { amount_vnd: 130000 });
+  const finalRefundKey = crypto.randomUUID();
+  r = await a.post(`/orders/${o5.id}/refund`, refundBody({ amount_vnd: 130000 }, finalRefundKey));
   r.status === 200 && r.json.status === 'refunded' && r.json.payment_status === 'refunded' && r.json.refunded_total_vnd === 230000
     ? ok('partial thứ 2 chạm tổng (100k+130k=230k) → LẬT refunded') : bad('chạm tổng không lật', r.raw);
   inv = await invOf(vid);
@@ -328,9 +339,38 @@ async function main() {
     ? ok('nhát lật từ pending → GIẢI PHÓNG reserve (−2) như hoàn toàn bộ') : bad(`tồn sau lật: ${inv.on_hand}/${inv.reserved}`);
   r = await a.get(`/orders/${o5.id}`);
   (r.json?.refunds ?? []).length === 2 && r.json?.refunded_total_vnd === 230000
-    ? ok('lịch sử 2 bút toán, luỹ kế = tổng đơn') : bad('lịch sử sau lật sai', r.raw);
-  r = await a.post(`/orders/${o5.id}/refund`, { amount_vnd: 1000 });
-  r.status === 409 ? ok('hoàn tiếp sau khi đã lật refunded → 409') : bad('refund sau lật lọt', r.raw);
+    && r.json?.payment_summary?.refunded_vnd === 230000 && r.json?.payment_summary?.customer_credit_vnd === 0
+    ? ok('lịch sử/payment_summary cùng luỹ kế 230k, không còn credit khách') : bad('lịch sử/summary sau lật sai', r.raw);
+  r = await a.post(`/orders/${o5.id}/refund`, refundBody({ amount_vnd: 130000 }, finalRefundKey));
+  r.status === 200 && r.json?.replayed === true && r.json?.status === 'refunded'
+    ? ok('replay nhát lật refunded → 200 replayed') : bad('replay nhát lật sai', r.raw);
+  r = await a.post(`/orders/${o5.id}/refund`, refundBody({ amount_vnd: 1000 }));
+  r.status === 409 ? ok('hoàn tiếp key mới sau khi đã lật refunded → 409') : bad('refund sau lật lọt', r.raw);
+
+  // Hai request đồng thời cùng key: chỉ một phiếu. Hai key khác nhau vẫn là hai lần hoàn hợp lệ.
+  const oc = await mkOrder(2);
+  await a.post(`/orders/${oc.id}/mark-paid`, {});
+  const concurrentKey = crypto.randomUUID();
+  const concurrentPayload = { amount_vnd: 40000, reason: 'double click' };
+  const [cc1, cc2] = await Promise.all([
+    a.post(`/orders/${oc.id}/refund`, refundBody(concurrentPayload, concurrentKey)),
+    a.post(`/orders/${oc.id}/refund`, refundBody(concurrentPayload, concurrentKey)),
+  ]);
+  const concurrentRows = (await owner.query(`SELECT amount_vnd FROM refunds WHERE order_id=$1`, [oc.id])).rows;
+  [cc1.status, cc2.status].every((s) => s === 200) && [cc1.json?.replayed, cc2.json?.replayed].filter(Boolean).length === 1
+    && concurrentRows.length === 1 && Number(concurrentRows[0].amount_vnd) === 40000
+    ? ok('2 POST đồng thời cùng key → đúng 1 phiếu, request còn lại replay') : bad('concurrent refund sai', `${cc1.raw} | ${cc2.raw} | ${JSON.stringify(concurrentRows)}`);
+  const otherOrder = await mkOrder(1);
+  await a.post(`/orders/${otherOrder.id}/mark-paid`, {});
+  r = await a.post(`/orders/${otherOrder.id}/refund`, refundBody(concurrentPayload, concurrentKey));
+  r.status === 409 && r.json?.error_code === 'idempotency_key_reused'
+    ? ok('cùng key khác order_id → 409 idempotency_key_reused') : bad('cùng key khác order lọt', r.raw);
+  const sameAmountA = await a.post(`/orders/${oc.id}/refund`, refundBody({ amount_vnd: 30000 }));
+  const sameAmountB = await a.post(`/orders/${oc.id}/refund`, refundBody({ amount_vnd: 30000 }));
+  const ocRows = (await owner.query(`SELECT amount_vnd FROM refunds WHERE order_id=$1 ORDER BY created_at, id`, [oc.id])).rows;
+  sameAmountA.status === 200 && sameAmountB.status === 200 && ocRows.length === 3
+    && ocRows.reduce((sum, x) => sum + Number(x.amount_vnd), 0) === 100000
+    ? ok('khác key cùng amount → hai lần hoàn hợp lệ, tổng đúng 100k') : bad('hai key hợp lệ bị gộp/sai', `${sameAmountA.raw} | ${sameAmountB.raw} | ${JSON.stringify(ocRows)}`);
 
   // ── 6. BULK MARK-PAID COD (gom tiền cuối ngày) ────────────────────────────
   sect('7. BULK MARK-PAID (chỉ COD, bỏ qua QR/terminal)');

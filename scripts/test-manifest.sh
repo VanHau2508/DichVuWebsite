@@ -117,7 +117,7 @@ MANIFEST_E2E_COUNT=106
 # nên hôm nay là 172 file trong khi file mới nhất mang số 0174 — suy số lượng từ số thứ tự
 # là sai ngay từ hôm nay. scripts/fresh-migration-gate.sh so BẰNG với con số này, và so
 # thêm với số dòng thực trong schema_migrations của một DB TRẮNG.
-MANIFEST_MIGRATION_COUNT=172
+MANIFEST_MIGRATION_COUNT=173
 
 manifest_unit_files() {
   shopt -s nullglob

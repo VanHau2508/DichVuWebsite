@@ -539,6 +539,11 @@ function makeTransition(from, to, tsCol, action, guard = null, eventType = actio
     });
     if (out.code === 404) return send(res, 404, { error: 'không tìm thấy đơn' });
     if (out.code === 4092) return send(res, 409, { error: out.msg });
+    if (out.code === 409 && out.cur === to) return send(res, 409, {
+      error_code: 'order_already_in_target_state',
+      message: `đơn đã ở trạng thái ${to} — thao tác trước đã chạy, không cần làm lại`,
+      action: 'Tải lại trang để xem trạng thái mới nhất.',
+    });
     if (out.code === 409) return send(res, 409, { error: `không thể chuyển từ ${out.cur}` });
     return send(res, 200, { ok: true, status: to });
   };
@@ -780,6 +785,11 @@ async function markReturnedBomb(res, ctx, body, params) {
     error_code: 'mixed_shipment_resolution_required',
     message: out.msg,
     action: 'Mở mục Việc cần xử lý của đơn để chờ hàng, restock/quarantine và chốt giao một phần.',
+  });
+  if (out.code === 409 && out.cur === 'returned') return send(res, 409, {
+    error_code: 'order_already_returned',
+    message: 'Đơn đã ở trạng thái Hoàn về — thao tác trước đã chạy, không cần làm lại.',
+    action: 'Tải lại trang để kiểm tra tồn kho và lịch sử xử lý.',
   });
   if (out.code === 409) return send(res, 409, { error: `chỉ hoàn-về đơn ĐANG GIAO (shipped); đơn hiện ${out.cur}` });
   return send(res, 200, { ok: true, status: 'returned' });
@@ -1073,7 +1083,37 @@ async function reverseManualPayment(res, ctx, body, params) {
 //   - shipped/delivered / cancelled → KHÔNG đụng tồn; chủ shop tự nhập lại kho nếu khách
 //     trả hàng. restock trên dòng refunds là Ý ĐỊNH GHI NHẬN (v1 không tự đụng tồn —
 //     hoàn theo số tiền không ánh xạ được sang qty từng dòng hàng).
-// Idempotent: guard payment_status='paid' (sau lật → 'refunded' → 409).
+// Refund MỘT PHẦN giữ nguyên paid/status nên chốt trạng thái không thể chống double-submit.
+// Dùng idempotency_keys để giữ response nguyên bản (kể cả đơn 0đ không sinh refunds row),
+// đồng thời đóng key lên chứng từ refunds để đối soát được request nào đã tạo dòng nào.
+async function refundIdempotency(c, dbKey, fingerprint) {
+  const ex = (await c.query(
+    `SELECT request_hash, status, response_code, response_body
+       FROM idempotency_keys WHERE key = $1`, [dbKey],
+  )).rows[0];
+  if (!ex) return null;
+  if (ex.request_hash !== fingerprint) return {
+    code: 4094,
+    msg: 'mã chống gửi lặp đã được dùng cho một yêu cầu hoàn tiền khác',
+  };
+  if (ex.status === 'completed') return {
+    code: Number(ex.response_code) || 200,
+    replay: true,
+    result: ex.response_body,
+  };
+  return { code: 4095, msg: 'yêu cầu hoàn tiền này đang được xử lý — không gửi lại với mã khác' };
+}
+
+async function claimRefundIdempotency(c, dbKey, fingerprint) {
+  const claim = await c.query(
+    `INSERT INTO idempotency_keys (shop_id, key, request_hash, status)
+     VALUES (current_shop_id(), $1, $2, 'in_progress')
+     ON CONFLICT (shop_id, key) DO NOTHING RETURNING key`,
+    [dbKey, fingerprint],
+  );
+  return claim.rowCount === 1 ? null : refundIdempotency(c, dbKey, fingerprint);
+}
+
 async function refundOrder(res, ctx, body, params) {
   const orderId = params[1];
   // Validate amount TRƯỚC transaction: null/'' = hoàn toàn bộ; có giá trị phải là số nguyên dương.
@@ -1086,12 +1126,30 @@ async function refundOrder(res, ctx, body, params) {
   }
   const reason = String(body?.reason ?? '').trim().slice(0, 500) || null;
   const restock = body?.restock === true || body?.restock === 'true';
+  const idempotencyKey = String(body?.idempotency_key ?? '').trim().toLowerCase();
+  if (!UUID_RE.test(idempotencyKey)) return send(res, 400, {
+    error: 'idempotency_key phải là UUID hợp lệ',
+    error_code: 'refund_idempotency_key_required',
+  });
+  const mode = amountReq == null ? 'full' : 'amount';
+  const fingerprint = sha256(JSON.stringify({
+    order_id: orderId, mode, amount_vnd: amountReq, reason, restock,
+  }));
+  const dbKey = `refund:${idempotencyKey}`;
   const out = await withTenant(ctx.shopId, async (c) => {
+    // Fast replay trước mọi guard trạng thái. Nếu lần đầu đã lật refunded thì đặt đoạn này
+    // sau SELECT orders sẽ biến một replay hợp lệ thành lỗi "đơn đã hoàn tiền".
+    let idem = await refundIdempotency(c, dbKey, fingerprint);
+    if (idem) return idem;
     const o = (await c.query(
       `SELECT id, order_number, status, payment_status, customer_email, total_vnd
          FROM orders WHERE id = $1 FOR UPDATE`, [orderId],
     )).rows[0];
     if (!o) return { code: 404 };
+    // Request đồng thời trên CÙNG đơn chờ ở FOR UPDATE. Khi được đánh thức, transaction đầu
+    // đã commit idempotency row nên phải đọc lại trước guard payment_status.
+    idem = await refundIdempotency(c, dbKey, fingerprint);
+    if (idem) return idem;
     if (o.payment_status !== 'paid') return { code: 409, msg: 'chỉ hoàn được đơn đã thanh toán' };
     if (o.status === 'refunded') return { code: 409, msg: 'đơn đã hoàn tiền' };
     const activeCase = await activeResolutionCaseForOrder(c, orderId);
@@ -1145,11 +1203,16 @@ async function refundOrder(res, ctx, body, params) {
       msg: 'không thể hoàn toàn bộ khi ca giao một phần còn mở vì sẽ đóng sai trạng thái thương mại của đơn',
       action: 'Chỉ hoàn đúng phần không giao theo số tối thiểu trong ca, sau đó chốt Chấp nhận giao một phần.',
     };
+    // Chỉ giành key SAU toàn bộ validation nhưng TRƯỚC tác dụng phụ đầu tiên. Hai request
+    // khác đơn dùng cùng key không chờ cùng order lock; UNIQUE của idempotency_keys sẽ chọn
+    // đúng một bên, bên còn lại đọc response đã commit và không chạm refunds/tồn/audit.
+    idem = await claimRefundIdempotency(c, dbKey, fingerprint);
+    if (idem) return idem;
     if (amount > 0) { // đơn 0đ (hàng tặng + freeship) hoàn toàn bộ = chỉ lật, không có bút toán 0đ
       await c.query(
-        `INSERT INTO refunds (shop_id, order_id, amount_vnd, reason, restock, created_by)
-         VALUES (current_shop_id(), $1, $2, $3, $4, $5)`,
-        [orderId, amount, reason, restock, ctx.user.id],
+        `INSERT INTO refunds (shop_id, order_id, amount_vnd, reason, restock, created_by, idempotency_key, request_fingerprint)
+         VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6, $7)`,
+        [orderId, amount, reason, restock, ctx.user.id, idempotencyKey, fingerprint],
       );
       await orderEvent(c, orderId, 'payment.refunded', ctx, {
         amount_vnd: amount, reason, restock, refunded_total_vnd: already + amount,
@@ -1159,7 +1222,12 @@ async function refundOrder(res, ctx, body, params) {
     if (refundedTotal < total) {
       // MỘT PHẦN: đơn giữ nguyên paid + status. Không statusEvent (trạng thái không đổi).
       await audit(c, 'order.refund_partial', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, amount_vnd: amount, refunded_total_vnd: refundedTotal, ...(reason ? { reason } : {}) } });
-      return { code: 200, partial: true, status: o.status, refundedTotal, amount };
+      const result = { ok: true, status: o.status, payment_status: 'paid', refund_vnd: amount, refunded_total_vnd: refundedTotal };
+      await c.query(
+        `UPDATE idempotency_keys SET status = 'completed', response_code = 200, response_body = $2 WHERE key = $1`,
+        [dbKey, result],
+      );
+      return { code: 200, result };
     }
     // LUỸ KẾ CHẠM TỔNG → lật refunded. NHẢ CHỖ GIỮ cho phần hàng SẼ KHÔNG BAO GIỜ ĐI NỮA:
     //   - pending/confirmed: chưa gửi gì → nhả toàn bộ qty.
@@ -1183,13 +1251,19 @@ async function refundOrder(res, ctx, body, params) {
     o.status = 'refunded';
     await audit(c, 'order.refunded', { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, total_vnd: total, amount_vnd: amount, ...(reason ? { reason } : {}) } });
     await statusEvent(c, o); // email báo khách: trạng thái = refunded
-    return { code: 200, partial: false, refundedTotal, amount };
+    const result = { ok: true, status: 'refunded', payment_status: 'refunded', refund_vnd: amount, refunded_total_vnd: refundedTotal };
+    await c.query(
+      `UPDATE idempotency_keys SET status = 'completed', response_code = 200, response_body = $2 WHERE key = $1`,
+      [dbKey, result],
+    );
+    return { code: 200, result };
   });
   if (out.code === 404) return send(res, 404, { error: 'không tìm thấy đơn' });
   if (out.code === 409) return send(res, 409, { error: out.msg, ...(out.errorCode ? { error_code: out.errorCode } : {}), ...(out.action ? { action: out.action } : {}) });
+  if (out.code === 4094) return send(res, 409, { error: out.msg, error_code: 'idempotency_key_reused' });
+  if (out.code === 4095) return send(res, 409, { error: out.msg, error_code: 'refund_in_progress' });
   if (out.code === 422) return send(res, 422, { error: out.msg });
-  if (out.partial) return send(res, 200, { ok: true, status: out.status, payment_status: 'paid', refund_vnd: out.amount, refunded_total_vnd: out.refundedTotal });
-  return send(res, 200, { ok: true, status: 'refunded', payment_status: 'refunded', refund_vnd: out.amount, refunded_total_vnd: out.refundedTotal });
+  return send(res, out.code ?? 200, { ...(out.result ?? {}), ...(out.replay ? { replayed: true } : {}) });
 }
 
 const confirmOrder = makeTransition(['pending'], 'confirmed', null, 'order.confirmed');

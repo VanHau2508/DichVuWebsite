@@ -52,6 +52,18 @@ async function adm(method, path, { cookie, form } = {}) {
   const r = await fetch(ADMIN + path, { method, headers: h, redirect: 'manual', body: form !== undefined ? String(form) : undefined });
   return { status: r.status, loc: r.headers.get('location'), body: await r.text(), sc: r.headers.getSetCookie() };
 }
+async function adminRefund(shopId, oid, { cookie, password, amount_vnd = '', reason = '' }) {
+  const prepare = await adm('POST', `/shops/${shopId}/orders/${oid}/refund`, {
+    cookie, form: new URLSearchParams({ amount_vnd, reason }),
+  });
+  const key = (prepare.body.match(/name="idempotency_key" value="([0-9a-f-]{36})"/) ?? [])[1];
+  if (!key) return { prepare, result: { status: 0, body: 'confirmation thiếu idempotency_key' } };
+  const final = { amount_vnd, reason, idempotency_key: key };
+  if (/name="password"/.test(prepare.body)) final.password = password;
+  return { prepare, result: await adm('POST', `/shops/${shopId}/orders/${oid}/refund/confirm`, {
+    cookie, form: new URLSearchParams(final),
+  }), key };
+}
 const login = async (e, p) => ck((await rq(AUTH, 'POST', '/auth/login', { body: { email: e, password: p }, origin: OA })).sc);
 const uidOf = async (e) => (await owner.query('SELECT id FROM users WHERE email=$1', [e])).rows[0]?.id ?? null;
 
@@ -117,17 +129,33 @@ async function main() {
     ? ok('dựng được ca thật: đơn ĐÃ THU TIỀN + bị bom hàng (shop đang giữ tiền của khách)')
     : bad(`không dựng được ca: ${JSON.stringify(st)}`, '');
   (await tienCua(dTra.id)) === 0 ? ok('và ĐÚNG như thực tế: chưa có phiếu hoàn nào') : bad('ca dựng sai — đã có phiếu hoàn', '');
-  let r1 = await adm('POST', `/shops/${shopId}/orders/${dTra.id}/refund`, { cookie: ac, form: new URLSearchParams({ reason: 'khách bom hàng, trả lại tiền đã thanh toán' }) });
-  r1.status === 200 && /mật khẩu/i.test(r1.body) ? ok('bấm Hoàn tiền → ra màn xác nhận mật khẩu (không còn 409 ngõ cụt)') : bad(`vẫn chặn: ${r1.status}`, r1.body.match(/class="err"[\s\S]{0,150}/)?.[0]);
-  const r2 = await adm('POST', `/shops/${shopId}/orders/${dTra.id}/refund/step-up`, { cookie: ac, form: new URLSearchParams({ password: op, reason: 'khách bom hàng, trả lại tiền đã thanh toán' }) });
+  const lyDoBom = 'khách bom hàng, trả lại tiền đã thanh toán';
+  const r1 = await adm('POST', `/shops/${shopId}/orders/${dTra.id}/refund`, {
+    cookie: ac, form: new URLSearchParams({ reason: lyDoBom }),
+  });
+  const refundKey = (r1.body.match(/name="idempotency_key" value="([0-9a-f-]{36})"/) ?? [])[1];
+  const rowsAfterPrepare = Number((await owner.query(`SELECT count(*)::int n FROM refunds WHERE order_id=$1`, [dTra.id])).rows[0].n);
+  r1.status === 200 && /mật khẩu/i.test(r1.body) && refundKey && rowsAfterPrepare === 0
+    ? ok('POST đầu chỉ render xác nhận SSR + UUID, chưa ghi phiếu hoàn')
+    : bad(`màn xác nhận sai: status=${r1.status} key=${refundKey} rows=${rowsAfterPrepare}`, r1.body.match(/class="err"[\s\S]{0,150}/)?.[0]);
+  const wrong = await adm('POST', `/shops/${shopId}/orders/${dTra.id}/refund/confirm`, {
+    cookie: ac, form: new URLSearchParams({ password: 'sai mật khẩu', reason: lyDoBom, idempotency_key: refundKey }),
+  });
+  wrong.status === 401 && wrong.body.includes(`value="${refundKey}"`) && (await tienCua(dTra.id)) === 0
+    ? ok('sai mật khẩu → giữ nguyên key và chưa ghi tiền') : bad('sai mật khẩu làm mất key/ghi tiền', wrong.status);
+  const r2 = await adm('POST', `/shops/${shopId}/orders/${dTra.id}/refund/confirm`, {
+    cookie: ac, form: new URLSearchParams({ password: op, reason: lyDoBom, idempotency_key: refundKey }),
+  });
   const hoan = await tienCua(dTra.id);
   r2.status === 303 && hoan === Number(dTra.total_vnd)
     ? ok(`ghi được phiếu hoàn ${hoan}₫ đúng bằng số đã thu — tiền không còn kẹt trong sổ`)
     : bad(`hoàn sai: status=${r2.status} hoàn=${hoan} tổng=${dTra.total_vnd}`, '');
   // KHÔNG được mở đường hoàn hai lần: trần `remaining` phải còn nguyên.
-  const r3 = await adm('POST', `/shops/${shopId}/orders/${dTra.id}/refund`, { cookie: ac, form: new URLSearchParams({ reason: 'hoàn lần hai' }) });
+  const secondRefund = await adminRefund(shopId, dTra.id, { cookie: ac, password: op, reason: 'hoàn lần hai' });
+  const r3 = secondRefund.result;
   const hoan2 = await tienCua(dTra.id);
-  hoan2 === hoan ? ok('hoàn lần hai KHÔNG đẻ thêm đồng nào (trần còn-lại vẫn chặn)') : bad(`hoàn đúp: ${hoan} → ${hoan2}`, r3.status);
+  hoan2 === hoan && !/name="password"/.test(secondRefund.prepare.body)
+    ? ok('step-up còn hạn không hỏi mật khẩu; key mới vẫn không vượt trần hoàn') : bad(`hoàn đúp: ${hoan} → ${hoan2}`, r3.status);
 
   // ── 2. ĐƠN RMA VẪN PHẢI BỊ CHẶN (không nới nhầm) ─────────────────────────
   sect('2. Đơn đã trả hàng qua RMA thì VẪN chặn — nới đúng chỗ, không nới bừa');
@@ -144,7 +172,7 @@ async function main() {
   rmaHoan > 0 ? ok(`RMA tạo phiếu hoàn ${rmaHoan}₫ như trước (không đụng gì tới đường này)`) : bad('RMA không tạo phiếu hoàn', '');
   const stR = (await owner.query(`SELECT status FROM orders WHERE id=$1`, [dRma.id])).rows[0].status;
   if (stR === 'returned') {
-    const rr = await adm('POST', `/shops/${shopId}/orders/${dRma.id}/refund`, { cookie: ac, form: new URLSearchParams({ reason: 'thử hoàn thêm' }) });
+    const rr = (await adminRefund(shopId, dRma.id, { cookie: ac, password: op, reason: 'thử hoàn thêm' })).result;
     /đã có phiếu hoàn/.test(rr.body) || rr.status >= 400
       ? ok('đơn RMA vẫn bị chặn hoàn thêm, kèm câu nói ĐÚNG chỗ cần xem') : bad('nới nhầm: đơn RMA hoàn thêm được', rr.status);
   } else ok(`đơn RMA ở trạng thái '${stR}' (trả một phần) — ngoài phạm vi chốt này`);
@@ -267,7 +295,7 @@ async function main() {
   // Hoàn MỘT PHẦN cố ý: hoàn ĐỦ thì đơn nhảy sang 'refunded' và chốt trạng thái lại che mất chốt
   // phiếu-hoàn. Hoàn một phần giữ đơn ở 'cancelled' — đúng ca cần canh, và cũng là ca thật (giữ
   // lại phí ship đã trả cho hãng).
-  await adm('POST', `/shops/${shopId}/orders/${dHuyHoan.id}/refund/step-up`, { cookie: ac, form: new URLSearchParams({ password: op, amount_vnd: '100000', reason: 'trả tiền vì huỷ đơn, giữ lại phí ship' }) });
+  await adminRefund(shopId, dHuyHoan.id, { cookie: ac, password: op, amount_vnd: '100000', reason: 'trả tiền vì huỷ đơn, giữ lại phí ship' });
   const stHH = (await owner.query(`SELECT status FROM orders WHERE id=$1`, [dHuyHoan.id])).rows[0].status;
   (stHH === 'cancelled' && (await tienCua(dHuyHoan.id)) > 0)
     ? ok('dựng được ca: đơn ĐÃ HUỶ và ĐÃ hoàn tiền (chốt trạng thái không che được chốt phiếu-hoàn)')

@@ -5,6 +5,9 @@
 import { esc } from './http.js';
 import { PROVINCES } from './provinces.js';
 import { presetChoices, getPreset } from '../presets.js';
+import {
+  CATALOG_ROLES, ORDER_ROLES, CONTENT_ROLES, REFUND_ROLES, PAYMENT_ROLES, INVENTORY_ROLES,
+} from './roles.js';
 
 // Trang ĐĂNG KÝ nằm ở site công khai (nentang.vn/signup) chứ KHÔNG phải trên admin — Caddy
 // định tuyến `/signup*` sang service `signup`, còn admin ở tên miền khác. Nên link "chưa có
@@ -542,9 +545,6 @@ a:focus-visible,.btn:focus-visible,.shop-card:focus-visible,.metric:focus-visibl
 
 const badge = (kind, label) => `<span class="badge ${esc(kind)}">${esc(label)}</span>`;
 // Vai trò nào thấy tab nào (backend mới là nơi cưỡng chế; đây chỉ để ẩn/hiện cho gọn).
-const CATALOG_ROLES = new Set(['owner', 'admin', 'catalog_manager']);
-const ORDER_ROLES = new Set(['owner', 'admin', 'order_manager']);
-const CONTENT_ROLES = new Set(['owner', 'admin']);
 
 /**
  * MÀN HÌNH ĐẦU TIÊN sau khi đăng nhập, theo vai.
@@ -571,10 +571,8 @@ const MEMBER_READ_ROLES = new Set(['owner', 'admin']); // xem nhân sự; SỬA 
 const EXPORT_ROLES = new Set(['owner']); // xuất dữ liệu: CHỈ chủ shop (seller cưỡng chế perm 'export')
 const REPORT_ROLES = new Set(['owner', 'admin']); // báo cáo lãi: owner/admin (seller cưỡng chế 'reports.read' — ẩn nav chỉ là mỹ quan)
 const DOMAIN_ROLES = new Set(['owner']); // tên miền: CHỈ chủ shop (seller cưỡng chế 'domain.write')
-const PAYMENT_ROLES = new Set(['owner']); // thanh toán: CHỈ chủ shop (seller cưỡng chế 'payment.write' + step-up)
 const SHIPPING_ROLES = new Set(['owner', 'admin']); // vận chuyển: owner/admin (seller cưỡng chế 'shop.write' + step-up)
 const AUDIT_ROLES = new Set(['owner', 'admin']); // nhật ký hoạt động: owner/admin (seller cưỡng chế 'audit.read')
-const INVENTORY_ROLES = new Set(['owner', 'admin']); // nhập hàng/NCC/kiểm kê: owner/admin (seller cưỡng chế 'inventory.manage' — giá nhập/NCC là bí mật KD)
 const LOYALTY_ROLES = new Set(['owner', 'admin']); // điểm thưởng: owner/admin (seller cưỡng chế 'loyalty.write' + step-up)
 const ROLE_LABEL = { owner: 'Chủ shop', admin: 'Quản trị', catalog_manager: 'Quản lý sản phẩm', order_manager: 'Quản lý đơn' };
 const INVITE_ROLES = ['admin', 'catalog_manager', 'order_manager']; // KHÔNG mời owner qua đây
@@ -2958,24 +2956,22 @@ export function renderOrders(ctx, shopId, data, filter) {
 
 export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returned, timelineFilter = '') {
   const totalVnd = Math.max(0, Number(o.payment_summary?.total_vnd ?? o.total_vnd) || 0);
-  const legacyReceived = Number(o.amount_paid_vnd) > 0
-    ? Number(o.amount_paid_vnd)
-    : (o.payment_status === 'paid' || o.paid_at ? totalVnd : 0);
-  const fallbackRefunded = Math.max(0, Number(o.refunded_vnd ?? o.refunded_total_vnd) || 0);
-  const fallbackNet = Math.max(0, legacyReceived - fallbackRefunded);
   const orderDead = ['cancelled', 'returned', 'refunded'].includes(o.status);
-  const payment = o.payment_summary ?? {
-    total_vnd: totalVnd,
-    received_vnd: legacyReceived,
-    refunded_vnd: fallbackRefunded,
-    net_received_vnd: fallbackNet,
-    amount_due_vnd: orderDead ? 0 : Math.max(0, totalVnd - legacyReceived),
-    customer_credit_vnd: orderDead ? fallbackNet : Math.max(0, fallbackNet - totalVnd),
-    display_state: fallbackRefunded >= legacyReceived && legacyReceived > 0 ? 'refunded'
-      : orderDead && fallbackNet > 0 ? 'refund_due'
-        : legacyReceived <= 0 ? 'unpaid' : legacyReceived < totalVnd ? 'partial' : fallbackNet > totalVnd ? 'overpaid' : 'paid',
+  // Thiếu summary là lỗi hợp đồng giữa BFF và seller, không phải lý do để dựng lại công thức
+  // tiền trong view. Bản fallback cũ đã trôi khỏi fulfillment_adjustment_vnd và có thể giấu
+  // đúng khoản shop còn nợ khách. Giữ object 0 chỉ để render phần KHÔNG tài chính an toàn;
+  // mọi nút tiền bên dưới đều gác bằng paymentReady và card hiện mã hỗ trợ rõ ràng.
+  const paymentReady = o.payment_summary && typeof o.payment_summary === 'object'
+    && ['total_vnd', 'received_vnd', 'refunded_vnd', 'net_received_vnd', 'amount_due_vnd', 'customer_credit_vnd']
+      .every((k) => Number.isFinite(Number(o.payment_summary[k])))
+    && typeof o.payment_summary.display_state === 'string';
+  const payment = paymentReady ? o.payment_summary : {
+    total_vnd: totalVnd, received_vnd: 0, refunded_vnd: 0, net_received_vnd: 0,
+    amount_due_vnd: 0, customer_credit_vnd: 0, display_state: 'unpaid',
   };
-  const paymentView = PAYMENT_DISPLAY[payment.display_state] ?? ['unpaid', payment.display_state ?? 'Chưa rõ'];
+  const paymentView = paymentReady
+    ? (PAYMENT_DISPLAY[payment.display_state] ?? ['unpaid', payment.display_state ?? 'Chưa rõ'])
+    : ['cancelled', 'Không tải được'];
   const fulfillmentAdjustment = Math.max(0, Number(o.fulfillment_adjustment_vnd) || 0);
   const transactions = Array.isArray(o.payment_transactions) ? o.payment_transactions : [];
   const reversedTransactions = new Set(transactions.filter((t) => t.reverses_transaction_id).map((t) => t.reverses_transaction_id));
@@ -2991,17 +2987,17 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   const act = (path, label, cls = 'btn sm', extra = '', hoi = '') => `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/${path}">${extra}<button class="${cls}" type="submit"${hoi ? ` data-confirm="${esc(hoi)}"` : ''}>${label}</button></form>`;
   // "Sửa đơn" CHỈ khi đơn còn sửa được: chưa gửi hãng (pending/confirmed) VÀ chưa thanh toán.
   // Đơn đã trả / đã giao → seller từ chối (409) nên không hiện nút (khỏi dẫn user vào ngõ cụt).
-  const editable = ['pending', 'confirmed'].includes(o.status) && Number(payment.net_received_vnd) === 0;
+  const editable = paymentReady && ['pending', 'confirmed'].includes(o.status) && Number(payment.net_received_vnd) === 0;
   const editAction = editable ? `<a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/edit">Sửa đơn</a>` : '';
   // Sửa đơn ĐÃ TRẢ (v2): đơn paid + chưa gửi hãng, owner/admin (perm 'refund' + step-up ở seller).
   // Giảm tổng → tự tạo phiếu hoàn phần chênh; tăng tổng chưa hỗ trợ. Nút dẫn sang trang riêng.
-  const editPaidAction = (o.payment_status === 'paid' && ['pending', 'confirmed'].includes(o.status) && ['owner', 'admin'].includes(ctx.role))
+  const editPaidAction = (paymentReady && o.payment_status === 'paid' && ['pending', 'confirmed'].includes(o.status) && REFUND_ROLES.has(ctx.role))
     ? `<a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/edit-paid">Sửa đơn đã trả</a>` : '';
   // Nhận trả hàng (RMA 0078): đơn ĐÃ GIAO + còn hàng chưa trả (qty > returned_qty) — owner/admin
   // (perm 'refund' + step-up ở seller). Dẫn sang trang form riêng (chọn dòng + số lượng trả +
   // nhập lại kho). Trả HẾT mọi dòng → đơn "Hoàn hàng"; ẩn nút khi không còn gì để trả.
   const hasReturnable = (o.lines ?? []).some((l) => Number(l.qty) - Number(l.returned_qty ?? 0) > 0);
-  const returnAction = (o.status === 'delivered' && hasReturnable && ['owner', 'admin'].includes(ctx.role))
+  const returnAction = (paymentReady && o.status === 'delivered' && hasReturnable && REFUND_ROLES.has(ctx.role))
     ? `<a class="btn warn sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/return">Nhận trả hàng</a>` : '';
   // GIAO MỘT PHẦN (0080): còn phải gửi = qty − shipped_qty − claim đang tạo. Nút "Đã giao xong" CHỈ
   // hiện khi đã gửi ĐỦ (fulfillment='fulfilled') — khớp guard seller (deliver partial → 409).
@@ -3014,9 +3010,13 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   // HUỶ ĐƠN (0117): đơn ĐÃ TRẢ TIỀN thì lý do là BẮT BUỘC — seller trả 400 nếu thiếu,
   // và lý do đi thẳng vào email cho khách. Nói rõ ngay tại nút là khách sẽ đọc được nó,
   // để người bán không gõ ghi chú nội bộ vào đây.
-  const paidCancel = Number(payment.net_received_vnd) > 0;
+  const paidCancel = paymentReady
+    ? Number(payment.net_received_vnd) > 0
+    : (o.payment_status === 'paid' || Boolean(o.paid_at));
   const cancelExtra = paidCancel
-    ? `<div class="err" style="margin-bottom:8px;padding:10px 12px">Shop đã ghi nhận <strong>${esc(money(payment.net_received_vnd))}</strong> từ khách.
+    ? `<div class="err" style="margin-bottom:8px;padding:10px 12px">${paymentReady
+      ? `Shop đã ghi nhận <strong>${esc(money(payment.net_received_vnd))}</strong> từ khách.`
+      : 'Đơn này có ghi nhận thanh toán nhưng bản tổng hợp tiền đang lỗi.'}
          Huỷ đơn KHÔNG tự hoàn tiền — bạn phải chuyển lại cho khách.
          <label style="display:block;margin-top:6px;font-size:.85rem">Lý do huỷ (bắt buộc — khách sẽ nhận được lý do này)
            <input name="reason" required maxlength="500" placeholder="vd: hết hàng, không kịp giao trước Tết"></label>
@@ -3044,7 +3044,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   else if (o.status === 'shipped' && o.fulfillment_status === 'fulfilled' && activeCases.length === 0) flowActions = act('deliver', 'Đã giao xong');
   // BOM HÀNG / HOÀN VỀ (audit #58): đơn ĐANG GIAO khách không nhận → hàng về. Restock phần đã gửi +
   // nhả reserve phần chưa gửi (đơn tách bỏ dở) → tồn sạch. Hiện cho MỌI đơn shipped (đủ/một-phần).
-  if (o.status === 'shipped' && activeCases.length === 0 && ['owner', 'admin'].includes(ctx.role)) {
+  if (o.status === 'shipped' && activeCases.length === 0 && ORDER_ROLES.has(ctx.role)) {
     flowActions += act('mark-returned', '↩ Bom hàng / Hoàn về', 'btn warn sm',
       '<label style="display:block;font-size:.82rem;margin-bottom:6px"><input type="checkbox" name="restock" checked style="width:auto"> Nhập lại kho (bỏ tick nếu hàng hỏng)</label>',
       `Đánh dấu đơn #${o.order_number} là BOM HÀNG? Khách nhận ngay email báo hoàn hàng, đơn đóng lại và không giao tiếp được. Chỉ dùng khi hàng đã thật sự quay về.`);
@@ -3055,13 +3055,13 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     <div class="card"><h2 style="margin-top:0">Giao hàng (nhập tay)</h2>
       <p class="muted">Số lượng gửi mỗi mặt hàng — mặc định = còn lại. Gửi ÍT hơn → đơn "Giao một phần", gửi nốt kiện sau.</p>
       <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/ship">
-        <table><tbody>
+        <div class="tblscroll"><table data-cards><thead><tr><th>Mặt hàng</th><th>Còn phải gửi</th><th>Số lượng kiện này</th></tr></thead><tbody>
           ${remLines.map((l) => `<tr>
             <td>${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span></td>
             <td class="muted" style="text-align:right;white-space:nowrap">còn ${l.remaining}/${esc(l.qty)}${l.planned > 0 ? `<br><small>đang chờ hãng ${esc(l.planned)}</small>` : ''}</td>
             <td style="text-align:right"><input type="hidden" name="order_line_id" value="${esc(l.order_line_id)}"><input name="ship_qty" type="number" min="0" max="${l.remaining}" value="${l.remaining}" inputmode="numeric" style="width:78px" aria-label="Số lượng gửi ${esc(l.title_snapshot)}"></td>
           </tr>`).join('')}
-        </tbody></table>
+        </tbody></table></div>
         <div class="grid2" style="margin-top:8px">
           <div><label>Mã vận đơn</label><input name="tracking_number" required maxlength="64"></div>
           <div><label>Đơn vị VC</label><input name="carrier" maxlength="40" placeholder="GHN..."></div>
@@ -3104,7 +3104,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     </div>` : '';
   // Sổ tiền v2: mỗi lần thu là một chứng từ. Form cho phép nhập phần thực nhận, còn đảo sai
   // sót tạo thêm reversal trỏ đúng dòng cũ — không còn công tắc xoá sạch dấu vết.
-  const canRecordManual = !orderDead && Number(payment.amount_due_vnd) > 0 && ctx.role === 'owner';
+  const canRecordManual = paymentReady && !orderDead && Number(payment.amount_due_vnd) > 0 && PAYMENT_ROLES.has(ctx.role);
   const manualPaymentForm = canRecordManual ? `
     <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/payments/manual" class="gridform" style="margin-top:14px">
       <label>Số tiền thực nhận (đ)
@@ -3116,8 +3116,8 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     </form>` : '';
   const transactionRows = transactions.map((t) => {
     const reversal = t.entry_type === 'reversal';
-    const canReverse = !reversal && t.provider === 'manual' && !reversedTransactions.has(t.id)
-      && !(o.refunds ?? []).length && ctx.role === 'owner';
+    const canReverse = paymentReady && !reversal && t.provider === 'manual' && !reversedTransactions.has(t.id)
+      && !(o.refunds ?? []).length && PAYMENT_ROLES.has(ctx.role);
     const source = { manual: 'Ghi nhận tay', legacy: 'Số dư mở sổ', sepay: 'SePay' }[t.provider] ?? t.provider;
     const status = { received: 'Đã nhận', underpaid: 'Chưa đủ', unmatched: 'Chưa khớp' }[t.status] ?? t.status;
     const reverseForm = canReverse ? `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/payments/${esc(t.id)}/reverse" style="min-width:220px">
@@ -3130,7 +3130,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
       <td><strong style="color:${reversal ? 'var(--bad)' : 'var(--good)'}">${reversal ? '−' : '+'}${money(t.amount_vnd)}</strong><br><span class="muted">${reversal ? 'Điều chỉnh giảm' : 'Khoản thu'}</span></td>
       <td>${esc(source ?? '—')}<br><span class="muted">${esc(status ?? '—')}</span></td>
       <td>${esc(t.note ?? '') || '<span class="muted">—</span>'}${t.recorded_by_email ? `<br><span class="muted">${esc(t.recorded_by_email)}</span>` : ''}</td>
-      <td>${reverseForm}</td>
+      <td${canReverse ? ' class="stack"' : ''}>${reverseForm}</td>
     </tr>`;
   }).join('');
   const creditText = Number(payment.customer_credit_vnd) > 0
@@ -3138,7 +3138,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   const partialValueText = fulfillmentAdjustment > 0
     ? `<div class="notice"><strong>Đơn được chốt giao một phần.</strong> Giá trị phần không giao: ${money(fulfillmentAdjustment)}; shop chỉ được giữ tối đa ${money(Math.max(0, Number(payment.total_vnd) - fulfillmentAdjustment))}.</div>`
     : '';
-  const paymentCard = `<div class="card" id="thanh-toan"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+  const paymentCard = paymentReady ? `<div class="card" id="thanh-toan"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
       <h2 style="margin:0">Thanh toán</h2>${badge(paymentView[0], paymentView[1])}
     </div>
     <div class="metrics" style="margin:14px 0">
@@ -3150,17 +3150,21 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     ${partialValueText}${creditText}${manualPaymentForm}
     <h3 style="margin-top:18px">Lịch sử giao dịch</h3>
     ${transactionRows ? `<div class="tblscroll"><table data-cards><thead><tr><th>Thời gian</th><th>Số tiền</th><th>Nguồn</th><th>Ghi chú</th><th>Điều chỉnh</th></tr></thead><tbody>${transactionRows}</tbody></table></div>` : '<p class="muted">Chưa có chứng từ thanh toán.</p>'}
+  </div>` : `<div class="card" id="thanh-toan" style="border-color:var(--bad)">
+    <h2 style="margin-top:0">Thanh toán tạm thời không tải được</h2>
+    <div class="err">Hệ thống thiếu bản tổng hợp thanh toán nên đã khoá toàn bộ thao tác tiền để tránh hiển thị hoặc ghi sai số.</div>
+    <p class="muted" style="margin-bottom:0">Tải lại trang. Nếu vẫn còn lỗi, gửi hỗ trợ mã <code>PAYMENT_SUMMARY_MISSING</code>; không ghi nhận hoặc hoàn tiền ở màn hình khác.</p>
   </div>`;
   // Hoàn tiền (bút toán 0070): đơn ĐÃ thanh toán, chưa hoàn — owner/admin (perm 'refund'
   // + step-up). Số tiền để trống = hoàn TOÀN BỘ số còn lại; ghi số nhỏ hơn = hoàn MỘT PHẦN
   // (đơn giữ trạng thái, luỹ kế chạm tổng mới lật "Đã hoàn").
   const activeRequiredRefund = Math.max(0, ...activeCases.map((c) => Number(c.required_refund_vnd) || 0));
   const activeRefundMax = Math.max(0, Number(o.total_vnd) - Number(o.refunded_total_vnd ?? 0) - 1);
-  const refundAction = (o.payment_status === 'paid' && o.status !== 'refunded' && ['owner', 'admin'].includes(ctx.role))
+  const refundAction = (paymentReady && o.payment_status === 'paid' && o.status !== 'refunded' && REFUND_ROLES.has(ctx.role))
     ? `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/refund" class="actions" style="align-items:end">
         <div><label>Số tiền hoàn (đ${activeCases.length ? ' — bắt buộc nhập khi đang xử lý giao một phần' : ' — để trống = hoàn toàn bộ'})</label><input name="amount_vnd" inputmode="numeric" style="width:200px"${activeCases.length ? ` required min="${esc(activeRequiredRefund || 1)}" max="${esc(activeRefundMax)}" value="${esc(Math.min(activeRequiredRefund || 1, activeRefundMax))}"` : ''} placeholder="vd 50000"></div>
         <div><label>Lý do (tuỳ chọn)</label><input name="reason" maxlength="500" style="width:180px" placeholder="khách trả 1 món…"></div>
-        <button class="btn warn sm" type="submit">Hoàn tiền</button>${activeCases.length ? `<p class="muted actgrp-h">Ca giao một phần cần phiếu hoàn tối thiểu ${money(activeRequiredRefund)} cho phần không giao; không tự hoàn phí vận chuyển.</p>` : ''}</form>` : '';
+        <button class="btn warn sm" type="submit" data-busy="Đang chuẩn bị xác nhận…">Hoàn tiền</button>${activeCases.length ? `<p class="muted actgrp-h">Ca giao một phần cần phiếu hoàn tối thiểu ${money(activeRequiredRefund)} cho phần không giao; không tự hoàn phí vận chuyển.</p>` : ''}</form>` : '';
   // Lịch sử hoàn tiền: mọi bút toán (một phần lẫn toàn bộ) + tổng đã hoàn.
   const refundHistory = (o.refunds ?? []).length ? `
     <div class="card"><h2>Hoàn tiền</h2>
@@ -3205,7 +3209,9 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   const actionGroups = (grp('Xử lý đơn', flowActions)
     + grp('Sửa đơn', editAction + editPaidAction)
     + grp('Tiền &amp; hậu mãi', refundAction + returnAction, moneyHint)
-    + grp('Huỷ đơn', cancelAction)) || '<div class="actions"><span class="muted">Không có thao tác.</span></div>';
+    + grp('Huỷ đơn', cancelAction)) || (['delivered', 'returned'].includes(o.status) && !REFUND_ROLES.has(ctx.role)
+      ? '<div class="notice"><strong>Cần chủ shop hoặc quản trị viên xử lý tiếp.</strong> Vai trò của bạn được xem đơn nhưng không được ghi hoàn tiền hoặc nhận trả hàng.</div>'
+      : '<div class="actions"><span class="muted">Không có thao tác.</span></div>');
 
   // PHÍ VẬN CHUYỂN SHOP THỰC TRẢ (0147) — khoản lỗ có thật mà P&L đang không thấy.
   //
@@ -3237,8 +3243,8 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     accept_partial: 'Chấp nhận giao một phần', resent: 'Đã gửi bù', refunded_remainder: 'Đã hoàn phần thiếu',
     cancelled_remainder: 'Đã huỷ phần còn lại', other: 'Cách xử lý khác',
   };
-  const canResolveOrder = ['owner', 'admin', 'order_manager'].includes(ctx.role);
-  const canReceiveReturn = ['owner', 'admin'].includes(ctx.role);
+  const canResolveOrder = ORDER_ROLES.has(ctx.role);
+  const canReceiveReturn = INVENTORY_ROLES.has(ctx.role);
   const resolutionActions = (c) => {
     if (!['open', 'waiting_return'].includes(c.status)) return '';
     const remaining = Number(c.remaining_return_qty);
@@ -3254,8 +3260,8 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     const receive = canReceiveReturn && receiptLines.length ? `<details style="margin-top:8px"><summary class="btn alt sm">Xác nhận đã nhận hàng</summary>
       <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/resolution-cases/${esc(c.id)}/receive-return" style="margin-top:10px">
         <input type="hidden" name="idempotency_key" value="receipt-${esc(c.id)}-${esc(c.received_return_qty)}">
-        <table><tbody>${receiptLines.map((line) => `<tr><td>Dòng ${esc(line.order_line_id)}</td><td class="muted">còn ${esc(line.remaining_return_qty)}/${esc(line.returned_qty)}</td>
-          <td><input type="hidden" name="case_line_id" value="${esc(line.id)}"><input type="number" name="qty" min="0" max="${esc(line.remaining_return_qty)}" value="${esc(line.remaining_return_qty)}" inputmode="numeric" style="width:76px" aria-label="Số lượng hàng hoàn đã nhận"></td></tr>`).join('')}</tbody></table>
+        <div class="tblscroll"><table data-cards><thead><tr><th>Mặt hàng</th><th>Chưa nhận</th><th>Số lượng nhận</th></tr></thead><tbody>${receiptLines.map((line) => `<tr><td><strong>${esc(line.title_snapshot ?? 'Mặt hàng')}</strong>${line.sku_snapshot ? `<br><span class="muted">SKU ${esc(line.sku_snapshot)}</span>` : ''}</td><td class="muted">còn ${esc(line.remaining_return_qty)}/${esc(line.returned_qty)}</td>
+          <td><input type="hidden" name="case_line_id" value="${esc(line.id)}"><input type="number" name="qty" min="0" max="${esc(line.remaining_return_qty)}" value="${esc(line.remaining_return_qty)}" inputmode="numeric" style="width:76px" aria-label="Số lượng hàng hoàn đã nhận của ${esc(line.title_snapshot ?? 'mặt hàng')}"></td></tr>`).join('')}</tbody></table></div>
         <label>Cách xử lý hàng
           <select name="disposition"><option value="restock">Nhập lại tồn bán được</option><option value="quarantine">Cách ly / hàng hỏng</option></select></label>
         <label>Ghi chú kiểm nhận <input name="note" required maxlength="1000" placeholder="Tình trạng hàng khi mở kiện"></label>
@@ -3319,6 +3325,13 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
       : eventType.startsWith('notification.') ? 'notification' : 'order';
   const timelineKey = ['order', 'payment', 'shipment', 'notification'].includes(timelineFilter) ? timelineFilter : '';
   const visibleTimeline = (Array.isArray(o.timeline) ? o.timeline : []).filter((e) => !timelineKey || eventGroup(e.event_type) === timelineKey).slice().reverse();
+  const returnedShipmentEvent = (Array.isArray(o.timeline) ? o.timeline : []).slice().reverse()
+    .find((e) => e.event_type === 'shipment.returned');
+  const returnedStockNote = returnedShipmentEvent?.payload?.restocked === true
+    ? 'Hàng đã được nhập lại tồn theo thao tác hoàn về. Không cộng tồn thủ công lần nữa.'
+    : returnedShipmentEvent?.payload?.restocked === false
+      ? 'Người xử lý đã chọn không nhập lại tồn vì hàng hỏng/thiếu. Xem timeline để đối chiếu.'
+      : 'Xem phiếu trả hàng và timeline bên dưới để biết số lượng đã nhập lại hoặc cách ly; không tự cộng tồn khi chưa đối chiếu.';
   const eventDetail = (e) => {
     const p = e.payload && typeof e.payload === 'object' ? e.payload : {};
     const parts = [];
@@ -3332,8 +3345,8 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   const timelineTabs = [['', 'Tất cả'], ['order', 'Đơn hàng'], ['payment', 'Tiền'], ['shipment', 'Vận chuyển'], ['notification', 'Thông báo']]
     .map(([key, label]) => `<a class="stab${timelineKey === key ? ' on' : ''}" href="/shops/${esc(shopId)}/orders/${esc(o.id)}${key ? `?timeline=${key}` : ''}">${label}</a>`).join('');
   const timelineCard = `<div class="card" id="nhat-ky"><h2>Nhật ký đơn hàng</h2><nav class="stabs" aria-label="Lọc nhật ký">${timelineTabs}</nav>
-    ${visibleTimeline.length ? `<div>${visibleTimeline.map((e) => `<div style="display:grid;grid-template-columns:minmax(125px,auto) 1fr;gap:14px;padding:12px 0;border-bottom:1px solid var(--row)">
-      <div class="muted">${dt(e.occurred_at ?? e.recorded_at)}</div><div><strong>${esc(EVENT_LABEL[e.event_type] ?? e.event_type)}</strong>
+    ${visibleTimeline.length ? `<div>${visibleTimeline.map((e) => `<div style="display:grid;grid-template-columns:minmax(125px,auto) minmax(0,1fr);gap:14px;padding:12px 0;border-bottom:1px solid var(--row)">
+      <div class="muted">${dt(e.occurred_at ?? e.recorded_at)}</div><div style="min-width:0;overflow-wrap:anywhere"><strong>${esc(EVENT_LABEL[e.event_type] ?? e.event_type)}</strong>
       ${eventDetail(e) ? `<div class="muted">${esc(eventDetail(e))}</div>` : ''}<div class="muted" style="font-size:.78rem">${esc(e.source ?? 'system')}${e.actor_type ? ` · ${esc(e.actor_type)}` : ''}</div></div>
     </div>`).join('')}</div>` : '<p class="muted">Chưa có sự kiện trong nhóm này.</p>'}
   </div>`;
@@ -3391,12 +3404,10 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     ${shipCostCard}
     ${o.status === 'returned' ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg)">
       <h2 style="margin-top:0">↩️ Đơn bị hoàn (bom hàng)</h2>
-      <p class="muted" style="margin-bottom:0">Hãng vận chuyển báo hàng đang/đã hoàn về. Khi <strong>nhận lại hàng thực tế</strong>,
-        vào trang sản phẩm → <strong>Điều chỉnh tồn</strong> để cộng lại số lượng — hệ thống KHÔNG tự cộng
-        vì hàng có thể hỏng/thiếu khi về tới nơi.</p></div>` : ''}
-    <div class="card"><h2>Sản phẩm</h2><table><tbody>
+      <p class="muted" style="margin-bottom:0">${returnedStockNote}</p></div>` : ''}
+    <div class="card"><h2>Sản phẩm</h2><div class="tblscroll"><table data-cards><thead><tr><th>Mặt hàng</th><th>Đơn giá × SL</th><th>Thành tiền</th></tr></thead><tbody>
       ${(o.lines ?? []).map((l) => `<tr><td><div class="pcell">${l.image_url ? `<img class="pthumb" src="${esc(l.image_url)}" alt="" loading="lazy" width="40" height="40">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0">${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span>${Number(l.shipped_qty) > 0 ? ` <span class="muted">· đã gửi ${esc(l.shipped_qty)}/${esc(l.qty)}</span>` : ''}${Number(l.returned_qty) > 0 ? ` <span class="muted">· đã trả ${esc(l.returned_qty)}</span>` : ''}</div></div></td><td class="muted">${money(l.unit_price_vnd)} × ${esc(l.qty)}</td><td style="text-align:right">${money(Number(l.unit_price_vnd) * l.qty)}</td></tr>`).join('')}
-    </tbody></table>
+    </tbody></table></div>
       <div style="text-align:right;margin-top:8px" class="muted">Tạm tính ${money(o.subtotal_vnd)} · Ship ${money(o.shipping_vnd)}</div>
       <div style="text-align:right;font-weight:700;font-size:1.1rem">Tổng ${money(o.total_vnd)}</div></div>
     ${shipCard}
@@ -5566,7 +5577,7 @@ export function renderOrderPayStepUp(ctx, shopId, oid, err, vals = {}) {
 }
 // Interstitial cho hoàn tiền (thao tác nhạy cảm — mang theo mã đơn).
 // vals {amount_vnd, reason} từ form chi tiết đơn SỐNG SÓT qua hidden input — không gõ lại.
-export function renderRefundStepUp(ctx, shopId, oid, err, vals) {
+export function renderRefundConfirm(ctx, shopId, oid, err, vals, requirePassword) {
   const base = `/shops/${esc(shopId)}/orders/${esc(oid)}`;
   const amount = String(vals?.amount_vnd ?? '').trim();
   const partial = amount !== '';
@@ -5575,13 +5586,18 @@ export function renderRefundStepUp(ctx, shopId, oid, err, vals) {
     <p class="muted">${partial
       ? `Bạn sẽ ghi nhận hoàn <strong>${esc(amount)}đ</strong> cho khách (hoàn MỘT PHẦN — đơn giữ nguyên trạng thái cho tới khi hoàn đủ tổng).`
       : `Bạn sẽ hoàn <strong>TOÀN BỘ số còn lại</strong> của đơn và đánh dấu <strong>ĐÃ HOÀN TIỀN</strong>. Nếu đơn <strong>chưa giao</strong>, hàng sẽ được trả lại kho.`}
-      Hãy đảm bảo đã thực sự chuyển/trả tiền. Thao tác không thể hoàn tác — nhập mật khẩu để tiếp tục.</p>
+      Hãy đảm bảo đã thực sự chuyển/trả tiền. Thao tác không thể hoàn tác.${requirePassword ? ' Phiên xác thực đã hết hạn nên cần nhập lại mật khẩu.' : ' Phiên xác thực vẫn còn hiệu lực; hãy kiểm tra lần cuối trước khi ghi chứng từ.'}</p>
+    <dl style="display:grid;grid-template-columns:auto 1fr;gap:6px 12px;margin:14px 0">
+      <dt class="muted">Số tiền</dt><dd style="margin:0"><strong>${partial ? esc(`${amount}đ`) : 'Toàn bộ số còn lại'}</strong></dd>
+      <dt class="muted">Lý do</dt><dd style="margin:0">${esc(vals?.reason ?? '') || '<span class="muted">Không ghi lý do</span>'}</dd>
+    </dl>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
-    <form method="POST" action="${base}/refund/step-up">
+    <form method="POST" action="${base}/refund/confirm">
       <input type="hidden" name="amount_vnd" value="${esc(amount)}">
       <input type="hidden" name="reason" value="${esc(vals?.reason ?? '')}">
-      <label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">
-      <button class="btn warn" type="submit" style="width:100%;margin-top:12px">Xác nhận hoàn tiền</button>
+      <input type="hidden" name="idempotency_key" value="${esc(vals?.idempotency_key ?? '')}">
+      ${requirePassword ? '<label>Mật khẩu</label><input name="password" type="password" required autocomplete="current-password">' : ''}
+      <button class="btn warn" type="submit" data-busy="Đang ghi phiếu hoàn…" style="width:100%;margin-top:12px">Xác nhận hoàn tiền</button>
     </form>
     <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Huỷ</a>
   </div></div>`);

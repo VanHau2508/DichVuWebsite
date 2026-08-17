@@ -61,6 +61,25 @@ describe('vai trò database', () => {
       assert.equal(rows[0].upd, false, `${table}: KHÔNG được UPDATE`);
       assert.equal(rows[0].del, false, `${table}: KHÔNG được DELETE`);
       assert.equal(rows[0].ins, true, `${table}: vẫn phải ghi thêm được`);
+      if (table === 'refunds') {
+        const { rows: [shape] } = await owner.query(`
+          SELECT
+            EXISTS (SELECT 1 FROM information_schema.columns
+                     WHERE table_schema='public' AND table_name='refunds' AND column_name='idempotency_key' AND data_type='uuid') AS has_key,
+            EXISTS (SELECT 1 FROM information_schema.columns
+                     WHERE table_schema='public' AND table_name='refunds' AND column_name='request_fingerprint' AND data_type='text') AS has_fingerprint,
+            pg_get_expr(i.indpred, i.indrelid) AS predicate,
+            pg_get_indexdef(i.indexrelid) AS definition
+          FROM pg_index i
+          JOIN pg_class x ON x.oid = i.indexrelid
+          WHERE x.relname = 'refunds_idem_uq'
+        `);
+        assert.equal(shape?.has_key, true, 'refunds.idempotency_key uuid phải tồn tại');
+        assert.equal(shape?.has_fingerprint, true, 'refunds.request_fingerprint text phải tồn tại');
+        assert.match(shape?.definition ?? '', /UNIQUE INDEX refunds_idem_uq ON public\.refunds USING btree \(shop_id, idempotency_key\)/);
+        assert.match(shape?.predicate ?? '', /idempotency_key IS NOT NULL/,
+          'partial index phải bỏ qua chứng từ cũ có key NULL');
+      }
     });
   }
 

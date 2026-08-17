@@ -3,6 +3,7 @@
 // 422, đua 2 lệnh không vượt, deliverOrder chặn khi partial, editOrder chặn khi có vận đơn,
 // cancel/refund chặn ở 'shipped', + mô phỏng SQL guard worker order-aware (chốt đơn đúng lúc).
 import http from 'node:http';
+import crypto from 'node:crypto';
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
@@ -183,7 +184,7 @@ async function main() {
       ? ok('gửi 2/3 A, chưa gửi B → đơn shipped (tách kiện bỏ dở)') : bad('không dựng được cảnh bỏ dở');
     await owner.query(`UPDATE orders SET payment_status='paid', paid_at=now(), amount_paid_vnd=total_vnd WHERE id=$1`, [oR.id]);
     await rq(AUTH, 'POST', '/auth/step-up', { body: { password: op }, cookie: oc, origin: OA });
-    const rf = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${oR.id}/refund`, { body: {}, cookie: oc, origin: OS });
+    const rf = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${oR.id}/refund`, { body: { idempotency_key: crypto.randomUUID() }, cookie: oc, origin: OS });
     const rvA1 = await reserved(A), rvB1 = await reserved(B);
     rf.status === 200 && rvA1 === rvA0 - 1 && rvB1 === rvB0 - 2
       ? ok(`hoàn toàn bộ → nhả ĐÚNG phần chưa gửi (A: −1 còn lại, B: −2 chưa gửi gì)`)

@@ -18,6 +18,7 @@ import { countProductGroups, mergeImportResults, splitProductBatches } from './i
 import { getPreset } from '../presets.js';
 import { runReq, makeLog, health, setUsageSink, makeUsageSink, skipUsage } from './obs.js';
 import { makeRedis } from '../redis-lite.js';
+import { REFUND_ROLES } from './roles.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const ALLOWED = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -3874,30 +3875,53 @@ async function requireMfaSave(req, res, me, cookie, shopId) {
 // Bút toán 0070: form gửi kèm amount_vnd (để trống = hoàn TOÀN BỘ số còn lại) + reason;
 // hai giá trị này phải SỐNG SÓT qua màn step-up (hidden input) — không bắt gõ lại.
 async function doRefund(res, me, cookie, shopId, oid, vals) {
-  const body = {};
-  if ((vals?.amount_vnd ?? '') !== '') body.amount_vnd = parseVnd(vals.amount_vnd);
+  const body = { idempotency_key: vals.idempotency_key };
+  // Giữ nguyên chuỗi người dùng nhập để seller tự kiểm số nguyên dương. parseVnd('abc') = null
+  // sẽ biến dữ liệu rác thành lệnh hoàn TOÀN BỘ — sai theo hướng nguy hiểm nhất.
+  if ((vals?.amount_vnd ?? '') !== '') body.amount_vnd = vals.amount_vnd;
   if ((vals?.reason ?? '').trim() !== '') body.reason = vals.reason.trim();
   const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/refund`, { cookie, body });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}`);
-  return orderDetail(res, me, cookie, shopId, oid, paymentApiError(r, 'Không hoàn tiền được.'));
+  // Lỗi provider/DB hoặc double-click đang xử lý phải giữ NGUYÊN key để lần thử kế tiếp
+  // replay đúng request đầu. Quay về chi tiết đơn sẽ sinh key mới và vô hiệu hoá idempotency.
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+  const status = r.status >= 400 && r.status < 600 ? r.status : 502;
+  return sendHtmlJs(res, status, (nonce) => V.renderRefundConfirm({ ...ctx, nonce }, shopId, oid,
+    paymentApiError(r, 'Không hoàn tiền được.'), vals, !steppedUp(me)));
 }
 async function refundConfirm(req, res, me, cookie, shopId, oid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
-  const vals = { amount_vnd: String(f.amount_vnd ?? '').trim(), reason: String(f.reason ?? '').trim().slice(0, 500) };
-  if (!['owner', 'admin'].includes(roleFor(me, shopId))) return orderDetail(res, me, cookie, shopId, oid, 'Chỉ chủ cửa hàng hoặc quản trị mới hoàn tiền.');
-  if (steppedUp(me)) return doRefund(res, me, cookie, shopId, oid, vals);
+  const vals = {
+    amount_vnd: String(f.amount_vnd ?? '').trim(),
+    reason: String(f.reason ?? '').trim().slice(0, 500),
+    idempotency_key: crypto.randomUUID(),
+  };
+  if (!REFUND_ROLES.has(roleFor(me, shopId))) return orderDetail(res, me, cookie, shopId, oid, 'Chỉ chủ cửa hàng hoặc quản trị mới hoàn tiền.');
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
-  return sendHtml(res, 200, V.renderRefundStepUp(ctx, shopId, oid, null, vals));
+  return sendHtmlJs(res, 200, (nonce) => V.renderRefundConfirm({ ...ctx, nonce }, shopId, oid, null, vals, !steppedUp(me)));
 }
-async function refundStepUp(req, res, me, cookie, shopId, oid) {
+async function refundExecute(req, res, me, cookie, shopId, oid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
-  const vals = { amount_vnd: String(f.amount_vnd ?? '').trim(), reason: String(f.reason ?? '').trim().slice(0, 500) };
-  const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
-  if (r.status !== 200) {
+  const vals = {
+    amount_vnd: String(f.amount_vnd ?? '').trim(),
+    reason: String(f.reason ?? '').trim().slice(0, 500),
+    idempotency_key: String(f.idempotency_key ?? '').trim().toLowerCase(),
+  };
+  if (!REFUND_ROLES.has(roleFor(me, shopId))) return orderDetail(res, me, cookie, shopId, oid, 'Chỉ chủ cửa hàng hoặc quản trị mới hoàn tiền.');
+  if (!UUID_RE.test(vals.idempotency_key)) {
     const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
-    return sendHtml(res, 401, V.renderRefundStepUp(ctx, shopId, oid, r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.', vals));
+    return sendHtmlJs(res, 400, (nonce) => V.renderRefundConfirm({ ...ctx, nonce }, shopId, oid,
+      'Mã chống gửi lặp không hợp lệ. Hãy huỷ và bắt đầu lại từ trang đơn.', vals, !steppedUp(me)));
+  }
+  if (!steppedUp(me)) {
+    const r = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.password ?? '') } });
+    if (r.status !== 200) {
+      const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+      return sendHtmlJs(res, 401, (nonce) => V.renderRefundConfirm({ ...ctx, nonce }, shopId, oid,
+        r.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.', vals, true));
+    }
   }
   return doRefund(res, me, cookie, shopId, oid, vals);
 }
@@ -4097,7 +4121,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr$`).exec(p)) && req.method === 'POST') return markPaidQrConfirm(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr/step-up$`).exec(p)) && req.method === 'POST') return markPaidQrStepUp(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/refund$`).exec(p)) && req.method === 'POST') return refundConfirm(req, res, me, cookie, m[1], m[2]);
-    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/refund/step-up$`).exec(p)) && req.method === 'POST') return refundStepUp(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/refund/confirm$`).exec(p)) && req.method === 'POST') return refundExecute(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/return$`).exec(p)) && req.method === 'GET') return returnPage(res, me, cookie, m[1], m[2], null, null, url.searchParams.get('request_id'));
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/return$`).exec(p)) && req.method === 'POST') return returnSubmit(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/return/step-up$`).exec(p)) && req.method === 'POST') return returnStepUp(req, res, me, cookie, m[1], m[2]);

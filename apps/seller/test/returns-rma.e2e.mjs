@@ -2,6 +2,7 @@
 // cộng dồn không quá số mua, trả HẾT → đơn 'returned' + payment 'refunded', trần hoàn
 // (đã hoàn trước), guard chưa-giao 409, không-restock giữ tồn, đua, perm+step-up, cross-shop.
 import http from 'node:http';
+import crypto from 'node:crypto';
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
@@ -129,7 +130,7 @@ async function main() {
   sect('Đơn khác: trần hoàn — đã refund tay 400k thì trả 3×A(300k) → 422 (chỉ còn 30k)');
   const id2 = await mkDelivered(); // 430k
   await stepUp();
-  await rq(SELLER, 'POST', `/shops/${shopId}/orders/${id2}/refund`, { body: { amount_vnd: 400000, reason: 'giảm giá bù' }, cookie: oc, origin: OS });
+  await rq(SELLER, 'POST', `/shops/${shopId}/orders/${id2}/refund`, { body: { amount_vnd: 400000, reason: 'giảm giá bù', idempotency_key: crypto.randomUUID() }, cookie: oc, origin: OS });
   r = await rq(SELLER, 'POST', rurl(id2), { body: { lines: [{ variant_id: A, qty: 3 }], restock: true }, cookie: oc, origin: OS });
   r.status === 422 && /vượt số còn có thể hoàn/.test(r.json?.error ?? '') ? ok('hoàn vượt số còn lại → 422 (đã hoàn 400k/430k)') : bad('vượt trần hoàn lọt', `${r.status} ${r.json?.error}`);
 

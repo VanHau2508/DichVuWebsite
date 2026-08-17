@@ -11,6 +11,7 @@
  */
 
 import http from 'node:http';
+import crypto from 'node:crypto';
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
@@ -807,7 +808,7 @@ async function main() {
        FROM orders o JOIN order_resolution_cases rc ON rc.order_id=o.id
       WHERE o.id=$1`, [oMix.id],
   )).rows[0];
-  r = await a.post(`/orders/${oMix.id}/refund`, { amount_vnd: oMix.total, reason: 'Thử hoàn toàn bộ khi ca còn mở', restock: false });
+  r = await a.post(`/orders/${oMix.id}/refund`, { amount_vnd: oMix.total, reason: 'Thử hoàn toàn bộ khi ca còn mở', restock: false, idempotency_key: crypto.randomUUID() });
   const fullRefundAfter = (await owner.query(
     `SELECT o.status, o.payment_status, rc.status AS case_status,
             (SELECT count(*)::int FROM refunds WHERE order_id=o.id AND kind <> 'edit_adjustment') AS refunds
@@ -821,7 +822,7 @@ async function main() {
     ? ok('active case → chặn full refund, giữ nguyên order/payment/case/refunds')
     : bad('full refund phá trạng thái active case', `${r.raw} ${JSON.stringify({ before: fullRefundBefore, after: fullRefundAfter })}`);
 
-  r = await a.post(`/orders/${oMix.id}/refund`, { amount_vnd: 1, reason: 'Hoàn thử một phần nhỏ', restock: false });
+  r = await a.post(`/orders/${oMix.id}/refund`, { amount_vnd: 1, reason: 'Hoàn thử một phần nhỏ', restock: false, idempotency_key: crypto.randomUUID() });
   const firstMixRefund = (await owner.query(
     `SELECT id FROM refunds WHERE order_id=$1 AND kind='refund' ORDER BY created_at DESC, id DESC LIMIT 1`, [oMix.id],
   )).rows[0];
@@ -838,6 +839,7 @@ async function main() {
     amount_vnd: requiredRefund - 1,
     reason: 'Hoàn đủ phần kiện không giao',
     restock: false,
+    idempotency_key: crypto.randomUUID(),
   });
   const mixRefund = (await owner.query(
     `SELECT id FROM refunds WHERE order_id=$1 AND kind='refund' ORDER BY created_at DESC, id DESC LIMIT 1`, [oMix.id],

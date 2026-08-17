@@ -25,11 +25,11 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 |---|---:|---|
 | dòng mã ứng dụng | ~43.200 | `apps/*/src/*.js` |
 | dòng test | ~31.400 | `apps/*/test/*.{js,mjs}` |
-| migration | 172 tệp, mới nhất `0174` | `packages/db/migrations/` |
+| migration | 173 tệp, mới nhất `0175` | `packages/db/migrations/` |
 | bộ unit | 37 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 106 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 116 test TAP | `packages/db/test/*.test.js` |
-| tài liệu | 75 tệp | `docs/` |
+| tài liệu | 76 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,71 — cao có chủ ý, xem §4.
 
@@ -88,7 +88,7 @@ clone: `git config core.hooksPath scripts/hooks`.
 apps/<service>/src/     mã service        apps/<service>/test/    test của nó
 packages/               mã DÙNG CHUNG     packages/db/migrations/ toàn bộ SQL
 infra/compose.*.yml     dàn dịch vụ       scripts/                cổng, seed, vận hành
-docs/                   75 tệp ghi chép   .github/workflows/ci.yml cổng đám mây
+docs/                   76 tệp ghi chép   .github/workflows/ci.yml cổng đám mây
 ```
 
 | việc cần sửa | file |
@@ -338,8 +338,9 @@ lỗi contract của Codex (`c.ok !== true` trong khi readiness dùng `status`).
 
 Bảy workflow, làm **dọc từng cái**, không redesign cả hệ thống một lượt:
 
-~~`onboarding/go-live`~~ → ~~`bảng điều khiển "việc cần làm"`~~ → **`chi tiết đơn` ← tiếp theo**
-→ `đa kiện/ca xử lý` → `checkout mobile của khách` → `catalog + nhập từ sàn` → `cài đặt`
+~~`onboarding/go-live`~~ → ~~`bảng điều khiển "việc cần làm"`~~ → ~~`chi tiết đơn`~~
+→ **`đa kiện/ca xử lý` ← sau khi review/merge lát cắt hiện tại** → `checkout mobile của khách`
+→ `catalog + nhập từ sàn` → `cài đặt`
 
 Mỗi lát cắt đi đủ đường: **UI → route/BFF → API seller → giao dịch nghiệp vụ → DB/outbox →
 worker/provider → trạng thái quay lại UI.** Lập bản đồ đó **trước khi đụng UI** — giá trị nằm

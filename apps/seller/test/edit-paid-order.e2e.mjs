@@ -2,6 +2,7 @@
 // tăng tổng → 409 (chưa thu thêm), NHIỀU lần sửa tính hoàn đúng (neo amount_paid),
 // guard perm 'refund' + STEP-UP, đơn chưa trả → 409 (dùng /edit thường).
 import http from 'node:http';
+import crypto from 'node:crypto';
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
@@ -194,7 +195,7 @@ async function main() {
     const conNo = N(await colOf(id2, 'total_vnd'));
     const daHoanChenh = await refundsOf(id2);
     await rq(AUTH, 'POST', '/auth/step-up', { body: { password: op }, cookie: oc, origin: OA });
-    const rr = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${id2}/refund`, { body: {}, cookie: oc, origin: OS });
+    const rr = await rq(SELLER, 'POST', `/shops/${shopId}/orders/${id2}/refund`, { body: { idempotency_key: crypto.randomUUID() }, cookie: oc, origin: OS });
     const tongHoan = await refundsOf(id2);
     const hoanThem = tongHoan - daHoanChenh, shopGiu = thu - tongHoan;
     re.status === 200 && rr.status === 200 && hoanThem === conNo && shopGiu === 0

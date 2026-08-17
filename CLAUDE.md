@@ -28,7 +28,7 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 | migration | 173 tệp, mới nhất `0175` | `packages/db/migrations/` |
 | bộ unit | 37 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 106 | `MANIFEST_E2E_COUNT` |
-| bất biến DB | 9 bộ, 116 test TAP | `packages/db/test/*.test.js` |
+| bất biến DB | 9 bộ, 117 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 76 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,71 — cao có chủ ý, xem §4.
@@ -75,7 +75,7 @@ với GitHub CI. Nó tự dựng PostgreSQL trắng trong project Compose riêng
 chạy đúng runner production **không seed**, rồi so ba chiều: số file = `MANIFEST_MIGRATION_COUNT`
 = số dòng thật trong `schema_migrations`, kèm 0 DRIFT / 0 pending. Tự dọn bằng `trap` ở mọi đường
 thoát, kể cả Ctrl-C. **Không chạm DB dev.** Thêm migration thì sửa `MANIFEST_MIGRATION_COUNT`
-trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 172 file / số cao nhất 0174).
+trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 173 file / số cao nhất 0175).
 
 Hook `scripts/hooks/pre-push` chạy `--fast` và **chặn push khi đỏ**. Cài một lần cho mỗi bản
 clone: `git config core.hooksPath scripts/hooks`.

@@ -136,8 +136,8 @@ test('refund idempotency được khoá ở DB và replay chạy trước guard 
 });
 
 test('mọi SELECT/UPDATE idempotency_keys của seller đều gác theo tenant', () => {
-  // idempotency_keys là bảng legacy chưa bật RLS. Chốt này đọc đúng các SQL template
-  // của seller để một truy vấn mới chỉ WHERE key=$1 không thể lọt qua review lần nữa.
+  // idempotency_keys là bảng legacy chưa bật RLS. Chốt này đọc các SQL template viết
+  // trực tiếp trong c.query; nếu chuyển SQL qua biến thì phải bổ sung chốt tương ứng.
   const queries = [...sellerOrders.matchAll(/c\.query\(\s*`([^`]*\bidempotency_keys\b[^`]*)`/g)]
     .map((m) => m[1])
     .filter((sql) => /^\s*(SELECT|UPDATE|DELETE)\b/.test(sql));

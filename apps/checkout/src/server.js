@@ -822,7 +822,11 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
        ON CONFLICT (shop_id, key) DO NOTHING RETURNING key`, [idemKey, requestHash],
     );
     if (claim.rows.length === 0) {
-      const ex = (await c.query(`SELECT request_hash, status, response_code, response_body FROM idempotency_keys WHERE key = $1`, [idemKey])).rows[0];
+      const ex = (await c.query(
+        `SELECT request_hash, status, response_code, response_body
+           FROM idempotency_keys
+          WHERE key = $1 AND shop_id = current_shop_id()`, [idemKey],
+      )).rows[0];
       if (ex.request_hash !== requestHash) fail(422, 'Idempotency-Key dùng lại với nội dung khác');
       if (ex.status === 'completed') return { code: ex.response_code, body: ex.response_body, replay: true };
       fail(409, 'đơn đang được xử lý, thử lại');
@@ -1089,7 +1093,11 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
 
     const response = { order_number: Number(num), subtotal_vnd: subtotal, shipping_vnd: shipping, discount_vnd: discount, coupon_code: couponCode, points_redeemed: pointsRedeemed, points_discount_vnd: pointsDiscount, total_vnd: total, status: 'pending', payment_status: 'unpaid', payment_method: paymentMethod, lookup_token: lookupToken };
     if (paymentMethod === 'qr') { response.payment_ref = paymentRef; response.qr_string = qrString; }
-    await c.query(`UPDATE idempotency_keys SET status = 'completed', response_code = 201, response_body = $2 WHERE key = $1`, [idemKey, response]);
+    await c.query(
+      `UPDATE idempotency_keys
+          SET status = 'completed', response_code = 201, response_body = $2
+        WHERE key = $1 AND shop_id = current_shop_id()`, [idemKey, response],
+    );
     log('info', 'order_created', { orderNumber: Number(num), total });
     return { code: 201, body: response };
   }

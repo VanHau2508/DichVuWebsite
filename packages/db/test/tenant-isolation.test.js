@@ -153,9 +153,8 @@ describe('GHI — WITH CHECK phải chặn', () => {
   });
 
   test('idempotency key trùng giữa hai shop chỉ đọc và cập nhật dòng tenant hiện tại', async () => {
-    // Bảng legacy này chưa bật RLS, nên mọi câu SELECT/UPDATE của app_rw phải tự mang
-    // shop_id = current_shop_id(). Dùng CÙNG key ở hai shop để biến thiếu predicate thành
-    // lỗi thấy ngay: đọc ra 2 dòng hoặc UPDATE cả chứng từ của shop B.
+    // RLS là lớp DB đang chặn rò chéo shop; predicate là lớp ứng dụng bổ sung. Dùng CÙNG key
+    // ở hai shop để xác nhận predicate chỉ đọc/cập nhật đúng chứng từ tenant hiện tại.
     const key = `tenant-shared-${randomUUID()}`;
     await owner.query(
       `INSERT INTO idempotency_keys (shop_id, key, request_hash, status)

@@ -6,6 +6,7 @@ import path from 'node:path';
 const server = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'server.js'), 'utf8');
 const pages = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'pages.js'), 'utf8');
 const sellerOrders = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'seller', 'src', 'orders.js'), 'utf8');
+const checkoutServer = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'checkout', 'src', 'server.js'), 'utf8');
 const migration = fs.readFileSync(path.join(import.meta.dirname, '..', '..', '..', 'packages', 'db', 'migrations', '0175_refund_idempotency.sql'), 'utf8');
 
 function thanHam(ten, tenHamSau) {
@@ -135,15 +136,34 @@ test('refund idempotency được khoá ở DB và replay chạy trước guard 
   assert.match(refund, /refund_in_progress/);
 });
 
-test('mọi SELECT/UPDATE idempotency_keys của seller đều gác theo tenant', () => {
-  // idempotency_keys là bảng legacy chưa bật RLS. Chốt này đọc các SQL template viết
-  // trực tiếp trong c.query; nếu chuyển SQL qua biến thì phải bổ sung chốt tương ứng.
-  const queries = [...sellerOrders.matchAll(/c\.query\(\s*`([^`]*\bidempotency_keys\b[^`]*)`/g)]
+test('10 SQL idempotency_keys của seller và checkout đều tự gác theo tenant', () => {
+  // RLS là lớp DB đang chặn rò chéo shop; predicate là lớp ứng dụng bổ sung. Chốt này chỉ
+  // thấy SQL viết thẳng trong c.query; SQL qua biến hoặc dựng động cần chốt riêng.
+  const extract = (source) => [...source.matchAll(/c\.query\(\s*`([^`]*\bidempotency_keys\b[^`]*)`/g)]
     .map((m) => m[1])
-    .filter((sql) => /^\s*(SELECT|UPDATE|DELETE)\b/.test(sql));
-  assert.equal(queries.length, 5, 'đang có đúng 5 đường đọc/cập nhật idempotency key trong seller');
-  for (const sql of queries) {
-    assert.match(sql, /shop_id\s*=\s*current_shop_id\(\)/,
-      `truy vấn idempotency_keys thiếu tenant scope:\n${sql}`);
+    .map((sql) => ({ sql, kind: /^\s*(SELECT|INSERT|UPDATE|DELETE)\b/.exec(sql)?.[1] ?? null }))
+    .filter((q) => q.kind !== null);
+  const sellerQueries = extract(sellerOrders);
+  const checkoutQueries = extract(checkoutServer);
+  const queries = [...sellerQueries, ...checkoutQueries];
+
+  assert.equal(sellerQueries.length, 7, 'seller phải có đúng 7 SQL idempotency inline đã khai');
+  assert.equal(checkoutQueries.length, 3, 'checkout phải có đúng 3 SQL idempotency inline đã khai');
+  assert.equal(queries.length, 10, 'toàn kho phải có đúng 10 SQL idempotency inline đã khai');
+  assert.deepEqual(
+    Object.fromEntries(['SELECT', 'INSERT', 'UPDATE', 'DELETE']
+      .map((kind) => [kind, queries.filter((q) => q.kind === kind).length])),
+    { SELECT: 3, INSERT: 3, UPDATE: 4, DELETE: 0 },
+  );
+
+  for (const { kind, sql } of queries) {
+    if (kind === 'INSERT') {
+      assert.match(sql, /INSERT\s+INTO\s+idempotency_keys\s*\(\s*shop_id\s*,\s*key\b/i);
+      assert.match(sql, /VALUES\s*\(\s*current_shop_id\(\)\s*,/i);
+      assert.match(sql, /ON\s+CONFLICT\s*\(\s*shop_id\s*,\s*key\s*\)/i);
+    } else {
+      assert.match(sql, /shop_id\s*=\s*current_shop_id\(\)/,
+        `truy vấn ${kind} idempotency_keys thiếu tenant scope:\n${sql}`);
+    }
   }
 });

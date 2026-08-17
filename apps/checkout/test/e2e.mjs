@@ -208,6 +208,67 @@ async function main() {
   r = await co(Bs.host, 'POST', '/checkout', { body: { customer: { name: 'b', phone: '0903333333' } }, cartToken: cb, idemKey: `kb-${uniq()}` });
   r.json?.order_number === 1 ? ok('shop B: đơn đầu tiên = #1 (đếm theo shop, không toàn cục)') : bad('order_number không theo shop', String(r.json?.order_number));
 
+  // ── 8b. Cùng idempotency key trên hai shop ────────────────────────────────
+  sect('8b. Idempotency key trùng giữa hai shop');
+  const sharedKey = `shared-${uniq()}-${uniq()}`;
+  const sharedBody = { customer: { name: 'Khách dùng key chung', phone: '0904444444' }, address: { line: 'HN' }, payment_method: 'cod' };
+  const vidSharedA = await setupProduct(A, 70000, 3);
+  const vidSharedB = await setupProduct(Bs, 80000, 3);
+  const cartSharedA = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vidSharedA, qty: 1 } })).cartToken;
+  const cartSharedB = (await co(Bs.host, 'POST', '/cart/items', { body: { variant_id: vidSharedB, qty: 1 } })).cartToken;
+  const placedA = await co(A.host, 'POST', '/checkout', { body: sharedBody, cartToken: cartSharedA, idemKey: sharedKey });
+  placedA.status === 201 && placedA.json?.total_vnd === 100000
+    ? ok('shop A tạo đơn với key chung và response riêng') : bad('shop A không tạo được đơn key chung', placedA.raw);
+  const beforeB = (await owner.query(
+    `SELECT status, response_body FROM idempotency_keys WHERE shop_id=$1 AND key=$2`,
+    [A.shopId, sharedKey],
+  )).rows[0];
+
+  const placedB = await co(Bs.host, 'POST', '/checkout', { body: sharedBody, cartToken: cartSharedB, idemKey: sharedKey });
+  placedB.status === 201 && placedB.json?.total_vnd === 110000
+    ? ok('shop B dùng cùng key vẫn tạo response riêng') : bad('shop B không tạo được đơn key chung', placedB.raw);
+  const idemRows = (await owner.query(
+    `SELECT shop_id, status, response_body FROM idempotency_keys WHERE key=$1 ORDER BY shop_id`,
+    [sharedKey],
+  )).rows;
+  const idemA = idemRows.find((x) => x.shop_id === A.shopId);
+  const idemB = idemRows.find((x) => x.shop_id === Bs.shopId);
+  idemRows.length === 2 && idemA?.status === 'completed'
+    && idemA.response_body?.lookup_token === beforeB?.response_body?.lookup_token
+    && Number(idemA.response_body?.total_vnd) === 100000
+    ? ok('shop B hoàn tất không ghi đè chứng từ idempotency của shop A') : bad('chứng từ shop A bị đổi', JSON.stringify(idemRows));
+  idemB?.status === 'completed' && idemB.response_body?.lookup_token === placedB.json?.lookup_token
+    && Number(idemB.response_body?.total_vnd) === 110000
+    ? ok('chứng từ idempotency shop B giữ đúng response của B') : bad('chứng từ shop B sai', JSON.stringify(idemB));
+
+  const replayA = await co(A.host, 'POST', '/checkout', { body: sharedBody, cartToken: cartSharedA, idemKey: sharedKey });
+  replayA.status === 201 && replayA.headers['idempotency-replayed'] === 'true'
+    && replayA.json?.lookup_token === placedA.json?.lookup_token && replayA.json?.total_vnd === 100000
+    ? ok('replay shop A sau khi B hoàn tất vẫn trả đúng đơn A') : bad('replay shop A đọc nhầm shop B', replayA.raw);
+
+  // ── 8c. Hai request đồng thời cùng key trong một shop ─────────────────────
+  sect('8c. Idempotency đồng thời cùng shop');
+  const vidConcurrent = await setupProduct(A, 60000, 2);
+  const cartConcurrent = (await co(A.host, 'POST', '/cart/items', { body: { variant_id: vidConcurrent, qty: 1 } })).cartToken;
+  const concurrentKey = `same-shop-${uniq()}-${uniq()}`;
+  const concurrentBody = { customer: { name: 'Khách gửi lặp', phone: '0905555555' }, address: { line: 'HN' }, payment_method: 'cod' };
+  const concurrent = await Promise.all([
+    co(A.host, 'POST', '/checkout', { body: concurrentBody, cartToken: cartConcurrent, idemKey: concurrentKey }),
+    co(A.host, 'POST', '/checkout', { body: concurrentBody, cartToken: cartConcurrent, idemKey: concurrentKey }),
+  ]);
+  const replayCount = concurrent.filter((x) => x.headers['idempotency-replayed'] === 'true').length;
+  const concurrentNumbers = new Set(concurrent.map((x) => x.json?.order_number));
+  concurrent.every((x) => x.status === 201) && replayCount === 1 && concurrentNumbers.size === 1
+    ? ok('hai request đồng thời cùng key → một tạo, một replay cùng đơn')
+    : bad('idempotency đồng thời sai', concurrent.map((x) => `${x.status}/${x.headers['idempotency-replayed'] ?? '-'}:${x.raw}`).join(' | '));
+  const concurrentOrder = concurrent[0].json?.order_number;
+  const concurrentCount = await owner.query(
+    `SELECT count(*)::int n FROM orders WHERE shop_id=$1 AND order_number=$2`,
+    [A.shopId, concurrentOrder],
+  );
+  concurrentCount.rows[0].n === 1
+    ? ok('hai request đồng thời chỉ tạo đúng một đơn trong DB') : bad('đồng thời tạo trùng đơn', String(concurrentCount.rows[0].n));
+
   // ── 9. Cô lập chéo shop ────────────────────────────────────────────────────
   sect('9. Cô lập chéo shop');
   // Dùng cookie giỏ của shop A trên domain shop B → RLS không thấy giỏ A.

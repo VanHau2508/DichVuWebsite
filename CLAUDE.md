@@ -28,7 +28,7 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 | migration | 173 tệp, mới nhất `0175` | `packages/db/migrations/` |
 | bộ unit | 37 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 106 | `MANIFEST_E2E_COUNT` |
-| bất biến DB | 9 bộ, 117 test TAP | `packages/db/test/*.test.js` |
+| bất biến DB | 9 bộ, 118 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 76 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,71 — cao có chủ ý, xem §4.
@@ -231,6 +231,10 @@ Những lỗi này **không nằm ở sản phẩm mà ở cách kiểm chứng*
   nằm 3 dòng dưới điều kiện của nó), rộng quá thì nhận nhầm điều kiện của khối bên cạnh. Không
   có regex nào chữa được chuyện đó — thứ bù lại là **ma trận đột biến**, chạy lại mỗi khi sửa
   cửa sổ.
+- **Schema runtime phải đọc từ `pg_class` / `pg_policies`, không suy bằng grep migration.**
+  `0004_rls.sql` bật RLS và tạo policy qua vòng lặp động cho mọi bảng có `shop_id`; tìm
+  `ALTER TABLE <tên>` viết thẳng từng dẫn tới finding CAO sai và suýt sinh migration trùng
+  policy. Không truy vấn được schema thì ghi "chưa xác minh", đừng khẳng định.
 
 ---
 
@@ -339,7 +343,7 @@ lỗi contract của Codex (`c.ok !== true` trong khi readiness dùng `status`).
 Bảy workflow, làm **dọc từng cái**, không redesign cả hệ thống một lượt:
 
 ~~`onboarding/go-live`~~ → ~~`bảng điều khiển "việc cần làm"`~~ → ~~`chi tiết đơn`~~
-→ **`đa kiện/ca xử lý` ← sau khi review/merge lát cắt hiện tại** → `checkout mobile của khách`
+→ **`đa kiện/ca xử lý` ← tiếp theo** → `checkout mobile của khách`
 → `catalog + nhập từ sàn` → `cài đặt`
 
 Mỗi lát cắt đi đủ đường: **UI → route/BFF → API seller → giao dịch nghiệp vụ → DB/outbox →

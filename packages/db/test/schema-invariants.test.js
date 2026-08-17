@@ -26,6 +26,8 @@ const TENANT_TABLES = `
         AND col.column_name  = 'shop_id')
 `;
 
+const compactPolicyExpr = (value) => String(value ?? '').replace(/[()\s]/g, '').toLowerCase();
+
 describe('vai trò database', () => {
   for (const role of ['app_rw', 'app_tls']) {
     test(`${role} không phải superuser và không có BYPASSRLS`, async () => {
@@ -551,6 +553,46 @@ describe('Row-Level Security', () => {
     );
     assert.equal(rows[0].relrowsecurity, true);
     assert.equal(rows[0].relforcerowsecurity, true);
+  });
+
+  test('idempotency_keys giữ đúng RLS và toàn bộ tập policy tenant', async () => {
+    const { rows: [table] } = await owner.query(`
+      SELECT c.relrowsecurity, c.relforcerowsecurity
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public' AND c.relname = 'idempotency_keys'
+    `);
+    assert.equal(table.relrowsecurity, true);
+    assert.equal(table.relforcerowsecurity, true);
+
+    // So toàn bộ tập, không chỉ kiểm hai tên có mặt: một policy PERMISSIVE thứ ba sẽ OR
+    // với policy đúng và nới quyền dù hai policy gốc vẫn nguyên vẹn.
+    const { rows } = await owner.query(`
+      SELECT policyname, permissive, cmd, roles::text[] AS roles, qual, with_check
+        FROM pg_policies
+       WHERE schemaname = 'public' AND tablename = 'idempotency_keys'
+       ORDER BY policyname
+    `);
+    const actual = rows.map((r) => ({
+      policyname: r.policyname,
+      permissive: r.permissive,
+      cmd: r.cmd,
+      roles: [...r.roles].sort(),
+      qual: compactPolicyExpr(r.qual),
+      with_check: compactPolicyExpr(r.with_check),
+    }));
+    const appRw = compactPolicyExpr('shop_id = current_shop_id()');
+    const checkout = compactPolicyExpr('shop_id = current_shop_id() AND current_shop_is_live()');
+    assert.deepEqual(actual, [
+      {
+        policyname: 'checkout_idem', permissive: 'PERMISSIVE', cmd: 'ALL',
+        roles: ['app_checkout'], qual: checkout, with_check: checkout,
+      },
+      {
+        policyname: 'tenant_isolation', permissive: 'PERMISSIVE', cmd: 'ALL',
+        roles: ['app_rw'], qual: appRw, with_check: appRw,
+      },
+    ]);
   });
 
   test('không LỆNH nào của bảng tenant bị ≥2 policy PERMISSIVE app_rw phủ (OR nới quyền)', async () => {

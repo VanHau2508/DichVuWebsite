@@ -286,8 +286,10 @@ async function main() {
 
   let ap = await adm('GET', `/shops/${A.shopId}/products`, { cookie: A.cookie });
   /<th class="right"[^>]*>Lượt xem<\/th>/.test(ap.body) ? ok('trang Sản phẩm có cột "Lượt xem"') : bad('thiếu cột Lượt xem');
-  new RegExp(`${P2.pid}[\\s\\S]{0,1200}?<td class="num right">4</td>`).test(ap.body) || /<td class="num right">4<\/td>/.test(ap.body)
-    ? ok('cột Lượt xem hiện số 4') : bad('cột Lượt xem không hiện số', (ap.body.match(/<td class="num right">\d+<\/td>/g) ?? []).slice(0, 6).join(' '));
+  const p2Row = [...ap.body.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)]
+    .map((m) => m[0]).find((row) => row.includes(`value="${P2.pid}"`)) ?? '';
+  /<td class="num right" data-label="Lượt xem">4<\/td>/.test(p2Row)
+    ? ok('cột Lượt xem hiện số 4') : bad('cột Lượt xem không hiện số', p2Row.slice(0, 1400));
 
   // ── 10. SEO riêng cho sản phẩm (0098) ──────────────────────────────────────
   sect('10. SEO riêng cho sản phẩm: bỏ trống → suy như cũ; nhập → ĐÈ title/description');
@@ -415,7 +417,11 @@ async function main() {
   const ovM = await adm('GET', `/shops/${A.shopId}/overview`, { cookie: A.cookie });
   const theHuy = /<div class="l"><span class="sdot"[^>]*><\/span>Đã huỷ<\/div><div class="v">(\d+)<\/div>/.exec(ovM.body)?.[1];
   theHuy === '0' ? ok('Tổng quan thôi đếm đơn di cư (thẻ "Đã huỷ" = 0)') : bad('Tổng quan vẫn đếm đơn di cư', `=${theHuy}`);
-  const demDong = (b) => (b.match(/<td><a href="\/shops\/[^"]*\/orders\/[^"]*">#/g) ?? []).length;
+  // Đếm HÀNG đơn, không neo vào chuỗi mở <td>: tblCards thêm data-label ở SSR nhưng không
+  // đổi tập đơn. Đếm link trên toàn trang cũng không đủ chặt vì một hàng có thể có nhiều
+  // lối mở cùng đơn; cắt từng <tr> rồi mới hỏi hàng đó có link số đơn hay không.
+  const demDong = (b) => [...b.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)]
+    .filter((m) => /<a href="\/shops\/[^"]*\/orders\/[^"]*">#/.test(m[0])).length;
   const dsTran = await adm('GET', `/shops/${A.shopId}/orders?status=cancelled`, { cookie: A.cookie });
   const dsLoc = await adm('GET', `/shops/${A.shopId}/orders?status=cancelled&migrated=0`, { cookie: A.cookie });
   demDong(dsTran.body) === 1 && demDong(dsLoc.body) === 0

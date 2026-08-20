@@ -4265,11 +4265,15 @@ export function renderProductImport(ctx, shopId, result, err) {
   const n = (x) => esc(Number(x ?? 0));
 
   // Bảng lỗi theo DÒNG trong file gốc — người bán sửa file, không sửa cơ sở dữ liệu.
-  const errRows = (result?.errors ?? []).map((e) => `<tr>
-    <td class="num">${esc(e.line)}</td><td>${esc(e.title || '(trống)')}</td>
-    <td class="muted">${esc(e.error)}</td></tr>`).join('');
-  const errTable = errRows ? `<div class="tblscroll"><table data-cards><thead><tr>
-      <th>Dòng</th><th>Sản phẩm</th><th>Lý do bị bỏ</th></tr></thead><tbody>${errRows}</tbody></table></div>` : '';
+  const errRows = (result?.errors ?? []).map((e) => [
+    { cls: 'num', html: esc(e.line) },
+    { html: esc(e.title || '(trống)') },
+    { cls: 'muted', html: esc(e.error) },
+  ]);
+  const errTable = errRows.length ? `<div class="tblscroll">${tblCards({
+    head: [{ html: 'Dòng' }, { html: 'Sản phẩm' }, { html: 'Lý do bị bỏ' }],
+    rows: errRows,
+  })}</div>` : '';
 
   // Cột nhận diện được / bị bỏ qua. Bỏ qua IM LẶNG là cách người bán mất nguyên cột giá mà
   // không hề biết — nên cột lạ phải hiện ra kèm câu "dữ liệu ở đây KHÔNG được nhập".
@@ -4285,16 +4289,17 @@ export function renderProductImport(ctx, shopId, result, err) {
   const axisControls = axisHints.length ? `<div class="card" style="flex-basis:100%">
     <h2 style="margin-top:0">Tách trục TikTok</h2>
     <p class="muted" style="margin-top:-6px">Dấu <code>, </code> chỉ là suy đoán. Kiểm tra giá trị gốc và đặt tên trục trước khi nhập thật. Bỏ chọn <strong>Tách</strong> nếu dấu phẩy thuộc cùng một giá trị.</p>
-    <div class="tblscroll"><table data-cards><thead><tr><th>product_id</th><th>Giá trị gốc</th><th>Tên trục</th><th>Hành động</th></tr></thead><tbody>
-      ${axisHints.map((h) => `<tr>
-        <td><code>${esc(h.productId)}</code><div class="muted">${esc(h.name || '')}</div></td>
-        <td><code>${esc(h.sample || '—')}</code><div class="muted">→ ${(h.parts ?? []).map(esc).join(' · ')}</div></td>
-        <td class="actions" style="align-items:flex-start;flex-wrap:wrap">
+    <div class="tblscroll">${tblCards({
+    head: [{ html: 'product_id' }, { html: 'Giá trị gốc' }, { html: 'Tên trục' }, { html: 'Hành động' }],
+    rows: axisHints.map((h) => [
+      { html: `<code>${esc(h.productId)}</code><div class="muted">${esc(h.name || '')}</div>` },
+      { html: `<code>${esc(h.sample || '—')}</code><div class="muted">→ ${(h.parts ?? []).map(esc).join(' · ')}</div>` },
+      { cls: 'actions', style: 'align-items:flex-start;flex-wrap:wrap', html: `
           ${Array.from({ length: Number(h.count ?? 1) }, (_, i) => `<label style="min-width:130px"><span class="muted">Trục ${i + 1}</span><input name="axis_${esc(h.productId)}_${i + 1}" value="${esc(h.axisNames?.[i] || (h.count === 1 ? 'Phân loại' : `Phân loại ${i + 1}`))}" maxlength="60"></label>`).join('')}
-        </td>
-        <td><label><input type="checkbox" name="split_off_${esc(h.productId)}" value="1"> Tắt tách</label></td>
-      </tr>`).join('')}
-    </tbody></table></div>
+        ` },
+      { html: `<label><input type="checkbox" name="split_off_${esc(h.productId)}" value="1"> Tắt tách</label>` },
+    ]),
+  })}</div>
   </div>` : '';
 
   const selectedImportMode = ['create_only', 'update_only', 'upsert'].includes(result?.import_mode) ? result.import_mode : 'create_only';
@@ -4317,17 +4322,23 @@ export function renderProductImport(ctx, shopId, result, err) {
   if (result?.dry_run) {
     // XEM TRƯỚC: chưa ghi gì. Phải NÓI RÕ điều đó — một trang tên "kết quả" mà không nói đã
     // ghi hay chưa là chỗ người bán tưởng xong rồi và bỏ đi, cửa hàng vẫn trống.
-    const rows = (result.preview ?? []).map((p) => `<tr>
-      <td>${esc(p.title)}<div class="muted" style="font-size:.8rem">${esc(p.slug)}</div></td>
-      <td class="num">${esc(p.variants)}</td>
-      <td class="muted">${p.axes?.length ? esc(p.axes.join(' × ')) : '—'}</td>
-      <td class="muted">${esc(p.category || '—')}</td></tr>`).join('');
-    const diffRows = (result.diffs ?? []).map((d) => `<tr>
-      <td><code>${esc(d.external_id || d.product_external_id || '')}</code></td>
-      <td>${esc(d.sku || d.field || '')}</td><td>${esc(d.action)}</td>
-      <td class="muted">${esc(d.from == null ? '—' : d.from)} → ${esc(d.to == null ? '—' : d.to)}</td>
-      <td class="muted">${esc(d.reason || '')}</td></tr>`).join('');
-    const diffTable = diffRows ? `<h2 style="margin:16px 0 6px;font-size:15px">Bảng khác biệt trước khi ghi</h2><div class="tblscroll"><table data-cards><thead><tr><th>Mã nguồn</th><th>SKU/trường</th><th>Hành động</th><th>Hiện tại → file</th><th>Ghi chú</th></tr></thead><tbody>${diffRows}</tbody></table></div>` : '';
+    const rows = (result.preview ?? []).map((p) => [
+      { html: `${esc(p.title)}<div class="muted" style="font-size:.8rem">${esc(p.slug)}</div>` },
+      { cls: 'num', html: esc(p.variants) },
+      { cls: 'muted', html: p.axes?.length ? esc(p.axes.join(' × ')) : '—' },
+      { cls: 'muted', html: esc(p.category || '—') },
+    ]);
+    const diffRows = (result.diffs ?? []).map((d) => [
+      { html: `<code>${esc(d.external_id || d.product_external_id || '')}</code>` },
+      { html: esc(d.sku || d.field || '') },
+      { html: esc(d.action) },
+      { cls: 'muted', html: `${esc(d.from == null ? '—' : d.from)} → ${esc(d.to == null ? '—' : d.to)}` },
+      { cls: 'muted', html: esc(d.reason || '') },
+    ]);
+    const diffTable = diffRows.length ? `<h2 style="margin:16px 0 6px;font-size:15px">Bảng khác biệt trước khi ghi</h2><div class="tblscroll">${tblCards({
+      head: [{ html: 'Mã nguồn' }, { html: 'SKU/trường' }, { html: 'Hành động' }, { html: 'Hiện tại → file' }, { html: 'Ghi chú' }],
+      rows: diffRows,
+    })}</div>` : '';
     const warningBox = (result.warnings ?? []).length ? `<p style="color:var(--warn)"><strong>Cảnh báo:</strong> ${(result.warnings ?? []).map((w) => esc(w.message)).join(' ')}</p>` : '';
     resultCard = `<div class="card" style="border-color:var(--indigo)">
       <h2 style="margin-top:0">Xem trước — <span style="color:var(--indigo)">chưa ghi gì vào cửa hàng</span></h2>
@@ -4342,7 +4353,10 @@ export function renderProductImport(ctx, shopId, result, err) {
       ${result.failed ? `<p><strong style="color:var(--warn)">${n(result.failed)} dòng cần xem lại</strong> — sửa các dòng dưới rồi tải lại.</p>${errTable}` : '<p class="muted">Không có lỗi nào.</p>'}
       ${warningBox}${diffTable}
       ${rows ? `<h2 style="margin:16px 0 6px;font-size:15px">Sản phẩm sẽ tạo${result.created > (result.preview ?? []).length ? ` (${(result.preview ?? []).length} đầu tiên)` : ''}</h2>
-      <div class="tblscroll"><table data-cards><thead><tr><th>Sản phẩm</th><th>Biến thể</th><th>Trục</th><th>Danh mục</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+      <div class="tblscroll">${tblCards({
+      head: [{ html: 'Sản phẩm' }, { html: 'Biến thể' }, { html: 'Trục' }, { html: 'Danh mục' }],
+      rows,
+    })}</div>` : ''}
       <p style="margin:16px 0 0">Ưng ý thì chọn lại tệp ở dưới và bấm <strong>Nhập thật</strong>.</p>
     </div>`;
   } else if (result) {
@@ -4394,20 +4408,23 @@ export function renderProductImport(ctx, shopId, result, err) {
         <span class="muted" style="margin-left:8px;font-size:13px">Mở bằng Excel, thay dữ liệu của bạn rồi tải lên.</span></p>
       <p><strong>Nhiều biến thể của cùng một sản phẩm:</strong> cho các dòng đó cùng giá trị cột <code>handle</code>.
         Dòng đầu của nhóm ghi tên/mô tả/danh mục; các dòng sau chỉ cần cột biến thể.</p>
-      <div class="tblscroll"><table data-cards><thead><tr><th>Cột</th><th>Bắt buộc</th><th>Ý nghĩa</th></tr></thead><tbody>
-        <tr><td><code>handle</code></td><td class="muted">không</td><td>Khoá gộp biến thể. Bỏ trống ⇒ mỗi dòng một sản phẩm.</td></tr>
-        <tr><td><code>title</code></td><td><strong>có</strong></td><td>Tên sản phẩm (ghi ở dòng đầu của nhóm).</td></tr>
-        <tr><td><code>sku</code></td><td><strong>có</strong></td><td>Mã hàng, không trùng trong cửa hàng.</td></tr>
-        <tr><td><code>price_vnd</code></td><td><strong>có</strong></td><td>Giá bán, ví dụ <code>199000</code>.</td></tr>
-        <tr><td><code>option1_name</code> / <code>option1_value</code></td><td class="muted">không</td><td>Trục biến thể, ví dụ <code>Màu</code> / <code>Đen</code>. Tối đa 3 trục.</td></tr>
-        <tr><td><code>category</code></td><td class="muted">không</td><td>Danh mục, tối đa 2 cấp: <code>Thời trang &gt; Áo</code>.</td></tr>
-        <tr><td><code>image_url</code></td><td class="muted">không</td><td>Địa chỉ ảnh (http/https). Hệ thống tự tải về và lưu.</td></tr>
-        <tr><td><code>compare_at_price_vnd</code></td><td class="muted">không</td><td>Giá gạch ngang — phải lớn hơn giá bán.</td></tr>
-        <tr><td><code>cost_vnd</code></td><td class="muted">không</td><td>Giá vốn, dùng cho báo cáo lãi.</td></tr>
-        <tr><td><code>stock</code></td><td class="muted">không</td><td>Tồn kho ban đầu (mặc định 0).</td></tr>
-        <tr><td><code>weight_gram</code></td><td class="muted">không</td><td>Cân nặng tính bằng <strong>gram</strong> — dùng để tính phí ship.</td></tr>
-        <tr><td><code>status</code></td><td class="muted">không</td><td><code>active</code> để bán ngay, mặc định <code>draft</code>.</td></tr>
-      </tbody></table></div>
+      <div class="tblscroll">${tblCards({
+        head: [{ html: 'Cột' }, { html: 'Bắt buộc' }, { html: 'Ý nghĩa' }],
+        rows: [
+          [{ html: `<code>handle</code>` }, { html: `không`, cls: 'muted' }, { html: `Khoá gộp biến thể. Bỏ trống ⇒ mỗi dòng một sản phẩm.` }],
+          [{ html: `<code>title</code>` }, { html: `<strong>có</strong>` }, { html: `Tên sản phẩm (ghi ở dòng đầu của nhóm).` }],
+          [{ html: `<code>sku</code>` }, { html: `<strong>có</strong>` }, { html: `Mã hàng, không trùng trong cửa hàng.` }],
+          [{ html: `<code>price_vnd</code>` }, { html: `<strong>có</strong>` }, { html: `Giá bán, ví dụ <code>199000</code>.` }],
+          [{ html: `<code>option1_name</code> / <code>option1_value</code>` }, { html: `không`, cls: 'muted' }, { html: `Trục biến thể, ví dụ <code>Màu</code> / <code>Đen</code>. Tối đa 3 trục.` }],
+          [{ html: `<code>category</code>` }, { html: `không`, cls: 'muted' }, { html: `Danh mục, tối đa 2 cấp: <code>Thời trang &gt; Áo</code>.` }],
+          [{ html: `<code>image_url</code>` }, { html: `không`, cls: 'muted' }, { html: `Địa chỉ ảnh (http/https). Hệ thống tự tải về và lưu.` }],
+          [{ html: `<code>compare_at_price_vnd</code>` }, { html: `không`, cls: 'muted' }, { html: `Giá gạch ngang — phải lớn hơn giá bán.` }],
+          [{ html: `<code>cost_vnd</code>` }, { html: `không`, cls: 'muted' }, { html: `Giá vốn, dùng cho báo cáo lãi.` }],
+          [{ html: `<code>stock</code>` }, { html: `không`, cls: 'muted' }, { html: `Tồn kho ban đầu (mặc định 0).` }],
+          [{ html: `<code>weight_gram</code>` }, { html: `không`, cls: 'muted' }, { html: `Cân nặng tính bằng <strong>gram</strong> — dùng để tính phí ship.` }],
+          [{ html: `<code>status</code>` }, { html: `không`, cls: 'muted' }, { html: `<code>active</code> để bán ngay, mặc định <code>draft</code>.` }],
+        ],
+      })}</div>
       <p class="muted" style="font-size:13px;margin-bottom:0">Đơn hàng cũ và khách hàng cũ <strong>chưa</strong> nhập được — phần đó chạm vào số liệu doanh thu nên phải làm riêng cho chắc.</p>
     </div>`);
 }
@@ -4444,11 +4461,15 @@ function piiImportWarn(pii, shopId, truocKhiNhap) {
 export function renderOrderImport(ctx, shopId, result, err) {
   const base = `/shops/${esc(shopId)}/orders`;
   const n = (x) => esc(Number(x ?? 0));
-  const errRows = (result?.errors ?? []).map((e) => `<tr>
-    <td class="num">${esc(e.line)}</td><td>${esc(e.title || '(không mã)')}</td>
-    <td class="muted">${esc(e.error)}</td></tr>`).join('');
-  const errTable = errRows ? `<div class="tblscroll"><table data-cards><thead><tr>
-      <th>Dòng</th><th>Mã đơn</th><th>Lý do bị bỏ</th></tr></thead><tbody>${errRows}</tbody></table></div>` : '';
+  const errRows = (result?.errors ?? []).map((e) => [
+    { cls: 'num', html: esc(e.line) },
+    { html: esc(e.title || '(không mã)') },
+    { cls: 'muted', html: esc(e.error) },
+  ]);
+  const errTable = errRows.length ? `<div class="tblscroll">${tblCards({
+    head: [{ html: 'Dòng' }, { html: 'Mã đơn' }, { html: 'Lý do bị bỏ' }],
+    rows: errRows,
+  })}</div>` : '';
 
   const cols = result?.columns;
   const colCard = cols ? `<div class="card">
@@ -4459,11 +4480,13 @@ export function renderOrderImport(ctx, shopId, result, err) {
 
   let card = '';
   if (result?.dry_run) {
-    const rows = (result.preview ?? []).map((o) => `<tr>
-      <td>${esc(o.ref || '—')}</td><td class="muted">${esc(o.date)}</td>
-      <td>${esc(o.name || '(không tên)')}<div class="muted" style="font-size:.8rem">${esc(o.phone)}</div></td>
-      <td class="num right">${money(o.total_vnd)}</td>
-      <td class="muted">${esc(o.status)}</td></tr>`).join('');
+    const rows = (result.preview ?? []).map((o) => [
+      { html: esc(o.ref || '—') },
+      { cls: 'muted', html: esc(o.date) },
+      { html: `${esc(o.name || '(không tên)')}<div class="muted" style="font-size:.8rem">${esc(o.phone)}</div>` },
+      { cls: 'num right', html: money(o.total_vnd) },
+      { cls: 'muted', html: esc(o.status) },
+    ]);
     card = `<div class="card" style="border-color:var(--indigo)">
       <h2 style="margin-top:0">Xem trước — <span style="color:var(--indigo)">chưa ghi gì vào cửa hàng</span></h2>
       <div class="metrics" style="margin-bottom:12px">
@@ -4472,7 +4495,10 @@ export function renderOrderImport(ctx, shopId, result, err) {
         <div class="metric"><div class="l">Khách hàng</div><div class="v">${n(result.customers)}</div></div>
       </div>
       ${result.failed ? `<p><strong style="color:var(--warn)">${n(result.failed)} dòng sẽ bị bỏ</strong> — sửa rồi tải lại.</p>${errTable}` : '<p class="muted">Không có lỗi nào.</p>'}
-      ${rows ? `<div class="tblscroll"><table data-cards><thead><tr><th>Mã gốc</th><th>Ngày</th><th>Khách</th><th class="right">Tổng tiền</th><th>Trạng thái</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+      ${rows.length ? `<div class="tblscroll">${tblCards({
+        head: [{ html: 'Mã gốc' }, { html: 'Ngày' }, { html: 'Khách' }, { html: 'Tổng tiền', cls: 'right' }, { html: 'Trạng thái' }],
+        rows,
+      })}</div>` : ''}
       <p style="margin:16px 0 0">Ưng ý thì chọn lại tệp ở dưới và bấm <strong>Nhập thật</strong>.</p>
     </div>${piiImportWarn(result.pii, shopId, true)}`;
   } else if (result) {
@@ -4522,15 +4548,18 @@ export function renderOrderImport(ctx, shopId, result, err) {
     <div class="card">
       <h2 style="margin-top:0">Định dạng tệp</h2>
       <p style="margin-top:-6px"><a class="btn alt sm" href="${base}/import/mau.csv">⬇ Tải tệp mẫu</a></p>
-      <div class="tblscroll"><table data-cards><thead><tr><th>Cột</th><th>Bắt buộc</th><th>Ý nghĩa</th></tr></thead><tbody>
-        <tr><td><code>customer_phone</code></td><td><strong>có</strong></td><td>Số điện thoại — <strong>khoá gộp hồ sơ khách</strong>. Thiếu thì đơn không gắn được với ai nên bị bỏ.</td></tr>
-        <tr><td><code>date</code></td><td><strong>có</strong></td><td>Ngày đặt: <code>28/07/2026</code> hoặc <code>2026-07-28</code>. Ngày ở tương lai bị từ chối.</td></tr>
-        <tr><td><code>total_vnd</code></td><td><strong>có</strong></td><td>Tổng tiền đơn.</td></tr>
-        <tr><td><code>order_code</code></td><td class="muted">nên có</td><td>Mã đơn ở sàn cũ. Đây là <strong>khoá chống nhập trùng</strong> — có nó thì nhập lại cùng tệp sẽ bỏ qua thay vì nhân đôi.</td></tr>
-        <tr><td><code>customer_name</code>, <code>customer_email</code></td><td class="muted">không</td><td>Tên và email khách.</td></tr>
-        <tr><td><code>status</code></td><td class="muted">không</td><td><code>delivered</code> (mặc định) · <code>đã huỷ</code> · <code>refunded</code>.</td></tr>
-        <tr><td><code>address</code>, <code>province</code></td><td class="muted">không</td><td>Địa chỉ giao.</td></tr>
-      </tbody></table></div>
+      <div class="tblscroll">${tblCards({
+        head: [{ html: 'Cột' }, { html: 'Bắt buộc' }, { html: 'Ý nghĩa' }],
+        rows: [
+          [{ html: `<code>customer_phone</code>` }, { html: `<strong>có</strong>` }, { html: `Số điện thoại — <strong>khoá gộp hồ sơ khách</strong>. Thiếu thì đơn không gắn được với ai nên bị bỏ.` }],
+          [{ html: `<code>date</code>` }, { html: `<strong>có</strong>` }, { html: `Ngày đặt: <code>28/07/2026</code> hoặc <code>2026-07-28</code>. Ngày ở tương lai bị từ chối.` }],
+          [{ html: `<code>total_vnd</code>` }, { html: `<strong>có</strong>` }, { html: `Tổng tiền đơn.` }],
+          [{ html: `<code>order_code</code>` }, { html: `nên có`, cls: 'muted' }, { html: `Mã đơn ở sàn cũ. Đây là <strong>khoá chống nhập trùng</strong> — có nó thì nhập lại cùng tệp sẽ bỏ qua thay vì nhân đôi.` }],
+          [{ html: `<code>customer_name</code>, <code>customer_email</code>` }, { html: `không`, cls: 'muted' }, { html: `Tên và email khách.` }],
+          [{ html: `<code>status</code>` }, { html: `không`, cls: 'muted' }, { html: `<code>delivered</code> (mặc định) · <code>đã huỷ</code> · <code>refunded</code>.` }],
+          [{ html: `<code>address</code>, <code>province</code>` }, { html: `không`, cls: 'muted' }, { html: `Địa chỉ giao.` }],
+        ],
+      })}</div>
       <p class="muted" style="font-size:13px;margin-bottom:0">Không khai <code>order_code</code> thì hệ thống không có gì để nhận diện, nên nhập lại tệp sẽ tạo đơn trùng.</p>
     </div>`);
 }

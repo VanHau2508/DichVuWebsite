@@ -342,17 +342,21 @@ async function main() {
     ? ok('chỗ đếm số đang chọn cũng ẩn khi chưa có JS')
     : bad('chỗ đếm không ẩn');
 
-  // ── docs/44 §8: bảng nào gắn data-cards thì trang đó PHẢI xin JS ───────────
-  // Thuộc tính data-cards tự nó không làm gì: JS mới là thứ đọc <th> gán nhãn rồi thêm lớp
-  // .cards. Nếu route quên đổi sang sendHtmlJs thì thuộc tính nằm đó im lặng — bảng vẫn
-  // cuộn ngang trên điện thoại, và không có gì báo. Đây là kiểu hỏng KHÔNG bộ test nào
-  // khác bắt được, vì HTML vẫn đủ và trang vẫn 200.
+  // ── docs/44 §8: bảng gắn data-cards phải mang nhãn SẴN TRONG HTML ─────────
+  // Tiền đề của khẳng định này ĐÃ ĐỔI. Trước đây thuộc tính data-cards tự nó không làm gì —
+  // JS mới là thứ đọc <th> gán nhãn rồi thêm lớp .cards — nên chốt cũ kiểm "trang có xin
+  // JS không". Đo lại bằng Chromium ở 360px cho thấy đó chính là lỗi: TẮT JS thì không
+  // trang nào card-hoá (chi tiết đơn tràn 572/360), vi phạm ràng buộc "JS chỉ là tăng
+  // cường". Nay nhãn do server phát cùng markup và CSS móc thẳng vào thuộc tính, nên chốt
+  // đúng phải là: bảng có data-cards thì trong HTML đã phải có data-label.
+  // Vẫn giữ phần kiểm nonce, nhưng vì LÝ DO KHÁC: các trang này còn dùng JS cho hỏi-lại
+  // trước thao tác phá huỷ và chọn hàng loạt — không còn dùng JS cho việc card-hoá nữa.
   // Liệt kê tường minh chứ không quét động: đúng ý đồ "trang phải CHỦ ĐỘNG xin JS" — thêm
   // bảng mới mà quên thêm vào đây thì đó là việc của lô sau, còn tụt mất một trang đang có
   // thì test đỏ ngay.
   const CARD_PAGES = ['/customers', '/audit-log', '/purchasing', '/suppliers', '/stocktakes',
     '/inventory-ledger', '/promotions', '/coupons', '/pages', '/members', '/cod', '/products/import', '/orders/import'];
-  const nonceBad = [], notOk = [], chuaBat = [];
+  const nonceBad = [], notOk = [], chuaBat = [], khongNhan = [];
   let coBang = 0;
   for (const path of CARD_PAGES) {
     const pr = await adm('GET', `/shops/${A.shopId}${path}`, { cookie: A.cookie });
@@ -364,17 +368,21 @@ async function main() {
     // bảng Sổ cái kho chưa hề được gắn data-cards — bật sót một bảng không hề báo gì.
     // Trang nào ĐANG render <table> thì bảng đó phải bật thẻ; trang trạng-thái-rỗng không
     // có <table> nên tự bỏ qua (đếm coBang để không âm thầm kiểm được 0 trang).
-    // Cắt <style> trước khi quét: biểu định kiểu nội tuyến có chú thích nói VỀ bảng, và
-    // một khẳng định về markup của trang thì không được đọc nhầm sang biểu định kiểu.
-    const markup = pr.body.replace(/<style[\s\S]*?<\/style>/g, '');
+    // Cắt <style> VÀ <script> trước khi quét: cả hai đi kèm mọi trang và có nhắc tên thuộc
+    // tính trong chú thích; một khẳng định về markup thì không được đọc nhầm sang đó.
+    const markup = pr.body.replace(/<style[\s\S]*?<\/style>/g, '').replace(/<script[\s\S]*?<\/script>/g, '');
     if (/<table[\s>]/.test(markup)) {
       coBang++;
       if (!/<table[^>]*\sdata-cards/.test(markup)) chuaBat.push(path);
+      // Chốt MỚI, thứ mà bản cũ không thể có: nhãn phải nằm SẴN trong HTML do server phát.
+      // Đây mới là điều làm card-hoá chạy khi tắt JS; thiếu nó thì thuộc tính data-cards
+      // có mặt mà CSS vẫn dựng ra một chồng số không nhãn.
+      else if (!/<td[^>]*\sdata-label="/.test(markup)) khongNhan.push(path);
     }
   }
-  nonceBad.length === 0 && notOk.length === 0 && chuaBat.length === 0 && coBang >= 3
-    ? ok(`${CARD_PAGES.length} trang có JS ký nonce KHỚP header; ${coBang} trang có bảng đều đã bật data-cards`)
-    : bad('trang bật thẻ-mobile hỏng', `nonce: ${nonceBad.join(' ') || '—'} | không 200: ${notOk.join(' ') || '—'} | bảng chưa bật: ${chuaBat.join(' ') || '—'} | số trang có bảng: ${coBang}`);
+  nonceBad.length === 0 && notOk.length === 0 && chuaBat.length === 0 && khongNhan.length === 0 && coBang >= 3
+    ? ok(`${CARD_PAGES.length} trang có JS ký nonce KHỚP header; ${coBang} trang có bảng đều bật data-cards VÀ mang data-label sẵn trong HTML`)
+    : bad('trang bật thẻ-mobile hỏng', `nonce: ${nonceBad.join(' ') || '—'} | không 200: ${notOk.join(' ') || '—'} | bảng chưa bật: ${chuaBat.join(' ') || '—'} | bảng thiếu nhãn: ${khongNhan.join(' ') || '—'} | số trang có bảng: ${coBang}`);
 
   // ── docs/44 §7: ô số liệu LÀ LINK tới danh sách ĐÃ LỌC SẴN ────────────────
   // Khẳng định phải chứng minh bộ lọc THẬT SỰ LỌC. Một API nhận tham số rồi lặng lẽ bỏ qua

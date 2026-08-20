@@ -110,9 +110,14 @@ test('workflow đơn dùng role semantic, bảng cuộn và hướng dẫn tồn
   assert.match(detail, /const canReceiveReturn = INVENTORY_ROLES\.has\(ctx\.role\);/);
   assert.equal((server.match(/if \(!REFUND_ROLES\.has\(roleFor\(me, shopId\)\)\)/g) ?? []).length, 2,
     'cả POST chuẩn bị và POST cuối của BFF phải dùng đúng REFUND_ROLES');
-  assert.ok((detail.match(/<div class="tblscroll"><table data-cards>/g) ?? []).length >= 3,
-    'ba bảng chi tiết đơn phải cuộn trong khối, không đẩy body ở 360px');
-  assert.match(detail, /<td\$\{canReverse \? ' class="stack"' : ''\}>\$\{reverseForm\}<\/td>/,
+  // Cùng HẬU QUẢ như trước — bảng nằm trong khối cuộn riêng, không đẩy body ở 360px —
+  // chỉ đổi CÁCH VIẾT: markup bảng nay do tblCards phát chứ không viết tay.
+  // So BẰNG chứ không phải >=. Bản trước viết ">= 3" trong khi thực tế có 4, nên gỡ mất
+  // một khối cuộn vẫn XANH — đã chứng minh bằng đột biến. Chi tiết đơn có 10 bảng, đúng 4
+  // trong số đó nằm trong khối cuộn (những bảng còn lại đủ hẹp để nằm thẳng trong thẻ).
+  assert.equal((detail.match(/<div class="tblscroll">\$\{tblCards\(/g) ?? []).length, 4,
+    'bốn bảng chi tiết đơn phải cuộn trong khối, không đẩy body ở 360px');
+  assert.match(detail, /\{ cls: canReverse \? 'stack' : undefined, html: reverseForm \}/,
     'form điều chỉnh tiền phải dùng ô stack để không giữ min-width 220px trong cột mobile hẹp');
   assert.match(detail, /grid-template-columns:minmax\(125px,auto\) minmax\(0,1fr\)/,
     'cột nội dung timeline phải được phép co nhỏ trong grid mobile');

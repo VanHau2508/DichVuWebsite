@@ -354,47 +354,53 @@ input[type=file]{width:auto;padding:9px 12px;background:var(--surf);border:1.5px
    mới ghép được "đơn nào — bao nhiêu tiền — trạng thái gì", và cột quan trọng nhất
    thường nằm ngoài màn hình. Mỗi hàng thành MỘT thẻ, mỗi ô một dòng "nhãn — giá trị".
 
-   Chỉ áp cho bảng ĐÃ CÓ LỚP cards — lớp đó do JS thêm SAU KHI đã gán nhãn từ tiêu đề cột.
+   Móc vào THUỘC TÍNH data-cards, không vào một lớp do JS thêm. Bản trước móc vào lớp
+   "cards", mà lớp đó chỉ xuất hiện sau khi JS chạy xong — nên TẮT JS là mọi bảng lại cuộn
+   ngang. Đo bằng Chromium ở 360px trên chi tiết đơn có ca xử lý: JS bật 385/360 (tràn
+   25px), JS tắt 572/360 (tràn 212px). Nhãn nay do server phát cùng markup (tblCards), nên
+   thuộc tính và nhãn LUÔN đi cùng nhau, nên quy tắc này an toàn ngay từ byte đầu tiên.
+   (Dấu backtick bị cấm trong chú thích này: cả biểu định kiểu nằm TRONG một template
+   literal, một backtick lạc là cắt đứt chuỗi và lỗi báo ở dòng rất xa — CLAUDE.md §4.)
    (Cố ý không viết thẻ HTML dạng nguyên văn trong chú thích: CSS này đi kèm MỌI trang, nên
-   một chuỗi trông-giống-markup ở đây sẽ khớp regex của e2e đang quét markup của trang.)
-   Không JS ⇒ không có lớp ⇒ bảng giữ nguyên kiểu cuộn ngang như hiện nay. Nếu áp
-   display:block mà thiếu nhãn thì được một chồng số vô nghĩa — tệ hơn cuộn ngang. */
+   một chuỗi trông-giống-markup ở đây sẽ khớp regex của e2e đang quét markup của trang.) */
 @media(max-width:767px){
-  table.cards,table.cards tbody,table.cards tr,table.cards td{display:block;width:100%}
-  table.cards thead{display:none}
-  table.cards{border-collapse:separate;border-spacing:0}
-  table.cards tr{border:1px solid var(--bd);border-radius:var(--r-lg);padding:12px 14px;margin-bottom:12px;background:var(--card)}
-  table.cards tr:hover td{background:transparent}
+  table[data-cards],table[data-cards] tbody,table[data-cards] tr,table[data-cards] td{display:block;width:100%}
+  table[data-cards] thead{display:none}
+  table[data-cards]{border-collapse:separate;border-spacing:0}
+  table[data-cards] tr{border:1px solid var(--bd);border-radius:var(--r-lg);padding:12px 14px;margin-bottom:12px;background:var(--card)}
+  table[data-cards] tr:hover td{background:transparent}
   /* Nhãn cột đặt TUYỆT ĐỐI ở lề trái; phần giá trị chiếm chỗ còn lại và xuống dòng bình
      thường. Bản đầu dùng flex và ĐÃ SAI: flex biến MỖI CON của <td> thành một item, nên ô
      hai con — <a>tên khách</a> + <div>SĐT</div> — bị xếp NGANG cạnh nhau rồi tràn ra ngoài
      thẻ. Đơn/Sản phẩm không lộ vì ô chính của chúng có sẵn một <div> bọc.
      Vị trí tuyệt đối không quan tâm ô có mấy con, nên đúng cho mọi bảng. */
-  table.cards td{border:0;position:relative;padding:6px 0 6px 40%;text-align:right;min-height:20px;overflow-wrap:anywhere}
-  table.cards td::before{content:attr(data-label);position:absolute;left:0;top:6px;width:38%;
+  table[data-cards] td{border:0;position:relative;padding:6px 0 6px 40%;text-align:right;min-height:20px;overflow-wrap:anywhere}
+  table[data-cards] td::before{content:attr(data-label);position:absolute;left:0;top:6px;width:38%;
     color:var(--mut);font-size:13px;line-height:20px;font-weight:400;text-align:left;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   /* Ô rỗng (cột hành động trống, cột đệm) không đẻ ra dòng trắng vô nghĩa. */
-  table.cards td:empty{display:none}
-  /* Ô KHÔNG có nhãn (cột checkbox chọn hàng loạt, cột nút) trải hết chiều ngang. */
-  table.cards td[data-label=""]{padding-left:0;text-align:left}
-  table.cards td[data-label=""]::before{display:none}
+  table[data-cards] td:empty{display:none}
+  /* Ô KHÔNG có nhãn (cột checkbox chọn hàng loạt, cột nút) trải hết chiều ngang.
+     Bộ chọn là :not([data-label]) chứ không phải [data-label=""]: tblCards BỎ HẲN thuộc
+     tính khi nhãn rỗng, vì content:attr() với chuỗi rỗng vẫn sinh một ::before chiếm chỗ. */
+  table[data-cards] td:not([data-label]){padding-left:0;text-align:left}
+  table[data-cards] td:not([data-label])::before{display:none}
   /* Ô chứa VĂN XUÔI (nội dung phiếu hỗ trợ, ghi chú xử lý): xếp nhãn LÊN TRÊN thay vì
      dành 40% bề ngang cho nó. Đo thật ở 375px: ghi chú nằm trong ô có nhãn chỉ còn 109px
      → 33 dòng mỗi dòng 3-4 ký tự. Cột nhãn 40% là đúng cho GIÁ TRỊ NGẮN (số tiền, trạng
      thái, ngày) — sai cho một đoạn văn. */
-  table.cards td.stack{padding-left:0;text-align:left}
-  table.cards td.stack::before{position:static;display:block;width:auto;margin-bottom:2px}
-  /* Hàng <tfoot> là dòng TỔNG, không phải một bản ghi — JS cố ý chỉ gán nhãn cho tbody.
+  table[data-cards] td.stack{padding-left:0;text-align:left}
+  table[data-cards] td.stack::before{position:static;display:block;width:auto;margin-bottom:2px}
+  /* Hàng <tfoot> là dòng TỔNG, không phải một bản ghi — tblCards cố ý chỉ gán nhãn cho tbody.
      Không xử riêng thì ô không có data-label vẫn dính quy tắc td ở trên: chừa 40% trống
      cho nhãn rỗng rồi ép số tiền vào 60% còn lại. Cho cả hàng thành một dải
      "chữ trái — số phải" (đối soát COD, chi tiết phiếu nhập). */
-  table.cards tfoot{display:block;width:100%}
-  table.cards tfoot tr{display:flex;justify-content:space-between;align-items:baseline;gap:12px;background:var(--surf)}
-  table.cards tfoot td{display:block;width:auto;padding:0;min-height:0;text-align:right}
-  table.cards tfoot td::before{display:none}
+  table[data-cards] tfoot{display:block;width:100%}
+  table[data-cards] tfoot tr{display:flex;justify-content:space-between;align-items:baseline;gap:12px;background:var(--surf)}
+  table[data-cards] tfoot td{display:block;width:auto;padding:0;min-height:0;text-align:right}
+  table[data-cards] tfoot td::before{display:none}
   /* Trong thẻ thì không cần cuộn ngang nữa. */
-  .tblscroll:has(table.cards){overflow-x:visible}
+  .tblscroll:has(table[data-cards]){overflow-x:visible}
 }
 .savebar{display:flex;justify-content:flex-end;align-items:center;gap:12px;flex-wrap:wrap;margin-top:16px;padding-top:16px;border-top:1px solid var(--bd)}.savebar .muted{margin-right:auto}
 .vartbl th,.vartbl td{padding:11px 10px}.vartbl input{padding:8px 10px;font-size:.9rem}
@@ -932,26 +938,12 @@ const ADMIN_JS = `(function(){
     setTimeout(function(){ if (b.disabled) { b.disabled = false; b.textContent = label; delete b.dataset.busyOn; } }, 15000);
   });
 
-  // ── 3. Bảng → thẻ trên mobile: gán nhãn cột cho từng ô ────────────────────
-  // Đọc chữ ở <th> rồi gắn vào data-label của ô cùng cột. Làm ở đây thay vì render
-  // sẵn data-label trong HTML vì: bật cho một bảng chỉ tốn một thuộc tính data-cards,
-  // không phải sửa tay từng <td> của hàng chục bảng — và nhãn không thể lệch với
-  // tiêu đề cột, vì nó ĐƯỢC LẤY TỪ chính tiêu đề đó.
-  // Lớp .cards chỉ thêm SAU khi gán xong: nếu script chết giữa chừng thì bảng vẫn là
-  // bảng cuộn ngang bình thường, không thành chồng số mất nhãn.
-  document.querySelectorAll('table[data-cards]').forEach(function(t){
-    var ths = Array.prototype.slice.call(t.querySelectorAll('thead th'));
-    if (!ths.length) return;
-    var labels = ths.map(function(th){ return (th.textContent || '').trim(); });
-    Array.prototype.forEach.call(t.querySelectorAll('tbody tr'), function(tr){
-      Array.prototype.forEach.call(tr.children, function(td, i){
-        if (td.tagName === 'TD' && !td.hasAttribute('data-label')) {
-          td.setAttribute('data-label', labels[i] != null ? labels[i] : '');
-        }
-      });
-    });
-    t.classList.add('cards');
-  });
+  // ── 3. (đã gỡ) Bảng → thẻ trên mobile ─────────────────────────────────────
+  // Trước đây khối này đọc chữ ở <th> rồi gán data-label cho từng <td>, và thêm lớp
+  // "cards" để CSS ăn. Nghĩa là card-hoá CHỈ chạy khi có JS — vi phạm ràng buộc cố định
+  // "JS chỉ là tăng cường". Nay tblCards phát nhãn ngay trong HTML ở server và CSS móc
+  // vào thuộc tính data-cards, nên giữ khối này lại chỉ là bản sao thứ hai của cùng một
+  // việc — đúng lớp lỗi "hai bản sao sẽ trôi" mà kho này đã bị ba đợt.
 })();`;
 
 // Nonce đi theo ctx (`{ ...ctx, nonce }` ở route), KHÔNG phải tham số vị trí của từng hàm

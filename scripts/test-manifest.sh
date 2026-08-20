@@ -108,10 +108,17 @@ MANIFEST_UNIT_FILES=(
   # nào đi qua nhánh thiếu quyền; và chênh lệch đơn di cư chỉ lộ khi shop đã nhập từ sàn cũ.
   # Bộ này còn đối chiếu Set vai của sideNav với ma trận quyền THẬT trong apps/seller/src/rbac.js.
   apps/seller-admin/test/dashboard-viec.test.js
+  # Bảng quản trị card-hoá Ở SERVER, không phụ thuộc JS. Bản trước gán data-label bằng
+  # JavaScript và móc CSS vào lớp do JS thêm, nên TẮT JS là mọi bảng lại cuộn ngang: đo bằng
+  # Chromium ở 360px trên chi tiết đơn có ca xử lý được 385/360 khi bật JS và 572/360 khi
+  # tắt. E2E không thấy lớp hỏng này vì chúng khớp CHỮ trong HTML chứ không dựng layout —
+  # bảng thiếu nhãn vẫn đủ chữ và trang vẫn 200. Bộ này canh cả ba đường quay lại: bảng viết
+  # tay, CSS móc lớp .cards, và JS dựng lại việc gán nhãn.
+  apps/seller-admin/test/table-cards.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=37
+MANIFEST_UNIT_COUNT=38
 MANIFEST_E2E_COUNT=106
 # Số FILE migration, KHÔNG phải số thứ tự cao nhất. Dãy có khoảng trống (0157 chẳng hạn)
 # nên hôm nay là 173 file trong khi file mới nhất mang số 0175 — suy số lượng từ số thứ tự

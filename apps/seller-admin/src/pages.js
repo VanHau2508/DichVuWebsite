@@ -3961,16 +3961,17 @@ export function renderCoupons(ctx, shopId, data, notice, err) {
   const base = `/shops/${esc(shopId)}`;
   const cps = data?.coupons ?? [];
   const fmtVal = (c) => c.kind === 'percent' ? `${esc(c.value)}%` : money(c.value);
-  const rows = cps.map((c) => `<tr>
-    <td><code>${esc(c.code)}</code></td>
-    <td>Giảm ${fmtVal(c)}${Number(c.min_subtotal_vnd) > 0 ? `<div class="muted" style="font-size:.8rem">đơn từ ${money(c.min_subtotal_vnd)}</div>` : ''}</td>
-    <td class="num">${esc(c.used_count)}${c.max_uses != null ? `/${esc(c.max_uses)}` : ''}</td>
-    <td class="muted">${c.expires_at ? dt(c.expires_at) : '—'}</td>
-    <td>${badge(c.active ? 'active' : 'archived', c.active ? 'Đang bật' : 'Tắt')}</td>
-    <td style="text-align:right"><div class="thumb-act" style="justify-content:flex-end">
+  const rows = cps.map((c) => [
+    { html: `<code>${esc(c.code)}</code>` },
+    { html: `Giảm ${fmtVal(c)}${Number(c.min_subtotal_vnd) > 0 ? `<div class="muted" style="font-size:.8rem">đơn từ ${money(c.min_subtotal_vnd)}</div>` : ''}` },
+    { cls: 'num', html: `${esc(c.used_count)}${c.max_uses != null ? `/${esc(c.max_uses)}` : ''}` },
+    { cls: 'muted', html: c.expires_at ? dt(c.expires_at) : '—' },
+    { html: badge(c.active ? 'active' : 'archived', c.active ? 'Đang bật' : 'Tắt') },
+    { style: 'text-align:right', html: `<div class="thumb-act" style="justify-content:flex-end">
       <form method="POST" action="${base}/coupons/${esc(c.id)}/toggle" style="margin:0"><input type="hidden" name="active" value="${c.active ? '' : '1'}"><button class="btn alt sm" type="submit">${c.active ? 'Tắt' : 'Bật'}</button></form>
       <form method="POST" action="${base}/coupons/${esc(c.id)}/delete" style="margin:0"><button class="btn warn sm" type="submit">Xoá</button></form>
-    </div></td></tr>`).join('');
+    </div>` },
+  ]);
   return layout('Mã giảm giá', ctx, `
     <h1>Mã giảm giá</h1>
     <p class="muted">Khách <strong>nhập mã</strong> ở giỏ hàng để được giảm. Muốn giảm giá <strong>tự động theo khung giờ</strong> (không cần mã) → dùng <a href="${base}/promotions">Flash sale</a>.</p>
@@ -3989,7 +3990,10 @@ export function renderCoupons(ctx, shopId, data, notice, err) {
       <p class="muted" style="font-size:.82rem;margin-bottom:0">Giảm trên <strong>tạm tính</strong> (không giảm phí ship). Khách nhập mã ở trang giỏ hàng.</p>
     </div>
     <div class="card">${cps.length
-      ? `<table data-cards><thead><tr><th>Mã</th><th>Ưu đãi</th><th>Đã dùng</th><th>Hết hạn</th><th>Trạng thái</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      ? tblCards({
+        head: [{ html: 'Mã' }, { html: 'Ưu đãi' }, { html: 'Đã dùng' }, { html: 'Hết hạn' }, { html: 'Trạng thái' }, { html: '', label: '' }],
+        rows,
+      })
       : '<p class="muted">Chưa có mã giảm giá. Tạo ở trên để chạy khuyến mãi.</p>'}</div>`);
 }
 
@@ -4005,18 +4009,22 @@ export function renderPromotions(ctx, shopId, data, notice, err) {
   const ps = data?.promotions ?? [];
   const fmtVal = (p) => p.kind === 'percent' ? `-${esc(p.value)}%` : `-${money(p.value)}`;
   const scopeTxt = (p) => p.scope === 'all' ? 'Toàn shop' : `${esc(p.product_count ?? 0)} sản phẩm`;
-  const row = (p) => `<tr>
-    <td><a href="${base}/promotions/${esc(p.id)}">${esc(p.title)}</a></td>
-    <td><strong>${fmtVal(p)}</strong></td>
-    <td class="muted">${scopeTxt(p)}</td>
-    <td class="muted" style="font-size:.85rem">${vnFull(p.starts_at)}<br>→ ${vnFull(p.ends_at)}</td>
-    <td>${badge(PROMO_STATUS[p.status]?.[1] ?? 'archived', PROMO_STATUS[p.status]?.[0] ?? p.status)}</td>
-    <td style="text-align:right"><div class="thumb-act" style="justify-content:flex-end">
+  const row = (p) => [
+    { html: `<a href="${base}/promotions/${esc(p.id)}">${esc(p.title)}</a>` },
+    { html: `<strong>${fmtVal(p)}</strong>` },
+    { cls: 'muted', html: scopeTxt(p) },
+    { cls: 'muted', style: 'font-size:.85rem', html: `${vnFull(p.starts_at)}<br>→ ${vnFull(p.ends_at)}` },
+    { html: badge(PROMO_STATUS[p.status]?.[1] ?? 'archived', PROMO_STATUS[p.status]?.[0] ?? p.status) },
+    { style: 'text-align:right', html: `<div class="thumb-act" style="justify-content:flex-end">
       ${p.active ? `<form method="POST" action="${base}/promotions/${esc(p.id)}/end" style="margin:0"><button class="btn alt sm" type="submit">Kết thúc sớm</button></form>` : ''}
       <form method="POST" action="${base}/promotions/${esc(p.id)}/delete" style="margin:0"><button class="btn warn sm" type="submit">Xoá</button></form>
-    </div></td></tr>`;
+    </div>` },
+  ];
   const table = ps.length
-    ? `<table data-cards><thead><tr><th>Tên</th><th>Ưu đãi</th><th>Phạm vi</th><th>Thời gian (giờ VN)</th><th>Trạng thái</th><th></th></tr></thead><tbody>${ps.map(row).join('')}</tbody></table>`
+    ? tblCards({
+      head: [{ html: 'Tên' }, { html: 'Ưu đãi' }, { html: 'Phạm vi' }, { html: 'Thời gian (giờ VN)' }, { html: 'Trạng thái' }, { html: '', label: '' }],
+      rows: ps.map(row),
+    })
     : '<p class="muted">Chưa có chương trình. Tạo ở trên để chạy flash sale.</p>';
   return layout('Flash sale', ctx, `
     <h1>Flash sale — khuyến mãi tự động</h1>
@@ -4709,15 +4717,19 @@ export function renderContentPages(ctx, shopId, data) {
   // In "/<slug>" trần là đưa họ một link 404 — đúng lỗi mà sitemap từng mắc (storefront chỉ
   // phục vụ trang nội dung ở /pages/:slug). Bộ chọn liên kết của trang Giao diện, CÙNG FILE
   // này, vốn đã dựng đúng '/pages/' + slug.
-  const rows = pages.map((p) => `<tr>
-    <td><a href="/shops/${esc(shopId)}/pages/${esc(p.id)}">${esc(p.title)}</a><div class="muted" style="font-size:.8rem">/pages/${esc(p.slug)}</div></td>
-    <td>${badge(p.status, PGSTATUS[p.status] ?? p.status)}</td>
-    <td class="num right">${p.menu_position ?? '—'}</td>
-    <td class="muted">${dt(p.updated_at)}</td></tr>`).join('');
+  const rows = pages.map((p) => [
+    { html: `<a href="/shops/${esc(shopId)}/pages/${esc(p.id)}">${esc(p.title)}</a><div class="muted" style="font-size:.8rem">/pages/${esc(p.slug)}</div>` },
+    { html: badge(p.status, PGSTATUS[p.status] ?? p.status) },
+    { cls: 'num right', html: p.menu_position ?? '—' },
+    { cls: 'muted', html: dt(p.updated_at) },
+  ]);
   return layout('Trang nội dung', ctx, `
     <div class="toolbar"><h1 style="margin:0">Trang nội dung</h1>
       <a class="btn" href="/shops/${esc(shopId)}/pages/new">+ Thêm trang</a></div>
-    <div class="card">${pages.length ? `<table data-cards><thead><tr><th>Trang</th><th>Trạng thái</th><th class="right">Vị trí menu</th><th>Cập nhật</th></tr></thead><tbody>${rows}</tbody></table>`
+    <div class="card">${pages.length ? tblCards({
+      head: [{ html: 'Trang' }, { html: 'Trạng thái' }, { html: 'Vị trí menu', cls: 'right' }, { html: 'Cập nhật' }],
+      rows,
+    })
       : '<p class="muted">Chưa có trang nào. Tạo “Giới thiệu”, “Chính sách đổi trả”… bằng nút “+ Thêm trang”.</p>'}</div>`);
 }
 
@@ -4939,14 +4951,14 @@ export function renderMfaRequiredByShop(ctx) {
 export function renderMembers(ctx, shopId, data, canWrite, notice, err) {
   const members = data?.members ?? [];
   const base = `/shops/${esc(shopId)}/members`;
-  const rows = members.map((mb) => `<tr>
-    <td>${esc(mb.email)}</td>
-    <td>${canWrite && mb.role !== 'owner' ? `<form method="POST" action="${base}/${esc(mb.user_id)}/role" class="inline">
+  const rows = members.map((mb) => [
+    { html: esc(mb.email) },
+    { html: `${canWrite && mb.role !== 'owner' ? `<form method="POST" action="${base}/${esc(mb.user_id)}/role" class="inline">
         <select name="role">${INVITE_ROLES.map((r) => `<option value="${r}"${r === mb.role ? ' selected' : ''}>${esc(ROLE_LABEL[r])}</option>`).join('')}</select>
-        <button class="btn alt sm" type="submit">Đổi</button></form>` : `<span class="badge">${esc(ROLE_LABEL[mb.role] ?? mb.role)}</span>`}</td>
-    <td class="muted">${dt(mb.created_at)}</td>
-    <td class="right">${canWrite ? `<form method="POST" action="${base}/${esc(mb.user_id)}/remove"><button class="btn warn sm" type="submit">Gỡ</button></form>` : ''}</td>
-  </tr>`).join('');
+        <button class="btn alt sm" type="submit">Đổi</button></form>` : `<span class="badge">${esc(ROLE_LABEL[mb.role] ?? mb.role)}</span>`}` },
+    { cls: 'muted', html: dt(mb.created_at) },
+    { cls: 'right', html: canWrite ? `<form method="POST" action="${base}/${esc(mb.user_id)}/remove"><button class="btn warn sm" type="submit">Gỡ</button></form>` : '' },
+  ]);
   // LỜI MỜI ĐANG CHỜ. Trước đây màn này chỉ liệt kê người ĐÃ vào, nên lời mời gửi nhầm nằm im
   // 7 ngày mà chủ shop không biết là có — không thấy thì không thể muốn thu hồi.
   //
@@ -4955,22 +4967,28 @@ export function renderMembers(ctx, shopId, data, canWrite, notice, err) {
   // hạn. Vai trò in bằng NHÃN trong <span>, KHÔNG dùng <select><option> — trang này có khẳng
   // định "không được có option value=owner" và một select thừa ở đây sẽ phá nó.
   const cho = data?.invitations ?? [];
-  const choRows = cho.map((iv) => `<tr>
-    <td>${esc(iv.email)}</td>
-    <td><span class="badge">${esc(ROLE_LABEL[iv.role] ?? iv.role)}</span></td>
-    <td class="muted">${dt(iv.expires_at)}</td>
-    <td class="right">${canWrite ? `<form method="POST" action="${base}/invitations/${esc(iv.id)}/revoke"><button class="btn warn sm" type="submit" data-confirm="Huỷ lời mời gửi tới ${esc(iv.email)}? Link đã gửi sẽ hết hiệu lực ngay.">Huỷ</button></form>` : ''}</td>
-  </tr>`).join('');
+  const choRows = cho.map((iv) => [
+    { html: esc(iv.email) },
+    { html: `<span class="badge">${esc(ROLE_LABEL[iv.role] ?? iv.role)}</span>` },
+    { cls: 'muted', html: dt(iv.expires_at) },
+    { cls: 'right', html: canWrite ? `<form method="POST" action="${base}/invitations/${esc(iv.id)}/revoke"><button class="btn warn sm" type="submit" data-confirm="Huỷ lời mời gửi tới ${esc(iv.email)}? Link đã gửi sẽ hết hiệu lực ngay.">Huỷ</button></form>` : '' },
+  ]);
   return layout('Nhân sự', ctx, `<h1>Nhân sự cửa hàng</h1>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${notice?.invited ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0">
       <strong>Đã gửi email lời mời tới ${esc(notice.invited)}.</strong> Họ mở email, bấm link để đặt mật khẩu & tham gia (lời mời sống 7 ngày).</div>` : ''}
     ${notice?.revoked ? `<div class="card" style="background:#ecfdf5;border-color:#a7f3d0">
       <strong>Đã huỷ lời mời${notice.revoked ? ` gửi tới ${esc(notice.revoked)}` : ''}.</strong> Link trong email đó không dùng được nữa.</div>` : ''}
-    <div class="card"><table data-cards><thead><tr><th>Email</th><th>Vai trò</th><th>Tham gia</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="card">${tblCards({
+    head: [{ html: 'Email' }, { html: 'Vai trò' }, { html: 'Tham gia' }, { html: '', label: '' }],
+    rows,
+  })}</div>
     ${cho.length ? `<div class="card"><h2 style="margin-top:0">Lời mời đang chờ</h2>
       <p class="muted" style="font-size:.85rem">Người được mời chưa bấm link. Mời nhầm email hoặc nhầm vai trò thì <strong>Huỷ</strong> ngay — link đã gửi sẽ hết hiệu lực lập tức.</p>
-      <table data-cards><thead><tr><th>Email</th><th>Vai trò</th><th>Hết hạn</th><th></th></tr></thead><tbody>${choRows}</tbody></table></div>` : ''}
+      ${tblCards({
+    head: [{ html: 'Email' }, { html: 'Vai trò' }, { html: 'Hết hạn' }, { html: '', label: '' }],
+    rows: choRows,
+  })}</div>` : ''}
     ${canWrite ? `<div class="card"><h2 style="margin-top:0">Mời thành viên</h2>
       <p class="muted" style="font-size:.85rem">Thao tác nhân sự cần xác nhận lại mật khẩu (step-up).</p>
       <form method="POST" action="${base}/invite">
@@ -5074,17 +5092,20 @@ export function renderAuditLog(ctx, shopId, data, filter) {
     : e.actor_type === 'system' ? 'Hệ thống'
     : e.actor_type === 'platform_staff' ? 'Nhân viên nền tảng'
     : '(không còn là nhân sự)';
-  const rows = entries.map((e) => `<tr>
-    <td class="muted" style="white-space:nowrap">${dt(e.created_at)}</td>
-    <td>${actorOf(e)}</td>
-    <td>${ACTION_LABEL[e.action] ? esc(ACTION_LABEL[e.action]) : `<code>${esc(e.action)}</code>`}</td>
-    <td class="muted" style="font-size:.85rem">${maskMeta(e.metadata)}</td>
-  </tr>`).join('');
+  const rows = entries.map((e) => [
+    { cls: 'muted', style: 'white-space:nowrap', html: dt(e.created_at) },
+    { html: actorOf(e) },
+    { html: ACTION_LABEL[e.action] ? esc(ACTION_LABEL[e.action]) : `<code>${esc(e.action)}</code>` },
+    { cls: 'muted', style: 'font-size:.85rem', html: maskMeta(e.metadata) },
+  ]);
   const nav = (o) => `/shops/${esc(shopId)}/audit-log?offset=${o}`;
   return layout('Nhật ký', ctx, `<h1>Nhật ký hoạt động</h1>
     <p class="muted">Mọi thao tác trong shop đều được ghi lại, không sửa/xoá được.
       Lịch sử đăng nhập, đổi mật khẩu, MFA là sự kiện cấp tài khoản (không gắn shop) nên không hiển thị tại đây.</p>
-    <div class="card">${rows ? `<table data-cards><thead><tr><th>Thời điểm</th><th>Người thực hiện</th><th>Hành động</th><th>Chi tiết</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="card">${rows.length ? `${tblCards({
+      head: [{ html: 'Thời điểm' }, { html: 'Người thực hiện' }, { html: 'Hành động' }, { html: 'Chi tiết' }],
+      rows,
+    })}
       <div class="muted" style="margin-top:12px">
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Mới hơn</a>` : '<span style="color:#d1d5db">← Mới hơn</span>'} ·
         ${data?.has_more ? `<a href="${nav(off + lim)}">Cũ hơn →</a>` : '<span style="color:#d1d5db">Cũ hơn →</span>'}</div>`
@@ -5341,11 +5362,12 @@ export function renderSepayStepUp(ctx, shopId, op, txnId, err) {
 // ── CRM-lite: khách hàng gộp từ đơn (theo SĐT) + ghi chú ──────────────────────
 export function renderCustomers(ctx, shopId, data, filter, notice) {
   const base = `/shops/${esc(shopId)}/customers`;
-  const rows = (data?.customers ?? []).map((cu) => `<tr>
-    <td><a href="${base}/${esc(cu.phone)}">${esc(cu.name ?? '(không tên)')}</a><div class="muted" style="font-size:.8rem">${esc(cu.phone)}${cu.email ? ` · ${esc(cu.email)}` : ''}</div></td>
-    <td class="num">${esc(cu.n_orders)} đơn${Number(cu.n_orders) >= 3 ? ' <span class="badge delivered">thân thiết</span>' : ''}</td>
-    <td class="num right"><strong>${money(cu.total_spent_vnd)}</strong></td>
-    <td class="muted">${dt(cu.last_order_at)}</td></tr>`).join('');
+  const rows = (data?.customers ?? []).map((cu) => [
+    { html: `<a href="${base}/${esc(cu.phone)}">${esc(cu.name ?? '(không tên)')}</a><div class="muted" style="font-size:.8rem">${esc(cu.phone)}${cu.email ? ` · ${esc(cu.email)}` : ''}</div>` },
+    { cls: 'num', html: `${esc(cu.n_orders)} đơn${Number(cu.n_orders) >= 3 ? ' <span class="badge delivered">thân thiết</span>' : ''}` },
+    { cls: 'num right', html: `<strong>${money(cu.total_spent_vnd)}</strong>` },
+    { cls: 'muted', html: dt(cu.last_order_at) },
+  ]);
   const total = data?.total ?? 0, off = filter.offset, lim = filter.limit;
   const nav = (o) => `?q=${encodeURIComponent(filter.q ?? '')}&min_orders=${esc(String(filter.min_orders ?? 1))}&offset=${o}`;
   return layout('Khách hàng', ctx, `<h1>Khách hàng</h1>
@@ -5356,7 +5378,10 @@ export function renderCustomers(ctx, shopId, data, filter, notice) {
       <div><label>Mua tối thiểu</label><select name="min_orders">${[1, 2, 3, 5].map((n) => `<option value="${n}"${Number(filter.min_orders) === n ? ' selected' : ''}>≥ ${n} đơn</option>`).join('')}</select></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
-    <div class="card">${rows ? `<table data-cards><thead><tr><th>Khách</th><th>Số đơn</th><th class="right">Tổng chi</th><th>Mua gần nhất</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="card">${rows.length ? `${tblCards({
+      head: [{ html: 'Khách' }, { html: 'Số đơn' }, { html: 'Tổng chi', cls: 'right' }, { html: 'Mua gần nhất' }],
+      rows,
+    })}
       <div class="muted" style="margin-top:12px">${esc(String(total))} khách ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}</div>`
@@ -5365,12 +5390,13 @@ export function renderCustomers(ctx, shopId, data, filter, notice) {
 
 export function renderCustomerDetail(ctx, shopId, cu, saved, err) {
   const base = `/shops/${esc(shopId)}`;
-  const rows = (cu.orders ?? []).map((o) => `<tr>
-    <td><a href="${base}/orders/${esc(o.id)}">#${esc(o.order_number)}</a></td>
-    <td>${badge(o.status, STATUS[o.status] ?? o.status)}</td>
-    <td>${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} <span class="muted">${esc(o.payment_method?.toUpperCase() ?? '')}</span></td>
-    <td class="muted">${dt(o.created_at)}</td>
-    <td class="right"><strong>${money(o.total_vnd)}</strong></td></tr>`).join('');
+  const rows = (cu.orders ?? []).map((o) => [
+    { html: `<a href="${base}/orders/${esc(o.id)}">#${esc(o.order_number)}</a>` },
+    { html: badge(o.status, STATUS[o.status] ?? o.status) },
+    { html: `${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} <span class="muted">${esc(o.payment_method?.toUpperCase() ?? '')}</span>` },
+    { cls: 'muted', html: dt(o.created_at) },
+    { cls: 'right', html: `<strong>${money(o.total_vnd)}</strong>` },
+  ]);
   return layout(`Khách: ${cu.name ?? cu.phone}`, ctx, `
     <a class="muted" href="${base}/customers">← Danh sách khách hàng</a>
     <h1>${esc(cu.name ?? '(không tên)')}</h1>
@@ -5386,7 +5412,10 @@ export function renderCustomerDetail(ctx, shopId, cu, saved, err) {
         <button class="btn sm" type="submit" style="margin-top:10px">Lưu ghi chú</button>
       </form></div>
     <div class="card"><h2 style="margin-top:0">Lịch sử mua (${esc(String((cu.orders ?? []).length))})</h2>
-      <table data-cards><thead><tr><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Thời gian</th><th class="right">Tổng</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${tblCards({
+      head: [{ html: 'Đơn' }, { html: 'Trạng thái' }, { html: 'Thanh toán' }, { html: 'Thời gian' }, { html: 'Tổng', cls: 'right' }],
+      rows,
+    })}</div>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${ctx.role === 'owner' ? `<div class="card" style="border-color:#fca5a5">
       <h2 style="margin-top:0">Xoá dữ liệu cá nhân (ẩn danh)</h2>
@@ -5839,22 +5868,22 @@ export function renderSafetyStock(ctx, shopId, data, opt) {
   const off = opt.offset, lim = opt.limit;
   const body = rows.map((r) => {
     const ov = r.safety_override;
-    return `<tr>
-      <td>${esc(r.product_title)}${r.variant_title ? ` <span class="muted">${esc(r.variant_title)}</span>` : ''}
-        ${r.sku ? `<div class="muted" style="font-size:.8rem">${esc(r.sku)}</div>` : ''}</td>
-      <td class="num right">${esc(r.on_hand)}</td>
-      <td class="num right muted">${esc(r.reserved)}</td>
-      <td class="num right">${esc(r.safety_effective)}${ov != null ? ' <span class="muted" style="font-size:.75rem">(riêng)</span>' : ''}</td>
-      <td class="num right"><strong>${esc(r.available_online)}</strong></td>
-      <td class="num right">${Number(r.blocked_count) > 0 ? `<strong style="color:var(--bad)">${esc(r.blocked_count)}</strong>` : '<span class="muted">0</span>'}</td>
-      <td><form method="POST" action="${base}/safety-stock/override" class="actions" style="gap:6px">
+    return [
+      { html: `${esc(r.product_title)}${r.variant_title ? ` <span class="muted">${esc(r.variant_title)}</span>` : ''}
+        ${r.sku ? `<div class="muted" style="font-size:.8rem">${esc(r.sku)}</div>` : ''}` },
+      { cls: 'num right', html: esc(r.on_hand) },
+      { cls: 'num right muted', html: esc(r.reserved) },
+      { cls: 'num right', html: `${esc(r.safety_effective)}${ov != null ? ' <span class="muted" style="font-size:.75rem">(riêng)</span>' : ''}` },
+      { cls: 'num right', html: `<strong>${esc(r.available_online)}</strong>` },
+      { cls: 'num right', html: Number(r.blocked_count) > 0 ? `<strong style="color:var(--bad)">${esc(r.blocked_count)}</strong>` : '<span class="muted">0</span>' },
+      { html: `<form method="POST" action="${base}/safety-stock/override" class="actions" style="gap:6px">
         <input type="hidden" name="variant_id" value="${esc(r.variant_id)}">
         <input class="sm" type="number" name="safety_stock_qty" min="0" step="1" style="width:80px"
                value="${ov != null ? esc(ov) : ''}" placeholder="theo tỉ lệ" aria-label="Giữ riêng cho ${esc(r.product_title)}">
         <button class="btn alt sm" type="submit">Lưu</button>
-      </form></td>
-    </tr>`;
-  }).join('');
+      </form>` },
+    ];
+  });
   const nav = (o) => `?offset=${o}`;
   return layout('Tồn an toàn', ctx, `
     <h1>Tồn an toàn</h1>
@@ -5874,15 +5903,18 @@ export function renderSafetyStock(ctx, shopId, data, opt) {
         <div><button class="btn sm" type="submit">Lưu tỉ lệ</button></div>
       </form>
     </div>
-    <div class="card">${rows.length ? `<div class="tblscroll"><table data-cards><thead><tr>
-        <th>Sản phẩm</th>
-        <th class="right">Tồn thực</th>
-        <th class="right">Đang giữ chỗ</th>
-        <th class="right">Giữ an toàn</th>
-        <th class="right">Còn bán được online</th>
-        <th class="right">Số lần bị chặn</th>
-        <th>Giữ riêng (số cái)</th>
-      </tr></thead><tbody>${body}</tbody></table></div>
+    <div class="card">${rows.length ? `<div class="tblscroll">${tblCards({
+      head: [
+        { html: 'Sản phẩm' },
+        { html: 'Tồn thực', cls: 'right' },
+        { html: 'Đang giữ chỗ', cls: 'right' },
+        { html: 'Giữ an toàn', cls: 'right' },
+        { html: 'Còn bán được online', cls: 'right' },
+        { html: 'Số lần bị chặn', cls: 'right' },
+        { html: 'Giữ riêng (số cái)' },
+      ],
+      rows: body,
+    })}</div>
       <p class="muted" style="margin-top:12px;font-size:.85rem">
         <strong>Còn bán được online = Tồn thực − Đang giữ chỗ − Giữ an toàn</strong> (không âm).
         Ô <em>Giữ riêng</em> để trống nghĩa là dùng tỉ lệ chung; gõ <code>0</code> nghĩa là sản phẩm này không giữ lại gì cả.
@@ -5913,15 +5945,15 @@ export function renderInventoryLedger(ctx, shopId, data, filter) {
     const name = e.product_title
       ? `${esc(e.product_title)}${e.variant_title ? ` <span class="muted">${esc(e.variant_title)}</span>` : ''}`
       : '<span class="muted">(biến thể đã xoá)</span>';
-    return `<tr>
-      <td class="muted">${dt(e.created_at)}</td>
-      <td>${name}${e.sku ? `<div class="muted" style="font-size:.8rem">${esc(e.sku)}</div>` : ''}</td>
-      <td>${badge(LEDGER_BADGE[e.kind] ?? 'draft', LEDGER_KIND[e.kind] ?? e.kind)}</td>
-      <td class="num right"><strong style="color:${d > 0 ? 'var(--good)' : 'var(--bad)'}">${d > 0 ? '+' : ''}${esc(d)}</strong></td>
-      <td>${e.reason ? esc(e.reason) : '<span class="muted">—</span>'}</td>
-      <td class="muted">${e.actor_email ? esc(e.actor_email) : '<span class="muted">hệ thống</span>'}</td>
-    </tr>`;
-  }).join('');
+    return [
+      { cls: 'muted', html: dt(e.created_at) },
+      { html: `${name}${e.sku ? `<div class="muted" style="font-size:.8rem">${esc(e.sku)}</div>` : ''}` },
+      { html: badge(LEDGER_BADGE[e.kind] ?? 'draft', LEDGER_KIND[e.kind] ?? e.kind) },
+      { cls: 'num right', html: `<strong style="color:${d > 0 ? 'var(--good)' : 'var(--bad)'}">${d > 0 ? '+' : ''}${esc(d)}</strong>` },
+      { html: e.reason ? esc(e.reason) : '<span class="muted">—</span>' },
+      { cls: 'muted', html: e.actor_email ? esc(e.actor_email) : '<span class="muted">hệ thống</span>' },
+    ];
+  });
   const kOpt = (v, l) => `<option value="${v}"${(filter.kind ?? '') === v ? ' selected' : ''}>${l}</option>`;
   return layout('Sổ cái kho', ctx, `
     <h1>Sổ cái kho</h1>
@@ -5935,9 +5967,10 @@ export function renderInventoryLedger(ctx, shopId, data, filter) {
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
       ${filter.variantId ? `<div><a class="btn alt sm" href="${base}/inventory-ledger">Bỏ lọc 1 biến thể</a></div>` : ''}
     </form></div>
-    <div class="card">${entries.length ? `<div class="tblscroll"><table data-cards><thead><tr>
-        <th>Thời điểm</th><th>Sản phẩm</th><th>Loại</th><th class="right">Thay đổi</th><th>Lý do</th><th>Người thực hiện</th>
-      </tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="card">${entries.length ? `<div class="tblscroll">${tblCards({
+      head: [{ html: 'Thời điểm' }, { html: 'Sản phẩm' }, { html: 'Loại' }, { html: 'Thay đổi', cls: 'right' }, { html: 'Lý do' }, { html: 'Người thực hiện' }],
+      rows,
+    })}</div>
       <div class="muted" style="margin-top:12px">
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Mới hơn</a>` : '<span style="color:#d1d5db">← Mới hơn</span>'} ·
         ${data?.has_more ? `<a href="${nav(off + lim)}">Cũ hơn →</a>` : '<span style="color:#d1d5db">Cũ hơn →</span>'}
@@ -5958,16 +5991,17 @@ export function renderOwed(ctx, shopId, data) {
   const base = `/shops/${esc(shopId)}`;
   const list = data?.orders ?? [];
   const tong = Number(data?.total_owed_vnd ?? 0);
-  const rows = list.map((o) => `<tr>
-    <td><a href="${base}/orders/${esc(o.id)}">#${esc(o.order_number)}</a></td>
-    <td>${esc(o.customer_name ?? '')}${o.customer_phone ? `<div class="muted" style="font-size:.8rem">${esc(o.customer_phone)}</div>` : ''}</td>
-    <td>${badge(o.status === 'cancelled' ? 'draft' : 'warn', STATUS[o.status] ?? o.status)}</td>
-    <td class="muted">${esc(OWED_WHY[o.owed_reason] ?? '—')}</td>
-    <td class="right num muted">${money(o.amount_paid_vnd)}</td>
-    <td class="right num muted">${money(o.refunded_vnd)}</td>
-    <td class="right num"><strong style="color:var(--bad)">${money(o.owed_vnd)}</strong></td>
-    <td class="muted">${dt(o.since)}</td>
-    <td><a class="btn alt sm" href="${base}/orders/${esc(o.id)}">Xử lý →</a></td></tr>`).join('');
+  const rows = list.map((o) => [
+    { html: `<a href="${base}/orders/${esc(o.id)}">#${esc(o.order_number)}</a>` },
+    { html: `${esc(o.customer_name ?? '')}${o.customer_phone ? `<div class="muted" style="font-size:.8rem">${esc(o.customer_phone)}</div>` : ''}` },
+    { html: badge(o.status === 'cancelled' ? 'draft' : 'warn', STATUS[o.status] ?? o.status) },
+    { cls: 'muted', html: esc(OWED_WHY[o.owed_reason] ?? '—') },
+    { cls: 'right num muted', html: money(o.amount_paid_vnd) },
+    { cls: 'right num muted', html: money(o.refunded_vnd) },
+    { cls: 'right num', html: `<strong style="color:var(--bad)">${money(o.owed_vnd)}</strong>` },
+    { cls: 'muted', html: dt(o.since) },
+    { html: `<a class="btn alt sm" href="${base}/orders/${esc(o.id)}">Xử lý →</a>` },
+  ]);
   const heading = tong > 0
     ? `<div class="card" style="border-color:var(--bad);background:var(--badbg)">
          <div class="muted" style="font-size:.9rem">Tổng tiền của khách đang nằm ở cửa hàng</div>
@@ -5980,10 +6014,14 @@ export function renderOwed(ctx, shopId, data) {
     <div class="toolbar"><h1 style="margin:0">Còn nợ khách</h1>
       <a class="btn alt sm" href="${base}/orders">Danh sách đơn →</a></div>
     ${heading}
-    ${list.length ? `<div class="card"><div class="tblscroll"><table data-cards><thead><tr>
-        <th>Đơn</th><th>Khách</th><th>Trạng thái</th><th>Vì sao còn nợ</th>
-        <th class="right">Đã thu</th><th class="right">Đã hoàn</th><th class="right">Còn nợ</th><th>Từ</th><th></th>
-      </tr></thead><tbody>${rows}</tbody></table></div>
+    ${list.length ? `<div class="card"><div class="tblscroll">${tblCards({
+      head: [
+        { html: 'Đơn' }, { html: 'Khách' }, { html: 'Trạng thái' }, { html: 'Vì sao còn nợ' },
+        { html: 'Đã thu', cls: 'right' }, { html: 'Đã hoàn', cls: 'right' }, { html: 'Còn nợ', cls: 'right' },
+        { html: 'Từ' }, { html: '', label: '' },
+      ],
+      rows,
+    })}</div>
       ${data.truncated ? '<p class="muted" style="margin:12px 0 0">⚠ Danh sách bị cắt ở 500 đơn — con số tổng phía trên vẫn tính trên TOÀN BỘ đơn.</p>' : ''}
     </div>` : ''}`);
 }
@@ -6491,8 +6529,16 @@ export function renderBilling(ctx, shopId, d, err, ok) {
       </form>
     </div>`}
     <div class="card"><h2 style="margin-top:0">Lịch sử đóng phí</h2>
-      ${(d?.invoices ?? []).length ? `<table data-cards><thead><tr><th>Ngày</th><th>Gói</th><th>Số tháng</th><th style="text-align:right">Số tiền</th><th>Ghi chú</th></tr></thead><tbody>${
-        d.invoices.map((i) => `<tr><td class="muted">${dt(i.created_at)}</td><td>${esc(i.plan_code)}</td><td>${esc(i.months)}</td><td style="text-align:right"><strong>${esc(money(i.amount_vnd))}</strong></td><td class="muted">${esc(i.note ?? '')}</td></tr>`).join('')}</tbody></table>`
+      ${(d?.invoices ?? []).length ? tblCards({
+        head: [{ html: 'Ngày' }, { html: 'Gói' }, { html: 'Số tháng' }, { html: 'Số tiền', style: 'text-align:right' }, { html: 'Ghi chú' }],
+        rows: d.invoices.map((i) => [
+          { cls: 'muted', html: dt(i.created_at) },
+          { html: esc(i.plan_code) },
+          { html: esc(i.months) },
+          { style: 'text-align:right', html: `<strong>${esc(money(i.amount_vnd))}</strong>` },
+          { cls: 'muted', html: esc(i.note ?? '') },
+        ]),
+      })
         : '<p class="muted">Chưa có khoản đóng phí nào.</p>'}
     </div>`);
 }
@@ -6543,15 +6589,15 @@ export function renderNotificationDeliveries(ctx, shopId, data, filter = {}) {
         retry_window_expired: 'Đã hết hạn gửi lại',
         channel_not_supported: 'Kênh không hỗ trợ gửi lại',
       }[d.retry_block_reason] ?? '—')}</span>`;
-    return `<tr>
-      <td>${order}<div class="muted" style="font-size:.82rem">${esc(d.topic ?? '')}</div></td>
-      <td>${badge(d.channel ?? 'unknown', d.channel ?? '—')}</td>
-      <td>${badge(d.status ?? 'unknown', d.status ?? '—')}<div class="muted" style="font-size:.82rem">${esc(d.attempts ?? 0)} lần thử</div></td>
-      <td class="muted">${d.last_attempt_at ? dt(d.last_attempt_at) : dt(d.updated_at ?? d.created_at)}</td>
-      <td class="stack">${d.last_error ? `<span style="color:var(--bad)">${esc(d.last_error)}</span>` : (d.provider_message_id ? `Mã provider: ${esc(d.provider_message_id)}` : '—')}</td>
-      <td style="text-align:right">${retry}</td>
-    </tr>`;
-  }).join('');
+    return [
+      { html: `${order}<div class="muted" style="font-size:.82rem">${esc(d.topic ?? '')}</div>` },
+      { html: badge(d.channel ?? 'unknown', d.channel ?? '—') },
+      { html: `${badge(d.status ?? 'unknown', d.status ?? '—')}<div class="muted" style="font-size:.82rem">${esc(d.attempts ?? 0)} lần thử</div>` },
+      { cls: 'muted', html: d.last_attempt_at ? dt(d.last_attempt_at) : dt(d.updated_at ?? d.created_at) },
+      { cls: 'stack', html: d.last_error ? `<span style="color:var(--bad)">${esc(d.last_error)}</span>` : (d.provider_message_id ? `Mã provider: ${esc(d.provider_message_id)}` : '—') },
+      { style: 'text-align:right', html: retry },
+    ];
+  });
   const extra = `&limit=${encodeURIComponent(filter.limit || 20)}`;
   return layout('Thông báo cần xử lý', ctx, `
     <div class="toolbar"><div><a class="muted" href="/shops/${esc(shopId)}/overview">← Tổng quan</a><h1 style="margin:4px 0 0">Thông báo cần xử lý</h1></div></div>
@@ -6559,7 +6605,10 @@ export function renderNotificationDeliveries(ctx, shopId, data, filter = {}) {
     ${filter.notice ? `<div class="notice success">${esc(filter.notice)}</div>` : ''}
     ${queueTabs(base, status, [['failed', 'Gửi thất bại'], ['queued', 'Đang chờ'], ['retrying', 'Đang thử lại'], ['sending', 'Đang gửi'], ['accepted', 'Đã provider nhận'], ['skipped', 'Đã bỏ qua'], ['superseded', 'Đã thay thế']], extra)}
     <div class="card"><p class="muted" style="margin-top:0">Chỉ hiện “đã gửi” sau khi nhà cung cấp chấp nhận. Lỗi email có thể gửi lại; các kênh khác cần xử lý theo cấu hình kênh.</p>
-      ${rows ? `<div class="tblscroll"><table data-cards><thead><tr><th>Đơn</th><th>Kênh</th><th>Trạng thái</th><th>Lần thử gần nhất</th><th>Lỗi / mã provider</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state">Không có thông báo trong trạng thái này.</div>'}
+      ${rows.length ? `<div class="tblscroll">${tblCards({
+        head: [{ html: 'Đơn' }, { html: 'Kênh' }, { html: 'Trạng thái' }, { html: 'Lần thử gần nhất' }, { html: 'Lỗi / mã provider' }, { html: '', label: '' }],
+        rows,
+      })}</div>` : '<div class="empty-state">Không có thông báo trong trạng thái này.</div>'}
       ${queuePager(base, filter, data.total ?? 0)}</div>`);
 }
 
@@ -6575,21 +6624,24 @@ export function renderResolutionCases(ctx, shopId, data, filter = {}) {
       : c.status === 'waiting_return'
         ? `Chờ nhận hàng hoàn (${Math.max(0, returned - received)} sp)`
         : 'Đã xử lý';
-    return `<tr>
-      <td><a href="/shops/${esc(shopId)}/orders/${esc(c.order_id)}?timeline=shipment"><strong>#${esc(c.order_number)}</strong></a><div class="muted" style="font-size:.82rem">${esc(c.kind ?? 'mixed_shipment')}</div></td>
-      <td>${badge(c.status ?? 'unknown', c.status === 'waiting_return' ? 'Chờ hàng hoàn' : c.status === 'open' ? 'Cần xử lý' : c.status ?? '—')}</td>
-      <td><div>Đã giao: <strong>${esc(c.delivered_qty ?? 0)}</strong></div><div>Đã hoàn: <strong>${esc(returned)}</strong> · Đã nhận: ${esc(received)}</div><div class="muted">Chưa phân định: ${esc(remaining)}</div></td>
-      <td>${Number(c.required_refund_vnd ?? 0) > 0 ? `<strong>${money(c.required_refund_vnd)}</strong><div class="muted">mức hoàn tối thiểu</div>` : '—'}</td>
-      <td class="muted">${dt(c.detected_at)}</td>
-      <td style="text-align:right"><a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(c.order_id)}?timeline=shipment">${esc(action)}</a></td>
-    </tr>`;
-  }).join('');
+    return [
+      { html: `<a href="/shops/${esc(shopId)}/orders/${esc(c.order_id)}?timeline=shipment"><strong>#${esc(c.order_number)}</strong></a><div class="muted" style="font-size:.82rem">${esc(c.kind ?? 'mixed_shipment')}</div>` },
+      { html: badge(c.status ?? 'unknown', c.status === 'waiting_return' ? 'Chờ hàng hoàn' : c.status === 'open' ? 'Cần xử lý' : c.status ?? '—') },
+      { html: `<div>Đã giao: <strong>${esc(c.delivered_qty ?? 0)}</strong></div><div>Đã hoàn: <strong>${esc(returned)}</strong> · Đã nhận: ${esc(received)}</div><div class="muted">Chưa phân định: ${esc(remaining)}</div>` },
+      { html: Number(c.required_refund_vnd ?? 0) > 0 ? `<strong>${money(c.required_refund_vnd)}</strong><div class="muted">mức hoàn tối thiểu</div>` : '—' },
+      { cls: 'muted', html: dt(c.detected_at) },
+      { style: 'text-align:right', html: `<a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(c.order_id)}?timeline=shipment">${esc(action)}</a>` },
+    ];
+  });
   const extra = `&limit=${encodeURIComponent(filter.limit || 20)}`;
   return layout('Ca đơn hàng cần xử lý', ctx, `
     <div class="toolbar"><div><a class="muted" href="/shops/${esc(shopId)}/overview">← Tổng quan</a><h1 style="margin:4px 0 0">Ca đơn hàng cần xử lý</h1></div></div>
     ${queueTabs(base, status, [['active', 'Đang mở'], ['open', 'Mở'], ['waiting_return', 'Chờ hàng hoàn'], ['resolved', 'Đã xử lý']], extra)}
     <div class="card"><div class="notice warn" style="margin-top:0">Không tự hoàn tiền hoặc nhập lại kho chỉ vì hãng báo hoàn. Mở chi tiết đơn để xác nhận từng số lượng và chọn bước tiếp theo.</div>
-      ${rows ? `<div class="tblscroll"><table data-cards><thead><tr><th>Đơn</th><th>Trạng thái ca</th><th>Tiến độ số lượng</th><th>Hoàn tiền</th><th>Phát hiện</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state">Không có ca nào trong trạng thái này.</div>'}
+      ${rows.length ? `<div class="tblscroll">${tblCards({
+        head: [{ html: 'Đơn' }, { html: 'Trạng thái ca' }, { html: 'Tiến độ số lượng' }, { html: 'Hoàn tiền' }, { html: 'Phát hiện' }, { html: '', label: '' }],
+        rows,
+      })}</div>` : '<div class="empty-state">Không có ca nào trong trạng thái này.</div>'}
       ${queuePager(base, filter, data.total ?? 0)}</div>`);
 }
 
@@ -6609,14 +6661,14 @@ export function renderOrderRequests(ctx, shopId, data, filter = {}) {
       ? `<a class="btn sm" href="/shops/${esc(shopId)}/orders/${esc(r.order_id)}/return?request_id=${encodeURIComponent(r.id)}">Tiếp tục nhận trả</a>`
       : `<span class="muted">${esc(r.decision_note ?? 'Đã có quyết định')}</span>`);
     const payload = r.request_payload && typeof r.request_payload === 'object' ? r.request_payload : {};
-    return `<tr>
-      <td><a href="/shops/${esc(shopId)}/orders/${esc(r.order_id)}"><strong>#${esc(r.order_number)}</strong></a><div class="muted" style="font-size:.82rem">${esc(r.customer_name ?? '')} · ${esc(r.customer_phone ?? '')}</div></td>
-      <td>${badge(r.request_type ?? 'unknown', typeLabel[r.request_type] ?? r.request_type ?? '—')}</td>
-      <td>${badge(r.status ?? 'unknown', r.status ?? '—')}<div class="muted" style="font-size:.82rem">${dt(r.created_at)}</div></td>
-      <td class="stack">${esc(r.reason ?? '')}${r.request_type === 'address_change' && payload.line ? `<div class="muted" style="margin-top:4px">Địa chỉ mới: ${esc(payload.line)}, ${esc(payload.province ?? '')}</div>` : ''}</td>
-      <td style="min-width:260px">${actions}</td>
-    </tr>`;
-  }).join('');
+    return [
+      { html: `<a href="/shops/${esc(shopId)}/orders/${esc(r.order_id)}"><strong>#${esc(r.order_number)}</strong></a><div class="muted" style="font-size:.82rem">${esc(r.customer_name ?? '')} · ${esc(r.customer_phone ?? '')}</div>` },
+      { html: badge(r.request_type ?? 'unknown', typeLabel[r.request_type] ?? r.request_type ?? '—') },
+      { html: `${badge(r.status ?? 'unknown', r.status ?? '—')}<div class="muted" style="font-size:.82rem">${dt(r.created_at)}</div>` },
+      { cls: 'stack', html: `${esc(r.reason ?? '')}${r.request_type === 'address_change' && payload.line ? `<div class="muted" style="margin-top:4px">Địa chỉ mới: ${esc(payload.line)}, ${esc(payload.province ?? '')}</div>` : ''}` },
+      { style: 'min-width:260px', html: actions },
+    ];
+  });
   const extra = `&limit=${encodeURIComponent(filter.limit || 20)}${type ? `&type=${encodeURIComponent(type)}` : ''}`;
   return layout('Yêu cầu của khách', ctx, `
     <div class="toolbar"><div><a class="muted" href="/shops/${esc(shopId)}/overview">← Tổng quan</a><h1 style="margin:4px 0 0">Yêu cầu của khách</h1></div></div>
@@ -6624,7 +6676,10 @@ export function renderOrderRequests(ctx, shopId, data, filter = {}) {
     ${filter.notice ? `<div class="notice success">${esc(filter.notice)}</div>` : ''}
     ${queueTabs(base, status, [['requested', 'Chờ shop xử lý'], ['approved', 'Đã chấp thuận'], ['completed', 'Đã hoàn tất'], ['rejected', 'Đã từ chối']], extra)}
     <div class="card"><form method="GET" class="filters" style="align-items:end;margin-bottom:14px"><input type="hidden" name="status" value="${esc(status)}"><input type="hidden" name="limit" value="${esc(filter.limit || 20)}"><div><label>Loại yêu cầu</label><select name="type"><option value="">Tất cả</option>${Object.entries(typeLabel).map(([k, v]) => `<option value="${k}"${type === k ? ' selected' : ''}>${v}</option>`).join('')}</select></div><button class="btn alt sm" type="submit">Lọc</button></form>
-      ${rows ? `<div class="tblscroll"><table data-cards><thead><tr><th>Đơn / khách</th><th>Loại</th><th>Trạng thái</th><th>Nội dung yêu cầu</th><th>Quyết định</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state">Không có yêu cầu trong trạng thái này.</div>'}
+      ${rows.length ? `<div class="tblscroll">${tblCards({
+        head: [{ html: 'Đơn / khách' }, { html: 'Loại' }, { html: 'Trạng thái' }, { html: 'Nội dung yêu cầu' }, { html: 'Quyết định' }],
+        rows,
+      })}</div>` : '<div class="empty-state">Không có yêu cầu trong trạng thái này.</div>'}
       ${queuePager(base, filter, data.total ?? 0)}</div>`);
 }
 

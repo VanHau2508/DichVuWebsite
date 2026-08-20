@@ -3139,13 +3139,14 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     <div class="card"><h2 style="margin-top:0">Giao hàng (nhập tay)</h2>
       <p class="muted">Số lượng gửi mỗi mặt hàng — mặc định = còn lại. Gửi ÍT hơn → đơn "Giao một phần", gửi nốt kiện sau.</p>
       <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/ship">
-        <div class="tblscroll"><table data-cards><thead><tr><th>Mặt hàng</th><th>Còn phải gửi</th><th>Số lượng kiện này</th></tr></thead><tbody>
-          ${remLines.map((l) => `<tr>
-            <td>${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span></td>
-            <td class="muted" style="text-align:right;white-space:nowrap">còn ${l.remaining}/${esc(l.qty)}${l.planned > 0 ? `<br><small>đang chờ hãng ${esc(l.planned)}</small>` : ''}</td>
-            <td style="text-align:right"><input type="hidden" name="order_line_id" value="${esc(l.order_line_id)}"><input name="ship_qty" type="number" min="0" max="${l.remaining}" value="${l.remaining}" inputmode="numeric" style="width:78px" aria-label="Số lượng gửi ${esc(l.title_snapshot)}"></td>
-          </tr>`).join('')}
-        </tbody></table></div>
+        <div class="tblscroll">${tblCards({
+    head: [{ html: 'Mặt hàng' }, { html: 'Còn phải gửi' }, { html: 'Số lượng kiện này' }],
+    rows: remLines.map((l) => [
+      { html: `${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span>` },
+      { cls: 'muted', style: 'text-align:right;white-space:nowrap', html: `còn ${l.remaining}/${esc(l.qty)}${l.planned > 0 ? `<br><small>đang chờ hãng ${esc(l.planned)}</small>` : ''}` },
+      { style: 'text-align:right', html: `<input type="hidden" name="order_line_id" value="${esc(l.order_line_id)}"><input name="ship_qty" type="number" min="0" max="${l.remaining}" value="${l.remaining}" inputmode="numeric" style="width:78px" aria-label="Số lượng gửi ${esc(l.title_snapshot)}">` },
+    ]),
+  })}</div>
         <div class="grid2" style="margin-top:8px">
           <div><label>Mã vận đơn</label><input name="tracking_number" required maxlength="64"></div>
           <div><label>Đơn vị VC</label><input name="carrier" maxlength="40" placeholder="GHN..."></div>
@@ -3209,14 +3210,14 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
         <input name="reason" required minlength="3" maxlength="500" placeholder="vd: nhân viên ghi nhận nhầm"></label>
       <button class="btn alt sm" type="submit" data-confirm="Tạo bút toán đảo ${esc(money(t.amount_vnd))}? Chứng từ cũ vẫn được giữ lại.">Điều chỉnh ghi nhận</button>
     </form>` : (reversal ? `<span class="muted">Đảo chứng từ ${esc(String(t.reverses_transaction_id ?? '').slice(0, 8))}</span>` : '');
-    return `<tr>
-      <td class="muted">${dt(t.created_at)}</td>
-      <td><strong style="color:${reversal ? 'var(--bad)' : 'var(--good)'}">${reversal ? '−' : '+'}${money(t.amount_vnd)}</strong><br><span class="muted">${reversal ? 'Điều chỉnh giảm' : 'Khoản thu'}</span></td>
-      <td>${esc(source ?? '—')}<br><span class="muted">${esc(status ?? '—')}</span></td>
-      <td>${esc(t.note ?? '') || '<span class="muted">—</span>'}${t.recorded_by_email ? `<br><span class="muted">${esc(t.recorded_by_email)}</span>` : ''}</td>
-      <td${canReverse ? ' class="stack"' : ''}>${reverseForm}</td>
-    </tr>`;
-  }).join('');
+    return [
+      { cls: 'muted', html: dt(t.created_at) },
+      { html: `<strong style="color:${reversal ? 'var(--bad)' : 'var(--good)'}">${reversal ? '−' : '+'}${money(t.amount_vnd)}</strong><br><span class="muted">${reversal ? 'Điều chỉnh giảm' : 'Khoản thu'}</span>` },
+      { html: `${esc(source ?? '—')}<br><span class="muted">${esc(status ?? '—')}</span>` },
+      { html: `${esc(t.note ?? '') || '<span class="muted">—</span>'}${t.recorded_by_email ? `<br><span class="muted">${esc(t.recorded_by_email)}</span>` : ''}` },
+      { cls: canReverse ? 'stack' : undefined, html: reverseForm },
+    ];
+  });
   const creditText = Number(payment.customer_credit_vnd) > 0
     ? `<div class="err"><strong>Cần xử lý ${money(payment.customer_credit_vnd)}</strong> khách chuyển dư hoặc shop đang giữ sau khi đơn kết thúc. Không xoá giao dịch; hãy hoàn tiền và ghi bút toán hoàn.</div>` : '';
   const partialValueText = fulfillmentAdjustment > 0
@@ -3233,7 +3234,10 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     </div>
     ${partialValueText}${creditText}${manualPaymentForm}
     <h3 style="margin-top:18px">Lịch sử giao dịch</h3>
-    ${transactionRows ? `<div class="tblscroll"><table data-cards><thead><tr><th>Thời gian</th><th>Số tiền</th><th>Nguồn</th><th>Ghi chú</th><th>Điều chỉnh</th></tr></thead><tbody>${transactionRows}</tbody></table></div>` : '<p class="muted">Chưa có chứng từ thanh toán.</p>'}
+    ${transactionRows.length ? `<div class="tblscroll">${tblCards({
+    head: [{ html: 'Thời gian' }, { html: 'Số tiền' }, { html: 'Nguồn' }, { html: 'Ghi chú' }, { html: 'Điều chỉnh' }],
+    rows: transactionRows,
+  })}</div>` : '<p class="muted">Chưa có chứng từ thanh toán.</p>'}
   </div>` : `<div class="card" id="thanh-toan" style="border-color:var(--bad)">
     <h2 style="margin-top:0">Thanh toán tạm thời không tải được</h2>
     <div class="err">Hệ thống thiếu bản tổng hợp thanh toán nên đã khoá toàn bộ thao tác tiền để tránh hiển thị hoặc ghi sai số.</div>
@@ -3252,9 +3256,15 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   // Lịch sử hoàn tiền: mọi bút toán (một phần lẫn toàn bộ) + tổng đã hoàn.
   const refundHistory = (o.refunds ?? []).length ? `
     <div class="card"><h2>Hoàn tiền</h2>
-      <table data-cards><thead><tr><th>Thời gian</th><th>Số tiền</th><th>Lý do</th><th>Người thao tác</th></tr></thead><tbody>
-        ${o.refunds.map((r) => `<tr><td class="muted">${dt(r.created_at)}</td><td><strong>${money(r.amount_vnd)}</strong></td><td>${esc(r.reason ?? '') || '<span class="muted">—</span>'}${r.restock ? ' <span class="muted">(khai nhập lại kho)</span>' : ''}</td><td class="muted">${esc(r.created_by_email ?? '—')}</td></tr>`).join('')}
-      </tbody></table>
+      ${tblCards({
+    head: [{ html: 'Thời gian' }, { html: 'Số tiền' }, { html: 'Lý do' }, { html: 'Người thao tác' }],
+    rows: o.refunds.map((r) => [
+      { cls: 'muted', html: dt(r.created_at) },
+      { html: `<strong>${money(r.amount_vnd)}</strong>` },
+      { html: `${esc(r.reason ?? '') || '<span class="muted">—</span>'}${r.restock ? ' <span class="muted">(khai nhập lại kho)</span>' : ''}` },
+      { cls: 'muted', html: esc(r.created_by_email ?? '—') },
+    ]),
+  })}
       <div style="text-align:right;margin-top:8px"><strong>Tổng đã hoàn ${money(o.refunded_total_vnd ?? 0)}</strong>
         ${o.payment_status === 'paid' ? `<span class="muted"> / ${money(o.total_vnd)} — còn có thể hoàn ${money(Number(o.total_vnd) - Number(o.refunded_total_vnd ?? 0))}</span>` : ''}</div>
     </div>` : '';
@@ -3262,22 +3272,31 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   // thao tác). Mirror card hoàn tiền — chứng từ trả giữ độc lập với bút toán hoàn.
   const returnHistory = (o.returns ?? []).length ? `
     <div class="card"><h2>Lịch sử đổi-trả</h2>
-      <table data-cards><thead><tr><th>Thời gian</th><th>SL trả</th><th>Số hoàn</th><th>Nhập kho</th><th>Lý do</th><th>Người thao tác</th></tr></thead><tbody>
-        ${o.returns.map((r) => `<tr><td class="muted">${dt(r.created_at)}</td><td>${esc(r.qty)}</td><td><strong>${money(r.refund_vnd)}</strong></td><td class="muted">${r.restocked ? 'có' : 'không'}</td><td>${esc(r.reason ?? '') || '<span class="muted">—</span>'}</td><td class="muted">${esc(r.created_by_email ?? '—')}</td></tr>`).join('')}
-      </tbody></table>
+      ${tblCards({
+    head: [{ html: 'Thời gian' }, { html: 'SL trả' }, { html: 'Số hoàn' }, { html: 'Nhập kho' }, { html: 'Lý do' }, { html: 'Người thao tác' }],
+    rows: o.returns.map((r) => [
+      { cls: 'muted', html: dt(r.created_at) },
+      { html: esc(r.qty) },
+      { html: `<strong>${money(r.refund_vnd)}</strong>` },
+      { cls: 'muted', html: r.restocked ? 'có' : 'không' },
+      { html: esc(r.reason ?? '') || '<span class="muted">—</span>' },
+      { cls: 'muted', html: esc(r.created_by_email ?? '—') },
+    ]),
+  })}
     </div>` : '';
   // Danh sách KIỆN HÀNG (0080): mỗi vận đơn + mặt hàng trong kiện (shipment_lines từ getOrder).
   // Đơn nhiều kiện thấy rõ kiện nào chứa gì + trạng thái từng kiện. Thay <p> vận đơn cũ.
   const shipmentsCard = (o.shipments ?? []).length ? `
     <div class="card"><h2>Kiện hàng / vận đơn</h2>
-      <table data-cards><thead><tr><th>Mã vận đơn</th><th>Trạng thái</th><th>Hãng</th><th>Mặt hàng</th></tr></thead><tbody>
-        ${o.shipments.map((s) => `<tr>
-          <td><strong>${esc(s.tracking_number ?? '(đang tạo)')}</strong> ${esc(s.carrier ?? '')}</td>
-          <td>${esc(SHIP_ST[s.status] ?? s.status)}</td>
-          <td class="muted">${s.provider ? esc(s.provider.toUpperCase()) : 'giao tay'}${s.carrier_fee_vnd != null ? ` · ${money(s.carrier_fee_vnd)}` : ''}</td>
-          <td class="muted">${(s.lines ?? []).length ? s.lines.map((sl) => `${esc(sl.sku ?? '?')}×${esc(sl.qty)}`).join(', ') : '—'}</td>
-        </tr>`).join('')}
-      </tbody></table>
+      ${tblCards({
+    head: [{ html: 'Mã vận đơn' }, { html: 'Trạng thái' }, { html: 'Hãng' }, { html: 'Mặt hàng' }],
+    rows: o.shipments.map((s) => [
+      { html: `<strong>${esc(s.tracking_number ?? '(đang tạo)')}</strong> ${esc(s.carrier ?? '')}` },
+      { html: esc(SHIP_ST[s.status] ?? s.status) },
+      { cls: 'muted', html: `${s.provider ? esc(s.provider.toUpperCase()) : 'giao tay'}${s.carrier_fee_vnd != null ? ` · ${money(s.carrier_fee_vnd)}` : ''}` },
+      { cls: 'muted', html: (s.lines ?? []).length ? s.lines.map((sl) => `${esc(sl.sku ?? '?')}×${esc(sl.qty)}`).join(', ') : '—' },
+    ]),
+  })}
     </div>` : '';
   // Cụm nút chia theo VIỆC, mỗi nhóm một hàng có nhãn. Nhóm rỗng thì biến mất hẳn —
   // không để nhãn trơ không có nút nào bên dưới.
@@ -3344,8 +3363,14 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     const receive = canReceiveReturn && receiptLines.length ? `<details style="margin-top:8px"><summary class="btn alt sm">Xác nhận đã nhận hàng</summary>
       <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/resolution-cases/${esc(c.id)}/receive-return" style="margin-top:10px">
         <input type="hidden" name="idempotency_key" value="receipt-${esc(c.id)}-${esc(c.received_return_qty)}">
-        <div class="tblscroll"><table data-cards><thead><tr><th>Mặt hàng</th><th>Chưa nhận</th><th>Số lượng nhận</th></tr></thead><tbody>${receiptLines.map((line) => `<tr><td><strong>${esc(line.title_snapshot ?? 'Mặt hàng')}</strong>${line.sku_snapshot ? `<br><span class="muted">SKU ${esc(line.sku_snapshot)}</span>` : ''}</td><td class="muted">còn ${esc(line.remaining_return_qty)}/${esc(line.returned_qty)}</td>
-          <td><input type="hidden" name="case_line_id" value="${esc(line.id)}"><input type="number" name="qty" min="0" max="${esc(line.remaining_return_qty)}" value="${esc(line.remaining_return_qty)}" inputmode="numeric" style="width:76px" aria-label="Số lượng hàng hoàn đã nhận của ${esc(line.title_snapshot ?? 'mặt hàng')}"></td></tr>`).join('')}</tbody></table></div>
+        <div class="tblscroll">${tblCards({
+      head: [{ html: 'Mặt hàng' }, { html: 'Chưa nhận' }, { html: 'Số lượng nhận' }],
+      rows: receiptLines.map((line) => [
+        { html: `<strong>${esc(line.title_snapshot ?? 'Mặt hàng')}</strong>${line.sku_snapshot ? `<br><span class="muted">SKU ${esc(line.sku_snapshot)}</span>` : ''}` },
+        { cls: 'muted', html: `còn ${esc(line.remaining_return_qty)}/${esc(line.returned_qty)}` },
+        { html: `<input type="hidden" name="case_line_id" value="${esc(line.id)}"><input type="number" name="qty" min="0" max="${esc(line.remaining_return_qty)}" value="${esc(line.remaining_return_qty)}" inputmode="numeric" style="width:76px" aria-label="Số lượng hàng hoàn đã nhận của ${esc(line.title_snapshot ?? 'mặt hàng')}">` },
+      ]),
+    })}</div>
         <label>Cách xử lý hàng
           <select name="disposition"><option value="restock">Nhập lại tồn bán được</option><option value="quarantine">Cách ly / hàng hỏng</option></select></label>
         <label>Ghi chú kiểm nhận <input name="note" required maxlength="1000" placeholder="Tình trạng hàng khi mở kiện"></label>
@@ -3385,24 +3410,37 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     skipped: ['unpaid', 'Bỏ qua'], superseded: ['unpaid', 'Đã thay bằng lần gửi lại'],
   };
   const notificationCard = deliveries.length ? `<div class="card"><h2>Thông báo tới khách</h2>
-    <table data-cards><thead><tr><th>Thời gian</th><th>Kênh</th><th>Trạng thái</th><th>Số lần thử</th><th>Lỗi gần nhất</th></tr></thead><tbody>
-      ${deliveries.map((d) => { const st = deliveryStatus[d.status] ?? ['unpaid', d.status]; return `<tr>
-        <td class="muted">${dt(d.last_attempt_at ?? d.created_at)}</td><td>${esc(String(d.channel ?? '').toUpperCase())}<br><span class="muted">${esc(d.topic ?? '')}</span></td>
-        <td>${badge(st[0], st[1])}</td><td>${esc(d.attempts ?? 0)}</td><td>${esc(d.last_error ?? '') || '<span class="muted">—</span>'}</td>
-      </tr>`; }).join('')}
-    </tbody></table>
+    ${tblCards({
+    head: [{ html: 'Thời gian' }, { html: 'Kênh' }, { html: 'Trạng thái' }, { html: 'Số lần thử' }, { html: 'Lỗi gần nhất' }],
+    rows: deliveries.map((d) => {
+      const st = deliveryStatus[d.status] ?? ['unpaid', d.status];
+      return [
+        { cls: 'muted', html: dt(d.last_attempt_at ?? d.created_at) },
+        { html: `${esc(String(d.channel ?? '').toUpperCase())}<br><span class="muted">${esc(d.topic ?? '')}</span>` },
+        { html: badge(st[0], st[1]) },
+        { html: esc(d.attempts ?? 0) },
+        { html: esc(d.last_error ?? '') || '<span class="muted">—</span>' },
+      ];
+    }),
+  })}
   </div>` : '';
 
   const requestType = { cancel: 'Huỷ đơn', address_change: 'Đổi địa chỉ', return: 'Trả hàng' };
   const requestStatus = { requested: ['pending', 'Chờ shop xử lý'], approved: ['confirmed', 'Đã duyệt'], completed: ['delivered', 'Hoàn tất'], rejected: ['cancelled', 'Đã từ chối'] };
   const customerRequestCard = requests.length ? `<div class="card"><h2>Yêu cầu từ khách</h2>
-    <table data-cards><thead><tr><th>Thời gian</th><th>Loại</th><th>Nội dung</th><th>Trạng thái</th><th>Phản hồi shop</th></tr></thead><tbody>
-      ${requests.map((r) => { const st = requestStatus[r.status] ?? ['unpaid', r.status]; return `<tr>
-        <td class="muted">${dt(r.created_at)}</td><td><strong>${esc(requestType[r.request_type] ?? r.request_type)}</strong><br><span class="muted">${esc(r.requester_type ?? '')}</span></td>
-        <td>${esc(r.reason ?? '') || '<span class="muted">Khách không ghi lý do</span>'}</td><td>${badge(st[0], st[1])}</td>
-        <td>${esc(r.decision_note ?? '') || (r.status === 'requested' ? '<span class="muted">Cần mở hàng đợi hậu mãi để duyệt hoặc từ chối.</span>' : '<span class="muted">—</span>')}</td>
-      </tr>`; }).join('')}
-    </tbody></table>
+    ${tblCards({
+    head: [{ html: 'Thời gian' }, { html: 'Loại' }, { html: 'Nội dung' }, { html: 'Trạng thái' }, { html: 'Phản hồi shop' }],
+    rows: requests.map((r) => {
+      const st = requestStatus[r.status] ?? ['unpaid', r.status];
+      return [
+        { cls: 'muted', html: dt(r.created_at) },
+        { html: `<strong>${esc(requestType[r.request_type] ?? r.request_type)}</strong><br><span class="muted">${esc(r.requester_type ?? '')}</span>` },
+        { html: esc(r.reason ?? '') || '<span class="muted">Khách không ghi lý do</span>' },
+        { html: badge(st[0], st[1]) },
+        { html: esc(r.decision_note ?? '') || (r.status === 'requested' ? '<span class="muted">Cần mở hàng đợi hậu mãi để duyệt hoặc từ chối.</span>' : '<span class="muted">—</span>') },
+      ];
+    }),
+  })}
   </div>` : '';
 
   const eventGroup = (eventType) => eventType.startsWith('payment.') ? 'payment'
@@ -3490,9 +3528,14 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     ${o.status === 'returned' ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg)">
       <h2 style="margin-top:0">↩️ Đơn bị hoàn (bom hàng)</h2>
       <p class="muted" style="margin-bottom:0">${returnedStockNote}</p></div>` : ''}
-    <div class="card"><h2>Sản phẩm</h2><div class="tblscroll"><table data-cards><thead><tr><th>Mặt hàng</th><th>Đơn giá × SL</th><th>Thành tiền</th></tr></thead><tbody>
-      ${(o.lines ?? []).map((l) => `<tr><td><div class="pcell">${l.image_url ? `<img class="pthumb" src="${esc(l.image_url)}" alt="" loading="lazy" width="40" height="40">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0">${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span>${Number(l.shipped_qty) > 0 ? ` <span class="muted">· đã gửi ${esc(l.shipped_qty)}/${esc(l.qty)}</span>` : ''}${Number(l.returned_qty) > 0 ? ` <span class="muted">· đã trả ${esc(l.returned_qty)}</span>` : ''}</div></div></td><td class="muted">${money(l.unit_price_vnd)} × ${esc(l.qty)}</td><td style="text-align:right">${money(Number(l.unit_price_vnd) * l.qty)}</td></tr>`).join('')}
-    </tbody></table></div>
+    <div class="card"><h2>Sản phẩm</h2><div class="tblscroll">${tblCards({
+    head: [{ html: 'Mặt hàng' }, { html: 'Đơn giá × SL' }, { html: 'Thành tiền' }],
+    rows: (o.lines ?? []).map((l) => [
+      { html: `<div class="pcell">${l.image_url ? `<img class="pthumb" src="${esc(l.image_url)}" alt="" loading="lazy" width="40" height="40">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0">${esc(l.title_snapshot)} <span class="muted">${esc(l.sku_snapshot ?? '')}</span>${Number(l.shipped_qty) > 0 ? ` <span class="muted">· đã gửi ${esc(l.shipped_qty)}/${esc(l.qty)}</span>` : ''}${Number(l.returned_qty) > 0 ? ` <span class="muted">· đã trả ${esc(l.returned_qty)}</span>` : ''}</div></div>` },
+      { cls: 'muted', html: `${money(l.unit_price_vnd)} × ${esc(l.qty)}` },
+      { style: 'text-align:right', html: money(Number(l.unit_price_vnd) * l.qty) },
+    ]),
+  })}</div>
       <div style="text-align:right;margin-top:8px" class="muted">Tạm tính ${money(o.subtotal_vnd)} · Ship ${money(o.shipping_vnd)}</div>
       <div style="text-align:right;font-weight:700;font-size:1.1rem">Tổng ${money(o.total_vnd)}</div></div>
     ${shipCard}

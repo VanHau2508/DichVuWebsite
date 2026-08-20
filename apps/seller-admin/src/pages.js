@@ -558,28 +558,43 @@ const badge = (kind, label) => `<span class="badge ${esc(kind)}">${esc(label)}</
  * không có cách nào để CSS lấy chữ từ `th` tương ứng. Nhãn buộc phải do server phát ra.
  *
  * HỢP ĐỒNG
- *   head: [{ html, label }]   label='' → cột không sinh ::before (ô checkbox/nút)
+ *   head: [{ html, label, cls?, style? }]
+ *                             label='' → cột không sinh ::before (ô checkbox/nút)
  *                             label bỏ trống → lấy từ chính `html` sau khi bỏ thẻ
- *   rows: [[{ html, label?, colspan? }]]  label mặc định theo CHỈ SỐ cột trong head
+ *   rows: [[{ html, label?, cls?, style?, colspan? }]]  label mặc định theo CHỈ SỐ cột
  *                             colspan > 1 → KHÔNG gán nhãn (chỉ số cột không xác định)
+ *                             hàng cần thuộc tính riêng: { cells: [...], attrs: '…' }
  *   foot: [[{ html, colspan? }]]          KHÔNG card-hoá, giữ nguyên dạng hàng
  *
  * Nhãn suy theo CHỈ SỐ nên không thể chép tay lệch: thêm một cột vào `head` mà quên sửa
  * `rows` thì lệch lộ ra ngay ở chính hàng đó, không âm thầm mất nhãn.
+ *
+ * `style` KHÔNG đi qua esc(): nó là CSS viết tại chỗ, esc() sẽ biến `"` thành `&quot;` và
+ * hỏng thuộc tính. Cũng vì thế nó chỉ được nhận hằng viết tay, không bao giờ ghép từ dữ liệu
+ * — y như `attrs`.
+ *
+ * `attrs` là lối thoát cho ĐÚNG ba hàng trong cả kho có thuộc tính riêng (NCC đã ẩn, API
+ * key đã thu hồi, dòng tổng in đậm — đều là một `style` mờ/đậm có điều kiện). Nó nhận HTML
+ * thô nên chỉ được truyền hằng viết tại chỗ, không bao giờ ghép từ dữ liệu.
  */
 const stripTags = (h) => String(h ?? '').replace(/<[^>]*>/g, '').trim();
 function tblCards({ head = [], rows = [], foot = [], cls = '' } = {}) {
   const labels = head.map((h) => (h.label !== undefined ? h.label : stripTags(h.html)));
-  const th = head.map((h) => `<th${h.cls ? ` class="${esc(h.cls)}"` : ''}>${h.html ?? ''}</th>`).join('');
-  const body = rows.map((cells) => `<tr>${cells.map((c, i) => {
+  const at = (c) => `${c.cls ? ` class="${esc(c.cls)}"` : ''}${c.style ? ` style="${c.style}"` : ''}`;
+  const th = head.map((h) => `<th${at(h)}>${h.html ?? ''}</th>`).join('');
+  const body = rows.map((r) => `<tr${Array.isArray(r) ? '' : r.attrs ?? ''}>${(Array.isArray(r) ? r : r.cells).map((c, i) => {
     const span = Number(c.colspan) > 1 ? ` colspan="${esc(c.colspan)}"` : '';
     // Ô spanning nhiều cột không thuộc về một tiêu đề nào → không gán nhãn, thay vì gán sai.
-    const lab = span || c.label === '' ? '' : ` data-label="${esc(c.label ?? labels[i] ?? '')}"`;
-    return `<td${c.cls ? ` class="${esc(c.cls)}"` : ''}${span}${lab}>${c.html ?? ''}</td>`;
+    // Nhãn RỖNG thì BỎ HẲN thuộc tính, không phát `data-label=""`: CSS dùng
+    // `content: attr(data-label)` nên nhãn rỗng vẫn sinh một ::before chiếm chỗ và đẩy nội
+    // dung ô lệch đi — đúng những cột không có tiêu đề (checkbox, nút) mới hay rơi vào đây.
+    const want = c.label ?? labels[i] ?? '';
+    const lab = span || !want ? '' : ` data-label="${esc(want)}"`;
+    return `<td${at(c)}${span}${lab}>${c.html ?? ''}</td>`;
   }).join('')}</tr>`).join('');
   const tf = foot.length ? `<tfoot>${foot.map((cells) => `<tr>${cells.map((c) => {
     const span = Number(c.colspan) > 1 ? ` colspan="${esc(c.colspan)}"` : '';
-    return `<td${c.cls ? ` class="${esc(c.cls)}"` : ''}${span}>${c.html ?? ''}</td>`;
+    return `<td${at(c)}${span}>${c.html ?? ''}</td>`;
   }).join('')}</tr>`).join('')}</tfoot>` : '';
   return `<table data-cards${cls ? ` class="${esc(cls)}"` : ''}><thead><tr>${th}</tr></thead><tbody>${body}</tbody>${tf}</table>`;
 }
@@ -5979,18 +5994,22 @@ export function renderPurchasing(ctx, shopId, data, filter) {
   const pos = data.purchase_orders ?? [];
   const cur = filter?.status ?? '';
   const tab = (val, label) => `<a class="btn ${cur === val ? '' : 'alt '}sm" href="${base}/purchasing${val ? `?status=${val}` : ''}">${label}</a>`;
-  const rows = pos.map((o) => `<tr>
-    <td><a href="${base}/purchasing/${esc(o.id)}">#${esc(o.po_number)}</a></td>
-    <td>${badge(PO_BADGE[o.status], PO_STATUS[o.status] ?? o.status)}</td>
-    <td>${esc(o.supplier_name)}</td>
-    <td class="right num">${esc(o.line_count)}</td>
-    <td class="right num"><strong>${money(o.subtotal_vnd)}</strong></td>
-    <td class="muted">${o.received_at ? dt(o.received_at) : dt(o.created_at)}</td></tr>`).join('');
+  const rows = pos.map((o) => [
+    { html: `<a href="${base}/purchasing/${esc(o.id)}">#${esc(o.po_number)}</a>` },
+    { html: badge(PO_BADGE[o.status], PO_STATUS[o.status] ?? o.status) },
+    { html: esc(o.supplier_name) },
+    { cls: 'right num', html: esc(o.line_count) },
+    { cls: 'right num', html: `<strong>${money(o.subtotal_vnd)}</strong>` },
+    { cls: 'muted', html: o.received_at ? dt(o.received_at) : dt(o.created_at) },
+  ]);
   return layout('Phiếu nhập', ctx, `${invTabs(shopId, 'po')}
     <div class="toolbar"><h1 style="margin:0">Phiếu nhập hàng</h1>
       <a class="btn" href="${base}/purchasing/new">+ Tạo phiếu nhập</a></div>
     <div class="actions" style="flex-wrap:wrap;margin-bottom:12px">${tab('', 'Tất cả')}${tab('draft', 'Nháp')}${tab('ordered', 'Đã đặt')}${tab('received', 'Đã nhận')}${tab('cancelled', 'Đã huỷ')}</div>
-    <div class="card">${pos.length ? `<table data-cards><thead><tr><th>Phiếu</th><th>Trạng thái</th><th>Nhà cung cấp</th><th class="right">Dòng</th><th class="right">Trị giá</th><th>Ngày</th></tr></thead><tbody>${rows}</tbody></table>${data.truncated ? '<p class="muted" style="margin:12px 0 0">⚠ Hiện 200 phiếu gần nhất.</p>' : ''}` : '<p class="muted" style="margin:0">Chưa có phiếu nhập nào. Tạo phiếu để nhập kho + cập nhật giá vốn.</p>'}</div>`);
+    <div class="card">${pos.length ? `${tblCards({
+      head: [{ html: 'Phiếu' }, { html: 'Trạng thái' }, { html: 'Nhà cung cấp' }, { html: 'Dòng', cls: 'right' }, { html: 'Trị giá', cls: 'right' }, { html: 'Ngày' }],
+      rows,
+    })}${data.truncated ? '<p class="muted" style="margin:12px 0 0">⚠ Hiện 200 phiếu gần nhất.</p>' : ''}` : '<p class="muted" style="margin:0">Chưa có phiếu nhập nào. Tạo phiếu để nhập kho + cập nhật giá vốn.</p>'}</div>`);
 }
 
 // Nhà cung cấp: danh sách + form tạo/sửa (inline).
@@ -5998,11 +6017,15 @@ export function renderSuppliers(ctx, shopId, suppliers, opts = {}) {
   const base = `/shops/${esc(shopId)}`;
   const ed = opts.editing; // đối tượng NCC đang sửa (nếu có)
   const list = suppliers ?? [];
-  const rows = list.map((s) => `<tr${s.is_active ? '' : ' style="opacity:.55"'}>
-    <td><a href="${base}/suppliers?edit=${esc(s.id)}">${esc(s.name)}</a>${s.is_active ? '' : ' <span class="badge archived">Đã ẩn</span>'}</td>
-    <td class="muted">${esc(s.phone ?? '') || '—'}</td>
-    <td class="muted">${esc(s.contact ?? '') || '—'}</td>
-    <td class="muted">${esc(s.email ?? '') || '—'}</td></tr>`).join('');
+  const rows = list.map((s) => ({
+    attrs: s.is_active ? '' : ' style="opacity:.55"',
+    cells: [
+      { html: `<a href="${base}/suppliers?edit=${esc(s.id)}">${esc(s.name)}</a>${s.is_active ? '' : ' <span class="badge archived">Đã ẩn</span>'}` },
+      { cls: 'muted', html: `${esc(s.phone ?? '') || '—'}` },
+      { cls: 'muted', html: `${esc(s.contact ?? '') || '—'}` },
+      { cls: 'muted', html: `${esc(s.email ?? '') || '—'}` },
+    ],
+  }));
   const f = (k) => esc(ed?.[k] ?? '');
   const formCard = `<div class="card"><h2 style="margin-top:0">${ed ? `Sửa: ${esc(ed.name)}` : 'Thêm nhà cung cấp'}</h2>
     <form method="POST" action="${base}/suppliers${ed ? `/${esc(ed.id)}` : ''}">
@@ -6026,7 +6049,10 @@ export function renderSuppliers(ctx, shopId, suppliers, opts = {}) {
     ${formCard}
     <div class="card"><div class="toolbar"><h2 style="margin:0">Danh sách</h2>
       <a class="btn alt sm" href="${base}/suppliers${opts.showInactive ? '' : '?all=1'}">${opts.showInactive ? 'Chỉ NCC hoạt động' : 'Hiện cả NCC đã ẩn'}</a></div>
-      ${list.length ? `<table data-cards><thead><tr><th>Tên</th><th>SĐT</th><th>Liên hệ</th><th>Email</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted" style="margin:0">Chưa có nhà cung cấp nào.</p>'}</div>`);
+      ${list.length ? tblCards({
+    head: [{ html: 'Tên' }, { html: 'SĐT' }, { html: 'Liên hệ' }, { html: 'Email' }],
+    rows,
+  }) : '<p class="muted" style="margin:0">Chưa có nhà cung cấp nào.</p>'}</div>`);
 }
 
 // Tạo phiếu nhập mới.
@@ -6181,12 +6207,13 @@ export function renderPurchasingReport(ctx, shopId, data, opts = {}) {
 // Kiểm kê: danh sách + form tạo phiên.
 export function renderStocktakes(ctx, shopId, list, opts = {}) {
   const base = `/shops/${esc(shopId)}`;
-  const rows = (list ?? []).map((s) => `<tr>
-    <td><a href="${base}/stocktakes/${esc(s.id)}">#${esc(s.stocktake_number)}</a></td>
-    <td>${badge(ST_BADGE[s.status], ST_STATUS[s.status] ?? s.status)}</td>
-    <td class="right num">${esc(s.counted_count)}/${esc(s.line_count)}</td>
-    <td class="muted">${esc(s.note ?? '') || '—'}</td>
-    <td class="muted">${s.completed_at ? dt(s.completed_at) : dt(s.created_at)}</td></tr>`).join('');
+  const rows = (list ?? []).map((s) => [
+    { html: `<a href="${base}/stocktakes/${esc(s.id)}">#${esc(s.stocktake_number)}</a>` },
+    { html: badge(ST_BADGE[s.status], ST_STATUS[s.status] ?? s.status) },
+    { cls: 'right num', html: `${esc(s.counted_count)}/${esc(s.line_count)}` },
+    { cls: 'muted', html: `${esc(s.note ?? '') || '—'}` },
+    { cls: 'muted', html: s.completed_at ? dt(s.completed_at) : dt(s.created_at) },
+  ]);
   return layout('Kiểm kê', ctx, `${invTabs(shopId, 'stocktakes')}
     <h1>Kiểm kê kho</h1>
     ${opts.err ? `<div class="err">${esc(opts.err)}</div>` : ''}
@@ -6199,7 +6226,10 @@ export function renderStocktakes(ctx, shopId, list, opts = {}) {
         <button class="btn" type="submit" style="margin-top:12px">Bắt đầu đếm</button>
       </form></div>
     <div class="card"><h2 style="margin-top:0">Các phiên</h2>
-      ${rows ? `<table data-cards><thead><tr><th>Phiên</th><th>Trạng thái</th><th class="right">Đã đếm</th><th>Ghi chú</th><th>Ngày</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted" style="margin:0">Chưa có phiên kiểm kê nào.</p>'}</div>`);
+      ${rows.length ? tblCards({
+        head: [{ html: 'Phiên' }, { html: 'Trạng thái' }, { html: 'Đã đếm', cls: 'right' }, { html: 'Ghi chú' }, { html: 'Ngày' }],
+        rows,
+      }) : '<p class="muted" style="margin:0">Chưa có phiên kiểm kê nào.</p>'}</div>`);
 }
 
 // Chi tiết + ghi số đếm cho một phiên kiểm kê.
@@ -6307,15 +6337,19 @@ export function renderApiKeys(ctx, shopId, data, err, ok, freshToken, mess, veri
   const keys = data?.keys ?? [];
   const url = data?.ingest_url ?? '';
   const dt = (v) => (v ? new Date(v).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : '—');
-  const rows = keys.map((k) => `<tr${k.revoked_at ? ' style="opacity:.55"' : ''}>
-    <td><strong>${esc(k.name)}</strong><br><code class="muted" style="font-size:.8rem">${esc(k.token_prefix)}…</code></td>
-    <td class="muted">${dt(k.created_at)}</td>
-    <td class="muted">${k.last_used_at ? dt(k.last_used_at) : '<em>chưa dùng lần nào</em>'}</td>
-    <td style="text-align:right">${esc(k.orders_count ?? 0)}</td>
-    <td>${k.revoked_at
-      ? `<span class="badge cancelled">Đã thu hồi</span>`
-      : `<form method="POST" action="${base}/${esc(k.id)}/revoke" data-confirm="Thu hồi khoá &quot;${esc(k.name)}&quot;? Phần mềm đang dùng khoá này sẽ NGỪNG đẩy đơn về ngay lập tức.">
-           <button class="btn warn sm" type="submit">Thu hồi</button></form>`}</td></tr>`).join('');
+  const rows = keys.map((k) => ({
+    attrs: k.revoked_at ? ' style="opacity:.55"' : '',
+    cells: [
+      { html: `<strong>${esc(k.name)}</strong><br><code class="muted" style="font-size:.8rem">${esc(k.token_prefix)}…</code>` },
+      { cls: 'muted', html: dt(k.created_at) },
+      { cls: 'muted', html: k.last_used_at ? dt(k.last_used_at) : '<em>chưa dùng lần nào</em>' },
+      { style: 'text-align:right', html: esc(k.orders_count ?? 0) },
+      { html: k.revoked_at
+        ? `<span class="badge cancelled">Đã thu hồi</span>`
+        : `<form method="POST" action="${base}/${esc(k.id)}/revoke" data-confirm="Thu hồi khoá &quot;${esc(k.name)}&quot;? Phần mềm đang dùng khoá này sẽ NGỪNG đẩy đơn về ngay lập tức.">
+           <button class="btn warn sm" type="submit">Thu hồi</button></form>` },
+    ],
+  }));
   // Tên trang phải nói được rằng ĐÂY là chỗ bán qua Facebook. Trước đợt kiểm toán trang tên
   // "Kết nối phần mềm ngoài" mà lại chứa kết nối Trang Messenger — không ai đi tìm Facebook
   // trong mục nghe như dành cho lập trình viên.
@@ -6373,7 +6407,10 @@ export function renderApiKeys(ctx, shopId, data, err, ok, freshToken, mess, veri
       </form>
     </div>
     <div class="card"><h2 style="margin-top:0">Khoá của cửa hàng</h2>
-      ${keys.length ? `<table data-cards><thead><tr><th>Tên</th><th>Tạo lúc</th><th>Dùng lần cuối</th><th style="text-align:right">Đơn đã nhận</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      ${keys.length ? tblCards({
+        head: [{ html: 'Tên' }, { html: 'Tạo lúc' }, { html: 'Dùng lần cuối' }, { html: 'Đơn đã nhận', style: 'text-align:right' }, { html: '', label: '' }],
+        rows,
+      })
         : '<p class="muted">Chưa có khoá nào.</p>'}
     </div>
     <div class="card"><h2 style="margin-top:0">Đưa phần này cho người dựng tích hợp</h2>

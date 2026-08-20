@@ -1853,14 +1853,14 @@ export function renderPlatformUsage(ctx, data, opt) {
     // Ngưỡng 10%: dưới ngưỡng thì tô để mắt bắt được ngay, KHÔNG tự động kết luận "gỡ đi" —
     // một tính năng ít shop dùng vẫn có thể là tính năng giữ chân đúng shop trả tiền nhiều nhất.
     const yeu = pct !== null && pct < 10;
-    return `<tr>
-      <td class="muted">${esc(r.service)}</td>
-      <td><code>${esc(r.route)}</code></td>
-      <td class="num right"><strong${yeu ? ' style="color:var(--bad)"' : ''}>${esc(r.shops)}</strong>${pct !== null ? ` <span class="muted">(${pct}%)</span>` : ''}</td>
-      <td class="num right muted">${esc(r.hits)}</td>
-      <td class="muted">${esc(String(r.last_day ?? '').slice(0, 10))}</td>
-    </tr>`;
-  }).join('');
+    return [
+      { cls: 'muted', html: esc(r.service) },
+      { html: `<code>${esc(r.route)}</code>` },
+      { cls: 'num right', html: `<strong${yeu ? ' style="color:var(--bad)"' : ''}>${esc(r.shops)}</strong>${pct !== null ? ` <span class="muted">(${pct}%)</span>` : ''}` },
+      { cls: 'num right muted', html: esc(r.hits) },
+      { cls: 'muted', html: esc(String(r.last_day ?? '').slice(0, 10)) },
+    ];
+  });
   return layout('Đo luồng dùng', ctx, `
     <a class="muted" href="/platform">← Console nền tảng</a>
     <div class="toolbar"><h1 style="margin:0">Đo luồng dùng</h1></div>
@@ -1879,9 +1879,10 @@ export function renderPlatformUsage(ctx, data, opt) {
       <div><label>Dịch vụ</label><input name="service" value="${esc(opt.service ?? '')}" maxlength="32" placeholder="tất cả" style="width:160px"></div>
       <div><button class="btn alt sm" type="submit">Xem</button></div>
     </form></div>
-    <div class="card">${rows.length ? `<div class="tblscroll"><table data-cards><thead><tr>
-        <th>Dịch vụ</th><th>Đường dẫn</th><th class="right">Cửa hàng dùng</th><th class="right">Lượt</th><th>Lần cuối</th>
-      </tr></thead><tbody>${body}</tbody></table></div>
+    <div class="card">${rows.length ? `<div class="tblscroll">${tblCards({
+      head: [{ html: 'Dịch vụ' }, { html: 'Đường dẫn' }, { html: 'Cửa hàng dùng', cls: 'right' }, { html: 'Lượt', cls: 'right' }, { html: 'Lần cuối' }],
+      rows: body,
+    })}</div>
       <p class="muted" style="margin-top:12px;font-size:.85rem">
         <strong>Chưa trả lời được:</strong> đường dẫn <em>chưa ai chạm bao giờ</em> thì không xuất hiện ở đây — bảng này chỉ
         biết những gì đã được dùng ít nhất một lần. Muốn có danh sách "chưa từng chạm" thì cần một bản kê toàn bộ đường dẫn
@@ -2456,18 +2457,21 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
       ? 'Chưa rõ hãng đã tạo hay chưa'
       : 'Hãng đã tạo nhưng hệ thống chưa chốt đơn';
     const href = `${base}/orders/${esc(item.order_id)}?timeline=shipment`;
-    return `<tr>
-      <td><a href="${href}"><strong>#${esc(item.order_number)}</strong></a><div class="muted" style="font-size:.82rem">Phát sinh ${dt(item.created_at)}</div></td>
-      <td>${esc(String(item.provider ?? 'Hãng vận chuyển').toUpperCase())}</td>
-      <td>${badge(item.provider_status ?? 'unknown', statusText)}</td>
-      <td>${item.tracking_number ? `<code>${esc(item.tracking_number)}</code>` : '<span class="muted">Chưa có mã</span>'}</td>
-      <td style="text-align:right"><a class="btn alt sm" href="${href}">Mở đơn phục hồi</a></td>
-    </tr>`;
-  }).join('');
+    return [
+      { html: `<a href="${href}"><strong>#${esc(item.order_number)}</strong></a><div class="muted" style="font-size:.82rem">Phát sinh ${dt(item.created_at)}</div>` },
+      { html: esc(String(item.provider ?? 'Hãng vận chuyển').toUpperCase()) },
+      { html: badge(item.provider_status ?? 'unknown', statusText) },
+      { html: item.tracking_number ? `<code>${esc(item.tracking_number)}</code>` : '<span class="muted">Chưa có mã</span>' },
+      { style: 'text-align:right', html: `<a class="btn alt sm" href="${href}">Mở đơn phục hồi</a>` },
+    ];
+  });
   const shipmentAttentionCard = (Number(td.shipment_attention ?? 0) > 0 || shipmentAttention.length > 0)
     ? `<div class="card" id="shipment-attention" style="border-color:var(--bad)">
       <div class="toolbar"><div><h2 style="margin:0">Vận đơn cần xử lý</h2><p class="muted" style="margin:5px 0 0">Kiểm tra trên portal hãng trước khi thao tác; không tạo lại mù vì có thể sinh hai vận đơn và thu COD hai lần.</p></div></div>
-      ${shipmentAttentionRows ? `<div class="tblscroll"><table data-cards><thead><tr><th>Đơn</th><th>Hãng</th><th>Tình trạng</th><th>Mã vận đơn</th><th></th></tr></thead><tbody>${shipmentAttentionRows}</tbody></table></div>` : '<div class="empty-state">Các vận đơn cần phục hồi vừa được xử lý xong.</div>'}
+      ${shipmentAttentionRows.length ? `<div class="tblscroll">${tblCards({
+        head: [{ html: 'Đơn' }, { html: 'Hãng' }, { html: 'Tình trạng' }, { html: 'Mã vận đơn' }, { html: '', label: '' }],
+        rows: shipmentAttentionRows,
+      })}</div>` : '<div class="empty-state">Các vận đơn cần phục hồi vừa được xử lý xong.</div>'}
       ${Number(td.shipment_attention ?? 0) > shipmentAttention.length ? `<p class="muted" style="font-size:.82rem;margin-bottom:0">Đang hiện ${esc(shipmentAttention.length)} ca mới nhất trong tổng ${esc(td.shipment_attention)} ca.</p>` : ''}
     </div>` : '';
 
@@ -5766,15 +5770,17 @@ export function renderCodReconcile(ctx, shopId, data, isOwner, done, err) {
   const providers = [...new Set(outstanding.map((o) => o.provider).filter(Boolean))];
   const carrierCards = byCarrier.map((c) => `<div class="metric"><div class="l">${esc(provOf(c.provider))} · ${esc(c.count)} đơn</div>
     <div class="v">${money(c.expected_vnd)}</div></div>`).join('');
-  const rows = outstanding.map((o) => `<tr>
-    ${isOwner ? `<td><input type="checkbox" name="order_ids" value="${esc(o.id)}" form="codf" aria-label="Chọn đơn ${esc(o.order_number)}"></td>` : ''}
-    <td><a href="${base}/orders/${esc(o.id)}">#${esc(o.order_number)}</a></td>
-    <td class="muted">${dt(o.delivered_at)}</td>
-    <td>${esc(provOf(o.provider))}${o.carrier ? ` <span class="muted">${esc(o.carrier)}</span>` : ''}</td>
-    <td class="right num">${money(o.total_vnd)}</td>
-    <td class="right num muted">${money(o.carrier_fee_vnd)}</td>
-    <td class="right num"><strong>${money(o.expected_net_vnd)}</strong></td>
-  </tr>`).join('');
+  // Cột checkbox chỉ có với chủ shop, nên nó phải vắng mặt ở CẢ head lẫn rows — cùng một
+  // cờ `isOwner` sinh cả hai, không chép hai bản điều kiện.
+  const rows = outstanding.map((o) => [
+    ...(isOwner ? [{ label: '', html: `<input type="checkbox" name="order_ids" value="${esc(o.id)}" form="codf" aria-label="Chọn đơn ${esc(o.order_number)}">` }] : []),
+    { html: `<a href="${base}/orders/${esc(o.id)}">#${esc(o.order_number)}</a>` },
+    { cls: 'muted', html: dt(o.delivered_at) },
+    { html: `${esc(provOf(o.provider))}${o.carrier ? ` <span class="muted">${esc(o.carrier)}</span>` : ''}` },
+    { cls: 'right num', html: money(o.total_vnd) },
+    { cls: 'right num muted', html: money(o.carrier_fee_vnd) },
+    { cls: 'right num', html: `<strong>${money(o.expected_net_vnd)}</strong>` },
+  ]);
   const colspan = isOwner ? 7 : 6;
   // Banner thành công sau khi ghi phiếu (kỳ vọng vs thực nhận + chênh lệch).
   const disc = done ? Number(done.disc) : 0;
@@ -5798,15 +5804,17 @@ export function renderCodReconcile(ctx, shopId, data, isOwner, done, err) {
     </div>` : '';
   const histRows = remittances.map((r) => {
     const d = Number(r.discrepancy_vnd);
-    return `<tr><td class="muted">${dt(r.remitted_at ?? r.created_at)}</td>
-      <td>${esc(provOf(r.carrier))}</td>
-      <td class="num">${esc(r.order_count)}</td>
-      <td class="right num">${money(r.expected_vnd)}</td>
-      <td class="right num"><strong>${money(r.amount_vnd)}</strong></td>
-      <td class="right num" style="color:${d < 0 ? 'var(--bad)' : 'var(--good)'};font-weight:700">${money(d)}</td>
-      <td>${esc(r.note ?? '') || '<span class="muted">—</span>'}</td>
-      <td class="muted">${esc(r.created_by_email ?? '—')}</td></tr>`;
-  }).join('');
+    return [
+      { cls: 'muted', html: dt(r.remitted_at ?? r.created_at) },
+      { html: esc(provOf(r.carrier)) },
+      { cls: 'num', html: esc(r.order_count) },
+      { cls: 'right num', html: money(r.expected_vnd) },
+      { cls: 'right num', html: `<strong>${money(r.amount_vnd)}</strong>` },
+      { cls: 'right num', style: `color:${d < 0 ? 'var(--bad)' : 'var(--good)'};font-weight:700`, html: money(d) },
+      { html: esc(r.note ?? '') || '<span class="muted">—</span>' },
+      { cls: 'muted', html: esc(r.created_by_email ?? '—') },
+    ];
+  });
   return layout('Đối soát COD', ctx, `
     <h1>Đối soát COD với hãng</h1>
     <p class="muted" style="margin-top:-6px">Đơn COD đã giao qua hãng — hãng thu hộ tiền rồi chuyển lại (đã trừ phí). <strong>Kỳ vọng nhận = tổng đơn − phí hãng</strong>. Đối chiếu với số hãng thực chuyển để phát hiện thiếu/thất thoát.</p>
@@ -5818,16 +5826,30 @@ export function renderCodReconcile(ctx, shopId, data, isOwner, done, err) {
       ${carrierCards}
     </div>
     <div class="card"><h2 style="margin-top:0">Đơn chờ đối soát (${esc(outstanding.length)})</h2>
-      ${outstanding.length ? `<table data-cards><thead><tr>${isOwner ? '<th></th>' : ''}<th>Đơn</th><th>Ngày giao</th><th>Hãng</th><th class="right">Tổng COD</th><th class="right">Phí hãng</th><th class="right">Kỳ vọng nhận</th></tr></thead>
-        <tbody>${rows}</tbody>
-        <tfoot><tr><td colspan="${colspan - 1}" class="muted">Tổng kỳ vọng</td><td class="right num"><strong>${money(data.total_outstanding_vnd ?? 0)}</strong></td></tr></tfoot></table>
+      ${outstanding.length ? `${tblCards({
+        head: [
+          ...(isOwner ? [{ html: '', label: '' }] : []),
+          { html: 'Đơn' }, { html: 'Ngày giao' }, { html: 'Hãng' },
+          { html: 'Tổng COD', cls: 'right' }, { html: 'Phí hãng', cls: 'right' }, { html: 'Kỳ vọng nhận', cls: 'right' },
+        ],
+        rows,
+        foot: [[
+          { colspan: colspan - 1, cls: 'muted', html: 'Tổng kỳ vọng' },
+          { cls: 'right num', html: `<strong>${money(data.total_outstanding_vnd ?? 0)}</strong>` },
+        ]],
+      })}
         ${isOwner ? '<p class="muted" style="margin:12px 0 0;font-size:.85rem">Tick các đơn thuộc phiếu chuyển tiền của hãng ở cột đầu, rồi ghi phiếu bên dưới.</p>' : '<p class="muted" style="margin:12px 0 0;font-size:.85rem">Chỉ chủ cửa hàng mới ghi được phiếu chuyển tiền.</p>'}`
         : '<p class="muted">Không có đơn COD nào đang chờ đối soát.</p>'}
     </div>
     ${recordCard}
     <div class="card"><h2 style="margin-top:0">Lịch sử đối soát</h2>
-      ${remittances.length ? `<table data-cards><thead><tr><th>Ngày</th><th>Hãng</th><th>Số đơn</th><th class="right">Kỳ vọng</th><th class="right">Thực nhận</th><th class="right">Chênh lệch</th><th>Ghi chú</th><th>Người ghi</th></tr></thead>
-        <tbody>${histRows}</tbody></table>
+      ${remittances.length ? `${tblCards({
+        head: [
+          { html: 'Ngày' }, { html: 'Hãng' }, { html: 'Số đơn' }, { html: 'Kỳ vọng', cls: 'right' },
+          { html: 'Thực nhận', cls: 'right' }, { html: 'Chênh lệch', cls: 'right' }, { html: 'Ghi chú' }, { html: 'Người ghi' },
+        ],
+        rows: histRows,
+      })}
         <p class="muted" style="margin:12px 0 0;font-size:.85rem">Chênh lệch <span style="color:var(--bad);font-weight:700">âm (đỏ)</span> = hãng còn nợ; <span style="color:var(--good);font-weight:700">≥0 (xanh)</span> = đủ/dư.</p>`
         : '<p class="muted">Chưa có phiếu đối soát nào.</p>'}
     </div>

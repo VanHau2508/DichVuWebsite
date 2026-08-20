@@ -26,10 +26,10 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 | dòng mã ứng dụng | ~43.200 | `apps/*/src/*.js` |
 | dòng test | ~31.400 | `apps/*/test/*.{js,mjs}` |
 | migration | 173 tệp, mới nhất `0175` | `packages/db/migrations/` |
-| bộ unit | 37 | `MANIFEST_UNIT_COUNT` |
+| bộ unit | 38 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 106 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 118 test TAP | `packages/db/test/*.test.js` |
-| tài liệu | 76 tệp | `docs/` |
+| tài liệu | 78 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,71 — cao có chủ ý, xem §4.
 
@@ -231,6 +231,21 @@ Những lỗi này **không nằm ở sản phẩm mà ở cách kiểm chứng*
   nằm 3 dòng dưới điều kiện của nó), rộng quá thì nhận nhầm điều kiện của khối bên cạnh. Không
   có regex nào chữa được chuyện đó — thứ bù lại là **ma trận đột biến**, chạy lại mỗi khi sửa
   cửa sổ.
+- **Đo bằng trình duyệt thì phải kiểm CHÍNH PHÉP ĐO trước.** `chrome --headless` (new
+  headless) **bỏ qua `--window-size`** và luôn dựng khung nhìn 500px; phải dùng
+  `headless_shell`. Một lượt đo 360px đã chạy trọn ở 500px trước khi bị phát hiện — dấu hiệu
+  là mọi trang ra **cùng một con số**, kể cả khung ngoài cùng. Probe phải TỰ CHỐI khi
+  `innerWidth` khác giá trị mong đợi, thay vì trả một con số sai.
+- **`Array.isArray` trả FALSE trên Proxy bọc HÀM.** Dữ liệu thử kiểu Proxy mà đích là hàm
+  (để gọi được) sẽ làm mọi khối sau `Array.isArray(...)` bị bỏ qua — `pages.js` có 31 chốt
+  như vậy. Đích phải là MẢNG. Lỗi này im lặng theo chiều nguy hiểm: khối không render thì
+  phép so vẫn "bằng nhau".
+- **So "biến thể tốt nhất" là xanh giả.** Bộ so chạy hàm render với nhiều số-đối-số rồi giữ
+  biến thể nhiều hàng nhất sẽ bỏ sót đúng thứ vừa sửa, nếu thứ đó chỉ dựng được ở biến thể
+  khác. Phải so MỌI biến thể.
+- **Chuẩn hoá trước khi so phải HẸP và có chủ đích.** Bỏ khoảng trắng kề thẻ cấu trúc bảng
+  thì đúng (bộ phân tích HTML cũng vứt); collapse toàn cục thì `<td>a b</td>` và `<td>ab</td>`
+  hoá giống nhau — giấu mất lỗi nuốt chữ. Thứ tự thuộc tính thì vô nghĩa, sắp xếp được.
 - **Schema runtime phải đọc từ `pg_class` / `pg_policies`, không suy bằng grep migration.**
   `0004_rls.sql` bật RLS và tạo policy qua vòng lặp động cho mọi bảng có `shop_id`; tìm
   `ALTER TABLE <tên>` viết thẳng từng dẫn tới finding CAO sai và suýt sinh migration trùng
@@ -343,7 +358,7 @@ lỗi contract của Codex (`c.ok !== true` trong khi readiness dùng `status`).
 Bảy workflow, làm **dọc từng cái**, không redesign cả hệ thống một lượt:
 
 ~~`onboarding/go-live`~~ → ~~`bảng điều khiển "việc cần làm"`~~ → ~~`chi tiết đơn`~~
-→ **`đa kiện/ca xử lý` ← tiếp theo** → `checkout mobile của khách`
+→ **`đa kiện/ca xử lý` ← đang làm** → `checkout mobile của khách`
 → `catalog + nhập từ sàn` → `cài đặt`
 
 Mỗi lát cắt đi đủ đường: **UI → route/BFF → API seller → giao dịch nghiệp vụ → DB/outbox →
@@ -408,6 +423,18 @@ một lát cắt riêng, không phải phần đuôi của lát cắt này.
 **Nếu sau pilot** phát hiện tên sản phẩm / SKU / doanh thu cần được coi là dữ liệu catalog hay
 report MẬT, thì đó là một **quyết định sản phẩm mới**: phải đo lại toàn bộ dashboard, không tự
 thay trong một lát cắt khác.
+
+### 9.3b Đang dở: lát cắt 4 tách làm ba
+
+Đợt đo 2 của `đa kiện/ca xử lý` ra ba nhánh việc, cố ý tách để không đụng `pages.js` cùng lúc:
+
+| brief | nội dung | trạng thái |
+|---|---|---|
+| **A** | bằng chứng hoàn tiền + chốt ca, `app_resolution`, hàm SECURITY DEFINER hẹp | đã KHOÁ, chờ Codex tách từ `main` mới |
+| **B** | bảng quản trị card-hoá ở server (`docs/77`) | đã thi công xong trên `claude/responsive-table-ssr`, **chưa merge** |
+| **C** | bản đồ phục hồi vận đơn | giữ ở mức đã-đo, cần đợt đo riêng trước khi thành brief |
+
+B chạy trước để A tách ra từ `main` đã có `tblCards` và dùng luôn helper đó cho UI của mình.
 
 ### 9.4 Bắt đầu một phiên mới thế nào
 

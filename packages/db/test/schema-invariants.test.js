@@ -26,6 +26,15 @@ const TENANT_TABLES = `
         AND col.column_name  = 'shop_id')
 `;
 
+// Chuẩn hoá biểu thức policy trước khi so: PostgreSQL in lại `qual`/`with_check` với dấu
+// ngoặc và khoảng trắng do NÓ tự chọn, không phải như đã viết trong migration, nên so
+// nguyên văn là đỏ giả sau mỗi lần nâng cấp bản PostgreSQL.
+//
+// GIỚI HẠN, ghi ở đây để người sau khỏi tin quá: nó XOÁ HẲN dấu ngoặc, nên hai biểu thức
+// khác nhau về THỨ TỰ ƯU TIÊN có thể bị gộp thành một —  `a AND (b OR c)` và `(a AND b) OR c`
+// chuẩn hoá ra cùng một chuỗi. Hôm nay mọi policy trong kho đều thuần AND nên chỗ này an
+// toàn; thêm một policy có trộn AND với OR thì phải so bằng cây cú pháp chứ không bằng
+// chuỗi đã nén, nếu không chốt sẽ im lặng chấp nhận một policy rộng hơn ý định.
 const compactPolicyExpr = (value) => String(value ?? '').replace(/[()\s]/g, '').toLowerCase();
 
 describe('vai trò database', () => {

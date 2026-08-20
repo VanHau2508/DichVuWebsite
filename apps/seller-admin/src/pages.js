@@ -6124,27 +6124,27 @@ export function renderPurchaseOrderEdit(ctx, shopId, po, variantData, suppliers,
   const notices = { header: 'Đã lưu nhà cung cấp và ghi chú.', 'line-added': 'Đã thêm dòng hàng.', 'line-saved': 'Đã cập nhật dòng hàng.', 'line-deleted': 'Đã xoá dòng hàng.' };
   const pickerState = `<input type="hidden" name="q" value="${esc(pq)}"><input type="hidden" name="offset" value="${esc(offset)}">`;
   const selectedVariantIds = new Set((po.lines ?? []).map((l) => String(l.variant_id)));
-  const lineRows = (po.lines ?? []).map((l) => `<tr>
-    <td><strong>${esc(l.title_snapshot ?? '')}</strong>${l.sku_snapshot ? `<br><span class="muted">${esc(l.sku_snapshot)}</span>` : ''}</td>
-    <td><form method="POST" action="${base}/purchasing/${esc(po.id)}/lines/${esc(l.id)}" class="actions" style="align-items:end;flex-wrap:wrap">
+  const lineRows = (po.lines ?? []).map((l) => [
+    { html: `<strong>${esc(l.title_snapshot ?? '')}</strong>${l.sku_snapshot ? `<br><span class="muted">${esc(l.sku_snapshot)}</span>` : ''}` },
+    { html: `<form method="POST" action="${base}/purchasing/${esc(po.id)}/lines/${esc(l.id)}" class="actions" style="align-items:end;flex-wrap:wrap">
       <input type="hidden" name="variant_id" value="${esc(l.variant_id)}">
       ${pickerState}
       <label style="max-width:110px">Số lượng<input name="qty" type="number" min="1" max="100000" required value="${esc(l.qty)}" inputmode="numeric"></label>
       <label style="max-width:170px">Giá nhập (đ)<input name="unit_cost" type="number" min="0" required value="${esc(l.unit_cost_vnd)}" inputmode="numeric"></label>
-      <button class="btn alt sm" type="submit">Lưu dòng</button></form></td>
-    <td class="right"><form method="POST" action="${base}/purchasing/${esc(po.id)}/lines/${esc(l.id)}/delete">${pickerState}<button class="btn warn sm" type="submit" data-confirm="Xoá ${esc(l.title_snapshot ?? 'dòng hàng')} khỏi phiếu?">Xoá</button></form></td>
-  </tr>`).join('');
+      <button class="btn alt sm" type="submit">Lưu dòng</button></form>` },
+    { cls: 'right', html: `<form method="POST" action="${base}/purchasing/${esc(po.id)}/lines/${esc(l.id)}/delete">${pickerState}<button class="btn warn sm" type="submit" data-confirm="Xoá ${esc(l.title_snapshot ?? 'dòng hàng')} khỏi phiếu?">Xoá</button></form>` },
+  ]);
   const resultRows = variants.map((v) => {
     const alreadyAdded = selectedVariantIds.has(String(v.id));
-    return `<tr>
-    <td><strong>${esc(v.product_title)}</strong>${v.variant_title ? ` / ${esc(v.variant_title)}` : ''}<br><span class="muted">${esc(v.sku ?? '')} · tồn ${esc(v.on_hand)}${v.cost_vnd != null ? ` · vốn ${money(v.cost_vnd)}` : ''}</span></td>
-    <td><form method="POST" action="${base}/purchasing/${esc(po.id)}/lines" class="actions" style="align-items:end;flex-wrap:wrap">
+    return [
+      { html: `<strong>${esc(v.product_title)}</strong>${v.variant_title ? ` / ${esc(v.variant_title)}` : ''}<br><span class="muted">${esc(v.sku ?? '')} · tồn ${esc(v.on_hand)}${v.cost_vnd != null ? ` · vốn ${money(v.cost_vnd)}` : ''}</span>` },
+      { html: `<form method="POST" action="${base}/purchasing/${esc(po.id)}/lines" class="actions" style="align-items:end;flex-wrap:wrap">
       <input type="hidden" name="variant_id" value="${esc(v.id)}">${pickerState}
       <label style="max-width:100px">SL<input name="qty" type="number" min="1" max="100000" value="1" required inputmode="numeric"></label>
       <label style="max-width:160px">Giá nhập<input name="unit_cost" type="number" min="0" value="${esc(v.cost_vnd ?? 0)}" required inputmode="numeric"></label>
-      <button class="btn ${alreadyAdded ? 'alt ' : ''}sm" type="submit"${alreadyAdded ? ' disabled title="Biến thể này đã có trong phiếu"' : ''}>${alreadyAdded ? 'Đã có trong phiếu' : '+ Thêm'}</button></form></td>
-  </tr>`;
-  }).join('');
+      <button class="btn ${alreadyAdded ? 'alt ' : ''}sm" type="submit"${alreadyAdded ? ' disabled title="Biến thể này đã có trong phiếu"' : ''}>${alreadyAdded ? 'Đã có trong phiếu' : '+ Thêm'}</button></form>` },
+    ];
+  });
   const pageHref = (nextOffset) => `${base}/purchasing/${esc(po.id)}/edit?${new URLSearchParams({ ...(pq ? { q: pq } : {}), offset: String(nextOffset) })}`;
   return layout('Sửa phiếu nhập', ctx, `${invTabs(shopId, 'po')}
     <a class="muted" href="${base}/purchasing/${esc(po.id)}">← Phiếu #${esc(po.po_number)}</a>
@@ -6158,12 +6158,18 @@ export function renderPurchaseOrderEdit(ctx, shopId, po, variantData, suppliers,
         <label>Ghi chú</label><input name="note" maxlength="1000" value="${esc(po.note ?? '')}"></div>
       <button class="btn" type="submit">Lưu thông tin chung</button></form>
     <div class="card"><div class="toolbar"><h2 style="margin:0">Dòng đã thêm (${esc((po.lines ?? []).length)}/200)</h2><strong>${money(po.subtotal_vnd)}</strong></div>
-      ${lineRows ? `<div class="tblscroll"><table data-cards><thead><tr><th>Hàng</th><th>Số lượng / giá</th><th></th></tr></thead><tbody>${lineRows}</tbody></table></div>` : '<p class="muted">Phiếu đang trống. Tìm sản phẩm bên dưới để thêm dòng đầu tiên.</p>'}</div>
+      ${lineRows.length ? `<div class="tblscroll">${tblCards({
+        head: [{ html: 'Hàng' }, { html: 'Số lượng / giá' }, { html: '', label: '' }],
+        rows: lineRows,
+      })}</div>` : '<p class="muted">Phiếu đang trống. Tìm sản phẩm bên dưới để thêm dòng đầu tiên.</p>'}</div>
     <div class="card"><h2 style="margin-top:0">Tìm và thêm hàng</h2>
       <form method="GET" action="${base}/purchasing/${esc(po.id)}/edit" class="actions" style="align-items:end;flex-wrap:wrap">
         <div style="flex:1 1 260px"><label>Tên sản phẩm, tên biến thể hoặc SKU</label><input name="q" value="${esc(pq)}" maxlength="100" placeholder="vd: Blue XL, SKU-001"></div>
         <button class="btn alt sm" type="submit">Tìm</button>${pq ? `<a class="muted" href="${base}/purchasing/${esc(po.id)}/edit">Xoá lọc</a>` : ''}</form>
-      ${resultRows ? `<div class="tblscroll"><table data-cards><thead><tr><th>Kết quả</th><th>Thêm vào phiếu</th></tr></thead><tbody>${resultRows}</tbody></table></div>` : '<p class="muted">Không có biến thể phù hợp.</p>'}
+      ${resultRows.length ? `<div class="tblscroll">${tblCards({
+        head: [{ html: 'Kết quả' }, { html: 'Thêm vào phiếu' }],
+        rows: resultRows,
+      })}</div>` : '<p class="muted">Không có biến thể phù hợp.</p>'}
       <div class="actions" style="justify-content:space-between;margin-top:12px">
         ${offset > 0 ? `<a class="btn alt sm" href="${pageHref(Math.max(0, offset - limit))}">← Trang trước</a>` : '<span></span>'}
         ${variantData?.has_more ? `<a class="btn alt sm" href="${pageHref(offset + limit)}">Trang sau →</a>` : ''}
@@ -6173,12 +6179,13 @@ export function renderPurchaseOrderEdit(ctx, shopId, po, variantData, suppliers,
 // Chi tiết phiếu nhập + hành động theo trạng thái.
 export function renderPurchaseOrderDetail(ctx, shopId, po, notice, err) {
   const base = `/shops/${esc(shopId)}`;
-  const lineRows = (po.lines ?? []).map((l) => `<tr>
-    <td>${esc(l.title_snapshot ?? '')}${l.sku_snapshot ? ` <span class="muted">[${esc(l.sku_snapshot)}]</span>` : ''}</td>
-    <td class="right num">${esc(l.qty)}</td>
-    <td class="right num">${money(l.unit_cost_vnd)}</td>
-    <td class="right num"><strong>${money(l.qty * l.unit_cost_vnd)}</strong></td>
-    <td class="right num muted">${esc(l.on_hand)}</td></tr>`).join('');
+  const lineRows = (po.lines ?? []).map((l) => [
+    { html: `${esc(l.title_snapshot ?? '')}${l.sku_snapshot ? ` <span class="muted">[${esc(l.sku_snapshot)}]</span>` : ''}` },
+    { cls: 'right num', html: esc(l.qty) },
+    { cls: 'right num', html: money(l.unit_cost_vnd) },
+    { cls: 'right num', html: `<strong>${money(l.qty * l.unit_cost_vnd)}</strong>` },
+    { cls: 'right num muted', html: esc(l.on_hand) },
+  ]);
   const canReceiveOrCancel = po.status === 'draft' || po.status === 'ordered';
   const actions = [];
   if (po.status === 'draft') actions.push(`<form method="POST" action="${base}/purchasing/${esc(po.id)}/order" style="display:inline"><button class="btn alt" type="submit">Đánh dấu đã đặt</button></form>`);
@@ -6194,8 +6201,15 @@ export function renderPurchaseOrderDetail(ctx, shopId, po, notice, err) {
       ${po.note ? `<p class="muted" style="margin:6px 0 0">Ghi chú: ${esc(po.note)}</p>` : ''}
       ${po.received_at ? `<p class="muted" style="margin:6px 0 0">Đã nhận: ${dt(po.received_at)}</p>` : (po.ordered_at ? `<p class="muted" style="margin:6px 0 0">Đã đặt: ${dt(po.ordered_at)}</p>` : '')}</div>
     <div class="card"><h2 style="margin-top:0">Hàng${po.status === 'received' ? '' : ' dự kiến'}</h2>
-      ${(po.lines ?? []).length ? `<table data-cards><thead><tr><th>Hàng</th><th class="right">SL</th><th class="right">Giá nhập</th><th class="right">Thành tiền</th><th class="right">Tồn hiện tại</th></tr></thead>
-        <tbody>${lineRows}</tbody><tfoot><tr><td colspan="3" class="right"><strong>Tổng trị giá</strong></td><td class="right num"><strong>${money(po.subtotal_vnd)}</strong></td><td></td></tr></tfoot></table>`
+      ${(po.lines ?? []).length ? tblCards({
+        head: [{ html: 'Hàng' }, { html: 'SL', cls: 'right' }, { html: 'Giá nhập', cls: 'right' }, { html: 'Thành tiền', cls: 'right' }, { html: 'Tồn hiện tại', cls: 'right' }],
+        rows: lineRows,
+        foot: [[
+          { colspan: 3, cls: 'right', html: '<strong>Tổng trị giá</strong>' },
+          { cls: 'right num', html: `<strong>${money(po.subtotal_vnd)}</strong>` },
+          { html: '' },
+        ]],
+      })
         : '<p class="muted" style="margin:0">Phiếu chưa có dòng hàng nào.</p>'}</div>
     ${actions.length ? `<div class="actions" style="flex-wrap:wrap">${actions.join('')}</div>` : ''}`);
 }
@@ -6701,15 +6715,16 @@ export function renderAffiliates(ctx, shopId, data, cfg, err, ok) {
   const rateOf = (a) => (a.rate_kind == null
     ? `<span class="muted">chung (${cfg.rate_kind === 'percent' ? `${esc(cfg.rate_value)}%` : money(cfg.rate_value)})</span>`
     : (a.rate_kind === 'percent' ? `${esc(a.rate_value)}%` : money(a.rate_value)));
-  const rows = list.map((a) => `<tr>
-      <td><a href="${base}/affiliates/${esc(a.id)}"><strong>${esc(a.code)}</strong></a>
-        <div class="muted" style="font-size:.84rem">${esc(a.name)}${a.phone ? ` · ${esc(a.phone)}` : ''}</div></td>
-      <td>${rateOf(a)}</td>
-      <td class="num right">${esc(a.order_count)}</td>
-      <td class="num right muted">${money(a.pending_vnd)}</td>
-      <td class="num right"><strong>${money(a.eligible_vnd)}</strong></td>
-      <td class="num right muted">${money(a.paid_vnd)}</td>
-      <td>${a.active ? 'Đang chạy' : '<span class="muted">Đã tắt</span>'}</td></tr>`).join('');
+  const rows = list.map((a) => [
+    { html: `<a href="${base}/affiliates/${esc(a.id)}"><strong>${esc(a.code)}</strong></a>
+        <div class="muted" style="font-size:.84rem">${esc(a.name)}${a.phone ? ` · ${esc(a.phone)}` : ''}</div>` },
+    { html: rateOf(a) },
+    { cls: 'num right', html: esc(a.order_count) },
+    { cls: 'num right muted', html: money(a.pending_vnd) },
+    { cls: 'num right', html: `<strong>${money(a.eligible_vnd)}</strong>` },
+    { cls: 'num right muted', html: money(a.paid_vnd) },
+    { html: a.active ? 'Đang chạy' : '<span class="muted">Đã tắt</span>' },
+  ]);
   const owed = list.reduce((s, a) => s + Number(a.eligible_vnd || 0), 0);
   return layout('Cộng tác viên', ctx, `
     <h1>Cộng tác viên</h1>
@@ -6754,9 +6769,13 @@ export function renderAffiliates(ctx, shopId, data, cfg, err, ok) {
       </form>
     </div>
     <div class="card"><h2 style="margin-top:0">Danh sách${owed > 0 ? ` <span class="muted" style="font-size:.9rem;font-weight:400">— đang nợ ${money(owed)}</span>` : ''}</h2>
-      ${rows ? `<div class="tblscroll"><table data-cards><thead><tr>
-          <th>Mã / tên</th><th>Hoa hồng</th><th class="right">Đơn</th><th class="right">Tạm tính</th>
-          <th class="right">Chờ chi</th><th class="right">Đã trả</th><th>Trạng thái</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      ${rows.length ? `<div class="tblscroll">${tblCards({
+        head: [
+          { html: 'Mã / tên' }, { html: 'Hoa hồng' }, { html: 'Đơn', cls: 'right' }, { html: 'Tạm tính', cls: 'right' },
+          { html: 'Chờ chi', cls: 'right' }, { html: 'Đã trả', cls: 'right' }, { html: 'Trạng thái' },
+        ],
+        rows,
+      })}</div>`
         : '<p class="muted" style="margin-bottom:0">Chưa có cộng tác viên nào.</p>'}</div>`);
 }
 
@@ -6764,15 +6783,19 @@ export function renderAffiliateDetail(ctx, shopId, d, err, ok) {
   const base = `/shops/${esc(shopId)}`;
   const a = d.affiliate, t = d.totals, cu = d.cod_unsettled ?? { amount_vnd: 0, orders: 0 };
   const LABEL = { pending: 'Tạm tính', eligible: 'Chờ chi', void: 'Đã rụng', paid: 'Đã trả' };
-  const rows = (d.commissions ?? []).map((k) => `<tr>
-      <td><a href="${base}/orders/${esc(k.order_id)}">#${esc(k.order_number)}</a>
-        ${k.cod_unsettled ? '<div class="muted" style="font-size:.8rem">🚚 hãng chưa chuyển tiền</div>' : ''}</td>
-      <td class="num right muted">${money(k.base_vnd)}</td>
-      <td class="num right"><strong>${money(k.amount_vnd)}</strong></td>
-      <td>${esc(LABEL[k.status] ?? k.status)}${k.void_reason ? `<div class="muted" style="font-size:.8rem">${esc(k.void_reason)}</div>` : ''}</td></tr>`).join('');
-  const payRows = (d.payouts ?? []).map((p) => `<tr>
-      <td>${esc(String(p.paid_at).slice(0, 10))}</td><td class="num right"><strong>${money(p.amount_vnd)}</strong></td>
-      <td class="num right muted">${esc(p.item_count)}</td><td class="muted">${esc(p.method ?? '')} ${esc(p.note ?? '')}</td></tr>`).join('');
+  const rows = (d.commissions ?? []).map((k) => [
+    { html: `<a href="${base}/orders/${esc(k.order_id)}">#${esc(k.order_number)}</a>
+        ${k.cod_unsettled ? '<div class="muted" style="font-size:.8rem">🚚 hãng chưa chuyển tiền</div>' : ''}` },
+    { cls: 'num right muted', html: money(k.base_vnd) },
+    { cls: 'num right', html: `<strong>${money(k.amount_vnd)}</strong>` },
+    { html: `${esc(LABEL[k.status] ?? k.status)}${k.void_reason ? `<div class="muted" style="font-size:.8rem">${esc(k.void_reason)}</div>` : ''}` },
+  ]);
+  const payRows = (d.payouts ?? []).map((p) => [
+    { html: esc(String(p.paid_at).slice(0, 10)) },
+    { cls: 'num right', html: `<strong>${money(p.amount_vnd)}</strong>` },
+    { cls: 'num right muted', html: esc(p.item_count) },
+    { cls: 'muted', html: `${esc(p.method ?? '')} ${esc(p.note ?? '')}` },
+  ]);
   return layout(`CTV: ${a.code}`, ctx, `
     <a class="muted" href="${base}/affiliates">← Cộng tác viên</a>
     <h1>${esc(a.name)} <span class="muted">${esc(a.code)}</span></h1>
@@ -6800,10 +6823,14 @@ export function renderAffiliateDetail(ctx, shopId, d, err, ok) {
       </form>` : '<p class="muted" style="margin-bottom:0">Chưa có hoa hồng nào đủ điều kiện chi.</p>'}
     </div>
     <div class="card"><h2 style="margin-top:0">Hoa hồng theo đơn</h2>
-      ${rows ? `<div class="tblscroll"><table data-cards><thead><tr>
-          <th>Đơn</th><th class="right">Căn cứ</th><th class="right">Hoa hồng</th><th>Trạng thái</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      ${rows.length ? `<div class="tblscroll">${tblCards({
+        head: [{ html: 'Đơn' }, { html: 'Căn cứ', cls: 'right' }, { html: 'Hoa hồng', cls: 'right' }, { html: 'Trạng thái' }],
+        rows,
+      })}</div>`
         : '<p class="muted" style="margin-bottom:0">Chưa có đơn nào qua mã này.</p>'}</div>
     ${payRows ? `<div class="card"><h2 style="margin-top:0">Phiếu đã chi</h2>
-      <div class="tblscroll"><table data-cards><thead><tr><th>Ngày</th><th class="right">Số tiền</th><th class="right">Số dòng</th><th>Ghi chú</th></tr></thead>
-      <tbody>${payRows}</tbody></table></div></div>` : ''}`);
+      <div class="tblscroll">${tblCards({
+        head: [{ html: 'Ngày' }, { html: 'Số tiền', cls: 'right' }, { html: 'Số dòng', cls: 'right' }, { html: 'Ghi chú' }],
+        rows: payRows,
+      })}</div></div>` : ''}`);
 }

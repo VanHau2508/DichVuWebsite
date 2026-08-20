@@ -558,10 +558,10 @@ const badge = (kind, label) => `<span class="badge ${esc(kind)}">${esc(label)}</
  * không có cách nào để CSS lấy chữ từ `th` tương ứng. Nhãn buộc phải do server phát ra.
  *
  * HỢP ĐỒNG
- *   head: [{ html, label, cls?, style? }]
+ *   head: [{ html, label, cls?, style?, attrs? }]
  *                             label='' → cột không sinh ::before (ô checkbox/nút)
  *                             label bỏ trống → lấy từ chính `html` sau khi bỏ thẻ
- *   rows: [[{ html, label?, cls?, style?, colspan? }]]  label mặc định theo CHỈ SỐ cột
+ *   rows: [[{ html, label?, cls?, style?, attrs?, colspan? }]]  label mặc định theo CHỈ SỐ cột
  *                             colspan > 1 → KHÔNG gán nhãn (chỉ số cột không xác định)
  *                             hàng cần thuộc tính riêng: { cells: [...], attrs: '…' }
  *   foot: [[{ html, colspan? }]]          KHÔNG card-hoá, giữ nguyên dạng hàng
@@ -569,9 +569,10 @@ const badge = (kind, label) => `<span class="badge ${esc(kind)}">${esc(label)}</
  * Nhãn suy theo CHỈ SỐ nên không thể chép tay lệch: thêm một cột vào `head` mà quên sửa
  * `rows` thì lệch lộ ra ngay ở chính hàng đó, không âm thầm mất nhãn.
  *
- * `style` KHÔNG đi qua esc(): nó là CSS viết tại chỗ, esc() sẽ biến `"` thành `&quot;` và
- * hỏng thuộc tính. Cũng vì thế nó chỉ được nhận hằng viết tay, không bao giờ ghép từ dữ liệu
- * — y như `attrs`.
+ * `style` và `attrs` KHÔNG đi qua esc(): chúng là CSS/HTML viết tại chỗ, esc() sẽ biến `"`
+ * thành `&quot;` và hỏng thuộc tính. Cũng vì thế cả hai chỉ được nhận hằng viết tay hoặc
+ * hàm sinh thuộc tính đã kiểm (như `neg()` ở báo cáo, trả nguyên ` style="…"`), KHÔNG BAO
+ * GIỜ ghép từ dữ liệu người dùng.
  *
  * `attrs` là lối thoát cho ĐÚNG ba hàng trong cả kho có thuộc tính riêng (NCC đã ẩn, API
  * key đã thu hồi, dòng tổng in đậm — đều là một `style` mờ/đậm có điều kiện). Nó nhận HTML
@@ -580,7 +581,7 @@ const badge = (kind, label) => `<span class="badge ${esc(kind)}">${esc(label)}</
 const stripTags = (h) => String(h ?? '').replace(/<[^>]*>/g, '').trim();
 function tblCards({ head = [], rows = [], foot = [], cls = '' } = {}) {
   const labels = head.map((h) => (h.label !== undefined ? h.label : stripTags(h.html)));
-  const at = (c) => `${c.cls ? ` class="${esc(c.cls)}"` : ''}${c.style ? ` style="${c.style}"` : ''}`;
+  const at = (c) => `${c.cls ? ` class="${esc(c.cls)}"` : ''}${c.style ? ` style="${c.style}"` : ''}${c.attrs ?? ''}`;
   const th = head.map((h) => `<th${at(h)}>${h.html ?? ''}</th>`).join('');
   const body = rows.map((r) => `<tr${Array.isArray(r) ? '' : r.attrs ?? ''}>${(Array.isArray(r) ? r : r.cells).map((c, i) => {
     const span = Number(c.colspan) > 1 ? ` colspan="${esc(c.colspan)}"` : '';
@@ -700,11 +701,12 @@ export function renderHelp(ctx, shopId, tickets, notice, err, form = {}) {
   const base = `/shops/${esc(shopId)}`;
   // Ghi chú xử lý (0108) nằm NGAY trong ô nội dung, không phải một cột thứ tư: nó là CÂU TRẢ
   // LỜI cho việc người bán hỏi — đọc nó quan trọng hơn đọc lại tiêu đề mình vừa gõ.
-  const rows = (tickets ?? []).map((t) => `<tr>
-    <td class="stack">${esc(t.subject)}<div class="muted" style="font-size:.8rem">${esc(String(t.body).slice(0, 90))}${String(t.body).length > 90 ? '…' : ''}</div>
-      ${t.resolution_note ? `<div class="prosetxt" style="margin-top:8px;padding:8px 10px;background:var(--goodbg);color:var(--good);border-radius:var(--r-xs);font-size:.85rem;text-align:left">${esc(t.resolution_note)}</div>` : ''}</td>
-    <td>${badge(TICKET_ST[t.status]?.[1] ?? 'draft', TICKET_ST[t.status]?.[0] ?? t.status)}</td>
-    <td class="muted">${dt(t.created_at)}</td></tr>`).join('');
+  const rows = (tickets ?? []).map((t) => [
+    { cls: 'stack', html: `${esc(t.subject)}<div class="muted" style="font-size:.8rem">${esc(String(t.body).slice(0, 90))}${String(t.body).length > 90 ? '…' : ''}</div>
+      ${t.resolution_note ? `<div class="prosetxt" style="margin-top:8px;padding:8px 10px;background:var(--goodbg);color:var(--good);border-radius:var(--r-xs);font-size:.85rem;text-align:left">${esc(t.resolution_note)}</div>` : ''}` },
+    { html: badge(TICKET_ST[t.status]?.[1] ?? 'draft', TICKET_ST[t.status]?.[0] ?? t.status) },
+    { cls: 'muted', html: dt(t.created_at) },
+  ]);
 
   const contacts = [
     SUPPORT_ZALO ? ['Zalo', esc(SUPPORT_ZALO)] : null,
@@ -721,7 +723,7 @@ export function renderHelp(ctx, shopId, tickets, notice, err, form = {}) {
     ${contacts.length ? `<div class="card">
       <h2 style="margin-top:0">Liên hệ trực tiếp</h2>
       <p class="muted" style="margin-top:-6px">Cần gấp thì gọi hoặc nhắn — nhanh hơn gửi yêu cầu.</p>
-      <div class="tblscroll"><table data-cards><tbody>
+      <div class="tblscroll"><table><tbody>
         ${contacts.map(([k, v]) => `<tr><td style="width:140px">${esc(k)}</td><td><strong>${v}</strong></td></tr>`).join('')}
         ${SUPPORT_HOURS ? `<tr><td>Giờ làm việc</td><td class="muted">${esc(SUPPORT_HOURS)}</td></tr>` : ''}
       </tbody></table></div>
@@ -743,8 +745,10 @@ export function renderHelp(ctx, shopId, tickets, notice, err, form = {}) {
 
     <div class="card">
       <h2 style="margin-top:0">Yêu cầu đã gửi</h2>
-      ${rows ? `<div class="tblscroll"><table data-cards><thead><tr>
-          <th>Nội dung</th><th>Trạng thái</th><th>Gửi lúc</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      ${rows.length ? `<div class="tblscroll">${tblCards({
+        head: [{ html: 'Nội dung' }, { html: 'Trạng thái' }, { html: 'Gửi lúc' }],
+        rows,
+      })}</div>`
         : '<p class="muted" style="margin-bottom:0">Bạn chưa gửi yêu cầu nào.</p>'}
     </div>`);
 }
@@ -2687,18 +2691,23 @@ export function renderReports(ctx, shopId, d, f) {
       chưa chuyển tiền về. Khoản này <strong>không</strong> trừ vào lãi (tiền vẫn của bạn) — đối chiếu ở trang
       <a href="/shops/${esc(shopId)}/cod">Đối soát COD</a>.</p></div>` : '';
   const sortLink = (k, label) => sort === k ? `<strong>${label}</strong>` : `<a href="${base}?${qs({ from, to, group, sort: k })}">${label}</a>`;
-  const prodRows = (d.by_product ?? []).map((p) => `<tr>
-      <td>${esc(p.title)} <span class="muted">${esc(p.sku ?? '')}</span></td>
-      <td class="num right">${esc(p.qty)}</td>
-      <td class="num right">${money(p.revenue_vnd)}</td>
-      <td class="num right">${p.cogs_vnd == null ? '<span class="muted">—</span>' : money(p.cogs_vnd)}</td>
-      <td class="num right"${p.profit_vnd != null ? neg(p.profit_vnd) : ''}>${p.profit_vnd == null ? '<span class="muted">—</span>' : money(p.profit_vnd)}</td>
-      <td class="num right">${p.margin_pct == null ? '<span class="muted">—</span>' : esc(p.margin_pct) + '%'}</td></tr>`).join('');
-  const bucketRows = d.series.map((s) => `<tr>
-      <td class="num">${esc(s.bucket)}</td><td class="num right">${esc(s.orders_paid)}</td>
-      <td class="num right">${money(s.net_revenue_vnd)}</td>
-      <td class="num right"${neg(s.gross_profit_vnd)}>${money(s.gross_profit_vnd)}</td>
-      <td class="num right"${neg(s.operating_profit_vnd)}>${money(s.operating_profit_vnd)}</td></tr>`).join('');
+  // `neg(v)` trả về nguyên một chuỗi thuộc tính (` style="…"` hoặc rỗng) chứ không trả
+  // giá trị CSS, nên nó đi vào `attrs` của ô, không đi vào `style`.
+  const prodRows = (d.by_product ?? []).map((p) => [
+    { html: `${esc(p.title)} <span class="muted">${esc(p.sku ?? '')}</span>` },
+    { cls: 'num right', html: esc(p.qty) },
+    { cls: 'num right', html: money(p.revenue_vnd) },
+    { cls: 'num right', html: p.cogs_vnd == null ? '<span class="muted">—</span>' : money(p.cogs_vnd) },
+    { cls: 'num right', attrs: p.profit_vnd != null ? neg(p.profit_vnd) : '', html: p.profit_vnd == null ? '<span class="muted">—</span>' : money(p.profit_vnd) },
+    { cls: 'num right', html: p.margin_pct == null ? '<span class="muted">—</span>' : esc(p.margin_pct) + '%' },
+  ]);
+  const bucketRows = d.series.map((s) => [
+    { cls: 'num', html: esc(s.bucket) },
+    { cls: 'num right', html: esc(s.orders_paid) },
+    { cls: 'num right', html: money(s.net_revenue_vnd) },
+    { cls: 'num right', attrs: neg(s.gross_profit_vnd), html: money(s.gross_profit_vnd) },
+    { cls: 'num right', attrs: neg(s.operating_profit_vnd), html: money(s.operating_profit_vnd) },
+  ]);
   const exportBtns = EXPORT_ROLES.has(ctx.role) ? `<div class="actions" style="margin-top:10px">
       <form method="POST" action="${base}/export"><input type="hidden" name="type" value="pnl"><input type="hidden" name="from" value="${esc(from)}"><input type="hidden" name="to" value="${esc(to)}"><input type="hidden" name="group" value="${esc(group)}"><button class="btn alt sm" type="submit">Xuất CSV theo kỳ</button></form>
       <form method="POST" action="${base}/export"><input type="hidden" name="type" value="products"><input type="hidden" name="from" value="${esc(from)}"><input type="hidden" name="to" value="${esc(to)}"><button class="btn alt sm" type="submit">Xuất CSV theo sản phẩm</button></form>
@@ -2745,10 +2754,19 @@ export function renderReports(ctx, shopId, d, f) {
       ${exportBtns}
     </div>
     <div class="card"><h2 style="margin-top:0">Lãi theo sản phẩm${d.products_truncated ? ' <span class="muted" style="font-size:.82rem">(top 100)</span>' : ''}</h2>
-      ${prodRows ? `<table data-cards><thead><tr><th>Sản phẩm</th><th class="right">${sortLink('qty', 'SL')}</th><th class="right">${sortLink('revenue', 'Doanh thu')}</th><th class="right">Giá vốn</th><th class="right">${sortLink('profit', 'Lãi')}</th><th class="right">Biên</th></tr></thead><tbody>${prodRows}</tbody></table>
+      ${prodRows.length ? `${tblCards({
+        head: [
+          { html: 'Sản phẩm' }, { html: sortLink('qty', 'SL'), cls: 'right' }, { html: sortLink('revenue', 'Doanh thu'), cls: 'right' },
+          { html: 'Giá vốn', cls: 'right' }, { html: sortLink('profit', 'Lãi'), cls: 'right' }, { html: 'Biên', cls: 'right' },
+        ],
+        rows: prodRows,
+      })}
       <p class="muted" style="font-size:.8rem;margin-bottom:0">Doanh thu theo dòng hàng, CHƯA trừ giảm giá cấp đơn + hoàn/trả. Dòng "—" chưa có giá vốn.</p>` : '<p class="muted">Chưa có dữ liệu.</p>'}</div>
     <div class="card"><h2 style="margin-top:0">Theo ${group === 'month' ? 'tháng' : 'ngày'}</h2>
-      <table data-cards><thead><tr><th>Kỳ</th><th class="right">Đơn</th><th class="right">Thuần</th><th class="right">Lãi gộp</th><th class="right">Lãi VH</th></tr></thead><tbody>${bucketRows}</tbody></table></div>
+      ${tblCards({
+    head: [{ html: 'Kỳ' }, { html: 'Đơn', cls: 'right' }, { html: 'Thuần', cls: 'right' }, { html: 'Lãi gộp', cls: 'right' }, { html: 'Lãi VH', cls: 'right' }],
+    rows: bucketRows,
+  })}</div>
     <p class="muted" style="font-size:.82rem">Doanh thu ghi tại <strong>ngày thanh toán</strong>; hoàn/trả trừ tại <strong>ngày phiếu</strong>; giá vốn chốt tại <strong>thời điểm đặt hàng</strong>; số kỳ cũ có thể thay đổi khi sửa đơn đã trả; mốc ngày giờ Việt Nam. Lãi vận hành chưa gồm phí nền tảng/quảng cáo/đóng gói.</p>`);
 }
 
@@ -2884,17 +2902,18 @@ export function renderOrders(ctx, shopId, data, filter) {
   const flagged = orders.filter((o) => Number(o.same_ip_phones) >= SUSPICIOUS_MIN).length;
   const rows = orders.map((o) => {
     const susp = Number(o.same_ip_phones) >= SUSPICIOUS_MIN;
-    return `<tr>
-    <td><input type="checkbox" name="order_ids" value="${esc(o.id)}" form="bulkf" aria-label="Chọn đơn ${esc(o.order_number)}"></td>
-    <td><a href="/shops/${esc(shopId)}/orders/${esc(o.id)}">#${esc(o.order_number)}</a></td>
-    <td>${badge(o.status, STATUS[o.status] ?? o.status)}</td>
-    <td>${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} <span class="muted">${esc(o.payment_method?.toUpperCase() ?? '')}</span></td>
-    <td>${esc(o.customer_name)}${susp ? ` <span class="badge cancelled" title="Cùng nguồn mạng với ${esc(o.same_ip_phones)} SĐT khác nhau đang chờ xử lý — kiểm tra kẻo đơn ảo">⚠ ${esc(o.same_ip_phones)} SĐT cùng nguồn</span>` : ''}</td>
-    <td>${o.source ? `<span class="badge">${esc(ORDER_SOURCE_LABEL[o.source] ?? o.source)}</span>`
-      : (o.is_migrated ? '<span class="muted">Nhập từ sàn cũ</span>' : '<span class="muted">—</span>')}</td>
-    <td class="muted">${dt(o.created_at)}</td>
-    <td style="text-align:right"><strong>${money(o.total_vnd)}</strong></td></tr>`;
-  }).join('');
+    return [
+      { label: '', html: `<input type="checkbox" name="order_ids" value="${esc(o.id)}" form="bulkf" aria-label="Chọn đơn ${esc(o.order_number)}">` },
+      { html: `<a href="/shops/${esc(shopId)}/orders/${esc(o.id)}">#${esc(o.order_number)}</a>` },
+      { html: badge(o.status, STATUS[o.status] ?? o.status) },
+      { html: `${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} <span class="muted">${esc(o.payment_method?.toUpperCase() ?? '')}</span>` },
+      { html: `${esc(o.customer_name)}${susp ? ` <span class="badge cancelled" title="Cùng nguồn mạng với ${esc(o.same_ip_phones)} SĐT khác nhau đang chờ xử lý — kiểm tra kẻo đơn ảo">⚠ ${esc(o.same_ip_phones)} SĐT cùng nguồn</span>` : ''}` },
+      { html: o.source ? `<span class="badge">${esc(ORDER_SOURCE_LABEL[o.source] ?? o.source)}</span>`
+        : (o.is_migrated ? '<span class="muted">Nhập từ sàn cũ</span>' : '<span class="muted">—</span>') },
+      { cls: 'muted', html: dt(o.created_at) },
+      { style: 'text-align:right', html: `<strong>${money(o.total_vnd)}</strong>` },
+    ];
+  });
   const total = data.total ?? orders.length;
   const off = filter.offset, lim = filter.limit;
   const qenc = encodeURIComponent(filter.q ?? '');
@@ -3001,7 +3020,14 @@ export function renderOrders(ctx, shopId, data, filter) {
         <span class="muted" data-bulk-count="order_ids" hidden style="font-size:13px"></span>
         <span class="muted" style="font-size:.82rem">Tích ô ở đầu bảng để chọn cả trang (xác nhận: chỉ đơn "Chờ xử lý"; giao: chỉ đơn đã xác nhận, KHÔNG gồm đơn đang gửi qua hãng vận chuyển${ctx.role === 'owner' ? '; nhận tiền: chỉ đơn COD chưa thu' : ''}; đơn khác tự bỏ qua).</span>
       </form>
-      <table data-cards><thead><tr><th><input type="checkbox" data-bulk-all="order_ids" form="bulkf" hidden aria-label="Chọn tất cả đơn trên trang"></th><th>Đơn</th><th>Trạng thái</th><th>Thanh toán</th><th>Khách</th><th>Nguồn</th><th>Thời gian</th><th style="text-align:right">Tổng</th></tr></thead><tbody>${rows}</tbody></table>
+      ${tblCards({
+    head: [
+      { html: '<input type="checkbox" data-bulk-all="order_ids" form="bulkf" hidden aria-label="Chọn tất cả đơn trên trang">', label: '' },
+      { html: 'Đơn' }, { html: 'Trạng thái' }, { html: 'Thanh toán' }, { html: 'Khách' },
+      { html: 'Nguồn' }, { html: 'Thời gian' }, { html: 'Tổng', style: 'text-align:right' },
+    ],
+    rows,
+  })}
       <div class="muted" style="margin-top:12px">${total} đơn ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}
@@ -3826,17 +3852,18 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
       : '';
     return `<span class="stock${n <= 0 ? ' zero' : (n < 5 ? ' low' : '')}">${esc(n)}</span>${nhan}`;
   };
-  const rows = products.map((p) => `<tr>
-    <td><input type="checkbox" name="product_ids" value="${esc(p.id)}" form="pbulk" aria-label="Chọn ${esc(p.title)}"></td>
-    <td><div class="pcell">${p.image_url ? `<img class="pthumb lg" src="${esc(p.image_url)}" alt="" loading="lazy" width="56" height="56">` : `<span class="pthumb lg ph">${IC_IMG}</span>`}<div style="min-width:0"><a href="/shops/${esc(shopId)}/products/${esc(p.id)}">${esc(p.title)}</a><div class="muted" style="font-size:.8rem">${esc(p.slug)}</div></div></div></td>
-    <td>${badge(p.status, PSTATUS[p.status] ?? p.status)}</td>
-    <td class="num right">${money(p.price_vnd)}</td>
-    <td class="num right">${p.variant_count}</td>
-    <td class="num right">${stockCell(p)}</td>
-    <td class="num right">${p.views_30d != null ? esc(p.views_30d) : '<span class="muted">—</span>'}</td>
-    <td class="num right">${p.wish_count ? esc(p.wish_count) : '<span class="muted">0</span>'}</td>
-    <td class="num right">${p.sold_count != null ? esc(p.sold_count) : '<span class="muted">—</span>'}</td>
-    <td class="muted">${dt(p.created_at)}</td></tr>`).join('');
+  const rows = products.map((p) => [
+    { label: '', html: `<input type="checkbox" name="product_ids" value="${esc(p.id)}" form="pbulk" aria-label="Chọn ${esc(p.title)}">` },
+    { html: `<div class="pcell">${p.image_url ? `<img class="pthumb lg" src="${esc(p.image_url)}" alt="" loading="lazy" width="56" height="56">` : `<span class="pthumb lg ph">${IC_IMG}</span>`}<div style="min-width:0"><a href="/shops/${esc(shopId)}/products/${esc(p.id)}">${esc(p.title)}</a><div class="muted" style="font-size:.8rem">${esc(p.slug)}</div></div></div>` },
+    { html: badge(p.status, PSTATUS[p.status] ?? p.status) },
+    { cls: 'num right', html: money(p.price_vnd) },
+    { cls: 'num right', html: p.variant_count },
+    { cls: 'num right', html: stockCell(p) },
+    { cls: 'num right', html: p.views_30d != null ? esc(p.views_30d) : '<span class="muted">—</span>' },
+    { cls: 'num right', html: p.wish_count ? esc(p.wish_count) : '<span class="muted">0</span>' },
+    { cls: 'num right', html: p.sold_count != null ? esc(p.sold_count) : '<span class="muted">—</span>' },
+    { cls: 'muted', html: dt(p.created_at) },
+  ]);
   // TAB trạng thái kèm SỐ ĐẾM (mẫu trang Đơn hàng). Đổi tab GIỮ ô tìm và RESET offset về 0
   // — nếu giữ offset, user đang ở trang 3 bấm tab khác sẽ thấy trang trắng.
   const cnts = d.counts ?? {};
@@ -3882,7 +3909,17 @@ export function renderProducts(ctx, shopId, data, filter, notice = null) {
       <div style="flex:1 1 200px"><label>Tìm theo tên</label><input name="q" value="${esc(filter.q ?? '')}" placeholder="Ghế sofa…"></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></div>
-    <div class="card">${products.length ? `${bulkBar}${filter.stock === 'low' ? `<p class="muted" style="margin:0 0 10px">Đang lọc: <strong>Sắp hết hàng</strong> · <a href="?${esc(new URLSearchParams({ ...(filter.status ? { status: filter.status } : {}), ...(filter.q ? { q: filter.q } : {}) }).toString())}">Xoá bộ lọc</a></p>` : ''}<div class="tblscroll"><table data-cards><thead><tr><th><input type="checkbox" data-bulk-all="product_ids" hidden aria-label="Chọn tất cả sản phẩm trên trang"></th><th>Sản phẩm</th><th>Trạng thái</th><th class="right">Giá</th><th class="right">Biến thể</th><th class="right">Tồn</th><th class="right" title="Lượt xem trang sản phẩm trong 30 ngày qua">Lượt xem</th><th class="right" title="Số khách đã bấm Yêu thích">Thích</th><th class="right">Đã bán</th><th>Tạo</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="card">${products.length ? `${bulkBar}${filter.stock === 'low' ? `<p class="muted" style="margin:0 0 10px">Đang lọc: <strong>Sắp hết hàng</strong> · <a href="?${esc(new URLSearchParams({ ...(filter.status ? { status: filter.status } : {}), ...(filter.q ? { q: filter.q } : {}) }).toString())}">Xoá bộ lọc</a></p>` : ''}<div class="tblscroll">${tblCards({
+      head: [
+        { html: '<input type="checkbox" data-bulk-all="product_ids" hidden aria-label="Chọn tất cả sản phẩm trên trang">', label: '' },
+        { html: 'Sản phẩm' }, { html: 'Trạng thái' }, { html: 'Giá', cls: 'right' }, { html: 'Biến thể', cls: 'right' },
+        { html: 'Tồn', cls: 'right' },
+        { html: 'Lượt xem', cls: 'right', attrs: ' title="Lượt xem trang sản phẩm trong 30 ngày qua"' },
+        { html: 'Thích', cls: 'right', attrs: ' title="Số khách đã bấm Yêu thích"' },
+        { html: 'Đã bán', cls: 'right' }, { html: 'Tạo' },
+      ],
+      rows,
+    })}</div>
       <div class="muted" style="margin-top:12px">${total} sản phẩm ·
         ${off > 0 ? `<a href="${nav(Math.max(0, off - lim))}">← Trước</a>` : '<span style="color:#d1d5db">← Trước</span>'} ·
         ${off + lim < total ? `<a href="${nav(off + lim)}">Sau →</a>` : '<span style="color:#d1d5db">Sau →</span>'}

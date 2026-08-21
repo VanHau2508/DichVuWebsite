@@ -53,6 +53,8 @@ const MONEY_OUT_ROUTES = (aff) => [
     'POST', `/affiliates/${aff}/payouts`, { method: 'bank' }],
   ['hoàn tiền đơn hàng',
     'POST', '/orders/00000000-0000-4000-8000-000000000001/refund', {}],
+  ['gắn phiếu hoàn tiền để chốt ca giao một phần',
+    'POST', '/resolution-cases/00000000-0000-4000-8000-000000000001/accept-partial-with-refund', { refund_ids: [] }],
   // Khách định danh bằng SĐT, KHÔNG phải uuid — truyền uuid thì không khớp route nào và
   // nhận 404 "không tìm thấy", trông y hệt "cổng step-up không chạy". Đã dính một lần.
   ['xoá dữ liệu cá nhân khách (không khôi phục được)',

@@ -380,6 +380,142 @@ describe('vai trò database', () => {
     }
   });
 
+  test('attribution refund có quyền hẹp, policy exact và cửa ghi SECURITY DEFINER', async () => {
+    const { rows: [meta] } = await owner.query(`
+      SELECT c.relrowsecurity AS rls, c.relforcerowsecurity AS force_rls,
+             has_table_privilege('app_rw',c.oid,'SELECT') AS rw_select,
+             has_table_privilege('app_rw',c.oid,'INSERT') AS rw_insert,
+             has_table_privilege('app_rw',c.oid,'UPDATE') AS rw_update,
+             has_table_privilege('app_rw',c.oid,'DELETE') AS rw_delete,
+             has_table_privilege('app_resolution',c.oid,'SELECT') AS resolution_select,
+             has_table_privilege('app_resolution',c.oid,'INSERT') AS resolution_insert,
+             has_table_privilege('app_resolution',c.oid,'UPDATE') AS resolution_update,
+             has_table_privilege('app_resolution',c.oid,'DELETE') AS resolution_delete
+        FROM pg_class c
+       WHERE c.oid='order_resolution_refund_attributions'::regclass
+    `);
+    assert.deepEqual(meta, {
+      rls: true,
+      force_rls: true,
+      rw_select: true,
+      rw_insert: false,
+      rw_update: false,
+      rw_delete: false,
+      resolution_select: true,
+      resolution_insert: true,
+      resolution_update: false,
+      resolution_delete: false,
+    });
+
+    const policies = (await owner.query(`
+      SELECT policyname, cmd, roles, qual, with_check
+        FROM pg_policies
+       WHERE schemaname='public' AND tablename='order_resolution_refund_attributions'
+       ORDER BY policyname
+    `)).rows.map((row) => ({
+      ...row,
+      roles: String(row.roles).slice(1, -1).split(',').filter(Boolean).sort(),
+      qual: compactPolicyExpr(row.qual),
+      with_check: compactPolicyExpr(row.with_check),
+    }));
+    assert.deepEqual(policies, [
+      { policyname: 'attrib_resolution_insert', cmd: 'INSERT', roles: ['app_resolution'], qual: '', with_check: 'shop_id=current_shop_id' },
+      { policyname: 'attrib_resolution_select', cmd: 'SELECT', roles: ['app_resolution'], qual: 'shop_id=current_shop_id', with_check: '' },
+      { policyname: 'attrib_rw_select', cmd: 'SELECT', roles: ['app_rw'], qual: 'shop_id=current_shop_id', with_check: '' },
+    ]);
+
+    const { rows: [fn] } = await owner.query(`
+      SELECT r.rolname AS owner, r.rolcanlogin, r.rolsuper, r.rolbypassrls,
+             p.prosecdef, p.proconfig,
+             has_function_privilege('app_rw',p.oid,'EXECUTE') AS rw_exec,
+             has_function_privilege('public',p.oid,'EXECUTE') AS public_exec,
+             pg_get_functiondef(p.oid) AS definition
+        FROM pg_proc p
+        JOIN pg_roles r ON r.oid=p.proowner
+       WHERE p.oid='attribute_resolution_refunds(uuid,uuid[],text,uuid)'::regprocedure
+    `);
+    assert.equal(fn.owner, 'app_resolution');
+    assert.equal(fn.rolcanlogin, false);
+    assert.equal(fn.rolsuper, false);
+    assert.equal(fn.rolbypassrls, false);
+    assert.equal(fn.prosecdef, true);
+    assert.ok((fn.proconfig ?? []).includes('search_path=public, pg_temp'));
+    assert.equal(fn.rw_exec, true);
+    assert.equal(fn.public_exec, false);
+    assert.match(fn.definition, /m\.role\s+IN\s+\('owner'(?:::text)?,\s*'admin'(?:::text)?\)/i);
+    assert.match(fn.definition, /pg_advisory_xact_lock\(hashtextextended\(current_shop_id\(\)::text\s*\|\|\s*':'(?:::text)?\s*\|\|\s*x::text,\s*0(?:::bigint)?\)\)/i);
+    assert.match(fn.definition, /FROM unnest\(v_refund_ids\) AS x\s+ORDER BY x/i);
+    assert.doesNotMatch(fn.definition, /created_at\s*>?=/i,
+      'phiếu tạo trước detected_at vẫn phải dùng được');
+
+    const { rows: constraints } = await owner.query(`
+      SELECT contype, pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+       WHERE conrelid='order_resolution_refund_attributions'::regclass
+       ORDER BY contype, conname
+    `);
+    const defs = constraints.map((row) => row.definition);
+    assert.ok(defs.some((d) => /UNIQUE \(shop_id, refund_id\)/i.test(d)));
+    assert.ok(defs.some((d) => /FOREIGN KEY \(shop_id, order_id, case_id\).*order_resolution_cases\(shop_id, order_id, id\)/i.test(d)));
+    assert.ok(defs.some((d) => /FOREIGN KEY \(shop_id, order_id, refund_id\).*refunds\(shop_id, order_id, id\)/i.test(d)));
+  });
+
+  test('UNIQUE attribution chặn hai case tranh cùng refund dưới concurrency', async () => {
+    const { rows: [actor] } = await owner.query(`SELECT id FROM users ORDER BY created_at, id LIMIT 1`);
+    assert.ok(actor?.id, 'fixture cần một user làm actor');
+    const { rows: [fixture] } = await owner.query(`
+      WITH s AS (
+        INSERT INTO shops (slug,name,status)
+        VALUES ('attrib-race-' || substring(gen_random_uuid()::text,1,8), 'Attribution race', 'active')
+        RETURNING id
+      ), o AS (
+        INSERT INTO orders (shop_id,order_number,total_vnd)
+        SELECT id,1,1000 FROM s RETURNING shop_id,id
+      ), r AS (
+        INSERT INTO refunds (shop_id,order_id,amount_vnd,reason,created_by)
+        SELECT shop_id,id,1000,'race', $1 FROM o RETURNING shop_id,order_id,id
+      ), resolved_case AS (
+        INSERT INTO order_resolution_cases
+          (shop_id,order_id,status,resolution,resolution_note,resolved_at,resolved_by)
+        SELECT shop_id,order_id,'resolved','accept_partial','ca đã đóng',now(),$1 FROM r
+        RETURNING id
+      ), open_case AS (
+        INSERT INTO order_resolution_cases (shop_id,order_id)
+        SELECT shop_id,order_id FROM r RETURNING id
+      )
+      SELECT r.shop_id, r.order_id, r.id AS refund_id,
+             resolved_case.id AS case_a, open_case.id AS case_b
+        FROM r, resolved_case, open_case
+    `, [actor.id]);
+
+    const insertOne = async (caseId) => {
+      const client = await owner.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          `INSERT INTO order_resolution_refund_attributions
+             (shop_id,order_id,case_id,refund_id,attributed_by)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [fixture.shop_id, fixture.order_id, caseId, fixture.refund_id, actor.id],
+        );
+        await client.query('COMMIT');
+        return 'ok';
+      } catch (error) {
+        await client.query('ROLLBACK');
+        return error.code;
+      } finally {
+        client.release();
+      }
+    };
+    const results = await Promise.all([insertOne(fixture.case_a), insertOne(fixture.case_b)]);
+    assert.deepEqual(results.sort(), ['23505', 'ok']);
+    const { rows: [proof] } = await owner.query(
+      `SELECT count(*)::int AS n FROM order_resolution_refund_attributions
+        WHERE shop_id=$1 AND refund_id=$2`, [fixture.shop_id, fixture.refund_id],
+    );
+    assert.equal(proof.n, 1);
+  });
+
   test('resolution evidence cast actor timeline text sang uuid rõ ràng', async () => {
     const defs = (await owner.query(`
       SELECT proname, pg_get_functiondef(oid) AS def

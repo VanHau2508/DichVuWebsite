@@ -108,8 +108,18 @@ test('workflow đơn dùng role semantic, bảng cuộn và hướng dẫn tồn
   assert.match(detail, /const refundAction = \([^\n]*REFUND_ROLES\.has\(ctx\.role\)\)/);
   assert.match(detail, /const canResolveOrder = ORDER_ROLES\.has\(ctx\.role\);/);
   assert.match(detail, /const canReceiveReturn = INVENTORY_ROLES\.has\(ctx\.role\);/);
-  assert.equal((server.match(/if \(!REFUND_ROLES\.has\(roleFor\(me, shopId\)\)\)/g) ?? []).length, 2,
-    'cả POST chuẩn bị và POST cuối của BFF phải dùng đúng REFUND_ROLES');
+  assert.match(detail, /const canResolveRefund = REFUND_ROLES\.has\(ctx\.role\);/);
+  const refundBff = server.slice(server.indexOf('// ── Hoàn tiền (refund'), server.indexOf('// ── Nhận trả hàng'));
+  assert.equal((refundBff.match(/if \(!REFUND_ROLES\.has\(roleFor\(me, shopId\)\)\)/g) ?? []).length, 2,
+    'cả POST chuẩn bị và POST cuối của hoàn tiền thường phải dùng đúng REFUND_ROLES');
+  const resolutionRefundBff = server.slice(
+    server.indexOf('function resolutionRefundBody('),
+    server.indexOf('// Sổ tiền v2 là đường tài chính riêng'),
+  );
+  assert.equal((resolutionRefundBff.match(/if \(!REFUND_ROLES\.has\(roleFor\(me, shopId\)\)\)/g) ?? []).length, 2,
+    'cả POST interstitial và POST step-up của attribution phải dùng đúng REFUND_ROLES');
+  assert.match(resolutionRefundBff, /\.\.\.\(body\.refund_ids \?\? \[\]\)\.map\(\(id\) => \['refund_ids', id\]\)/,
+    'mọi refund_ids phải sống qua interstitial dưới dạng hidden lặp');
   // Cùng HẬU QUẢ như trước — bảng nằm trong khối cuộn riêng, không đẩy body ở 360px —
   // chỉ đổi CÁCH VIẾT: markup bảng nay do tblCards phát chứ không viết tay.
   // So BẰNG chứ không phải >=. Bản trước viết ">= 3" trong khi thực tế có 4, nên gỡ mất

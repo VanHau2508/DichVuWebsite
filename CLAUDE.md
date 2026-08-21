@@ -25,11 +25,11 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 |---|---:|---|
 | dòng mã ứng dụng | ~43.200 | `apps/*/src/*.js` |
 | dòng test | ~31.400 | `apps/*/test/*.{js,mjs}` |
-| migration | 173 tệp, mới nhất `0175` | `packages/db/migrations/` |
+| migration | 174 tệp, mới nhất `0176` | `packages/db/migrations/` |
 | bộ unit | 38 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 106 | `MANIFEST_E2E_COUNT` |
-| bất biến DB | 9 bộ, 118 test TAP | `packages/db/test/*.test.js` |
-| tài liệu | 78 tệp | `docs/` |
+| bất biến DB | 9 bộ, 120 test TAP | `packages/db/test/*.test.js` |
+| tài liệu | 79 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,71 — cao có chủ ý, xem §4.
 
@@ -75,7 +75,7 @@ với GitHub CI. Nó tự dựng PostgreSQL trắng trong project Compose riêng
 chạy đúng runner production **không seed**, rồi so ba chiều: số file = `MANIFEST_MIGRATION_COUNT`
 = số dòng thật trong `schema_migrations`, kèm 0 DRIFT / 0 pending. Tự dọn bằng `trap` ở mọi đường
 thoát, kể cả Ctrl-C. **Không chạm DB dev.** Thêm migration thì sửa `MANIFEST_MIGRATION_COUNT`
-trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 173 file / số cao nhất 0175).
+trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 174 file / số cao nhất 0176).
 
 Hook `scripts/hooks/pre-push` chạy `--fast` và **chặn push khi đỏ**. Cài một lần cho mỗi bản
 clone: `git config core.hooksPath scripts/hooks`.
@@ -430,8 +430,8 @@ thay trong một lát cắt khác.
 
 | brief | nội dung | trạng thái |
 |---|---|---|
-| **A** | bằng chứng hoàn tiền + chốt ca, `app_resolution`, hàm SECURITY DEFINER hẹp | đã KHOÁ, chờ Codex tách từ `main` mới |
-| **B** | bảng quản trị card-hoá ở server (`docs/77`) | đã thi công xong trên `claude/responsive-table-ssr`, **chưa merge** |
+| **A** | bằng chứng hoàn tiền + chốt ca, `app_resolution`, hàm SECURITY DEFINER hẹp | đang thi công trên `codex/workflow4-refund-attribution`, chưa merge |
+| **B** | bảng quản trị card-hoá ở server (`docs/77`) | đã merge vào `main` tại `db9eeae` |
 | **C** | bản đồ phục hồi vận đơn | giữ ở mức đã-đo, cần đợt đo riêng trước khi thành brief |
 
 B chạy trước để A tách ra từ `main` đã có `tblCards` và dùng luôn helper đó cho UI của mình.

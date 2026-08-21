@@ -325,8 +325,12 @@ async function getOrder(res, ctx, _b, params) {
     // Lịch sử hoàn tiền (bút toán 0070). LEFT JOIN users: người thao tác đã rời shop →
     // email NULL nhưng dòng VẪN hiện (mirror audit-log.js — không nuốt chứng từ).
     o.refunds = (await c.query(
-      `SELECT r.id, r.amount_vnd, r.reason, r.restock, r.kind, r.created_at, u.email AS created_by_email
-         FROM refunds r LEFT JOIN users u ON u.id = r.created_by
+      `SELECT r.id, r.amount_vnd, r.reason, r.restock, r.kind, r.created_at,
+              u.email AS created_by_email, a.case_id AS attributed_case_id
+         FROM refunds r
+         LEFT JOIN users u ON u.id = r.created_by
+         LEFT JOIN order_resolution_refund_attributions a
+           ON a.shop_id = r.shop_id AND a.order_id = r.order_id AND a.refund_id = r.id
         WHERE r.order_id = $1 ORDER BY r.created_at, r.id`, [o.id],
     )).rows.map((r) => ({ ...r, amount_vnd: Number(r.amount_vnd) }));
     o.refunded_total_vnd = o.refunds.reduce((s, r) => s + r.amount_vnd, 0);

@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { can, permsFor, needsStepUp, ROLES } from '../src/rbac.js';
+
+const resolutionSource = readFileSync(new URL('../src/order-resolutions.js', import.meta.url), 'utf8');
 
 test('owner có mọi quyền', () => {
   for (const p of ['catalog.write', 'orders.write', 'refund', 'members.write', 'domain.write', 'export']) {
@@ -31,6 +34,16 @@ test('order_manager: chỉ đơn hàng', () => {
   assert.equal(can('order_manager', 'orders.write'), true);
   assert.equal(can('order_manager', 'catalog.read'), false);
   assert.equal(can('order_manager', 'refund'), false); // hoàn tiền không thuộc order manager
+});
+
+test('chốt COD và chốt bằng refund là hai route quyền khác nhau', () => {
+  const routeLines = resolutionSource.split('\n').filter((line) => line.includes("{ m: 'POST'") && line.includes('accept-partial'));
+  const plain = routeLines.filter((line) => line.includes('accept-partial$'));
+  const withRefund = routeLines.filter((line) => line.includes('accept-partial-with-refund'));
+  assert.equal(plain.length, 2, 'hai alias accept-partial phải còn cho client cũ');
+  assert.ok(plain.every((line) => line.includes("perm: 'orders.write'") && !line.includes('stepUp: true')));
+  assert.equal(withRefund.length, 2, 'hai alias refund phải cùng được bảo vệ');
+  assert.ok(withRefund.every((line) => line.includes("perm: 'refund'") && line.includes('stepUp: true')));
 });
 
 test('audit.read: owner + admin xem nhật ký; catalog/order manager thì không', () => {

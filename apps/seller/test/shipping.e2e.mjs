@@ -244,14 +244,47 @@ async function main() {
     );
     await owner.query(`SELECT open_mixed_shipment_resolution($1)`, [orderId]);
     const caseRows = (await owner.query(
-      `SELECT rc.id, rc.required_refund_vnd, cl.id AS case_line_id, cl.variant_id,
+      `SELECT rc.id, rc.required_refund_vnd, rc.detected_at, cl.id AS case_line_id, cl.variant_id,
               cl.delivered_qty, cl.returned_qty, cl.unresolved_qty
          FROM order_resolution_cases rc
          JOIN order_resolution_case_lines cl ON cl.case_id=rc.id
         WHERE rc.order_id=$1 ORDER BY cl.variant_id`,
       [orderId],
     )).rows;
-    return { id: caseRows[0]?.id, required_refund_vnd: Number(caseRows[0]?.required_refund_vnd ?? 0), lines: caseRows };
+    return {
+      id: caseRows[0]?.id,
+      required_refund_vnd: Number(caseRows[0]?.required_refund_vnd ?? 0),
+      detected_at: caseRows[0]?.detected_at,
+      lines: caseRows,
+    };
+  };
+  const prepareRefundResolution = async (label) => {
+    const order = await placeCod(A, vid, `${label}-${uniq()}@mail.vn`);
+    await a.post(`/orders/${order.id}/confirm`, {});
+    const paid = await markPaid(order.id);
+    if (paid.status !== 200) throw new Error(`không mark-paid được fixture ${label}: ${paid.raw}`);
+    const resolutionCase = await openMixedCaseFixture(order.id, new Map([
+      [vid, { delivered: 1, returned: 1 }],
+    ]));
+    const received = await a.post(`/resolution-cases/${resolutionCase.id}/receive-return`, {
+      idempotency_key: `${label}-return-${uniq()}`,
+      disposition: 'quarantine',
+      note: `Nhận hàng hoàn ${label}`,
+      lines: [{ case_line_id: resolutionCase.lines[0].case_line_id, qty: 1 }],
+    });
+    if (received.status !== 201) throw new Error(`không receive-return được fixture ${label}: ${received.raw}`);
+    await stepUpA();
+    const firstAmount = 1;
+    for (const [amount, reason] of [[firstAmount, `${label} phiếu 1`], [resolutionCase.required_refund_vnd - firstAmount, `${label} phiếu 2`]]) {
+      const refunded = await a.post(`/orders/${order.id}/refund`, {
+        amount_vnd: amount, reason, restock: false, idempotency_key: crypto.randomUUID(),
+      });
+      if (refunded.status !== 200) throw new Error(`không tạo refund fixture ${label}: ${refunded.raw}`);
+    }
+    const refundIds = (await owner.query(
+      `SELECT id FROM refunds WHERE order_id=$1 AND kind='refund' ORDER BY id`, [order.id],
+    )).rows.map((row) => row.id);
+    return { order, resolutionCase, refundIds };
   };
   const PICKUP = { name: 'Kho Nhà Xinh', phone: '0901234567', address: '5 Lê Lợi', province: 'TP. Hồ Chí Minh', district: 'Quận 1' };
 
@@ -476,7 +509,7 @@ async function main() {
     ? ok('sweep lặp → không nhân case/event/outbox') : bad('resolution bị nhân khi replay', JSON.stringify(mixReplay));
 
   const mixCase = (await owner.query(
-    `SELECT rc.id, rc.status, rc.required_refund_vnd,
+    `SELECT rc.id, rc.status, rc.required_refund_vnd, rc.detected_at,
             cl.id AS case_line_id, cl.ordered_qty, cl.delivered_qty,
             cl.returned_qty, cl.unresolved_qty
        FROM order_resolution_cases rc
@@ -492,6 +525,7 @@ async function main() {
     `SELECT status, resolution, resolution_payload
        FROM order_resolution_cases WHERE id=$1`, [mixCase.id],
   )).rows[0];
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: Bs.password }, cookie: Bs.cookie, origin: OA });
   const crossShopResolutionCalls = await Promise.all([
     b.post(`/resolution-cases/${mixCase.id}/wait-return`, {}),
     b.post(`/resolution-cases/${mixCase.id}/receive-return`, {
@@ -501,6 +535,9 @@ async function main() {
     }),
     b.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
       financial_action: 'not_required', note: 'cross-shop must not see this case',
+    }),
+    b.post(`/resolution-cases/${mixCase.id}/accept-partial-with-refund`, {
+      refund_ids: [crypto.randomUUID()], note: 'cross-shop refund must not see this case',
     }),
     b.post(`/resolution-cases/${mixCase.id}/resolve`, {
       resolution: 'accept_partial', financial_action: 'not_required', note: 'cross-shop resolve',
@@ -828,11 +865,22 @@ async function main() {
   )).rows[0];
   r.status === 200 && r.json?.refund_vnd === 1 && r.json?.status === 'shipped'
     ? ok('partial refund 1đ → đơn vẫn shipped/paid') : bad('partial refund nhỏ làm sai trạng thái', r.raw);
+  // Phiếu có thể có trước lúc worker phát hiện ca. Định dạng cũ lọc created_at >= detected_at
+  // nên loại oan chứng từ thật này; attribution mới chỉ hỏi nó có thuộc đúng đơn hay không.
+  await owner.query(
+    `UPDATE refunds SET created_at=$2::timestamptz - interval '1 minute' WHERE id=$1`,
+    [firstMixRefund.id, mixCase.detected_at],
+  );
   r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
-    financial_action: 'handled_separately', refund_id: firstMixRefund.id, note: 'Bằng chứng chưa hoàn đủ',
+    financial_action: 'handled_separately', refund_ids: [firstMixRefund.id], note: 'Không được đi đường COD',
+  });
+  r.status === 400 && r.json?.error_code === 'refund_evidence_requires_step_up_route'
+    ? ok('accept-partial thường từ chối mọi refund_ids') : bad('route COD nhận nhầm chứng từ refund', r.raw);
+  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial-with-refund`, {
+    refund_ids: [firstMixRefund.id], note: 'Bằng chứng chưa hoàn đủ',
   });
   r.status === 409 && r.json?.error_code === 'refund_amount_insufficient'
-    ? ok('refund luỹ kế chưa đủ snapshot → không thể đóng case') : bad('case đóng khi refund chưa đủ', r.raw);
+    ? ok('phiếu trước detected_at vẫn được xét, nhưng tổng chọn chưa đủ') : bad('case đóng khi refund chưa đủ', r.raw);
 
   const requiredRefund = Number(mixCase.required_refund_vnd);
   r = await a.post(`/orders/${oMix.id}/refund`, {
@@ -846,28 +894,70 @@ async function main() {
   )).rows[0];
   r.status === 200 && r.json?.refunded_total_vnd === requiredRefund
     ? ok('refund cộng dồn đạt đúng required_refund_vnd') : bad('refund cộng dồn sai snapshot', `${r.raw} required=${requiredRefund}`);
-  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
-    financial_action: 'handled_separately', refund_id: mixRefund.id.toUpperCase(), note: 'Đã hoàn tiền kiện không giao',
+  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial-with-refund`, {
+    refund_ids: [mixRefund.id.toUpperCase(), firstMixRefund.id], note: 'Đã hoàn tiền kiện không giao',
   });
   const resolvedProof = (await owner.query(
     `SELECT o.status, o.fulfillment_status, rc.status AS case_status,
-            (SELECT count(*)::int FROM order_events WHERE order_id=o.id AND event_type='resolution.completed') AS events
+            (SELECT count(*)::int FROM order_events WHERE order_id=o.id AND event_type='resolution.completed') AS events,
+            (SELECT count(*)::int FROM order_resolution_refund_attributions WHERE case_id=rc.id) AS attributions,
+            (SELECT coalesce(sum(r.amount_vnd),0)::bigint
+               FROM order_resolution_refund_attributions a JOIN refunds r ON r.id=a.refund_id
+              WHERE a.case_id=rc.id) AS attributed_vnd
        FROM orders o JOIN order_resolution_cases rc ON rc.order_id=o.id
       WHERE o.id=$1`, [oMix.id],
   )).rows[0];
   r.status === 200 && resolvedProof.status === 'delivered' && resolvedProof.fulfillment_status === 'partial'
     && resolvedProof.case_status === 'resolved' && resolvedProof.events === 1
+    && resolvedProof.attributions === 2 && Number(resolvedProof.attributed_vnd) === requiredRefund
     ? ok('refund có chứng từ → chốt delivered/partial đúng một event') : bad('accept partial cuối sai', `${r.raw} ${JSON.stringify(resolvedProof)}`);
-  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
-    financial_action: 'handled_separately', refund_id: mixRefund.id, note: 'Đã hoàn tiền kiện không giao',
+  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial-with-refund`, {
+    refund_ids: [firstMixRefund.id, mixRefund.id], note: 'Đã hoàn tiền kiện không giao',
   });
   r.status === 200 && r.json?.replayed
-    ? ok('accept-partial replay cùng nội dung → idempotent') : bad('accept replay lỗi', r.raw);
-  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial`, {
-    financial_action: 'handled_separately', refund_id: mixRefund.id, note: 'ghi chú khác',
+    ? ok('accept-partial-with-refund replay cùng canonical → idempotent') : bad('accept replay lỗi', r.raw);
+  r = await a.post(`/resolution-cases/${mixCase.id}/accept-partial-with-refund`, {
+    refund_ids: [firstMixRefund.id, mixRefund.id], note: 'ghi chú khác',
   });
   r.status === 409 && r.json?.error_code === 'resolution_replay_conflict'
-    ? ok('accept-partial replay khác nội dung → conflict') : bad('accept replay conflict lọt', r.raw);
+    ? ok('accept-partial-with-refund replay khác note → conflict') : bad('accept replay conflict lọt', r.raw);
+
+  const sameConcurrent = await prepareRefundResolution('same-canonical');
+  const sameNote = 'Hai request đồng thời cùng nội dung';
+  const sameResults = await Promise.all([
+    a.post(`/resolution-cases/${sameConcurrent.resolutionCase.id}/accept-partial-with-refund`, {
+      refund_ids: sameConcurrent.refundIds, note: sameNote,
+    }),
+    a.post(`/resolution-cases/${sameConcurrent.resolutionCase.id}/accept-partial-with-refund`, {
+      refund_ids: [...sameConcurrent.refundIds].reverse(), note: sameNote,
+    }),
+  ]);
+  const sameSuccess = sameResults.filter((x) => x.status === 200 && !x.json?.replayed).length;
+  const sameReplay = sameResults.filter((x) => x.status === 200 && x.json?.replayed).length;
+  const sameProof = (await owner.query(
+    `SELECT count(*)::int AS attrs,
+            (SELECT count(*)::int FROM order_events WHERE order_id=$2 AND event_type='resolution.completed') AS events
+       FROM order_resolution_refund_attributions WHERE case_id=$1`,
+    [sameConcurrent.resolutionCase.id, sameConcurrent.order.id],
+  )).rows[0];
+  sameSuccess === 1 && sameReplay === 1 && sameProof.attrs === 2 && sameProof.events === 1
+    ? ok('cùng case + cùng canonical đồng thời → một success, một replay, một event')
+    : bad('same-canonical concurrency sai', JSON.stringify({ sameResults, sameProof }));
+
+  const differentConcurrent = await prepareRefundResolution('different-canonical');
+  const differentResults = await Promise.all([
+    a.post(`/resolution-cases/${differentConcurrent.resolutionCase.id}/accept-partial-with-refund`, {
+      refund_ids: differentConcurrent.refundIds, note: 'Ghi chú cạnh tranh A',
+    }),
+    a.post(`/resolution-cases/${differentConcurrent.resolutionCase.id}/accept-partial-with-refund`, {
+      refund_ids: differentConcurrent.refundIds, note: 'Ghi chú cạnh tranh B',
+    }),
+  ]);
+  const differentSuccess = differentResults.filter((x) => x.status === 200 && !x.json?.replayed).length;
+  const differentConflict = differentResults.filter((x) => x.status === 409 && x.json?.error_code === 'resolution_replay_conflict').length;
+  differentSuccess === 1 && differentConflict === 1
+    ? ok('cùng case + khác canonical đồng thời → một success, một 409')
+    : bad('different-canonical concurrency sai', JSON.stringify(differentResults));
 
   // COD chưa thu tiền: sau khi chấp nhận giao một phần, khoản phải thu phải giảm theo
   // giá trị hàng không giao. Nếu nhân viên vẫn ghi tổng cũ thì phần dư phải hiện thành

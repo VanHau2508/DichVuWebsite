@@ -15,6 +15,7 @@
  * Harness mirror admin-order-edit.
  */
 import http from 'node:http';
+import crypto from 'node:crypto';
 import pg from 'pg';
 import { totp, counterFor } from '../../../packages/auth/src/totp.js';
 import { base32Decode } from '../../../packages/auth/src/base32.js';
@@ -204,6 +205,127 @@ async function main() {
   sect('8. CSRF POST /ship thiếu Origin');
   r = await adm('POST', `${ov}/ship`, { cookie: cookieA, form: [['order_line_id', oOver.olId], ['ship_qty', '1'], ['tracking_number', 'NOP']] });
   r.status === 403 && await olShipped(oOver.orderId) === 0 ? ok('POST /ship không Origin → 403, đơn giữ nguyên') : bad('ship thiếu Origin lọt', `${r.status} sh=${await olShipped(oOver.orderId)}`);
+
+  // ── 9. Chốt ca bằng NHIỀU refund qua form no-JS + interstitial mật khẩu ────
+  sect('9. Attribution nhiều refund qua BFF no-JS');
+  const oRefund = await placeOrder(A, vid, 2);
+  const refundUrl = `/shops/${A.shopId}/orders/${oRefund.orderId}`;
+  await adm('POST', `${refundUrl}/confirm`, { cookie: cookieA, origin: OADM });
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
+  let api = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oRefund.orderId}/mark-paid`, {
+    body: {}, cookie: A.cookie, origin: OS,
+  });
+  if (api.status !== 200) bad('không dựng được đơn paid cho attribution', api.raw);
+
+  const [line] = (await owner.query(
+    `SELECT id, variant_id, unit_price_vnd FROM order_lines WHERE order_id=$1`, [oRefund.orderId],
+  )).rows;
+  const sd = (await owner.query(
+    `INSERT INTO shipments (shop_id,order_id,carrier,tracking_number,status)
+     VALUES ($1,$2,'manual',$3,'delivered') RETURNING id`,
+    [A.shopId, oRefund.orderId, `BFF-D-${uniq()}`],
+  )).rows[0];
+  const sr = (await owner.query(
+    `INSERT INTO shipments (shop_id,order_id,carrier,tracking_number,status)
+     VALUES ($1,$2,'manual',$3,'returned') RETURNING id`,
+    [A.shopId, oRefund.orderId, `BFF-R-${uniq()}`],
+  )).rows[0];
+  await owner.query(
+    `INSERT INTO shipment_lines (shop_id,shipment_id,order_line_id,variant_id,qty,unit_price_vnd)
+     VALUES ($1,$2,$3,$4,1,$5),($1,$6,$3,$4,1,$5)`,
+    [A.shopId, sd.id, line.id, line.variant_id, line.unit_price_vnd, sr.id],
+  );
+  await owner.query(`UPDATE orders SET status='shipped', fulfillment_status='fulfilled' WHERE id=$1`, [oRefund.orderId]);
+  await owner.query(`SELECT open_mixed_shipment_resolution($1)`, [oRefund.orderId]);
+  const mixed = (await owner.query(
+    `SELECT rc.id, rc.detected_at, rc.required_refund_vnd, cl.id AS case_line_id
+       FROM order_resolution_cases rc JOIN order_resolution_case_lines cl ON cl.case_id=rc.id
+      WHERE rc.order_id=$1`, [oRefund.orderId],
+  )).rows[0];
+  api = await rq(SELLER, 'POST', `/shops/${A.shopId}/resolution-cases/${mixed.id}/receive-return`, {
+    body: {
+      idempotency_key: `bff-refund-return-${uniq()}`,
+      disposition: 'quarantine',
+      note: 'Đã nhận hàng hoàn để kiểm tra form attribution',
+      lines: [{ case_line_id: mixed.case_line_id, qty: 1 }],
+    },
+    cookie: A.cookie,
+    origin: OS,
+  });
+  if (api.status !== 201) bad('không nhận được hàng hoàn cho ca BFF', api.raw);
+
+  const firstAmount = 40000;
+  api = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oRefund.orderId}/refund`, {
+    body: { amount_vnd: firstAmount, reason: 'Phiếu tạo trước detected_at', idempotency_key: crypto.randomUUID() },
+    cookie: A.cookie, origin: OS,
+  });
+  const firstRefund = (await owner.query(
+    `SELECT id FROM refunds WHERE order_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1`, [oRefund.orderId],
+  )).rows[0];
+  await owner.query(`UPDATE refunds SET created_at=$2::timestamptz - interval '1 minute' WHERE id=$1`, [firstRefund.id, mixed.detected_at]);
+  api = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oRefund.orderId}/refund`, {
+    body: {
+      amount_vnd: Number(mixed.required_refund_vnd) - firstAmount,
+      reason: 'Phiếu đủ phần còn lại',
+      idempotency_key: crypto.randomUUID(),
+    },
+    cookie: A.cookie, origin: OS,
+  });
+  const secondRefund = (await owner.query(
+    `SELECT id FROM refunds WHERE order_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1`, [oRefund.orderId],
+  )).rows[0];
+  if (api.status !== 200) bad('không dựng được refund thứ hai', api.raw);
+
+  r = await adm('GET', refundUrl, { cookie: cookieA });
+  const hasChecklist = r.body.includes(`name="refund_ids" value="${firstRefund.id}"`)
+    && r.body.includes(`name="refund_ids" value="${secondRefund.id}"`)
+    && !r.body.includes('name="refund_id"');
+  const hasThreeAmounts = r.body.includes('Cần chứng minh đã hoàn')
+    && r.body.includes('Đã gắn vào ca') && r.body.includes('Còn thiếu bằng chứng');
+  const showsOldRefund = r.body.includes('tạo trước khi ca được phát hiện');
+  r.status === 200 && hasChecklist && hasThreeAmounts && showsOldRefund
+    ? ok('GET chi tiết: checklist nhiều refund + ba số + hiện phiếu trước detected_at')
+    : bad('SSR attribution sai', `status=${r.status} checklist=${hasChecklist} amounts=${hasThreeAmounts} old=${showsOldRefund}`);
+
+  const note = 'Hai phiếu hoàn cùng chứng minh phần hàng không giao';
+  const attributionPath = `${refundUrl}/resolution-cases/${mixed.id}/accept-partial-with-refund`;
+  r = await adm('POST', attributionPath, {
+    cookie: cookieA, origin: OADM,
+    form: [['refund_ids', secondRefund.id], ['refund_ids', firstRefund.id], ['note', note]],
+  });
+  const hiddenPreserved = r.body.includes(`name="refund_ids" value="${firstRefund.id}"`)
+    && r.body.includes(`name="refund_ids" value="${secondRefund.id}"`)
+    && r.body.includes(`name="note" value="${note}"`);
+  const stillOpen = (await owner.query(`SELECT status FROM order_resolution_cases WHERE id=$1`, [mixed.id])).rows[0].status;
+  r.status === 200 && hiddenPreserved && stillOpen === 'open'
+    ? ok('POST đầu chỉ render interstitial và giữ nguyên nhiều refund_ids + note')
+    : bad('interstitial làm mất body hoặc gọi seller sớm', `status=${r.status} hidden=${hiddenPreserved} case=${stillOpen}`);
+
+  r = await adm('POST', `${attributionPath}/step-up`, {
+    cookie: cookieA, origin: OADM,
+    form: [['refund_ids', secondRefund.id], ['refund_ids', firstRefund.id], ['note', note], ['password', 'sai-mat-khau']],
+  });
+  const wrongStillPreserved = r.body.includes(`name="refund_ids" value="${firstRefund.id}"`)
+    && r.body.includes(`name="refund_ids" value="${secondRefund.id}"`);
+  r.status === 401 && wrongStillPreserved
+    ? ok('sai mật khẩu → 401 và checklist ẩn vẫn nguyên')
+    : bad('step-up sai làm mất lựa chọn', `status=${r.status} preserved=${wrongStillPreserved}`);
+
+  r = await adm('POST', `${attributionPath}/step-up`, {
+    cookie: cookieA, origin: OADM,
+    form: [['refund_ids', secondRefund.id], ['refund_ids', firstRefund.id], ['note', note], ['password', A.password]],
+  });
+  const finalProof = (await owner.query(
+    `SELECT rc.status, count(a.refund_id)::int AS n, coalesce(sum(r.amount_vnd),0)::bigint AS amount
+       FROM order_resolution_cases rc
+       LEFT JOIN order_resolution_refund_attributions a ON a.case_id=rc.id
+       LEFT JOIN refunds r ON r.id=a.refund_id
+      WHERE rc.id=$1 GROUP BY rc.status`, [mixed.id],
+  )).rows[0];
+  r.status === 303 && finalProof.status === 'resolved' && finalProof.n === 2
+    && Number(finalProof.amount) === Number(mixed.required_refund_vnd)
+    ? ok('đúng mật khẩu → PRG, ca resolved với đúng hai attribution')
+    : bad('BFF không chốt đúng attribution', `${r.status} ${JSON.stringify(finalProof)} ${r.body.slice(0, 180)}`);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();

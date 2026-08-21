@@ -1480,13 +1480,67 @@ async function orderResolutionAction(req, res, me, cookie, shopId, oid, caseId, 
   } else if (action === 'accept-partial') {
     body = {
       financial_action: String(f.get('financial_action') ?? '').trim(),
-      refund_id: String(f.get('refund_id') ?? '').trim() || null,
       note: String(f.get('note') ?? '').trim(),
     };
   }
   const r = await sellerApi('POST', `/shops/${shopId}/resolution-cases/${caseId}/${action}`, { cookie, body });
   if (r.status === 200 || r.status === 201) return redirect(res, `/shops/${shopId}/orders/${oid}`);
   const message = r.json?.message ?? r.json?.error ?? 'Không xử lý được ca giao hàng.';
+  const actionHint = r.json?.action ? ` ${r.json.action}` : '';
+  return orderDetail(res, me, cookie, shopId, oid, `${message}${actionHint}`);
+}
+
+function resolutionRefundBody(f) {
+  return {
+    refund_ids: f.getAll('refund_ids').map((id) => String(id ?? '').trim()).filter(Boolean),
+    note: String(f.get('note') ?? '').trim().slice(0, 1000),
+  };
+}
+
+async function resolutionRefundGate(res, me, cookie, shopId, oid, caseId, body, err = null) {
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+  return sendHtml(res, err ? 401 : 200, V.renderStepUpGate(ctx, {
+    title: 'Xác nhận chốt ca bằng phiếu hoàn tiền',
+    giaiThich: 'Các phiếu đã chọn sẽ trở thành bằng chứng tài chính không thể sửa của ca này. Nhập mật khẩu để tiếp tục.',
+    action: `/shops/${shopId}/orders/${oid}/resolution-cases/${caseId}/accept-partial-with-refund/step-up`,
+    huyUrl: `/shops/${shopId}/orders/${oid}`,
+    hidden: [
+      ...(body.refund_ids ?? []).map((id) => ['refund_ids', id]),
+      ['note', body.note ?? ''],
+    ],
+    err,
+  }));
+}
+
+async function orderResolutionRefundStart(req, res, me, cookie, shopId, oid, caseId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (!REFUND_ROLES.has(roleFor(me, shopId))) {
+    return orderDetail(res, me, cookie, shopId, oid, 'Chỉ chủ cửa hàng hoặc quản trị mới được gắn phiếu hoàn tiền để chốt ca.');
+  }
+  const body = resolutionRefundBody(await readFormAll(req));
+  if (body.refund_ids.length === 0) return orderDetail(res, me, cookie, shopId, oid, 'Hãy chọn ít nhất một phiếu hoàn tiền.');
+  if (!body.note) return orderDetail(res, me, cookie, shopId, oid, 'Hãy ghi chú quyết định trước khi chốt ca.');
+  return resolutionRefundGate(res, me, cookie, shopId, oid, caseId, body);
+}
+
+async function orderResolutionRefundStepUp(req, res, me, cookie, shopId, oid, caseId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (!REFUND_ROLES.has(roleFor(me, shopId))) {
+    return orderDetail(res, me, cookie, shopId, oid, 'Chỉ chủ cửa hàng hoặc quản trị mới được gắn phiếu hoàn tiền để chốt ca.');
+  }
+  const f = await readFormAll(req);
+  const body = resolutionRefundBody(f);
+  const stepped = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(f.get('password') ?? '') } });
+  if (stepped.status !== 200) return resolutionRefundGate(
+    res, me, cookie, shopId, oid, caseId, body,
+    stepped.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.',
+  );
+  const r = await sellerApi('POST', `/shops/${shopId}/resolution-cases/${caseId}/accept-partial-with-refund`, { cookie, body });
+  if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}`);
+  if (r.json?.step_up_required) return resolutionRefundGate(
+    res, me, cookie, shopId, oid, caseId, body, 'Phiên xác thực đã hết hạn. Nhập lại mật khẩu.',
+  );
+  const message = r.json?.message ?? r.json?.error ?? 'Không chốt được ca bằng các phiếu hoàn tiền đã chọn.';
   const actionHint = r.json?.action ? ` ${r.json.action}` : '';
   return orderDetail(res, me, cookie, shopId, oid, `${message}${actionHint}`);
 }
@@ -4116,6 +4170,8 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/payments/${UUID}/reverse/step-up$`).exec(p)) && req.method === 'POST') return paymentLedgerReverseStepUp(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/(mark-paid|unmark-paid)$`).exec(p)) && req.method === 'POST') return legacyPaymentSubmit(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/(mark-paid|unmark-paid)/step-up$`).exec(p)) && req.method === 'POST') return legacyPaymentStepUp(req, res, me, cookie, m[1], m[2], m[3]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/resolution-cases/${UUID}/accept-partial-with-refund/step-up$`).exec(p)) && req.method === 'POST') return orderResolutionRefundStepUp(req, res, me, cookie, m[1], m[2], m[3]);
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/resolution-cases/${UUID}/accept-partial-with-refund$`).exec(p)) && req.method === 'POST') return orderResolutionRefundStart(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/resolution-cases/${UUID}/(wait-return|receive-return|accept-partial)$`).exec(p)) && req.method === 'POST') return orderResolutionAction(req, res, me, cookie, m[1], m[2], m[3], m[4]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/(confirm|ship|cancel|deliver|mark-returned|reopen|ship-cost)$`).exec(p)) && req.method === 'POST') return orderAction(req, res, me, cookie, m[1], m[2], m[3]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/mark-paid-qr$`).exec(p)) && req.method === 'POST') return markPaidQrConfirm(req, res, me, cookie, m[1], m[2]);

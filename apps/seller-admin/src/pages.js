@@ -3340,15 +3340,16 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   };
   const canResolveOrder = ORDER_ROLES.has(ctx.role);
   const canReceiveReturn = INVENTORY_ROLES.has(ctx.role);
+  const canResolveRefund = REFUND_ROLES.has(ctx.role);
   const resolutionActions = (c) => {
     if (!['open', 'waiting_return'].includes(c.status)) return '';
     const remaining = Number(c.remaining_return_qty);
     const unresolved = Number(c.unresolved_qty);
     const receiptLines = (c.snapshot_lines ?? []).filter((line) => Number(line.remaining_return_qty) > 0);
-    const refundOptions = (o.refunds ?? []).filter((r) => r.kind !== 'edit_adjustment' && new Date(r.created_at) >= new Date(c.detected_at));
-    const refundedForCase = refundOptions.reduce((sum, r) => sum + Number(r.amount_vnd || 0), 0);
+    const refundOptions = (o.refunds ?? []).filter((r) => r.kind !== 'edit_adjustment');
     const requiredForCase = Number(c.required_refund_vnd || 0);
-    const refundEnough = refundedForCase >= requiredForCase;
+    const attributedForCase = Number(c.attributed_refund_vnd || 0);
+    const remainingEvidence = Math.max(0, requiredForCase - attributedForCase);
     const wait = canResolveOrder && remaining > 0 && c.status !== 'waiting_return'
       ? `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/resolution-cases/${esc(c.id)}/wait-return">
            <button class="btn alt sm" type="submit">Chờ hàng hoàn về</button></form>` : '';
@@ -3371,14 +3372,36 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     let accept = '';
     if (canResolveOrder && remaining === 0 && unresolved === 0) {
       const paid = Number(payment.received_vnd) > 0 || o.payment_status === 'paid' || Boolean(o.paid_at);
-      accept = paid && !refundEnough
-        ? `<div class="err" style="margin-top:8px">Đơn đã nhận tiền. Cần hoàn tối thiểu <strong>${money(requiredForCase)}</strong> cho phần không giao; đã ghi nhận ${money(refundedForCase)}.</div>`
-        : `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/resolution-cases/${esc(c.id)}/accept-partial" style="margin-top:8px">
-            <input type="hidden" name="financial_action" value="${paid ? 'handled_separately' : 'not_required'}">
-            ${paid ? `<label>Phiếu hoàn tiền đã xử lý <select name="refund_id" required>${refundOptions.map((r) => `<option value="${esc(r.id)}">${money(r.amount_vnd)} · ${dt(r.created_at)}</option>`).join('')}</select></label>` : ''}
-            <label>Ghi chú quyết định <input name="note" required maxlength="1000" placeholder="Đã giao phần nào, đã xử lý phần hoàn ra sao"></label>
-            <button class="btn sm" type="submit" data-confirm="Chốt đơn là giao một phần? Ca sẽ đóng và không thể sửa chứng từ nhận hàng.">Chấp nhận giao một phần</button>
-          </form>`;
+      if (!paid) {
+        accept = `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/resolution-cases/${esc(c.id)}/accept-partial" style="margin-top:8px">
+          <input type="hidden" name="financial_action" value="not_required">
+          <label>Ghi chú quyết định <input name="note" required maxlength="1000" placeholder="Đã giao phần nào; đơn COD chưa thu phần không giao"></label>
+          <button class="btn sm" type="submit" data-confirm="Chốt đơn là giao một phần? Ca sẽ đóng và không thể sửa chứng từ nhận hàng.">Chấp nhận giao một phần</button>
+        </form>`;
+      } else if (!canResolveRefund) {
+        accept = '<div class="notice" style="margin-top:8px"><strong>Cần chủ shop hoặc quản trị viên.</strong> Đơn đã nhận tiền nên phải chọn chứng từ hoàn và xác thực lại trước khi chốt.</div>';
+      } else {
+        const refundChecks = refundOptions.length ? refundOptions.map((r) => {
+          const usedElsewhere = r.attributed_case_id && r.attributed_case_id !== c.id;
+          const beforeDetection = new Date(r.created_at) < new Date(c.detected_at);
+          return `<label style="display:flex;gap:8px;align-items:flex-start;margin:7px 0">
+            <input type="checkbox" name="refund_ids" value="${esc(r.id)}"${usedElsewhere ? ' disabled' : ''}>
+            <span><strong>${money(r.amount_vnd)}</strong> · ${dt(r.created_at)}${beforeDetection ? ' · tạo trước khi ca được phát hiện' : ''}
+              ${r.reason ? `<br><span class="muted">${esc(r.reason)}</span>` : ''}
+              ${usedElsewhere ? '<br><span class="err" style="display:inline-block">Đã làm bằng chứng cho ca khác — không thể dùng lại.</span>' : ''}</span>
+          </label>`;
+        }).join('') : '<div class="err">Đơn chưa có phiếu hoàn tiền nghiệp vụ để chọn.</div>';
+        accept = `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/resolution-cases/${esc(c.id)}/accept-partial-with-refund" style="margin-top:8px">
+          <div class="metrics" style="margin:8px 0">
+            <div class="metric"><div class="l">Cần chứng minh đã hoàn</div><div class="v">${money(requiredForCase)}</div></div>
+            <div class="metric"><div class="l">Đã gắn vào ca</div><div class="v">${money(attributedForCase)}</div></div>
+            <div class="metric"><div class="l">Còn thiếu bằng chứng</div><div class="v">${money(remainingEvidence)}</div></div>
+          </div>
+          <fieldset><legend>Chọn các phiếu hoàn tiền làm bằng chứng</legend>${refundChecks}</fieldset>
+          <label>Ghi chú quyết định <input name="note" required maxlength="1000" placeholder="Đã giao phần nào, các phiếu hoàn bù cho phần nào"></label>
+          <button class="btn sm" type="submit"${refundOptions.some((r) => !r.attributed_case_id || r.attributed_case_id === c.id) ? '' : ' disabled'} data-confirm="Các phiếu đã chọn sẽ gắn vĩnh viễn vào ca này. Tiếp tục xác thực mật khẩu?">Chấp nhận giao một phần</button>
+        </form>`;
+      }
     }
     const blocked = unresolved > 0 ? `<div class="muted" style="margin-top:8px">Còn ${esc(unresolved)} sản phẩm chưa có kết quả cuối từ vận chuyển.</div>` : '';
     return `<div class="stack" style="min-width:230px">${wait}${receive}${accept}${blocked}</div>`;
@@ -3390,7 +3413,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
       { cls: 'muted', html: dt(c.detected_at) },
       { html: `Đã giao ${esc(c.delivered_shipments)} kiện / ${esc(c.delivered_qty)} SP<br><span class="muted">Hoàn về ${esc(c.returned_shipments)} kiện / ${esc(c.returned_qty)} SP</span>${Number(c.required_refund_vnd) > 0 ? `<br><span class="muted">Cần hoàn phần không giao: ${money(c.required_refund_vnd)}</span>` : ''}` },
       { html: `${badge(['open', 'waiting_return'].includes(c.status) ? 'pending' : 'delivered', c.status === 'waiting_return' ? 'Đang chờ hàng hoàn' : c.status === 'open' ? 'Đang chờ shop xử lý' : 'Đã chốt')}<br><span class="muted">Đã nhận ${esc(c.received_return_qty)}/${esc(c.returned_qty)} SP hoàn</span>` },
-      { html: `${c.resolution ? esc(resolutionName[c.resolution] ?? c.resolution) : '<span class="muted">Chưa có quyết định</span>'}${c.resolution_note ? `<br><span class="muted">${esc(c.resolution_note)}</span>` : ''}${resolutionActions(c)}` },
+      { html: `${c.resolution ? esc(resolutionName[c.resolution] ?? c.resolution) : '<span class="muted">Chưa có quyết định</span>'}${c.refund_evidence_format === 'legacy' ? '<br><span class="muted">Bằng chứng tiền theo định dạng cũ (một refund_id trong lịch sử ca).</span>' : ''}${c.refund_evidence_format === 'attributions' ? `<br><span class="muted">${esc(c.refund_attributions?.length ?? 0)} phiếu hoàn · ${money(c.attributed_refund_vnd)}</span>` : ''}${c.resolution_note ? `<br><span class="muted">${esc(c.resolution_note)}</span>` : ''}${resolutionActions(c)}` },
     ]),
   })}
     ${activeCases.length ? '<p class="muted">Hệ thống chỉ nhập lại tồn sau khi shop xác nhận hàng đã về; phần tiền phải có phiếu hoàn trước khi chốt đơn đã thanh toán.</p>' : ''}

@@ -6,7 +6,7 @@ import { withTenant, audit } from './db.js';
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RESOLUTIONS = new Set(['accept_partial', 'resent', 'refunded_remainder', 'cancelled_remainder', 'other']);
-const FINANCIAL_ACTIONS = new Set(['handled_separately', 'not_required']);
+const FINANCIAL_ACTIONS = new Set(['not_required']);
 
 class ResolutionRollbackError extends Error {
   constructor(result) {
@@ -38,7 +38,9 @@ const SUMMARY_SQL = `
          coalesce(snap.unresolved_qty, 0)::int AS unresolved_qty,
          coalesce(received.received_qty, 0)::int AS received_return_qty,
          coalesce(received.restocked_qty, 0)::int AS restocked_qty,
-         coalesce(received.quarantined_qty, 0)::int AS quarantined_qty
+         coalesce(received.quarantined_qty, 0)::int AS quarantined_qty,
+         coalesce(attrib.refund_attributions, '[]'::jsonb) AS refund_attributions,
+         coalesce(attrib.attributed_refund_vnd, 0)::bigint AS attributed_refund_vnd
     FROM order_resolution_cases rc
     JOIN orders o ON o.id = rc.order_id
     LEFT JOIN LATERAL (
@@ -85,7 +87,20 @@ const SUMMARY_SQL = `
         FROM order_resolution_return_receipt_lines rl
         JOIN order_resolution_return_receipts rr ON rr.id = rl.receipt_id
        WHERE rr.case_id = rc.id
-    ) received ON true`;
+    ) received ON true
+    LEFT JOIN LATERAL (
+      SELECT jsonb_agg(jsonb_build_object(
+               'refund_id', a.refund_id,
+               'amount_vnd', r.amount_vnd,
+               'attributed_by', a.attributed_by,
+               'created_at', a.created_at
+             ) ORDER BY a.refund_id) AS refund_attributions,
+             sum(r.amount_vnd)::bigint AS attributed_refund_vnd
+        FROM order_resolution_refund_attributions a
+        JOIN refunds r
+          ON r.shop_id = a.shop_id AND r.order_id = a.order_id AND r.id = a.refund_id
+       WHERE a.case_id = rc.id
+    ) attrib ON true`;
 
 export async function resolutionCasesForOrder(c, orderId) {
   return (await c.query(
@@ -111,7 +126,15 @@ function normalize(r) {
     restocked_qty: Number(r.restocked_qty),
     quarantined_qty: Number(r.quarantined_qty),
     required_refund_vnd: Number(r.required_refund_vnd ?? 0),
+    attributed_refund_vnd: Number(r.attributed_refund_vnd ?? 0),
+    remaining_refund_evidence_vnd: Math.max(0, Number(r.required_refund_vnd ?? 0) - Number(r.attributed_refund_vnd ?? 0)),
     fulfillment_adjustment_vnd: Number(r.fulfillment_adjustment_vnd ?? 0),
+    refund_attributions: Array.isArray(r.refund_attributions) ? r.refund_attributions.map((a) => ({
+      ...a, amount_vnd: Number(a.amount_vnd ?? 0),
+    })) : [],
+    refund_evidence_format: (Array.isArray(r.refund_attributions) && r.refund_attributions.length > 0)
+      ? 'attributions'
+      : (r.resolution_payload?.refund_id ? 'legacy' : null),
     snapshot_lines: Array.isArray(r.snapshot_lines) ? r.snapshot_lines.map((line) => ({
       ...line,
       ordered_qty: Number(line.ordered_qty),
@@ -402,22 +425,18 @@ async function acceptPartialDelivery(res, ctx, body, params) {
   const caseId = params[1];
   const financialAction = String(body?.financial_action ?? '').trim();
   const note = String(body?.note ?? '').trim().slice(0, 1000) || null;
-  const refundId = body?.refund_id == null ? null : String(body.refund_id).trim().toLowerCase();
+  if (Object.hasOwn(body ?? {}, 'refund_ids') || Object.hasOwn(body ?? {}, 'refund_id')) return send(res, 400, {
+    error_code: 'refund_evidence_requires_step_up_route',
+    message: 'chứng từ hoàn tiền phải đi qua thao tác xác thực riêng',
+    action: 'Dùng accept-partial-with-refund; đường accept-partial chỉ dành cho đơn chưa thu tiền.',
+  });
   if (!FINANCIAL_ACTIONS.has(financialAction)) return send(res, 409, {
     error_code: 'financial_action_required',
-    message: 'hệ thống không tự hoàn tiền cho phần khách không nhận',
-    action: 'Hoàn tiền bằng nghiệp vụ refund an toàn trước, hoặc xác nhận financial_action=not_required nếu thực sự không phát sinh khoản phải hoàn.',
+    message: 'đường này chỉ chốt ca không phát sinh khoản phải hoàn',
+    action: 'Gửi financial_action=not_required cho đơn chưa thu tiền; đơn đã thu tiền phải dùng accept-partial-with-refund.',
   });
   if (!note) return send(res, 400, {
     error: 'cần ghi chú cách đã xử lý tiền cho phần không giao',
-  });
-  if (financialAction === 'handled_separately' && !UUID_RE.test(refundId ?? '')) return send(res, 400, {
-    error_code: 'refund_id_required',
-    message: 'cần chọn đúng phiếu hoàn tiền dùng để xử lý phần không giao',
-    action: 'Hoàn tiền bằng endpoint refund an toàn, sau đó gửi lại refund_id của phiếu vừa tạo.',
-  });
-  if (financialAction === 'not_required' && refundId) return send(res, 400, {
-    error: 'financial_action=not_required không được đính kèm phiếu hoàn tiền',
   });
 
   const out = await withTenant(ctx.shopId, async (c) => {
@@ -428,12 +447,12 @@ async function acceptPartialDelivery(res, ctx, body, params) {
       const sameRequest = row.resolution === 'accept_partial'
         && row.resolution_note === note
         && saved.financial_action === financialAction
-        && (saved.refund_id ?? null) === (refundId ?? null);
+        && !saved.refund_id;
       if (sameRequest) return { code: 200, replayed: true, row };
       if (row.resolution === 'accept_partial') return {
         code: 409, errorCode: 'resolution_replay_conflict',
         message: 'ca đã được chốt bằng nội dung tài chính khác',
-        action: 'Tải lại timeline; không phát lại accept-partial với note hoặc refund_id khác.',
+        action: 'Tải lại timeline; không phát lại accept-partial với ghi chú khác.',
       };
       return { code: 409, errorCode: 'case_already_resolved', message: 'ca đã được chốt bằng cách xử lý khác' };
     }
@@ -473,46 +492,9 @@ async function acceptPartialDelivery(res, ctx, body, params) {
       message: 'đơn đã ghi nhận tiền nên không thể chốt phần không giao chỉ bằng xác nhận',
       action: 'Tạo phiếu hoàn tiền cho phần không giao và gửi lại với financial_action=handled_separately + refund_id.',
     };
-    let refund = null;
-    if (financialAction === 'handled_separately') {
-      refund = (await c.query(
-        `SELECT id, amount_vnd
-           FROM refunds
-          WHERE id = $1 AND order_id = $2 AND kind <> 'edit_adjustment'
-            AND created_at >= $3`,
-        [refundId, row.order_id, row.detected_at],
-      )).rows[0] ?? null;
-      if (!refund) return {
-        code: 409, errorCode: 'refund_evidence_invalid',
-        message: 'phiếu hoàn tiền không thuộc đơn, có trước khi ca phát sinh hoặc không phải phiếu hoàn nghiệp vụ',
-        action: 'Chọn phiếu refund đúng của đơn này; không dùng phiếu điều chỉnh giá hoặc phiếu của shop khác.',
-      };
-      const refundEvidence = (await c.query(
-        `SELECT coalesce(sum(amount_vnd), 0)::bigint AS amount,
-                count(*) FILTER (WHERE id = $3)::int AS selected_count
-           FROM refunds
-          WHERE order_id = $1 AND kind <> 'edit_adjustment' AND created_at >= $2`,
-        [row.order_id, row.detected_at, refundId],
-      )).rows[0];
-      const refundedSinceCase = Number(refundEvidence.amount);
-      const requiredRefund = Number(row.required_refund_vnd ?? 0);
-      if (refundedSinceCase < requiredRefund) return {
-        code: 409,
-        errorCode: 'refund_amount_insufficient',
-        message: `mới ghi nhận hoàn ${refundedSinceCase}đ, thấp hơn số tối thiểu ${requiredRefund}đ cho phần không giao`,
-        action: `Hoàn thêm ${requiredRefund - refundedSinceCase}đ bằng endpoint refund an toàn rồi chốt lại ca.`,
-      };
-      if (Number(refundEvidence.selected_count) !== 1) return {
-        code: 409,
-        errorCode: 'refund_evidence_not_in_required_total',
-        message: 'phiếu được chọn không nằm trong tổng chứng từ dùng để đạt số hoàn tối thiểu',
-        action: 'Tải lại đơn và chọn một phiếu refund vừa được tính trong ca này.',
-      };
-    }
-
     const completed = (await c.query(
       `SELECT complete_order_resolution_accept_partial($1,$2,$3,$4,$5) AS result`,
-      [caseId, note, financialAction, refund?.id ?? null, ctx.user.id],
+      [caseId, note, financialAction, null, ctx.user.id],
     )).rows[0].result;
     if (completed?.error_code === 'case_not_found') return { code: 404 };
     const adjustmentVnd = Number((await c.query(
@@ -525,7 +507,6 @@ async function acceptPartialDelivery(res, ctx, body, params) {
         case_id: caseId, orderId: row.order_id, resolution: 'accept_partial', financial_action: financialAction,
         delivered_qty: Number(progress.delivered_qty), returned_qty: Number(progress.returned_qty),
         fulfillment_adjustment_vnd: adjustmentVnd, note,
-        ...(refund ? { refund_id: refund.id, refund_amount_vnd: Number(refund.amount_vnd) } : {}),
       },
     });
     await c.query(
@@ -535,7 +516,6 @@ async function acceptPartialDelivery(res, ctx, body, params) {
         delivered_qty: Number(progress.delivered_qty), returned_qty: Number(progress.returned_qty),
         order_status: 'delivered', fulfillment_status: 'partial',
         fulfillment_adjustment_vnd: adjustmentVnd, note,
-        ...(refund ? { refund_id: refund.id, refund_amount_vnd: Number(refund.amount_vnd) } : {}),
       }],
     );
     return { code: 200, replayed: false, row, adjustmentVnd };
@@ -547,6 +527,93 @@ async function acceptPartialDelivery(res, ctx, body, params) {
     ok: true, replayed: out.replayed, status: 'resolved', resolution: 'accept_partial',
     order_id: out.row.order_id, order_status: 'delivered', fulfillment_status: 'partial',
     fulfillment_adjustment_vnd: out.adjustmentVnd ?? Number(out.row.fulfillment_adjustment_vnd ?? 0),
+  });
+}
+
+function refundAttributionError(result) {
+  const required = Number(result?.required_refund_vnd ?? 0);
+  const attributed = Number(result?.attributed_refund_vnd ?? 0);
+  const messages = {
+    resolution_note_invalid: ['cần ghi chú quyết định từ 1 đến 1000 ký tự', 'Ghi rõ phần đã giao và các phiếu hoàn dùng làm bằng chứng.'],
+    refund_ids_invalid: ['cần chọn từ 1 đến 100 phiếu hoàn tiền khác nhau', 'Tải lại đơn và tích lại đúng các phiếu cần dùng.'],
+    case_already_resolved: ['ca đã được chốt bằng cách xử lý khác', 'Tải lại timeline trước khi thao tác tiếp.'],
+    resolution_replay_conflict: ['ca đã được chốt bằng tập chứng từ hoặc ghi chú khác', 'Tải lại timeline; không phát lại với nội dung khác.'],
+    resolution_snapshot_missing: ['ca chưa có snapshot số lượng', 'Không chốt đơn khi chưa giải thích được số lượng.'],
+    shipment_qty_unresolved: ['vẫn còn sản phẩm chưa có kết quả giao hoặc hoàn', 'Chờ hãng cập nhật hoặc đối soát vận đơn còn lại.'],
+    resolution_inventory_integrity_error: ['số hàng đã nhận vượt snapshot hàng hoàn', 'Dừng chốt ca và đối soát receipt/ledger.'],
+    returned_goods_not_received: ['vẫn còn hàng hoàn chưa được shop xác nhận đã nhận', 'Xác nhận hàng thực sự về và chọn restock hoặc quarantine trước.'],
+    no_delivered_qty: ['không có sản phẩm giao thành công để chấp nhận giao một phần', 'Đối soát lại trạng thái các kiện.'],
+    order_state_changed: ['trạng thái đơn đã thay đổi', 'Tải lại đơn trước khi chốt ca.'],
+    refund_evidence_invalid: ['có phiếu không thuộc đơn hoặc là phiếu điều chỉnh giá', 'Chỉ chọn refund nghiệp vụ của đúng đơn này.'],
+    refund_amount_insufficient: [`tập phiếu đã chọn mới đạt ${attributed}đ, thấp hơn mức ${required}đ`, `Chọn thêm ít nhất ${Math.max(0, required - attributed)}đ chứng từ hoàn tiền.`],
+    refund_already_attributed: ['có phiếu hoàn tiền đã thuộc một ca khác', 'Tải lại đơn; phiếu đã gắn được giữ nguyên để tránh dùng làm bằng chứng hai lần.'],
+  };
+  const [message, action] = messages[result?.error_code] ?? ['không chốt được ca bằng các phiếu hoàn tiền đã chọn', 'Tải lại đơn và kiểm tra lại chứng từ.'];
+  return { code: result?.error_code === 'case_not_found' ? 404 : 409, errorCode: result?.error_code, message, action };
+}
+
+async function acceptPartialWithRefund(res, ctx, body, params) {
+  const caseId = params[1];
+  const note = String(body?.note ?? '').trim().slice(0, 1000) || null;
+  const rawIds = Array.isArray(body?.refund_ids) ? body.refund_ids : [];
+  const refundIds = [...new Set(rawIds.map((id) => String(id ?? '').trim().toLowerCase()))].sort();
+  if (!note) return send(res, 400, { error: 'cần ghi chú quyết định' });
+  if (refundIds.length === 0 || refundIds.length !== rawIds.length || refundIds.some((id) => !UUID_RE.test(id))) {
+    return send(res, 400, { error: 'cần chọn các refund_ids hợp lệ và không trùng nhau' });
+  }
+
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const result = (await c.query(
+      `SELECT attribute_resolution_refunds($1,$2,$3,$4) AS result`,
+      [caseId, refundIds, note, ctx.user.id],
+    )).rows[0].result;
+    if (result?.error_code) return refundAttributionError(result);
+    if (result?.replayed) {
+      const adjustmentVnd = Number((await c.query(
+        `SELECT fulfillment_adjustment_vnd FROM orders WHERE id = $1`, [result.order_id],
+      )).rows[0]?.fulfillment_adjustment_vnd ?? 0);
+      return { code: 200, replayed: true, result, adjustmentVnd };
+    }
+    const adjustmentVnd = Number((await c.query(
+      `SELECT set_order_partial_fulfillment_adjustment($1) AS amount`, [caseId],
+    )).rows[0].amount);
+    const metadata = {
+      case_id: caseId,
+      orderId: result.order_id,
+      resolution: 'accept_partial',
+      financial_action: 'handled_separately',
+      delivered_qty: Number(result.delivered_qty),
+      returned_qty: Number(result.returned_qty),
+      fulfillment_adjustment_vnd: adjustmentVnd,
+      refund_ids: refundIds,
+      attributed_refund_vnd: Number(result.attributed_refund_vnd),
+      note,
+    };
+    await audit(c, 'order.resolution_case_resolved', {
+      actorId: ctx.user.id, ip: ctx.ip, metadata,
+    });
+    await c.query(
+      `SELECT record_order_event($1, 'resolution.completed', 'user', $2, 'seller_admin', $3)`,
+      [result.order_id, ctx.user.id, {
+        ...metadata, order_status: 'delivered', fulfillment_status: 'partial',
+      }],
+    );
+    return { code: 200, replayed: false, result, adjustmentVnd };
+  });
+
+  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy ca cần xử lý' });
+  if (out.code === 409) return send(res, 409, { error_code: out.errorCode, message: out.message, action: out.action });
+  return send(res, 200, {
+    ok: true,
+    replayed: out.replayed,
+    status: 'resolved',
+    resolution: 'accept_partial',
+    order_id: out.result.order_id,
+    order_status: 'delivered',
+    fulfillment_status: 'partial',
+    refund_ids: out.result.refund_ids,
+    attributed_refund_vnd: Number(out.result.attributed_refund_vnd ?? 0),
+    fulfillment_adjustment_vnd: out.adjustmentVnd,
   });
 }
 
@@ -577,6 +644,8 @@ export const ORDER_RESOLUTION_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/resolution-cases/${UUID}/receive-return$`), perm: 'inventory.manage', fn: receiveReturnedGoods },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/order-resolution-cases/${UUID}/accept-partial$`), perm: 'orders.write', fn: acceptPartialDelivery },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/resolution-cases/${UUID}/accept-partial$`), perm: 'orders.write', fn: acceptPartialDelivery },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/order-resolution-cases/${UUID}/accept-partial-with-refund$`), perm: 'refund', stepUp: true, fn: acceptPartialWithRefund },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/resolution-cases/${UUID}/accept-partial-with-refund$`), perm: 'refund', stepUp: true, fn: acceptPartialWithRefund },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/order-resolution-cases/${UUID}/resolve$`), perm: 'orders.write', fn: resolveCase },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/resolution-cases/${UUID}/resolve$`), perm: 'orders.write', fn: resolveCase },
 ];

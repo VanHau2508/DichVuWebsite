@@ -29,7 +29,7 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 | bộ unit | 38 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 106 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 120 test TAP | `packages/db/test/*.test.js` |
-| tài liệu | 79 tệp | `docs/` |
+| tài liệu | 80 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,71 — cao có chủ ý, xem §4.
 
@@ -430,11 +430,21 @@ thay trong một lát cắt khác.
 
 | brief | nội dung | trạng thái |
 |---|---|---|
-| **A** | bằng chứng hoàn tiền + chốt ca, `app_resolution`, hàm SECURITY DEFINER hẹp | đang thi công trên `codex/workflow4-refund-attribution`, chưa merge |
-| **B** | bảng quản trị card-hoá ở server (`docs/77`) | đã merge vào `main` tại `db9eeae` |
-| **C** | bản đồ phục hồi vận đơn | giữ ở mức đã-đo, cần đợt đo riêng trước khi thành brief |
+| **A** | bằng chứng hoàn tiền + chốt ca, `app_resolution`, hàm SECURITY DEFINER hẹp (`docs/78`) | **đã merge** `b7088ab` |
+| **B** | bảng quản trị card-hoá ở server (`docs/77`) | **đã merge** `db9eeae` |
+| **C** | bản đồ phục hồi vận đơn | vẫn ở mức đã-đo, CHƯA khoá brief |
 
-B chạy trước để A tách ra từ `main` đã có `tblCards` và dùng luôn helper đó cho UI của mình.
+Lát cắt 4 coi như đóng ở phần A+B. C chưa khoá, và **không mặc nhiên là việc kế tiếp**.
+
+Đợt đo mở đã chạy (`docs/79`) và kết luận việc kế tiếp **không phải** C cũng không phải
+workflow 5, mà là **phân tầng gói dịch vụ**: bảng `plans` chỉ có một chiều phân biệt
+(`max_products`), `care` và `platform` cùng trần 100 SP dù chênh 1,5 triệu/tháng, và trang bán
+hàng liệt kê năm khác biệt mà hệ thống **không cưỡng chế mục nào**. Đang chờ chủ dự án chốt ba
+câu hỏi kinh doanh ở `docs/79 §4` trước khi khoá brief.
+
+Nợ đã ghi, chưa xử lý: trang **Tồn an toàn tràn 377/360** ở cả JS bật lẫn tắt — thủ phạm là ô
+nhập "Tỉ lệ giữ an toàn cho toàn shop (%)" trong form đầu trang (`pages.js:6022`), không phải
+bảng, nên nằm ngoài Brief B.
 
 ### 9.4 Bắt đầu một phiên mới thế nào
 

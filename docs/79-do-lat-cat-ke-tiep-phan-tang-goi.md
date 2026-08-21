@@ -176,3 +176,92 @@ lâu: *"platform và care cùng trần 100 SP nên gói giữa hiện không bá
 Điều kho này đã biết, nhưng chưa ai đo xem nó rộng đến đâu. Đo ra thì rộng hơn mô tả: không chỉ
 gói giữa không bán được, mà **cả ba lời hứa phân tầng đều không được cưỡng chế**, và **người bỏ
 tiền là người duy nhất không được cho xem con số quyết định**.
+
+---
+
+## 7. Brief đề xuất — phần KHÔNG phụ thuộc quyết định giá
+
+> Chủ dự án đã trả lời §4: **câu 1 (Care để làm gì) và câu 2 (Hỗ trợ ưu tiên) chưa quyết.**
+> Nên lát cắt này **không đụng bảng giá, không thêm cửa chặn tính năng, không bỏ gói nào.**
+> Chỉ làm bốn việc đúng dù sau này chọn đường nào.
+
+### Nguyên tắc xuyên suốt: mọi con số về gói phải DẪN XUẤT từ bảng `plans`
+
+Không hardcode "100", không hardcode "Growth". Khi chủ dự án đổi trần hoặc thêm cột, giao diện
+tự đúng theo. Đây là thứ làm cho lát cắt này an toàn để làm TRƯỚC khi quyết.
+
+### B1 — Mọi điểm bán hàng phải in trần sản phẩm
+
+| chỗ | hôm nay | sau |
+|---|---|---|
+| `signup/server.js:87` `loadPlans` | `SELECT code, name, price_vnd_month` | thêm `max_products` |
+| `signup/views.js:120` | `Care — 2.490.000₫/tháng` | thêm `· 100 SP` |
+| `pages.js:6687` ô nâng gói | `Care — 2.490.000₫/tháng` | dùng chính `planLabel` đã có ở `pages.js:1568` |
+
+`planLabel` đã in đúng định dạng cần và đang được console nhân viên nền tảng dùng. Việc ở đây
+là **thôi giữ nó cho riêng người nội bộ**, không phải viết hàm mới.
+
+**Hậu quả cho người dùng:** không ai được mời trả tiền mà không thấy con số quyết định việc họ
+mua. Một shop 100 SP nhìn "Care · 100 SP" là tự biết nó không giải quyết vấn đề của mình.
+
+### B2 — Lời nhắc chạm trần phải nói SỰ THẬT, không nói "nâng gói"
+
+`pages.js:3955` hiện in *"Đã đạt giới hạn — nâng gói để thêm."* khi `cc >= mx`.
+
+Thay bằng câu **dẫn xuất từ dữ liệu**: nêu trần hiện tại, rồi liệt kê các gói có trần **thực
+sự cao hơn** (`max_products > mx`, lấy từ chính danh sách `plans` mà `/billing` đã trả). Nếu
+không gói nào cao hơn → **không mời nâng gói**, mà nói thẳng là đã ở trần cao nhất.
+
+Không khuyến nghị gói cụ thể (đó là chuyện kinh doanh) — chỉ nêu gói nào có trần cao hơn.
+
+**Hậu quả:** shop không còn trả 1.500.000₫/tháng cho một thao tác không giải quyết việc họ được
+mời để giải quyết.
+
+### B3 — Chốt nguồn: quảng cáo phải KHAI, không được âm thầm
+
+`landing.js:118-122` liệt kê 5 khác biệt, hệ thống cưỡng chế 1. Chưa quyết thì **chưa sửa nội
+dung trang bán hàng** — nhưng phải làm khoảng cách đó **hiện rõ trong mã và không nới thêm được**.
+
+Chốt nguồn mới, theo đúng cách `MANIFEST_*` đang làm:
+
+- Mỗi mục trong `PLANS[].feat` phải có mặt trong một trong hai danh sách khai báo:
+  `CO_CUONG_CHE` (có cửa chặn thật, kèm chỉ tới nơi chặn) hoặc `CHUA_CUONG_CHE` (nợ đã biết,
+  kèm lý do).
+- So **BẰNG**: thêm một dòng quảng cáo mới mà không khai là **ĐỎ**.
+- Hôm nay `CHUA_CUONG_CHE` có 5 mục. Khi chủ dự án quyết, danh sách này co lại — và việc co lại
+  đó nhìn thấy trong diff.
+
+**Hậu quả:** khoảng cách hôm nay không tự lớn thêm, và người sau đọc mã thấy ngay nó rộng bao nhiêu.
+
+### B4 — Hai việc nhỏ, cùng chạm các trang này
+
+- **Ngõ cụt `/help` của `catalog_manager`.** Nav mời `/help`; `GET`+`POST /support` đòi
+  `orders.read` mà vai này không có. `helpPage` nuốt 403 thành *"Bạn chưa gửi yêu cầu nào"*, rồi
+  bấm Gửi ra lỗi chung chung. **Không nới quyền** — hai hướng cho chủ dự án chọn ở §8.
+- **Giỏ hàng tràn 373/360.** Dòng thành tiền (`STRONG`) đẩy ngang trên điện thoại khách mua.
+  Việc CSS thuần, không đụng số tiền.
+
+### Ngoài phạm vi — nói rõ để không ai tự quyết thay
+
+Không đổi `plans` (không migration). Không thêm cửa chặn tính năng theo gói. Không bỏ/đổi giá
+gói nào. Không đổi RBAC. Không đụng công thức tiền/tồn hay đường SePay.
+
+### Phân công
+
+| phần | ai |
+|---|---|
+| `signup` (loadPlans + views), chốt nguồn B3, test | Codex |
+| `pages.js` B1/B2, `/help`, CSS giỏ hàng | Claude |
+| review độc lập trước merge | người không viết code |
+
+---
+
+## 8. Còn chờ chủ dự án
+
+1. **Care để làm gì** (§4 câu 1) — chưa quyết.
+2. **"Hỗ trợ ưu tiên" nghĩa là gì** (§4 câu 2) — chưa quyết.
+3. **`/help` cho `catalog_manager`** — hai đáp án đều hợp lý, cần chọn:
+   - **(a) Bỏ `/help` khỏi nav của vai không có `orders.read`.** Trung thực, rẻ. Đổi lại: nhân
+     viên kho bí thì không có đường nào trong sản phẩm để kêu, phải nhắn chủ shop.
+   - **(b) Tách quyền hỗ trợ khỏi `orders.read`.** Ai cũng gửi được phiếu cho shop mình. Đúng
+     hơn về nghiệp vụ, nhưng chạm RBAC — mà nới quyền là thứ `CLAUDE.md §7` bắt hỏi trước.

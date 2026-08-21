@@ -70,4 +70,3 @@ hidden input; POST step-up mới gọi auth rồi seller; thành công dùng PRG
 - exact privilege/policy + composite FK + SECURITY DEFINER được canh trong schema invariants;
 - seller E2E canh phiếu trước `detected_at`, replay, conflict, cross-shop và hai ca concurrency;
 - BFF E2E đi qua form-urlencoded thật, mật khẩu sai/đúng và PRG, không POST JSON thẳng vào seller.
-

@@ -706,6 +706,8 @@ async function main() {
     ? ok('chưa nhận hàng hoàn → không thể chốt giao một phần') : bad('chốt lọt trước khi nhận hàng', r.raw);
   r = await a.post(`/resolution-cases/${mixCase.id}/resolve`, { resolution: 'refunded_remainder' });
   r.status === 409 && /safe_workflow/.test(r.json?.error_code ?? '')
+    && /accept-partial-with-refund/.test(r.json?.action ?? '')
+    && !/handled_separately/.test(r.json?.action ?? '')
     ? ok('refund/reship không chạy mù, case giữ mở') : bad('unsupported resolution lọt', r.raw);
 
   r = await a.post(`/resolution-cases/${mixCase.id}/wait-return`, {});
@@ -837,6 +839,8 @@ async function main() {
     financial_action: 'not_required', note: 'đơn đã thu tiền nhưng không có phiếu hoàn',
   });
   r.status === 409 && r.json?.error_code === 'refund_evidence_required'
+    && /accept-partial-with-refund/.test(r.json?.action ?? '')
+    && !/handled_separately|refund_id\b/.test(r.json?.action ?? '')
     ? ok('đơn đã thu tiền → bắt buộc bằng chứng refund') : bad('paid case chốt không refund', r.raw);
   await rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
   const fullRefundBefore = (await owner.query(

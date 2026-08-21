@@ -490,7 +490,7 @@ async function acceptPartialDelivery(res, ctx, body, params) {
           || Number(row.amount_paid_vnd) > 0 || row.paid_at)) return {
       code: 409, errorCode: 'refund_evidence_required',
       message: 'đơn đã ghi nhận tiền nên không thể chốt phần không giao chỉ bằng xác nhận',
-      action: 'Tạo phiếu hoàn tiền cho phần không giao và gửi lại với financial_action=handled_separately + refund_id.',
+      action: 'Cần chủ shop hoặc quản trị viên dùng accept-partial-with-refund để chọn các phiếu hoàn tiền và xác thực lại.',
     };
     const completed = (await c.query(
       `SELECT complete_order_resolution_accept_partial($1,$2,$3,$4,$5) AS result`,
@@ -623,7 +623,7 @@ async function resolveCase(res, ctx, body, params) {
   if (resolution === 'accept_partial') return acceptPartialDelivery(res, ctx, body, params);
   const action = {
     resent: 'Tạo vận đơn gửi bù bằng luồng shipment có claim/idempotency; tính năng nối kiện bù vào case chưa được mở nên case vẫn giữ nguyên.',
-    refunded_remainder: 'Dùng endpoint refund có step-up để ghi chứng từ tiền; sau đó quay lại chốt accept_partial với financial_action=handled_separately.',
+    refunded_remainder: 'Dùng accept-partial-with-refund để chọn các phiếu hoàn tiền và xác thực lại; thao tác này cần chủ shop hoặc quản trị viên.',
     cancelled_remainder: 'Không thể huỷ mù một phần đơn đã giao. Hãy đối soát tiền và hàng rồi chốt accept_partial nếu phù hợp.',
     other: 'Ghi chú không thay thế được chứng từ tiền/tồn. Chọn chờ hàng hoàn, nhận hàng, hoặc chấp nhận giao một phần khi đủ điều kiện.',
   }[resolution];

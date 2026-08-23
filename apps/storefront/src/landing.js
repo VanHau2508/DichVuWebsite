@@ -534,6 +534,19 @@ main{display:block}
 .lp-cmp-img img{display:block;width:100%;max-width:1100px;height:auto;margin-inline:auto;
                 border-radius:var(--lp-r3)}
 @media(min-width:1024px){.lp-cmp-img{margin-bottom:48px}}
+/* KHI CÓ ẢNH (lớp co-anh) — hai bề mặt, hai vai trò, không chỗ nào mất dữ liệu:
+   · Màn rộng: ảnh thay bảng. Bảng HTML lui về dạng CHỈ-ĐỌC-MÀN-HÌNH chứ KHÔNG display:none
+     — display:none thì mất khỏi cả cây trợ năng lẫn thứ Google đọc được, tức đổi một bảng
+     so sánh 8 tiêu chí lấy một tấm ảnh không có chữ nào.
+   · Màn hẹp: bảng hiện dạng thẻ như cũ, ảnh ẩn hẳn — một tấm chụp bảng bốn cột thu xuống
+     360px thì không ai đọc nổi, phóng to cũng không.
+   Hai quy tắc này PHẢI nằm sau phần khai .lp-cmp-img ở trên: cùng độ ưu tiên thì cái viết
+   sau mới thắng, @media không cộng thêm gì. */
+@media(min-width:900px){
+  .lp-cmp.co-anh .lp-cmp-w{position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+                           overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+}
+@media(max-width:899px){.lp-cmp-img{display:none}}
 .lp-cmp-w{margin-top:0}
 @media(min-width:900px){.lp-cmp-w{overflow-x:auto;padding-top:14px}}
 .lp-tbl{width:100%;border-collapse:separate;border-spacing:0}
@@ -1125,13 +1138,13 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
   // không để lại khoảng trống hay khung viền rỗng.
   const soSanhShot = assetSrc('so-sanh');
   const cmpImg = soSanhShot
-    ? `<figure class="lp-cmp-img rv"><img src="${esc(soSanhShot)}" alt="Bảng so sánh ${esc(brand)} với các lựa chọn phổ biến trên thị trường" loading="lazy" decoding="async"></figure>`
+    ? `<figure class="lp-cmp-img rv" aria-hidden="true"><img src="${esc(soSanhShot)}" alt="" loading="lazy" decoding="async"></figure>`
     : '';
 
   const o = (kind, cot, mark, html) => `<td${kind === 0 ? ' class="us"' : ''} data-label="${esc(cot)}">
         <span class="lp-cell"><span class="lp-mk ${mark}" aria-hidden="true">${MK[mark]}</span><span><span class="lp-sr">${MK_SR[mark]} — </span>${html}</span></span>
       </td>`;
-  const cmp = `<section class="lp-sec lp-cmp" id="loi-ich" aria-labelledby="lpCmpH"><div class="ct">
+  const cmp = `<section class="lp-sec lp-cmp${soSanhShot ? ' co-anh' : ''}" id="loi-ich" aria-labelledby="lpCmpH"><div class="ct">
   <div class="lp-head lp-head-mid rv">
     <h2 class="lp-h2" id="lpCmpH">Cùng một đơn hàng, <em>ai giữ lại bao nhiêu?</em></h2>
   </div>

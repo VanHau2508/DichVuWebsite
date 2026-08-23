@@ -23,6 +23,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const SRC = readFileSync(new URL('../src/landing.js', import.meta.url), 'utf8');
+// CSS đã CẮT CHÚ THÍCH. Chú thích ở file này mô tả chính những quy tắc từng gây lỗi, nên
+// khớp regex trên toàn văn bản là khớp phải lời kể chứ không phải luật đang chạy — một chốt
+// đã đỏ giả vì đúng chuyện đó, và cùng lỗi ở chiều ngược lại thì XANH GIẢ.
+const LUAT = SRC.replace(/\/\*[\s\S]*?\*\//g, '');
 
 test('khối sản phẩm dựng từ MỘT nguồn cho cả hai bố cục', () => {
   // Bản trong dòng (màn hẹp / trình duyệt chưa hỗ trợ) và bản dán dính (màn rộng) phải
@@ -139,4 +143,55 @@ test('nội dung không bịa lời chứng thực', () => {
   assert.doesNotMatch(SRC, /TESTIMONIALS/, 'không dựng lời chứng thực khi chưa có khách thật');
   assert.match(SRC, /\['no', '<b>Chưa có\.<\/b>/,
     'bảng so sánh phải giữ dòng mình THUA — thắng cả tám ô thì người đọc trừ điểm');
+});
+
+test('không thẻ a nào để trình duyệt tự chọn màu', () => {
+  // Ba lần hỏng liên tiếp vì cùng một chuyện: một quy tắc cho thẻ a có độ ưu tiên cao hơn
+  // lớp của nút. Kết quả đo được: nút hero TRẮNG chữ TRẮNG (rỗng hoàn toàn), mục điều
+  // hướng gần như vô hình trên nền tối, nút trong ngăn kéo chữ ĐEN trên nền xanh, và nút
+  // viền trong thẻ giá nổi bật TRẮNG trên TRẮNG. Chốt: không đặt màu chung cho thẻ a.
+  assert.doesNotMatch(LUAT, /\.lp a\{[^}]*color:/,
+    'không được đặt color cho .lp a — nó thắng mọi lớp nút và làm chữ nút tàng hình');
+  assert.doesNotMatch(LUAT, /\.lp a:not\(\[class\]\)/,
+    ':not([class]) tính như bộ chọn thuộc tính nên còn thắng cả .lp-nav a');
+  assert.match(SRC, /\.lp-drawer a:not\(\.lp-btn\)\{/,
+    'quy tắc màu của ngăn kéo phải chừa nút ra');
+  assert.match(SRC, /\.lp-plan\.hot \.lp-b-gh\{background:transparent/,
+    'thẻ giá nổi bật nền tối: nút viền phải bỏ nền trắng, nếu không là trắng trên trắng');
+});
+
+test('ngăn kéo đóng thì KHÔNG nằm trong bố cục', () => {
+  // Khai display cho .lp-drawer đè mất display:none của thuộc tính hidden ⇒ bấm Tab từ
+  // trang đi thẳng vào một menu không nhìn thấy.
+  assert.match(SRC, /\.lp-drawer\[hidden\],\.lp-scrim\[hidden\]\{display:none\}/,
+    'phải trả lại display:none cho trạng thái hidden');
+});
+
+test('khối tiêu đề mục trải đúng bề rộng nội dung', () => {
+  // Xếp một cột thì trên màn rộng tiêu đề chỉ chiếm nửa trái còn nửa phải bỏ trống, trong
+  // khi bảng ngay dưới trải hết — đó là cảm giác lệch tỉ lệ, và nó lặp ở MỌI mục.
+  assert.match(SRC, /\.lp-head\{margin-bottom:48px;display:grid;grid-template-columns:/,
+    'từ 1024px khối tiêu đề phải chia hai cột');
+  assert.equal((SRC.match(/<div class="lp-head">/g) ?? []).length, 6,
+    'cả sáu mục phải dùng chung lớp nhịp .lp-head');
+});
+
+test('tiêu đề viết hoa có đủ chiều cao dòng cho dấu tiếng Việt', () => {
+  // Ở cỡ lớn, dấu của chữ hoa (Ồ, Ế, Ữ) chạm chân dòng trên. Đo được trên ảnh chụp thật.
+  const h2 = /\.lp-h2\{[^}]*\}/.exec(SRC)?.[0] ?? '';
+  const lh = Number(/line-height:([\d.]+)/.exec(h2)?.[1] ?? 0);
+  assert.ok(lh >= 1.24, `chiều cao dòng ${lh} quá thấp cho chữ hoa có dấu`);
+  assert.doesNotMatch(SRC, /\.lp-hero h1\{[^}]*text-transform:uppercase/,
+    'tiêu đề hero KHÔNG viết hoa: ở cỡ đó dấu chồng lên nhau');
+});
+
+test('thanh điều hướng không gãy chữ', () => {
+  // Chữ xuống dòng trong viên thuốc cao cố định thì lòi hẳn ra ngoài — đo được trên ảnh.
+  for (const sel of ['.lp-brand', '.lp-btn']) {
+    const rule = new RegExp(sel.replace('.', '\\.') + '\\{[^}]*white-space:nowrap');
+    assert.match(SRC, rule, `${sel} phải khoá nowrap`);
+  }
+  assert.match(SRC, /\.lp-nav a\{[^}]*white-space:nowrap/, '.lp-nav a phải khoá nowrap');
+  assert.match(SRC, /@media\(min-width:480px\)\{\.lp-hdr \.lp-btn\{display:inline-flex/,
+    'dưới 480px phải bỏ nút trong thanh, nếu không nút menu bị cắt cụt');
 });

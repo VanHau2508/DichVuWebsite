@@ -102,6 +102,42 @@ const FLAGS = [
     bullets: ['Sao lưu mã hoá định kỳ, khôi phục được khi có sự cố', 'HTTPS tự động cho cả tên miền riêng của bạn', 'Dữ liệu là của bạn — xuất toàn bộ ra file bất cứ lúc nào'],
   },
 ];
+// Khối SẢN PHẨM: danh sách bên trái, khung xem bên phải DÁN DÍNH và tự đổi theo chỗ
+// đang cuộn tới. Đồng bộ hai cột bằng CSS thuần (view-timeline-name trên từng mục ở cột
+// trái + timeline-scope ở khối cha → khung bên phải chạy theo dòng thời gian ĐÓ). Không JS,
+// hợp CSP nghiêm — trang này không có script-src nên mọi hiệu ứng buộc phải nằm ở CSS.
+const PRODUCTS = [
+  {
+    n: '01', icon: I.chart, kick: 'Tổng quan', vis: 'dash',
+    h: 'Mở máy là biết hôm nay bán được bao nhiêu',
+    d: 'Doanh thu, đơn mới, việc cần xử lý — gom về một màn hình, không phải mở bốn chỗ để cộng tay.',
+    bullets: ['Doanh thu hôm nay, tuần này, tháng này — theo giờ Việt Nam', 'Việc cần xử lý xếp trước: đơn chờ xác nhận, hàng sắp hết', 'Sản phẩm bán chạy để biết nên nhập thêm gì'],
+  },
+  {
+    n: '02', icon: I.truck, kick: 'Đơn hàng', vis: 'orders',
+    h: 'Đơn về là chạy — từ chốt tới giao',
+    d: 'Xác nhận, đóng gói, đẩy sang GHN/GHTK bằng tài khoản của chính bạn. Khách tự tra cứu bằng mã đơn.',
+    bullets: ['Tách vận đơn, giao một phần, đổi trả — đủ nghiệp vụ thật', 'Đối soát COD với hãng ship, lệch là thấy ngay', 'Sửa đơn có ghi vết: ai sửa gì, lúc nào'],
+  },
+  {
+    n: '03', icon: I.box, kick: 'Kho hàng', vis: 'stock',
+    h: 'Tồn kho chuẩn tới từng biến thể',
+    d: 'Màu, size, phiên bản — mỗi biến thể một số tồn. Trừ kho ngay lúc khách đặt, không bao giờ bán lố.',
+    bullets: ['Tồn khả dụng = tồn thật − đang giữ − đệm an toàn bạn đặt', 'Nhập hàng, giá vốn bình quân tự tính, báo cáo lãi lỗ thật', 'Cảnh báo sắp hết trước khi hết, không phải sau'],
+  },
+  {
+    n: '04', icon: I.wallet, kick: 'Tiền về', vis: 'money',
+    h: 'Tiền vào thẳng tài khoản của bạn',
+    d: 'Khách quét VietQR là tiền về ngân hàng của bạn. Hệ thống tự khớp tiền với đơn, không cần bạn dò tay.',
+    bullets: ['Khớp đúng TÀI KHOẢN NHẬN, không chỉ khớp mã đơn', 'Khách bấm trả hai lần cũng không cộng hai lần', 'Trả thiếu thì vào hàng đợi đối soát, không tự ghi "đã trả"'],
+  },
+  {
+    n: '05', icon: I.palette, kick: 'Cửa hàng', vis: 'shop',
+    h: 'Cửa hàng đẹp, và chạy được cả khi mạng yếu',
+    d: 'Đổi banner, màu, logo ngay trong trang quản trị. Trang bán hàng dựng sẵn ở máy chủ nên mở là thấy.',
+    bullets: ['Trang bán và trang đặt hàng chạy được cả khi không có JavaScript', 'Chuẩn SEO: sitemap, dữ liệu có cấu trúc, tự lên Google', 'Tên miền riêng của bạn, HTTPS tự cấp và tự gia hạn'],
+  },
+];
 const TESTIMONIALS = [
   { q: 'Trước tôi bán qua Facebook, đơn hay sót. Có website riêng, khách tự đặt, tôi chỉ việc gói hàng. Nhàn hẳn.', name: 'Chị Hương', role: 'Shop thời trang, Hà Nội' },
   { q: 'Cái tôi thích nhất là tiền khách chuyển khoản vào thẳng tài khoản mình, không qua trung gian. Rõ ràng, yên tâm.', name: 'Anh Tuấn', role: 'Đồ nội thất, TP.HCM' },
@@ -282,6 +318,80 @@ const CSS = `
 .cta-box .cta-sub{font-size:1.02rem;opacity:.92;margin-top:-16px;margin-bottom:26px;position:relative}
 .cta-box .cta-row{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;position:relative}
 .cta-box .btn-ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.55)}.cta-box .btn-ghost:hover{border-color:#fff;color:#fff}
+/* ══ CHỐNG TRÀN NGANG — ba lỗi ĐO ĐƯỢC trên bản trước, ba nguyên nhân khác nhau ══
+   Đo bằng headless_shell ở bề rộng thật, so scrollWidth với clientWidth (KHÔNG so với
+   innerWidth: innerWidth còn tính cả thanh cuộn nên bỏ lọt tràn 15px).
+   (1) 360px — sw 495/345. Ô .vrow trong khối minh hoạ là flex một dòng; bề rộng tối
+       thiểu của nó lên tới 391px, kéo min-content của .vis lên 429px. Ô lưới mặc định
+       min-width:auto nên cột KHÔNG co xuống dưới mức đó → đẩy cả trang. Cho .vrow và
+       các ô cùng họ xuống dòng khi màn hẹp.
+   (2) 768px — sw 771/753. Trạng thái ĐẦU của hiệu ứng trượt ngang (.srl/.srr dịch 42px)
+       nằm ngoài mép phải. Nội dung đúng, nhưng trong lúc chưa cuộn tới thì trang cuộn
+       ngang được. Cắt ở đúng khối dùng hiệu ứng đó — KHÔNG cắt toàn trang, vì cắt ở tổ
+       tiên sẽ phá position:sticky của khối sản phẩm.
+   (3) 1024px — sw 1143/1009. Ba thẻ giá giữ nguyên 3 cột tới tận 960px; min-content mỗi
+       thẻ 356px nên 3×356 + gap vượt 961px chỗ trống. Cho track co được và đổi bố cục
+       sớm hơn. ══ */
+.vis{min-width:0}
+@media(max-width:820px){
+  .vrow,.vcredit,.vcoupon,.vpts,.vflash{flex-wrap:wrap}
+  .vrow .vn,.vcredit .src,.vcoupon span{flex:1 1 100%;min-width:0;white-space:normal;overflow:visible;text-overflow:clip}
+  .vqr{grid-template-columns:1fr}
+}
+.flags{overflow-x:clip}
+.flag>*,.pane>*,.prod-grid>*,.prod-list,.plan{min-width:0}
+.plans{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:1100px){
+  .plans{grid-template-columns:1fr;max-width:440px;margin:0 auto}
+  .plan.hot{transform:none}
+}
+/* ══ KHỐI SẢN PHẨM — cột trái cuộn, cột phải DÁN DÍNH và đổi theo ══
+   Đồng bộ hai cột KHÔNG dùng JS: mỗi mục bên trái đặt một view-timeline-name, khối cha
+   mở timeline-scope, khung bên phải chạy animation theo ĐÚNG dòng thời gian của mục
+   tương ứng. Trang này CSP default-src 'none' và không có script-src, nên JS không phải
+   lựa chọn — không phải sở thích.
+   CỔNG AN TOÀN: mặc định cột phải ẨN và mỗi mục tự mang khung minh hoạ của nó ngay dưới
+   chữ. Chỉ khi trình duyệt hỗ trợ ĐỦ (timeline-scope + animation-timeline), màn đủ rộng
+   và người dùng không chọn giảm chuyển động thì mới đổi sang bố cục dán dính. Trình duyệt
+   cũ nhận một trang bình thường đầy đủ nội dung, không có ô nào kẹt trống. ══ */
+.prod{background:var(--surf)}
+.prod-grid{display:grid;gap:0;margin-top:40px;align-items:start}
+.pitem{padding:44px 0;border-top:1px solid var(--bd)}
+.pitem:first-child{border-top:0;padding-top:0}
+.pkick{display:flex;align-items:center;gap:9px;margin:0 0 12px;font-size:.78rem;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--pri)}
+.pkick .pn{display:grid;place-items:center;width:26px;height:26px;border-radius:8px;background:color-mix(in srgb,var(--pri) 12%,transparent);font-variant-numeric:tabular-nums;letter-spacing:0}
+.pkick svg{width:17px;height:17px}
+.pitem h3{margin:0 0 10px;font-size:clamp(1.3rem,2.4vw,1.85rem);font-weight:800;letter-spacing:-.02em;text-wrap:balance}
+.pitem .pd{margin:0 0 16px;color:var(--soft)}
+.pitem ul{display:grid;gap:9px;margin:0;padding:0;list-style:none}
+.pitem li{display:flex;gap:10px;align-items:flex-start;font-size:.97rem;color:var(--soft)}
+.pitem li svg{flex:none;width:18px;height:18px;margin-top:3px;color:var(--good)}
+.pvis-in{margin-top:22px}
+.prod-stick{display:none}
+.pstage{display:grid;min-width:0}
+.pframe{grid-area:1/1;min-width:0}
+
+@supports (timeline-scope:--a) and (animation-timeline:view()){
+  @media (prefers-reduced-motion:no-preference) and (min-width:1100px){
+    .prod-grid{grid-template-columns:minmax(0,1fr) minmax(0,1.04fr);gap:64px;timeline-scope:--p1,--p2,--p3,--p4,--p5}
+    .pitem{min-height:74vh;display:flex;flex-direction:column;justify-content:center;padding:32px 0}
+    .pitem:first-child{padding-top:32px}
+    .pitem:nth-child(1){view-timeline-name:--p1}
+    .pitem:nth-child(2){view-timeline-name:--p2}
+    .pitem:nth-child(3){view-timeline-name:--p3}
+    .pitem:nth-child(4){view-timeline-name:--p4}
+    .pitem:nth-child(5){view-timeline-name:--p5}
+    .pvis-in{display:none}
+    .prod-stick{display:block;position:sticky;top:92px}
+    .pframe{opacity:0;animation:pframe-in both;animation-timing-function:linear;animation-range:cover 0% cover 100%}
+    .pframe:nth-child(1){animation-timeline:--p1}
+    .pframe:nth-child(2){animation-timeline:--p2}
+    .pframe:nth-child(3){animation-timeline:--p3}
+    .pframe:nth-child(4){animation-timeline:--p4}
+    .pframe:nth-child(5){animation-timeline:--p5}
+    @keyframes pframe-in{0%,10%{opacity:0;transform:translateY(14px)}45%,55%{opacity:1;transform:none}90%,100%{opacity:0;transform:translateY(-14px)}}
+  }
+}
 /* ══ HIỆU ỨNG CHUYỂN ĐỘNG — mỗi hiệu ứng có "cổng an toàn" riêng (giữ KÍN):
    · tab-fade/marquee: cần @media(prefers-reduced-motion:no-preference)
      (fallback = trạng thái tĩnh đầy đủ nội dung; marquee thêm @supports để chỉ chuyển
@@ -322,6 +432,7 @@ const CSS = `
   .plan.hot{transform:none}.plan.hot:hover{transform:translateY(-4px)}
 }
 @media(max-width:680px){
+  .pitem{padding:32px 0}
   .stats .wrap{grid-template-columns:1fr 1fr;gap:22px}
   .tst-grid{grid-template-columns:1fr}.steps{grid-template-columns:1fr}
   .hero{padding:52px 0 64px}
@@ -347,6 +458,11 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
         <div class="sc"><div class="si">${I.sofa}</div><div class="sl"></div></div>
         <div class="sc"><div class="si">${I.cosmetic}</div><div class="sl"></div></div>
       </div></div>`,
+    dash: `<div class="vis" aria-hidden="true"><div class="vis-h"><i></i>Tổng quan hôm nay</div>
+      <div class="dnum"><b>4.280.000đ</b><span>doanh thu hôm nay · 12 đơn</span></div>
+      <div class="dbars"><i style="height:38%"></i><i style="height:56%"></i><i style="height:44%"></i><i style="height:71%"></i><i style="height:62%"></i><i style="height:88%"></i><i class="on" style="height:74%"></i></div>
+      <div class="vrow"><span class="vn">Đơn chờ xác nhận</span><b>3</b><span class="pill new">Cần làm</span></div>
+      <div class="vrow"><span class="vn">Sản phẩm sắp hết hàng</span><b>2</b><span class="pill warn">Cần nhập</span></div></div>`,
     orders: `<div class="vis" aria-hidden="true"><div class="vis-h"><i></i>Đơn hàng hôm nay</div>
       <div class="vrow"><span class="vc">#1042</span><span class="vn">Áo thun basic ×2</span><b>350.000đ</b><span class="pill new">Mới</span></div>
       <div class="vrow"><span class="vc">#1041</span><span class="vn">Ghế gỗ sồi ×1</span><b>1.290.000đ</b><span class="pill ship">Đang giao</span></div>
@@ -393,6 +509,17 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
     </div>
     <div>${VIS[t.vis]}</div>
   </div>`).join('');
+
+  // Mỗi mục dựng HAI lần từ CÙNG một nguồn (PRODUCTS + VIS): bản trong dòng cho màn hẹp
+  // và trình duyệt chưa hỗ trợ, bản dán dính cho màn rộng. Dựng từ một nguồn nên hai bản
+  // KHÔNG THỂ trôi khỏi nhau — chép tay ra hai chỗ thì sẽ trôi, và trôi âm thầm.
+  const prodItem = (x) => `<article class="pitem">
+    <p class="pkick"><span class="pn">${esc(x.n)}</span>${x.icon}${esc(x.kick)}</p>
+    <h3>${esc(x.h)}</h3>
+    <p class="pd">${esc(x.d)}</p>
+    <ul>${x.bullets.map((b) => `<li>${I.check}<span>${esc(b)}</span></li>`).join('')}</ul>
+    <div class="pvis-in">${VIS[x.vis]}</div>
+  </article>`;
 
   const chip = (x) => `<span class="mchip"><span class="mi">${x.icon}</span>${esc(x.name)}</span>`;
   const half = Math.ceil(INDUSTRIES.length / 2);
@@ -451,6 +578,14 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
   ${STATS.map((s) => `<div class="stat reveal"><div class="n">${esc(s.n)}</div><div class="l">${esc(s.l)}</div></div>`).join('')}
 </div></section>
 
+<section class="sec prod" id="san-pham"><div class="wrap">
+  <div class="sec-head reveal"><p class="kick">Sản phẩm</p><h2>Một vòng qua thứ bạn sẽ dùng mỗi ngày</h2><p>Cuộn xuống — khung bên phải đổi theo đúng phần bạn đang đọc.</p></div>
+  <div class="prod-grid">
+    <div class="prod-list">${PRODUCTS.map(prodItem).join('')}</div>
+    <div class="prod-stick" aria-hidden="true"><div class="pstage">${PRODUCTS.map((x) => `<div class="pframe">${VIS[x.vis]}</div>`).join('')}</div></div>
+  </div>
+</div></section>
+
 <section class="sec" id="tinh-nang"><div class="wrap">
   <div class="sec-head reveal"><p class="kick">Tính năng</p><h2>Mọi thứ để bán hàng online, gọn trong một chỗ</h2><p>Chọn một mảng để xem — tất cả đều có sẵn trong mọi gói, không cài thêm gì.</p></div>
   <div class="tabs">
@@ -472,7 +607,7 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
   <div class="steps stag">${STEPS.map((s) => `<div class="step reveal"><div class="n">${esc(s.n)}</div><h3>${esc(s.t)}</h3><p>${esc(s.d)}</p></div>`).join('')}</div>
 </div></section>
 
-<section class="sec" style="padding-top:40px"><div class="wrap">
+<section class="sec flags" style="padding-top:40px"><div class="wrap">
   <div class="sec-head reveal"><p class="kick">Vì sao chọn chúng tôi</p><h2>Làm thật những việc khó nhất của bán hàng online</h2></div>
   ${FLAGS.map(flagBlock).join('')}
 </div></section>

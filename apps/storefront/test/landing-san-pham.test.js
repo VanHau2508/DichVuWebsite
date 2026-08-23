@@ -241,3 +241,27 @@ test('thẻ nổi trang trí ẩn ở màn hẹp, và quy tắc nằm ĐÚNG ch�
   assert.ok(iKhai >= 0 && iAn >= 0, 'thiếu một trong hai quy tắc .lp-float');
   assert.ok(iAn > iKhai, 'lệnh ẩn phải nằm SAU phần khai display:flex, nếu không bị đè');
 });
+
+test('có ảnh: ảnh THAY bảng ở màn rộng, bảng giữ cho điện thoại', () => {
+  // Chủ dự án chốt: ảnh thay bảng ở màn rộng, giữ bảng HTML cho điện thoại.
+  // Đo được ở trình duyệt với một tệp ảnh thật:
+  //   1440px → ảnh 1128×620, bảng thu về 1×1 · 1024px → ảnh 934×526, bảng 1×1
+  //   390px  → ảnh display:none, bảng hiện dạng thẻ 350×2567
+  // Cả ba cỡ đều còn ĐỦ 8 dòng bảng trong DOM.
+  assert.match(SRC, /class="lp-sec lp-cmp\$\{soSanhShot \? ' co-anh' : ''\}"/,
+    'section phải mang cờ co-anh khi có tệp ảnh, để CSS biết đường đổi bề mặt');
+  assert.match(LUAT, /\.lp-cmp\.co-anh \.lp-cmp-w\{position:absolute;width:1px;height:1px/,
+    'màn rộng: bảng phải lui về dạng chỉ-đọc-màn-hình');
+  assert.doesNotMatch(LUAT, /\.lp-cmp\.co-anh \.lp-cmp-w\{display:none/,
+    'KHÔNG được display:none — mất khỏi cả cây trợ năng lẫn thứ Google đọc được, tức đổi bảng 8 tiêu chí lấy một tấm ảnh không chữ');
+  assert.match(LUAT, /@media\(max-width:899px\)\{\.lp-cmp-img\{display:none\}\}/,
+    'màn hẹp: phải ẩn ảnh — ảnh chụp bảng bốn cột thu xuống 360px thì không đọc nổi');
+  // Ảnh là bản vẽ lại của bảng, không mang thông tin mới: alt rỗng + aria-hidden, nếu
+  // không trình đọc màn hình nghe cùng một nội dung hai lần.
+  assert.match(SRC, /<figure class="lp-cmp-img rv" aria-hidden="true"><img src="\$\{esc\(soSanhShot\)\}" alt=""/,
+    'ảnh phải là trang trí thuần, dữ liệu thật nằm ở bảng');
+  // Thứ tự cascade: lệnh đổi bề mặt phải nằm SAU phần khai .lp-cmp-img.
+  assert.ok(LUAT.indexOf('@media(max-width:899px){.lp-cmp-img{display:none}}')
+            > LUAT.indexOf('.lp-cmp-img{margin:0 0 32px}'),
+    'lệnh ẩn ảnh phải nằm sau phần khai .lp-cmp-img, nếu không bị đè im lặng');
+});

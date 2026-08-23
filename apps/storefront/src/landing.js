@@ -1,111 +1,110 @@
 /**
  * Trang CHỦ công ty của nền tảng (nentang.vn gốc — không phải shop nào): marketing + bảng giá.
- * Dùng khung chung site.js (nav/footer/CSS nền). SSR tĩnh, KHÔNG JS, hợp CSP nghiêm —
- * mọi "ảnh" là SVG/khung UI phẳng; hiệu ứng cuộn/tab/marquee bằng CSS THUẦN
- * (tab = radio + :checked; marquee = @keyframes; tiết lộ cuộn = animation-timeline:view()).
  *
- * PHONG CÁCH: ẤM kiểu thương mại Việt (Haravan/Sapo) — điểm nhấn ĐỎ GẠCH/CORAL duy nhất,
- * nền kem ấm, section xen kẽ trắng ↔ kem-đào, UI mô phỏng PHẲNG & thẳng (không nghiêng 3D,
- * không gradient tràn, không glass-blur, không quả cầu trôi, không chữ gradient). Hiệu ứng
- * giữ KÍN: chỉ trượt-lên khi cuộn (có cổng an toàn), nâng nhẹ khi hover, marquee ngành hàng.
+ * BỐ CỤC: thanh điều hướng nổi ẩn/hiện theo chiều cuộn · hero băng 3 banner đổi được · dải cam
+ * kết · bảng so sánh với thị trường · khối sản phẩm hai cột đồng bộ khi cuộn · giải pháp tăng
+ * trưởng trên nền tối · băng ngành hàng · bảng giá · hỏi đáp · CTA cuối · chân trang · thanh CTA
+ * nổi. Trang tự mang header/footer riêng (sitePage với shell:false) vì bộ điều hướng của nó
+ * khác hẳn các trang công ty còn lại.
  *
- * An toàn: hiệu ứng cuộn + marquee chỉ bật khi trình duyệt HỖ TRỢ + người dùng KHÔNG chọn
- * "giảm chuyển động" — nếu không, nội dung hiện đầy đủ (không kẹt ẩn; marquee → lưới tĩnh).
- * NỘI DUNG TRUNG THỰC: không bịa số khách hàng/giải thưởng — chỉ cam kết thật
- * (3 phút / 0đ / 100% tiền về chủ shop / 24/7) + tính năng có thật. Sửa nội dung: các mảng dưới.
+ * LỚP TĂNG CƯỜNG — đọc trước khi sửa JS:
+ * Trang phải DÙNG ĐƯỢC KHI KHÔNG CÓ JS. Server chỉ phát script-src khi có nonce; thiếu nonce
+ * thì sitePage cũng không chèn script. Vì vậy mọi thứ JS làm đều là TĂNG CƯỜNG, không phải điều
+ * kiện: không JS thì thanh điều hướng đứng yên (vẫn bấm được), hero hiện slide đầu (vẫn đủ chữ
+ * và đủ nút), thanh CTA nổi không xuất hiện, và hiệu ứng hiện-dần KHÔNG áp trạng thái ẩn (quy
+ * tắc nằm sau html.lpjs, mà cờ đó do chính JS gắn). Đừng bao giờ để nội dung chỉ tồn tại trong
+ * JS — đã có lần phần tử kẹt opacity:0 và mất trắng chữ trong khi mọi phép đo tràn ngang vẫn
+ * báo ĐẠT.
+ *
+ * Đồng bộ hai cột ở khối sản phẩm vẫn giữ THUẦN CSS (view-timeline-name + timeline-scope) dù
+ * trang đã có JS: nó chạy trên luồng dựng hình nên không giật, và không tốn handler cuộn nào.
+ *
+ * PHÔNG: Be Vietnam Pro tự-host, CHỈ có 400/600/800 — không khai 500/700/900, thiếu file thì
+ * trình duyệt tự bóp chữ và kết quả xấu theo kiểu rất khó chỉ tên.
+ *
+ * NỘI DUNG TRUNG THỰC: không bịa số khách hàng, không bịa giải thưởng, không bịa case study.
+ * Kho này chưa triển khai và chưa có khách thật (CLAUDE.md §0) — mọi lời chứng thực dựng lên
+ * đều là nói dối người đọc, và là thứ đối thủ kiểm chứng được. Chỉ nêu cam kết thật và tính
+ * năng có thật. Sửa nội dung: các mảng ngay dưới đây.
  */
-import { esc, I, mailtoHref, sitePage, SIGNUP_URL } from './site.js';
+import { esc, I, mailtoHref, sitePage, SIGNUP_URL, ADMIN_LOGIN_URL } from './site.js';
 
-// ── DỮ LIỆU (sửa nội dung ở đây) ─────────────────────────────────────────────
+// ── BANNER HERO — thêm/bớt phần tử là đổi được băng, không phải sửa markup ────
+// Còn đúng 1 phần tử thì băng tự tắt tự-chạy và ẩn thanh điều khiển.
+const BANNERS = [
+  {
+    h: 'Website bán hàng của riêng bạn, tiền về thẳng túi',
+    d: 'Dựng cửa hàng trong 3 phút, dùng thử miễn phí 14 ngày. Đơn hàng, vận chuyển GHN/GHTK, kho, khuyến mãi — đủ đồ nghề để bán, không cần biết code.',
+    cta: 'Bắt đầu miễn phí', href: SIGNUP_URL, vis: 'shop',
+  },
+  {
+    h: 'Khách quét mã là tiền vào tài khoản của bạn',
+    d: 'Không ví trung gian, không giữ hộ, không phí rút. Hệ thống tự khớp tiền với đơn và khớp đúng tài khoản nhận — trả trùng cũng không cộng hai lần.',
+    cta: 'Xem cách đường tiền chạy', href: '#giai-phap', vis: 'money',
+  },
+  {
+    h: 'Cửa hàng chạy được cả khi mạng yếu',
+    d: 'Trang bán và trang đặt hàng dựng sẵn ở máy chủ, không bắt khách tải app. Mạng chập chờn vẫn mua được — chỗ khác là trang trắng và mất đơn mà không ai biết.',
+    cta: 'So với nơi khác', href: '#loi-ich', vis: 'orders',
+  },
+];
+
+const NAV = [
+  { href: '#san-pham', label: 'Sản phẩm' },
+  { href: '#loi-ich', label: 'So sánh' },
+  { href: '#giai-phap', label: 'Giải pháp' },
+  { href: '#nganh-hang', label: 'Ngành hàng' },
+  { href: '#bang-gia', label: 'Bảng giá' },
+  { href: '#faq', label: 'Hỏi đáp' },
+];
+
 const STATS = [
   { n: '3 phút', l: 'Có cửa hàng mẫu để xem ngay' },
   { n: '0đ', l: 'Phí thiết lập ban đầu' },
   { n: '100%', l: 'Tiền khách trả vào thẳng tài khoản bạn' },
   { n: '24/7', l: 'Cửa hàng luôn online, không lo sập' },
 ];
-// Tab tính năng (radio + :checked — thuần CSS). `vis`: khóa hình minh hoạ dựng bằng CSS.
-const TABS = [
-  {
-    icon: I.palette, label: 'Cửa hàng & giao diện', vis: 'shop',
-    h: 'Cửa hàng đẹp, đúng chất thương hiệu của bạn',
-    d: 'Tự đổi mọi thứ trong trang quản trị — không cần biết một dòng code.',
-    bullets: ['Tự chỉnh banner, menu, màu sắc, logo, phông chữ', 'Chuẩn SEO: sitemap, dữ liệu có cấu trúc, tự lên Google', 'Blog bán hàng + trang nội dung tuỳ ý', 'Giỏ hàng trượt, xem nhanh sản phẩm — mượt như sàn lớn'],
-  },
-  {
-    icon: I.truck, label: 'Đơn hàng & vận chuyển', vis: 'orders',
-    h: 'Đơn về là chạy — từ chốt tới giao',
-    d: 'Kết nối hãng vận chuyển bằng tài khoản của CHÍNH BẠN, phí ship bạn tự cài.',
-    bullets: ['Kết nối GHN, GHTK bằng tài khoản riêng của bạn', 'Phí ship theo km (định vị GPS) hoặc theo vùng — bạn đặt luật', 'Tách vận đơn, giao một phần; khách tự tra cứu đơn bằng mã', 'Sửa đơn, đổi-trả, đối soát COD với hãng — đủ nghiệp vụ'],
-  },
-  {
-    icon: I.box, label: 'Kho & nhập hàng', vis: 'stock',
-    h: 'Tồn kho chuẩn tới từng biến thể',
-    d: 'Màu, size, phiên bản — mỗi biến thể một số tồn, không bao giờ bán lố.',
-    bullets: ['Tồn kho theo từng biến thể (màu / size / loại)', 'Nhập hàng từ nhà cung cấp — giá vốn bình quân tự tính', 'Kiểm kê hai lượt, cảnh báo sắp hết hàng', 'Báo cáo lãi lỗ (P&L) theo giá vốn thật'],
-  },
-  {
-    icon: I.percent, label: 'Khuyến mãi & khách quen', vis: 'promo',
-    h: 'Kéo khách mới, giữ khách quen',
-    d: 'Đủ công cụ tăng đơn — và mọi khuyến mãi đều tính đúng tiền tới từng đồng.',
-    bullets: ['Flash sale hẹn giờ, giá gạch tự áp lên cửa hàng', 'Mã giảm giá theo điều kiện bạn đặt', 'Điểm thưởng tích luỹ cho khách quen', 'CRM-lite, đánh giá sản phẩm, tài khoản khách hàng'],
-  },
-  {
-    icon: I.wallet, label: 'Tiền về thẳng túi', vis: 'money',
-    h: 'Chúng tôi không bao giờ giữ tiền của bạn',
-    d: 'Khách trả COD hoặc quét VietQR — tiền vào thẳng tài khoản ngân hàng của bạn.',
-    bullets: ['COD + chuyển khoản VietQR vào THẲNG tài khoản bạn', 'Không trung gian, không ôm dòng tiền — bao giờ cũng vậy', 'Đối soát chuyển khoản tự động, đối soát COD với hãng ship', 'Cảnh báo ngay khi đường tiền trục trặc'],
-  },
+
+// ── BẢNG SO SÁNH ────────────────────────────────────────────────────────────
+// Dòng cuối là chỗ CHÚNG TA THUA. Bảng so sánh thắng mọi ô thì người đọc trừ điểm
+// ngay, và đó là phản ứng đúng. Số liệu của bên khác mô tả CÁCH VẬN HÀNH phổ biến,
+// không phải báo giá — không bịa con số của đối thủ.
+const CMP_COLS = ['Evotech', 'Nền tảng phổ thông', 'Sàn TMĐT'];
+const CMP = [
+  ['Hoa hồng trên mỗi đơn',
+    ['ok', '<b>0%.</b> Bạn giữ trọn doanh thu, chỉ trả phí thuê bao cố định'],
+    ['mid', 'Không thu hoa hồng, nhưng cộng phí cổng thanh toán mỗi giao dịch'],
+    ['no', 'Chiết khấu theo ngành hàng, cộng phí thanh toán và phí dịch vụ']],
+  ['Tiền về tài khoản shop',
+    ['ok', 'Ngay khi khách chuyển khoản, vào <b>thẳng tài khoản của shop</b>'],
+    ['mid', 'Qua ví trung gian rồi mới rút về ngân hàng'],
+    ['no', 'Chỉ giải ngân sau khi giao thành công và hết hạn khiếu nại']],
+  ['Dữ liệu khách hàng',
+    ['ok', 'Shop sở hữu toàn bộ. Xuất khách, đơn, doanh thu bất cứ lúc nào'],
+    ['mid', 'Shop sở hữu, nhưng xuất đầy đủ thường phải lên gói cao'],
+    ['no', 'Sàn giữ. Số điện thoại và địa chỉ khách bị che một phần']],
+  ['Đối soát thanh toán',
+    ['ok', 'Khớp <b>đúng tài khoản nhận</b>, không chỉ khớp mã đơn. Khách bấm trả hai lần cũng không cộng hai lần'],
+    ['mid', 'Tuỳ cổng thanh toán bạn gắn vào; lệch thì tự dò tay'],
+    ['mid', 'Sàn đối soát theo kỳ; lệch phải mở khiếu nại và chờ']],
+  ['Khách mua khi mạng yếu',
+    ['ok', 'Trang bán và trang đặt hàng <b>chạy được cả khi không có JavaScript</b>'],
+    ['mid', 'Phụ thuộc JavaScript. Mạng chập chờn là trang trắng, mất đơn mà không ai biết'],
+    ['no', 'Bắt tải app, hoặc trang nặng vài megabyte']],
+  ['Tên miền riêng của shop',
+    ['ok', 'Có, kèm chứng chỉ HTTPS tự cấp và tự gia hạn'],
+    ['mid', 'Có, thường nằm ở gói cao'],
+    ['no', 'Không — địa chỉ luôn mang tên sàn']],
+  ['Đối thủ nằm cạnh sản phẩm',
+    ['ok', 'Không. Trang chỉ có sản phẩm của bạn'],
+    ['ok', 'Không'],
+    ['no', 'Có. Khách so giá với shop khác ngay dưới sản phẩm của bạn']],
+  ['Nguồn khách có sẵn',
+    ['no', '<b>Chưa có.</b> Bạn mang khách về, chúng tôi lo phần bán và giữ chân'],
+    ['no', 'Chưa có'],
+    ['ok', 'Có sẵn lượng truy cập lớn — đổi bằng chiết khấu và cạnh tranh giá']],
 ];
-const INDUSTRIES = [
-  { icon: I.shirt, name: 'Thời trang' },
-  { icon: I.cosmetic, name: 'Mỹ phẩm' },
-  { icon: I.sofa, name: 'Nội thất' },
-  { icon: I.device, name: 'Điện tử' },
-  { icon: I.baby, name: 'Mẹ & Bé' },
-  { icon: I.food, name: 'Thực phẩm' },
-  { icon: I.book, name: 'Nhà sách' },
-  { icon: I.gift, name: 'Quà tặng · Handmade' },
-  { icon: I.coffee, name: 'Cà phê & Trà' },
-  { icon: I.dumbbell, name: 'Thể thao' },
-  { icon: I.paw, name: 'Thú cưng' },
-  { icon: I.gem, name: 'Trang sức' },
-];
-const STEPS = [
-  { n: '1', t: 'Đăng ký miễn phí', d: 'Điền email và tên shop — 2 phút, không cần thẻ. Xác nhận email là có ngay cửa hàng dùng thử 14 ngày.' },
-  { n: '2', t: 'Tự dựng trong 3 phút', d: 'Cửa hàng mẫu dựng sẵn: đổi logo, màu, đăng sản phẩm là xong. Cần thì chúng tôi dựng giúp tận tay.' },
-  { n: '3', t: 'Bắt đầu bán', d: 'Nhận đơn, giao hàng, thu tiền — COD và VietQR vào thẳng tài khoản bạn.' },
-];
-// 4 khối tính năng xen kẽ (chữ ↔ hình đổi bên, hiệu ứng trượt vào khi cuộn).
-const FLAGS = [
-  {
-    kick: 'Đường tiền', icon: I.wallet, vis: 'qr',
-    h: 'Tiền của bạn không qua tay ai',
-    d: 'Khác với sàn thương mại điện tử, ở đây khách thanh toán là tiền vào thẳng tài khoản ngân hàng CỦA BẠN — nền tảng không giữ hộ, không đối soát chậm, không phí rút tiền.',
-    bullets: ['Mỗi shop một cấu hình VietQR riêng, tiền về tài khoản riêng', 'Hệ thống tự khớp tiền vào với đơn hàng', 'Sao kê rõ ràng — bạn luôn biết đồng nào của đơn nào'],
-  },
-  {
-    kick: 'Chống thất thoát', icon: I.shield, vis: 'guard',
-    h: 'Bớt đơn ảo, bớt bom hàng',
-    d: 'Bán COD ở Việt Nam sợ nhất đơn ảo. Nền tảng chặn từ gốc — không cần bạn phải ngồi soi từng đơn.',
-    bullets: ['Đơn COD quá hạn không nhận — tự huỷ, nhả lại tồn kho', 'Chặn spam đặt đơn hàng loạt từ cùng một nguồn', 'Tự gắn cờ cảnh báo số điện thoại đặt bất thường'],
-  },
-  {
-    kick: 'Khách quen', icon: I.users, vis: 'loyal',
-    h: 'Khách mua một lần, quay lại nhiều lần',
-    d: 'Đơn đầu tiên là quảng cáo, đơn thứ hai mới là lãi. Đủ công cụ để khách cũ quay lại mà không tốn thêm tiền quảng cáo.',
-    bullets: ['Điểm thưởng tích luỹ — mua càng nhiều, ưu đãi càng lớn', 'Tài khoản khách hàng: lịch sử đơn, sổ địa chỉ, đặt lại nhanh', 'CRM-lite: biết ai mua gì, bao nhiêu lần, lần cuối khi nào'],
-  },
-  {
-    kick: 'An toàn', icon: I.doc, vis: 'safe',
-    h: 'Bạn ngủ ngon, hệ thống tự lo',
-    d: 'Máy chủ, HTTPS, sao lưu, giám sát — phần việc "ngầm" nhưng sống còn, chúng tôi trực thay bạn.',
-    bullets: ['Sao lưu mã hoá định kỳ, khôi phục được khi có sự cố', 'HTTPS tự động cho cả tên miền riêng của bạn', 'Dữ liệu là của bạn — xuất toàn bộ ra file bất cứ lúc nào'],
-  },
-];
-// Khối SẢN PHẨM: danh sách bên trái, khung xem bên phải DÁN DÍNH và tự đổi theo chỗ
-// đang cuộn tới. Đồng bộ hai cột bằng CSS thuần (view-timeline-name trên từng mục ở cột
-// trái + timeline-scope ở khối cha → khung bên phải chạy theo dòng thời gian ĐÓ). Không JS,
-// hợp CSP nghiêm — trang này không có script-src nên mọi hiệu ứng buộc phải nằm ở CSS.
+
 const PRODUCTS = [
   {
     n: '01', icon: I.chart, kick: 'Tổng quan', vis: 'dash',
@@ -138,11 +137,62 @@ const PRODUCTS = [
     bullets: ['Trang bán và trang đặt hàng chạy được cả khi không có JavaScript', 'Chuẩn SEO: sitemap, dữ liệu có cấu trúc, tự lên Google', 'Tên miền riêng của bạn, HTTPS tự cấp và tự gia hạn'],
   },
 ];
-const TESTIMONIALS = [
-  { q: 'Trước tôi bán qua Facebook, đơn hay sót. Có website riêng, khách tự đặt, tôi chỉ việc gói hàng. Nhàn hẳn.', name: 'Chị Hương', role: 'Shop thời trang, Hà Nội' },
-  { q: 'Cái tôi thích nhất là tiền khách chuyển khoản vào thẳng tài khoản mình, không qua trung gian. Rõ ràng, yên tâm.', name: 'Anh Tuấn', role: 'Đồ nội thất, TP.HCM' },
-  { q: 'Không rành công nghệ mà vẫn có shop chuẩn SEO. Bên này dựng giúp hết, cần gì nhắn là được hỗ trợ.', name: 'Chị Mai', role: 'Mỹ phẩm handmade, Đà Nẵng' },
+
+const INDUSTRIES = [
+  { icon: I.shirt, name: 'Thời trang' },
+  { icon: I.cosmetic, name: 'Mỹ phẩm' },
+  { icon: I.sofa, name: 'Nội thất' },
+  { icon: I.device, name: 'Điện tử' },
+  { icon: I.baby, name: 'Mẹ & Bé' },
+  { icon: I.food, name: 'Thực phẩm' },
+  { icon: I.book, name: 'Nhà sách' },
+  { icon: I.gift, name: 'Quà tặng · Handmade' },
+  { icon: I.coffee, name: 'Cà phê & Trà' },
+  { icon: I.dumbbell, name: 'Thể thao' },
+  { icon: I.paw, name: 'Thú cưng' },
+  { icon: I.gem, name: 'Trang sức' },
 ];
+
+const STEPS = [
+  { n: '1', t: 'Đăng ký miễn phí', d: 'Điền email và tên shop — 2 phút, không cần thẻ. Xác nhận email là có ngay cửa hàng dùng thử 14 ngày.' },
+  { n: '2', t: 'Tự dựng trong 3 phút', d: 'Cửa hàng mẫu dựng sẵn: đổi logo, màu, đăng sản phẩm là xong. Cần thì chúng tôi dựng giúp tận tay.' },
+  { n: '3', t: 'Bắt đầu bán', d: 'Nhận đơn, giao hàng, thu tiền — COD và VietQR vào thẳng tài khoản bạn.' },
+];
+
+// 4 khối tính năng xen kẽ (chữ ↔ hình đổi bên, hiệu ứng trượt vào khi cuộn).
+const FLAGS = [
+  {
+    kick: 'Đường tiền', icon: I.wallet, vis: 'qr',
+    h: 'Tiền của bạn không qua tay ai',
+    d: 'Khác với sàn thương mại điện tử, ở đây khách thanh toán là tiền vào thẳng tài khoản ngân hàng CỦA BẠN — nền tảng không giữ hộ, không đối soát chậm, không phí rút tiền.',
+    bullets: ['Mỗi shop một cấu hình VietQR riêng, tiền về tài khoản riêng', 'Hệ thống tự khớp tiền vào với đơn hàng', 'Sao kê rõ ràng — bạn luôn biết đồng nào của đơn nào'],
+  },
+  {
+    kick: 'Chống thất thoát', icon: I.shield, vis: 'guard',
+    h: 'Bớt đơn ảo, bớt bom hàng',
+    d: 'Bán COD ở Việt Nam sợ nhất đơn ảo. Nền tảng chặn từ gốc — không cần bạn phải ngồi soi từng đơn.',
+    bullets: ['Đơn COD quá hạn không nhận — tự huỷ, nhả lại tồn kho', 'Chặn spam đặt đơn hàng loạt từ cùng một nguồn', 'Tự gắn cờ cảnh báo số điện thoại đặt bất thường'],
+  },
+  {
+    kick: 'Khách quen', icon: I.users, vis: 'loyal',
+    h: 'Khách mua một lần, quay lại nhiều lần',
+    d: 'Đơn đầu tiên là quảng cáo, đơn thứ hai mới là lãi. Đủ công cụ để khách cũ quay lại mà không tốn thêm tiền quảng cáo.',
+    bullets: ['Điểm thưởng tích luỹ — mua càng nhiều, ưu đãi càng lớn', 'Tài khoản khách hàng: lịch sử đơn, sổ địa chỉ, đặt lại nhanh', 'CRM-lite: biết ai mua gì, bao nhiêu lần, lần cuối khi nào'],
+  },
+  {
+    kick: 'An toàn', icon: I.doc, vis: 'safe',
+    h: 'Bạn ngủ ngon, hệ thống tự lo',
+    d: 'Máy chủ, HTTPS, sao lưu, giám sát — phần việc "ngầm" nhưng sống còn, chúng tôi trực thay bạn.',
+    bullets: ['Sao lưu mã hoá định kỳ, khôi phục được khi có sự cố', 'HTTPS tự động cho cả tên miền riêng của bạn', 'Dữ liệu là của bạn — xuất toàn bộ ra file bất cứ lúc nào'],
+  },
+];
+
+const PLANS = [
+  { code: 'platform', name: 'Platform', price: '990.000', unit: 'đ/tháng', hot: false, tagline: 'Bắt đầu bán online', feat: ['100 sản phẩm', 'Tên miền phụ .nentang.vn', 'COD + QR chuyển khoản', 'Quản lý đơn · tồn kho · danh mục'] },
+  { code: 'care', name: 'Care', price: '2.490.000', unit: 'đ/tháng', hot: true, tagline: 'Đầy đủ để bán tốt', feat: ['Tất cả gói Platform', 'Blog & SEO nâng cao', 'Trình dựng giao diện sâu', 'Hỗ trợ ưu tiên'] },
+  { code: 'growth', name: 'Growth', price: '5.900.000', unit: 'đ/tháng', hot: false, tagline: 'Cho cửa hàng lớn', feat: ['Tất cả gói Care', '500 sản phẩm', 'Tên miền riêng của bạn', 'Đối soát QR tự động'] },
+];
+
 const FAQS = [
   { q: 'Đăng ký dùng thử thế nào? Có mất phí không?', a: 'Bấm "Bắt đầu miễn phí", điền email và tên shop — sau khi xác nhận email bạn có ngay cửa hàng dùng thử 14 ngày, đầy đủ tính năng, không cần thẻ, không phí thiết lập.' },
   { q: 'Tôi không biết gì về kỹ thuật, có dùng được không?', a: 'Được. Cửa hàng mẫu dựng sẵn, bạn chỉ đổi logo, màu và đăng sản phẩm. Nếu cần, chúng tôi dựng giúp và hướng dẫn tận tay — mọi phần kỹ thuật (máy chủ, bảo mật, sao lưu) do chúng tôi lo.' },
@@ -151,497 +201,961 @@ const FAQS = [
   { q: 'Nếu muốn ngừng thì dữ liệu của tôi thế nào?', a: 'Dữ liệu là của bạn. Bạn có thể xuất toàn bộ sản phẩm, đơn hàng, khách hàng ra file bất cứ lúc nào trong trang quản trị.' },
   { q: 'Chi phí có phát sinh gì ẩn không?', a: 'Không. Bạn trả theo gói hằng tháng đã niêm yết, nâng/hạ gói bất cứ lúc nào. Không phí thiết lập, không phí ẩn, không thu phần trăm trên đơn hàng.' },
 ];
-const PLANS = [
-  { code: 'platform', name: 'Platform', price: '990.000', unit: 'đ/tháng', hot: false, tagline: 'Bắt đầu bán online', feat: ['100 sản phẩm', 'Tên miền phụ .nentang.vn', 'COD + QR chuyển khoản', 'Quản lý đơn · tồn kho · danh mục'] },
-  { code: 'care', name: 'Care', price: '2.490.000', unit: 'đ/tháng', hot: true, tagline: 'Đầy đủ để bán tốt', feat: ['Tất cả gói Platform', 'Blog & SEO nâng cao', 'Trình dựng giao diện sâu', 'Hỗ trợ ưu tiên'] },
-  { code: 'growth', name: 'Growth', price: '5.900.000', unit: 'đ/tháng', hot: false, tagline: 'Cho cửa hàng lớn', feat: ['Tất cả gói Care', '500 sản phẩm', 'Tên miền riêng của bạn', 'Đối soát QR tự động'] },
-];
 
-// CSS RIÊNG của trang chủ. PHẲNG + ẤM: không gradient tràn, không glass-blur, không nghiêng 3D,
-// không quả cầu, không chữ gradient, không shimmer. Chỉ còn: trượt-cuộn (có cổng an toàn),
-// nâng-hover nhẹ, tab-fade, marquee ngành hàng. Thuần CSS, không JS, hợp CSP nghiêm.
+
+// ── Khung minh hoạ giao diện, dựng bằng CSS (aria-hidden: trang trí thuần) ────
+// Dùng lại ở CẢ khối sản phẩm, hero và giải pháp — một nguồn, ba chỗ hiện.
+const VIS = {
+  dash: `<div class="lp-vis" aria-hidden="true"><div class="lp-vis-h"><i></i>Tổng quan hôm nay</div>
+    <div class="lp-num"><b>4.280.000đ</b><span>doanh thu hôm nay · 12 đơn</span></div>
+    <div class="lp-bars"><i style="height:38%"></i><i style="height:56%"></i><i style="height:44%"></i><i style="height:71%"></i><i style="height:62%"></i><i style="height:88%"></i><i class="on" style="height:74%"></i></div>
+    <div class="lp-row"><span class="n">Đơn chờ xác nhận</span><b>3</b><span class="lp-pill2 new">Cần làm</span></div>
+    <div class="lp-row"><span class="n">Sản phẩm sắp hết hàng</span><b>2</b><span class="lp-pill2 warn">Cần nhập</span></div></div>`,
+  orders: `<div class="lp-vis" aria-hidden="true"><div class="lp-vis-h"><i></i>Đơn hàng hôm nay</div>
+    <div class="lp-row"><span class="c">#1042</span><span class="n">Áo thun basic ×2</span><b>350.000đ</b><span class="lp-pill2 new">Mới</span></div>
+    <div class="lp-row"><span class="c">#1041</span><span class="n">Ghế gỗ sồi ×1</span><b>1.290.000đ</b><span class="lp-pill2 ship">Đang giao</span></div>
+    <div class="lp-row"><span class="c">#1040</span><span class="n">Son dưỡng ×3</span><b>250.000đ</b><span class="lp-pill2 done">Đã giao</span></div>
+    <div class="lp-row"><span class="c">GHN</span><span class="n">Mã vận đơn — khách tự tra cứu</span><span class="lp-pill2 done">Đã lấy hàng</span></div></div>`,
+  stock: `<div class="lp-vis" aria-hidden="true"><div class="lp-vis-h"><i></i>Tồn kho theo biến thể</div>
+    <div class="lp-row"><span class="n">Áo thun — Đen / M</span><span class="bar"><i style="width:72%"></i></span><b>36</b></div>
+    <div class="lp-row"><span class="n">Áo thun — Trắng / L</span><span class="bar"><i style="width:48%"></i></span><b>24</b></div>
+    <div class="lp-row"><span class="n">Son dưỡng — Đỏ gạch</span><span class="bar"><i class="lo" style="width:9%"></i></span><b>4</b><span class="lp-pill2 warn">Sắp hết</span></div>
+    <div class="lp-row"><span class="n">Phiếu nhập NCC An Phát — giá vốn tự tính</span><span class="lp-pill2 done">Đã nhận</span></div></div>`,
+  money: `<div class="lp-vis" aria-hidden="true"><div class="lp-vis-h"><i></i>Tiền vào tài khoản CỦA BẠN</div>
+    <div class="lp-credit"><span class="amt">+350.000đ</span><span class="src">VietQR · đơn #1042 — tự khớp</span><span class="tm">vừa xong</span></div>
+    <div class="lp-credit"><span class="amt">+1.290.000đ</span><span class="src">COD · hãng ship chuyển — đã đối soát</span><span class="tm">hôm nay</span></div>
+    <div class="lp-row"><span class="n">Nền tảng không giữ tiền — 0đ nằm ở trung gian</span><span class="lp-pill2 done">Luôn luôn</span></div></div>`,
+  shop: `<div class="lp-vis lp-shop" aria-hidden="true"><div class="lp-vis-h"><i></i>Cửa hàng của bạn</div>
+    <div class="sb">Bộ sưu tập mới về</div>
+    <div class="sg">
+      <div class="sc"><div class="si">${I.shirt}</div><div class="sl"></div></div>
+      <div class="sc"><div class="si">${I.sofa}</div><div class="sl"></div></div>
+      <div class="sc"><div class="si">${I.cosmetic}</div><div class="sl"></div></div>
+    </div></div>`,
+  qr: `<div class="lp-vis" aria-hidden="true"><div class="lp-vis-h"><i></i>Thanh toán VietQR</div>
+    <div class="lp-qr"><span class="q">${I.qr}</span><div><b>Quét là tiền về tài khoản bạn</b><span>Mỗi shop một cấu hình QR riêng — không ví trung gian</span></div></div>
+    <div class="lp-credit"><span class="amt">+499.000đ</span><span class="src">Khớp đơn #1039 tự động</span><span class="tm">3 phút trước</span></div></div>`,
+  guard: `<div class="lp-vis" aria-hidden="true"><div class="lp-vis-h"><i></i>Lá chắn đơn ảo</div>
+    <div class="lp-row"><span class="n">Đơn COD quá 7 ngày không nhận</span><span class="lp-pill2 warn">Tự huỷ + nhả kho</span></div>
+    <div class="lp-row"><span class="n">Cùng SĐT đặt dồn dập nhiều đơn</span><span class="lp-pill2 warn">Chặn vượt trần</span></div>
+    <div class="lp-row"><span class="n">SĐT đặt bất thường nhiều nguồn</span><span class="lp-pill2 ship">Gắn cờ chờ duyệt</span></div>
+    <div class="lp-row"><span class="n">Khách thật đặt hàng bình thường</span><span class="lp-pill2 done">Vào mượt</span></div></div>`,
+  loyal: `<div class="lp-vis" aria-hidden="true"><div class="lp-vis-h"><i></i>Khách quen của shop</div>
+    <div class="lp-row"><span class="n">Chị Lan — 5 đơn · lần cuối 3 ngày trước</span><span class="lp-pill2 done">Thân thiết</span></div>
+    <div class="lp-pts"><span class="ic">${I.star}</span><div><b>860 điểm tích luỹ</b><span>Đổi được 86.000đ cho đơn sau</span></div></div>
+    <div class="lp-coup"><span class="code">QUAYLAI15</span><span>Ưu đãi riêng gửi khách lâu chưa mua</span></div></div>`,
+  safe: `<div class="lp-vis" aria-hidden="true"><div class="lp-vis-h"><i></i>Trực hệ thống 24/7</div>
+    <div class="lp-row"><span class="n">Sao lưu mã hoá hằng ngày</span><span class="lp-pill2 done">Hoàn tất</span></div>
+    <div class="lp-row"><span class="n">Chứng chỉ HTTPS mọi tên miền</span><span class="lp-pill2 done">Tự gia hạn</span></div>
+    <div class="lp-row"><span class="n">Giám sát đường tiền webhook</span><span class="lp-pill2 done">Đang canh</span></div>
+    <div class="lp-row"><span class="n">Xuất toàn bộ dữ liệu của bạn</span><span class="lp-pill2 new">Bất cứ lúc nào</span></div></div>`,
+  promo: `<div class="lp-vis" aria-hidden="true"><div class="lp-vis-h"><i></i>Khuyến mãi đang chạy</div>
+    <div class="lp-flash"><b>FLASH SALE −30%</b><span class="cd"><i>02</i><i>11</i><i>45</i></span></div>
+    <div class="lp-coup"><span class="code">GIAM10</span><span>Giảm 10% cho đơn từ 500.000đ — hết hạn tự khoá</span></div>
+    <div class="lp-pts"><span class="ic">${I.star}</span><div><b>+120 điểm thưởng</b><span>Khách quen tích luỹ, đổi giảm giá lần sau</span></div></div></div>`,
+};
+
+// ── CSS RIÊNG của trang chủ ─────────────────────────────────────────────────
 const CSS = `
-/* ══ HERO: nền kem, một dải wash ấm rất nhẹ ở đỉnh (phẳng, không chấm/không cầu) ══ */
-.hero{position:relative;overflow:hidden;padding:80px 0 96px;background:var(--bg)}
-.hero::before{content:"";position:absolute;inset:0 0 auto;height:62%;z-index:-1;background:linear-gradient(180deg,var(--surf),transparent)}
-.hero-grid{position:relative;display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center}
-.hero h1{font-size:clamp(2.4rem,5vw,3.8rem);line-height:1.07;letter-spacing:-.03em;font-weight:800;margin:0 0 20px;text-wrap:balance}
-.hero h1 .g{color:var(--pri)}
-.hero .lead{font-size:clamp(1.06rem,2vw,1.26rem);color:var(--soft);max-width:566px;margin:0 0 30px}
-.hero-cta{display:flex;gap:14px;flex-wrap:wrap}
-.hero-trust{display:flex;gap:18px;flex-wrap:wrap;margin-top:26px}
-.hero-trust span{display:inline-flex;align-items:center;gap:6px;font-size:.86rem;color:var(--soft);font-weight:500}.hero-trust svg{width:16px;height:16px;color:var(--good)}
-/* ══ MOCKUP cửa hàng — PHẲNG, thẳng, viền ấm + đổ bóng mềm (không nghiêng 3D) ══ */
-.mock-wrap{position:relative}
-.mock{border-radius:16px;background:var(--card);border:1px solid var(--bd);box-shadow:0 30px 64px -40px rgba(33,26,22,.28);overflow:hidden}
-.mock-shot{display:block;width:100%;height:auto}
-.mock-bar{display:flex;align-items:center;gap:7px;padding:12px 15px;background:var(--surf);border-bottom:1px solid var(--bd)}
-.mock-bar i{width:11px;height:11px;border-radius:50%;background:#e3d8cc;display:block}
-.mock-bar i:nth-child(1){background:#e9b7a6}.mock-bar i:nth-child(2){background:#ecd3a0}.mock-bar i:nth-child(3){background:#b6d3bf}
-.mock-bar .url{margin-left:8px;flex:1;height:20px;border-radius:6px;background:var(--wash);font-size:.7rem;color:var(--mut);display:flex;align-items:center;padding:0 10px}
-.mk-screen{padding:16px}
-.mk-top{display:flex;align-items:center;gap:10px;margin-bottom:14px}
-.mk-logo{font-size:.8rem;font-weight:800;color:var(--pri);letter-spacing:-.01em}
-.mk-nav{flex:1;height:8px;border-radius:5px;background:var(--bd);max-width:130px}
-.mk-dot{width:26px;height:26px;border-radius:8px;background:var(--wash);border:1px solid var(--bd);display:grid;place-items:center;color:var(--pri)}.mk-dot svg{width:14px;height:14px}
-.mk-banner{height:80px;border-radius:12px;background:var(--surf);border:1px solid var(--bd);position:relative;margin-bottom:16px;display:flex;flex-direction:column;justify-content:center;padding:0 18px;color:var(--ink)}
-.mkb-t{font-size:.9rem;font-weight:700}
-.mkb-btn{margin-top:8px;align-self:flex-start;background:var(--pri);color:#fff;font-size:.72rem;font-weight:700;padding:5px 12px;border-radius:7px}
-.mk-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}
-.mk-card{border:1px solid var(--bd);border-radius:11px;overflow:hidden;background:var(--card)}
-.mk-img{aspect-ratio:1.1;display:grid;place-items:center;color:var(--pri);background:var(--wash)}.mk-img svg{width:28px;height:28px}
-.mk-body{padding:8px 9px 9px}
-.mk-l{height:7px;border-radius:4px;background:var(--bd);margin-bottom:8px;width:82%}
-.mk-row{display:flex;align-items:center;justify-content:space-between}
-.mk-price{font-size:.7rem;font-weight:800;color:var(--ink)}
-.mk-buy{width:22px;height:17px;border-radius:6px;background:var(--pri);display:grid;place-items:center}.mk-buy svg{width:11px;height:11px;color:#fff}
-.mk-float{position:absolute;z-index:2;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:11px 15px;display:flex;align-items:center;gap:10px;box-shadow:0 18px 40px -18px rgba(33,26,22,.3)}
-.mk-float .ico{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;flex:none}.mk-float .ico svg{width:16px;height:16px}
-.mk-float b{font-size:.85rem;display:block}.mk-float span{font-size:.72rem;color:var(--mut)}
-.mk-noti{left:-18px;bottom:24px}.mk-noti .ico{background:var(--wash);color:var(--pri)}
-.mk-pay{right:-14px;top:34px}.mk-pay .ico{background:color-mix(in srgb,var(--good) 15%,transparent);color:var(--good)}
-/* ══ STATS: dải số cam kết (nền kem-đào) ══ */
-.stats{border-top:1px solid var(--bd);border-bottom:1px solid var(--bd);background:var(--surf)}
-.stats .wrap{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;padding:38px 24px}
-.stat{position:relative;padding-left:18px}
-.stat::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:3px;border-radius:3px;background:var(--pri)}
-.stat .n{font-size:clamp(1.7rem,3.2vw,2.3rem);font-weight:800;letter-spacing:-.02em;color:var(--pri)}
-.stat .l{font-size:.9rem;color:var(--mut);margin-top:4px}
-/* ══ TAB TÍNH NĂNG — radio + :checked, thuần CSS, bàn phím dùng mũi tên ══ */
-.tabs{position:relative}
-.tabs>input{position:absolute;opacity:0;width:1px;height:1px;margin:0;pointer-events:none}
-/* Tab: MỘT HÀNG gọn (như Sapo). nowrap + overflow-x auto → không rớt 4+1; safe center =
-   vừa thì căn giữa, tràn (mobile) thì cuộn ngang không bị kẹp mất đầu. */
-.tabbar{display:flex;gap:8px;flex-wrap:nowrap;overflow-x:auto;justify-content:safe center;margin-bottom:36px;padding-bottom:4px;scrollbar-width:thin}
-.tabbar::-webkit-scrollbar{height:6px}.tabbar::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
-.tabbar label{display:inline-flex;align-items:center;gap:7px;padding:10px 16px;border-radius:999px;border:1.5px solid var(--bd);background:var(--card);font-weight:600;font-size:.9rem;color:var(--soft);cursor:pointer;transition:border-color .2s,color .2s,background .2s,transform .12s;white-space:nowrap;flex:0 0 auto}
-.tabbar label svg{width:16px;height:16px;flex:0 0 auto}
-.tabbar label:hover{border-color:color-mix(in srgb,var(--pri) 45%,var(--bd));color:var(--pri);transform:translateY(-1px)}
-#ft-0:checked~.tabbar label[for="ft-0"],#ft-1:checked~.tabbar label[for="ft-1"],#ft-2:checked~.tabbar label[for="ft-2"],#ft-3:checked~.tabbar label[for="ft-3"],#ft-4:checked~.tabbar label[for="ft-4"]{
-  background:var(--pri);border-color:transparent;color:#fff;box-shadow:0 8px 18px -10px color-mix(in srgb,var(--pri) 65%,transparent)}
-#ft-0:focus-visible~.tabbar label[for="ft-0"],#ft-1:focus-visible~.tabbar label[for="ft-1"],#ft-2:focus-visible~.tabbar label[for="ft-2"],#ft-3:focus-visible~.tabbar label[for="ft-3"],#ft-4:focus-visible~.tabbar label[for="ft-4"]{outline:3px solid var(--pri);outline-offset:2px}
-.pane{display:none;grid-template-columns:1fr 1fr;gap:48px;align-items:center;background:var(--card);border:1px solid var(--bd);border-radius:20px;padding:40px 44px;box-shadow:0 20px 50px -42px rgba(33,26,22,.24)}
-#ft-0:checked~.panes .pane:nth-child(1),#ft-1:checked~.panes .pane:nth-child(2),#ft-2:checked~.panes .pane:nth-child(3),#ft-3:checked~.panes .pane:nth-child(4),#ft-4:checked~.panes .pane:nth-child(5){display:grid}
-.pane h3{font-size:clamp(1.3rem,2.4vw,1.7rem);font-weight:800;letter-spacing:-.02em;margin:0 0 10px}
-.pane .pd{color:var(--mut);margin:0 0 18px}
-.pane ul{list-style:none;margin:0 0 22px;padding:0;display:flex;flex-direction:column;gap:12px}
-.pane li{display:flex;gap:10px;align-items:flex-start;color:var(--soft);font-size:.97rem}
-.pane li svg{width:19px;height:19px;flex:none;color:var(--good);margin-top:2px}
-.pane .plink{display:inline-flex;align-items:center;gap:7px;color:var(--pri);font-weight:700}
-.pane .plink svg{width:17px;height:17px;transition:transform .18s}.pane .plink:hover svg{transform:translateX(3px)}
-/* hình minh hoạ trong tab/khối xen kẽ — khung "màn hình" chung (phẳng) */
-.vis{border:1px solid var(--bd);border-radius:16px;background:var(--card);box-shadow:0 22px 48px -40px rgba(33,26,22,.3);padding:18px;min-width:0}
-.vis-h{display:flex;align-items:center;gap:8px;font-size:.78rem;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;margin-bottom:14px}
-.vis-h i{width:8px;height:8px;border-radius:50%;background:var(--good);display:block}
-.vrow{display:flex;align-items:center;gap:12px;padding:11px 12px;border:1px solid var(--bd);border-radius:11px;margin-bottom:9px;background:var(--bg)}
-.vrow:last-child{margin-bottom:0}
-.vrow .vc{font-size:.78rem;font-weight:800;color:var(--mut);flex:none}
-.vrow .vn{flex:1;font-size:.86rem;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.vrow b{font-size:.84rem;flex:none}
-.pill{font-size:.7rem;font-weight:700;padding:3px 10px;border-radius:999px;flex:none}
-.pill.new{background:color-mix(in srgb,var(--pri) 13%,transparent);color:var(--prid)}
-.pill.ship{background:color-mix(in srgb,#C67A1E 16%,transparent);color:#9A5B12}
-.pill.done{background:color-mix(in srgb,var(--good) 15%,transparent);color:var(--good)}
-.pill.warn{background:color-mix(in srgb,#C0392B 13%,transparent);color:#B02A1C}
-.vbar{flex:1;height:8px;border-radius:5px;background:var(--bd);overflow:hidden}.vbar i{display:block;height:100%;border-radius:5px;background:var(--pri)}
-.vbar i.lo{background:#C0392B}
-.vqr{display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:center;border:1px solid var(--bd);border-radius:14px;padding:16px;background:var(--bg);margin-bottom:12px}
-.vqr .q{width:74px;height:74px;border-radius:10px;background:var(--ink);color:var(--card);display:grid;place-items:center}.vqr .q svg{width:52px;height:52px}
-.vqr b{display:block;font-size:1rem}.vqr span{font-size:.8rem;color:var(--mut)}
-.vcredit{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--good) 30%,var(--bd));border-radius:11px;background:color-mix(in srgb,var(--good) 7%,var(--bg));margin-bottom:9px}
-.vcredit:last-child{margin-bottom:0}
-.vcredit .amt{font-weight:800;color:var(--good);font-size:.92rem;flex:none}
-.vcredit .src{flex:1;font-size:.82rem;color:var(--soft)}.vcredit .tm{font-size:.74rem;color:var(--mut);flex:none}
-.vflash{border-radius:14px;background:var(--pri);color:#fff;padding:16px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
-.vflash b{font-size:1.02rem}.vflash .cd{display:flex;gap:5px}.vflash .cd i{background:rgba(0,0,0,.24);border-radius:7px;padding:5px 8px;font-style:normal;font-weight:800;font-size:.86rem}
-.vcoupon{display:flex;align-items:center;gap:12px;border:1.6px dashed color-mix(in srgb,var(--pri) 55%,var(--bd));border-radius:12px;padding:12px 14px;background:color-mix(in srgb,var(--pri) 6%,var(--bg));margin-bottom:12px}
-.vcoupon .code{font-weight:800;letter-spacing:.06em;color:var(--pri);flex:none}.vcoupon span{font-size:.82rem;color:var(--soft)}
-.vpts{display:flex;align-items:center;gap:10px;padding:11px 13px;border:1px solid var(--bd);border-radius:12px;background:var(--bg)}
-.vpts .ic{width:30px;height:30px;border-radius:9px;background:color-mix(in srgb,#C67A1E 16%,transparent);color:#9A5B12;display:grid;place-items:center;flex:none}.vpts .ic svg{width:16px;height:16px}
-.vpts b{font-size:.88rem;display:block}.vpts span{font-size:.76rem;color:var(--mut)}
-.vshop .sb{height:62px;border-radius:11px;background:var(--surf);border:1px solid var(--bd);margin-bottom:12px;display:flex;align-items:center;padding:0 16px;color:var(--ink);font-weight:700;font-size:.86rem}
-.vshop .sg{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.vshop .sc{border:1px solid var(--bd);border-radius:10px;overflow:hidden}
-.vshop .si{aspect-ratio:1.15;display:grid;place-items:center;color:var(--pri);background:var(--wash)}.vshop .si svg{width:24px;height:24px}
-.vshop .sl{height:6px;border-radius:4px;background:var(--bd);margin:8px 8px 10px;width:70%}
-/* ══ NGÀNH HÀNG: marquee 2 hàng ngược chiều — có gate; không hỗ trợ/giảm chuyển động → lưới tĩnh ══ */
-.ind-wrap{background:var(--surf)}
-.mq{overflow:hidden;padding:6px 0}
-.mq-inner{display:flex}
-.mq-set{display:flex;flex-wrap:wrap;justify-content:center;gap:14px;width:100%}
-.mq-set.clone{display:none}
-.mchip{display:inline-flex;align-items:center;gap:11px;padding:9px 20px 9px 10px;border:1px solid var(--bd);border-radius:999px;background:var(--card);font-weight:600;font-size:.95rem;white-space:nowrap;box-shadow:0 1px 2px rgba(33,26,22,.05);transition:transform .18s,border-color .18s,box-shadow .18s}
-.mchip:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--pri) 40%,var(--bd));box-shadow:0 12px 24px -16px color-mix(in srgb,var(--pri) 45%,transparent)}
-.mchip .mi{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;color:var(--pri);background:var(--wash);flex:none}.mchip .mi svg{width:19px;height:19px}
-/* ══ 3 BƯỚC: huy hiệu số phẳng + đường nối ══ */
-.steps{display:grid;gap:24px;grid-template-columns:repeat(3,1fr);position:relative}
-.step{text-align:center;padding:0 8px;position:relative}
-.step .n{width:60px;height:60px;border-radius:50%;background:var(--pri);color:#fff;font-weight:800;font-size:1.4rem;display:grid;place-items:center;margin:0 auto 16px;box-shadow:0 12px 24px -14px color-mix(in srgb,var(--pri) 70%,transparent);position:relative;z-index:1;border:4px solid var(--bg)}
-.step h3{margin:0 0 6px;font-size:1.2rem}.step p{margin:0;color:var(--mut);font-size:.97rem}
-@media(min-width:961px){.steps::before{content:"";position:absolute;top:30px;left:17%;right:17%;height:2px;background:repeating-linear-gradient(90deg,color-mix(in srgb,var(--pri) 40%,var(--bd)) 0 10px,transparent 10px 20px)}}
-/* ══ KHỐI TÍNH NĂNG XEN KẼ ══ */
-.flag{display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:center;padding:34px 0}
-.flag .kick2{display:inline-flex;align-items:center;gap:8px;font-size:.8rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--prid);background:color-mix(in srgb,var(--pri) 12%,var(--bg));padding:6px 14px;border-radius:999px;margin:0 0 14px}
-.flag .kick2 svg{width:15px;height:15px}
-.flag h3{font-size:clamp(1.4rem,2.6vw,1.9rem);font-weight:800;letter-spacing:-.02em;margin:0 0 12px;text-wrap:balance}
-.flag .fd{color:var(--mut);margin:0 0 18px;line-height:1.7}
-.flag ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:11px}
-.flag li{display:flex;gap:10px;align-items:flex-start;color:var(--soft);font-size:.97rem}
-.flag li svg{width:19px;height:19px;flex:none;color:var(--good);margin-top:2px}
-.flag.rev .flag-vis{order:-1}
-/* ══ TESTIMONIALS (thẻ phẳng, viền ấm, bóng mềm — không glass) ══ */
-.tst-grid{display:grid;gap:22px;grid-template-columns:repeat(3,1fr)}
-.tst{background:var(--card);border:1px solid var(--bd);border-radius:18px;padding:30px;display:flex;flex-direction:column;transition:transform .25s cubic-bezier(.2,.7,.2,1),box-shadow .25s,border-color .25s}
-.tst:hover{transform:translateY(-4px);border-color:color-mix(in srgb,var(--pri) 28%,var(--bd));box-shadow:0 22px 44px -32px color-mix(in srgb,var(--pri) 40%,transparent)}
-.tst .quote{font-size:2.8rem;line-height:1;color:var(--pri);font-family:Georgia,"Times New Roman",serif;height:26px;opacity:.55}
-.tst p{margin:12px 0 20px;color:var(--soft);font-size:1rem;line-height:1.7;flex:1}
-.tst .who{display:flex;align-items:center;gap:12px}
-.tst .av{width:44px;height:44px;border-radius:50%;background:var(--pri);color:#fff;font-weight:700;display:grid;place-items:center}
-.tst .nm{font-weight:700;font-size:.95rem}.tst .rl{font-size:.85rem;color:var(--mut)}
-/* ══ PRICING (nền kem-đào) ══ */
-.pricing{background:var(--surf)}
-.plans{display:grid;gap:24px;grid-template-columns:repeat(3,1fr);align-items:start}
-.plan{position:relative;background:var(--card);border:1px solid var(--bd);border-radius:20px;padding:34px 28px;display:flex;flex-direction:column;transition:transform .25s,box-shadow .25s}
-.plan:hover{transform:translateY(-4px);box-shadow:0 22px 46px -34px rgba(33,26,22,.3)}
-.plan.hot{border:2px solid var(--pri);box-shadow:0 28px 56px -36px color-mix(in srgb,var(--pri) 55%,transparent);transform:translateY(-8px)}
-.plan.hot:hover{transform:translateY(-12px)}
-.plan-badge{position:absolute;top:-14px;left:50%;transform:translateX(-50%);background:var(--pri);color:#fff;font-size:.76rem;font-weight:700;padding:6px 16px;border-radius:999px;white-space:nowrap;box-shadow:0 8px 18px -8px color-mix(in srgb,var(--pri) 70%,transparent)}
-.plan-tag{font-size:.85rem;color:var(--mut);font-weight:600}
-.plan-name{font-weight:800;font-size:1.35rem;margin:2px 0 6px}
-.plan-price{font-size:2.3rem;font-weight:800;letter-spacing:-.02em;margin:0 0 22px}.plan-price span{font-size:.95rem;font-weight:500;color:var(--mut)}
-.plan ul{list-style:none;padding:0;margin:0 0 26px;flex:1;display:flex;flex-direction:column;gap:12px}
-.plan li{display:flex;align-items:flex-start;gap:10px;color:var(--soft);font-size:.96rem}
-.plan li svg{width:18px;height:18px;flex:none;color:var(--good);margin-top:2px}
-.plan-note{text-align:center;color:var(--mut);font-size:.94rem;margin-top:30px}
-.plan-note a{color:var(--pri);font-weight:600}.plan-note a:hover{text-decoration:underline}
-/* ══ CTA CUỐI ══ */
-.cta-box .cta-sub{font-size:1.02rem;opacity:.92;margin-top:-16px;margin-bottom:26px;position:relative}
-.cta-box .cta-row{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;position:relative}
-.cta-box .btn-ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.55)}.cta-box .btn-ghost:hover{border-color:#fff;color:#fff}
-/* ══ CHỐNG TRÀN NGANG — ba lỗi ĐO ĐƯỢC trên bản trước, ba nguyên nhân khác nhau ══
-   Đo bằng headless_shell ở bề rộng thật, so scrollWidth với clientWidth (KHÔNG so với
-   innerWidth: innerWidth còn tính cả thanh cuộn nên bỏ lọt tràn 15px).
-   (1) 360px — sw 495/345. Ô .vrow trong khối minh hoạ là flex một dòng; bề rộng tối
-       thiểu của nó lên tới 391px, kéo min-content của .vis lên 429px. Ô lưới mặc định
-       min-width:auto nên cột KHÔNG co xuống dưới mức đó → đẩy cả trang. Cho .vrow và
-       các ô cùng họ xuống dòng khi màn hẹp.
-   (2) 768px — sw 771/753. Trạng thái ĐẦU của hiệu ứng trượt ngang (.srl/.srr dịch 42px)
-       nằm ngoài mép phải. Nội dung đúng, nhưng trong lúc chưa cuộn tới thì trang cuộn
-       ngang được. Cắt ở đúng khối dùng hiệu ứng đó — KHÔNG cắt toàn trang, vì cắt ở tổ
-       tiên sẽ phá position:sticky của khối sản phẩm.
-   (3) 1024px — sw 1143/1009. Ba thẻ giá giữ nguyên 3 cột tới tận 960px; min-content mỗi
-       thẻ 356px nên 3×356 + gap vượt 961px chỗ trống. Cho track co được và đổi bố cục
-       sớm hơn. ══ */
-.vis{min-width:0}
-@media(max-width:820px){
-  .vrow,.vcredit,.vcoupon,.vpts,.vflash{flex-wrap:wrap}
-  .vrow .vn,.vcredit .src,.vcoupon span{flex:1 1 100%;min-width:0;white-space:normal;overflow:visible;text-overflow:clip}
-  .vqr{grid-template-columns:1fr}
+/* ══════════════════════════════════════════════════════════════════════════════
+   TRANG CHỦ — hệ thiết kế riêng, phủ lên BASE_CSS.
+   Xanh cobalt trên nền tối ở hero, sáng ở thân trang. Phông Be Vietnam Pro TỰ-HOST,
+   chỉ có 400/600/800 nên KHÔNG dùng 500/700/900: khai một cân nặng không có file thì
+   trình duyệt tự bóp chữ, và nó xấu theo kiểu rất khó chỉ tên.
+   ══════════════════════════════════════════════════════════════════════════════ */
+:root{
+  --lp-blue:#0045FF; --lp-blue-h:#0038CC; --lp-blue-br:#2286FF;
+  --lp-b100:#CDDAFF; --lp-b050:#EAF0FF; --lp-b025:#EFF4FF;
+  --lp-ink:#141723; --lp-body:#2A2F3D; --lp-mut:#5A6172; --lp-mut2:#6C7280;
+  --lp-line:#E5E7EB; --lp-soft:#EEF1F6; --lp-alt:#F5F6F8;
+  --lp-navy:#0A1024; --lp-deep:#080B14;
+  --lp-ok:#15803D; --lp-ok-bg:#E7F6ED;
+  --lp-warn:#B45309; --lp-warn-bg:#FDF1DF;
+  --lp-bad:#B91C1C; --lp-bad-bg:#FCEBEB;
+  --lp-hero:radial-gradient(120% 95% at 62% 42%,#143E96 0%,#0B1A4A 46%,#080B14 100%);
+  --lp-r:12px; --lp-r2:16px; --lp-r3:20px; --lp-r4:28px; --lp-pill:9999px;
+  --lp-sh:0 4px 20px rgba(20,23,35,.08);
+  --lp-sh2:0 12px 40px rgba(20,23,35,.10);
+  --lp-t:240ms; --lp-e:cubic-bezier(.22,1,.36,1);
 }
-.flags{overflow-x:clip}
-.flag>*,.pane>*,.prod-grid>*,.prod-list,.plan{min-width:0}
-.plans{grid-template-columns:repeat(3,minmax(0,1fr))}
-@media(max-width:1100px){
-  .plans{grid-template-columns:1fr;max-width:440px;margin:0 auto}
-  .plan.hot{transform:none}
-}
-/* ══ KHỐI SẢN PHẨM — cột trái cuộn, cột phải DÁN DÍNH và đổi theo ══
-   Đồng bộ hai cột KHÔNG dùng JS: mỗi mục bên trái đặt một view-timeline-name, khối cha
-   mở timeline-scope, khung bên phải chạy animation theo ĐÚNG dòng thời gian của mục
-   tương ứng. Trang này CSP default-src 'none' và không có script-src, nên JS không phải
-   lựa chọn — không phải sở thích.
-   CỔNG AN TOÀN: mặc định cột phải ẨN và mỗi mục tự mang khung minh hoạ của nó ngay dưới
-   chữ. Chỉ khi trình duyệt hỗ trợ ĐỦ (timeline-scope + animation-timeline), màn đủ rộng
-   và người dùng không chọn giảm chuyển động thì mới đổi sang bố cục dán dính. Trình duyệt
-   cũ nhận một trang bình thường đầy đủ nội dung, không có ô nào kẹt trống. ══ */
-.prod{background:var(--surf)}
-.prod-grid{display:grid;gap:0;margin-top:40px;align-items:start}
-.pitem{padding:44px 0;border-top:1px solid var(--bd)}
-.pitem:first-child{border-top:0;padding-top:0}
-.pkick{display:flex;align-items:center;gap:9px;margin:0 0 12px;font-size:.78rem;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--pri)}
-.pkick .pn{display:grid;place-items:center;width:26px;height:26px;border-radius:8px;background:color-mix(in srgb,var(--pri) 12%,transparent);font-variant-numeric:tabular-nums;letter-spacing:0}
-.pkick svg{width:17px;height:17px}
-.pitem h3{margin:0 0 10px;font-size:clamp(1.3rem,2.4vw,1.85rem);font-weight:800;letter-spacing:-.02em;text-wrap:balance}
-.pitem .pd{margin:0 0 16px;color:var(--soft)}
-.pitem ul{display:grid;gap:9px;margin:0;padding:0;list-style:none}
-.pitem li{display:flex;gap:10px;align-items:flex-start;font-size:.97rem;color:var(--soft)}
-.pitem li svg{flex:none;width:18px;height:18px;margin-top:3px;color:var(--good)}
-.pvis-in{margin-top:22px}
-.prod-stick{display:none}
-.pstage{display:grid;min-width:0}
-.pframe{grid-area:1/1;min-width:0}
+body{background:#fff;color:var(--lp-body);font-family:'Be Vietnam Pro',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+     font-size:clamp(15.5px,.95rem + .1vw,17px);line-height:1.7;overflow-x:hidden}
+main{display:block}
+.ct{width:100%;max-width:1240px;margin-inline:auto;padding-inline:clamp(20px,4.4vw,56px)}
+.lp h1,.lp h2,.lp h3,.lp h4{color:var(--lp-ink);text-wrap:balance;letter-spacing:-.015em;margin:0}
+.lp p{margin:0;text-wrap:pretty}
+.lp ul{margin:0;padding:0;list-style:none}
+.lp a{color:inherit;text-decoration:none}
+.lp :focus-visible{outline:3px solid rgba(0,69,255,.5);outline-offset:2px;border-radius:5px}
+.lp-dark :focus-visible{outline-color:rgba(255,255,255,.8)}
+.lp-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 
+.lp-eb{display:inline-flex;align-items:center;gap:10px;font-size:.8rem;font-weight:800;
+       letter-spacing:.1em;text-transform:uppercase;color:var(--lp-blue)}
+.lp-eb::before{content:'';width:22px;height:2px;background:currentColor;border-radius:2px}
+.lp-h2{margin-top:14px;font-size:clamp(1.6rem,1.15rem + 1.9vw,2.85rem);font-weight:800;line-height:1.16;text-transform:uppercase}
+.lp-h2 em{font-style:normal;color:var(--lp-blue)}
+.lp-sub{margin-top:16px;font-size:clamp(.97rem,.92rem + .2vw,1.12rem);line-height:1.65;color:var(--lp-mut);max-width:62ch}
+.lp-sec{padding:64px 0}
+@media(min-width:1024px){.lp-sec{padding:104px 0}}
+
+/* ── Nút ─────────────────────────────────────────────────────────────────── */
+.lp-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;height:48px;
+        padding:0 24px;border-radius:var(--lp-pill);font-weight:600;font-size:1rem;
+        transition:background var(--lp-t),color var(--lp-t),transform 140ms var(--lp-e)}
+.lp-btn svg{width:18px;height:18px;flex:none}
+.lp-b-pri{background:var(--lp-blue);color:#fff}
+.lp-b-pri:hover{background:var(--lp-blue-h)}
+.lp-b-gh{border:1px solid var(--lp-line);color:var(--lp-ink);background:#fff}
+.lp-b-gh:hover{border-color:var(--lp-blue);color:var(--lp-blue)}
+.lp-dark .lp-b-gh{border-color:rgba(255,255,255,.3);color:#fff;background:transparent}
+.lp-dark .lp-b-gh:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.5)}
+
+/* Nút pill trắng có núm xanh — chữ ký thị giác của trang */
+.lp-knob{height:56px;background:#fff;color:var(--lp-navy);font-weight:800;font-size:1.05rem;
+         padding:6px 6px 6px 26px;gap:18px;box-shadow:var(--lp-sh2)}
+.lp-knob:hover{background:#fff;transform:translateY(-1px)}
+.lp-knob i{display:grid;place-items:center;width:44px;height:44px;border-radius:var(--lp-pill);
+           background:var(--lp-blue);color:#fff;flex:none;transition:transform 140ms var(--lp-e)}
+.lp-knob:hover i{transform:translateX(3px)}
+
+/* ── HEADER thanh nổi ────────────────────────────────────────────────────── */
+.lp-hdr{position:fixed;inset:12px 0 auto;z-index:60;transition:transform 300ms var(--lp-e)}
+.lp-hdr.hide{transform:translateY(calc(-100% - 16px))}
+.lp-pill{display:flex;align-items:center;gap:14px;height:62px;padding:0 10px 0 20px;
+         border-radius:var(--lp-pill);background:rgba(11,16,36,.55);
+         border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(14px);
+         transition:background var(--lp-t),border-color var(--lp-t),box-shadow var(--lp-t)}
+.lp-hdr.solid .lp-pill{background:#fff;border-color:var(--lp-line);box-shadow:var(--lp-sh)}
+.lp-brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:1.06rem;color:#fff;letter-spacing:-.02em}
+.lp-hdr.solid .lp-brand{color:var(--lp-ink)}
+.lp-brand .mk{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;background:var(--lp-blue);color:#fff}
+.lp-brand .mk svg{width:17px;height:17px}
+.lp-nav{display:none}
+@media(min-width:1080px){
+  .lp-nav{display:flex;gap:4px;margin-inline:auto}
+  .lp-nav a{padding:9px 14px;border-radius:var(--lp-pill);font-size:.95rem;font-weight:600;
+            color:rgba(255,255,255,.82);transition:background var(--lp-t),color var(--lp-t)}
+  .lp-nav a:hover{background:rgba(255,255,255,.12);color:#fff}
+  .lp-hdr.solid .lp-nav a{color:var(--lp-mut)}
+  .lp-hdr.solid .lp-nav a:hover{background:var(--lp-b025);color:var(--lp-blue)}
+}
+.lp-hdr-act{display:flex;align-items:center;gap:8px;margin-left:auto}
+@media(min-width:1080px){.lp-hdr-act{margin-left:0}}
+.lp-login{display:none}
+@media(min-width:720px){
+  .lp-login{display:inline-flex;align-items:center;gap:7px;font-size:.93rem;font-weight:600;
+            padding:0 12px;color:rgba(255,255,255,.82)}
+  .lp-login svg{width:17px;height:17px}
+  .lp-hdr.solid .lp-login{color:var(--lp-mut)}
+}
+.lp-hdr .lp-btn{height:44px;padding:0 20px;font-size:.95rem}
+.lp-burger{display:grid;place-items:center;width:44px;height:44px;border-radius:var(--lp-pill);
+           border:1px solid rgba(255,255,255,.24);color:#fff;background:none;cursor:pointer}
+.lp-hdr.solid .lp-burger{border-color:var(--lp-line);color:var(--lp-ink)}
+@media(min-width:1080px){.lp-burger{display:none}}
+
+.lp-scrim{position:fixed;inset:0;z-index:70;background:rgba(8,11,20,.6);opacity:0;
+          transition:opacity var(--lp-t)}
+.lp-scrim.on{opacity:1}
+.lp-drawer{position:fixed;inset:0 0 0 auto;z-index:71;width:min(86vw,340px);background:#fff;
+           padding:24px 20px calc(24px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:6px;
+           transform:translateX(100%);transition:transform 280ms var(--lp-e);overflow-y:auto}
+.lp-drawer.on{transform:none}
+.lp-drawer .x{align-self:flex-end;width:44px;height:44px;border-radius:var(--lp-pill);display:grid;
+              place-items:center;border:1px solid var(--lp-line);background:none;cursor:pointer;margin-bottom:8px}
+.lp-drawer a{padding:13px 12px;border-radius:var(--lp-r);font-weight:600;color:var(--lp-ink)}
+.lp-drawer a:hover{background:var(--lp-b025);color:var(--lp-blue)}
+.lp-drawer .lp-btn{margin-top:14px;width:100%}
+
+/* ── HERO ────────────────────────────────────────────────────────────────── */
+.lp-hero{position:relative;background:var(--lp-hero);color:#fff;overflow:hidden;padding:118px 0 64px}
+@media(min-width:1024px){.lp-hero{min-height:100svh;max-height:960px;padding:150px 0 88px;display:flex;align-items:center}}
+.lp-hero-g{display:grid;gap:40px}
+@media(min-width:1024px){.lp-hero-g{grid-template-columns:minmax(0,1fr) minmax(0,1.02fr);gap:64px;align-items:center}}
+.lp-slide{display:none}
+.lp-slide.on{display:block}
+@media(prefers-reduced-motion:no-preference){.lp-slide.on{animation:lp-in 420ms var(--lp-e) both}}
+@keyframes lp-in{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+.lp-hero h1{font-size:clamp(1.85rem,1.15rem + 3vw,3.6rem);font-weight:800;line-height:1.13;
+            text-transform:uppercase;color:#fff;max-width:14ch}
+.lp-hero .lead{margin-top:22px;font-size:clamp(1rem,.94rem + .35vw,1.18rem);line-height:1.62;
+               color:rgba(255,255,255,.8);max-width:52ch}
+.lp-hero .lp-knob{margin-top:30px;width:100%}
+@media(min-width:600px){.lp-hero .lp-knob{width:auto;max-width:360px}}
+.lp-trust{display:flex;flex-wrap:wrap;gap:10px 22px;margin-top:28px}
+.lp-trust span{display:inline-flex;align-items:center;gap:7px;font-size:.88rem;color:rgba(255,255,255,.72)}
+.lp-trust svg{width:16px;height:16px;color:#7FE0A5;flex:none}
+
+/* Khung thiết bị dựng bằng CSS — không phụ thuộc ảnh ngoài, không vỡ khi thiếu file */
+.lp-stage{position:relative}
+.lp-lap{border-radius:14px;background:#0E1526;border:1px solid rgba(255,255,255,.14);
+        box-shadow:0 30px 80px -40px rgba(0,0,0,.9);overflow:hidden}
+.lp-lap .bar{display:flex;align-items:center;gap:6px;padding:10px 14px;background:rgba(255,255,255,.05);
+             border-bottom:1px solid rgba(255,255,255,.08)}
+.lp-lap .bar i{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,.22)}
+.lp-lap .bar .u{margin-left:8px;flex:1;height:22px;border-radius:6px;background:rgba(255,255,255,.07);
+                display:flex;align-items:center;padding:0 10px;font-size:.7rem;color:rgba(255,255,255,.5)}
+.lp-lap .scr{padding:16px}
+.lp-shot{display:block;width:100%;height:auto}
+.lp-float{position:absolute;display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:14px;
+          background:#fff;color:var(--lp-ink);box-shadow:var(--lp-sh2);max-width:74%}
+.lp-float .ic{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;flex:none}
+.lp-float b{display:block;font-size:.88rem;font-weight:800;line-height:1.3}
+.lp-float span{font-size:.76rem;color:var(--lp-mut2)}
+.lp-f-pay{right:-6px;bottom:-16px}
+.lp-f-pay .ic{background:var(--lp-ok-bg);color:var(--lp-ok)}
+.lp-f-noti{left:-6px;top:-18px}
+.lp-f-noti .ic{background:var(--lp-b050);color:var(--lp-blue)}
+@media(min-width:600px){.lp-f-pay{right:-18px}.lp-f-noti{left:-18px}}
+
+.lp-ctl{display:flex;flex-direction:column;align-items:center;gap:18px;margin-top:38px}
+@media(min-width:1024px){.lp-ctl{flex-direction:row;justify-content:space-between;align-items:flex-end;margin-top:56px}}
+.lp-count{font-weight:600;font-size:1.15rem;color:rgba(255,255,255,.5);font-variant-numeric:tabular-nums}
+.lp-count b{font-size:2rem;font-weight:800;color:#fff}
+.lp-ctl-r{display:flex;align-items:center;gap:18px}
+.lp-dots{display:flex;gap:8px;align-items:center}
+.lp-dots button{width:7px;height:7px;padding:0;border:0;border-radius:var(--lp-pill);background:#fff;opacity:.32;
+                cursor:pointer;transition:width var(--lp-t) var(--lp-e),opacity var(--lp-t)}
+.lp-dots button[aria-current="true"]{width:26px;opacity:1}
+.lp-arr{display:none}
+@media(min-width:720px){
+  .lp-arr{display:flex;gap:10px}
+  .lp-arr button{width:50px;height:50px;border-radius:var(--lp-pill);display:grid;place-items:center;
+                 border:1px solid rgba(255,255,255,.26);color:#fff;background:none;cursor:pointer;
+                 transition:background var(--lp-t)}
+  .lp-arr button:hover{background:rgba(255,255,255,.12)}
+}
+.lp-pause{display:grid;place-items:center;width:42px;height:42px;border-radius:var(--lp-pill);
+          border:1px solid rgba(255,255,255,.26);color:#fff;background:none;cursor:pointer}
+.lp-pause:hover{background:rgba(255,255,255,.12)}
+
+/* ── Dải cam kết ─────────────────────────────────────────────────────────── */
+.lp-strip{background:var(--lp-navy);color:#fff;padding:36px 0}
+.lp-strip .g{display:grid;grid-template-columns:1fr 1fr;gap:26px 20px}
+@media(min-width:900px){.lp-strip .g{grid-template-columns:repeat(4,1fr);gap:24px}}
+.lp-stat .n{font-size:clamp(1.5rem,1.1rem + 1.5vw,2.2rem);font-weight:800;color:#fff;line-height:1.1}
+.lp-stat .l{margin-top:6px;font-size:.9rem;line-height:1.5;color:rgba(255,255,255,.62)}
+
+/* ── BẢNG SO SÁNH ────────────────────────────────────────────────────────────
+   Bảng THẬT: đọc màn hình cần quan hệ hàng↔cột. Dưới 900px hoá THẺ bằng CSS thuần
+   (data-label + ::before) — không cần JS mới đọc được nhãn cột. ── */
+.lp-cmp{background:#fff;background-image:radial-gradient(76% 50% at 50% -6%,var(--lp-b025) 0%,transparent 66%)}
+.lp-cmp-w{margin-top:28px}
+@media(min-width:900px){.lp-cmp-w{margin-top:52px;overflow-x:auto;padding-top:14px}}
+.lp-tbl{width:100%;border-collapse:separate;border-spacing:0}
+@media(min-width:900px){.lp-tbl{min-width:840px}}
+.lp-tbl thead th{padding:18px 20px 15px;text-align:left;vertical-align:bottom;font-size:.94rem;
+                 font-weight:600;line-height:1.4;color:var(--lp-mut)}
+.lp-tbl thead th.crit{width:25%;color:var(--lp-mut2);font-weight:400}
+.lp-tbl tbody th{padding:17px 20px 17px 0;text-align:left;vertical-align:top;font-size:1rem;
+                 font-weight:800;line-height:1.42;color:var(--lp-ink)}
+.lp-tbl tbody td{padding:17px 20px;vertical-align:top;font-size:.94rem;line-height:1.58;color:var(--lp-body)}
+.lp-tbl tbody th,.lp-tbl tbody td{border-bottom:1px solid var(--lp-soft)}
+.lp-tbl tbody tr:last-child th,.lp-tbl tbody tr:last-child td{border-bottom:0}
+/* Cột "chúng tôi" nổi lên như một thẻ chạy dọc bảng: bo góc ở ô đầu/cuối, viền trái–phải
+   lặp trên MỌI ô — cách duy nhất giữ liền mạch khi border-collapse:separate. */
+.lp-tbl .us{background:var(--lp-b025);border-left:1px solid var(--lp-b100);border-right:1px solid var(--lp-b100)}
+.lp-tbl thead th.us{background:var(--lp-b050);border-top:1px solid var(--lp-b100);
+                    border-radius:var(--lp-r2) var(--lp-r2) 0 0;padding-top:20px;color:var(--lp-ink);
+                    font-size:1.08rem;font-weight:800}
+.lp-tbl tbody tr:last-child td.us{border-bottom:1px solid var(--lp-b100);border-radius:0 0 var(--lp-r2) var(--lp-r2)}
+.lp-tbl tbody tr:hover td:not(.us){background:var(--lp-alt)}
+.lp-badge{display:inline-block;margin-left:9px;padding:3px 9px;border-radius:var(--lp-pill);
+          background:var(--lp-blue);color:#fff;font-size:.68rem;font-weight:800;letter-spacing:.06em;
+          text-transform:uppercase;vertical-align:middle}
+.lp-cell{display:flex;align-items:flex-start;gap:10px}
+.lp-mk{flex:none;display:grid;place-items:center;width:21px;height:21px;margin-top:2px;border-radius:var(--lp-pill)}
+.lp-mk svg{width:12px;height:12px}
+.lp-mk.ok{background:var(--lp-ok-bg);color:var(--lp-ok)}
+.lp-mk.mid{background:var(--lp-warn-bg);color:var(--lp-warn)}
+.lp-mk.no{background:var(--lp-bad-bg);color:var(--lp-bad)}
+.lp-note{margin-top:22px;font-size:.82rem;line-height:1.6;color:var(--lp-mut2);max-width:74ch}
+@media(max-width:899px){
+  .lp-tbl{min-width:0}
+  .lp-tbl,.lp-tbl tbody,.lp-tbl tr{display:block}
+  .lp-tbl thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+  .lp-tbl tr{background:#fff;border:1px solid var(--lp-line);border-radius:var(--lp-r2);padding:14px;box-shadow:var(--lp-sh)}
+  .lp-tbl tr + tr{margin-top:12px}
+  .lp-tbl tbody th{display:block;padding:0 0 10px;font-size:1rem;line-height:1.35;border-bottom:1px solid var(--lp-soft)}
+  .lp-tbl tbody td{display:grid;grid-template-columns:76px minmax(0,1fr);gap:9px;align-items:start;
+                   padding:9px 0;font-size:.9rem;line-height:1.55}
+  .lp-tbl tbody td::before{content:attr(data-label);font-size:.68rem;font-weight:800;line-height:1.45;
+                           padding-top:3px;text-transform:uppercase;letter-spacing:.05em;color:var(--lp-mut2)}
+  .lp-tbl tbody tr td.us{background:var(--lp-b025);border:1px solid var(--lp-b100);border-radius:var(--lp-r);
+                         padding:10px 11px;margin:10px 0 3px}
+  .lp-tbl tbody tr td.us::before{color:var(--lp-blue)}
+  .lp-tbl tbody tr:last-child td{border-bottom:1px solid var(--lp-soft)}
+  .lp-tbl tbody td:last-child{border-bottom:0 !important;padding-bottom:0}
+}
+
+/* ── KHỐI SẢN PHẨM: cột trái cuộn, cột phải DÁN DÍNH và đổi theo ─────────────
+   Đồng bộ hai cột bằng CSS, KHÔNG bằng JS — kể cả khi trang đã có JS. Lý do: nó chạy
+   trên luồng dựng hình nên không giật, và không tốn một handler cuộn nào. Cổng an toàn:
+   mặc định cột phải ẨN, mỗi mục tự mang khung minh hoạ ngay dưới chữ. ── */
+.lp-prod{background:var(--lp-alt)}
+.lp-grid{display:grid;gap:0;margin-top:36px;align-items:start}
+.lp-item{padding:40px 0;border-top:1px solid var(--lp-line)}
+.lp-item:first-child{border-top:0;padding-top:0}
+.lp-kick{display:flex;align-items:center;gap:9px;margin:0 0 12px;font-size:.76rem;font-weight:800;
+         letter-spacing:.08em;text-transform:uppercase;color:var(--lp-blue)}
+.lp-kick .n{display:grid;place-items:center;width:26px;height:26px;border-radius:8px;
+            background:var(--lp-b050);font-variant-numeric:tabular-nums;letter-spacing:0}
+.lp-kick svg{width:17px;height:17px}
+.lp-item h3{margin:0 0 10px;font-size:clamp(1.2rem,1rem + 1.1vw,1.75rem);font-weight:800;line-height:1.25}
+.lp-item .d{margin:0 0 15px;color:var(--lp-mut)}
+.lp-item ul{display:grid;gap:9px}
+.lp-item li{display:flex;gap:10px;align-items:flex-start;font-size:.94rem;color:var(--lp-mut)}
+.lp-item li svg{flex:none;width:17px;height:17px;margin-top:4px;color:var(--lp-ok)}
+.lp-vin{margin-top:20px}
+.lp-stick{display:none}
+.lp-stage2{display:grid;min-width:0}
+.lp-frame{grid-area:1/1;min-width:0}
 @supports (timeline-scope:--a) and (animation-timeline:view()){
   @media (prefers-reduced-motion:no-preference) and (min-width:1100px){
-    .prod-grid{grid-template-columns:minmax(0,1fr) minmax(0,1.04fr);gap:64px;timeline-scope:--p1,--p2,--p3,--p4,--p5}
-    .pitem{min-height:74vh;display:flex;flex-direction:column;justify-content:center;padding:32px 0}
-    .pitem:first-child{padding-top:32px}
-    .pitem:nth-child(1){view-timeline-name:--p1}
-    .pitem:nth-child(2){view-timeline-name:--p2}
-    .pitem:nth-child(3){view-timeline-name:--p3}
-    .pitem:nth-child(4){view-timeline-name:--p4}
-    .pitem:nth-child(5){view-timeline-name:--p5}
-    .pvis-in{display:none}
-    .prod-stick{display:block;position:sticky;top:92px}
-    .pframe{opacity:0;animation:pframe-in both;animation-timing-function:linear;animation-range:cover 0% cover 100%}
-    .pframe:nth-child(1){animation-timeline:--p1}
-    .pframe:nth-child(2){animation-timeline:--p2}
-    .pframe:nth-child(3){animation-timeline:--p3}
-    .pframe:nth-child(4){animation-timeline:--p4}
-    .pframe:nth-child(5){animation-timeline:--p5}
-    @keyframes pframe-in{0%,10%{opacity:0;transform:translateY(14px)}45%,55%{opacity:1;transform:none}90%,100%{opacity:0;transform:translateY(-14px)}}
+    .lp-grid{grid-template-columns:minmax(0,1fr) minmax(0,1.04fr);gap:60px;
+             timeline-scope:--p1,--p2,--p3,--p4,--p5}
+    .lp-item{min-height:74vh;display:flex;flex-direction:column;justify-content:center;padding:30px 0}
+    .lp-item:first-child{padding-top:30px}
+    .lp-item:nth-child(1){view-timeline-name:--p1}
+    .lp-item:nth-child(2){view-timeline-name:--p2}
+    .lp-item:nth-child(3){view-timeline-name:--p3}
+    .lp-item:nth-child(4){view-timeline-name:--p4}
+    .lp-item:nth-child(5){view-timeline-name:--p5}
+    .lp-vin{display:none}
+    .lp-stick{display:block;position:sticky;top:96px}
+    .lp-frame{opacity:0;animation:lp-fr both;animation-timing-function:linear;animation-range:cover 0% cover 100%}
+    .lp-frame:nth-child(1){animation-timeline:--p1}
+    .lp-frame:nth-child(2){animation-timeline:--p2}
+    .lp-frame:nth-child(3){animation-timeline:--p3}
+    .lp-frame:nth-child(4){animation-timeline:--p4}
+    .lp-frame:nth-child(5){animation-timeline:--p5}
+    /* Mốc theo hình học THẬT: mục cao 74vh, khung nhìn 900 ⇒ dải cover dài 1566px, hai mục
+       cách nhau 666px = 42,5% dải. Lúc một mục ở CHÍNH GIỮA (50%) thì mục kề ở 7,5% và 92,5%
+       — phải tắt hẳn; lúc cuộn GIỮA hai mục (71% và 28,5%) thì cả hai quanh 50% để giao mượt. */
+    @keyframes lp-fr{0%,10%{opacity:0;transform:translateY(14px)}45%,55%{opacity:1;transform:none}
+                     90%,100%{opacity:0;transform:translateY(-14px)}}
   }
 }
-/* ══ HIỆU ỨNG CHUYỂN ĐỘNG — mỗi hiệu ứng có "cổng an toàn" riêng (giữ KÍN):
-   · tab-fade/marquee: cần @media(prefers-reduced-motion:no-preference)
-     (fallback = trạng thái tĩnh đầy đủ nội dung; marquee thêm @supports để chỉ chuyển
-     sang nowrap khi chắc chắn chạy được animation).
-   · tiết lộ cuộn (.srl/.srr): thêm @supports(animation-timeline:view()) —
-     trình duyệt cũ/giảm chuyển động: KHÔNG áp opacity:0 → nội dung hiện bình thường. ══ */
-@media(prefers-reduced-motion:no-preference){
-  .pane{animation:pane-in .38s cubic-bezier(.2,.7,.2,1)}
-  @keyframes pane-in{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
-  @supports(width:max-content){
-    .mq{-webkit-mask-image:linear-gradient(90deg,transparent,#000 7%,#000 93%,transparent);mask-image:linear-gradient(90deg,transparent,#000 7%,#000 93%,transparent)}
-    .mq-inner{width:max-content;animation:mq-l 44s linear infinite}
-    .mq.rev .mq-inner{animation-name:mq-r}
-    .mq-set{flex-wrap:nowrap;width:auto;padding-right:14px}
-    .mq-set.clone{display:flex}
-    .mq:hover .mq-inner{animation-play-state:paused}
-    @keyframes mq-l{to{transform:translateX(-50%)}}
-    @keyframes mq-r{from{transform:translateX(-50%)}to{transform:translateX(0)}}
-  }
-  @supports(animation-timeline:view()){
-    .srl{opacity:0;transform:translateX(-42px);animation:sr-in both;animation-timeline:view();animation-range:entry 5% cover 30%}
-    .srr{opacity:0;transform:translateX(42px);animation:sr-in both;animation-timeline:view();animation-range:entry 5% cover 30%}
-    @keyframes sr-in{to{opacity:1;transform:none}}
-    .stag>*:nth-child(2){animation-range:entry 10% cover 36%}
-    .stag>*:nth-child(3){animation-range:entry 16% cover 42%}
-    .stag>*:nth-child(4){animation-range:entry 22% cover 48%}
-  }
-}
-/* ══ RESPONSIVE ══ */
-@media(max-width:960px){
-  .hero-grid{grid-template-columns:1fr;gap:44px}
-  .mock{max-width:520px;margin:0 auto}
-  .pane{grid-template-columns:1fr;gap:30px;padding:28px 24px}
-  .flag{grid-template-columns:1fr;gap:30px;padding:26px 0}
-  .flag.rev .flag-vis{order:0}
-  .tst-grid{grid-template-columns:1fr 1fr}
-  .plans{grid-template-columns:1fr;max-width:440px;margin:0 auto}
-  .plan.hot{transform:none}.plan.hot:hover{transform:translateY(-4px)}
-}
-@media(max-width:680px){
-  .pitem{padding:32px 0}
-  .stats .wrap{grid-template-columns:1fr 1fr;gap:22px}
-  .tst-grid{grid-template-columns:1fr}.steps{grid-template-columns:1fr}
-  .hero{padding:52px 0 64px}
-  .mk-noti{left:-6px}.mk-pay{right:-6px}
-  .tabbar{gap:8px}.tabbar label{padding:9px 14px;font-size:.86rem}
-  .hero-cta .btn{flex:1;min-width:150px}
-}`;
 
-export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone = '', brand = 'Nền Tảng', assets = new Map() } = {}) {
-  // Ảnh THẬT tuỳ chọn cho các "khe" trên landing: thả file vào apps/storefront/src/assets/
-  // (vd hero.webp) → hiện ảnh thật; chưa có file → dùng mock CSS (không vỡ). Thử các đuôi ảnh.
+/* ── Khung minh hoạ dùng chung (sản phẩm + giải pháp) ────────────────────── */
+.lp-vis{border:1px solid var(--lp-line);border-radius:var(--lp-r3);background:#fff;
+        box-shadow:var(--lp-sh2);padding:18px;min-width:0}
+.lp-dark .lp-vis{background:#0E1526;border-color:rgba(255,255,255,.12);box-shadow:none}
+.lp-vis-h{display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:.72rem;font-weight:800;
+          letter-spacing:.06em;text-transform:uppercase;color:var(--lp-mut2)}
+.lp-vis-h i{width:8px;height:8px;border-radius:50%;background:var(--lp-ok);flex:none}
+.lp-row{display:flex;align-items:center;gap:11px;padding:10px 12px;margin-bottom:8px;
+        border:1px solid var(--lp-line);border-radius:var(--lp-r);background:var(--lp-alt);min-width:0}
+.lp-row:last-child{margin-bottom:0}
+.lp-row .c{font-size:.75rem;font-weight:800;color:var(--lp-mut2);flex:none}
+.lp-row .n{flex:1;min-width:0;font-size:.84rem;font-weight:600;color:var(--lp-ink)}
+.lp-row b{font-size:.82rem;flex:none;color:var(--lp-ink)}
+.lp-row .bar{flex:1;min-width:40px;height:7px;border-radius:4px;background:var(--lp-soft);overflow:hidden}
+.lp-row .bar i{display:block;height:100%;border-radius:4px;background:var(--lp-blue)}
+.lp-row .bar i.lo{background:var(--lp-warn)}
+.lp-pill2{flex:none;font-size:.68rem;font-weight:800;padding:3px 9px;border-radius:var(--lp-pill)}
+.lp-pill2.new{background:var(--lp-b050);color:var(--lp-blue)}
+.lp-pill2.ship{background:var(--lp-warn-bg);color:var(--lp-warn)}
+.lp-pill2.done{background:var(--lp-ok-bg);color:var(--lp-ok)}
+.lp-pill2.warn{background:var(--lp-bad-bg);color:var(--lp-bad)}
+.lp-num{padding:14px 16px;margin-bottom:12px;border-radius:var(--lp-r);background:var(--lp-b025);
+        border:1px solid var(--lp-b100)}
+.lp-num b{display:block;font-size:1.5rem;font-weight:800;color:var(--lp-ink);line-height:1.15}
+.lp-num span{font-size:.8rem;color:var(--lp-mut2)}
+.lp-bars{display:flex;align-items:flex-end;gap:6px;height:62px;margin-bottom:12px}
+.lp-bars i{flex:1;border-radius:5px 5px 0 0;background:var(--lp-b100)}
+.lp-bars i.on{background:var(--lp-blue)}
+.lp-credit{display:flex;align-items:center;gap:10px;padding:10px 12px;margin-bottom:8px;
+           border:1px solid var(--lp-ok-bg);border-radius:var(--lp-r);background:var(--lp-ok-bg);min-width:0}
+.lp-credit:last-child{margin-bottom:0}
+.lp-credit .amt{font-weight:800;color:var(--lp-ok);font-size:.9rem;flex:none}
+.lp-credit .src{flex:1;min-width:0;font-size:.8rem;color:var(--lp-body)}
+.lp-credit .tm{font-size:.72rem;color:var(--lp-mut2);flex:none}
+.lp-qr{display:grid;grid-template-columns:auto minmax(0,1fr);gap:15px;align-items:center;padding:16px;
+       margin-bottom:12px;border:1px solid var(--lp-line);border-radius:var(--lp-r2);background:var(--lp-alt)}
+.lp-qr .q{display:grid;place-items:center;width:72px;height:72px;border-radius:12px;background:var(--lp-ink);color:#fff}
+.lp-qr .q svg{width:48px;height:48px}
+.lp-qr b{display:block;font-size:.98rem;color:var(--lp-ink)}
+.lp-qr span{font-size:.8rem;color:var(--lp-mut2)}
+.lp-flash{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 17px;
+          margin-bottom:12px;border-radius:var(--lp-r2);background:var(--lp-blue);color:#fff}
+.lp-flash b{font-size:1rem}
+.lp-flash .cd{display:flex;gap:5px}
+.lp-flash .cd i{padding:5px 8px;border-radius:7px;background:rgba(0,0,0,.26);font-style:normal;font-weight:800;font-size:.84rem}
+.lp-coup{display:flex;align-items:center;gap:12px;padding:12px 14px;margin-bottom:12px;
+         border:1.6px dashed var(--lp-b100);border-radius:var(--lp-r);background:var(--lp-b025);min-width:0}
+.lp-coup .code{flex:none;font-weight:800;letter-spacing:.06em;color:var(--lp-blue)}
+.lp-coup span{font-size:.8rem;color:var(--lp-mut)}
+.lp-pts{display:flex;align-items:center;gap:10px;padding:11px 13px;border:1px solid var(--lp-line);
+        border-radius:var(--lp-r);background:var(--lp-alt);min-width:0}
+.lp-pts .ic{flex:none;display:grid;place-items:center;width:30px;height:30px;border-radius:9px;
+            background:var(--lp-warn-bg);color:var(--lp-warn)}
+.lp-pts .ic svg{width:16px;height:16px}
+.lp-pts b{display:block;font-size:.86rem;color:var(--lp-ink)}
+.lp-pts span{font-size:.76rem;color:var(--lp-mut2)}
+.lp-shop .sb{display:flex;align-items:center;padding:0 16px;height:58px;margin-bottom:12px;
+             border:1px solid var(--lp-line);border-radius:var(--lp-r);background:var(--lp-alt);
+             font-weight:800;font-size:.86rem;color:var(--lp-ink)}
+.lp-shop .sg{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.lp-shop .sc{border:1px solid var(--lp-line);border-radius:var(--lp-r);overflow:hidden;background:var(--lp-alt)}
+.lp-shop .si{display:grid;place-items:center;height:58px;color:var(--lp-mut2)}
+.lp-shop .si svg{width:24px;height:24px}
+.lp-shop .sl{height:8px;margin:0 10px 12px;border-radius:4px;background:var(--lp-soft)}
+@media(max-width:820px){
+  .lp-row,.lp-credit,.lp-coup,.lp-pts,.lp-flash{flex-wrap:wrap}
+  .lp-row .n,.lp-credit .src,.lp-coup span{flex:1 1 100%;min-width:0}
+  .lp-qr{grid-template-columns:1fr}
+}
+
+/* ── GIẢI PHÁP TĂNG TRƯỞNG (giữ chuyển động, dựng lại cách trình bày) ─────── */
+.lp-grow{background:var(--lp-navy);color:#fff}
+.lp-grow .lp-h2,.lp-grow h3{color:#fff}
+.lp-grow .lp-sub{color:rgba(255,255,255,.66)}
+.lp-grow .lp-eb{color:var(--lp-blue-br)}
+.lp-flag{display:grid;gap:28px;padding:44px 0;border-top:1px solid rgba(255,255,255,.1)}
+.lp-flag:first-of-type{border-top:0}
+@media(min-width:960px){
+  .lp-flag{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:56px;align-items:center;padding:56px 0}
+  .lp-flag.rev .lp-flag-v{order:-1}
+}
+.lp-flag>*{min-width:0}
+.lp-kick2{display:inline-flex;align-items:center;gap:8px;margin:0 0 14px;padding:6px 14px;
+          border-radius:var(--lp-pill);background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);
+          font-size:.76rem;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:#fff}
+.lp-kick2 svg{width:15px;height:15px}
+.lp-flag h3{font-size:clamp(1.25rem,1rem + 1.2vw,1.85rem);font-weight:800;line-height:1.24}
+.lp-flag .d{margin-top:12px;color:rgba(255,255,255,.7)}
+.lp-flag ul{display:grid;gap:10px;margin-top:18px}
+.lp-flag li{display:flex;gap:11px;align-items:flex-start;font-size:.94rem;color:rgba(255,255,255,.78)}
+.lp-flag li svg{flex:none;width:17px;height:17px;margin-top:4px;color:#7FE0A5}
+
+/* ── NGÀNH HÀNG: băng chạy ────────────────────────────────────────────────── */
+.lp-ind{background:#fff;padding:56px 0}
+@media(min-width:1024px){.lp-ind{padding:88px 0}}
+.lp-mq{overflow:hidden;padding:7px 0}
+.lp-mq-in{display:flex}
+.lp-mq-set{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;width:100%}
+.lp-mq-set.clone{display:none}
+.lp-chip{display:inline-flex;align-items:center;gap:10px;padding:9px 18px 9px 9px;white-space:nowrap;
+         border:1px solid var(--lp-line);border-radius:var(--lp-pill);background:#fff;font-weight:600;
+         font-size:.93rem;color:var(--lp-ink);transition:border-color var(--lp-t),transform 140ms var(--lp-e)}
+.lp-chip:hover{border-color:var(--lp-b100);transform:translateY(-2px)}
+.lp-chip .i{display:grid;place-items:center;width:32px;height:32px;border-radius:var(--lp-pill);
+            background:var(--lp-b025);color:var(--lp-blue);flex:none}
+.lp-chip .i svg{width:17px;height:17px}
+
+/* ── BẢNG GIÁ ────────────────────────────────────────────────────────────── */
+.lp-price{background:var(--lp-alt)}
+.lp-plans{display:grid;gap:20px;margin-top:44px;grid-template-columns:repeat(3,minmax(0,1fr));align-items:start}
+@media(max-width:1100px){.lp-plans{grid-template-columns:1fr;max-width:460px;margin-inline:auto}}
+.lp-plan{position:relative;min-width:0;display:flex;flex-direction:column;padding:30px 26px;
+         border:1px solid var(--lp-line);border-radius:var(--lp-r4);background:#fff;
+         transition:border-color var(--lp-t),box-shadow var(--lp-t),transform 160ms var(--lp-e)}
+.lp-plan:hover{transform:translateY(-4px);box-shadow:var(--lp-sh2)}
+.lp-plan.hot{background:var(--lp-navy);border-color:var(--lp-navy);color:#fff}
+.lp-plan.hot .tag{color:rgba(255,255,255,.6)}
+.lp-plan.hot h3,.lp-plan.hot .pr{color:#fff}
+.lp-plan.hot li{color:rgba(255,255,255,.8)}
+.lp-plan.hot li svg{color:#7FE0A5}
+.lp-hot-b{position:absolute;top:-13px;left:26px;padding:5px 14px;border-radius:var(--lp-pill);
+          background:var(--lp-blue);color:#fff;font-size:.7rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
+.lp-plan .tag{font-size:.8rem;font-weight:600;color:var(--lp-mut2)}
+.lp-plan h3{margin-top:6px;font-size:1.5rem;font-weight:800}
+.lp-plan .pr{margin-top:14px;font-size:2rem;font-weight:800;color:var(--lp-ink);line-height:1.1;
+             font-variant-numeric:tabular-nums}
+.lp-plan .pr span{font-size:.9rem;font-weight:400;color:var(--lp-mut2)}
+.lp-plan ul{display:grid;gap:11px;margin:22px 0 26px}
+.lp-plan li{display:flex;gap:10px;align-items:flex-start;font-size:.93rem;color:var(--lp-mut)}
+.lp-plan li svg{flex:none;width:17px;height:17px;margin-top:4px;color:var(--lp-ok)}
+.lp-plan .lp-btn{margin-top:auto;width:100%}
+.lp-plan.hot .lp-b-gh{border-color:rgba(255,255,255,.34);color:#fff}
+.lp-plan.hot .lp-b-gh:hover{background:rgba(255,255,255,.12)}
+.lp-plan-note{margin-top:24px;text-align:center;font-size:.9rem;color:var(--lp-mut)}
+.lp-plan-note a{color:var(--lp-blue);font-weight:600;text-decoration:underline;text-underline-offset:3px}
+
+/* ── HỎI ĐÁP ─────────────────────────────────────────────────────────────── */
+.lp-faq{background:#fff}
+.lp-faq-l{margin-top:40px;display:grid;gap:12px;max-width:880px}
+.lp-faq details{border:1px solid var(--lp-line);border-radius:var(--lp-r2);background:#fff;overflow:hidden}
+.lp-faq details[open]{border-color:var(--lp-b100);background:var(--lp-b025)}
+.lp-faq summary{padding:18px 20px;font-weight:600;font-size:1rem;color:var(--lp-ink);cursor:pointer;
+                list-style:none;display:flex;align-items:center;justify-content:space-between;gap:14px}
+.lp-faq summary::-webkit-details-marker{display:none}
+.lp-faq summary::after{content:'';flex:none;width:11px;height:11px;border-right:2px solid var(--lp-blue);
+                       border-bottom:2px solid var(--lp-blue);transform:rotate(45deg) translateY(-2px);
+                       transition:transform var(--lp-t) var(--lp-e)}
+.lp-faq details[open] summary::after{transform:rotate(225deg) translateY(-2px)}
+.lp-faq .ans{padding:0 20px 18px;color:var(--lp-mut);font-size:.95rem;line-height:1.68}
+
+/* ── CTA cuối + chân trang ───────────────────────────────────────────────── */
+.lp-final{padding:64px 0}
+@media(min-width:1024px){.lp-final{padding:96px 0}}
+.lp-box{padding:48px 26px;border-radius:var(--lp-r4);background:var(--lp-hero);color:#fff;text-align:center}
+@media(min-width:768px){.lp-box{padding:68px 56px}}
+.lp-box h2{color:#fff;font-size:clamp(1.5rem,1.1rem + 1.8vw,2.5rem);font-weight:800;line-height:1.18;
+           text-transform:uppercase;margin-inline:auto;max-width:18ch}
+.lp-box p{margin-top:16px;color:rgba(255,255,255,.76);margin-inline:auto;max-width:52ch}
+.lp-box-r{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;margin-top:30px}
+.lp-box-c{margin-top:24px;font-size:.86rem;color:rgba(255,255,255,.6)}
+
+.lp-ft{background:var(--lp-deep);color:rgba(255,255,255,.66);padding:56px 0 28px}
+.lp-ft-g{display:grid;gap:34px}
+@media(min-width:760px){.lp-ft-g{grid-template-columns:1.5fr 1fr 1fr}}
+@media(min-width:1080px){.lp-ft-g{grid-template-columns:1.7fr repeat(4,1fr);gap:32px}}
+.lp-ft .lp-brand{color:#fff;margin-bottom:14px}
+.lp-ft-ab p{font-size:.9rem;line-height:1.65;max-width:38ch}
+.lp-ft-ab .lp-btn{margin-top:18px;height:44px;font-size:.93rem}
+.lp-ft-c h3{font-size:.78rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:#fff;margin-bottom:14px}
+.lp-ft-c a,.lp-ft-c span{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:.9rem;color:rgba(255,255,255,.66)}
+.lp-ft-c a:hover{color:#fff}
+.lp-ft-c svg{width:15px;height:15px;flex:none}
+.lp-ft-b{display:flex;flex-wrap:wrap;gap:10px 20px;justify-content:space-between;margin-top:38px;
+         padding-top:22px;border-top:1px solid rgba(255,255,255,.1);font-size:.84rem}
+.lp-ft-b a:hover{color:#fff}
+
+/* ── THANH CTA NỔI ───────────────────────────────────────────────────────── */
+.lp-dock{position:fixed;z-index:50;left:0;right:0;bottom:0;padding-bottom:env(safe-area-inset-bottom);
+         transform:translateY(130%);opacity:0;visibility:hidden;
+         transition:transform var(--lp-t) var(--lp-e),opacity var(--lp-t),visibility var(--lp-t)}
+.lp-dock.on{transform:none;opacity:1;visibility:visible}
+.lp-dock-c{display:flex;align-items:center;gap:12px;height:64px;padding:0 12px 0 16px;
+           background:var(--lp-blue);border-radius:var(--lp-r2) var(--lp-r2) 0 0}
+.lp-dock-c .t{flex:1;min-width:0}
+.lp-dock-c .t1{font-size:.93rem;font-weight:800;color:#fff;line-height:1.35;
+               overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lp-dock-c .t2{display:none}
+.lp-dock-c .go{flex:none;display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 18px;
+               border-radius:var(--lp-pill);background:#fff;color:var(--lp-blue);font-size:.93rem;font-weight:800}
+.lp-dock-c .x{flex:none;display:grid;place-items:center;width:32px;height:32px;border-radius:var(--lp-pill);
+              background:rgba(255,255,255,.18);color:#fff;border:0;cursor:pointer}
+@media(min-width:768px){
+  .lp-dock{left:auto;right:24px;bottom:24px;width:352px}
+  .lp-dock-c{height:auto;flex-direction:column;align-items:stretch;gap:14px;padding:20px;
+             border-radius:var(--lp-r3);box-shadow:0 6px 24px rgba(0,56,209,.36)}
+  .lp-dock-c .hd{display:flex;align-items:flex-start;gap:12px}
+  .lp-dock-c .t1{font-size:1.12rem;white-space:normal}
+  .lp-dock-c .t2{display:block;margin-top:6px;font-size:.88rem;font-weight:400;line-height:1.55;color:rgba(255,255,255,.86)}
+  .lp-dock-c .go{width:100%;height:46px;justify-content:center;border-radius:var(--lp-r);
+                 background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.3)}
+  .lp-dock-c .go:hover{background:rgba(255,255,255,.28)}
+}
+.lp-reopen{position:fixed;z-index:50;right:16px;bottom:16px;width:54px;height:54px;border:0;cursor:pointer;
+           border-radius:var(--lp-pill);background:var(--lp-blue);color:#fff;display:none;place-items:center;
+           box-shadow:0 6px 24px rgba(0,56,209,.36)}
+@media(min-width:768px){.lp-reopen{right:24px;bottom:24px}}
+.lp-reopen.on{display:grid}
+
+/* ── Hiện dần khi cuộn. Trạng thái ẩn CHỈ bật khi có JS (html.lpjs) ─────────
+   Không có JS thì quy tắc này không tồn tại, nên trang không bao giờ kẹt opacity:0. ── */
+html.lpjs .rv{opacity:0;transform:translateY(18px)}
+html.lpjs .rv.in{opacity:1;transform:none;transition:opacity 520ms var(--lp-e),transform 520ms var(--lp-e)}
+@media(prefers-reduced-motion:reduce){
+  html.lpjs .rv{opacity:1;transform:none}
+  .lp-hdr{transition:none}
+}
+`;
+
+// ── LỚP TĂNG CƯỜNG (chỉ chèn khi có nonce — xem chú thích đầu file) ─────────
+const JS = `(function(){
+  'use strict';
+  var RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var D = document, root = D.documentElement;
+  root.classList.add('lpjs');
+
+  /* ── HIỆN DẦN KHI CUỘN ───────────────────────────────────────────────────
+     Gọi TRỰC TIẾP trong listener cuộn, KHÔNG qua requestAnimationFrame và KHÔNG
+     qua IntersectionObserver. Đo được cả hai đường kia đều có lúc không chạy ở
+     khung hẹp, và hậu quả là phần tử kẹt opacity:0 — mất trắng chữ, trong khi
+     mọi phép đo tràn ngang vẫn báo ĐẠT. Hiệu ứng hỏng thì chấp nhận được; chữ
+     biến mất thì không. */
+  var rvs = [].slice.call(D.querySelectorAll('.rv')), rvDone = 0, rvArmed = false;
+  rvs.forEach(function(e, i){ e.dataset.d = String(Math.min(i, 4) * 70); });
+  function rvScan(){
+    if (!rvs.length) return;
+    var h = innerHeight;
+    rvs = rvs.filter(function(e){
+      var r = e.getBoundingClientRect();
+      /* CHỈ giữ lại thứ CHƯA tới lượt (còn nằm dưới mép dưới). Bản trước giữ luôn thứ đã
+         trôi LÊN TRÊN khung nhìn, và đó là lỗi: nhảy tới một mỏ neo, tải lại trang giữa
+         chừng, hay cuộn nhanh một phát tới cuối — mọi phần tử bị vượt qua sẽ kẹt opacity:0
+         VĨNH VIỄN. Đo được 4/37 phần tử hiện sau khi cuộn tới giữa trang. */
+      if (r.top > h * 0.94) return true;
+      rvDone++;
+      setTimeout(function(){ e.classList.add('in'); }, Number(e.dataset.d || 0));
+      return false;
+    });
+  }
+  if (RM) { rvs.forEach(function(e){ e.classList.add('in'); }); rvs = []; }
+  /* Lưới an toàn hẹn giờ từ LẦN CUỘN ĐẦU, không từ lúc nạp: đứng đọc hero vài giây
+     là bình thường, không phải hỏng. Đã cuộn mà không gì hiện được thì gỡ cờ lpjs
+     — thà mất hiệu ứng còn hơn mất chữ. */
+  function rvGuard(){
+    if (rvArmed) return;
+    rvArmed = true;
+    setTimeout(function(){
+      if (rvDone === 0 && rvs.length) { root.classList.remove('lpjs'); rvs = []; }
+    }, 1500);
+  }
+
+  /* ── HEADER: ẩn khi lướt xuống, hiện khi lướt lên ────────────────────────── */
+  var hdr = D.getElementById('lpHdr'), last = scrollY;
+  function onScroll(){
+    var y = Math.max(0, scrollY), d = y - last;
+    hdr.classList.toggle('solid', y > 80);
+    /* Vùng chết 6px để tay run không làm thanh nhấp nháy. Luôn hiện lại khi gần
+       đỉnh, và KHÔNG ẩn khi ngăn kéo đang mở (ẩn thì mất luôn nút đóng). */
+    if (!D.body.classList.contains('lp-lock')) {
+      if (y < 120 || d < -6) hdr.classList.remove('hide');
+      else if (d > 6 && y > 160) hdr.classList.add('hide');
+    }
+    last = y;
+    dockPos();
+    dock();
+  }
+  /* Gọi THẲNG, không bọc requestAnimationFrame. Trình duyệt đã tiết chế sự kiện cuộn
+     xuống quanh nhịp khung hình rồi, listener lại khai passive nên không chặn cuộn; đổi
+     lại thì hành vi không còn phụ thuộc việc có khung hình được vẽ hay không. Đo được:
+     trong môi trường không vẽ đều, rAF chỉ chạy 2 lần trong CẢ MỘT GIÂY — thanh điều
+     hướng kẹt nguyên trạng thái cũ, và cùng lớp lỗi đó từng làm chữ kẹt opacity:0. */
+  function beat(){ rvGuard(); rvScan(); onScroll(); }
+  addEventListener('scroll', beat, { passive: true });
+  addEventListener('resize', beat, { passive: true });
+  addEventListener('load', beat);
+  if (D.fonts && D.fonts.ready) D.fonts.ready.then(beat);
+
+  /* ── NGĂN KÉO ────────────────────────────────────────────────────────────── */
+  var dw = D.getElementById('lpDrawer'), sc = D.getElementById('lpScrim'),
+      bg = D.getElementById('lpBurger'), dx = D.getElementById('lpDx'), moTruoc = null;
+  function moDong(mo){
+    dw.hidden = !mo; sc.hidden = !mo;
+    bg.setAttribute('aria-expanded', String(mo));
+    D.body.classList.toggle('lp-lock', mo);
+    D.body.style.overflow = mo ? 'hidden' : '';
+    requestAnimationFrame(function(){ dw.classList.toggle('on', mo); sc.classList.toggle('on', mo); });
+    if (mo) { moTruoc = D.activeElement; dx.focus(); }
+    else if (moTruoc) { moTruoc.focus(); moTruoc = null; }
+  }
+  bg.addEventListener('click', function(){ moDong(true); });
+  dx.addEventListener('click', function(){ moDong(false); });
+  sc.addEventListener('click', function(){ moDong(false); });
+  dw.addEventListener('click', function(e){ if (e.target.tagName === 'A') moDong(false); });
+  addEventListener('keydown', function(e){
+    if (e.key === 'Escape' && !dw.hidden) moDong(false);
+    if (e.key !== 'Tab' || dw.hidden) return;
+    /* Giữ tiêu điểm trong ngăn kéo: không có bẫy này thì Tab đi ra sau tấm phủ và
+       người dùng bàn phím lạc vào một trang họ không nhìn thấy. */
+    var f = dw.querySelectorAll('a[href],button:not([disabled])');
+    if (!f.length) return;
+    var a = f[0], z = f[f.length - 1];
+    if (e.shiftKey && D.activeElement === a) { e.preventDefault(); z.focus(); }
+    else if (!e.shiftKey && D.activeElement === z) { e.preventDefault(); a.focus(); }
+  });
+
+  /* ── CAROUSEL HERO ───────────────────────────────────────────────────────── */
+  var slides = [].slice.call(D.querySelectorAll('.lp-slide')),
+      dots = [].slice.call(D.querySelectorAll('.lp-dots button')),
+      cur = D.getElementById('lpCur'), pause = D.getElementById('lpPause'),
+      hero = D.getElementById('lpHero'), i = 0, timer = null, dungTay = false;
+  function den(k){
+    i = (k + slides.length) % slides.length;
+    slides.forEach(function(s, n){ s.classList.toggle('on', n === i); });
+    dots.forEach(function(d, n){ d.setAttribute('aria-current', String(n === i)); });
+    if (cur) cur.textContent = String(i + 1).padStart(2, '0');
+  }
+  function chay(){ if (!timer && !dungTay && !RM && slides.length > 1) timer = setInterval(function(){ den(i + 1); }, 6000); }
+  function ngung(){ if (timer) { clearInterval(timer); timer = null; } }
+  dots.forEach(function(d, n){ d.addEventListener('click', function(){ den(n); ngung(); chay(); }); });
+  var prev = D.getElementById('lpPrev'), next = D.getElementById('lpNext');
+  if (prev) prev.addEventListener('click', function(){ den(i - 1); ngung(); chay(); });
+  if (next) next.addEventListener('click', function(){ den(i + 1); ngung(); chay(); });
+  if (pause) pause.addEventListener('click', function(){
+    dungTay = !dungTay;
+    pause.setAttribute('aria-pressed', String(dungTay));
+    pause.setAttribute('aria-label', dungTay ? 'Chạy lại băng giới thiệu' : 'Tạm dừng băng giới thiệu');
+    if (dungTay) ngung(); else chay();
+  });
+  /* WCAG 2.2.2: nội dung tự chạy phải dừng được, VÀ phải tự dừng khi người ta đang
+     đọc nó — trỏ chuột vào hoặc đưa tiêu điểm bàn phím vào. */
+  if (hero) {
+    hero.addEventListener('mouseenter', ngung);
+    hero.addEventListener('mouseleave', chay);
+    hero.addEventListener('focusin', ngung);
+    hero.addEventListener('focusout', function(e){ if (!hero.contains(e.relatedTarget)) chay(); });
+  }
+  chay();
+
+  /* ── THANH CTA NỔI ───────────────────────────────────────────────────────── */
+  var dk = D.getElementById('lpDock'), rp = D.getElementById('lpReopen'),
+      KEY = 'lp-dock-dong', thayCuoi = false;
+  function daDong(){
+    try {
+      var t = Number(localStorage.getItem(KEY) || 0);
+      return t > 0 && (Date.now() - t) < 864e5;      // nhớ 24 giờ
+    } catch (e) { return false; }
+  }
+  var dong = daDong();
+  if (dong && rp) rp.classList.add('on');
+  /* "Đã tới cuối trang" đo bằng KHOẢNG CÁCH TỚI ĐÁY TÀI LIỆU, không bằng việc khối CTA
+     cuối có nằm trong khung nhìn hay không. Đo được: ở 390px chân trang xếp dọc nên cao
+     hơn hẳn, tới đáy thì khối CTA đã trôi hết lên trên — phép đo cũ kết luận "chưa tới
+     cuối" và thanh nổi vẫn đè lên chính cái nút mà chân trang đang mời bấm. Khoảng cách
+     tới đáy thì không phụ thuộc bố cục nào. */
+  function dockPos(){
+    thayCuoi = (root.scrollHeight - (scrollY + innerHeight)) < innerHeight * 0.9;
+  }
+  function dock(){
+    var h = root.scrollHeight - innerHeight;
+    var qua = h > 0 && (scrollY / h) > 0.35;
+    dk.classList.toggle('on', qua && !dong && !thayCuoi);
+    rp.classList.toggle('on', qua && dong && !thayCuoi);
+  }
+  D.getElementById('lpDockX').addEventListener('click', function(){
+    dong = true;
+    try { localStorage.setItem(KEY, String(Date.now())); } catch (e) {}
+    dock();
+  });
+  rp.addEventListener('click', function(){
+    dong = false;
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    dock();
+  });
+  /* Bàn phím ảo mở (đang gõ vào một ô) thì thanh dán đáy che mất ô đang gõ. */
+  addEventListener('focusin', function(e){
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) dk.hidden = true;
+  });
+  addEventListener('focusout', function(){ dk.hidden = false; });
+
+  rvScan(); dockPos(); dock();
+})();
+`;
+
+const MK = {
+  ok: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5.2 5.2L20 7"/></svg>`,
+  mid: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"><path d="M5 12h14"/></svg>`,
+  no: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>`,
+};
+const MK_SR = { ok: 'Có', mid: 'Một phần', no: 'Không' };
+const AR = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M13 6l6 6-6 6"/></svg>`;
+
+export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone = '', brand = 'Nền Tảng', assets = new Map(), nonce = '' } = {}) {
+  // Ảnh THẬT tuỳ chọn: thả file vào apps/storefront/src/assets/ (vd hero.webp) → hiện ảnh
+  // thật; chưa có file → dùng khung dựng bằng CSS. Không có nhánh nào làm vỡ bố cục.
   const assetSrc = (base) => { for (const e of ['webp', 'avif', 'png', 'jpg', 'jpeg', 'svg']) { const f = base + '.' + e; if (assets && assets.has && assets.has(f)) return '/assets/' + f; } return null; };
   const heroShot = assetSrc('hero');
   const mailto = (subj) => mailtoHref(contactEmail, subj);
-  const contactLine = [contactPhone ? `ĐT: ${esc(contactPhone)}` : '', `Email: ${esc(contactEmail)}`].filter(Boolean).join(' · ');
 
-  // ── Hình minh hoạ UI phẳng cho tab + khối xen kẽ (aria-hidden: trang trí thuần) ──
-  const VIS = {
-    shop: `<div class="vis vshop" aria-hidden="true"><div class="vis-h"><i></i>Cửa hàng của bạn</div>
-      <div class="sb">Bộ sưu tập mới về</div>
-      <div class="sg">
-        <div class="sc"><div class="si">${I.shirt}</div><div class="sl"></div></div>
-        <div class="sc"><div class="si">${I.sofa}</div><div class="sl"></div></div>
-        <div class="sc"><div class="si">${I.cosmetic}</div><div class="sl"></div></div>
-      </div></div>`,
-    dash: `<div class="vis" aria-hidden="true"><div class="vis-h"><i></i>Tổng quan hôm nay</div>
-      <div class="dnum"><b>4.280.000đ</b><span>doanh thu hôm nay · 12 đơn</span></div>
-      <div class="dbars"><i style="height:38%"></i><i style="height:56%"></i><i style="height:44%"></i><i style="height:71%"></i><i style="height:62%"></i><i style="height:88%"></i><i class="on" style="height:74%"></i></div>
-      <div class="vrow"><span class="vn">Đơn chờ xác nhận</span><b>3</b><span class="pill new">Cần làm</span></div>
-      <div class="vrow"><span class="vn">Sản phẩm sắp hết hàng</span><b>2</b><span class="pill warn">Cần nhập</span></div></div>`,
-    orders: `<div class="vis" aria-hidden="true"><div class="vis-h"><i></i>Đơn hàng hôm nay</div>
-      <div class="vrow"><span class="vc">#1042</span><span class="vn">Áo thun basic ×2</span><b>350.000đ</b><span class="pill new">Mới</span></div>
-      <div class="vrow"><span class="vc">#1041</span><span class="vn">Ghế gỗ sồi ×1</span><b>1.290.000đ</b><span class="pill ship">Đang giao</span></div>
-      <div class="vrow"><span class="vc">#1040</span><span class="vn">Son dưỡng ×3</span><b>250.000đ</b><span class="pill done">Đã giao</span></div>
-      <div class="vrow"><span class="vc">GHN</span><span class="vn">Mã vận đơn GHN — khách tự tra cứu</span><span class="pill done">Đã lấy hàng</span></div></div>`,
-    stock: `<div class="vis" aria-hidden="true"><div class="vis-h"><i></i>Tồn kho theo biến thể</div>
-      <div class="vrow"><span class="vn">Áo thun — Đen / M</span><span class="vbar"><i style="width:72%"></i></span><b>36</b></div>
-      <div class="vrow"><span class="vn">Áo thun — Trắng / L</span><span class="vbar"><i style="width:48%"></i></span><b>24</b></div>
-      <div class="vrow"><span class="vn">Son dưỡng — Đỏ gạch</span><span class="vbar"><i class="lo" style="width:9%"></i></span><b>4</b><span class="pill warn">Sắp hết</span></div>
-      <div class="vrow"><span class="vn">Phiếu nhập NCC An Phát — giá vốn tự tính</span><span class="pill done">Đã nhận</span></div></div>`,
-    promo: `<div class="vis" aria-hidden="true"><div class="vis-h"><i></i>Khuyến mãi đang chạy</div>
-      <div class="vflash"><b>FLASH SALE −30%</b><span class="cd"><i>02</i><i>11</i><i>45</i></span></div>
-      <div class="vcoupon"><span class="code">GIAM10</span><span>Giảm 10% cho đơn từ 500.000đ — hết hạn tự khoá</span></div>
-      <div class="vpts"><span class="ic">${I.star}</span><div><b>+120 điểm thưởng</b><span>Khách quen tích luỹ, đổi giảm giá lần sau</span></div></div></div>`,
-    money: `<div class="vis" aria-hidden="true"><div class="vis-h"><i></i>Tiền vào tài khoản CỦA BẠN</div>
-      <div class="vcredit"><span class="amt">+350.000đ</span><span class="src">VietQR · đơn #1042 — tự khớp</span><span class="tm">vừa xong</span></div>
-      <div class="vcredit"><span class="amt">+1.290.000đ</span><span class="src">COD · hãng ship chuyển — đã đối soát</span><span class="tm">hôm nay</span></div>
-      <div class="vrow"><span class="vn">Nền tảng không giữ tiền — 0đ nằm ở trung gian</span><span class="pill done">Luôn luôn</span></div></div>`,
-    qr: `<div class="vis" aria-hidden="true"><div class="vis-h"><i></i>Thanh toán VietQR</div>
-      <div class="vqr"><span class="q">${I.qr}</span><div><b>Quét là tiền về tài khoản bạn</b><span>Mỗi shop một cấu hình QR riêng — không ví trung gian</span></div></div>
-      <div class="vcredit"><span class="amt">+499.000đ</span><span class="src">Khớp đơn #1039 tự động</span><span class="tm">3 phút trước</span></div></div>`,
-    guard: `<div class="vis" aria-hidden="true"><div class="vis-h"><i></i>Lá chắn đơn ảo</div>
-      <div class="vrow"><span class="vn">Đơn COD quá 7 ngày không nhận</span><span class="pill warn">Tự huỷ + nhả kho</span></div>
-      <div class="vrow"><span class="vn">Cùng SĐT đặt dồn dập nhiều đơn</span><span class="pill warn">Chặn vượt trần</span></div>
-      <div class="vrow"><span class="vn">SĐT đặt bất thường nhiều nguồn</span><span class="pill ship">⚠ Gắn cờ chờ duyệt</span></div>
-      <div class="vrow"><span class="vn">Khách thật đặt hàng bình thường</span><span class="pill done">Vào mượt</span></div></div>`,
-    loyal: `<div class="vis" aria-hidden="true"><div class="vis-h"><i></i>Khách quen của shop</div>
-      <div class="vrow"><span class="vn">Chị Lan — 5 đơn · lần cuối 3 ngày trước</span><span class="pill done">Thân thiết</span></div>
-      <div class="vpts"><span class="ic">${I.star}</span><div><b>860 điểm tích luỹ</b><span>Đổi được 86.000đ cho đơn sau</span></div></div>
-      <div class="vcoupon"><span class="code">QUAYLAI15</span><span>Ưu đãi riêng gửi khách lâu chưa mua</span></div></div>`,
-    safe: `<div class="vis" aria-hidden="true"><div class="vis-h"><i></i>Trực hệ thống 24/7</div>
-      <div class="vrow"><span class="vn">Sao lưu mã hoá hằng ngày</span><span class="pill done">Hoàn tất</span></div>
-      <div class="vrow"><span class="vn">Chứng chỉ HTTPS mọi tên miền</span><span class="pill done">Tự gia hạn</span></div>
-      <div class="vrow"><span class="vn">Giám sát đường tiền webhook</span><span class="pill done">Đang canh</span></div>
-      <div class="vrow"><span class="vn">Xuất toàn bộ dữ liệu của bạn</span><span class="pill new">Bất cứ lúc nào</span></div></div>`,
-  };
+  const nhieuBanner = BANNERS.length > 1;
 
-  const tabInputs = TABS.map((_, i) => `<input type="radio" name="ft" id="ft-${i}"${i === 0 ? ' checked' : ''} aria-label="${esc(TABS[i].label)}">`).join('');
-  const tabLabels = TABS.map((t, i) => `<label for="ft-${i}">${t.icon}${esc(t.label)}</label>`).join('');
-  const tabPanes = TABS.map((t) => `<div class="pane">
-    <div><h3>${esc(t.h)}</h3><p class="pd">${esc(t.d)}</p>
-      <ul>${t.bullets.map((b) => `<li>${I.check}<span>${esc(b)}</span></li>`).join('')}</ul>
-      <a class="plink" href="${SIGNUP_URL}">Dùng thử miễn phí 14 ngày ${I.arrow}</a>
+  const brandMark = `<span class="mk">${I.store}</span>${esc(brand)}`;
+
+  const header = `<header class="lp-hdr" id="lpHdr">
+  <div class="ct"><div class="lp-pill">
+    <a class="lp-brand" href="/" aria-label="${esc(brand)} — trang chủ">${brandMark}</a>
+    <nav class="lp-nav" aria-label="Điều hướng chính">${NAV.map((n) => `<a href="${n.href}">${esc(n.label)}</a>`).join('')}</nav>
+    <div class="lp-hdr-act">
+      <a class="lp-login" href="${ADMIN_LOGIN_URL}">${I.user}<span>Đăng nhập</span></a>
+      <a class="lp-btn lp-b-pri" href="${SIGNUP_URL}">Dùng thử miễn phí</a>
+      <button class="lp-burger" id="lpBurger" type="button" aria-label="Mở menu" aria-expanded="false" aria-controls="lpDrawer">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
     </div>
-    <div>${VIS[t.vis]}</div>
-  </div>`).join('');
+  </div></div>
+</header>
+<div class="lp-scrim" id="lpScrim" hidden></div>
+<div class="lp-drawer" id="lpDrawer" role="dialog" aria-modal="true" aria-label="Menu" hidden>
+  <button class="x" id="lpDx" type="button" aria-label="Đóng menu">
+    <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </button>
+  ${NAV.map((n) => `<a href="${n.href}">${esc(n.label)}</a>`).join('')}
+  <a href="${ADMIN_LOGIN_URL}">Đăng nhập quản trị</a>
+  <a class="lp-btn lp-b-pri" href="${SIGNUP_URL}">Dùng thử miễn phí</a>
+</div>`;
 
-  // Mỗi mục dựng HAI lần từ CÙNG một nguồn (PRODUCTS + VIS): bản trong dòng cho màn hẹp
-  // và trình duyệt chưa hỗ trợ, bản dán dính cho màn rộng. Dựng từ một nguồn nên hai bản
-  // KHÔNG THỂ trôi khỏi nhau — chép tay ra hai chỗ thì sẽ trôi, và trôi âm thầm.
-  const prodItem = (x) => `<article class="pitem">
-    <p class="pkick"><span class="pn">${esc(x.n)}</span>${x.icon}${esc(x.kick)}</p>
-    <h3>${esc(x.h)}</h3>
-    <p class="pd">${esc(x.d)}</p>
-    <ul>${x.bullets.map((b) => `<li>${I.check}<span>${esc(b)}</span></li>`).join('')}</ul>
-    <div class="pvis-in">${VIS[x.vis]}</div>
-  </article>`;
+  // Hero: slide ĐẦU mang class "on" ngay từ server — không JS thì nó vẫn là slide đang hiện,
+  // đủ tiêu đề, đủ mô tả, đủ nút. Các slide sau chỉ là bổ sung.
+  const slide = (b, k) => `<div class="lp-slide${k === 0 ? ' on' : ''}" role="group" aria-roledescription="banner" aria-label="Banner ${k + 1} trên ${BANNERS.length}">
+      <h1>${esc(b.h)}</h1>
+      <p class="lead">${esc(b.d)}</p>
+      <a class="lp-btn lp-knob" href="${esc(b.href)}">${esc(b.cta)}<i>${AR}</i></a>
+    </div>`;
 
-  const chip = (x) => `<span class="mchip"><span class="mi">${x.icon}</span>${esc(x.name)}</span>`;
-  const half = Math.ceil(INDUSTRIES.length / 2);
-  const mqRow = (items, rev) => {
-    const set = items.map(chip).join('');
-    return `<div class="mq${rev ? ' rev' : ''}"><div class="mq-inner"><div class="mq-set">${set}</div><div class="mq-set clone" aria-hidden="true">${set}</div></div></div>`;
-  };
-
-  const flagBlock = (f, i) => `<div class="flag${i % 2 ? ' rev' : ''}">
-    <div class="flag-txt ${i % 2 ? 'srr' : 'srl'}"><p class="kick2">${f.icon}${esc(f.kick)}</p><h3>${esc(f.h)}</h3><p class="fd">${esc(f.d)}</p>
-      <ul>${f.bullets.map((b) => `<li>${I.check}<span>${esc(b)}</span></li>`).join('')}</ul></div>
-    <div class="flag-vis ${i % 2 ? 'srl' : 'srr'}">${VIS[f.vis]}</div>
-  </div>`;
-
-  const planCard = (p) => `<div class="plan reveal${p.hot ? ' hot' : ''}">
-    ${p.hot ? '<div class="plan-badge">Phổ biến nhất</div>' : ''}
-    <div class="plan-tag">${esc(p.tagline)}</div>
-    <h3 class="plan-name">${esc(p.name)}</h3>
-    <div class="plan-price">${esc(p.price)}<span>${esc(p.unit)}</span></div>
-    <ul>${p.feat.map((f) => `<li>${I.check}<span>${esc(f)}</span></li>`).join('')}</ul>
-    <a class="btn ${p.hot ? 'btn-cta' : 'btn-ghost'} btn-block" href="${SIGNUP_URL}">Dùng thử miễn phí 14 ngày</a>
-  </div>`;
-
-  const mockCard = (icon, price) => `<div class="mk-card"><div class="mk-img">${icon}</div><div class="mk-body"><div class="mk-l"></div><div class="mk-row"><span class="mk-price">${price}</span><span class="mk-buy">${I.cart}</span></div></div></div>`;
-
-  const body = `<header class="hero"><div class="wrap"><div class="hero-grid">
-  <div>
-    <p class="eyebrow">${I.bolt}Nền tảng bán hàng online cho người Việt</p>
-    <h1>Website bán hàng của riêng bạn — <span class="g">tiền về thẳng túi</span>.</h1>
-    <p class="lead">Dựng cửa hàng trong 3 phút, dùng thử miễn phí 14 ngày. Đơn hàng, vận chuyển GHN/GHTK, kho, khuyến mãi — đủ đồ nghề để bán, không cần biết code.</p>
-    <div class="hero-cta">
-      <a class="btn btn-cta btn-lg" href="${SIGNUP_URL}">Bắt đầu miễn phí <span class="btn-arrow">${I.arrow}</span></a>
-      <a class="btn btn-ghost btn-lg" href="/#bang-gia">Xem bảng giá</a>
-    </div>
-    <div class="hero-trust"><span>${I.check}14 ngày dùng thử miễn phí</span><span>${I.check}Không cần thẻ</span><span>${I.wallet}Chúng tôi không giữ tiền của bạn</span><span>${I.headset}Hỗ trợ người thật</span></div>
-  </div>
-  <div class="mock-wrap">
-    <div class="mock"${heroShot ? '' : ' aria-hidden="true"'}>
-      <div class="mock-bar"><i></i><i></i><i></i><span class="url">shop.nentang.vn</span></div>
-      ${heroShot ? `<img class="mock-shot" src="${esc(heroShot)}" alt="Ảnh giao diện cửa hàng trên nền tảng" loading="eager">` : `<div class="mk-screen">
-        <div class="mk-top"><span class="mk-logo">CỬA HÀNG</span><span class="mk-nav"></span><span class="mk-dot">${I.cart}</span></div>
-        <div class="mk-banner"><span class="mkb-t">Bộ sưu tập mới về</span><span class="mkb-btn">Mua ngay</span></div>
-        <div class="mk-grid">
-          ${mockCard(I.shirt, '₫350.000')}
-          ${mockCard(I.sofa, '₫1.290.000')}
-          ${mockCard(I.cosmetic, '₫250.000')}
+  const hero = `<section class="lp-hero lp-dark" id="lpHero"${nhieuBanner ? ' aria-roledescription="carousel" aria-label="Giới thiệu nền tảng"' : ''}>
+  <div class="ct">
+    <div class="lp-hero-g">
+      <div>
+        ${BANNERS.map(slide).join('')}
+        <div class="lp-trust">
+          <span>${I.check}14 ngày dùng thử miễn phí</span>
+          <span>${I.check}Không cần thẻ</span>
+          <span>${I.wallet}Chúng tôi không giữ tiền của bạn</span>
         </div>
-      </div>`}
+      </div>
+      <div class="lp-stage">
+        <div class="lp-lap">
+          <div class="bar"><i></i><i></i><i></i><span class="u">shop.nentang.vn</span></div>
+          <div class="scr">${heroShot ? `<img class="lp-shot" src="${esc(heroShot)}" alt="Ảnh giao diện cửa hàng trên nền tảng" loading="eager" width="800" height="520">` : VIS.dash}</div>
+        </div>
+        <div class="lp-float lp-f-pay"><span class="ic">${I.qr}</span><div><b>+350.000đ VietQR</b><span>vào tài khoản của bạn</span></div></div>
+        <div class="lp-float lp-f-noti"><span class="ic">${I.bell}</span><div><b>Đơn hàng mới +1</b><span>vừa xong</span></div></div>
+      </div>
     </div>
-    <div class="mk-float mk-pay" aria-hidden="true"><span class="ico">${I.qr}</span><div><b>+350.000đ VietQR</b><span>vào tài khoản của bạn</span></div></div>
-    <div class="mk-float mk-noti" aria-hidden="true"><span class="ico">${I.bell}</span><div><b>Đơn hàng mới +1</b><span>vừa xong</span></div></div>
+    ${nhieuBanner ? `<div class="lp-ctl">
+      <p class="lp-count"><b id="lpCur">01</b> / ${String(BANNERS.length).padStart(2, '0')}</p>
+      <div class="lp-ctl-r">
+        <button class="lp-pause" id="lpPause" type="button" aria-pressed="false" aria-label="Tạm dừng băng giới thiệu">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+        </button>
+        <div class="lp-dots" role="tablist" aria-label="Chọn banner">
+          ${BANNERS.map((b, k) => `<button type="button" role="tab" aria-current="${k === 0}" aria-label="Banner ${k + 1}: ${esc(b.h)}"></button>`).join('')}
+        </div>
+        <div class="lp-arr">
+          <button id="lpPrev" type="button" aria-label="Banner trước"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H6M11 6l-6 6 6 6"/></svg></button>
+          <button id="lpNext" type="button" aria-label="Banner sau"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M13 6l6 6-6 6"/></svg></button>
+        </div>
+      </div>
+    </div>` : ''}
   </div>
-</div></div></header>
+</section>`;
 
-<section class="stats" aria-label="Cam kết"><div class="wrap stag">
-  ${STATS.map((s) => `<div class="stat reveal"><div class="n">${esc(s.n)}</div><div class="l">${esc(s.l)}</div></div>`).join('')}
-</div></section>
-
-<section class="sec prod" id="san-pham"><div class="wrap">
-  <div class="sec-head reveal"><p class="kick">Sản phẩm</p><h2>Một vòng qua thứ bạn sẽ dùng mỗi ngày</h2><p>Cuộn xuống — khung bên phải đổi theo đúng phần bạn đang đọc.</p></div>
-  <div class="prod-grid">
-    <div class="prod-list">${PRODUCTS.map(prodItem).join('')}</div>
-    <div class="prod-stick" aria-hidden="true"><div class="pstage">${PRODUCTS.map((x) => `<div class="pframe">${VIS[x.vis]}</div>`).join('')}</div></div>
-  </div>
-</div></section>
-
-<section class="sec" id="tinh-nang"><div class="wrap">
-  <div class="sec-head reveal"><p class="kick">Tính năng</p><h2>Mọi thứ để bán hàng online, gọn trong một chỗ</h2><p>Chọn một mảng để xem — tất cả đều có sẵn trong mọi gói, không cài thêm gì.</p></div>
-  <div class="tabs">
-    ${tabInputs}
-    <div class="tabbar">${tabLabels}</div>
-    <div class="panes">${tabPanes}</div>
-  </div>
-</div></section>
-
-<section class="sec ind-wrap" id="nganh-hang"><div class="wrap">
-  <div class="sec-head reveal"><p class="kick">Ngành hàng</p><h2>Dù bạn kinh doanh gì, cũng dựng được cửa hàng hợp gu</h2><p>Từ thời trang tới nội thất, cà phê tới thú cưng — giao diện tự chỉnh theo đúng chất ngành của bạn.</p></div>
-</div>
-  ${mqRow(INDUSTRIES.slice(0, half), false)}
-  ${mqRow(INDUSTRIES.slice(half), true)}
-</section>
-
-<section class="sec" id="cach-hoat-dong"><div class="wrap">
-  <div class="sec-head reveal"><p class="kick">Cách hoạt động</p><h2>Bắt đầu bán trong 3 bước</h2><p>Tự làm được hết — và luôn có người thật đồng hành khi bạn cần.</p></div>
-  <div class="steps stag">${STEPS.map((s) => `<div class="step reveal"><div class="n">${esc(s.n)}</div><h3>${esc(s.t)}</h3><p>${esc(s.d)}</p></div>`).join('')}</div>
-</div></section>
-
-<section class="sec flags" style="padding-top:40px"><div class="wrap">
-  <div class="sec-head reveal"><p class="kick">Vì sao chọn chúng tôi</p><h2>Làm thật những việc khó nhất của bán hàng online</h2></div>
-  ${FLAGS.map(flagBlock).join('')}
-</div></section>
-
-<section class="sec ind-wrap"><div class="wrap">
-  <div class="sec-head reveal"><p class="kick">Khách hàng nói gì</p><h2>Người bán thật, kết quả thật</h2></div>
-  <div class="tst-grid stag">${TESTIMONIALS.map((t) => `<div class="tst reveal"><div class="quote" aria-hidden="true">&ldquo;</div><p>${esc(t.q)}</p><div class="who"><div class="av" aria-hidden="true">${esc(t.name.trim().split(' ').pop()[0] || '?')}</div><div><div class="nm">${esc(t.name)}</div><div class="rl">${esc(t.role)}</div></div></div></div>`).join('')}</div>
-</div></section>
-
-<section class="sec pricing" id="bang-gia"><div class="wrap">
-  <div class="sec-head reveal"><p class="kick">Bảng giá</p><h2>Đơn giản, minh bạch, không phí ẩn</h2><p>Mọi gói đều bắt đầu bằng 14 ngày dùng thử miễn phí — không cần thẻ.</p></div>
-  <div class="plans stag">${PLANS.map(planCard).join('')}</div>
-  <p class="plan-note">Chưa chắc chọn gói nào? <a href="${mailto('Tư vấn chọn gói dịch vụ')}">Nhận tư vấn miễn phí qua email</a> — có người thật trả lời.</p>
-</div></section>
-
-<section class="sec" id="faq"><div class="wrap">
-  <div class="sec-head reveal"><p class="kick">Hỏi đáp</p><h2>Câu hỏi thường gặp</h2></div>
-  <div class="faq">${FAQS.map((f) => `<details><summary>${esc(f.q)}</summary><div class="ans">${esc(f.a)}</div></details>`).join('')}</div>
-</div></section>
-
-<section class="cta-final"><div class="wrap"><div class="cta-box reveal">
-  <h2>Dễ bắt đầu · Dễ bán hàng · Dễ tăng trưởng</h2>
-  <p>Trải nghiệm miễn phí 14 ngày — không cần thẻ, huỷ lúc nào cũng được.</p>
-  <p class="cta-sub">Hoặc để chúng tôi dựng cửa hàng giúp bạn, tận tay từ A tới Z.</p>
-  <div class="cta-row">
-    <a class="btn btn-primary btn-lg" href="${SIGNUP_URL}">Bắt đầu miễn phí ${I.arrow}</a>
-    <a class="btn btn-ghost btn-lg" href="${mailto('Tôi muốn được dựng cửa hàng giúp')}" aria-label="Nhờ dựng cửa hàng giúp (gửi email)">Nhờ dựng giúp</a>
-  </div>
-  <div class="cta-contact">${contactLine}</div>
+  const strip = `<section class="lp-strip lp-dark" aria-label="Cam kết"><div class="ct"><div class="g">
+  ${STATS.map((s) => `<div class="lp-stat"><div class="n">${esc(s.n)}</div><div class="l">${esc(s.l)}</div></div>`).join('')}
 </div></div></section>`;
+
+  const o = (kind, cot, mark, html) => `<td${kind === 0 ? ' class="us"' : ''} data-label="${esc(cot)}">
+        <span class="lp-cell"><span class="lp-mk ${mark}" aria-hidden="true">${MK[mark]}</span><span><span class="lp-sr">${MK_SR[mark]} — </span>${html}</span></span>
+      </td>`;
+  const cmp = `<section class="lp-sec lp-cmp" id="loi-ich" aria-labelledby="lpCmpH"><div class="ct">
+  <p class="lp-eb rv">So sánh thẳng</p>
+  <h2 class="lp-h2 rv" id="lpCmpH">Cùng một đơn hàng, <em>ai giữ lại bao nhiêu</em></h2>
+  <p class="lp-sub rv">Ba cách bán hàng online phổ biến nhất hiện nay, đặt cạnh nhau theo đúng những thứ ảnh hưởng tới túi tiền và quyền kiểm soát của shop. Chúng tôi để cả ô mình thua.</p>
+  <div class="lp-cmp-w rv">
+    <table class="lp-tbl">
+      <caption class="lp-sr">So sánh ${esc(brand)} với nền tảng website phổ thông và sàn thương mại điện tử</caption>
+      <thead><tr>
+        <th scope="col" class="crit">Tiêu chí</th>
+        <th scope="col" class="us">${esc(CMP_COLS[0])} <span class="lp-badge">Chúng tôi</span></th>
+        <th scope="col">${esc(CMP_COLS[1])}</th>
+        <th scope="col">${esc(CMP_COLS[2])}</th>
+      </tr></thead>
+      <tbody>${CMP.map((r) => `<tr><th scope="row">${esc(r[0])}</th>${r.slice(1).map((c, k) => o(k, CMP_COLS[k], c[0], c[1])).join('')}</tr>`).join('')}</tbody>
+    </table>
+  </div>
+  <p class="lp-note rv">Mức phí và chính sách của nền tảng khác thay đổi theo ngành hàng, gói dịch vụ và từng chương trình — bảng này mô tả cách vận hành phổ biến, không phải báo giá của bên thứ ba. Cột ${esc(CMP_COLS[0])} là cam kết của chúng tôi và được hệ thống cưỡng chế.</p>
+</div></section>`;
+
+  // Hai bản dựng từ CÙNG một nguồn (PRODUCTS + VIS): bản trong dòng cho màn hẹp và trình
+  // duyệt chưa hỗ trợ, bản dán dính cho màn rộng. Chép tay ra hai chỗ thì chúng sẽ trôi.
+  const prodItem = (x) => `<article class="lp-item">
+    <p class="lp-kick"><span class="n">${esc(x.n)}</span>${x.icon}${esc(x.kick)}</p>
+    <h3>${esc(x.h)}</h3>
+    <p class="d">${esc(x.d)}</p>
+    <ul>${x.bullets.map((b) => `<li>${I.check}<span>${esc(b)}</span></li>`).join('')}</ul>
+    <div class="lp-vin">${VIS[x.vis]}</div>
+  </article>`;
+  const prod = `<section class="lp-sec lp-prod" id="san-pham" aria-labelledby="lpProdH"><div class="ct">
+  <p class="lp-eb rv">Sản phẩm</p>
+  <h2 class="lp-h2 rv" id="lpProdH">Một vòng qua thứ bạn <em>dùng mỗi ngày</em></h2>
+  <p class="lp-sub rv">Cuộn xuống — khung bên phải đổi theo đúng phần bạn đang đọc.</p>
+  <div class="lp-grid">
+    <div>${PRODUCTS.map(prodItem).join('')}</div>
+    <div class="lp-stick" aria-hidden="true"><div class="lp-stage2">${PRODUCTS.map((x) => `<div class="lp-frame">${VIS[x.vis]}</div>`).join('')}</div></div>
+  </div>
+</div></section>`;
+
+  const grow = `<section class="lp-sec lp-grow lp-dark" id="giai-phap" aria-labelledby="lpGrowH"><div class="ct">
+  <p class="lp-eb rv">Giải pháp tăng trưởng</p>
+  <h2 class="lp-h2 rv" id="lpGrowH">Làm thật những việc <em>khó nhất</em> của bán hàng online</h2>
+  <p class="lp-sub rv">Bốn chỗ mà người bán mất tiền nhiều nhất mà thường không nhìn thấy. Đây là cách chúng tôi chặn từ gốc.</p>
+  ${FLAGS.map((f, k) => `<div class="lp-flag${k % 2 ? ' rev' : ''}">
+    <div class="rv"><p class="lp-kick2">${f.icon}${esc(f.kick)}</p><h3>${esc(f.h)}</h3><p class="d">${esc(f.d)}</p>
+      <ul>${f.bullets.map((b) => `<li>${I.check}<span>${esc(b)}</span></li>`).join('')}</ul></div>
+    <div class="lp-flag-v rv">${VIS[f.vis]}</div>
+  </div>`).join('')}
+</div></section>`;
+
+  const chip = (x) => `<span class="lp-chip"><span class="i">${x.icon}</span>${esc(x.name)}</span>`;
+  const half = Math.ceil(INDUSTRIES.length / 2);
+  const mq = (items, rev) => { const set = items.map(chip).join('');
+    return `<div class="lp-mq${rev ? ' rev' : ''}"><div class="lp-mq-in"><div class="lp-mq-set">${set}</div><div class="lp-mq-set clone" aria-hidden="true">${set}</div></div></div>`; };
+  const ind = `<section class="lp-ind" id="nganh-hang" aria-labelledby="lpIndH"><div class="ct">
+  <p class="lp-eb rv">Ngành hàng</p>
+  <h2 class="lp-h2 rv" id="lpIndH">Kinh doanh gì cũng <em>dựng được cửa hàng hợp gu</em></h2>
+</div>
+${mq(INDUSTRIES.slice(0, half), false)}
+${mq(INDUSTRIES.slice(half), true)}
+</section>`;
+
+  const price = `<section class="lp-sec lp-price" id="bang-gia" aria-labelledby="lpPriceH"><div class="ct">
+  <p class="lp-eb rv">Bảng giá</p>
+  <h2 class="lp-h2 rv" id="lpPriceH">Đơn giản, minh bạch, <em>không phí ẩn</em></h2>
+  <p class="lp-sub rv">Mọi gói đều bắt đầu bằng 14 ngày dùng thử miễn phí — không cần thẻ.</p>
+  <div class="lp-plans">
+    ${PLANS.map((p) => `<div class="lp-plan${p.hot ? ' hot' : ''} rv">
+      ${p.hot ? '<div class="lp-hot-b">Phổ biến nhất</div>' : ''}
+      <p class="tag">${esc(p.tagline)}</p>
+      <h3>${esc(p.name)}</h3>
+      <p class="pr">${esc(p.price)}<span>${esc(p.unit)}</span></p>
+      <ul>${p.feat.map((f) => `<li>${I.check}<span>${esc(f)}</span></li>`).join('')}</ul>
+      <a class="lp-btn ${p.hot ? 'lp-b-gh' : 'lp-b-pri'}" href="${SIGNUP_URL}">Dùng thử miễn phí 14 ngày</a>
+    </div>`).join('')}
+  </div>
+  <p class="lp-plan-note rv">Chưa chắc chọn gói nào? <a href="${mailto('Tư vấn chọn gói dịch vụ')}">Nhận tư vấn miễn phí qua email</a> — có người thật trả lời.</p>
+</div></section>`;
+
+  const faq = `<section class="lp-sec lp-faq" id="faq" aria-labelledby="lpFaqH"><div class="ct">
+  <p class="lp-eb rv">Hỏi đáp</p>
+  <h2 class="lp-h2 rv" id="lpFaqH">Câu hỏi thường gặp</h2>
+  <div class="lp-faq-l">${FAQS.map((f) => `<details class="rv"><summary>${esc(f.q)}</summary><div class="ans">${esc(f.a)}</div></details>`).join('')}</div>
+</div></section>`;
+
+  const final = `<section class="lp-final"><div class="ct"><div class="lp-box lp-dark rv">
+  <h2>Dễ bắt đầu · Dễ bán hàng · Dễ tăng trưởng</h2>
+  <p>${STEPS.map((s) => esc(s.t)).join(' → ')}. Trải nghiệm miễn phí 14 ngày — không cần thẻ, huỷ lúc nào cũng được.</p>
+  <div class="lp-box-r">
+    <a class="lp-btn lp-knob" href="${SIGNUP_URL}">Bắt đầu miễn phí<i>${AR}</i></a>
+    <a class="lp-btn lp-b-gh" href="${mailto('Tôi muốn được dựng cửa hàng giúp')}">Nhờ dựng giúp</a>
+  </div>
+  <p class="lp-box-c">${contactPhone ? `ĐT: ${esc(contactPhone)} · ` : ''}Email: ${esc(contactEmail)}</p>
+</div></div></section>`;
+
+  const footer = `<footer class="lp-ft"><div class="ct">
+  <div class="lp-ft-g">
+    <div class="lp-ft-ab">
+      <a class="lp-brand" href="/">${brandMark}</a>
+      <p>Nền tảng bán hàng online cho người Việt. Chúng tôi lo kỹ thuật, tiền khách trả vào thẳng tài khoản bạn.</p>
+      <a class="lp-btn lp-b-pri" href="${SIGNUP_URL}">Dùng thử miễn phí 14 ngày</a>
+    </div>
+    <div class="lp-ft-c"><h3>Giải pháp</h3><a href="#san-pham">Sản phẩm</a><a href="#nganh-hang">Ngành hàng</a><a href="#bang-gia">Bảng giá</a><a href="${SIGNUP_URL}">Đăng ký dùng thử</a></div>
+    <div class="lp-ft-c"><h3>Về chúng tôi</h3><a href="/gioi-thieu">Giới thiệu</a><a href="/blog">Blog</a><a href="${ADMIN_LOGIN_URL}">Đăng nhập quản trị</a></div>
+    <div class="lp-ft-c"><h3>Hỗ trợ</h3><a href="/ho-tro">Trung tâm hỗ trợ</a><a href="/lien-he">Liên hệ</a><a href="${mailto('Cần hỗ trợ')}">${I.mail}${esc(contactEmail)}</a>${contactPhone ? `<span>${I.phone}${esc(contactPhone)}</span>` : ''}</div>
+    <div class="lp-ft-c"><h3>Pháp lý</h3><a href="/dieu-khoan">Điều khoản dịch vụ</a><a href="/bao-mat">Chính sách bảo vệ dữ liệu</a></div>
+  </div>
+  <div class="lp-ft-b"><span>© ${esc(brand)} · Nền tảng bán hàng online cho người Việt.</span>
+    <span><a href="/dieu-khoan">Điều khoản</a> · <a href="/bao-mat">Bảo mật</a> · <a href="/lien-he">Liên hệ</a></span></div>
+</div></footer>`;
+
+  // Thanh CTA nổi CHỈ dựng khi có nonce: không JS thì nó không bao giờ hiện được (mặc định
+  // visibility:hidden), nên chèn vào chỉ là rác DOM và một nút Đóng không làm gì.
+  const dock = nonce ? `<aside class="lp-dock" id="lpDock" aria-label="Ưu đãi">
+  <div class="lp-dock-c"><div class="hd"><div class="t">
+    <p class="t1">Miễn phí tạo shop</p>
+    <p class="t2">Trọn bộ tính năng trong 14 ngày, không cần thẻ</p>
+  </div>
+  <button class="x" id="lpDockX" type="button" aria-label="Đóng">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </button></div>
+  <a class="go" href="${SIGNUP_URL}">Đăng ký ngay${AR}</a></div>
+</aside>
+<button class="lp-reopen" id="lpReopen" type="button" aria-label="Mở lại ưu đãi">
+  <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h2l2.4 12.3a2 2 0 0 0 2 1.7h7.7a2 2 0 0 0 2-1.6L21 8H6"/><circle cx="10" cy="20" r="1"/><circle cx="17" cy="20" r="1"/></svg>
+</button>` : '';
+
+  const body = `<div class="lp">${header}<main id="main">${hero}${strip}${cmp}${prod}${grow}${ind}${price}${faq}${final}</main>${footer}${dock}</div>`;
 
   return sitePage({
     title: `${esc(brand)} — Nền tảng website bán hàng cho người Việt, tiền về thẳng tài khoản bạn`,
     description: 'Dựng cửa hàng online trong 3 phút, dùng thử miễn phí 14 ngày. Đơn hàng, vận chuyển GHN/GHTK, kho, khuyến mãi, thanh toán COD + VietQR vào thẳng tài khoản bạn — không cần biết code.',
-    brand, contactEmail, contactPhone, active: '', extraCss: CSS, body,
+    brand, contactEmail, contactPhone, extraCss: CSS, body, shell: false, nonce, js: JS,
   });
 }

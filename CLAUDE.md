@@ -463,13 +463,25 @@ workflow 5, mà là **phân tầng gói dịch vụ**: bảng `plans` chỉ có 
 hàng liệt kê năm khác biệt mà hệ thống **không cưỡng chế mục nào**. Đang chờ chủ dự án chốt ba
 câu hỏi kinh doanh ở `docs/79 §4` trước khi khoá brief.
 
-Song song: đang dựng lại **trang chủ nền tảng** (`apps/storefront/src/landing.js`) theo yêu
-cầu của chủ dự án. Đã xong khối **sản phẩm** — hai cột đồng bộ khi cuộn, dựng thuần CSS
-(`view-timeline-name` + `timeline-scope`) vì trang này chạy dưới CSP `default-src 'none'`
-không có `script-src`. Cùng lượt vá **ba lỗi tràn ngang có sẵn** đo được trên `main`
-(360px 495/345 · 768px 771/753 · 1024px 1143/1009). Còn treo, chờ chủ dự án quyết:
-header ẩn/hiện theo chiều cuộn, carousel tự chạy và thanh CTA nhớ 24h **không dựng được
-nếu không mở `script-src` bằng nonce cho trang chủ** — đó là nới bảo mật, thuộc §7.
+Song song: **trang chủ nền tảng đã dựng lại toàn bộ** (`apps/storefront/src/landing.js`)
+theo yêu cầu của chủ dự án. Hệ thiết kế mới (xanh cobalt, hero nền tối), bố cục mới, và
+chủ dự án đã **cho phép dùng JavaScript** ở trang này. Không phải nới CSP: cơ chế nonce
+đã có sẵn trong storefront (đang dùng cho badge giỏ), chỉ cần truyền nonce cho route `/`.
+
+**JS ở đây là LỚP TĂNG CƯỜNG, không phải điều kiện.** Không nonce ⇒ `sitePage` không chèn
+script ⇒ trang vẫn đủ chữ và bấm được: slide đầu mở sẵn từ server, thanh CTA nổi không
+dựng, và trạng thái ẩn của hiệu ứng nằm sau `html.lpjs` — cờ do chính JS gắn. Đo cả hai
+nhánh: 0/7 bề rộng tràn khi có JS, 0/5 khi không.
+
+Hai lớp lỗi mới học được ở lượt này, cả hai đều làm MẤT NỘI DUNG chứ không chỉ mất hiệu ứng:
+`requestAnimationFrame` chỉ chạy **2 lần trong cả một giây** ở môi trường không vẽ đều, nên
+bọc handler cuộn trong rAF là để thanh điều hướng kẹt trạng thái cũ; và bộ quét hiện-dần giữ
+lại cả phần tử đã trôi LÊN TRÊN khung nhìn thì nhảy tới mỏ neo hay cuộn nhanh một phát sẽ
+làm chúng kẹt `opacity:0` vĩnh viễn (đo được 4/37 phần tử hiện, sau khi vá là 37/37).
+
+Đã **bỏ ba lời chứng thực khách hàng dựng lên** ("Chị Hương", "Anh Tuấn", "Chị Mai"): kho
+chưa triển khai và chưa có khách thật (§0), trong khi chính chú thích đầu file tuyên bố
+không bịa số khách hàng. Có chốt cấm dựng lại cho tới khi có trích dẫn thật.
 
 Nợ đã ghi, chưa xử lý: trang **Tồn an toàn tràn 377/360** ở cả JS bật lẫn tắt — thủ phạm là ô
 nhập "Tỉ lệ giữ an toàn cho toàn shop (%)" trong form đầu trang (`pages.js:6022`), không phải

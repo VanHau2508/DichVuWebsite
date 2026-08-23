@@ -115,10 +115,17 @@ MANIFEST_UNIT_FILES=(
   # bảng thiếu nhãn vẫn đủ chữ và trang vẫn 200. Bộ này canh cả ba đường quay lại: bảng viết
   # tay, CSS móc lớp .cards, và JS dựng lại việc gán nhãn.
   apps/seller-admin/test/table-cards.test.js
+  # Khối sản phẩm trên trang chủ: hai cột đồng bộ khi cuộn, dựng bằng CSS thuần vì trang
+  # chủ chạy dưới CSP không có script-src. Bộ này neo ba lỗi tràn ngang ĐO ĐƯỢC trên bản
+  # trước (360px 495/345 · 768px 771/753 · 1024px 1143/1009) cùng hai cách hỏng riêng của
+  # bố cục dán dính: mốc bề rộng đặt quá hẹp thì cột phải tràn 15px, và thiếu linear thì
+  # easing mặc định làm hai khung chồng lên nhau. E2E không thấy lớp này vì chúng khớp CHỮ
+  # trong HTML chứ không dựng bố cục — trang tràn ngang vẫn đủ chữ và vẫn 200.
+  apps/storefront/test/landing-san-pham.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=38
+MANIFEST_UNIT_COUNT=39
 MANIFEST_E2E_COUNT=106
 # Số FILE migration, KHÔNG phải số thứ tự cao nhất. Dãy có khoảng trống (0157 chẳng hạn)
 # nên hôm nay là 174 file trong khi file mới nhất mang số 0176 — suy số lượng từ số thứ tự

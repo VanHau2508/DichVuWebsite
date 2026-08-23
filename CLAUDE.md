@@ -246,6 +246,27 @@ Những lỗi này **không nằm ở sản phẩm mà ở cách kiểm chứng*
 - **Chuẩn hoá trước khi so phải HẸP và có chủ đích.** Bỏ khoảng trắng kề thẻ cấu trúc bảng
   thì đúng (bộ phân tích HTML cũng vứt); collapse toàn cục thì `<td>a b</td>` và `<td>ab</td>`
   hoá giống nhau — giấu mất lỗi nuốt chữ. Thứ tự thuộc tính thì vô nghĩa, sắp xếp được.
+- **So `scrollWidth` với `clientWidth`, KHÔNG với `innerWidth`.** `innerWidth` tính cả thanh
+  cuộn (360 → khung thật 345), nên ngưỡng đặt theo nó bỏ lọt mọi phần tử tràn trong khoảng
+  345–361px. Một lượt đo trang chủ đã báo ĐẠT trong khi trang tràn thật.
+- **`html{scroll-behavior:smooth}` vô hiệu hoá `scrollTo` trong headless.** Lệnh cuộn thành
+  hoạt ảnh và không kịp xong dưới `--virtual-time-budget`; `scrollY` vẫn là 0 nên mọi phép
+  đo sau khi cuộn đọc đúng trạng thái ĐẦU TRANG. Dấu hiệu: mọi vị trí cuộn cho **cùng một**
+  con số. Phải dùng `scrollTo({top, behavior:'instant'})`, và in kèm `scrollY` để phép đo
+  tự tố giác khi nó không cuộn.
+- **Mẫu của animation theo cuộn chỉ tươi ở LẦN ĐO ĐẦU sau mỗi lượt cuộn.** Headless không vẽ
+  khung hình đều, nên cuộn nhiều chặng trong MỘT lượt chạy thì các chặng sau đọc lại giá trị
+  cũ — và giá trị cũ đó *đúng* với chặng đầu nên trông rất thuyết phục. Mỗi vị trí một lượt
+  chạy riêng.
+- **`animation` mặc định easing là `ease`, không phải `linear`.** Với animation theo cuộn thì
+  nó bẻ cong tiến độ: đo được khung kề còn mở 54% ngay lúc khung chính đã 100%, tức chồng hai
+  hình. Mọi `animation-timeline` phải khai `linear`.
+- **Ô lưới/flex mặc định `min-width:auto` — cột KHÔNG co dưới min-content của nội dung.**
+  Trang chủ tràn ngang ở 3/7 bề rộng vì chuyện này: một hàng flex một dòng có bề rộng tối
+  thiểu 391px kéo cả cột lên 429px. `min-width:0` là bản vá, nhưng phải vá ở ĐÚNG ô lưới,
+  không phải ở tổ tiên.
+- **`overflow-x:clip` ở tổ tiên PHÁ `position:sticky`.** Vá tràn ngang bằng cách cắt ở khối
+  cha là cách nhanh nhất giết một bố cục dán dính mà không ai thấy — cắt ở đúng khối gây tràn.
 - **Schema runtime phải đọc từ `pg_class` / `pg_policies`, không suy bằng grep migration.**
   `0004_rls.sql` bật RLS và tạo policy qua vòng lặp động cho mọi bảng có `shop_id`; tìm
   `ALTER TABLE <tên>` viết thẳng từng dẫn tới finding CAO sai và suýt sinh migration trùng
@@ -441,6 +462,14 @@ workflow 5, mà là **phân tầng gói dịch vụ**: bảng `plans` chỉ có 
 (`max_products`), `care` và `platform` cùng trần 100 SP dù chênh 1,5 triệu/tháng, và trang bán
 hàng liệt kê năm khác biệt mà hệ thống **không cưỡng chế mục nào**. Đang chờ chủ dự án chốt ba
 câu hỏi kinh doanh ở `docs/79 §4` trước khi khoá brief.
+
+Song song: đang dựng lại **trang chủ nền tảng** (`apps/storefront/src/landing.js`) theo yêu
+cầu của chủ dự án. Đã xong khối **sản phẩm** — hai cột đồng bộ khi cuộn, dựng thuần CSS
+(`view-timeline-name` + `timeline-scope`) vì trang này chạy dưới CSP `default-src 'none'`
+không có `script-src`. Cùng lượt vá **ba lỗi tràn ngang có sẵn** đo được trên `main`
+(360px 495/345 · 768px 771/753 · 1024px 1143/1009). Còn treo, chờ chủ dự án quyết:
+header ẩn/hiện theo chiều cuộn, carousel tự chạy và thanh CTA nhớ 24h **không dựng được
+nếu không mở `script-src` bằng nonce cho trang chủ** — đó là nới bảo mật, thuộc §7.
 
 Nợ đã ghi, chưa xử lý: trang **Tồn an toàn tràn 377/360** ở cả JS bật lẫn tắt — thủ phạm là ô
 nhập "Tỉ lệ giữ an toàn cho toàn shop (%)" trong form đầu trang (`pages.js:6022`), không phải

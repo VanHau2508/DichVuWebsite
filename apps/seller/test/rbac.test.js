@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import { can, permsFor, needsStepUp, ROLES } from '../src/rbac.js';
 
 const resolutionSource = readFileSync(new URL('../src/order-resolutions.js', import.meta.url), 'utf8');
+const integrationSource = readFileSync(new URL('../src/integrations.js', import.meta.url), 'utf8');
+const adminSource = readFileSync(new URL('../../seller-admin/src/server.js', import.meta.url), 'utf8');
 
 test('owner có mọi quyền', () => {
   for (const p of ['catalog.write', 'orders.write', 'refund', 'members.write', 'domain.write', 'export']) {
@@ -92,4 +94,30 @@ test('privacy.erase: CHỈ owner + bắt buộc step-up (ẩn danh là thao tác
   assert.equal(can('catalog_manager', 'privacy.erase'), false);
   assert.equal(can('order_manager', 'privacy.erase'), false);
   assert.equal(needsStepUp('privacy.erase'), true);
+});
+
+test('connector POS giữ đúng quyền theo vai và mọi route tài chính cấu hình đều step-up', () => {
+  const routeLines = integrationSource.split('\n').filter((line) => line.includes("{ m: '") && line.includes('/integrations'));
+  const by = (needle) => routeLines.filter((line) => line.includes(needle));
+  assert.equal(by('/kiotviet/probe$').length, 1);
+  assert.ok(by('/kiotviet/probe$')[0].includes("perm: 'shop.write'") && by('/kiotviet/probe$')[0].includes('stepUp: true'));
+  assert.equal(by('/kiotviet/activate$').length, 1);
+  assert.ok(by('/kiotviet/activate$')[0].includes("perm: 'shop.write'") && by('/kiotviet/activate$')[0].includes('stepUp: true'));
+  assert.equal(by('/disable$').length, 1);
+  assert.ok(by('/disable$')[0].includes("perm: 'shop.write'") && by('/disable$')[0].includes('stepUp: true'));
+  assert.equal(by('/mappings/').length, 2);
+  assert.ok(by('/mappings/').every((line) => line.includes("perm: 'catalog.write'")));
+  assert.ok(by('/discrepancies/')[0].includes("perm: 'orders.write'"));
+
+  assert.match(integrationSource, /const UUID = '\(\[0-9a-f\]\{8\}-/, 'UUID route phải là nhóm bắt strict để params[1] là id đích');
+});
+
+test('BFF không hỏi mật khẩu vai không được quản lý credential POS', () => {
+  for (const name of ['integrationProbe', 'integrationProbeStepUp', 'integrationActivate', 'integrationActivateStepUp']) {
+    const start = adminSource.indexOf(`async function ${name}(`);
+    const end = adminSource.indexOf('\n}', start);
+    assert.ok(start > 0 && end > start, `không tìm thấy ${name}`);
+    assert.match(adminSource.slice(start, end), /INTEGRATION_MANAGE_ROLES\.has\(roleFor\(me, shopId\)\)/,
+      `${name} phải chặn vai ngoài owner/admin trước interstitial`);
+  }
 });

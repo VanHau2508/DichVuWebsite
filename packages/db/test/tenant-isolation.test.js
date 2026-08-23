@@ -14,8 +14,10 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import {
   rw,
+  integration,
   owner,
   withTenant,
+  withIntegrationTenant,
   seedTwoShops,
   cleanupShops,
   sqlstateOf,
@@ -188,6 +190,103 @@ describe('GHI — WITH CHECK phải chặn', () => {
     assert.deepEqual(a.response_body, { shop: 'a' });
     assert.equal(b.status, 'in_progress', 'shop B phải nguyên vẹn');
     assert.equal(b.response_body, null);
+  });
+});
+
+describe('CONNECTOR POS — cùng external id vẫn cô lập theo shop', () => {
+  let ia, ib, wa, wb;
+
+  before(async () => {
+    ia = (await owner.query(
+      `INSERT INTO shop_integrations
+         (shop_id, provider, status, inventory_authority, credential_ciphertext, retailer)
+       VALUES ($1, 'kiotviet', 'active', 'external_master', 'cipher-a', 'retailer-a')
+       RETURNING id, webhook_public_id`, [A.id],
+    )).rows[0];
+    ib = (await owner.query(
+      `INSERT INTO shop_integrations
+         (shop_id, provider, status, inventory_authority, credential_ciphertext, retailer)
+       VALUES ($1, 'kiotviet', 'active', 'external_master', 'cipher-b', 'retailer-b')
+       RETURNING id, webhook_public_id`, [B.id],
+    )).rows[0];
+    for (const [shop, connector, variant] of [[A, ia, A.variantId], [B, ib, B.variantId]]) {
+      const webhook = await owner.query(
+        `INSERT INTO integration_webhook_inbox
+           (shop_id, integration_id, provider_event_id, event_type, payload_hash, payload)
+         VALUES ($1,$2,'evt-chung','stock.update','hash','{}') RETURNING id`, [shop.id, connector.id],
+      );
+      if (shop.id === A.id) wa = webhook.rows[0].id;
+      else wb = webhook.rows[0].id;
+      await owner.query(
+        `INSERT INTO integration_entity_refs
+           (shop_id, integration_id, entity_type, external_id, local_id, mapping_status)
+         VALUES ($1,$2,'variant','external-chung',$3,'mapped')`, [shop.id, connector.id, variant],
+      );
+      await owner.query(
+        `INSERT INTO integration_sync_discrepancies
+           (shop_id, integration_id, kind, dedupe_key, message)
+         VALUES ($1,$2,'webhook_failed','loi-chung','Lỗi thử')`, [shop.id, connector.id],
+      );
+    }
+  });
+
+  test('app_integration của shop A chỉ thấy bốn dòng A', async () => {
+    const rows = await withIntegrationTenant(A.id, async (c) => {
+      const out = {};
+      for (const table of ['shop_integrations', 'integration_webhook_inbox', 'integration_entity_refs', 'integration_sync_discrepancies']) {
+        out[table] = (await c.query(`SELECT shop_id FROM ${table}`)).rows.map((r) => r.shop_id);
+      }
+      return out;
+    });
+    for (const [table, ids] of Object.entries(rows)) {
+      assert.deepEqual(ids, [A.id], `${table} không được lộ shop B`);
+    }
+  });
+
+  test('UPDATE theo UUID của connector shop B chạm 0 dòng', async () => {
+    const changed = await withIntegrationTenant(A.id, (c) => c.query(
+      `UPDATE shop_integrations SET last_error = 'xâm nhập' WHERE id = $1`, [ib.id],
+    ));
+    assert.equal(changed.rowCount, 0);
+    assert.equal((await owner.query(`SELECT last_error FROM shop_integrations WHERE id = $1`, [ib.id])).rows[0].last_error, null);
+  });
+
+  test('resolver công khai chỉ trả đúng connector theo public id, không cần mở SELECT toàn bảng', async () => {
+    const a = await integration.query(`SELECT * FROM resolve_integration_webhook($1)`, [ia.webhook_public_id]);
+    assert.equal(a.rowCount, 1);
+    assert.equal(a.rows[0].shop_id, A.id);
+    assert.equal(a.rows[0].credential_ciphertext, 'cipher-a');
+    const none = await integration.query(`SELECT * FROM resolve_integration_webhook($1)`, [randomUUID()]);
+    assert.equal(none.rowCount, 0);
+    const direct = await integration.query(`SELECT id FROM shop_integrations`);
+    assert.equal(direct.rowCount, 0, 'ngoài tenant context phải fail-closed');
+  });
+
+  test('sweep chỉ lộ UUID webhook tới hạn và phục hồi được claim processing bị treo', async () => {
+    const dueIds = async () => (await integration.query(
+      `SELECT inbox_id FROM list_due_integration_webhooks(200) WHERE inbox_id = ANY($1::uuid[]) ORDER BY inbox_id`,
+      [[wa, wb]],
+    )).rows.map((r) => r.inbox_id);
+    assert.deepEqual(await dueIds(), [wa, wb].sort());
+
+    await owner.query(
+      `UPDATE integration_webhook_inbox
+          SET status = CASE WHEN id = $1 THEN 'processing' ELSE 'failed' END,
+              claimed_at = CASE WHEN id = $1 THEN now() ELSE claimed_at END,
+              next_attempt_at = CASE WHEN id = $2 THEN now() + interval '1 hour' ELSE next_attempt_at END
+        WHERE id = ANY($3::uuid[])`,
+      [wa, wb, [wa, wb]],
+    );
+    assert.deepEqual(await dueIds(), [], 'claim còn mới và retry chưa tới hạn phải được bỏ qua');
+
+    await owner.query(
+      `UPDATE integration_webhook_inbox
+          SET claimed_at = CASE WHEN id = $1 THEN now() - interval '11 minutes' ELSE claimed_at END,
+              next_attempt_at = CASE WHEN id = $2 THEN now() - interval '1 minute' ELSE next_attempt_at END
+        WHERE id = ANY($3::uuid[])`,
+      [wa, wb, [wa, wb]],
+    );
+    assert.deepEqual(await dueIds(), [wa, wb].sort(), 'processing treo và retry tới hạn phải quay lại sweep');
   });
 });
 

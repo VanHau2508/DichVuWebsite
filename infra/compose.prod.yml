@@ -201,11 +201,13 @@ services:
       - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
       # Redis tối giản dùng chung (image không có packages/) — import '../redis-lite.js'.
       - ../packages/redis-lite/src/redis-lite.js:/app/redis-lite.js:ro
+      - ../packages/integrations/src/kiotviet.js:/app/kiotviet.js:ro
     restart: unless-stopped
     <<: *logging
     environment:
       APP_ENV: production
       DATABASE_URL: postgres://app_rw:${APP_RW_PASSWORD:?}@postgres:5432/app
+      DATABASE_URL_INTEGRATION: postgres://app_integration:${APP_INTEGRATION_PASSWORD:?}@postgres:5432/app
       AUTH_URL: http://auth:3020
       ALLOWED_ORIGINS: https://${ADMIN_DOMAIN:-admin.nentang.vn}
       PORT: "3040"
@@ -232,6 +234,9 @@ services:
       SHIPPING_ENC_KEY: ${SHIPPING_ENC_KEY:?}
       # Mã hoá Page Access Token khi chủ shop kết nối Trang Facebook (0122).
       MESSENGER_ENC_KEY: ${MESSENGER_ENC_KEY:?}
+      INTEGRATION_ENC_KEY: ${INTEGRATION_ENC_KEY:?}
+      INTEGRATION_ENC_KEYS: ${INTEGRATION_ENC_KEYS:-}
+      INTEGRATION_WEBHOOK_BASE: https://${SELLER_DOMAIN:-api.nentang.vn}
       # Telegram bot username (công khai) để dựng deep-link kết nối per-shop.
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
     deploy: { resources: { limits: { memory: 384m } } }   # sharp re-encode ảnh
@@ -375,11 +380,13 @@ services:
       - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
       # Bộ vẽ banner mặc định (0114) — import '../banner-art.js'. Cùng lối mount.
       - ../packages/banner-art/src/index.js:/app/banner-art.js:ro
+      - ../packages/integrations/src/kiotviet.js:/app/kiotviet.js:ro
     restart: unless-stopped
     <<: *logging
     environment:
       APP_ENV: production
       DATABASE_URL: postgres://app_worker:${APP_WORKER_PASSWORD:?}@postgres:5432/app
+      DATABASE_URL_INTEGRATION: postgres://app_integration:${APP_INTEGRATION_PASSWORD:?}@postgres:5432/app
       # Báo khách qua Messenger khi đơn đổi trạng thái (0122). Trống = tắt kênh này —
       # đơn chốt trong chat KHÔNG có email nên đây là kênh báo DUY NHẤT tới nhóm khách đó.
       MESSENGER_URL: ${MESSENGER_URL:-http://messenger:3072}
@@ -410,6 +417,8 @@ services:
       PLATFORM_CONTACT_EMAIL: ${PLATFORM_CONTACT_EMAIL:-lienhe@nentang.vn}
       # Poll vận đơn hãng VC (0044): khoá PHẢI khớp seller; sweep mặc định 10 phút.
       SHIPPING_ENC_KEY: ${SHIPPING_ENC_KEY:?}
+      INTEGRATION_ENC_KEY: ${INTEGRATION_ENC_KEY:?}
+      INTEGRATION_ENC_KEYS: ${INTEGRATION_ENC_KEYS:-}
       TRACKING_SWEEP_MS: ${TRACKING_SWEEP_MS:-600000}
       # Cảnh báo đường tiền/vận hành → webhook (Slack/Discord/Telegram-bridge). Trống = tắt.
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}

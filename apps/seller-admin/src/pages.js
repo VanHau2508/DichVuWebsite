@@ -669,6 +669,7 @@ const ic = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 export const ORDER_SOURCE_LABEL = {
   web: 'Website', manual: 'Nhân viên nhập', facebook: 'Facebook',
   zalo: 'Zalo', tiktok: 'TikTok', other: 'Khác',
+  kiotviet_pos: 'KiotViet POS', sapo_pos: 'Sapo POS',
 };
 export const ORDER_SOURCE_PICK = ['manual', 'facebook', 'zalo', 'tiktok', 'other'];
 const PAYMENT_LABEL = { unpaid: 'Chưa thu tiền', pending: 'Chờ đối soát', paid: 'Đã thu tiền', refunded: 'Đã hoàn tiền' };
@@ -825,6 +826,7 @@ function sideNav(ctx) {
     { solo: [`${base}/customers`, 'Khách hàng', IC_HEART, 'customers', ORDER_ROLES.has(R)] },
     { solo: [`${base}/reports`, 'Báo cáo', IC_CHART2, 'reports', REPORT_ROLES.has(R)] },
     { title: 'Kênh bán', icon: IC_PLUG, items: [
+      [`${base}/integrations`, 'Kết nối POS', 'integrations', true],
       [`${base}/api-keys`, 'Bán qua Facebook', 'apikeys', SHIPPING_ROLES.has(R)],
       [`${base}/domains`, 'Tên miền riêng', 'domains', DOMAIN_ROLES.has(R)],
     ] },
@@ -2900,7 +2902,10 @@ export function renderOrders(ctx, shopId, data, filter) {
       { html: badge(o.status, STATUS[o.status] ?? o.status) },
       { html: `${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} <span class="muted">${esc(o.payment_method?.toUpperCase() ?? '')}</span>` },
       { html: `${esc(o.customer_name)}${susp ? ` <span class="badge cancelled" title="Cùng nguồn mạng với ${esc(o.same_ip_phones)} SĐT khác nhau đang chờ xử lý — kiểm tra kẻo đơn ảo">⚠ ${esc(o.same_ip_phones)} SĐT cùng nguồn</span>` : ''}` },
-      { html: o.source ? `<span class="badge">${esc(ORDER_SOURCE_LABEL[o.source] ?? o.source)}</span>`
+      { html: o.source ? `<span class="badge">${esc(ORDER_SOURCE_LABEL[o.source] ?? o.source)}</span>${
+        o.sync_status === 'pending' ? ' <span class="badge wait">Đang đồng bộ</span>'
+        : o.sync_status === 'needs_attention' ? ' <span class="badge cancelled">Cần xử lý</span>'
+        : o.sync_status === 'synced' ? ' <span class="badge ok">Đã đồng bộ</span>' : ''}`
         : (o.is_migrated ? '<span class="muted">Nhập từ sàn cũ</span>' : '<span class="muted">—</span>') },
       { cls: 'muted', html: dt(o.created_at) },
       { style: 'text-align:right', html: `<strong>${money(o.total_vnd)}</strong>` },
@@ -3593,6 +3598,10 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
         o.source_ref ? ` · ${/^https?:\/\//i.test(o.source_ref)
           ? `<a href="${esc(o.source_ref)}" target="_blank" rel="noopener noreferrer">mở hội thoại ↗</a>`
           : esc(o.source_ref)}` : ''}</p>` : ''}
+      ${o.sync_status && o.sync_status !== 'not_required' ? `<div class="card" style="margin:10px 0;border-color:${o.sync_status === 'needs_attention' ? '#fca5a5' : '#93c5fd'}"><strong>${
+        o.sync_status === 'synced' ? 'Đã đồng bộ với hệ thống POS'
+        : o.sync_status === 'needs_attention' ? 'Đồng bộ cần xử lý'
+        : 'Đang chờ hệ thống POS xác nhận'}</strong>${o.external_ref ? `<p class="muted" style="margin:6px 0 0">Mã ngoài: <code>${esc(o.external_ref)}</code></p>` : ''}${o.sync_error ? `<p class="err" style="margin:6px 0 0">${esc(o.sync_error)}</p>` : ''}</div>` : ''}
       ${o.shipping_address ? `<p class="muted">${esc(typeof o.shipping_address === 'object' ? [o.shipping_address.line, o.shipping_address.province].filter(Boolean).join(', ') || JSON.stringify(o.shipping_address) : o.shipping_address)}</p>` : ''}
       <p class="muted">Tạo: ${dt(o.created_at)}</p></div>`);
 }
@@ -6632,6 +6641,76 @@ export function renderApiKeys(ctx, shopId, data, err, ok, freshToken, mess, veri
         <li><code>source</code>: <code>facebook</code> · <code>zalo</code> · <code>tiktok</code> · <code>other</code> — để trang Đơn hàng lọc được theo kênh.</li>
         <li>Hết hàng / thiếu trường → trả mã lỗi kèm câu tiếng Việt, đơn <strong>không</strong> được tạo nửa vời.</li>
       </ul>
+    </div>`);
+}
+
+// ── POS ngoài: kết nối, ánh xạ và ca đồng bộ ────────────────────────────────
+// Một trang cho cả ba vai vận hành nhưng mỗi vai chỉ thấy việc mình làm được. Credential
+// không bao giờ quay lại HTML; owner/admin nhập mới thì giá trị đi thẳng qua POST + step-up.
+export function renderIntegrations(ctx, shopId, data = {}, notice, err, probe = null) {
+  const base = `/shops/${esc(shopId)}/integrations`;
+  const dt = (value) => value ? new Date(value).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : 'Chưa có';
+  const canManage = ctx.role === 'owner' || ctx.role === 'admin';
+  const canMap = canManage || ctx.role === 'catalog_manager';
+  const canRetry = canManage || ctx.role === 'order_manager';
+  const integration = (data.integrations ?? []).find((row) => row.provider === 'kiotviet') ?? null;
+  const status = {
+    connecting: ['Đang đồng bộ thử', 'wait'], active: ['Đang hoạt động', 'ok'],
+    degraded: ['Cần xử lý', 'wait'], disabled: ['Đã ngắt', 'cancelled'],
+  }[integration?.status] ?? ['Chưa kết nối', 'cancelled'];
+  const authority = integration?.inventory_authority === 'external_master'
+    ? 'KiotViet làm chủ tồn vật lý' : 'Nền tảng đang làm chủ tồn vật lý';
+  const webhookRows = integration?.webhook_urls ? Object.entries(integration.webhook_urls).map(([name, url]) => `
+    <div style="margin:8px 0"><strong>${esc(name)}</strong><br><code style="word-break:break-all">${esc(url)}</code></div>`).join('') : '';
+  const mappingCards = (data.mappings ?? []).map((row) => `<div class="card" style="margin:10px 0">
+    <div class="actions" style="justify-content:space-between"><strong>${esc(row.raw_meta?.name || row.external_id)}</strong><span class="badge wait">${row.mapping_status === 'conflict' ? 'Trùng khớp' : 'Chưa ánh xạ'}</span></div>
+    <p class="muted" style="margin:6px 0">KiotViet ID: <code>${esc(row.external_id)}</code>${row.raw_meta?.sku ? ` · SKU: <code>${esc(row.raw_meta.sku)}</code>` : ''}${row.raw_meta?.barcode ? ` · Barcode: <code>${esc(row.raw_meta.barcode)}</code>` : ''}</p>
+    ${canMap ? `<form method="POST" action="${base}/mappings/${esc(row.id)}" class="actions" style="align-items:end;flex-wrap:wrap">
+      <div style="flex:1 1 240px"><label>ID ${row.entity_type === 'product' ? 'sản phẩm' : 'biến thể'} nội bộ</label><input name="local_id" required placeholder="UUID trên trang sản phẩm"></div>
+      <button class="btn sm" type="submit">Liên kết</button></form>
+      <form method="POST" action="${base}/mappings/${esc(row.id)}/ignore" style="margin-top:8px" data-confirm="Sản phẩm này sẽ không được bán trên website và không còn chặn việc kích hoạt đồng bộ. Tiếp tục?">
+        <button class="btn sm alt" type="submit">Không bán trên website</button>
+      </form>` : ''}
+  </div>`).join('');
+  const discrepancyCards = (data.discrepancies ?? []).map((row) => `<div class="card" style="margin:10px 0;border-color:${row.severity === 'critical' ? '#fca5a5' : '#fcd34d'}">
+    <div class="actions" style="justify-content:space-between"><strong>${esc(row.message)}</strong><span class="badge ${row.severity === 'critical' ? 'cancelled' : 'wait'}">${row.severity === 'critical' ? 'Quan trọng' : 'Cảnh báo'}</span></div>
+    <p class="muted" style="margin:6px 0">${esc(row.kind)} · ${dt(row.created_at)}</p>
+    ${canRetry ? `<form method="POST" action="${base}/discrepancies/${esc(row.id)}/retry"><button class="btn sm" type="submit">Thử đối soát lại</button></form>` : ''}
+  </div>`).join('');
+  return layout('Kết nối POS', { ...ctx, active: 'integrations' }, `<h1>Kết nối POS</h1>
+    <p class="muted" style="margin:-6px 0 14px">Đồng bộ KiotViet với website mà không bắt khách tại quầy vào website đặt hàng.</p>
+    ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${notice ? `<div class="card" style="border-color:#86efac;background:#f0fdf4">${esc(notice)}</div>` : ''}
+    <div class="card">
+      <div class="actions" style="justify-content:space-between;align-items:flex-start"><div><h2 style="margin:0">KiotViet</h2><p class="muted" style="margin:6px 0 0">${esc(authority)}</p></div><span class="badge ${status[1]}">${status[0]}</span></div>
+      ${integration ? `<div style="margin-top:12px">
+        <div class="row"><span class="muted">Retailer</span><strong>${esc(integration.retailer || '—')}</strong></div>
+        <div class="row"><span class="muted">Chi nhánh</span><strong>${esc(integration.external_branch_name || 'Chưa chọn')}</strong></div>
+        <div class="row"><span class="muted">Tồn cập nhật</span><span>${dt(integration.inventory_synced_at)}</span></div>
+        <div class="row"><span class="muted">Đối soát gần nhất</span><span>${dt(integration.reconciled_at)}</span></div>
+        <div class="row"><span class="muted">Webhook đăng ký</span><span>${dt(integration.webhook_registered_at)}</span></div>
+        <div class="row"><span class="muted">Lỗi ánh xạ / ca mở</span><span>${Number(integration.mapping_issues ?? 0)} / ${Number(integration.open_discrepancies ?? 0)}</span></div>
+        ${integration.last_error ? `<div class="err" style="margin-top:10px">${esc(integration.last_error)}</div>` : ''}
+      </div>` : '<p class="muted">Chưa có kết nối KiotViet cho cửa hàng này.</p>'}
+    </div>
+    ${canManage ? `<div class="card"><h2 style="margin-top:0">${integration ? 'Kiểm tra lại credential' : 'Kết nối KiotViet'}</h2>
+      <p class="muted">Lấy Client ID và Client Secret trong thiết lập Public API của KiotViet. Hệ thống kiểm tra thật và chỉ lưu bản mã hóa.</p>
+      <form method="POST" action="${base}/kiotviet/probe">
+        <div class="grid2"><div><label>Tên retailer *</label><input name="retailer" required value="${esc(integration?.retailer || '')}" placeholder="ten-cua-hang"></div><div><label>Client ID *</label><input name="client_id" required autocomplete="off"></div></div>
+        <label>Client Secret *</label><input type="password" name="client_secret" required autocomplete="new-password">
+        <button class="btn" type="submit" style="margin-top:10px">Kiểm tra và đọc chi nhánh</button>
+      </form>
+      ${probe?.branches?.length ? `<hr style="margin:18px 0;border:0;border-top:1px solid var(--line,#ddd)"><h3>Chọn một chi nhánh cho V1</h3>
+        <form method="POST" action="${base}/kiotviet/activate">${probe.branches.map((branch, index) => `<label style="display:block;border:1px solid var(--line,#ddd);border-radius:8px;padding:10px;margin:8px 0"><input type="radio" name="branch_id" value="${esc(branch.id)}"${index === 0 ? ' checked' : ''}> <strong>${esc(branch.name)}</strong>${branch.address ? `<br><span class="muted">${esc(branch.address)}</span>` : ''}</label>`).join('')}<button class="btn" type="submit">Chạy đồng bộ thử</button></form>` : ''}
+      ${integration && integration.status !== 'disabled' ? `<form method="POST" action="${base}/${esc(integration.id)}/disable" style="margin-top:14px" data-confirm="Ngắt kết nối? Ánh xạ vẫn được giữ; nếu KiotViet đang làm chủ tồn thì checkout sẽ tạm khóa cho tới khi chuyển quyền an toàn."><button class="btn warn sm" type="submit">Ngắt kết nối an toàn</button></form>` : ''}
+    </div>` : ''}
+    ${canManage && webhookRows ? `<details class="card"><summary><strong>Webhook KiotViet đã đăng ký tự động</strong></summary><p class="muted">Các URL dưới đây chỉ để đối chiếu vận hành. Secret chữ ký được mã hóa và không xuất hiện trên giao diện.</p>${webhookRows}</details>` : ''}
+    <div class="card"><h2 style="margin-top:0">Ánh xạ sản phẩm</h2>
+      <p class="muted">Chỉ tự nối khi SKU/barcode khớp duy nhất. Thiếu hoặc trùng thì dừng để người quản lý sản phẩm quyết định.</p>
+      ${mappingCards || '<p class="muted">Không có ánh xạ cần xử lý.</p>'}
+    </div>
+    <div class="card"><h2 style="margin-top:0">Trung tâm đồng bộ</h2>
+      ${discrepancyCards || '<p class="muted">Không có ca đồng bộ đang mở.</p>'}
     </div>`);
 }
 

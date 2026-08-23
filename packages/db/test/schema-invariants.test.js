@@ -461,59 +461,71 @@ describe('vai trò database', () => {
   });
 
   test('UNIQUE attribution chặn hai case tranh cùng refund dưới concurrency', async () => {
-    const { rows: [actor] } = await owner.query(`SELECT id FROM users ORDER BY created_at, id LIMIT 1`);
-    assert.ok(actor?.id, 'fixture cần một user làm actor');
-    const { rows: [fixture] } = await owner.query(`
-      WITH s AS (
-        INSERT INTO shops (slug,name,status)
-        VALUES ('attrib-race-' || substring(gen_random_uuid()::text,1,8), 'Attribution race', 'active')
-        RETURNING id
-      ), o AS (
-        INSERT INTO orders (shop_id,order_number,total_vnd)
-        SELECT id,1,1000 FROM s RETURNING shop_id,id
-      ), r AS (
-        INSERT INTO refunds (shop_id,order_id,amount_vnd,reason,created_by)
-        SELECT shop_id,id,1000,'race', $1 FROM o RETURNING shop_id,order_id,id
-      ), resolved_case AS (
-        INSERT INTO order_resolution_cases
-          (shop_id,order_id,status,resolution,resolution_note,resolved_at,resolved_by)
-        SELECT shop_id,order_id,'resolved','accept_partial','ca đã đóng',now(),$1 FROM r
-        RETURNING id
-      ), open_case AS (
-        INSERT INTO order_resolution_cases (shop_id,order_id)
-        SELECT shop_id,order_id FROM r RETURNING id
-      )
-      SELECT r.shop_id, r.order_id, r.id AS refund_id,
-             resolved_case.id AS case_a, open_case.id AS case_b
-        FROM r, resolved_case, open_case
-    `, [actor.id]);
+    // Không mượn user fixture của bộ khác: node --test chạy các file song song, và một bộ
+    // dọn user của chính nó trong khi refund ở đây còn tham chiếu sẽ làm cả cổng đỏ ngẫu nhiên.
+    const { rows: [actor] } = await owner.query(`
+      INSERT INTO users (email,password_hash)
+      VALUES ('schema-attrib-' || substring(gen_random_uuid()::text,1,8) || '@test.invalid', 'H')
+      RETURNING id
+    `);
+    assert.ok(actor?.id, 'không dựng được actor cho fixture attribution');
+    let fixture;
+    try {
+      ({ rows: [fixture] } = await owner.query(`
+        WITH s AS (
+          INSERT INTO shops (slug,name,status)
+          VALUES ('attrib-race-' || substring(gen_random_uuid()::text,1,8), 'Attribution race', 'active')
+          RETURNING id
+        ), o AS (
+          INSERT INTO orders (shop_id,order_number,total_vnd)
+          SELECT id,1,1000 FROM s RETURNING shop_id,id
+        ), r AS (
+          INSERT INTO refunds (shop_id,order_id,amount_vnd,reason,created_by)
+          SELECT shop_id,id,1000,'race', $1 FROM o RETURNING shop_id,order_id,id
+        ), resolved_case AS (
+          INSERT INTO order_resolution_cases
+            (shop_id,order_id,status,resolution,resolution_note,resolved_at,resolved_by)
+          SELECT shop_id,order_id,'resolved','accept_partial','ca đã đóng',now(),$1 FROM r
+          RETURNING id
+        ), open_case AS (
+          INSERT INTO order_resolution_cases (shop_id,order_id)
+          SELECT shop_id,order_id FROM r RETURNING id
+        )
+        SELECT r.shop_id, r.order_id, r.id AS refund_id,
+               resolved_case.id AS case_a, open_case.id AS case_b
+          FROM r, resolved_case, open_case
+      `, [actor.id]));
 
-    const insertOne = async (caseId) => {
-      const client = await owner.connect();
-      try {
-        await client.query('BEGIN');
-        await client.query(
-          `INSERT INTO order_resolution_refund_attributions
-             (shop_id,order_id,case_id,refund_id,attributed_by)
-           VALUES ($1,$2,$3,$4,$5)`,
-          [fixture.shop_id, fixture.order_id, caseId, fixture.refund_id, actor.id],
-        );
-        await client.query('COMMIT');
-        return 'ok';
-      } catch (error) {
-        await client.query('ROLLBACK');
-        return error.code;
-      } finally {
-        client.release();
-      }
-    };
-    const results = await Promise.all([insertOne(fixture.case_a), insertOne(fixture.case_b)]);
-    assert.deepEqual(results.sort(), ['23505', 'ok']);
-    const { rows: [proof] } = await owner.query(
-      `SELECT count(*)::int AS n FROM order_resolution_refund_attributions
-        WHERE shop_id=$1 AND refund_id=$2`, [fixture.shop_id, fixture.refund_id],
-    );
-    assert.equal(proof.n, 1);
+      const insertOne = async (caseId) => {
+        const client = await owner.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            `INSERT INTO order_resolution_refund_attributions
+               (shop_id,order_id,case_id,refund_id,attributed_by)
+             VALUES ($1,$2,$3,$4,$5)`,
+            [fixture.shop_id, fixture.order_id, caseId, fixture.refund_id, actor.id],
+          );
+          await client.query('COMMIT');
+          return 'ok';
+        } catch (error) {
+          await client.query('ROLLBACK');
+          return error.code;
+        } finally {
+          client.release();
+        }
+      };
+      const results = await Promise.all([insertOne(fixture.case_a), insertOne(fixture.case_b)]);
+      assert.deepEqual(results.sort(), ['23505', 'ok']);
+      const { rows: [proof] } = await owner.query(
+        `SELECT count(*)::int AS n FROM order_resolution_refund_attributions
+          WHERE shop_id=$1 AND refund_id=$2`, [fixture.shop_id, fixture.refund_id],
+      );
+      assert.equal(proof.n, 1);
+    } finally {
+      // Attribution và refund là chứng từ append-only, trigger cố ý từ chối DELETE. Fixture
+      // dùng actor riêng nên không va bộ chạy song song; cổng DB trắng tự huỷ volume sau lượt.
+    }
   });
 
   test('resolution evidence cast actor timeline text sang uuid rõ ràng', async () => {
@@ -867,6 +879,146 @@ describe('Composite foreign key', () => {
       [],
       'các FK này cho phép tham chiếu chéo shop',
     );
+  });
+});
+
+describe('Connector POS ngoài (0177) — quyền hẹp và fail-closed', () => {
+  const TABLES = ['shop_integrations', 'integration_webhook_inbox', 'integration_entity_refs', 'integration_sync_discrepancies'];
+
+  test('bốn bảng connector đều ENABLE + FORCE RLS', async () => {
+    const { rows } = await owner.query(`
+      SELECT relname, relrowsecurity, relforcerowsecurity
+        FROM pg_class
+       WHERE relname = ANY($1::text[]) ORDER BY relname`, [TABLES]);
+    assert.equal(rows.length, 4);
+    assert.deepEqual(rows.map((r) => [r.relname, r.relrowsecurity, r.relforcerowsecurity]), [
+      ['integration_entity_refs', true, true],
+      ['integration_sync_discrepancies', true, true],
+      ['integration_webhook_inbox', true, true],
+      ['shop_integrations', true, true],
+    ]);
+  });
+
+  test('tập policy connector đúng bằng manifest, thêm policy rộng cũng phải đỏ', async () => {
+    const { rows } = await owner.query(`
+      SELECT tablename, policyname, cmd, roles::text[] AS roles
+        FROM pg_policies
+       WHERE tablename = ANY($1::text[])
+       ORDER BY tablename, policyname`, [TABLES]);
+    assert.deepEqual(rows.map((r) => `${r.tablename}|${r.policyname}|${r.cmd}|${r.roles.join(',')}`), [
+      'integration_entity_refs|integration_refs|ALL|app_integration',
+      'integration_entity_refs|tenant_isolation|ALL|app_rw',
+      'integration_sync_discrepancies|integration_discrepancies|ALL|app_integration',
+      'integration_sync_discrepancies|tenant_isolation|ALL|app_rw',
+      'integration_webhook_inbox|integration_inbox|ALL|app_integration',
+      'integration_webhook_inbox|tenant_isolation|SELECT|app_rw',
+      'shop_integrations|checkout_active_integration|SELECT|app_checkout',
+      'shop_integrations|integration_config|ALL|app_integration',
+      'shop_integrations|tenant_isolation|ALL|app_rw',
+    ]);
+  });
+
+  test('app_rw và app_integration chỉ có đúng thao tác vận hành cần thiết', async () => {
+    const expected = {
+      app_rw: {
+        shop_integrations: [true, true, true, true],
+        integration_webhook_inbox: [true, false, false, false],
+        integration_entity_refs: [true, true, true, true],
+        integration_sync_discrepancies: [true, false, true, false],
+      },
+      app_integration: {
+        shop_integrations: [true, false, true, false],
+        integration_webhook_inbox: [true, true, true, false],
+        integration_entity_refs: [true, true, true, false],
+        integration_sync_discrepancies: [true, true, true, false],
+      },
+    };
+    for (const [role, tables] of Object.entries(expected)) {
+      for (const [table, want] of Object.entries(tables)) {
+        const { rows: [got] } = await owner.query(`
+          SELECT has_table_privilege($1,$2,'SELECT') AS sel,
+                 has_table_privilege($1,$2,'INSERT') AS ins,
+                 has_table_privilege($1,$2,'UPDATE') AS upd,
+                 has_table_privilege($1,$2,'DELETE') AS del`, [role, table]);
+        assert.deepEqual(Object.values(got), want, `${role} trên ${table}`);
+      }
+    }
+  });
+
+  test('app_integration chỉ đọc các cột tối thiểu để chống trùng và nhận id sự kiện', async () => {
+    const { rows } = await owner.query(`
+      SELECT p.table_name, p.column_name
+        FROM information_schema.column_privileges p
+        JOIN information_schema.columns c
+          ON c.table_schema = p.table_schema
+         AND c.table_name = p.table_name
+         AND c.column_name = p.column_name
+       WHERE p.grantee = 'app_integration'
+         AND p.privilege_type = 'SELECT'
+         AND p.table_schema = 'public'
+         AND p.table_name IN ('payment_transactions', 'order_events')
+       ORDER BY p.table_name, c.ordinal_position`,
+    );
+    assert.deepEqual(rows.map((r) => `${r.table_name}.${r.column_name}`), [
+      'order_events.id',
+      'payment_transactions.shop_id',
+      'payment_transactions.provider',
+      'payment_transactions.provider_event_id',
+    ]);
+    for (const table of ['payment_transactions', 'order_events']) {
+      const { rows: [got] } = await owner.query(
+        `SELECT has_table_privilege('app_integration',$1,'SELECT') AS can_read_all`, [table],
+      );
+      assert.equal(got.can_read_all, false, `${table} không được mở SELECT toàn bảng`);
+    }
+
+    const { rows: policies } = await owner.query(`
+      SELECT tablename, policyname, cmd, roles::text[] AS roles,
+             regexp_replace(coalesce(qual, ''), '[()[:space:]]', '', 'g') AS using_expr
+        FROM pg_policies
+       WHERE tablename IN ('payment_transactions', 'order_events')
+         AND 'app_integration' = ANY(roles::text[])
+       ORDER BY tablename, policyname`,
+    );
+    assert.deepEqual(policies.map((p) => `${p.tablename}|${p.policyname}|${p.cmd}|${p.roles.join(',')}|${p.using_expr}`), [
+      'order_events|integration_order_events|INSERT|app_integration|',
+      'order_events|integration_order_events_read|SELECT|app_integration|shop_id=current_shop_id',
+      'payment_transactions|integration_payments|INSERT|app_integration|',
+      'payment_transactions|integration_payments_read|SELECT|app_integration|shop_id=current_shop_id',
+    ]);
+  });
+
+  test('checkout chỉ đọc độ tươi tồn, không đọc credential hay secret webhook', async () => {
+    const allowed = ['id', 'provider', 'status', 'inventory_authority', 'external_branch_ref', 'inventory_synced_at'];
+    const { rows } = await owner.query(`
+      SELECT column_name, has_column_privilege('app_checkout','shop_integrations',column_name,'SELECT') AS can_read
+        FROM information_schema.columns
+       WHERE table_schema='public' AND table_name='shop_integrations'
+       ORDER BY ordinal_position`);
+    assert.deepEqual(rows.filter((r) => r.can_read).map((r) => r.column_name), allowed);
+    for (const secret of ['credential_ciphertext', 'webhook_refs', 'webhook_public_id']) {
+      assert.equal(rows.find((r) => r.column_name === secret)?.can_read, false, `checkout không được đọc ${secret}`);
+    }
+  });
+
+  test('mỗi shop có tối đa một external_master và hai hàm xuyên-tenant đều hẹp', async () => {
+    const { rows: [idx] } = await owner.query(`
+      SELECT pg_get_indexdef(indexrelid) AS def, pg_get_expr(indpred, indrelid) AS pred
+        FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+       WHERE c.relname = 'shop_integrations_one_external_master'`);
+    assert.match(idx?.def ?? '', /UNIQUE INDEX/);
+    assert.match(idx?.pred ?? '', /inventory_authority = 'external_master'/);
+
+    const { rows } = await owner.query(`
+      SELECT p.proname, p.prosecdef, r.rolname AS owner
+        FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner
+       WHERE p.proname IN ('resolve_integration_webhook','list_due_integrations','list_due_integration_webhooks')
+       ORDER BY p.proname`);
+    assert.deepEqual(rows, [
+      { proname: 'list_due_integration_webhooks', prosecdef: true, owner: 'app_owner' },
+      { proname: 'list_due_integrations', prosecdef: true, owner: 'app_owner' },
+      { proname: 'resolve_integration_webhook', prosecdef: true, owner: 'app_owner' },
+    ]);
   });
 });
 

@@ -431,6 +431,11 @@ export function renderOrder(shopName, o, pay, qr, justPlaced = false, lookupToke
     refunded: 'Đã hoàn tiền', returned: 'Đã hoàn hàng',
   }[o.status] ?? o.status;
   const badgeCls = o.status === 'delivered' ? 'ok' : daDong ? 'cancelled' : 'wait';
+  const syncBlock = o.sync_status === 'pending'
+    ? `<div class="card" style="border-color:#93c5fd;background:#eff6ff"><strong>Đã tiếp nhận, đang chờ KiotViet xác nhận.</strong><p class="muted" style="margin:6px 0 0">Đơn đã có trong hệ thống của cửa hàng. Bạn không cần đặt lại; trạng thái sẽ tự cập nhật khi kết nối hoàn tất.</p></div>`
+    : o.sync_status === 'needs_attention'
+    ? `<div class="card" style="border-color:#fcd34d;background:var(--warnbg,#fffbeb)"><strong>Cửa hàng đang kiểm tra lại đơn với hệ thống bán tại quầy.</strong><p class="muted" style="margin:6px 0 0">Đơn vẫn được lưu; cửa hàng sẽ liên hệ nếu cần thêm thông tin.</p></div>`
+    : '';
   const head = (o.payment_method === 'qr' && payment.amount_due_vnd > 0 && !daDong) ? '<meta http-equiv="refresh" content="8">' : '';
   let payBlock = '';
   if (daDong) {
@@ -487,7 +492,7 @@ export function renderOrder(shopName, o, pay, qr, justPlaced = false, lookupToke
     <div class="card" style="text-align:center">
       <h1>${justPlaced ? 'Đặt hàng thành công 🎉' : `Đơn hàng #${o.order_number}`}</h1>
       <p>Đơn <strong>#${o.order_number}</strong> · <span class="badge ${badgeCls}">${esc(statusVi)}</span></p></div>
-    ${payBlock}${partialValueNote}${moneyBlock}
+    ${syncBlock}${payBlock}${partialValueNote}${moneyBlock}
     ${(o.shipments?.length) ? `<div class="card"><h2>Vận chuyển</h2>
       <p class="muted" style="margin:0 0 8px">Đơn đã được gửi qua đơn vị vận chuyển. Theo dõi hành trình bằng mã dưới đây:</p>
       ${o.shipments.map((s) => `<div class="row"><span class="muted">${esc(carrierName(s.carrier))}</span><span><strong style="user-select:all">${esc(s.tracking_number)}</strong></span></div>

@@ -24,6 +24,12 @@ import { Queue, Worker } from 'bullmq';
 import nodemailer from 'nodemailer';
 import { runReq, makeLog, health } from './obs.js';
 import { buildSmtpOptions } from './smtp.js';
+import {
+  createKiotVietClient,
+  extractKiotVietNotifications,
+  kiotVietBranchOnHand,
+  KiotVietError,
+} from '../kiotviet.js';
 
 const PORT = Number(process.env.PORT ?? 3080);
 const POLL_MS = Number(process.env.POLL_MS ?? 1000);
@@ -36,6 +42,10 @@ const PLATFORM_BRAND = process.env.PLATFORM_BRAND ?? 'Nền Tảng';
 const BILLING_CONTACT = process.env.PLATFORM_CONTACT_EMAIL ?? 'lienhe@nentang.vn';
 
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 4 });
+const INTEGRATION_URL = process.env.DATABASE_URL_INTEGRATION;
+const integrationDb = INTEGRATION_URL ? new pg.Pool({ connectionString: INTEGRATION_URL, max: 4 }) : null;
+const INTEGRATION_ENC_KEY = process.env.INTEGRATION_ENC_KEY ?? '';
+const INTEGRATION_RECONCILE_MS = Number(process.env.INTEGRATION_RECONCILE_MS ?? 300000);
 // Pool RIÊNG cho job hết hạn đơn (role app_expiry cực hẹp — xem migration 0022).
 // Thiếu env → tắt tính năng (worker vẫn chạy phần outbox).
 const EXPIRY_URL = process.env.DATABASE_URL_EXPIRY;
@@ -894,9 +904,812 @@ Lý do: ${p.cancel_reason}` : '';
   return { status: 'accepted' };
 }
 
+// ── Connector KiotViet ──────────────────────────────────────────────────────
+// app_worker chỉ claim outbox toàn cục; mọi dữ liệu shop của connector dùng pool
+// app_integration + SET LOCAL, nên một job mang nhầm shopId vẫn bị RLS chặn ở DB.
+async function withIntegrationTenant(shopId, fn) {
+  if (!integrationDb) throw new Error('thiếu DATABASE_URL_INTEGRATION');
+  const c = await integrationDb.connect();
+  try {
+    await c.query('BEGIN');
+    await c.query(`SELECT set_config('app.shop_id', $1, true)`, [shopId]);
+    const out = await fn(c);
+    await c.query('COMMIT');
+    return out;
+  } catch (error) {
+    await c.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally { c.release(); }
+}
+
+function integrationCredentials(ciphertext) {
+  if (!/^[0-9a-f]{64}$/i.test(INTEGRATION_ENC_KEY)) throw new Error('INTEGRATION_ENC_KEY không hợp lệ');
+  return JSON.parse(sbOpen(ciphertext, INTEGRATION_ENC_KEY, 'INTEGRATION_ENC_KEYS'));
+}
+
+function integrationClient(row) {
+  const creds = integrationCredentials(row.credential_ciphertext);
+  return createKiotVietClient({
+    clientId: creds.client_id, clientSecret: creds.client_secret, retailer: creds.retailer,
+    ...(process.env.KIOTVIET_IDENTITY_BASE ? { identityBase: process.env.KIOTVIET_IDENTITY_BASE } : {}),
+    ...(process.env.KIOTVIET_API_BASE ? { apiBase: process.env.KIOTVIET_API_BASE } : {}),
+  });
+}
+
+const asId = (v) => v == null ? '' : String(v);
+const asInt = (v) => Number.isFinite(Number(v)) ? Math.max(0, Math.trunc(Number(v))) : null;
+const asDate = (v) => {
+  const ms = Date.parse(v ?? '');
+  return Number.isFinite(ms) ? new Date(ms) : null;
+};
+const branchInventory = (row, branchRef) => asInt(kiotVietBranchOnHand(row, branchRef));
+
+async function upsertDiscrepancy(c, integrationId, { kind, severity = 'warning', dedupeKey, message, entityType = null, externalRef = null, localId = null, details = null }) {
+  await c.query(
+    `INSERT INTO integration_sync_discrepancies
+       (shop_id, integration_id, kind, severity, entity_type, external_ref, local_id, dedupe_key, message, details)
+     VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (shop_id, integration_id, dedupe_key) WHERE status = 'open'
+     DO UPDATE SET severity = EXCLUDED.severity, message = EXCLUDED.message,
+                   details = EXCLUDED.details, updated_at = now()`,
+    [integrationId, kind, severity, entityType, externalRef, localId, dedupeKey, message, details],
+  );
+}
+
+async function applyProjectedStock(c, integrationId, variantId, externalRef, providerOnHand) {
+  // INSERT trước rồi mới khoá: hai webhook đầu tiên cho cùng biến thể có thể chạy đồng thời.
+  // SELECT-không-thấy rồi cùng INSERT sẽ làm một job vỡ unique và bỏ cả lô webhook.
+  await c.query(
+    `INSERT INTO inventory_levels (shop_id, variant_id, on_hand, reserved)
+     VALUES (current_shop_id(), $1, 0, 0) ON CONFLICT (shop_id, variant_id) DO NOTHING`,
+    [variantId],
+  );
+  const level = (await c.query(
+    `SELECT on_hand, reserved FROM inventory_levels WHERE variant_id = $1 FOR UPDATE`, [variantId],
+  )).rows[0];
+  const reserved = Number(level.reserved);
+  const target = Math.max(providerOnHand, reserved);
+  const delta = target - Number(level.on_hand);
+  if (delta !== 0) {
+    await c.query(`UPDATE inventory_levels SET on_hand = $2, updated_at = now() WHERE variant_id = $1`, [variantId, target]);
+    await c.query(
+      `INSERT INTO inventory_ledger (shop_id, variant_id, delta, kind, reason)
+       VALUES (current_shop_id(), $1, $2, 'adjust', $3)`,
+      [variantId, delta, `Bản chiếu tồn KiotViet (${externalRef})`],
+    );
+  }
+  if (providerOnHand < reserved) {
+    await upsertDiscrepancy(c, integrationId, {
+      kind: 'stock_below_reserved', severity: 'critical', dedupeKey: `stock:${externalRef}`,
+      message: 'Tồn KiotViet thấp hơn số lượng đang giữ cho đơn website; website đã hạ tồn khả dụng về 0.',
+      entityType: 'variant', externalRef, localId: variantId,
+      details: { provider_on_hand: providerOnHand, local_reserved: reserved },
+    });
+  }
+}
+
+async function applyKiotVietProducts(shopId, integration, rows) {
+  return withIntegrationTenant(shopId, async (c) => {
+    let unresolved = 0;
+    for (const row of rows) {
+      const externalId = asId(row.id ?? row.Id ?? row.productId ?? row.ProductId);
+      if (!externalId) continue;
+      const sku = String(row.code ?? row.Code ?? '').trim();
+      const barcode = String(row.barCode ?? row.barcode ?? row.BarCode ?? '').trim();
+      const existing = (await c.query(
+        `SELECT mapping_status FROM integration_entity_refs
+          WHERE integration_id = $1 AND entity_type = 'variant' AND external_id = $2`,
+        [integration.id, externalId],
+      )).rows[0];
+      if (existing?.mapping_status === 'ignored') {
+        // "Không bán trên website" là quyết định vận hành bền vững, không phải lỗi ánh xạ
+        // tạm thời. Đồng bộ sau chỉ làm mới metadata; không được tự biến nó lại thành unmapped.
+        await c.query(
+          `UPDATE integration_entity_refs
+              SET external_updated_at = coalesce($3, external_updated_at), raw_meta = $4, updated_at = now()
+            WHERE integration_id = $1 AND entity_type = 'variant' AND external_id = $2`,
+          [integration.id, externalId,
+            asDate(row.modifiedDate ?? row.ModifiedDate)?.toISOString() ?? null,
+            { name: row.name ?? row.Name ?? null, sku: sku || null, barcode: barcode || null }],
+        );
+        await c.query(
+          `UPDATE integration_sync_discrepancies SET status = 'resolved', resolved_at = now(), updated_at = now()
+            WHERE integration_id = $1 AND dedupe_key = $2 AND status = 'open'`,
+          [integration.id, `mapping:${externalId}`],
+        );
+        continue;
+      }
+      const pinned = (await c.query(
+        `SELECT v.id, v.product_id
+           FROM integration_entity_refs r JOIN variants v ON v.id = r.local_id
+          WHERE r.integration_id = $1 AND r.entity_type = 'variant' AND r.external_id = $2
+            AND r.mapping_status = 'mapped'`, [integration.id, externalId],
+      )).rows[0];
+      const candidates = pinned ? [pinned] : (await c.query(
+        `SELECT id, product_id FROM variants
+          WHERE ($1 <> '' AND sku = $1) OR ($2 <> '' AND barcode = $2)
+          ORDER BY id`, [sku, barcode],
+      )).rows;
+      const unique = [...new Map(candidates.map((it) => [it.id, it])).values()];
+      const mappingStatus = unique.length === 1 ? 'mapped' : unique.length > 1 ? 'conflict' : 'unmapped';
+      const local = unique[0] ?? null;
+      await c.query(
+        `INSERT INTO integration_entity_refs
+           (shop_id, integration_id, entity_type, external_id, local_id, mapping_status,
+            external_updated_at, raw_meta, updated_at)
+         VALUES (current_shop_id(), $1, 'variant', $2, $3, $4, $5, $6, now())
+         ON CONFLICT (shop_id, integration_id, entity_type, external_id)
+         DO UPDATE SET local_id = EXCLUDED.local_id, mapping_status = EXCLUDED.mapping_status,
+                       external_updated_at = coalesce(EXCLUDED.external_updated_at, integration_entity_refs.external_updated_at),
+                       raw_meta = EXCLUDED.raw_meta, updated_at = now()`,
+        [integration.id, externalId, local?.id ?? null, mappingStatus,
+          asDate(row.modifiedDate ?? row.ModifiedDate)?.toISOString() ?? null, {
+          name: row.name ?? row.Name ?? null, sku: sku || null, barcode: barcode || null,
+        }],
+      );
+      if (!local || unique.length !== 1) {
+        unresolved += 1;
+        await upsertDiscrepancy(c, integration.id, {
+          kind: unique.length > 1 ? (barcode ? 'duplicate_barcode' : 'duplicate_sku') : 'unmapped_sku',
+          dedupeKey: `mapping:${externalId}`,
+          message: unique.length > 1
+            ? 'SKU/barcode KiotViet khớp nhiều biến thể nội bộ; hệ thống không tự đoán.'
+            : 'Sản phẩm KiotViet chưa khớp biến thể nội bộ.',
+          entityType: 'variant', externalRef: externalId,
+          details: { sku: sku || null, barcode: barcode || null, candidate_ids: unique.map((it) => it.id) },
+        });
+        continue;
+      }
+      await c.query(
+        `INSERT INTO product_source_refs (shop_id, source, kind, external_id, product_id, variant_id, raw_row)
+         VALUES (current_shop_id(), 'kiotviet', 'variant', $1, $2, $3, $4)
+         ON CONFLICT (shop_id, source, kind, external_id)
+         DO UPDATE SET product_id = EXCLUDED.product_id, variant_id = EXCLUDED.variant_id,
+                       raw_row = EXCLUDED.raw_row, imported_at = now()`,
+        [externalId, local.product_id, local.id, row],
+      );
+      const onHand = branchInventory(row, integration.external_branch_ref);
+      if (onHand != null) await applyProjectedStock(c, integration.id, local.id, externalId, onHand);
+      await c.query(
+        `UPDATE integration_sync_discrepancies SET status = 'resolved', resolved_at = now(), updated_at = now()
+          WHERE integration_id = $1 AND dedupe_key IN ($2, $3) AND status = 'open'`,
+        [integration.id, `mapping:${externalId}`, `stock:${externalId}`],
+      );
+    }
+    return unresolved;
+  });
+}
+
+async function syncKiotVietCatalog(shopId, integrationId, { incremental = false } = {}) {
+  const integration = await withIntegrationTenant(shopId, async (c) =>
+    (await c.query(
+      `SELECT id, provider, credential_ciphertext, external_branch_ref, catalog_synced_at,
+              inventory_authority
+         FROM shop_integrations WHERE id = $1 FOR UPDATE`, [integrationId],
+    )).rows[0]);
+  if (!integration || integration.provider !== 'kiotviet' || !integration.external_branch_ref) return;
+  const client = integrationClient(integration);
+  let currentItem = 0;
+  let total = 0;
+  let unresolved = 0;
+  const removed = new Set();
+  const lastModifiedFrom = incremental && integration.catalog_synced_at
+    ? new Date(new Date(integration.catalog_synced_at).getTime() - 60_000).toISOString() : null;
+  for (let page = 0; page < 500; page++) {
+    const batch = await client.listProducts({ currentItem, pageSize: 100, lastModifiedFrom });
+    total = batch.total;
+    for (const id of batch.removed ?? []) removed.add(String(id));
+    unresolved += await applyKiotVietProducts(shopId, integration, batch.rows);
+    currentItem += batch.rows.length;
+    if (!batch.rows.length || batch.rows.length < 100 || (total && currentItem >= total)) break;
+  }
+  const localMissing = await withIntegrationTenant(shopId, async (c) => {
+    for (const externalId of removed) {
+      const ref = (await c.query(
+        `SELECT local_id FROM integration_entity_refs
+          WHERE integration_id = $1 AND entity_type = 'variant' AND external_id = $2`,
+        [integration.id, externalId],
+      )).rows[0];
+      await c.query(
+        `UPDATE integration_entity_refs
+            SET mapping_status = 'ignored', local_id = NULL, updated_at = now()
+          WHERE integration_id = $1 AND entity_type = 'variant' AND external_id = $2
+        `, [integration.id, externalId],
+      );
+      await c.query(
+        `DELETE FROM product_source_refs WHERE source = 'kiotviet' AND kind = 'variant' AND external_id = $1`,
+        [externalId],
+      );
+      await upsertDiscrepancy(c, integration.id, {
+        kind: 'unmapped_sku', severity: 'critical', dedupeKey: `provider-deleted:${externalId}`,
+        message: 'Sản phẩm đã bị xóa ở KiotViet; website khóa bán cho tới khi ánh xạ lại hoặc chuyển quyền tồn.',
+        entityType: 'variant', externalRef: externalId, localId: ref?.local_id ?? null,
+      });
+    }
+    const rows = (await c.query(
+      `SELECT v.id, v.sku FROM variants v JOIN products p ON p.id = v.product_id
+        WHERE p.status = 'active' AND p.deleted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM product_source_refs r
+             WHERE r.source = 'kiotviet' AND r.kind = 'variant' AND r.variant_id = v.id
+          ) LIMIT 500`,
+    )).rows;
+    for (const row of rows) await upsertDiscrepancy(c, integration.id, {
+      kind: 'unmapped_sku', dedupeKey: `local-variant:${row.id}`,
+      message: 'Biến thể đang bán trên website chưa có sản phẩm tương ứng ở KiotViet.',
+      entityType: 'variant', localId: row.id, details: { sku: row.sku },
+    });
+    const issues = rows.length + Number((await c.query(
+      `SELECT count(*)::int n FROM integration_entity_refs
+        WHERE integration_id = $1 AND mapping_status IN ('unmapped','conflict')`, [integration.id],
+    )).rows[0].n);
+    await c.query(
+      `UPDATE shop_integrations
+          SET status = $2, inventory_authority = $3, catalog_synced_at = now(),
+              inventory_synced_at = now(), reconciled_at = now(), last_error = $4, updated_at = now()
+        WHERE id = $1`, [integration.id, issues ? 'degraded' : 'active',
+        issues && integration.inventory_authority !== 'external_master' ? 'local' : 'external_master',
+        issues ? `Còn ${issues} ánh xạ sản phẩm cần xử lý; checkout dùng tồn ngoài đang bị khóa an toàn.` : null],
+    );
+    return rows.length;
+  });
+  log('info', incremental ? 'integration_catalog_reconciled' : 'integration_initial_sync_done', {
+    shopId, integrationId, total, removed: removed.size, unresolved: unresolved + localMissing,
+  });
+}
+
+function deterministicOrderCode(shopId, orderNumber) {
+  return `[NTG:${String(shopId).replace(/-/g, '').slice(0, 8).toUpperCase()}:${orderNumber}]`;
+}
+
+async function sendWebsiteOrderToKiotViet(shopId, payload) {
+  // Giữ khoá dòng đơn qua cả lần gọi provider. Đây là ngoại lệ có chủ ý cho ranh giới
+  // exactly-once: hai outbox/retry cùng tới sẽ không thể cùng quét "chưa thấy" rồi POST hai
+  // lần. Nếu worker chết sau khi KiotViet nhận nhưng trước COMMIT, lượt sau quét marker đầy
+  // đủ để nhận lại đơn cũ; phép quét chưa đầy đủ thì fail-closed ở adapter.
+  return withIntegrationTenant(shopId, async (c) => {
+    const integration = (await c.query(
+      `SELECT id, provider, status, credential_ciphertext, external_branch_ref
+         FROM shop_integrations WHERE id = $1`, [payload.integration_id],
+    )).rows[0];
+    const order = (await c.query(
+      `SELECT id, order_number, customer_name, customer_phone, customer_email, shipping_address,
+              subtotal_vnd, shipping_vnd, discount_vnd, total_vnd, payment_method, payment_status,
+              created_at, sync_status, external_ref
+         FROM orders WHERE id = $1 FOR UPDATE`, [payload.order_id],
+    )).rows[0];
+    if (!integration || !order || integration.provider !== 'kiotviet') return;
+    if (order.external_ref && order.sync_status === 'synced') return;
+    const lines = (await c.query(
+      `SELECT l.variant_id, l.title_snapshot, l.sku_snapshot, l.unit_price_vnd, l.qty,
+              r.external_id
+         FROM order_lines l
+         LEFT JOIN product_source_refs r ON r.variant_id = l.variant_id
+           AND r.source = 'kiotviet' AND r.kind = 'variant'
+         WHERE l.order_id = $1 ORDER BY l.id`, [payload.order_id],
+    )).rows;
+    if (integration.status !== 'active') {
+      await c.query(
+        `UPDATE orders SET sync_status = 'needs_attention', sync_error = $2, sync_updated_at = now()
+          WHERE id = $1`, [order.id, 'Kết nối KiotViet không còn hoạt động; đơn chưa được gửi ra POS.'],
+      );
+      await upsertDiscrepancy(c, integration.id, {
+        kind: 'provider_rejected', severity: 'critical', dedupeKey: `order-provider:${order.id}`,
+        message: 'Đơn website đang chờ nhưng kết nối KiotViet không hoạt động.',
+        entityType: 'order', localId: order.id,
+      });
+      return;
+    }
+    const missing = lines.filter((line) => !line.external_id);
+    if (missing.length) {
+      await c.query(
+        `UPDATE orders SET sync_status = 'needs_attention', sync_error = $2, sync_updated_at = now() WHERE id = $1`,
+        [order.id, 'Có dòng đơn chưa ánh xạ sang sản phẩm KiotViet.'],
+      );
+      await upsertDiscrepancy(c, integration.id, {
+        kind: 'unmapped_sku', severity: 'critical', dedupeKey: `order-mapping:${order.id}`,
+        message: 'Đơn website chưa gửi được vì có sản phẩm chưa ánh xạ KiotViet.',
+        entityType: 'order', localId: order.id, details: { variant_ids: missing.map((line) => line.variant_id) },
+      });
+      return;
+    }
+    const marker = deterministicOrderCode(shopId, order.order_number);
+    const client = integrationClient(integration);
+    const since = new Date(new Date(order.created_at).getTime() - 10 * 60_000).toISOString();
+    // Public API không công bố trường `code` khi tạo order. Marker trong description + quét
+    // theo lastModifiedFrom là lớp phục hồi cho cửa sổ "provider đã tạo, worker chết trước
+    // khi ghi external_ref"; retry sẽ tìm lại đơn thay vì POST lần hai.
+    let external = await client.findOrderByMarker(marker, { lastModifiedFrom: since });
+    if (!external) {
+      const address = order.shipping_address ?? {};
+      const deliveryAddress = [address.line, address.ward, address.district, address.province].filter(Boolean).join(', ');
+      const method = { card: 'Card', qr: 'Transfer', transfer: 'Transfer' }[order.payment_method] ?? 'Cash';
+      external = await client.createOrder({
+        branchId: /^\d+$/.test(integration.external_branch_ref) ? Number(integration.external_branch_ref) : integration.external_branch_ref,
+        description: `${marker} Đơn website Nền Tảng #${order.order_number}`,
+        purchaseDate: new Date(order.created_at).toISOString(),
+        makeInvoice: false,
+        method,
+        totalPayment: order.payment_status === 'paid' ? Number(order.total_vnd) : 0,
+        discount: Number(order.discount_vnd),
+        customer: {
+          name: order.customer_name,
+          contactNumber: order.customer_phone,
+          email: order.customer_email || undefined,
+          address: deliveryAddress,
+        },
+        orderDelivery: {
+          receiver: order.customer_name,
+          contactNumber: order.customer_phone,
+          address: deliveryAddress,
+          price: Number(order.shipping_vnd),
+        },
+        orderDetails: lines.map((line) => ({
+          productId: /^\d+$/.test(line.external_id) ? Number(line.external_id) : line.external_id,
+          quantity: Number(line.qty), price: Number(line.unit_price_vnd), discount: 0,
+          note: line.sku_snapshot,
+        })),
+      });
+    }
+    const externalId = asId(external.id ?? external.Id);
+    if (!externalId) throw new Error('KiotViet tạo đơn nhưng không trả id');
+    const providerCode = asId(external.code ?? external.Code) || null;
+    await c.query(
+      `UPDATE orders SET external_ref = $2, sync_status = 'synced', sync_error = NULL,
+                         sync_updated_at = now()
+        WHERE id = $1`, [order.id, externalId],
+    );
+    await c.query(
+      `INSERT INTO integration_entity_refs
+         (shop_id, integration_id, entity_type, external_id, local_id, mapping_status, raw_meta)
+       VALUES (current_shop_id(), $1, 'order', $2, $3, 'mapped', $4)
+       ON CONFLICT (shop_id, integration_id, entity_type, external_id)
+       DO UPDATE SET local_id = EXCLUDED.local_id, mapping_status = 'mapped', raw_meta = EXCLUDED.raw_meta, updated_at = now()`,
+      [integration.id, externalId, order.id, { marker, provider_code: providerCode }],
+    );
+    await c.query(
+      `UPDATE integration_sync_discrepancies
+          SET status = 'resolved', resolved_at = now(), updated_at = now()
+        WHERE integration_id = $1 AND status = 'open'
+          AND dedupe_key IN ($2,$3,$4)`,
+      [integration.id, `order-provider:${order.id}`, `order-mapping:${order.id}`, `order-dead-letter:${order.id}`],
+    );
+    await c.query(`UPDATE shop_integrations SET orders_synced_at = now(), last_error = NULL, updated_at = now() WHERE id = $1`, [integration.id]);
+  });
+}
+
+async function applyStockWebhook(shopId, integrationId, events) {
+  const integration = await withIntegrationTenant(shopId, async (c) =>
+    (await c.query(
+      `SELECT id, credential_ciphertext, external_branch_ref
+         FROM shop_integrations WHERE id = $1`, [integrationId],
+    )).rows[0]);
+  if (!integration?.external_branch_ref) return;
+  const client = integrationClient(integration);
+  const current = [];
+  const seen = new Set();
+  for (const event of events) {
+    const externalId = asId(event.data?.ProductId ?? event.data?.productId ?? event.data?.Id ?? event.data?.id);
+    const branchId = asId(event.data?.BranchId ?? event.data?.branchId);
+    if (!externalId || seen.has(externalId) || (branchId && branchId !== asId(integration.external_branch_ref))) continue;
+    seen.add(externalId);
+    // stock.update không mang ModifiedDate. Đọc lại chi tiết hiện tại từ provider để một
+    // webhook cũ tới muộn không ghi đè tồn mới; payload chỉ là tín hiệu cần làm mới.
+    const product = await client.getProduct(externalId);
+    const onHand = branchInventory(product, integration.external_branch_ref);
+    if (onHand == null) continue;
+    current.push({ externalId, onHand, modifiedAt: asDate(product.ModifiedDate ?? product.modifiedDate) });
+  }
+  await withIntegrationTenant(shopId, async (c) => {
+    for (const row of current) {
+      const ref = (await c.query(
+        `SELECT r.local_id AS variant_id, r.external_updated_at
+           FROM integration_entity_refs r
+          WHERE r.integration_id = $1 AND r.entity_type = 'variant' AND r.external_id = $2
+            AND r.mapping_status = 'mapped'`, [integrationId, row.externalId],
+      )).rows[0];
+      if (!ref?.variant_id) {
+        await upsertDiscrepancy(c, integrationId, {
+          kind: 'unmapped_sku', dedupeKey: `stock-unmapped:${row.externalId}`,
+          message: 'KiotViet gửi cập nhật tồn cho sản phẩm chưa ánh xạ.', entityType: 'variant', externalRef: row.externalId,
+        });
+        continue;
+      }
+      if (row.modifiedAt && ref.external_updated_at && row.modifiedAt <= new Date(ref.external_updated_at)) continue;
+      await applyProjectedStock(c, integrationId, ref.variant_id, row.externalId, row.onHand);
+      await c.query(
+        `UPDATE integration_entity_refs
+            SET external_updated_at = coalesce($3, external_updated_at), updated_at = now()
+          WHERE integration_id = $1 AND entity_type = 'variant' AND external_id = $2`,
+        [integrationId, row.externalId, row.modifiedAt?.toISOString() ?? null],
+      );
+    }
+    await c.query(`UPDATE shop_integrations SET inventory_synced_at = now(), updated_at = now() WHERE id = $1`, [integrationId]);
+  });
+}
+
+function markerOrderNumber(shopId, data) {
+  const short = String(shopId).replace(/-/g, '').slice(0, 8).toUpperCase();
+  const description = String(data.Description ?? data.description ?? '');
+  const match = new RegExp(`\\[NTG:${short}:(\\d+)\\]`).exec(description);
+  return match ? Number(match[1]) : null;
+}
+
+function posPaymentMethod(data) {
+  const methods = (data.Payments ?? data.payments ?? []).map((row) => String(row.Method ?? row.method ?? '').toLowerCase());
+  if (methods.some((x) => x.includes('cash'))) return 'cash';
+  if (methods.some((x) => x.includes('card'))) return 'card';
+  if (methods.some((x) => x.includes('transfer'))) return 'transfer';
+  return 'other';
+}
+
+async function importPosInvoice(shopId, integrationId, event) {
+  const data = event.data ?? {};
+  const externalId = asId(data.Id ?? data.id ?? data.InvoiceId ?? data.invoiceId);
+  if (!externalId) return;
+  await withIntegrationTenant(shopId, async (c) => {
+    await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`kiotviet:invoice:${integrationId}:${externalId}`]);
+    const integration = (await c.query(
+      `SELECT external_branch_ref FROM shop_integrations WHERE id = $1`, [integrationId],
+    )).rows[0];
+    const branchId = asId(data.BranchId ?? data.branchId);
+    // V1 chỉ nhập đúng một chi nhánh. Payload thiếu BranchId không được suy từ tổng retailer;
+    // reconciliation sẽ đọc lại hóa đơn đầy đủ qua API và phục hồi nếu webhook bị rút gọn.
+    if (!integration || !branchId || branchId !== asId(integration.external_branch_ref)) return;
+
+    const modifiedAt = asDate(data.ModifiedDate ?? data.modifiedDate ?? data.PurchaseDate ?? data.purchaseDate);
+    const existing = (await c.query(
+      `SELECT local_id, external_updated_at FROM integration_entity_refs
+        WHERE integration_id = $1 AND entity_type = 'invoice' AND external_id = $2 FOR UPDATE`,
+      [integrationId, externalId],
+    )).rows[0];
+    if (modifiedAt && existing?.external_updated_at && modifiedAt <= new Date(existing.external_updated_at)) return;
+
+    const providerOrderId = asId(data.OrderId ?? data.orderId);
+    const providerOrderCode = asId(data.OrderCode ?? data.orderCode);
+    const localNumber = markerOrderNumber(shopId, data);
+    let websiteOrder = null;
+    if (localNumber) websiteOrder = (await c.query(
+      `SELECT id FROM orders WHERE order_number = $1 AND source = 'web'`, [localNumber],
+    )).rows[0];
+    if (!websiteOrder && (providerOrderId || providerOrderCode)) websiteOrder = (await c.query(
+      `SELECT o.id FROM integration_entity_refs r JOIN orders o ON o.id = r.local_id
+        WHERE r.integration_id = $1 AND r.entity_type = 'order'
+          AND (r.external_id = $2 OR r.raw_meta->>'provider_code' = $3) LIMIT 1`,
+      [integrationId, providerOrderId || '-', providerOrderCode || '-'],
+    )).rows[0];
+
+    const status = Number(data.Status ?? data.status ?? 0);
+    if (websiteOrder) {
+      await c.query(
+        `INSERT INTO integration_entity_refs
+           (shop_id, integration_id, entity_type, external_id, local_id, mapping_status, external_updated_at, raw_meta)
+         VALUES (current_shop_id(), $1, 'invoice', $2, $3, 'mapped', $4, $5)
+         ON CONFLICT (shop_id, integration_id, entity_type, external_id)
+         DO UPDATE SET local_id = EXCLUDED.local_id, external_updated_at = EXCLUDED.external_updated_at,
+                       raw_meta = EXCLUDED.raw_meta, updated_at = now()`,
+        [integrationId, externalId, websiteOrder.id, modifiedAt?.toISOString() ?? null,
+          { code: data.Code ?? data.code ?? null, website_order_echo: true }],
+      );
+      await c.query(
+        `UPDATE orders SET sync_status = $2, sync_error = $3, sync_updated_at = now() WHERE id = $1`,
+        [websiteOrder.id, status === 2 ? 'needs_attention' : status === 1 ? 'synced' : 'pending',
+          status === 2 ? 'Hóa đơn KiotViet liên kết với đơn website đã bị hủy; cần đối soát tiền và tồn.' : null],
+      );
+      if (status === 2) await upsertDiscrepancy(c, integrationId, {
+        kind: 'return_mismatch', severity: 'critical', dedupeKey: `website-invoice-cancelled:${externalId}`,
+        message: 'Hóa đơn KiotViet của đơn website đã bị hủy; hệ thống không tự hoàn tiền hay nhập tồn.',
+        entityType: 'invoice', externalRef: externalId, localId: websiteOrder.id,
+      });
+      await c.query(
+        `SELECT record_order_event($1, 'integration.invoice_observed', 'system', NULL, 'kiotviet', $2::jsonb, coalesce($3, now()))`,
+        [websiteOrder.id, JSON.stringify({ external_invoice_id: externalId, status }), modifiedAt?.toISOString() ?? null],
+      );
+      return;
+    }
+
+    if (existing?.local_id) {
+      if (status === 2) {
+        await c.query(
+          `UPDATE orders SET sync_status = 'needs_attention', sync_error = $2, sync_updated_at = now() WHERE id = $1`,
+          [existing.local_id, 'Hóa đơn POS đã bị hủy ở KiotViet; cần đối soát hoàn tiền và tồn.'],
+        );
+        await upsertDiscrepancy(c, integrationId, {
+          kind: 'return_mismatch', severity: 'critical', dedupeKey: `pos-invoice-cancelled:${externalId}`,
+          message: 'Hóa đơn POS đã nhập trước đó nay bị hủy ở KiotViet; không tự đảo tiền/tồn.',
+          entityType: 'invoice', externalRef: externalId, localId: existing.local_id,
+        });
+      }
+      await c.query(
+        `UPDATE integration_entity_refs SET external_updated_at = coalesce($3, external_updated_at),
+                                            raw_meta = $4, updated_at = now()
+          WHERE integration_id = $1 AND entity_type = 'invoice' AND external_id = $2`,
+        [integrationId, externalId, modifiedAt?.toISOString() ?? null, { code: data.Code ?? data.code ?? null, status }],
+      );
+      return;
+    }
+
+    // Chỉ hóa đơn hoàn thành mới là giao dịch bán lẻ. Trạng thái đang xử lý/hủy không được
+    // biến thành doanh thu `paid` chỉ vì đã phát webhook.
+    if (status !== 1) return;
+    const details = data.InvoiceDetails ?? data.invoiceDetails ?? data.Details ?? data.details ?? [];
+    if (!Array.isArray(details) || !details.length) return;
+    const lines = [];
+    for (const detail of details) {
+      const productRef = asId(detail.ProductId ?? detail.productId ?? detail.Id ?? detail.id);
+      const ref = (await c.query(
+        `SELECT r.variant_id, v.sku, v.title AS variant_title, p.title AS product_title
+           FROM product_source_refs r JOIN variants v ON v.id = r.variant_id JOIN products p ON p.id = v.product_id
+          WHERE r.source = 'kiotviet' AND r.kind = 'variant' AND r.external_id = $1`, [productRef],
+      )).rows[0];
+      if (!ref) {
+        await upsertDiscrepancy(c, integrationId, {
+          kind: 'unmapped_sku', severity: 'critical', dedupeKey: `invoice:${externalId}:product:${productRef}`,
+          message: 'Hóa đơn POS chưa nhập được vì có sản phẩm chưa ánh xạ.',
+          entityType: 'invoice', externalRef: externalId, details: { product_ref: productRef },
+        });
+        return;
+      }
+      lines.push({ ...ref, qty: Math.max(1, asInt(detail.Quantity ?? detail.quantity) ?? 1),
+        price: asInt(detail.Price ?? detail.price) ?? 0 });
+    }
+    const total = asInt(data.Total ?? data.total) ?? lines.reduce((sum, line) => sum + line.price * line.qty, 0);
+    const totalPayment = asInt(data.TotalPayment ?? data.totalPayment) ?? 0;
+    if (totalPayment !== total) {
+      await upsertDiscrepancy(c, integrationId, {
+        kind: 'payment_mismatch', severity: 'critical', dedupeKey: `invoice-payment:${externalId}`,
+        message: 'Hóa đơn POS chưa được nhập vì số đã thanh toán khác tổng hóa đơn.',
+        entityType: 'invoice', externalRef: externalId, details: { total_vnd: total, total_payment_vnd: totalPayment },
+      });
+      return;
+    }
+    const num = (await c.query(
+      `INSERT INTO shop_counters (shop_id, name, value) VALUES (current_shop_id(), 'order_number', 1)
+       ON CONFLICT (shop_id, name) DO UPDATE SET value = shop_counters.value + 1 RETURNING value`,
+    )).rows[0].value;
+    const paidAt = (asDate(data.PurchaseDate ?? data.purchaseDate ?? data.CreatedDate ?? data.createdDate) ?? new Date()).toISOString();
+    const order = (await c.query(
+      `INSERT INTO orders
+         (shop_id, order_number, status, payment_status, payment_method, customer_name, customer_phone,
+          subtotal_vnd, total_vnd, amount_paid_vnd, paid_at, source, integration_id, external_ref,
+          external_branch_ref, sync_status, sync_updated_at, created_at)
+       VALUES (current_shop_id(), $1, 'delivered', 'paid', $2, $3, $4, $5, $5, $5, $6,
+               'kiotviet_pos', $7, $8, $9, 'synced', now(), $6)
+       RETURNING id`,
+      [num, posPaymentMethod(data), data.CustomerName ?? data.customerName ?? null,
+        data.CustomerContactNumber ?? data.customerContactNumber ?? null, total, paidAt,
+        integrationId, externalId, branchId || null],
+    )).rows[0];
+    for (const line of lines) await c.query(
+      `INSERT INTO order_lines
+         (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty)
+       VALUES (current_shop_id(), $1, $2, $3, $4, $5, $6)`,
+      [order.id, line.variant_id, `${line.product_title}${line.variant_title ? ` - ${line.variant_title}` : ''}`,
+        line.sku, line.price, line.qty],
+    );
+    await c.query(
+      `INSERT INTO payment_transactions
+         (shop_id, order_id, provider, provider_event_id, amount_vnd, status, entry_type, note, raw)
+       VALUES (current_shop_id(), $1, 'kiotviet', $2, $3, 'received', 'credit', 'Thanh toán tại KiotViet POS', $4)
+       ON CONFLICT (shop_id, provider, provider_event_id) DO NOTHING`,
+      [order.id, `invoice:${externalId}`, totalPayment, data],
+    );
+    await c.query(
+      `INSERT INTO integration_entity_refs
+         (shop_id, integration_id, entity_type, external_id, local_id, mapping_status, external_updated_at, raw_meta)
+       VALUES (current_shop_id(), $1, 'invoice', $2, $3, 'mapped', $4, $5)`,
+      [integrationId, externalId, order.id, modifiedAt?.toISOString() ?? null,
+        { code: data.Code ?? data.code ?? null, status }],
+    );
+    await c.query(
+      `SELECT record_order_event($1, 'order.imported_pos', 'system', NULL, 'kiotviet', $2::jsonb, $3)`,
+      [order.id, JSON.stringify({ external_invoice_id: externalId }), paidAt],
+    );
+    await c.query(`UPDATE shop_integrations SET orders_synced_at = now(), updated_at = now() WHERE id = $1`, [integrationId]);
+  });
+}
+
+async function observeKiotVietOrder(shopId, integrationId, event) {
+  const data = event.data ?? {};
+  const externalId = asId(data.Id ?? data.id);
+  const localNumber = markerOrderNumber(shopId, data);
+  if (!externalId || !localNumber) return; // đơn tạo trực tiếp ở KiotViet chỉ thành doanh thu khi có invoice.update
+  await withIntegrationTenant(shopId, async (c) => {
+    await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`kiotviet:order:${integrationId}:${externalId}`]);
+    const order = (await c.query(
+      `SELECT id FROM orders WHERE order_number = $1 AND source = 'web' FOR UPDATE`, [localNumber],
+    )).rows[0];
+    if (!order) return;
+    const status = Number(data.Status ?? data.status ?? 0);
+    const modifiedAt = asDate(data.ModifiedDate ?? data.modifiedDate);
+    const previous = (await c.query(
+      `SELECT external_updated_at FROM integration_entity_refs
+        WHERE integration_id = $1 AND entity_type = 'order' AND external_id = $2`,
+      [integrationId, externalId],
+    )).rows[0];
+    if (modifiedAt && previous?.external_updated_at && modifiedAt <= new Date(previous.external_updated_at)) return;
+    await c.query(
+      `INSERT INTO integration_entity_refs
+         (shop_id, integration_id, entity_type, external_id, local_id, mapping_status, external_updated_at, raw_meta)
+       VALUES (current_shop_id(), $1, 'order', $2, $3, 'mapped', $4, $5)
+       ON CONFLICT (shop_id, integration_id, entity_type, external_id)
+       DO UPDATE SET local_id = EXCLUDED.local_id, mapping_status = 'mapped',
+                     external_updated_at = EXCLUDED.external_updated_at,
+                     raw_meta = EXCLUDED.raw_meta, updated_at = now()`,
+      [integrationId, externalId, order.id, modifiedAt?.toISOString() ?? null, {
+        marker: deterministicOrderCode(shopId, localNumber), provider_code: data.Code ?? data.code ?? null, status,
+      }],
+    );
+    // Tài liệu Public API không khóa bảng số trạng thái order; StatusValue mới là contract
+    // có nghĩa đọc được. Không đoán 3/4 vì một mã sai sẽ biến đơn hợp lệ thành ca lỗi.
+    const rejected = /hủy|cancel/i.test(String(data.StatusValue ?? data.statusValue ?? ''));
+    await c.query(
+      `UPDATE orders SET external_ref = $2, sync_status = $3, sync_error = $4, sync_updated_at = now()
+        WHERE id = $1`, [order.id, externalId, rejected ? 'needs_attention' : 'synced',
+        rejected ? 'KiotViet từ chối hoặc hủy đơn; cần kiểm tra tồn và tiền trước khi xử lý tiếp.' : null],
+    );
+    if (rejected) await upsertDiscrepancy(c, integrationId, {
+      kind: 'provider_rejected', severity: 'critical', dedupeKey: `order-rejected:${externalId}`,
+      message: 'Đơn website đã bị KiotViet từ chối hoặc hủy; hệ thống không tự hủy đơn hay hoàn tiền.',
+      entityType: 'order', externalRef: externalId, localId: order.id,
+      details: { status, status_value: data.StatusValue ?? data.statusValue ?? null },
+    });
+  });
+}
+
+async function reconcileKiotVietInvoices(shopId, integrationId) {
+  const integration = await withIntegrationTenant(shopId, async (c) =>
+    (await c.query(
+      `SELECT id, provider, status, credential_ciphertext, external_branch_ref,
+              orders_synced_at, webhook_registered_at
+         FROM shop_integrations WHERE id = $1`, [integrationId],
+    )).rows[0]);
+  if (!integration || integration.provider !== 'kiotviet' || integration.status !== 'active') return;
+  const base = integration.orders_synced_at ?? integration.webhook_registered_at ?? new Date(Date.now() - 10 * 60_000);
+  const lastModifiedFrom = new Date(new Date(base).getTime() - 60_000).toISOString();
+  const client = integrationClient(integration);
+  let currentItem = 0;
+  let seen = 0;
+  for (let page = 0; page < 100; page++) {
+    const batch = await client.listInvoices({
+      currentItem, pageSize: 100, lastModifiedFrom, branchId: integration.external_branch_ref,
+    });
+    for (const row of batch.rows) await importPosInvoice(shopId, integrationId, { data: row });
+    seen += batch.rows.length;
+    currentItem += batch.rows.length;
+    if (!batch.rows.length || batch.rows.length < 100 || (batch.total && currentItem >= batch.total)) break;
+  }
+  await withIntegrationTenant(shopId, (c) => c.query(
+    `UPDATE shop_integrations SET orders_synced_at = now(), reconciled_at = now(),
+                                  last_error = NULL, updated_at = now()
+      WHERE id = $1`, [integrationId],
+  ));
+  log('info', 'integration_invoice_reconciled', { shopId, integrationId, seen });
+}
+
+async function sweepIntegrationReconcile() {
+  if (!integrationDb) return { checked: 0 };
+  const dueWebhooks = (await integrationDb.query(
+    `SELECT shop_id, inbox_id FROM list_due_integration_webhooks(50)`,
+  )).rows;
+  let recovered = 0;
+  for (const row of dueWebhooks) {
+    try {
+      await processIntegrationWebhook(row.shop_id, { inbox_id: row.inbox_id });
+      recovered += 1;
+    } catch (error) {
+      log('error', 'integration_webhook_recovery_failed', {
+        shopId: row.shop_id, inboxId: row.inbox_id, message: safeDeliveryError(error),
+      });
+    }
+  }
+  const rows = (await integrationDb.query(`SELECT shop_id, integration_id FROM list_due_integrations(20)`)).rows;
+  let done = 0;
+  for (const row of rows) {
+    try {
+      await syncKiotVietCatalog(row.shop_id, row.integration_id, { incremental: true });
+      await reconcileKiotVietInvoices(row.shop_id, row.integration_id);
+      done += 1;
+    } catch (error) {
+      log('error', 'integration_reconcile_failed', {
+        shopId: row.shop_id, integrationId: row.integration_id, message: safeDeliveryError(error),
+      });
+    }
+  }
+  return { checked: rows.length, done, webhook_checked: dueWebhooks.length, webhook_recovered: recovered };
+}
+
+async function processIntegrationWebhook(shopId, payload) {
+  const inbox = await withIntegrationTenant(shopId, async (c) => {
+    const row = (await c.query(
+      `SELECT id, integration_id, event_type, payload, status, next_attempt_at, claimed_at
+         FROM integration_webhook_inbox WHERE id = $1 FOR UPDATE`, [payload.inbox_id],
+    )).rows[0];
+    if (!row || row.status === 'completed') return null;
+    const claimed = (await c.query(
+      `UPDATE integration_webhook_inbox
+          SET status = 'processing', attempts = attempts + 1, claimed_at = now(), updated_at = now()
+        WHERE id = $1 AND (
+          status = 'pending'
+          OR (status = 'failed' AND coalesce(next_attempt_at, '-infinity'::timestamptz) <= now())
+          OR (status = 'processing' AND coalesce(claimed_at, '-infinity'::timestamptz) < now() - interval '10 minutes')
+        ) RETURNING id`, [row.id],
+    )).rowCount;
+    if (claimed !== 1) return null;
+    return row;
+  });
+  if (!inbox) return;
+  try {
+    const events = extractKiotVietNotifications(inbox.payload, inbox.event_type);
+    if (inbox.event_type === 'stock.update') await applyStockWebhook(shopId, inbox.integration_id, events);
+    if (inbox.event_type === 'product.update' || inbox.event_type === 'product.delete') {
+      await syncKiotVietCatalog(shopId, inbox.integration_id, { incremental: true });
+    }
+    if (inbox.event_type === 'order.update') {
+      for (const event of events) await observeKiotVietOrder(shopId, inbox.integration_id, event);
+    }
+    if (inbox.event_type === 'invoice.update') {
+      for (const event of events) await importPosInvoice(shopId, inbox.integration_id, event);
+    }
+    await withIntegrationTenant(shopId, (c) => c.query(
+      `UPDATE integration_webhook_inbox
+          SET status = 'completed', processed_at = now(), last_error = NULL, updated_at = now()
+        WHERE id = $1`, [inbox.id],
+    ));
+  } catch (error) {
+    const message = safeDeliveryError(error);
+    await withIntegrationTenant(shopId, async (c) => {
+      await c.query(
+        `UPDATE integration_webhook_inbox
+            SET status = 'failed', next_attempt_at = now() + interval '5 minutes',
+                last_error = $2, updated_at = now()
+          WHERE id = $1`, [inbox.id, message],
+      );
+      await upsertDiscrepancy(c, inbox.integration_id, {
+        kind: 'webhook_failed', severity: 'critical', dedupeKey: `webhook:${inbox.id}`,
+        message: 'Không xử lý được webhook KiotViet; hệ thống sẽ thử lại và đối soát.',
+        details: { event_type: inbox.event_type, error: message },
+      });
+    });
+    throw error;
+  }
+}
+
+async function processIntegrationJob(topic, payload, shopId) {
+  if (!integrationDb || !shopId) throw new Error('connector chưa được cấu hình');
+  try {
+    if (topic === 'integration.initial_sync_requested' || topic === 'integration.reconcile_requested') {
+      await syncKiotVietCatalog(shopId, payload.integration_id);
+      await reconcileKiotVietInvoices(shopId, payload.integration_id);
+      return;
+    }
+    if (topic === 'integration.order_created') {
+      await sendWebsiteOrderToKiotViet(shopId, payload);
+      return;
+    }
+    if (topic === 'integration.webhook_received') {
+      await processIntegrationWebhook(shopId, payload);
+    }
+  } catch (error) {
+    if (payload?.integration_id) await withIntegrationTenant(shopId, (c) => c.query(
+      `UPDATE shop_integrations SET status = CASE WHEN status = 'disabled' THEN status ELSE 'degraded' END,
+                                    last_error = $2, updated_at = now() WHERE id = $1`,
+      [payload.integration_id, safeDeliveryError(error)],
+    )).catch(() => {});
+    if (error instanceof KiotVietError && error.code === 'provider_rejected') {
+      log('warn', 'integration_provider_rejected', { shopId, integrationId: payload?.integration_id, message: safeDeliveryError(error) });
+    }
+    throw error;
+  }
+}
+
 // ── consumer: queue → email ──────────────────────────────────────────────────
 const worker = new Worker('email', async (job) => {
   const { topic, payload, shopId, outboxId } = job.data;
+  if (topic.startsWith('integration.')) {
+    await processIntegrationJob(topic, payload, shopId);
+    return;
+  }
   const channelErrors = [];
   const tryChannel = async (channel, fn) => {
     try { return await runTracked(job, channel, fn); }
@@ -939,7 +1752,26 @@ const worker = new Worker('email', async (job) => {
   if (payload?.to) log('info', 'email_sent', { topic, order: payload.order_number });
 }, { connection, concurrency: 5 });
 
-worker.on('failed', (job, err) => log('warn', 'email_failed', { id: job?.id, attempts: job?.attemptsMade, message: safeDeliveryError(err) }));
+worker.on('failed', (job, err) => {
+  log('warn', job?.data?.topic?.startsWith('integration.') ? 'integration_failed' : 'email_failed', {
+    id: job?.id, attempts: job?.attemptsMade, message: safeDeliveryError(err),
+  });
+  const exhausted = Number(job?.attemptsMade ?? 0) >= Number(job?.opts?.attempts ?? ATTEMPTS);
+  if (!exhausted || job?.data?.topic !== 'integration.order_created') return;
+  const { shopId, payload } = job.data;
+  void withIntegrationTenant(shopId, async (c) => {
+    await c.query(
+      `UPDATE orders SET sync_status = 'needs_attention', sync_error = $2, sync_updated_at = now()
+        WHERE id = $1 AND sync_status <> 'synced'`,
+      [payload.order_id, 'Đã thử gửi sang KiotViet nhiều lần nhưng chưa thành công.'],
+    );
+    await upsertDiscrepancy(c, payload.integration_id, {
+      kind: 'provider_rejected', severity: 'critical', dedupeKey: `order-dead-letter:${payload.order_id}`,
+      message: 'Đơn website đã hết lượt gửi tự động sang KiotViet; cần thử lại sau khi sửa kết nối.',
+      entityType: 'order', localId: payload.order_id, details: { error: safeDeliveryError(err) },
+    });
+  }).catch((error) => log('error', 'integration_dead_letter_mark_failed', { message: safeDeliveryError(error) }));
+});
 
 // ── sweep: hết hạn đơn QR/COD chưa trả tiền → RELEASE reserve ────────────────
 // Đơn 'pending'/'unpaid' quá hạn: nhả giữ chỗ + huỷ đơn + hoàn lượt coupon + báo khách.
@@ -1385,9 +2217,9 @@ const GHTK_BASE = (process.env.GHTK_API_BASE ?? 'https://services.giaohangtietki
 // Keyring xoay khoá (Đợt 5.6, đồng bộ apps/seller/src/secretbox.js): SHIPPING_ENC_KEYS
 // = 'k2:<64hex|base64>,k1:...'; blob v2 mang kid → chọn khoá theo kid; blob legacy
 // 3 phần và kid ngầm định 'k0' → khoá legacy SHIPPING_ENC_KEY.
-function sbRing() {
+function sbRing(keyringEnv = 'SHIPPING_ENC_KEYS') {
   const out = new Map();
-  for (const part of String(process.env.SHIPPING_ENC_KEYS ?? '').split(',').map((s) => s.trim()).filter(Boolean)) {
+  for (const part of String(process.env[keyringEnv] ?? '').split(',').map((s) => s.trim()).filter(Boolean)) {
     const i = part.indexOf(':');
     if (i < 1) continue;
     const m = part.slice(i + 1).trim();
@@ -1395,13 +2227,13 @@ function sbRing() {
   }
   return out;
 }
-function sbOpen(blob, keyHex) { // bản sao secretbox.open (build context worker là dir riêng)
+function sbOpen(blob, keyHex, keyringEnv = 'SHIPPING_ENC_KEYS') { // bản sao secretbox.open (build context worker là dir riêng)
   const parts = String(blob).split('.');
   let key = Buffer.from(keyHex, 'hex');
   let [ivB64, tagB64, ctB64] = parts;
   if (parts[0] === 'v2' && parts.length === 5) {
-    key = sbRing().get(parts[1]) ?? (parts[1] === 'k0' ? key : null);
-    if (!key) throw new Error(`không có khoá kid "${parts[1]}" trong SHIPPING_ENC_KEYS`);
+    key = sbRing(keyringEnv).get(parts[1]) ?? (parts[1] === 'k0' ? key : null);
+    if (!key) throw new Error(`không có khoá kid "${parts[1]}" trong ${keyringEnv}`);
     [, , ivB64, tagB64, ctB64] = parts;
   }
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivB64, 'base64'));
@@ -2686,6 +3518,7 @@ async function sweepMoneyAlerts() {
 }
 
 const timer = setInterval(poll, POLL_MS);
+const integrationReconcileTimer = integrationDb ? setInterval(sweepIntegrationReconcile, INTEGRATION_RECONCILE_MS) : null;
 
 // ── sweep: NHẮC MỘT LẦN người bán chưa đăng sản phẩm nào (0110) ───────────────
 // Sau khi xác minh email, người bán không nhận thêm gì cho tới lúc thuê bao sắp hết hạn —
@@ -3012,6 +3845,7 @@ server.listen(PORT, '0.0.0.0', () => {
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, async () => {
     clearInterval(timer);
+    if (integrationReconcileTimer) clearInterval(integrationReconcileTimer);
     if (expiryTimer) clearInterval(expiryTimer);
     if (domainTimer) clearInterval(domainTimer);
     if (billingTimer) clearInterval(billingTimer);
@@ -3033,6 +3867,6 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (tgLinkTimer) clearInterval(tgLinkTimer);
     await worker.close().catch(() => {});
     await queue.close().catch(() => {});
-    server.close(async () => { await db.end().catch(() => {}); await expiryDb?.end().catch(() => {}); await domainDb?.end().catch(() => {}); await billingDb?.end().catch(() => {}); await loyaltyDb?.end().catch(() => {}); process.exit(0); });
+    server.close(async () => { await db.end().catch(() => {}); await integrationDb?.end().catch(() => {}); await expiryDb?.end().catch(() => {}); await domainDb?.end().catch(() => {}); await billingDb?.end().catch(() => {}); await loyaltyDb?.end().catch(() => {}); process.exit(0); });
   });
 }

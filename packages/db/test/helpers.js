@@ -3,9 +3,10 @@ import { randomUUID } from 'node:crypto';
 
 export const rw = new pg.Pool({ connectionString: process.env.DATABASE_URL_RW, max: 5 });
 export const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 3 });
+export const integration = new pg.Pool({ connectionString: process.env.DATABASE_URL_INTEGRATION, max: 3 });
 
 export async function closeAll() {
-  await Promise.all([rw.end(), owner.end()]);
+  await Promise.all([rw.end(), owner.end(), integration.end()]);
 }
 
 /**
@@ -25,6 +26,22 @@ export async function closeAll() {
  */
 export async function withTenant(shopId, fn) {
   const client = await rw.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT set_config('app.shop_id', $1, true)`, [shopId]);
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function withIntegrationTenant(shopId, fn) {
+  const client = await integration.connect();
   try {
     await client.query('BEGIN');
     await client.query(`SELECT set_config('app.shop_id', $1, true)`, [shopId]);
@@ -117,8 +134,12 @@ export async function seedTwoShops() {
 export async function cleanupShops(shops) {
   const ids = Object.values(shops).map((s) => s.id);
   for (const table of [
+    'integration_webhook_inbox',
+    'integration_entity_refs',
+    'integration_sync_discrepancies',
     'order_lines',
     'orders',
+    'shop_integrations',
     'variants',
     'products',
     'shop_counters',

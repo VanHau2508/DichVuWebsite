@@ -40,6 +40,15 @@ test('buildOrderFilter đọc đúng bộ trường ta nghĩ (mốc nhận dạn
   }
 });
 
+test('nguồn POS chỉ được lọc để quan sát, không lọt vào allowlist tạo đơn tay', () => {
+  const src = rd('apps/seller/src/orders.js');
+  const writeSet = /const ORDER_SOURCES = new Set\(\[([^\]]+)\]\)/.exec(src)?.[1] ?? '';
+  const filterSet = /const ORDER_FILTER_SOURCES = new Set\(\[\.\.\.ORDER_SOURCES,([^\]]+)\]\)/.exec(src)?.[1] ?? '';
+  assert.doesNotMatch(writeSet, /kiotviet_pos|sapo_pos/, 'client không được giả mạo nguồn doanh thu POS');
+  assert.match(filterSet, /'kiotviet_pos'/);
+  assert.match(filterSet, /'sapo_pos'/);
+});
+
 test('form Lọc / tab trạng thái / phân trang / nút Xuất CSV đều mang ĐỦ trường lọc', () => {
   const pages = rd('apps/seller-admin/src/pages.js');
   // Cắt đúng thân renderOrders: pages.js còn nhiều màn khác cũng có `nav`/`keep` riêng.

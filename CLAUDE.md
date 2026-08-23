@@ -25,11 +25,11 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 |---|---:|---|
 | dòng mã ứng dụng | ~43.200 | `apps/*/src/*.js` |
 | dòng test | ~31.400 | `apps/*/test/*.{js,mjs}` |
-| migration | 174 tệp, mới nhất `0176` | `packages/db/migrations/` |
-| bộ unit | 38 | `MANIFEST_UNIT_COUNT` |
-| bộ e2e | 106 | `MANIFEST_E2E_COUNT` |
-| bất biến DB | 9 bộ, 120 test TAP | `packages/db/test/*.test.js` |
-| tài liệu | 80 tệp | `docs/` |
+| migration | 175 tệp, mới nhất `0177` | `packages/db/migrations/` |
+| bộ unit | 39 | `MANIFEST_UNIT_COUNT` |
+| bộ e2e | 107 | `MANIFEST_E2E_COUNT` |
+| bất biến DB | 9 bộ, 130 test TAP | `packages/db/test/*.test.js` |
+| tài liệu | 81 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,71 — cao có chủ ý, xem §4.
 
@@ -75,7 +75,7 @@ với GitHub CI. Nó tự dựng PostgreSQL trắng trong project Compose riêng
 chạy đúng runner production **không seed**, rồi so ba chiều: số file = `MANIFEST_MIGRATION_COUNT`
 = số dòng thật trong `schema_migrations`, kèm 0 DRIFT / 0 pending. Tự dọn bằng `trap` ở mọi đường
 thoát, kể cả Ctrl-C. **Không chạm DB dev.** Thêm migration thì sửa `MANIFEST_MIGRATION_COUNT`
-trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 174 file / số cao nhất 0176).
+trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 175 file / số cao nhất 0177).
 
 Hook `scripts/hooks/pre-push` chạy `--fast` và **chặn push khi đỏ**. Cài một lần cho mỗi bản
 clone: `git config core.hooksPath scripts/hooks`.
@@ -88,12 +88,12 @@ clone: `git config core.hooksPath scripts/hooks`.
 apps/<service>/src/     mã service        apps/<service>/test/    test của nó
 packages/               mã DÙNG CHUNG     packages/db/migrations/ toàn bộ SQL
 infra/compose.*.yml     dàn dịch vụ       scripts/                cổng, seed, vận hành
-docs/                   76 tệp ghi chép   .github/workflows/ci.yml cổng đám mây
+docs/                   81 tệp ghi chép   .github/workflows/ci.yml cổng đám mây
 ```
 
 | việc cần sửa | file |
 |---|---|
-| API nghiệp vụ shop (đơn, kho, báo cáo, KM) | `apps/seller/src/*.js` — 44 module, 1 module 1 miền |
+| API nghiệp vụ shop (đơn, kho, báo cáo, KM) | `apps/seller/src/*.js` — 52 module, 1 module 1 miền |
 | **HTML trang quản trị** | `apps/seller-admin/src/pages.js` (~17k dòng cả app) |
 | gọi từ admin sang seller/auth | `apps/seller-admin/src/api.js` |
 | cửa hàng công khai | `apps/storefront/src/` |
@@ -125,7 +125,7 @@ Mỗi dòng dưới đây từng làm hỏng một thứ có thật. Chi tiết 
   `REVOKE ALL … FROM app_rw` **và** thêm policy chặn.
 - **Migration BẤT BIẾN.** Runner băm nội dung — sửa file cũ → `DRIFT` → cổng đỏ. Sửa gì cũng bằng
   file mới, đánh số tiếp.
-- **22 vai DB `app_*`, mỗi service một vai ít quyền nhất.** Đừng nới cho tiện. Có vai KHÔNG
+- **23 vai DB `app_*`, mỗi service/miền nhạy cảm một vai ít quyền nhất.** Đừng nới cho tiện. Có vai KHÔNG
   đăng nhập được, chỉ tồn tại để **sở hữu** một hàm `SECURITY DEFINER` hẹp (`app_resolution`).
 - **GRANT cấp BẢNG cũ vô hiệu hoá mọi tính toán cấp CỘT về sau.** `app_rw` có `UPDATE` cấp bảng
   trên `orders` từ `0021`, nên `GRANT UPDATE (cột_mới) TO vai_khác` KHÔNG hề chặn được `app_rw`
@@ -436,11 +436,15 @@ thay trong một lát cắt khác.
 
 Lát cắt 4 coi như đóng ở phần A+B. C chưa khoá, và **không mặc nhiên là việc kế tiếp**.
 
-Đợt đo mở đã chạy (`docs/79`) và kết luận việc kế tiếp **không phải** C cũng không phải
-workflow 5, mà là **phân tầng gói dịch vụ**: bảng `plans` chỉ có một chiều phân biệt
-(`max_products`), `care` và `platform` cùng trần 100 SP dù chênh 1,5 triệu/tháng, và trang bán
-hàng liệt kê năm khác biệt mà hệ thống **không cưỡng chế mục nào**. Đang chờ chủ dự án chốt ba
-câu hỏi kinh doanh ở `docs/79 §4` trước khi khoá brief.
+Đợt đo phân tầng gói đã khoá quyết định kinh doanh trong `docs/79`, nhưng chủ dự án đổi ưu tiên
+sang chiến lược **tích hợp POS trước, POS riêng sau**. Lát cắt đang thi công là nền connector
+KiotViet ở `docs/80`: KiotViet làm chủ tồn vật lý/POS, nền tảng làm chủ website/checkout/đơn
+online; admin nhìn cả hai nguồn nhưng không đếm doanh thu hai lần. Đây mới là **connector core
+cho pilot**, chưa được tuyên bố hỗ trợ KiotViet hoàn chỉnh trước khi thử bằng tài khoản thật và
+chưa làm xong hoàn trả hai chiều.
+
+Nhánh thi công: `codex/kiotviet-integration-core`. Chỉ merge khi full `scripts/ci-local.sh`
+exit 0 và có review độc lập. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn, không bị huỷ.
 
 Nợ đã ghi, chưa xử lý: trang **Tồn an toàn tràn 377/360** ở cả JS bật lẫn tắt — thủ phạm là ô
 nhập "Tỉ lệ giữ an toàn cho toàn shop (%)" trong form đầu trang (`pages.js:6022`), không phải

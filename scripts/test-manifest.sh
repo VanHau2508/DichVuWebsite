@@ -115,16 +115,17 @@ MANIFEST_UNIT_FILES=(
   # bảng thiếu nhãn vẫn đủ chữ và trang vẫn 200. Bộ này canh cả ba đường quay lại: bảng viết
   # tay, CSS móc lớp .cards, và JS dựng lại việc gán nhãn.
   apps/seller-admin/test/table-cards.test.js
+  packages/integrations/test/kiotviet.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=38
-MANIFEST_E2E_COUNT=106
+MANIFEST_UNIT_COUNT=39
+MANIFEST_E2E_COUNT=107
 # Số FILE migration, KHÔNG phải số thứ tự cao nhất. Dãy có khoảng trống (0157 chẳng hạn)
-# nên hôm nay là 174 file trong khi file mới nhất mang số 0176 — suy số lượng từ số thứ tự
+# nên hôm nay là 175 file trong khi file mới nhất mang số 0177 — suy số lượng từ số thứ tự
 # là sai ngay từ hôm nay. scripts/fresh-migration-gate.sh so BẰNG với con số này, và so
 # thêm với số dòng thực trong schema_migrations của một DB TRẮNG.
-MANIFEST_MIGRATION_COUNT=174
+MANIFEST_MIGRATION_COUNT=175
 
 manifest_unit_files() {
   shopt -s nullglob

@@ -22,6 +22,26 @@ test('dependency scan đỏ khi Docker hoặc npm audit không chạy được',
   assert.doesNotMatch(source, /\|\| \[ -z "\$out" \]/);
 });
 
+test('role connector và khoá mã hoá được đấu đủ vào đường deploy production', () => {
+  const deploy = read('scripts/deploy.sh');
+  const provision = read('scripts/provision-db-roles.sh');
+  const compose = read('infra/compose.prod.yml');
+  const example = read('.env.example');
+
+  assert.match(example, /^APP_INTEGRATION_PASSWORD=.+$/m);
+  assert.match(example, /^INTEGRATION_ENC_KEY=.+$/m);
+  assert.match(provision, /ROLES=\([^\n]*\bapp_integration\b[^\n]*\)/,
+    'provision phải đổi mật khẩu bootstrap của app_integration');
+  assert.match(deploy, /-e APP_INTEGRATION_PASSWORD/,
+    'deploy phải chuyển secret vào provision-db-roles');
+  assert.match(deploy, /app_integration:APP_INTEGRATION_PASSWORD/,
+    'deploy phải đăng nhập thử role connector bằng mật khẩu production');
+  assert.match(deploy, /\^INTEGRATION_ENC_KEY=\[0-9a-fA-F\]\{64\}\$/,
+    'deploy phải fail-fast nếu khoá mã hoá credential sai hình dạng');
+  assert.match(compose, /DATABASE_URL_INTEGRATION: postgres:\/\/app_integration:\$\{APP_INTEGRATION_PASSWORD:\?\}/);
+  assert.match(compose, /INTEGRATION_ENC_KEY: \$\{INTEGRATION_ENC_KEY:\?\}/);
+});
+
 // ── Cổng migration từ DB TRẮNG ───────────────────────────────────────────────
 // Gate này tồn tại vì `ci-local.sh` chưa bao giờ chạy `migrate`: nó kiểm test trên DB dev
 // ĐÃ áp migration từ trước, nên "112/112 xanh" không nói gì về việc máy trắng dựng nổi

@@ -28,6 +28,7 @@ const MIEN_TRU = [
   { khop: 'unit_price_vnd, unit_cost_vnd, qty FROM order_lines', vi: 'createReturn: tra cứu + .every(), vòng restock sort riêng bằng .sort(localeCompare)' },
   { khop: 'ol.title_snapshot, ol.sku_snapshot, ol.unit_price_vnd, ol.qty, ol.shipped_qty', vi: 'getOrder: hiển thị chi tiết đơn + ảnh, KHÔNG khoá gì' },
   { khop: "WHERE sl.order_line_id = ol.id AND s.status = 'created'", vi: 'shipOrder: dựng danh sách kiện; vòng khoá nằm ở consumeAndShip và nó đọc shipment_lines ORDER BY variant_id' },
+  { khop: "r.source = 'kiotviet' AND r.kind = 'variant'", vi: 'worker connector chỉ dựng payload gửi provider, không đọc hay khoá inventory_levels' },
 ];
 
 test('resolution return inventory lock is ordered in SQL', () => {

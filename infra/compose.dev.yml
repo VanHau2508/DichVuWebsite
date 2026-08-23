@@ -17,8 +17,8 @@ services:
     image: caddy:2-alpine # dev không cần plugin DNS (dùng CA nội bộ)
     restart: unless-stopped
     ports:
-      - "8080:80"
-      - "8443:443"
+      - "${CADDY_HTTP_PORT:-8080}:80"
+      - "${CADDY_HTTPS_PORT:-8443}:443"
     volumes:
       - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
       - caddy_data:/data # chứng chỉ + CA nội bộ. Ở production PHẢI backup.
@@ -71,7 +71,7 @@ services:
     image: axllent/mailpit:v1.21
     restart: unless-stopped
     ports:
-      - "8025:8025"      # Mailpit web UI (xem email dev): http://localhost:8025
+      - "${MAILPIT_HTTP_PORT:-8025}:8025"      # Mailpit web UI (xem email dev): http://localhost:8025
     environment:
       MP_SMTP_AUTH_ACCEPT_ANY: "true"
       MP_SMTP_AUTH_ALLOW_INSECURE: "true"
@@ -101,6 +101,7 @@ services:
     command: ["node", "migrate.js", "up", "--seed", "/seed/900_seed_dev.sql"]
     environment:
       DATABASE_URL_OWNER: postgres://app_owner:devpassword@postgres:5432/app
+      DATABASE_URL_INTEGRATION: postgres://app_integration:devpassword@postgres:5432/app
     volumes:
       - ../packages/db/migrate.js:/work/migrate.js:ro
       - ../packages/db/migrations:/work/migrations:ro
@@ -213,6 +214,7 @@ services:
     environment:
       # app_rw: vai trò TENANT (RLS). Seller-admin dùng withTenant(shop_id).
       DATABASE_URL: postgres://app_rw:devpassword@postgres:5432/app
+      DATABASE_URL_INTEGRATION: postgres://app_integration:devpassword@postgres:5432/app
       # Lối thoát kiểm-dải-IP của bộ tải ảnh nhập liệu — CHỈ dev/e2e (docs/45 §5).
       # Máy chủ ảnh giả của bộ test chạy trong container dbtest, mà mọi IP trong stack đều
       # nội bộ nên không mở đúng tên này thì KHÔNG kiểm được đường-thành-công.
@@ -237,6 +239,10 @@ services:
       # Mã hoá Page Access Token + khoá bot khi chủ shop kết nối Trang (0122).
       # PHẢI khớp MESSENGER_ENC_KEY của service messenger, nếu không bot không giải mã được.
       MESSENGER_ENC_KEY: a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90
+      INTEGRATION_ENC_KEY: b1c2d3e4f5061728394a5b6c7d8e9fa0b1c2d3e4f5061728394a5b6c7d8e9fa0
+      INTEGRATION_WEBHOOK_BASE: https://seller.localtest:8443
+      KIOTVIET_IDENTITY_BASE: http://dbtest:9103
+      KIOTVIET_API_BASE: http://dbtest:9103
       # Tài khoản NHẬN TIỀN THUÊ BAO của nền tảng (0128) — cấu hình cấp nền tảng, không
       # để trong DB (xem lý do ở 0128). Thiếu → trang Gói dịch vụ tắt nút trả tiền.
       PLATFORM_BANK_BIN: "970436"
@@ -288,6 +294,7 @@ services:
       - ../packages/customer-input/src/phone.js:/app/phone.js:ro
       # Redis tối giản dùng chung (image không có packages/) — import '../redis-lite.js'.
       - ../packages/redis-lite/src/redis-lite.js:/app/redis-lite.js:ro
+      - ../packages/integrations/src/kiotviet.js:/app/kiotviet.js:ro
     depends_on:
       minio:
         condition: service_healthy
@@ -493,6 +500,7 @@ services:
       - ../packages/net-guard/src/fetch-image.js:/app/fetch-image.js:ro
       # Bộ vẽ banner mặc định (0114) — import '../banner-art.js'. Cùng lối mount.
       - ../packages/banner-art/src/index.js:/app/banner-art.js:ro
+      - ../packages/integrations/src/kiotviet.js:/app/kiotviet.js:ro
     restart: unless-stopped
     environment:
       # Lối thoát kiểm-dải-IP cho e2e (docs/45 §5) — CHỈ dev. Máy chủ ảnh giả của bộ
@@ -501,6 +509,7 @@ services:
       # Sweep tải ảnh chạy dày hơn ở dev để e2e không phải chờ lâu.
       MEDIAFETCH_SWEEP_MS: "2000"
       DATABASE_URL: postgres://app_worker:devpassword@postgres:5432/app
+      DATABASE_URL_INTEGRATION: postgres://app_integration:devpassword@postgres:5432/app
       # Pool riêng, role hẹp: hết hạn đơn QR + release reserve (0022).
       # Báo khách qua Messenger khi đơn đổi trạng thái (0122). Trống = tắt kênh này.
       MESSENGER_URL: http://messenger:3072
@@ -537,6 +546,9 @@ services:
       # Poll vận đơn hãng VC (0044) — dùng pool app_expiry; khoá giải mã token per-shop
       # PHẢI khớp seller (cả keyring lẫn legacy). Dev: API base trỏ stub trong dbtest.
       SHIPPING_ENC_KEY: 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
+      INTEGRATION_ENC_KEY: b1c2d3e4f5061728394a5b6c7d8e9fa0b1c2d3e4f5061728394a5b6c7d8e9fa0
+      KIOTVIET_IDENTITY_BASE: http://dbtest:9103
+      KIOTVIET_API_BASE: http://dbtest:9103
       SHIPPING_ENC_KEYS: "k2:9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0,k1:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
       GHN_API_BASE: http://dbtest:9101
       GHTK_API_BASE: http://dbtest:9102
@@ -673,6 +685,8 @@ services:
       DATABASE_URL_PLATFORM: postgres://app_platform:devpassword@postgres:5432/app
       DATABASE_URL_STORE: postgres://app_store:devpassword@postgres:5432/app
       DATABASE_URL_OWNER: postgres://app_owner:devpassword@postgres:5432/app
+      DATABASE_URL_INTEGRATION: postgres://app_integration:devpassword@postgres:5432/app
+      INTEGRATION_ENC_KEY: b1c2d3e4f5061728394a5b6c7d8e9fa0b1c2d3e4f5061728394a5b6c7d8e9fa0
       # Dùng cho platform/seller e2e: gọi thẳng service nội bộ, quản cookie tay.
       AUTH_URL: http://auth:3020
       PLATFORM_URL: http://platform:3030

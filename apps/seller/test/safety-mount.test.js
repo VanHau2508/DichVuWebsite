@@ -84,6 +84,21 @@ test('seller-admin import XLSX thì cả hai compose đều mount bộ đọc d�
   }
 });
 
+test('seller và worker dùng chung adapter KiotViet và cả hai compose đều mount đúng file', () => {
+  const mount = '../packages/integrations/src/kiotviet.js:/app/kiotviet.js:ro';
+  for (const [service, source] of [
+    ['seller', 'apps/seller/src/integrations.js'],
+    ['worker', 'apps/worker/src/index.js'],
+  ]) {
+    assert.match(doc(source), /from ['"]\.\.\/kiotviet\.js['"]/,
+      `${source}: chưa dùng adapter KiotViet chung`);
+    for (const compose of ['infra/compose.dev.yml', 'infra/compose.prod.yml']) {
+      const block = khoiService(compose).get(service);
+      assert.ok(block?.includes(mount), `${compose}: ${service} thiếu mount ${mount}`);
+    }
+  }
+});
+
 // CÔNG THỨC CÒN NỢ KHÁCH (packages/orders/src/owed.js) đi cùng cơ chế — nhưng có một cái bẫy
 // riêng: `account` để mã ở /app/apps/account/src nên '../owed.js' trỏ /app/apps/account/owed.js,
 // KHÔNG phải /app/owed.js như seller/checkout. Mount sai đích thì container chết ngay lúc khởi

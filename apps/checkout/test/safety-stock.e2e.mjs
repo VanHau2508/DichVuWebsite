@@ -432,6 +432,44 @@ async function main() {
   ovB = (await lvlOf(B.vid)).safety_stock_qty;
   ovB === null ? ok('ô trống → bỏ ngoại lệ (NULL), không phải 0') : bad(`ô trống thành ${ovB}`, '');
 
+  // ── 13. CONNECTOR NGOÀI: TỒN CŨ/NGẮT KẾT NỐI PHẢI FAIL-CLOSED ────────────
+  sect('13. KiotViet external-master khóa checkout khi tồn cũ hoặc connector bị ngắt');
+  const L = await mkSP('Áo đồng bộ POS', 10);
+  const gioStale = await themGio(L.vid, 1);
+  const beforeStale = await lvlOf(L.vid);
+  const connector = (await owner.query(
+    `INSERT INTO shop_integrations
+       (shop_id,provider,status,inventory_authority,credential_ciphertext,retailer,
+        external_branch_ref,external_branch_name,inventory_synced_at)
+     VALUES ($1,'kiotviet','active','external_master','cipher-test','retailer-test','7','Chi nhánh 7',now()-interval '10 minutes')
+     RETURNING id`, [shopId],
+  )).rows[0];
+  r = await chotGio(gioStale.cartCookie, 'kv-stale');
+  const afterStale = await lvlOf(L.vid);
+  r.status === 503 && /5 phút/.test(r.json?.error ?? '')
+    && Number(afterStale.reserved) === Number(beforeStale.reserved)
+    ? ok('tồn quá 5 phút → 503 trước reserve, không để giữ chỗ rác')
+    : bad('checkout vẫn bán bằng tồn cũ hoặc đã giữ chỗ trước khi chặn', JSON.stringify({ status: r.status, body: r.json, beforeStale, afterStale }));
+
+  await owner.query(`UPDATE shop_integrations SET inventory_synced_at=now() WHERE id=$1`, [connector.id]);
+  r = await chotGio(gioStale.cartCookie, 'kv-fresh');
+  r.status === 201 && r.json?.sync_status === 'pending'
+    ? ok('tồn vừa làm mới → đơn website được lưu local ở trạng thái chờ đồng bộ')
+    : bad('tồn mới nhưng checkout không tạo đơn pending', r.raw);
+  const queued = (await owner.query(
+    `SELECT count(*)::int n FROM outbox
+      WHERE shop_id=$1 AND topic='integration.order_created' AND payload->>'integration_id'=$2`,
+    [shopId, connector.id],
+  )).rows[0].n;
+  Number(queued) >= 1 ? ok('đơn website ghi outbox gửi KiotViet trong cùng giao dịch') : bad('thiếu outbox integration.order_created', '');
+
+  await owner.query(`UPDATE shop_integrations SET status='disabled' WHERE id=$1`, [connector.id]);
+  const gioDisabled = await themGio(L.vid, 1);
+  r = await chotGio(gioDisabled.cartCookie, 'kv-disabled');
+  r.status === 503 && /tạm ngừng nhận đơn/.test(r.json?.error ?? '')
+    ? ok('connector bị ngắt nhưng còn làm chủ tồn → checkout tiếp tục khóa an toàn')
+    : bad('connector disabled vẫn cho đặt đơn', r.raw);
+
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

@@ -27,6 +27,9 @@ const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 // mới thì sửa cả hai nơi trong cùng commit; lệch nhau thì DB từ chối và người bán thấy
 // lỗi 500 thay vì thông báo tử tế.
 const ORDER_SOURCES = new Set(['web', 'manual', 'facebook', 'zalo', 'tiktok', 'other']);
+// Nguồn POS ngoài chỉ được worker connector ghi. Bộ lọc phải thấy chúng, nhưng đường tạo
+// đơn tay không được nhận để một client giả mạo doanh thu KiotViet/Sapo.
+const ORDER_FILTER_SOURCES = new Set([...ORDER_SOURCES, 'kiotviet_pos', 'sapo_pos']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 // Biến thể KHÔNG mồ côi (mirror checkout/storefront 0057): phải có ánh xạ cho MỌI trục.
@@ -170,7 +173,7 @@ function buildOrderFilter(query) {
   // Lọc theo NGUỒN đơn (0119). Giá trị lạ bị BỎ QUA (không lọc) chứ không lỗi: đây là
   // tham số trên URL, người dùng sửa tay hoặc link cũ không được làm vỡ trang danh sách.
   const src = (query.get('source') ?? '').trim();
-  if (ORDER_SOURCES.has(src)) { args.push(src); where.push(`source = $${args.length}`); }
+  if (ORDER_FILTER_SOURCES.has(src)) { args.push(src); where.push(`source = $${args.length}`); }
   // Lọc ĐƠN DI CƯ (0104). `migrated=0` bỏ đơn nhập từ sàn cũ, `migrated=1` chỉ lấy đơn đó.
   //
   // VÌ SAO PHẢI CÓ. Tổng quan đếm trạng thái đơn với `WHERE NOT is_migrated` (dashboard.js) —
@@ -227,6 +230,7 @@ async function listOrders(res, ctx, _b, _p, query) {
         FROM orders o ${whereNoStatusSql}`, countArgs)).rows[0];
     const rows = (await c.query(
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.total_vnd, o.customer_name, o.created_at, o.source, o.is_migrated,
+              o.sync_status, o.sync_error, o.external_ref, o.external_branch_ref,
               (SELECT count(DISTINCT o2.customer_phone)::int FROM orders o2
                  WHERE o2.shop_id = current_shop_id() AND o2.client_ip_hash = o.client_ip_hash
                    AND o2.client_ip_hash IS NOT NULL AND o2.status = 'pending') AS same_ip_phones
@@ -295,6 +299,7 @@ async function getOrder(res, ctx, _b, params) {
               ${OWED_PAID_SQL} AS amount_paid_vnd,
               o.customer_name, o.customer_phone, o.customer_email, o.shipping_address, o.note, o.created_at,
               o.paid_at, o.shipped_at, o.delivered_at, o.cancelled_at, o.cancel_reason, o.source, o.source_ref, o.return_fee_vnd,
+              o.sync_status, o.sync_error, o.external_ref, o.external_branch_ref, o.sync_updated_at,
               ${OWED_REFUNDED_SQL} AS refunded_vnd, ${OWED_SQL} AS owed_vnd, ${OWED_REASON_SQL} AS owed_reason
          FROM orders o WHERE o.id = $1`, [orderId],
     )).rows[0];

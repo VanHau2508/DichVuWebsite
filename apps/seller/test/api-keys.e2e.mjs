@@ -176,6 +176,8 @@ async function main() {
   sect('6. Nguồn đơn sai chính tả → 400, KHÔNG âm thầm về mặc định');
   r = await ingest(token, { source: 'fb', idempotency_key: `s-${uniq()}` });
   r.status === 400 ? ok("source='fb' → 400 (không lặng lẽ thành 'manual')") : bad(`source rác lọt (${r.status})`, r.raw);
+  r = await ingest(token, { source: 'kiotviet_pos', idempotency_key: `s-${uniq()}` });
+  r.status === 400 ? ok("client không giả mạo được source='kiotviet_pos'") : bad(`nguồn POS lọt qua đường tạo đơn (${r.status})`, r.raw);
   r = await ingest(token, { source: 'zalo', source_ref: 'zalo.me/0912345678', idempotency_key: `s-${uniq()}` });
   const zrow = r.status === 201 ? (await owner.query('SELECT source, source_ref FROM orders WHERE id=$1', [r.json.id])).rows[0] : null;
   zrow?.source === 'zalo' && zrow.source_ref === 'zalo.me/0912345678'
@@ -183,14 +185,27 @@ async function main() {
 
   sect('7. Danh sách đơn: cột nguồn + bộ lọc ?source=');
   await a.post('/orders', { lines: [{ variant_id: vidA, qty: 1 }], customer: CUST, payment_method: 'cod', idempotency_key: `man-${uniq()}` });
+  const posNumber = (await owner.query(
+    `INSERT INTO shop_counters (shop_id,name,value) VALUES ($1,'order_number',1)
+     ON CONFLICT (shop_id,name) DO UPDATE SET value=shop_counters.value+1 RETURNING value`, [A.shopId],
+  )).rows[0].value;
+  await owner.query(
+    `INSERT INTO orders (shop_id,order_number,status,payment_status,total_vnd,source,sync_status,customer_name)
+     VALUES ($1,$2,'delivered','paid',250000,'kiotviet_pos','synced','Khách lẻ POS')`,
+    [A.shopId, posNumber],
+  );
   r = await a.get('/orders?limit=100');
   const all = r.json?.orders ?? [];
-  all.some((o) => o.source === 'facebook') && all.some((o) => o.source === 'manual')
-    ? ok('danh sách trả cột source cho cả đơn ingest và đơn gõ tay') : bad('danh sách thiếu source', r.raw);
+  all.some((o) => o.source === 'facebook') && all.some((o) => o.source === 'manual') && all.some((o) => o.source === 'kiotviet_pos')
+    ? ok('danh sách trả cột source cho đơn website, đơn tay và POS') : bad('danh sách thiếu source', r.raw);
   r = await a.get('/orders?source=facebook&limit=100');
   const fb = r.json?.orders ?? [];
   fb.length > 0 && fb.every((o) => o.source === 'facebook')
     ? ok(`?source=facebook lọc đúng (${fb.length} đơn)`) : bad('lọc theo nguồn sai', r.raw);
+  r = await a.get('/orders?source=kiotviet_pos&limit=100');
+  const pos = r.json?.orders ?? [];
+  pos.length === 1 && pos.every((o) => o.source === 'kiotviet_pos')
+    ? ok('?source=kiotviet_pos thấy đúng giao dịch tại quầy') : bad('lọc nguồn POS sai', r.raw);
   r = await a.get('/orders?source=zzz&limit=100');
   (r.json?.orders ?? []).length === all.length
     ? ok('?source= giá trị lạ → bỏ qua bộ lọc, không vỡ trang') : bad('source lạ làm lệch kết quả', r.raw);

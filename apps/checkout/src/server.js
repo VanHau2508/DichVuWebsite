@@ -836,6 +836,23 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     // Chỉ khi ĐĂNG NHẬP; guest → NULL → không đọc/ghi được điểm (fail-closed).
     if (ctx.customerId) await c.query(`SELECT set_config('app.customer_id', $1, true)`, [ctx.customerId]);
 
+    // Shop dùng POS ngoài vẫn giữ đơn website ở nền tảng, nhưng tồn vật lý có MỘT chủ.
+    // Nếu connector bị ngắt hoặc bản chiếu quá 5 phút thì dừng TRƯỚC reserve: bán tiếp trên
+    // số tồn cũ sẽ tạo một đơn mà cả shop lẫn KiotViet đều không thể thực hiện chắc chắn.
+    const integration = (await c.query(
+      `SELECT id, provider, status, external_branch_ref, inventory_synced_at
+         FROM shop_integrations
+        WHERE inventory_authority = 'external_master'
+        LIMIT 1`,
+    )).rows[0] ?? null;
+    if (integration && integration.status !== 'active') {
+      fail(503, 'Cửa hàng đang tạm ngừng nhận đơn vì kết nối tồn kho ngoài chưa sẵn sàng. Vui lòng thử lại sau.');
+    }
+    if (integration && (!integration.inventory_synced_at
+      || Date.now() - new Date(integration.inventory_synced_at).getTime() > 5 * 60_000)) {
+      fail(503, 'Tồn kho của cửa hàng chưa được cập nhật trong 5 phút gần đây. Vui lòng thử lại sau.');
+    }
+
     const cart = await findCart(c, token, { forUpdate: true });
     if (!cart) fail(400, 'giỏ hàng trống hoặc hết hạn');
     // Phòng thủ nhiều lớp: loại biến thể MỒ CÔI khỏi đơn (đã vào giỏ TRƯỚC khi shop thu hẹp
@@ -1014,9 +1031,10 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
          points_redeemed, points_discount_vnd,
          -- Nguồn đơn (0119): đơn qua trang thanh toán LUÔN là 'web'. Ghi ngay tại đây
          -- chứ không suy ra sau, vì "suy ra" nghĩa là mỗi chỗ đọc lại đoán một kiểu.
-         source)
-       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'web') RETURNING id`,
-      [num, paymentMethod, name, phoneCanon ?? phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount, couponCode, ipHash, ctx.customerId ?? null, pointsRedeemed, pointsDiscount],
+         source, integration_id, external_branch_ref, sync_status, sync_updated_at)
+       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'web', $19, $20, $21, now()) RETURNING id`,
+      [num, paymentMethod, name, phoneCanon ?? phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount, couponCode, ipHash, ctx.customerId ?? null, pointsRedeemed, pointsDiscount,
+        integration?.id ?? null, integration?.external_branch_ref ?? null, integration ? 'pending' : 'not_required'],
     )).rows[0];
     // Sổ điểm ĐỔI (0086): ghi SAU khi có order.id → UNIQUE loyalty_ledger_redeem_once(shop,order)
     // = đúng 1 dòng/đơn. Số dư đã trừ ở trên (cùng tx, khoá FOR UPDATE) → nguyên tử. Nếu tx
@@ -1091,7 +1109,19 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       );
     }
 
-    const response = { order_number: Number(num), subtotal_vnd: subtotal, shipping_vnd: shipping, discount_vnd: discount, coupon_code: couponCode, points_redeemed: pointsRedeemed, points_discount_vnd: pointsDiscount, total_vnd: total, status: 'pending', payment_status: 'unpaid', payment_method: paymentMethod, lookup_token: lookupToken };
+    // Đơn đã commit trong sổ của nền tảng trước; worker mới gửi sang KiotViet bằng outbox.
+    // Provider chết không làm mất đơn, retry không gọi đường tạo đơn thứ hai nhờ registry
+    // external ID + mã đơn deterministic ở worker.
+    if (integration) {
+      await c.query(
+        `INSERT INTO outbox (shop_id, topic, payload)
+         VALUES (current_shop_id(), 'integration.order_created', $1)`,
+        [{ integration_id: integration.id, order_id: order.id, order_number: Number(num) }],
+      );
+    }
+
+    const response = { order_number: Number(num), subtotal_vnd: subtotal, shipping_vnd: shipping, discount_vnd: discount, coupon_code: couponCode, points_redeemed: pointsRedeemed, points_discount_vnd: pointsDiscount, total_vnd: total, status: 'pending', payment_status: 'unpaid', payment_method: paymentMethod, lookup_token: lookupToken,
+      sync_status: integration ? 'pending' : 'not_required' };
     if (paymentMethod === 'qr') { response.payment_ref = paymentRef; response.qr_string = qrString; }
     await c.query(
       `UPDATE idempotency_keys
@@ -1298,12 +1328,14 @@ async function orderLookup(req, res, _body, ctx, query) {
     const o = (await c.query(
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.subtotal_vnd,
               o.shipping_vnd, o.total_vnd, o.fulfillment_adjustment_vnd, o.customer_name,
+              o.sync_status,
               ${OWED_PAID_SQL} AS amount_paid_vnd, ${OWED_REFUNDED_SQL} AS refunded_vnd
          FROM orders o WHERE o.order_number = $1 AND o.lookup_token_hash = $2`, [number, hashToken(token)],
     )).rows[0];
     if (!o) return null;
     const lines = (await c.query(`SELECT title_snapshot, sku_snapshot, unit_price_vnd, orig_unit_price_vnd, qty FROM order_lines WHERE order_id = $1`, [o.id])).rows;
     return { order_number: o.order_number, status: o.status, payment_status: o.payment_status,
+      sync_status: o.sync_status,
       payment_method: o.payment_method, subtotal_vnd: Number(o.subtotal_vnd), shipping_vnd: Number(o.shipping_vnd),
       total_vnd: Number(o.total_vnd), fulfillment_adjustment_vnd: Number(o.fulfillment_adjustment_vnd ?? 0),
       customer_name: o.customer_name, payment_summary: paymentSummary(o), lines };
@@ -1354,6 +1386,7 @@ async function getSuccessPage(req, res, _body, ctx, query) {
       // owed.js): con số shop nhìn thấy và con số KHÁCH nhìn thấy mà lệch nhau thì cuộc gọi
       // khiếu nại tiếp theo bắt đầu bằng hai bên đọc hai màn hình khác nhau.
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.shipping_vnd, o.total_vnd,
+              o.sync_status,
               o.fulfillment_adjustment_vnd,
               ${OWED_PAID_SQL} AS amount_paid_vnd, o.customer_name, o.payment_ref, o.qr_account,
               ${OWED_REFUNDED_SQL} AS refunded_vnd, ${OWED_SQL} AS owed_vnd,

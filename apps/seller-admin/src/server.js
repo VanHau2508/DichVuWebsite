@@ -1280,6 +1280,157 @@ async function apiKeyRevoke(res, me, cookie, shopId, keyId) {
     r.status === 200 ? null : (r.json?.error ?? 'Không thu hồi được khoá.'), null, null);
 }
 
+// ── Kết nối POS ngoài ───────────────────────────────────────────────────────
+async function integrationsPage(res, me, cookie, shopId, notice, err, probe = null) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'integrations');
+  const r = await sellerApi('GET', `/shops/${shopId}/integrations`, { cookie });
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderIntegrations(ctx, shopId, {}, null, r.json?.error ?? 'Không tải được trạng thái kết nối.'));
+  return sendHtml(res, err ? 400 : 200, V.renderIntegrations(ctx, shopId, r.json, notice, err, probe));
+}
+
+const INTEGRATION_MANAGE_ROLES = new Set(['owner', 'admin']);
+
+const integrationProbeBody = (form) => ({
+  retailer: String(form.retailer ?? '').trim().slice(0, 200),
+  client_id: String(form.client_id ?? '').trim().slice(0, 200),
+  client_secret: String(form.client_secret ?? '').trim().slice(0, 500),
+});
+
+async function doIntegrationProbe(res, me, cookie, shopId, body) {
+  const r = await sellerApi('POST', `/shops/${shopId}/integrations/kiotviet/probe`, { cookie, body, timeoutMs: 15000 });
+  return integrationsPage(res, me, cookie, shopId,
+    r.status === 200 ? 'Credential hợp lệ. Chọn chi nhánh để chạy đồng bộ thử.' : null,
+    r.status === 200 ? null : (r.json?.error ?? 'Không kiểm tra được KiotViet.'),
+    r.status === 200 ? r.json : null);
+}
+
+async function integrationProbe(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (!INTEGRATION_MANAGE_ROLES.has(roleFor(me, shopId))) return denyShop(res, me);
+  const body = integrationProbeBody(await readForm(req));
+  if (steppedUp(me)) return doIntegrationProbe(res, me, cookie, shopId, body);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'integrations');
+  return sendHtml(res, 200, V.renderStepUpGate(ctx, {
+    title: 'Xác nhận kết nối KiotViet', giaiThich: 'Credential này cho phép đọc tồn và gửi đơn của cửa hàng — nhập mật khẩu để tiếp tục.',
+    action: `/shops/${shopId}/integrations/kiotviet/probe/step-up`, huyUrl: `/shops/${shopId}/integrations`,
+    hidden: Object.entries(body),
+  }));
+}
+
+async function integrationProbeStepUp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (!INTEGRATION_MANAGE_ROLES.has(roleFor(me, shopId))) return denyShop(res, me);
+  const form = await readForm(req);
+  const body = integrationProbeBody(form);
+  const auth = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(form.password ?? '') } });
+  if (auth.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'integrations');
+    return sendHtml(res, 401, V.renderStepUpGate(ctx, {
+      title: 'Xác nhận kết nối KiotViet', action: `/shops/${shopId}/integrations/kiotviet/probe/step-up`,
+      giaiThich: 'Credential này cho phép đọc tồn và gửi đơn của cửa hàng — nhập mật khẩu để tiếp tục.',
+      huyUrl: `/shops/${shopId}/integrations`, hidden: Object.entries(body),
+      err: auth.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.',
+    }));
+  }
+  return doIntegrationProbe(res, me, cookie, shopId, body);
+}
+
+async function doIntegrationActivate(res, me, cookie, shopId, branchId) {
+  const r = await sellerApi('POST', `/shops/${shopId}/integrations/kiotviet/activate`, { cookie, body: { branch_id: branchId }, timeoutMs: 15000 });
+  return integrationsPage(res, me, cookie, shopId, r.status === 202 ? (r.json?.message ?? 'Đã đưa đồng bộ thử vào hàng đợi.') : null,
+    r.status === 202 ? null : (r.json?.error ?? 'Không kích hoạt được kết nối.'));
+}
+
+async function integrationActivate(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (!INTEGRATION_MANAGE_ROLES.has(roleFor(me, shopId))) return denyShop(res, me);
+  const branchId = String((await readForm(req)).branch_id ?? '').trim().slice(0, 200);
+  if (steppedUp(me)) return doIntegrationActivate(res, me, cookie, shopId, branchId);
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'integrations');
+  return sendHtml(res, 200, V.renderStepUpGate(ctx, {
+    title: 'Xác nhận đồng bộ KiotViet', giaiThich: 'Đồng bộ thử có thể cập nhật bản chiếu tồn kho — nhập mật khẩu để tiếp tục.',
+    action: `/shops/${shopId}/integrations/kiotviet/activate/step-up`, huyUrl: `/shops/${shopId}/integrations`,
+    hidden: [['branch_id', branchId]],
+  }));
+}
+
+async function integrationActivateStepUp(req, res, me, cookie, shopId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (!INTEGRATION_MANAGE_ROLES.has(roleFor(me, shopId))) return denyShop(res, me);
+  const form = await readForm(req);
+  const branchId = String(form.branch_id ?? '').trim().slice(0, 200);
+  const auth = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(form.password ?? '') } });
+  if (auth.status !== 200) {
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'integrations');
+    return sendHtml(res, 401, V.renderStepUpGate(ctx, {
+      title: 'Xác nhận đồng bộ KiotViet', giaiThich: 'Đồng bộ thử có thể cập nhật bản chiếu tồn kho — nhập mật khẩu để tiếp tục.',
+      action: `/shops/${shopId}/integrations/kiotviet/activate/step-up`, huyUrl: `/shops/${shopId}/integrations`,
+      hidden: [['branch_id', branchId]], err: auth.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.',
+    }));
+  }
+  return doIntegrationActivate(res, me, cookie, shopId, branchId);
+}
+
+async function integrationDisableGate(res, me, cookie, shopId, integrationId, err = null) {
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'integrations');
+  return sendHtml(res, err ? 401 : 200, V.renderStepUpGate(ctx, {
+    title: 'Xác nhận ngắt kết nối POS',
+    giaiThich: 'Kết nối sẽ ngừng nhận webhook. Nếu KiotViet đang làm chủ tồn, website tiếp tục khóa checkout cho tới khi chuyển quyền tồn có kiểm soát.',
+    action: `/shops/${shopId}/integrations/${integrationId}/disable/step-up`,
+    huyUrl: `/shops/${shopId}/integrations`,
+    err,
+  }));
+}
+
+async function doIntegrationDisable(res, me, cookie, shopId, integrationId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/integrations/${integrationId}/disable`, { cookie, body: {} });
+  const notice = r.status === 200 ? [r.json?.message, r.json?.warning].filter(Boolean).join(' ') : null;
+  return integrationsPage(res, me, cookie, shopId, notice,
+    r.status === 200 ? null : (r.json?.error ?? 'Không ngắt được kết nối.'));
+}
+
+async function integrationDisable(res, me, cookie, shopId, integrationId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (!INTEGRATION_MANAGE_ROLES.has(roleFor(me, shopId))) return denyShop(res, me);
+  return steppedUp(me) ? doIntegrationDisable(res, me, cookie, shopId, integrationId)
+    : integrationDisableGate(res, me, cookie, shopId, integrationId);
+}
+
+async function integrationDisableStepUp(req, res, me, cookie, shopId, integrationId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (!INTEGRATION_MANAGE_ROLES.has(roleFor(me, shopId))) return denyShop(res, me);
+  const form = await readForm(req);
+  const stepped = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(form.password ?? '') } });
+  if (stepped.status !== 200) return integrationDisableGate(res, me, cookie, shopId, integrationId,
+    stepped.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.');
+  return doIntegrationDisable(res, me, cookie, shopId, integrationId);
+}
+
+async function integrationMap(req, res, me, cookie, shopId, refId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const form = await readForm(req);
+  const r = await sellerApi('POST', `/shops/${shopId}/integrations/mappings/${refId}`, { cookie, body: { local_id: String(form.local_id ?? '').trim() } });
+  return integrationsPage(res, me, cookie, shopId, r.status === 200 ? 'Đã lưu ánh xạ. Chạy đối soát lại để áp dụng tồn.' : null,
+    r.status === 200 ? null : (r.json?.error ?? 'Không lưu được ánh xạ.'));
+}
+
+async function integrationIgnore(res, me, cookie, shopId, refId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/integrations/mappings/${refId}/ignore`, { cookie, body: {} });
+  return integrationsPage(res, me, cookie, shopId,
+    r.status === 200 ? 'Đã đánh dấu sản phẩm KiotViet này không bán trên website; các lần đồng bộ sau sẽ giữ nguyên quyết định.' : null,
+    r.status === 200 ? null : (r.json?.error ?? 'Không bỏ qua được sản phẩm này.'));
+}
+
+async function integrationRetry(res, me, cookie, shopId, discrepancyId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/integrations/discrepancies/${discrepancyId}/retry`, { cookie, body: {} });
+  return integrationsPage(res, me, cookie, shopId, r.status === 202 ? (r.json?.message ?? 'Đã đưa vào hàng đợi.') : null,
+    r.status === 202 ? null : (r.json?.error ?? 'Không thử lại được.'));
+}
+
 // Xác nhận HÀNG LOẠT: forward danh sách id (checkbox) → seller (thành công một phần).
 // QUAY VỀ ĐÚNG CHỖ ĐANG ĐỨNG. Trước đây mọi thao tác hàng loạt đá người bán về tab "Tất cả" —
 // đang ở "Chờ xử lý" tích 20 đơn, bấm xong thì màn hình nhảy về danh sách 395 đơn với mấy đơn
@@ -4392,6 +4543,16 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/affiliates/${UUID}/payouts$`).exec(p)) && req.method === 'POST') return affiliatePayout(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/affiliates/${UUID}/payouts/step-up$`).exec(p)) && req.method === 'POST') return affiliatePayoutStepUp(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/api-keys$`).exec(p)) && req.method === 'GET') return apiKeysPage(res, me, cookie, m[1], null, null, null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations$`).exec(p)) && req.method === 'GET') return integrationsPage(res, me, cookie, m[1], null, null);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations/kiotviet/probe$`).exec(p)) && req.method === 'POST') return integrationProbe(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations/kiotviet/probe/step-up$`).exec(p)) && req.method === 'POST') return integrationProbeStepUp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations/kiotviet/activate$`).exec(p)) && req.method === 'POST') return integrationActivate(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations/kiotviet/activate/step-up$`).exec(p)) && req.method === 'POST') return integrationActivateStepUp(req, res, me, cookie, m[1]);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations/${UUID}/disable$`).exec(p)) && req.method === 'POST') return integrationDisable(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations/${UUID}/disable/step-up$`).exec(p)) && req.method === 'POST') return integrationDisableStepUp(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations/mappings/${UUID}$`).exec(p)) && req.method === 'POST') return integrationMap(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations/mappings/${UUID}/ignore$`).exec(p)) && req.method === 'POST') return integrationIgnore(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations/discrepancies/${UUID}/retry$`).exec(p)) && req.method === 'POST') return integrationRetry(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/billing$`).exec(p)) && req.method === 'GET') return billingPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/billing/charge$`).exec(p)) && req.method === 'POST') return billingCharge(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/messenger$`).exec(p)) && req.method === 'POST') return messengerConnect(req, res, me, cookie, m[1]);

@@ -52,6 +52,8 @@ import { LOYALTY_CONFIG_ROUTES } from './loyalty-config.js';
 import { API_KEY_ROUTES, handleIngest } from './api-keys.js';
 import { MESSENGER_ROUTES } from './messenger-config.js';
 import { BILLING_ROUTES } from './billing.js';
+import { INTEGRATION_ROUTES, handleKiotVietWebhook } from './integrations.js';
+import { integrationDb } from './integration-db.js';
 import { READINESS_ROUTES } from './readiness.js';
 import { isProvince } from './provinces.js';
 import { runReq, makeLog, health, requestId, setUsageSink, makeUsageSink } from './obs.js';
@@ -675,6 +677,7 @@ const ROUTES = [
   ...API_KEY_ROUTES,
   ...MESSENGER_ROUTES,
   ...BILLING_ROUTES,
+  ...INTEGRATION_ROUTES,
 ];
 
 const server = http.createServer((req, res) => runReq(req, res, async () => {
@@ -686,7 +689,8 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   // Miễn được vì đường này xác thực bằng Bearer chứ không bằng cookie: trình duyệt của
   // nạn nhân không thể tự đính kèm chứng chỉ, nên không có CSRF để chống.
   const isIngest = url.pathname.startsWith('/ingest/');
-  if (!isIngest && !originAllowed(req, ALLOWED_ORIGINS)) return send(res, 403, { error: 'origin không được phép' });
+  const webhookMatch = new RegExp(`^/integrations/kiotviet/webhooks/${UUID}/([a-z]+\\.[a-z]+)$`, 'i').exec(url.pathname);
+  if (!isIngest && !webhookMatch && !originAllowed(req, ALLOWED_ORIGINS)) return send(res, 403, { error: 'origin không được phép' });
 
   try {
     // Nhận đơn TRƯỚC introspect (không session), nhưng PHẢI nằm trong try này: lỗi nghiệp
@@ -697,6 +701,11 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       return await handleIngest(req, res, {
         pathname: url.pathname, query: url.searchParams,
         ip: clientIp(req), readJson: (r) => readJson(r, 64 * 1024),
+      });
+    }
+    if (webhookMatch && req.method === 'POST') {
+      return await handleKiotVietWebhook(req, res, {
+        publicId: webhookMatch[1], eventType: webhookMatch[2], readBuffer,
       });
     }
 
@@ -785,6 +794,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
   process.on(sig, () => {
     server.close(async () => {
       await db.end().catch(() => {});
+      await integrationDb?.end().catch(() => {});
       process.exit(0);
     });
   });

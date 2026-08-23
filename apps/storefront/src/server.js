@@ -490,7 +490,15 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
         res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': CACHE_PUBLIC });
         return res.end(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`);
       }
-      if (url.pathname === '/') return sendHtml(res, 200, renderLanding({ ...LANDING_CFG, assets: ASSETS }), { cache: true });
+      if (url.pathname === '/') {
+        // Trang chủ mang lớp JS tăng cường (thanh điều hướng theo chiều cuộn, carousel banner,
+        // thanh CTA nổi). Script là TĨNH — không nội suy dữ liệu người dùng, trang chủ cũng
+        // không nhận đầu vào nào — nên dùng lại nonce trong cửa sổ cache 60s vẫn an toàn, đúng
+        // như trang cửa hàng đang làm cho badge giỏ. Thiếu JS thì trang vẫn đủ nội dung và bấm
+        // được: xem chú thích LỚP TĂNG CƯỜNG trong landing.js.
+        const nonceLanding = crypto.randomBytes(16).toString('base64');
+        return sendHtml(res, 200, renderLanding({ ...LANDING_CFG, assets: ASSETS, nonce: nonceLanding }), { cache: true, nonce: nonceLanding });
+      }
       if (url.pathname === '/gioi-thieu') return sendHtml(res, 200, renderAbout(LANDING_CFG), { cache: true });
       if (url.pathname === '/ho-tro') return sendHtml(res, 200, renderSupport(LANDING_CFG), { cache: true });
       if (url.pathname === '/dieu-khoan') return sendHtml(res, 200, renderTerms(LANDING_CFG), { cache: true });

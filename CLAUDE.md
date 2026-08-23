@@ -459,9 +459,28 @@ và bắt lỗi provider sau xác nhận về `needs_attention` thay vì để B
 Invoice chưa xác định được nguồn phải nằm ở `order_identity_pending`, chưa ghi doanh thu. Phạm vi hiện tại chỉ
 đủ cho pilot 1–3 shop; chưa có bằng chứng để tuyên bố tải 9.358 shop.
 
-Nhánh thi công: `codex/kiotviet-integration-core`. Full `scripts/ci-local.sh` đã exit 0 trên
-working tree cuối của lát cắt; chỉ merge sau review độc lập. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn,
-không bị huỷ.
+Song song: **trang chủ nền tảng đã dựng lại toàn bộ** (`apps/storefront/src/landing.js`)
+theo yêu cầu của chủ dự án. Hệ thiết kế mới (xanh cobalt, hero nền tối), bố cục mới, và
+chủ dự án đã **cho phép dùng JavaScript** ở trang này. Không phải nới CSP: cơ chế nonce
+đã có sẵn trong storefront (đang dùng cho badge giỏ), chỉ cần truyền nonce cho route `/`.
+
+**JS ở đây là LỚP TĂNG CƯỜNG, không phải điều kiện.** Không nonce ⇒ `sitePage` không chèn
+script ⇒ trang vẫn đủ chữ và bấm được: slide đầu mở sẵn từ server, thanh CTA nổi không
+dựng, và trạng thái ẩn của hiệu ứng nằm sau `html.lpjs` — cờ do chính JS gắn. Đo cả hai
+nhánh: 0/7 bề rộng tràn khi có JS, 0/5 khi không.
+
+Hai lớp lỗi mới học được ở lượt này, cả hai đều làm MẤT NỘI DUNG chứ không chỉ mất hiệu ứng:
+`requestAnimationFrame` chỉ chạy **2 lần trong cả một giây** ở môi trường không vẽ đều, nên
+bọc handler cuộn trong rAF là để thanh điều hướng kẹt trạng thái cũ; và bộ quét hiện-dần giữ
+lại cả phần tử đã trôi LÊN TRÊN khung nhìn thì nhảy tới mỏ neo hay cuộn nhanh một phát sẽ
+làm chúng kẹt `opacity:0` vĩnh viễn (đo được 4/37 phần tử hiện, sau khi vá là 37/37).
+
+Đã **bỏ ba lời chứng thực khách hàng dựng lên** ("Chị Hương", "Anh Tuấn", "Chị Mai"): kho
+chưa triển khai và chưa có khách thật (§0), trong khi chính chú thích đầu file tuyên bố
+không bịa số khách hàng. Có chốt cấm dựng lại cho tới khi có trích dẫn thật.
+
+Nhánh connector đã merge vào `main` tại `2e13602`. Nhánh landing hiện được rebase để review
+độc lập trước khi merge. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn, không bị huỷ.
 
 Nguyên nhân tràn ngang của trang **Tồn an toàn** đã được vá trên nhánh connector: con trực tiếp
 của `.filters` có `min-width:0;max-width:100%`, để nhãn "Tỉ lệ giữ an toàn cho toàn shop (%)"

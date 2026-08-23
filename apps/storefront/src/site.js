@@ -226,8 +226,18 @@ export function siteFooter(brand, contactEmail, contactPhone) {
   </div></footer>`;
 }
 
-/** Bọc một trang công ty hoàn chỉnh: head + nav + body + footer. `extraCss` là CSS riêng của trang. */
-export function sitePage({ title, description, brand = 'Nền Tảng', contactEmail = 'lienhe@nentang.vn', contactPhone = '', active = '', extraCss = '', body }) {
+/**
+ * Bọc một trang công ty hoàn chỉnh: head + nav + body + footer. `extraCss` là CSS riêng của trang.
+ *
+ * `shell:false` — trang TỰ mang lấy header/footer của nó (trang chủ dùng bộ điều hướng riêng,
+ * kiểu thanh nổi ẩn/hiện theo chiều cuộn, không phải thanh dùng chung). Khi đó nav/footer chung
+ * KHÔNG được chèn; CSS của chúng nằm trong BASE_CSS nhưng vô hại vì không còn phần tử nào khớp.
+ *
+ * `js` — script nội tuyến của trang, CHỈ được chèn khi có `nonce`. Không có nonce thì server
+ * cũng không phát `script-src`, nên chèn script vào chỉ tạo ra một thẻ chết và một lỗi CSP
+ * trong console: thà không chèn. Trang phải DÙNG ĐƯỢC khi thiếu cả hai — JS là lớp tăng cường.
+ */
+export function sitePage({ title, description, brand = 'Nền Tảng', contactEmail = 'lienhe@nentang.vn', contactPhone = '', active = '', extraCss = '', body, shell = true, nonce = '', js = '' }) {
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>
@@ -237,8 +247,9 @@ export function sitePage({ title, description, brand = 'Nền Tảng', contactEm
 <meta property="og:type" content="website">
 <style>${BASE_CSS}${extraCss}</style></head><body>
 <a class="skip" href="#main">Bỏ qua tới nội dung</a>
-${siteNav(brand, contactEmail, active)}
-<main id="main">${body}</main>
-${siteFooter(brand, contactEmail, contactPhone)}
+${shell ? siteNav(brand, contactEmail, active) : ''}
+${shell ? `<main id="main">${body}</main>` : body}
+${shell ? siteFooter(brand, contactEmail, contactPhone) : ''}
+${nonce && js ? `<script nonce="${esc(nonce)}">${js}</script>` : ''}
 </body></html>`;
 }

@@ -172,8 +172,12 @@ test('khối tiêu đề mục trải đúng bề rộng nội dung', () => {
   // khi bảng ngay dưới trải hết — đó là cảm giác lệch tỉ lệ, và nó lặp ở MỌI mục.
   assert.match(SRC, /\.lp-head\{margin-bottom:48px;display:grid;grid-template-columns:/,
     'từ 1024px khối tiêu đề phải chia hai cột');
-  assert.equal((SRC.match(/<div class="lp-head">/g) ?? []).length, 6,
-    'cả sáu mục phải dùng chung lớp nhịp .lp-head');
+  assert.equal((SRC.match(/<div class="lp-head[ "]/g) ?? []).length, 6,
+    'cả sáu mục phải dùng chung lớp nhịp .lp-head (kể cả biến thể căn giữa)');
+  // Biến thể căn giữa phải HUỶ lưới hai cột, nếu không tiêu đề vẫn bị ghim vào cột trái
+  // trong khi text-align:center chỉ căn chữ bên trong cột đó — trông càng lệch hơn.
+  assert.match(SRC, /\.lp-head-mid\{display:block\}/,
+    'biến thể căn giữa phải huỷ lưới hai cột ở mốc 1024px');
 });
 
 test('tiêu đề viết hoa có đủ chiều cao dòng cho dấu tiếng Việt', () => {
@@ -194,4 +198,46 @@ test('thanh điều hướng không gãy chữ', () => {
   assert.match(SRC, /\.lp-nav a\{[^}]*white-space:nowrap/, '.lp-nav a phải khoá nowrap');
   assert.match(SRC, /@media\(min-width:480px\)\{\.lp-hdr \.lp-btn\{display:inline-flex/,
     'dưới 480px phải bỏ nút trong thanh, nếu không nút menu bị cắt cụt');
+});
+
+
+test('hero gọn trong MỘT khung hình', () => {
+  // Chủ dự án yêu cầu banner đầu nằm trọn một màn. Đo được bằng trình duyệt ở 8 cỡ khung
+  // (1920×760 · 1600×780 · 1440×900 · 1366×700 · 1280×820 · 1024×700 · 390×844 · 360×740):
+  // 0/8 còn tràn. Ba thứ dưới đây là điều kiện để giữ được kết quả đó.
+  assert.match(LUAT, /\.lp-hero\{[^}]*min-height:100svh/, 'hero phải cao đúng một khung nhìn');
+  assert.match(LUAT, /\.lp-hero > \.ct\{display:flex;flex-direction:column;justify-content:center/,
+    'nội dung hero phải xếp dọc và canh giữa phần còn lại');
+  assert.match(LUAT, /\.lp-ctl\{[^}]*margin-top:auto/,
+    'cụm điều khiển băng phải bị đẩy xuống đáy, không trôi theo nội dung');
+  assert.match(LUAT, /@media\(min-width:1024px\)\{\.lp-stage\{max-width:none;max-height:min\(/,
+    'khung thiết bị phải có trần theo chiều cao khung nhìn để co lại thay vì đẩy mọi thứ ra ngoài');
+  assert.match(LUAT, /@media\(max-height:780px\)/, 'thiếu nhánh cho khung nhìn thấp');
+  assert.match(LUAT, /@media\(max-width:1023px\) and \(max-height:780px\)/,
+    'thiếu nhánh cho điện thoại màn thấp (360×740)');
+});
+
+test('không còn dải cam kết 4 ô', () => {
+  // Chủ dự án bỏ hẳn: "3 phút / 0đ / 100% / 24/7". Bỏ cả dữ liệu lẫn CSS, không để lại
+  // mảng chết rồi vài tháng sau có người dựng lại vì thấy nó còn đó.
+  assert.doesNotMatch(SRC, /const STATS =/, 'phải bỏ hẳn mảng STATS');
+  assert.doesNotMatch(SRC, /lp-strip/, 'phải bỏ hẳn dải cam kết, kể cả CSS');
+});
+
+test('mục so sánh có tiêu đề căn giữa và khe chèn ảnh', () => {
+  assert.match(SRC, /<div class="lp-head lp-head-mid rv">/, 'tiêu đề mục so sánh phải căn giữa');
+  assert.doesNotMatch(SRC, /Ba cách bán hàng online phổ biến nhất/,
+    'đoạn văn dẫn đã bỏ theo yêu cầu, thay bằng khe ảnh');
+  assert.match(SRC, /const soSanhShot = assetSrc\('so-sanh'\)/, 'thiếu khe chèn ảnh của mục so sánh');
+  // Chưa có tệp thì KHÔNG dựng gì — không để lại khung viền rỗng hay khoảng trống.
+  assert.match(SRC, /const cmpImg = soSanhShot\s*\?/, 'khe ảnh phải là nhánh có/không, không dựng khung rỗng');
+});
+
+test('thẻ nổi trang trí ẩn ở màn hẹp, và quy tắc nằm ĐÚNG chỗ', () => {
+  // Cùng độ ưu tiên thì cái viết SAU thắng. Bản trước đặt lệnh ẩn ở phía trên phần khai
+  // display:flex nên nó bị đè im lặng: đọc CSS thì tưởng đã ẩn, chụp ảnh vẫn thấy.
+  const iKhai = LUAT.indexOf('.lp-float{position:absolute;display:flex');
+  const iAn = LUAT.indexOf('@media(max-width:1023px){.lp-float{display:none}}');
+  assert.ok(iKhai >= 0 && iAn >= 0, 'thiếu một trong hai quy tắc .lp-float');
+  assert.ok(iAn > iKhai, 'lệnh ẩn phải nằm SAU phần khai display:flex, nếu không bị đè');
 });

@@ -57,12 +57,6 @@ const NAV = [
   { href: '#bang-gia', label: 'Bảng giá' },
 ];
 
-const STATS = [
-  { n: '3 phút', l: 'Có cửa hàng mẫu để xem ngay' },
-  { n: '0đ', l: 'Phí thiết lập ban đầu' },
-  { n: '100%', l: 'Tiền khách trả vào thẳng tài khoản bạn' },
-  { n: '24/7', l: 'Cửa hàng luôn online, không lo sập' },
-];
 
 // ── BẢNG SO SÁNH ────────────────────────────────────────────────────────────
 // Dòng cuối là chỗ CHÚNG TA THUA. Bảng so sánh thắng mọi ô thì người đọc trừ điểm
@@ -310,9 +304,18 @@ main{display:block}
    nửa trái còn nửa phải bỏ trống, trong khi bảng ngay dưới lại trải hết: đó chính là cảm
    giác "lệch tỉ lệ", và nó lặp ở mọi mục nên phải sửa ở đây, không sửa từng chỗ. */
 .lp-head{margin-bottom:32px}
+/* Biến thể CĂN GIỮA: cho mục chỉ có tiêu đề, không có câu dẫn. Phải huỷ luôn lưới hai
+   cột ở mốc 1024px bên dưới, nếu không tiêu đề vẫn bị ghim vào cột trái. */
+.lp-head-mid{text-align:center}
+/* Tiêu đề mục căn giữa lấy MỘT màu xanh cho cả khối, không tô hai tông như tiêu đề căn
+   trái: căn giữa mà đổi màu giữa chừng thì mắt đọc thành hai câu rời. */
+.lp-head-mid .lp-h2{margin-inline:auto;max-width:22ch;color:var(--lp-blue)}
+.lp-head-mid .lp-h2 em{color:inherit}
 @media(min-width:1024px){
   .lp-head{margin-bottom:48px;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);
            column-gap:56px;align-items:end}
+  .lp-head-mid{display:block}
+  .lp-head-mid .lp-h2{max-width:26ch}
   .lp-head .lp-eb{grid-column:1;grid-row:1}
   .lp-head .lp-h2{grid-column:1;grid-row:2;max-width:20ch}
   .lp-head .lp-sub{grid-column:2;grid-row:2;margin-top:0;max-width:44ch;padding-bottom:5px}
@@ -401,10 +404,18 @@ main{display:block}
 .lp-drawer .lp-btn{margin-top:14px;width:100%}
 
 /* ── HERO ────────────────────────────────────────────────────────────────── */
-.lp-hero{position:relative;background:var(--lp-hero);color:#fff;overflow:hidden;padding:118px 0 64px}
-@media(min-width:1024px){.lp-hero{min-height:100svh;max-height:960px;padding:150px 0 88px;display:flex;align-items:center}}
-.lp-hero-g{display:grid;gap:40px}
-@media(min-width:1024px){.lp-hero-g{grid-template-columns:minmax(0,1fr) minmax(0,1.02fr);gap:64px;align-items:center}}
+/* HERO PHẢI GỌN TRONG MỘT KHUNG HÌNH — kể cả khung thấp. Bản trước đặt padding trên
+   150px rồi canh giữa, nên trên màn cao ~790px (laptop 1080 ở 125%) phần khung thiết bị
+   và cả cụm điều khiển băng đều rơi xuống dưới mép: người xem phải cuộn mới thấy hết
+   một khối lẽ ra là "ảnh bìa". Nay dựng theo chiều dọc: nội dung canh giữa phần còn
+   lại, cụm điều khiển bị đẩy xuống đáy bằng margin-top:auto, và khung thiết bị có trần
+   theo chiều cao khung nhìn nên nó co lại thay vì đẩy mọi thứ ra ngoài. */
+.lp-hero{position:relative;background:var(--lp-hero);color:#fff;overflow:hidden;
+         padding:96px 0 22px;min-height:100svh;display:flex}
+.lp-hero > .ct{display:flex;flex-direction:column;justify-content:center;width:100%}
+@media(min-width:1024px){.lp-hero{padding:104px 0 26px}}
+.lp-hero-g{display:grid;gap:36px}
+@media(min-width:1024px){.lp-hero-g{grid-template-columns:minmax(0,1fr) minmax(0,1.02fr);gap:56px;align-items:center}}
 .lp-slide{display:none}
 .lp-slide.on{display:block}
 @media(prefers-reduced-motion:no-preference){.lp-slide.on{animation:lp-in 420ms var(--lp-e) both}}
@@ -415,22 +426,67 @@ main{display:block}
             letter-spacing:-.025em;color:#fff;max-width:17ch}
 .lp-hero .lead{margin-top:20px;font-size:clamp(1rem,.94rem + .3vw,1.14rem);line-height:1.6;
                color:rgba(255,255,255,.76);max-width:50ch}
-.lp-hero .lp-knob{margin-top:30px;width:100%}
+.lp-hero .lp-knob{margin-top:26px;width:100%}
 @media(min-width:600px){.lp-hero .lp-knob{width:auto;max-width:360px}}
-.lp-trust{display:flex;flex-wrap:wrap;gap:10px 22px;margin-top:28px}
+.lp-trust{display:flex;flex-wrap:wrap;gap:9px 22px;margin-top:24px}
 .lp-trust span{display:inline-flex;align-items:center;gap:7px;font-size:.88rem;color:rgba(255,255,255,.72)}
 .lp-trust svg{width:16px;height:16px;color:#7FE0A5;flex:none}
 
 /* Khung thiết bị dựng bằng CSS — không phụ thuộc ảnh ngoài, không vỡ khi thiếu file */
-.lp-stage{position:relative}
+.lp-stage{position:relative;margin-inline:auto;width:100%;max-width:560px}
+/* Trần theo chiều cao khung nhìn: khung thiết bị co lại trên màn thấp thay vì đẩy cụm
+   điều khiển ra ngoài mép dưới. Nội dung bên trong tự thu theo, không bị cắt. */
+@media(min-width:1024px){.lp-stage{max-width:none;max-height:min(50svh,470px)}}
+/* Khung nhìn THẤP (laptop 1080 ở 125%, cửa sổ không toàn màn hình): siết thêm nhịp dọc
+   thay vì để hero tràn 20–40px — tràn ít cũng vẫn là phải cuộn mới thấy hết ảnh bìa. */
+@media(max-height:780px){
+  .lp-hero{padding-top:88px}
+  .lp-hero .lead{margin-top:16px}
+  .lp-hero .lp-knob{margin-top:20px}
+  .lp-trust{margin-top:18px}
+  .lp-ctl{padding-top:20px}
+}
+/* MOBILE: xếp dọc nên không thể vừa một khung nếu khung thiết bị giữ nguyên cỡ. Cho nó
+   HÉ ra: cắt bớt phần dưới và làm mờ dần ở mép, vừa đủ để hiểu đây là màn quản trị mà
+   không đẩy nút và cụm điều khiển xuống dưới mép. Cắt CÓ CHỦ Ý, khác hẳn cắt vì tràn:
+   phần bị che không mang thông tin nào mà chỗ khác trên trang chưa nói. */
+@media(max-width:1023px){
+  .lp-hero h1{font-size:clamp(1.72rem,1.05rem + 2.6vw,2.4rem)}
+  .lp-hero .lead{font-size:.98rem;line-height:1.55;max-width:44ch}
+  /* Ba dòng tin cậy chiếm gần 90px trên điện thoại. Giữ hai dòng đắt nhất; dòng thứ ba
+     ("không giữ tiền") được nói lại đầy đủ ở mục Giải pháp nên không mất thông tin. */
+  .lp-trust span:nth-child(3){display:none}
+  .lp-stage{max-height:min(24svh,210px);overflow:hidden;
+            -webkit-mask-image:linear-gradient(180deg,#000 62%,transparent 100%);
+            mask-image:linear-gradient(180deg,#000 62%,transparent 100%)}
+  .lp-hero{padding:80px 0 16px}
+  .lp-hero-g{gap:18px}
+  .lp-hero .lead{margin-top:16px}
+  .lp-hero .lp-knob{margin-top:22px}
+  .lp-trust{margin-top:18px;gap:7px 18px;font-size:.9rem}
+  .lp-ctl{padding-top:18px;gap:12px}
+}
+/* Điện thoại MÀN THẤP (360×740 và tương đương): còn hụt ~67px sau các mức trên. Thu khung
+   thiết bị xuống mức chỉ còn thẻ doanh thu — vẫn nhận ra là màn quản trị, và đó là thứ
+   duy nhất trong khối này chịu co được mà không mất chữ. */
+@media(max-width:1023px) and (max-height:780px){
+  .lp-hero{padding:74px 0 10px}
+  .lp-stage{max-height:min(18svh,140px)}
+  .lp-ctl{padding-top:14px}
+  .lp-hero .lead{margin-top:14px}
+  .lp-hero .lp-knob{margin-top:18px;height:52px}
+  .lp-trust{margin-top:14px}
+  .lp-hero-g{gap:14px}
+}
 .lp-lap{border-radius:14px;background:#0E1526;border:1px solid rgba(255,255,255,.14);
-        box-shadow:0 30px 80px -40px rgba(0,0,0,.9);overflow:hidden}
+        box-shadow:0 30px 80px -40px rgba(0,0,0,.9);overflow:hidden;
+        display:flex;flex-direction:column;max-height:100%}
 .lp-lap .bar{display:flex;align-items:center;gap:6px;padding:10px 14px;background:rgba(255,255,255,.05);
              border-bottom:1px solid rgba(255,255,255,.08)}
 .lp-lap .bar i{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,.22)}
 .lp-lap .bar .u{margin-left:8px;flex:1;height:22px;border-radius:6px;background:rgba(255,255,255,.07);
                 display:flex;align-items:center;padding:0 10px;font-size:.7rem;color:rgba(255,255,255,.5)}
-.lp-lap .scr{padding:16px}
+.lp-lap .scr{padding:16px;min-height:0;overflow:hidden}
 .lp-shot{display:block;width:100%;height:auto}
 .lp-float{position:absolute;display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:14px;
           background:#fff;color:var(--lp-ink);box-shadow:var(--lp-sh2);max-width:74%}
@@ -442,11 +498,17 @@ main{display:block}
 .lp-f-noti{left:-6px;top:-18px}
 .lp-f-noti .ic{background:var(--lp-b050);color:var(--lp-blue)}
 @media(min-width:600px){.lp-f-pay{right:-18px}.lp-f-noti{left:-18px}}
+/* Hai thẻ nổi là trang trí. Trên khung thiết bị đã thu nhỏ và làm mờ mép ở màn hẹp,
+   chúng bị cắt ngang và đè lên nhau — thêm rối chứ không thêm thông tin.
+   Quy tắc này PHẢI nằm SAU khai .lp-float{display:flex} ở trên: cùng độ ưu tiên (0,1,0)
+   thì cái viết sau mới thắng. Bản trước đặt nó trong khối màn-hẹp ở phía trên và nó bị
+   đè im lặng — ảnh chụp vẫn thấy hai thẻ, trong khi đọc CSS thì tưởng đã ẩn. */
+@media(max-width:1023px){.lp-float{display:none}}
 
-.lp-ctl{display:flex;flex-direction:column;align-items:center;gap:18px;margin-top:38px}
-@media(min-width:1024px){.lp-ctl{flex-direction:row;justify-content:space-between;align-items:flex-end;margin-top:56px}}
+.lp-ctl{display:flex;flex-direction:column;align-items:center;gap:16px;margin-top:auto;padding-top:26px}
+@media(min-width:1024px){.lp-ctl{flex-direction:row;justify-content:space-between;align-items:center;padding-top:30px}}
 .lp-count{font-weight:600;font-size:1.15rem;color:rgba(255,255,255,.5);font-variant-numeric:tabular-nums}
-.lp-count b{font-size:2rem;font-weight:800;color:#fff}
+.lp-count b{font-size:1.75rem;font-weight:800;color:#fff}
 .lp-ctl-r{display:flex;align-items:center;gap:18px}
 .lp-dots{display:flex;gap:8px;align-items:center}
 .lp-dots button{width:7px;height:7px;padding:0;border:0;border-radius:var(--lp-pill);background:#fff;opacity:.32;
@@ -464,18 +526,14 @@ main{display:block}
           border:1px solid rgba(255,255,255,.26);color:#fff;background:none;cursor:pointer}
 .lp-pause:hover{background:rgba(255,255,255,.12)}
 
-/* ── Dải cam kết ─────────────────────────────────────────────────────────── */
-.lp-strip{background:var(--lp-navy);color:#fff;padding:40px 0}
-.lp-strip .g{display:grid;grid-template-columns:1fr 1fr;gap:26px 20px}
-@media(min-width:900px){.lp-strip .g{grid-template-columns:repeat(4,1fr);gap:24px}}
-.lp-stat .n{font-size:clamp(1.5rem,1.1rem + 1.5vw,2.2rem);font-weight:800;color:#fff;line-height:1.1}
-.lp-stat .l{margin-top:6px;font-size:.88rem;line-height:1.45;color:rgba(255,255,255,.6);
-            min-height:2.9em}
-
 /* ── BẢNG SO SÁNH ────────────────────────────────────────────────────────────
    Bảng THẬT: đọc màn hình cần quan hệ hàng↔cột. Dưới 900px hoá THẺ bằng CSS thuần
    (data-label + ::before) — không cần JS mới đọc được nhãn cột. ── */
 .lp-cmp{background:#fff;background-image:radial-gradient(76% 50% at 50% -6%,var(--lp-b025) 0%,transparent 66%)}
+.lp-cmp-img{margin:0 0 32px}
+.lp-cmp-img img{display:block;width:100%;max-width:1100px;height:auto;margin-inline:auto;
+                border-radius:var(--lp-r3)}
+@media(min-width:1024px){.lp-cmp-img{margin-bottom:48px}}
 .lp-cmp-w{margin-top:0}
 @media(min-width:900px){.lp-cmp-w{overflow-x:auto;padding-top:14px}}
 .lp-tbl{width:100%;border-collapse:separate;border-spacing:0}
@@ -1062,17 +1120,22 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
   </div>
 </section>`;
 
-  const strip = `<section class="lp-strip lp-dark" aria-label="Cam kết"><div class="ct"><div class="g">
-  ${STATS.map((s) => `<div class="lp-stat"><div class="n">${esc(s.n)}</div><div class="l">${esc(s.l)}</div></div>`).join('')}
-</div></div></section>`;
+  // Khe ảnh của mục so sánh. Thả tệp vào apps/storefront/src/assets/ (so-sanh.webp,
+  // .png, .jpg…) là ảnh hiện ngay dưới tiêu đề. Chưa có tệp thì KHÔNG dựng gì cả —
+  // không để lại khoảng trống hay khung viền rỗng.
+  const soSanhShot = assetSrc('so-sanh');
+  const cmpImg = soSanhShot
+    ? `<figure class="lp-cmp-img rv"><img src="${esc(soSanhShot)}" alt="Bảng so sánh ${esc(brand)} với các lựa chọn phổ biến trên thị trường" loading="lazy" decoding="async"></figure>`
+    : '';
 
   const o = (kind, cot, mark, html) => `<td${kind === 0 ? ' class="us"' : ''} data-label="${esc(cot)}">
         <span class="lp-cell"><span class="lp-mk ${mark}" aria-hidden="true">${MK[mark]}</span><span><span class="lp-sr">${MK_SR[mark]} — </span>${html}</span></span>
       </td>`;
   const cmp = `<section class="lp-sec lp-cmp" id="loi-ich" aria-labelledby="lpCmpH"><div class="ct">
-  <div class="lp-head"><p class="lp-eb rv">So sánh thẳng</p>
-  <h2 class="lp-h2 rv" id="lpCmpH">Cùng một đơn hàng, <em>ai giữ lại bao nhiêu</em></h2>
-  <p class="lp-sub rv">Ba cách bán hàng online phổ biến nhất hiện nay, đặt cạnh nhau theo đúng những thứ ảnh hưởng tới túi tiền và quyền kiểm soát của shop. Chúng tôi để cả ô mình thua.</p></div>
+  <div class="lp-head lp-head-mid rv">
+    <h2 class="lp-h2" id="lpCmpH">Cùng một đơn hàng, <em>ai giữ lại bao nhiêu?</em></h2>
+  </div>
+  ${cmpImg}
   <div class="lp-cmp-w rv">
     <table class="lp-tbl">
       <caption class="lp-sr">So sánh ${esc(brand)} với nền tảng website phổ thông và sàn thương mại điện tử</caption>
@@ -1195,7 +1258,7 @@ ${mq(INDUSTRIES.slice(half), true)}
   <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h2l2.4 12.3a2 2 0 0 0 2 1.7h7.7a2 2 0 0 0 2-1.6L21 8H6"/><circle cx="10" cy="20" r="1"/><circle cx="17" cy="20" r="1"/></svg>
 </button>` : '';
 
-  const body = `<div class="lp">${header}<main id="main">${hero}${strip}${cmp}${prod}${grow}${ind}${price}${faq}${final}</main>${footer}${dock}</div>`;
+  const body = `<div class="lp">${header}<main id="main">${hero}${cmp}${prod}${grow}${ind}${price}${faq}${final}</main>${footer}${dock}</div>`;
 
   return sitePage({
     title: `${esc(brand)} — Nền tảng website bán hàng cho người Việt, tiền về thẳng tài khoản bạn`,

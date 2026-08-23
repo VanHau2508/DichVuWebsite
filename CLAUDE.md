@@ -267,6 +267,31 @@ Những lỗi này **không nằm ở sản phẩm mà ở cách kiểm chứng*
   không phải ở tổ tiên.
 - **`overflow-x:clip` ở tổ tiên PHÁ `position:sticky`.** Vá tràn ngang bằng cách cắt ở khối
   cha là cách nhanh nhất giết một bố cục dán dính mà không ai thấy — cắt ở đúng khối gây tràn.
+- **ĐO KHÔNG PHẢI LÀ NHÌN.** Một trang có thể đạt 0/7 bề rộng tràn, 13/13 chốt xanh,
+  14/14 đột biến đỏ — và vẫn xấu tới mức không dùng được. Lượt dựng trang chủ đi qua đủ
+  các phép đo rồi mới bị chủ dự án bác: nút hero TRẮNG chữ TRẮNG (rỗng hoàn toàn), mục
+  điều hướng gãy chữ lòi khỏi thanh, tiêu đề chiếm nửa trái còn nửa phải bỏ trống. **Chụp
+  ảnh và NHÌN trước khi báo xong.** Playwright có sẵn (`/opt/node22/lib/node_modules`),
+  ảnh đọc được bằng công cụ Read.
+- **`body{overflow-x:hidden}` biến TRÀN thành CẮT CỤT — và giết luôn phép đo.** Nội dung
+  vượt mép bị xén mất, trang không cuộn ngang, nên `scrollWidth === clientWidth` và mọi
+  phép đo tràn báo ĐẠT. Nút menu ở 390px bị cắt mất trong khi phép đo nói 0/7. Probe phải
+  bắt CẢ phần tử vượt mép mà bị cắt; chỉ bỏ qua khi khối cắt nó rộng ≤2px (kiểu chỉ-đọc-
+  màn-hình), vì đó mới là cắt cố ý.
+- **Một quy tắc cho `a` sẽ thắng mọi lớp nút.** `.lp a{color:inherit}` là (0,1,1), cao hơn
+  `.lp-b-pri` (0,1,0) ⇒ chữ nút thừa hưởng màu khối cha. Bản vá `.lp a:not([class])` còn
+  tệ hơn: `:not([class])` tính như bộ chọn thuộc tính nên thành (0,2,1), thắng cả
+  `.lp-nav a`. Cùng lớp lỗi: `.lp-drawer a` (0,2,1) làm nút xanh trong ngăn kéo có chữ đen.
+  **Mọi thẻ a tự khai màu ở lớp của nó**, đừng đặt màu chung.
+- **Khai `display` đè mất `display:none` của thuộc tính `hidden`.** Ngăn kéo đóng vẫn nằm
+  trong bố cục, chỉ trượt ra ngoài mép bằng `transform` — bấm Tab là đi thẳng vào một menu
+  không nhìn thấy. Luôn thêm `[hidden]{display:none}` cho phần tử có khai `display`.
+- **Chữ HOA cỡ lớn + dấu tiếng Việt = dấu chồng lên dòng trên.** `line-height:1.16` đủ cho
+  chữ thường nhưng không đủ cho `Ồ Ế Ữ`. Tiêu đề hero thì đừng viết hoa; tiêu đề mục viết
+  hoa thì tối thiểu 1.26.
+- **Khối tiêu đề một cột trên màn rộng = lệch tỉ lệ ở MỌI mục.** Tiêu đề bó trong ~20ch nằm
+  nửa trái, nội dung bên dưới trải hết bề rộng. Cho khối tiêu đề chia hai cột (tiêu đề trái,
+  câu dẫn phải) từ 1024px — sửa ở lớp nhịp chung, không sửa từng mục.
 - **Schema runtime phải đọc từ `pg_class` / `pg_policies`, không suy bằng grep migration.**
   `0004_rls.sql` bật RLS và tạo policy qua vòng lặp động cho mọi bảng có `shop_id`; tìm
   `ALTER TABLE <tên>` viết thẳng từng dẫn tới finding CAO sai và suýt sinh migration trùng

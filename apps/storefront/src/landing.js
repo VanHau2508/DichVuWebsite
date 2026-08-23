@@ -55,7 +55,6 @@ const NAV = [
   { href: '#giai-phap', label: 'Giải pháp' },
   { href: '#nganh-hang', label: 'Ngành hàng' },
   { href: '#bang-gia', label: 'Bảng giá' },
-  { href: '#faq', label: 'Hỏi đáp' },
 ];
 
 const STATS = [
@@ -285,7 +284,13 @@ main{display:block}
 .lp h1,.lp h2,.lp h3,.lp h4{color:var(--lp-ink);text-wrap:balance;letter-spacing:-.015em;margin:0}
 .lp p{margin:0;text-wrap:pretty}
 .lp ul{margin:0;padding:0;list-style:none}
-.lp a{color:inherit;text-decoration:none}
+/* KHÔNG đặt màu cho thẻ a ở đây. Hai lần thử đều hỏng, mỗi lần một kiểu:
+   .lp a{color:inherit} có độ ưu tiên (0,1,1), cao hơn mọi lớp nút (0,1,0) ⇒ chữ nút
+   thừa hưởng màu khối cha, trên hero nền tối là chữ TRẮNG trên nút TRẮNG — nút rỗng.
+   .lp a:not([class]) còn tệ hơn: :not([class]) tính như một bộ chọn thuộc tính nên
+   thành (0,2,1), thắng cả .lp-nav a ⇒ mục điều hướng nhận màu chữ thân trang, tức
+   gần như vô hình trên nền tối. Kết luận: MỌI thẻ a phải tự khai màu ở lớp của nó. */
+.lp a{text-decoration:none}
 .lp :focus-visible{outline:3px solid rgba(0,69,255,.5);outline-offset:2px;border-radius:5px}
 .lp-dark :focus-visible{outline-color:rgba(255,255,255,.8)}
 .lp-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
@@ -293,15 +298,30 @@ main{display:block}
 .lp-eb{display:inline-flex;align-items:center;gap:10px;font-size:.8rem;font-weight:800;
        letter-spacing:.1em;text-transform:uppercase;color:var(--lp-blue)}
 .lp-eb::before{content:'';width:22px;height:2px;background:currentColor;border-radius:2px}
-.lp-h2{margin-top:14px;font-size:clamp(1.6rem,1.15rem + 1.9vw,2.85rem);font-weight:800;line-height:1.16;text-transform:uppercase}
+.lp-h2{margin-top:12px;font-size:clamp(1.45rem,1.1rem + 1.5vw,2.4rem);font-weight:800;
+       line-height:1.26;text-transform:uppercase;max-width:24ch}
 .lp-h2 em{font-style:normal;color:var(--lp-blue)}
-.lp-sub{margin-top:16px;font-size:clamp(.97rem,.92rem + .2vw,1.12rem);line-height:1.65;color:var(--lp-mut);max-width:62ch}
-.lp-sec{padding:64px 0}
-@media(min-width:1024px){.lp-sec{padding:104px 0}}
+.lp-sub{margin-top:14px;font-size:clamp(.95rem,.92rem + .15vw,1.05rem);line-height:1.62;color:var(--lp-mut);max-width:56ch}
+.lp-sec{padding:60px 0}
+@media(min-width:1024px){.lp-sec{padding:88px 0}}
+/* Khối tiêu đề mục là MỘT đơn vị nhịp: cùng khoảng cách tới nội dung bên dưới ở mọi mục.
+   Từ 1024px trở lên nó chia HAI CỘT — tiêu đề trái, câu dẫn phải — để khối tiêu đề trải
+   đúng bề rộng của nội dung bên dưới nó. Xếp một cột thì trên màn 1440px tiêu đề chỉ chiếm
+   nửa trái còn nửa phải bỏ trống, trong khi bảng ngay dưới lại trải hết: đó chính là cảm
+   giác "lệch tỉ lệ", và nó lặp ở mọi mục nên phải sửa ở đây, không sửa từng chỗ. */
+.lp-head{margin-bottom:32px}
+@media(min-width:1024px){
+  .lp-head{margin-bottom:48px;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);
+           column-gap:56px;align-items:end}
+  .lp-head .lp-eb{grid-column:1;grid-row:1}
+  .lp-head .lp-h2{grid-column:1;grid-row:2;max-width:20ch}
+  .lp-head .lp-sub{grid-column:2;grid-row:2;margin-top:0;max-width:44ch;padding-bottom:5px}
+}
 
 /* ── Nút ─────────────────────────────────────────────────────────────────── */
 .lp-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;height:48px;
         padding:0 24px;border-radius:var(--lp-pill);font-weight:600;font-size:1rem;
+        white-space:nowrap;flex:none;
         transition:background var(--lp-t),color var(--lp-t),transform 140ms var(--lp-e)}
 .lp-btn svg{width:18px;height:18px;flex:none}
 .lp-b-pri{background:var(--lp-blue);color:#fff}
@@ -327,33 +347,41 @@ main{display:block}
          border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(14px);
          transition:background var(--lp-t),border-color var(--lp-t),box-shadow var(--lp-t)}
 .lp-hdr.solid .lp-pill{background:#fff;border-color:var(--lp-line);box-shadow:var(--lp-sh)}
-.lp-brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:1.06rem;color:#fff;letter-spacing:-.02em}
+.lp-brand{display:flex;align-items:center;gap:9px;flex:none;white-space:nowrap;
+          font-weight:800;font-size:1.05rem;color:#fff;letter-spacing:-.02em}
 .lp-hdr.solid .lp-brand{color:var(--lp-ink)}
 .lp-brand .mk{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;background:var(--lp-blue);color:#fff}
 .lp-brand .mk svg{width:17px;height:17px}
 .lp-nav{display:none}
-@media(min-width:1080px){
+@media(min-width:1180px){
   .lp-nav{display:flex;gap:4px;margin-inline:auto}
-  .lp-nav a{padding:9px 14px;border-radius:var(--lp-pill);font-size:.95rem;font-weight:600;
-            color:rgba(255,255,255,.82);transition:background var(--lp-t),color var(--lp-t)}
+  .lp-nav a{padding:9px 13px;border-radius:var(--lp-pill);font-size:.93rem;font-weight:600;
+            white-space:nowrap;color:rgba(255,255,255,.82);
+            transition:background var(--lp-t),color var(--lp-t)}
   .lp-nav a:hover{background:rgba(255,255,255,.12);color:#fff}
   .lp-hdr.solid .lp-nav a{color:var(--lp-mut)}
   .lp-hdr.solid .lp-nav a:hover{background:var(--lp-b025);color:var(--lp-blue)}
 }
 .lp-hdr-act{display:flex;align-items:center;gap:8px;margin-left:auto}
-@media(min-width:1080px){.lp-hdr-act{margin-left:0}}
+@media(min-width:1180px){.lp-hdr-act{margin-left:0}}
 .lp-login{display:none}
 @media(min-width:720px){
-  .lp-login{display:inline-flex;align-items:center;gap:7px;font-size:.93rem;font-weight:600;
-            padding:0 12px;color:rgba(255,255,255,.82)}
+  .lp-login{display:inline-flex;align-items:center;gap:7px;font-size:.92rem;font-weight:600;
+            padding:0 10px;white-space:nowrap;color:rgba(255,255,255,.82)}
   .lp-login svg{width:17px;height:17px}
   .lp-hdr.solid .lp-login{color:var(--lp-mut)}
 }
-.lp-hdr .lp-btn{height:44px;padding:0 20px;font-size:.95rem}
+/* Dưới 480px, viên thuốc không đủ chỗ cho thương hiệu + nút + nút menu: đo được nút
+   menu bị CẮT CỤT ở mép phải. Không phát hiện được bằng scrollWidth vì body có
+   overflow-x:hidden — tràn bị biến thành cắt, trang không cuộn ngang nên mọi phép đo
+   tràn đều báo ĐẠT. Bỏ nút ở cỡ này; ngăn kéo vẫn mang nó ở vị trí nổi bật, và thanh
+   CTA nổi cũng phủ vai trò đó. */
+.lp-hdr .lp-btn{display:none}
+@media(min-width:480px){.lp-hdr .lp-btn{display:inline-flex;height:44px;padding:0 18px;font-size:.92rem}}
 .lp-burger{display:grid;place-items:center;width:44px;height:44px;border-radius:var(--lp-pill);
            border:1px solid rgba(255,255,255,.24);color:#fff;background:none;cursor:pointer}
 .lp-hdr.solid .lp-burger{border-color:var(--lp-line);color:var(--lp-ink)}
-@media(min-width:1080px){.lp-burger{display:none}}
+@media(min-width:1180px){.lp-burger{display:none}}
 
 .lp-scrim{position:fixed;inset:0;z-index:70;background:rgba(8,11,20,.6);opacity:0;
           transition:opacity var(--lp-t)}
@@ -362,10 +390,14 @@ main{display:block}
            padding:24px 20px calc(24px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:6px;
            transform:translateX(100%);transition:transform 280ms var(--lp-e);overflow-y:auto}
 .lp-drawer.on{transform:none}
+/* Khai display cho .lp-drawer/.lp-scrim ĐÈ MẤT display:none của thuộc tính hidden — ngăn
+   kéo đang đóng vẫn nằm trong bố cục, chỉ trượt ra ngoài mép bằng transform. Hậu quả: bấm
+   Tab từ trang là đi thẳng vào một menu KHÔNG NHÌN THẤY. Phải trả lại display:none. */
+.lp-drawer[hidden],.lp-scrim[hidden]{display:none}
 .lp-drawer .x{align-self:flex-end;width:44px;height:44px;border-radius:var(--lp-pill);display:grid;
               place-items:center;border:1px solid var(--lp-line);background:none;cursor:pointer;margin-bottom:8px}
-.lp-drawer a{padding:13px 12px;border-radius:var(--lp-r);font-weight:600;color:var(--lp-ink)}
-.lp-drawer a:hover{background:var(--lp-b025);color:var(--lp-blue)}
+.lp-drawer a:not(.lp-btn){padding:13px 12px;border-radius:var(--lp-r);font-weight:600;color:var(--lp-ink)}
+.lp-drawer a:not(.lp-btn):hover{background:var(--lp-b025);color:var(--lp-blue)}
 .lp-drawer .lp-btn{margin-top:14px;width:100%}
 
 /* ── HERO ────────────────────────────────────────────────────────────────── */
@@ -377,10 +409,12 @@ main{display:block}
 .lp-slide.on{display:block}
 @media(prefers-reduced-motion:no-preference){.lp-slide.on{animation:lp-in 420ms var(--lp-e) both}}
 @keyframes lp-in{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
-.lp-hero h1{font-size:clamp(1.85rem,1.15rem + 3vw,3.6rem);font-weight:800;line-height:1.13;
-            text-transform:uppercase;color:#fff;max-width:14ch}
-.lp-hero .lead{margin-top:22px;font-size:clamp(1rem,.94rem + .35vw,1.18rem);line-height:1.62;
-               color:rgba(255,255,255,.8);max-width:52ch}
+/* KHÔNG viết hoa: ở cỡ này dấu tiếng Việt (ồ, ế, ữ) chạm vào chân dòng trên, đo được
+   trên chính ảnh chụp. Chữ thường cỡ lớn cũng là kiểu chữ sang hơn. */
+.lp-hero h1{font-size:clamp(1.9rem,1.2rem + 2.6vw,3.35rem);font-weight:800;line-height:1.16;
+            letter-spacing:-.025em;color:#fff;max-width:17ch}
+.lp-hero .lead{margin-top:20px;font-size:clamp(1rem,.94rem + .3vw,1.14rem);line-height:1.6;
+               color:rgba(255,255,255,.76);max-width:50ch}
 .lp-hero .lp-knob{margin-top:30px;width:100%}
 @media(min-width:600px){.lp-hero .lp-knob{width:auto;max-width:360px}}
 .lp-trust{display:flex;flex-wrap:wrap;gap:10px 22px;margin-top:28px}
@@ -431,28 +465,32 @@ main{display:block}
 .lp-pause:hover{background:rgba(255,255,255,.12)}
 
 /* ── Dải cam kết ─────────────────────────────────────────────────────────── */
-.lp-strip{background:var(--lp-navy);color:#fff;padding:36px 0}
+.lp-strip{background:var(--lp-navy);color:#fff;padding:40px 0}
 .lp-strip .g{display:grid;grid-template-columns:1fr 1fr;gap:26px 20px}
 @media(min-width:900px){.lp-strip .g{grid-template-columns:repeat(4,1fr);gap:24px}}
 .lp-stat .n{font-size:clamp(1.5rem,1.1rem + 1.5vw,2.2rem);font-weight:800;color:#fff;line-height:1.1}
-.lp-stat .l{margin-top:6px;font-size:.9rem;line-height:1.5;color:rgba(255,255,255,.62)}
+.lp-stat .l{margin-top:6px;font-size:.88rem;line-height:1.45;color:rgba(255,255,255,.6);
+            min-height:2.9em}
 
 /* ── BẢNG SO SÁNH ────────────────────────────────────────────────────────────
    Bảng THẬT: đọc màn hình cần quan hệ hàng↔cột. Dưới 900px hoá THẺ bằng CSS thuần
    (data-label + ::before) — không cần JS mới đọc được nhãn cột. ── */
 .lp-cmp{background:#fff;background-image:radial-gradient(76% 50% at 50% -6%,var(--lp-b025) 0%,transparent 66%)}
-.lp-cmp-w{margin-top:28px}
-@media(min-width:900px){.lp-cmp-w{margin-top:52px;overflow-x:auto;padding-top:14px}}
+.lp-cmp-w{margin-top:0}
+@media(min-width:900px){.lp-cmp-w{overflow-x:auto;padding-top:14px}}
 .lp-tbl{width:100%;border-collapse:separate;border-spacing:0}
 @media(min-width:900px){.lp-tbl{min-width:840px}}
-.lp-tbl thead th{padding:18px 20px 15px;text-align:left;vertical-align:bottom;font-size:.94rem;
+.lp-tbl thead th{padding:16px 18px 13px;text-align:left;vertical-align:bottom;font-size:.92rem;
                  font-weight:600;line-height:1.4;color:var(--lp-mut)}
-.lp-tbl thead th.crit{width:25%;color:var(--lp-mut2);font-weight:400}
-.lp-tbl tbody th{padding:17px 20px 17px 0;text-align:left;vertical-align:top;font-size:1rem;
-                 font-weight:800;line-height:1.42;color:var(--lp-ink)}
-.lp-tbl tbody td{padding:17px 20px;vertical-align:top;font-size:.94rem;line-height:1.58;color:var(--lp-body)}
+.lp-tbl thead th.crit{width:18%;color:var(--lp-mut2);font-weight:400}
+.lp-tbl tbody th{padding:15px 18px 15px 0;text-align:left;vertical-align:top;font-size:.96rem;
+                 font-weight:800;line-height:1.4;color:var(--lp-ink)}
+.lp-tbl tbody td{padding:15px 18px;vertical-align:top;font-size:.9rem;line-height:1.55;color:var(--lp-body)}
 .lp-tbl tbody th,.lp-tbl tbody td{border-bottom:1px solid var(--lp-soft)}
 .lp-tbl tbody tr:last-child th,.lp-tbl tbody tr:last-child td{border-bottom:0}
+/* Đường kẻ hàng phải chạy qua CẢ cột nổi bật, nếu không bảng gãy làm hai mảnh: bên trái
+   có kẻ, giữa thì không, trông như thẻ dán đè lên bảng chứ không phải một cột của bảng. */
+.lp-tbl tbody td.us{border-bottom-color:var(--lp-b100)}
 /* Cột "chúng tôi" nổi lên như một thẻ chạy dọc bảng: bo góc ở ô đầu/cuối, viền trái–phải
    lặp trên MỌI ô — cách duy nhất giữ liền mạch khi border-collapse:separate. */
 .lp-tbl .us{background:var(--lp-b025);border-left:1px solid var(--lp-b100);border-right:1px solid var(--lp-b100)}
@@ -494,8 +532,8 @@ main{display:block}
    trên luồng dựng hình nên không giật, và không tốn một handler cuộn nào. Cổng an toàn:
    mặc định cột phải ẨN, mỗi mục tự mang khung minh hoạ ngay dưới chữ. ── */
 .lp-prod{background:var(--lp-alt)}
-.lp-grid{display:grid;gap:0;margin-top:36px;align-items:start}
-.lp-item{padding:40px 0;border-top:1px solid var(--lp-line)}
+.lp-grid{display:grid;gap:0;align-items:start}
+.lp-item{padding:34px 0;border-top:1px solid var(--lp-line)}
 .lp-item:first-child{border-top:0;padding-top:0}
 .lp-kick{display:flex;align-items:center;gap:9px;margin:0 0 12px;font-size:.76rem;font-weight:800;
          letter-spacing:.08em;text-transform:uppercase;color:var(--lp-blue)}
@@ -509,21 +547,24 @@ main{display:block}
 .lp-item li svg{flex:none;width:17px;height:17px;margin-top:4px;color:var(--lp-ok)}
 .lp-vin{margin-top:20px}
 .lp-stick{display:none}
-.lp-stage2{display:grid;min-width:0}
-.lp-frame{grid-area:1/1;min-width:0}
+.lp-stage2{display:grid;min-width:0;min-height:380px}
+.lp-frame{grid-area:1/1;min-width:0;display:grid;align-content:start}
 @supports (timeline-scope:--a) and (animation-timeline:view()){
   @media (prefers-reduced-motion:no-preference) and (min-width:1100px){
     .lp-grid{grid-template-columns:minmax(0,1fr) minmax(0,1.04fr);gap:60px;
              timeline-scope:--p1,--p2,--p3,--p4,--p5}
-    .lp-item{min-height:74vh;display:flex;flex-direction:column;justify-content:center;padding:30px 0}
-    .lp-item:first-child{padding-top:30px}
+    .lp-item{min-height:54vh;display:flex;flex-direction:column;justify-content:center;padding:22px 0}
+    .lp-item:first-child{padding-top:26px}
     .lp-item:nth-child(1){view-timeline-name:--p1}
     .lp-item:nth-child(2){view-timeline-name:--p2}
     .lp-item:nth-child(3){view-timeline-name:--p3}
     .lp-item:nth-child(4){view-timeline-name:--p4}
     .lp-item:nth-child(5){view-timeline-name:--p5}
     .lp-vin{display:none}
-    .lp-stick{display:block;position:sticky;top:96px}
+    /* Dán DÍNH CẢ MỘT KHUNG NHÌN rồi canh giữa nội dung bên trong: khung xem luôn nằm
+       ngang tầm mắt và ngang hàng với phần chữ đang được canh giữa ở cột trái. Dán theo
+       top cố định thì khung xem treo lên đỉnh trong khi chữ ở giữa — lệch hẳn. */
+    .lp-stick{position:sticky;top:0;height:100vh;display:grid;align-content:center;padding:80px 0 24px}
     .lp-frame{opacity:0;animation:lp-fr both;animation-timing-function:linear;animation-range:cover 0% cover 100%}
     .lp-frame:nth-child(1){animation-timeline:--p1}
     .lp-frame:nth-child(2){animation-timeline:--p2}
@@ -563,8 +604,9 @@ main{display:block}
         border:1px solid var(--lp-b100)}
 .lp-num b{display:block;font-size:1.5rem;font-weight:800;color:var(--lp-ink);line-height:1.15}
 .lp-num span{font-size:.8rem;color:var(--lp-mut2)}
-.lp-bars{display:flex;align-items:flex-end;gap:6px;height:62px;margin-bottom:12px}
-.lp-bars i{flex:1;border-radius:5px 5px 0 0;background:var(--lp-b100)}
+.lp-bars{display:flex;align-items:flex-end;gap:6px;height:64px;margin-bottom:12px;padding-bottom:7px;
+         border-bottom:2px solid var(--lp-soft)}
+.lp-bars i{flex:1;min-height:6px;border-radius:4px 4px 0 0;background:var(--lp-b100)}
 .lp-bars i.on{background:var(--lp-blue)}
 .lp-credit{display:flex;align-items:center;gap:10px;padding:10px 12px;margin-bottom:8px;
            border:1px solid var(--lp-ok-bg);border-radius:var(--lp-r);background:var(--lp-ok-bg);min-width:0}
@@ -616,7 +658,7 @@ main{display:block}
 .lp-flag{display:grid;gap:28px;padding:44px 0;border-top:1px solid rgba(255,255,255,.1)}
 .lp-flag:first-of-type{border-top:0}
 @media(min-width:960px){
-  .lp-flag{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:56px;align-items:center;padding:56px 0}
+  .lp-flag{grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:52px;align-items:center;padding:52px 0}
   .lp-flag.rev .lp-flag-v{order:-1}
 }
 .lp-flag>*{min-width:0}
@@ -647,7 +689,7 @@ main{display:block}
 
 /* ── BẢNG GIÁ ────────────────────────────────────────────────────────────── */
 .lp-price{background:var(--lp-alt)}
-.lp-plans{display:grid;gap:20px;margin-top:44px;grid-template-columns:repeat(3,minmax(0,1fr));align-items:start}
+.lp-plans{display:grid;gap:20px;grid-template-columns:repeat(3,minmax(0,1fr));align-items:start}
 @media(max-width:1100px){.lp-plans{grid-template-columns:1fr;max-width:460px;margin-inline:auto}}
 .lp-plan{position:relative;min-width:0;display:flex;flex-direction:column;padding:30px 26px;
          border:1px solid var(--lp-line);border-radius:var(--lp-r4);background:#fff;
@@ -655,6 +697,7 @@ main{display:block}
 .lp-plan:hover{transform:translateY(-4px);box-shadow:var(--lp-sh2)}
 .lp-plan.hot{background:var(--lp-navy);border-color:var(--lp-navy);color:#fff}
 .lp-plan.hot .tag{color:rgba(255,255,255,.6)}
+.lp-plan.hot .pr span{color:rgba(255,255,255,.6)}
 .lp-plan.hot h3,.lp-plan.hot .pr{color:#fff}
 .lp-plan.hot li{color:rgba(255,255,255,.8)}
 .lp-plan.hot li svg{color:#7FE0A5}
@@ -664,19 +707,19 @@ main{display:block}
 .lp-plan h3{margin-top:6px;font-size:1.5rem;font-weight:800}
 .lp-plan .pr{margin-top:14px;font-size:2rem;font-weight:800;color:var(--lp-ink);line-height:1.1;
              font-variant-numeric:tabular-nums}
-.lp-plan .pr span{font-size:.9rem;font-weight:400;color:var(--lp-mut2)}
+.lp-plan .pr span{margin-left:5px;font-size:.88rem;font-weight:400;color:var(--lp-mut2)}
 .lp-plan ul{display:grid;gap:11px;margin:22px 0 26px}
 .lp-plan li{display:flex;gap:10px;align-items:flex-start;font-size:.93rem;color:var(--lp-mut)}
 .lp-plan li svg{flex:none;width:17px;height:17px;margin-top:4px;color:var(--lp-ok)}
 .lp-plan .lp-btn{margin-top:auto;width:100%}
-.lp-plan.hot .lp-b-gh{border-color:rgba(255,255,255,.34);color:#fff}
+.lp-plan.hot .lp-b-gh{background:transparent;border-color:rgba(255,255,255,.34);color:#fff}
 .lp-plan.hot .lp-b-gh:hover{background:rgba(255,255,255,.12)}
 .lp-plan-note{margin-top:24px;text-align:center;font-size:.9rem;color:var(--lp-mut)}
 .lp-plan-note a{color:var(--lp-blue);font-weight:600;text-decoration:underline;text-underline-offset:3px}
 
 /* ── HỎI ĐÁP ─────────────────────────────────────────────────────────────── */
 .lp-faq{background:#fff}
-.lp-faq-l{margin-top:40px;display:grid;gap:12px;max-width:880px}
+.lp-faq-l{display:grid;gap:12px;max-width:900px;margin-inline:auto}
 .lp-faq details{border:1px solid var(--lp-line);border-radius:var(--lp-r2);background:#fff;overflow:hidden}
 .lp-faq details[open]{border-color:var(--lp-b100);background:var(--lp-b025)}
 .lp-faq summary{padding:18px 20px;font-weight:600;font-size:1rem;color:var(--lp-ink);cursor:pointer;
@@ -693,8 +736,8 @@ main{display:block}
 @media(min-width:1024px){.lp-final{padding:96px 0}}
 .lp-box{padding:48px 26px;border-radius:var(--lp-r4);background:var(--lp-hero);color:#fff;text-align:center}
 @media(min-width:768px){.lp-box{padding:68px 56px}}
-.lp-box h2{color:#fff;font-size:clamp(1.5rem,1.1rem + 1.8vw,2.5rem);font-weight:800;line-height:1.18;
-           text-transform:uppercase;margin-inline:auto;max-width:18ch}
+.lp-box h2{color:#fff;font-size:clamp(1.35rem,1.05rem + 1.5vw,2.2rem);font-weight:800;line-height:1.3;
+           text-transform:uppercase;margin-inline:auto;max-width:26ch}
 .lp-box p{margin-top:16px;color:rgba(255,255,255,.76);margin-inline:auto;max-width:52ch}
 .lp-box-r{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;margin-top:30px}
 .lp-box-c{margin-top:24px;font-size:.86rem;color:rgba(255,255,255,.6)}
@@ -702,7 +745,7 @@ main{display:block}
 .lp-ft{background:var(--lp-deep);color:rgba(255,255,255,.66);padding:56px 0 28px}
 .lp-ft-g{display:grid;gap:34px}
 @media(min-width:760px){.lp-ft-g{grid-template-columns:1.5fr 1fr 1fr}}
-@media(min-width:1080px){.lp-ft-g{grid-template-columns:1.7fr repeat(4,1fr);gap:32px}}
+@media(min-width:1180px){.lp-ft-g{grid-template-columns:1.7fr repeat(4,1fr);gap:32px}}
 .lp-ft .lp-brand{color:#fff;margin-bottom:14px}
 .lp-ft-ab p{font-size:.9rem;line-height:1.65;max-width:38ch}
 .lp-ft-ab .lp-btn{margin-top:18px;height:44px;font-size:.93rem}
@@ -712,6 +755,7 @@ main{display:block}
 .lp-ft-c svg{width:15px;height:15px;flex:none}
 .lp-ft-b{display:flex;flex-wrap:wrap;gap:10px 20px;justify-content:space-between;margin-top:38px;
          padding-top:22px;border-top:1px solid rgba(255,255,255,.1);font-size:.84rem}
+.lp-ft-b a{color:rgba(255,255,255,.66)}
 .lp-ft-b a:hover{color:#fff}
 
 /* ── THANH CTA NỔI ───────────────────────────────────────────────────────── */
@@ -1026,9 +1070,9 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
         <span class="lp-cell"><span class="lp-mk ${mark}" aria-hidden="true">${MK[mark]}</span><span><span class="lp-sr">${MK_SR[mark]} — </span>${html}</span></span>
       </td>`;
   const cmp = `<section class="lp-sec lp-cmp" id="loi-ich" aria-labelledby="lpCmpH"><div class="ct">
-  <p class="lp-eb rv">So sánh thẳng</p>
+  <div class="lp-head"><p class="lp-eb rv">So sánh thẳng</p>
   <h2 class="lp-h2 rv" id="lpCmpH">Cùng một đơn hàng, <em>ai giữ lại bao nhiêu</em></h2>
-  <p class="lp-sub rv">Ba cách bán hàng online phổ biến nhất hiện nay, đặt cạnh nhau theo đúng những thứ ảnh hưởng tới túi tiền và quyền kiểm soát của shop. Chúng tôi để cả ô mình thua.</p>
+  <p class="lp-sub rv">Ba cách bán hàng online phổ biến nhất hiện nay, đặt cạnh nhau theo đúng những thứ ảnh hưởng tới túi tiền và quyền kiểm soát của shop. Chúng tôi để cả ô mình thua.</p></div>
   <div class="lp-cmp-w rv">
     <table class="lp-tbl">
       <caption class="lp-sr">So sánh ${esc(brand)} với nền tảng website phổ thông và sàn thương mại điện tử</caption>
@@ -1054,9 +1098,9 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
     <div class="lp-vin">${VIS[x.vis]}</div>
   </article>`;
   const prod = `<section class="lp-sec lp-prod" id="san-pham" aria-labelledby="lpProdH"><div class="ct">
-  <p class="lp-eb rv">Sản phẩm</p>
+  <div class="lp-head"><p class="lp-eb rv">Sản phẩm</p>
   <h2 class="lp-h2 rv" id="lpProdH">Một vòng qua thứ bạn <em>dùng mỗi ngày</em></h2>
-  <p class="lp-sub rv">Cuộn xuống — khung bên phải đổi theo đúng phần bạn đang đọc.</p>
+  <p class="lp-sub rv">Cuộn xuống — khung bên phải đổi theo đúng phần bạn đang đọc.</p></div>
   <div class="lp-grid">
     <div>${PRODUCTS.map(prodItem).join('')}</div>
     <div class="lp-stick" aria-hidden="true"><div class="lp-stage2">${PRODUCTS.map((x) => `<div class="lp-frame">${VIS[x.vis]}</div>`).join('')}</div></div>
@@ -1064,9 +1108,9 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
 </div></section>`;
 
   const grow = `<section class="lp-sec lp-grow lp-dark" id="giai-phap" aria-labelledby="lpGrowH"><div class="ct">
-  <p class="lp-eb rv">Giải pháp tăng trưởng</p>
+  <div class="lp-head"><p class="lp-eb rv">Giải pháp tăng trưởng</p>
   <h2 class="lp-h2 rv" id="lpGrowH">Làm thật những việc <em>khó nhất</em> của bán hàng online</h2>
-  <p class="lp-sub rv">Bốn chỗ mà người bán mất tiền nhiều nhất mà thường không nhìn thấy. Đây là cách chúng tôi chặn từ gốc.</p>
+  <p class="lp-sub rv">Bốn chỗ mà người bán mất tiền nhiều nhất mà thường không nhìn thấy. Đây là cách chúng tôi chặn từ gốc.</p></div>
   ${FLAGS.map((f, k) => `<div class="lp-flag${k % 2 ? ' rev' : ''}">
     <div class="rv"><p class="lp-kick2">${f.icon}${esc(f.kick)}</p><h3>${esc(f.h)}</h3><p class="d">${esc(f.d)}</p>
       <ul>${f.bullets.map((b) => `<li>${I.check}<span>${esc(b)}</span></li>`).join('')}</ul></div>
@@ -1079,17 +1123,17 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
   const mq = (items, rev) => { const set = items.map(chip).join('');
     return `<div class="lp-mq${rev ? ' rev' : ''}"><div class="lp-mq-in"><div class="lp-mq-set">${set}</div><div class="lp-mq-set clone" aria-hidden="true">${set}</div></div></div>`; };
   const ind = `<section class="lp-ind" id="nganh-hang" aria-labelledby="lpIndH"><div class="ct">
-  <p class="lp-eb rv">Ngành hàng</p>
-  <h2 class="lp-h2 rv" id="lpIndH">Kinh doanh gì cũng <em>dựng được cửa hàng hợp gu</em></h2>
+  <div class="lp-head"><p class="lp-eb rv">Ngành hàng</p>
+  <h2 class="lp-h2 rv" id="lpIndH">Kinh doanh gì cũng <em>dựng được cửa hàng hợp gu</em></h2></div>
 </div>
 ${mq(INDUSTRIES.slice(0, half), false)}
 ${mq(INDUSTRIES.slice(half), true)}
 </section>`;
 
   const price = `<section class="lp-sec lp-price" id="bang-gia" aria-labelledby="lpPriceH"><div class="ct">
-  <p class="lp-eb rv">Bảng giá</p>
+  <div class="lp-head"><p class="lp-eb rv">Bảng giá</p>
   <h2 class="lp-h2 rv" id="lpPriceH">Đơn giản, minh bạch, <em>không phí ẩn</em></h2>
-  <p class="lp-sub rv">Mọi gói đều bắt đầu bằng 14 ngày dùng thử miễn phí — không cần thẻ.</p>
+  <p class="lp-sub rv">Mọi gói đều bắt đầu bằng 14 ngày dùng thử miễn phí — không cần thẻ.</p></div>
   <div class="lp-plans">
     ${PLANS.map((p) => `<div class="lp-plan${p.hot ? ' hot' : ''} rv">
       ${p.hot ? '<div class="lp-hot-b">Phổ biến nhất</div>' : ''}
@@ -1104,8 +1148,8 @@ ${mq(INDUSTRIES.slice(half), true)}
 </div></section>`;
 
   const faq = `<section class="lp-sec lp-faq" id="faq" aria-labelledby="lpFaqH"><div class="ct">
-  <p class="lp-eb rv">Hỏi đáp</p>
-  <h2 class="lp-h2 rv" id="lpFaqH">Câu hỏi thường gặp</h2>
+  <div class="lp-head"><p class="lp-eb rv">Hỏi đáp</p>
+  <h2 class="lp-h2 rv" id="lpFaqH">Câu hỏi thường gặp</h2></div>
   <div class="lp-faq-l">${FAQS.map((f) => `<details class="rv"><summary>${esc(f.q)}</summary><div class="ans">${esc(f.a)}</div></details>`).join('')}</div>
 </div></section>`;
 

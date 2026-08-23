@@ -28,4 +28,3 @@ export async function resolveIntegrationWebhook(publicId) {
   );
   return result.rows[0] ?? null;
 }
-

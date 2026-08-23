@@ -292,6 +292,15 @@ Những lỗi này **không nằm ở sản phẩm mà ở cách kiểm chứng*
 - **Khối tiêu đề một cột trên màn rộng = lệch tỉ lệ ở MỌI mục.** Tiêu đề bó trong ~20ch nằm
   nửa trái, nội dung bên dưới trải hết bề rộng. Cho khối tiêu đề chia hai cột (tiêu đề trái,
   câu dẫn phải) từ 1024px — sửa ở lớp nhịp chung, không sửa từng mục.
+- **Cùng độ ưu tiên thì quy tắc viết SAU thắng — kể cả khi quy tắc trước nằm trong
+  `@media` hẹp hơn.** Lệnh `@media(max-width:1023px){.lp-float{display:none}}` đặt phía
+  TRÊN phần khai `.lp-float{display:flex}` bị đè im lặng: đọc CSS thì tưởng đã ẩn, chụp
+  ảnh vẫn thấy. `@media` KHÔNG cộng thêm độ ưu tiên nào.
+- **"Gọn trong một khung hình" phải đo bằng ĐÁY CỦA TỪNG PHẦN, không bằng chiều cao
+  section.** Section có thể đúng `100svh` mà nội dung bên trong vẫn tràn ra ngoài đáy —
+  cụm điều khiển và khung minh hoạ rơi xuống dưới mép. Đo `getBoundingClientRect().bottom`
+  của từng phần rồi so với `innerHeight`, ở nhiều CHIỀU CAO khung nhìn chứ không chỉ nhiều
+  bề rộng: 1366×700 và 1920×760 mới là chỗ vỡ, 1440×900 thì không.
 - **Schema runtime phải đọc từ `pg_class` / `pg_policies`, không suy bằng grep migration.**
   `0004_rls.sql` bật RLS và tạo policy qua vòng lặp động cho mọi bảng có `shop_id`; tìm
   `ALTER TABLE <tên>` viết thẳng từng dẫn tới finding CAO sai và suýt sinh migration trùng

@@ -100,31 +100,31 @@ const CMP = [
 
 const PRODUCTS = [
   {
-    n: '01', icon: I.chart, kick: 'Tổng quan', vis: 'dash',
+    n: '01', icon: I.chart, kick: 'Tổng quan', key: 'tong-quan', vis: 'dash',
     h: 'Mở máy là biết hôm nay bán được bao nhiêu',
     d: 'Doanh thu, đơn mới, việc cần xử lý — gom về một màn hình, không phải mở bốn chỗ để cộng tay.',
     bullets: ['Doanh thu hôm nay, tuần này, tháng này — theo giờ Việt Nam', 'Việc cần xử lý xếp trước: đơn chờ xác nhận, hàng sắp hết', 'Sản phẩm bán chạy để biết nên nhập thêm gì'],
   },
   {
-    n: '02', icon: I.truck, kick: 'Đơn hàng', vis: 'orders',
+    n: '02', icon: I.truck, kick: 'Đơn hàng', key: 'don-hang', vis: 'orders',
     h: 'Đơn về là chạy — từ chốt tới giao',
     d: 'Xác nhận, đóng gói, đẩy sang GHN/GHTK bằng tài khoản của chính bạn. Khách tự tra cứu bằng mã đơn.',
     bullets: ['Tách vận đơn, giao một phần, đổi trả — đủ nghiệp vụ thật', 'Đối soát COD với hãng ship, lệch là thấy ngay', 'Sửa đơn có ghi vết: ai sửa gì, lúc nào'],
   },
   {
-    n: '03', icon: I.box, kick: 'Kho hàng', vis: 'stock',
+    n: '03', icon: I.box, kick: 'Kho hàng', key: 'kho-hang', vis: 'stock',
     h: 'Tồn kho chuẩn tới từng biến thể',
     d: 'Màu, size, phiên bản — mỗi biến thể một số tồn. Trừ kho ngay lúc khách đặt, không bao giờ bán lố.',
     bullets: ['Tồn khả dụng = tồn thật − đang giữ − đệm an toàn bạn đặt', 'Nhập hàng, giá vốn bình quân tự tính, báo cáo lãi lỗ thật', 'Cảnh báo sắp hết trước khi hết, không phải sau'],
   },
   {
-    n: '04', icon: I.wallet, kick: 'Tiền về', vis: 'money',
+    n: '04', icon: I.wallet, kick: 'Tiền về', key: 'tien-ve', vis: 'money',
     h: 'Tiền vào thẳng tài khoản của bạn',
     d: 'Khách quét VietQR là tiền về ngân hàng của bạn. Hệ thống tự khớp tiền với đơn, không cần bạn dò tay.',
     bullets: ['Khớp đúng TÀI KHOẢN NHẬN, không chỉ khớp mã đơn', 'Khách bấm trả hai lần cũng không cộng hai lần', 'Trả thiếu thì vào hàng đợi đối soát, không tự ghi "đã trả"'],
   },
   {
-    n: '05', icon: I.palette, kick: 'Cửa hàng', vis: 'shop',
+    n: '05', icon: I.palette, kick: 'Cửa hàng', key: 'cua-hang', vis: 'shop',
     h: 'Cửa hàng đẹp, và chạy được cả khi mạng yếu',
     d: 'Đổi banner, màu, logo ngay trong trang quản trị. Trang bán hàng dựng sẵn ở máy chủ nên mở là thấy.',
     bullets: ['Trang bán và trang đặt hàng chạy được cả khi không có JavaScript', 'Chuẩn SEO: sitemap, dữ liệu có cấu trúc, tự lên Google', 'Tên miền riêng của bạn, HTTPS tự cấp và tự gia hạn'],
@@ -306,7 +306,14 @@ main{display:block}
 .lp-head{margin-bottom:32px}
 /* Biến thể CĂN GIỮA: cho mục chỉ có tiêu đề, không có câu dẫn. Phải huỷ luôn lưới hai
    cột ở mốc 1024px bên dưới, nếu không tiêu đề vẫn bị ghim vào cột trái. */
+/* Biến thể căn giữa: mọi khối con phải tự canh giữa. text-align:center chỉ canh CHỮ bên
+   trong khối, còn bản thân khối vẫn dính mép trái vì nó có max-width — đó là lý do câu dẫn
+   nằm lệch hẳn sang trái dưới một tiêu đề đã căn giữa. Và bỏ gạch đầu dòng của nhãn: gạch
+   nằm bên trái một nhãn căn giữa thì trông như thừa ra một nét. */
 .lp-head-mid{text-align:center}
+.lp-head-mid .lp-eb{justify-content:center}
+.lp-head-mid .lp-eb::before{display:none}
+.lp-head-mid .lp-sub{margin-inline:auto}
 /* Tiêu đề mục căn giữa lấy MỘT màu xanh cho cả khối, không tô hai tông như tiêu đề căn
    trái: căn giữa mà đổi màu giữa chừng thì mắt đọc thành hai câu rời. */
 .lp-head-mid .lp-h2{margin-inline:auto;max-width:22ch;color:var(--lp-blue)}
@@ -598,57 +605,81 @@ main{display:block}
   .lp-tbl tbody td:last-child{border-bottom:0 !important;padding-bottom:0}
 }
 
-/* ── KHỐI SẢN PHẨM: cột trái cuộn, cột phải DÁN DÍNH và đổi theo ─────────────
-   Đồng bộ hai cột bằng CSS, KHÔNG bằng JS — kể cả khi trang đã có JS. Lý do: nó chạy
-   trên luồng dựng hình nên không giật, và không tốn một handler cuộn nào. Cổng an toàn:
-   mặc định cột phải ẨN, mỗi mục tự mang khung minh hoạ ngay dưới chữ. ── */
+/* ── KHỐI SẢN PHẨM — nút bên trái, khe hình + nội dung bên phải ───────────────
+   Bản trước dùng cột phải DÁN DÍNH đổi theo cuộn: đo ra thì đúng 5/5, nhưng nhìn thì
+   mỗi màn hình một khoảng trống lớn và hai cột không bao giờ ngang hàng. Nay là bộ TAB:
+   nút bên trái, khung bên phải, tự chạy lần lượt.
+
+   CỔNG AN TOÀN: quy tắc ẩn panel nằm sau html.lpjs — cờ do chính JS gắn. Không JS thì
+   MỌI panel hiện đủ (xếp dọc dưới danh sách nút), nên không mất một chữ nào. ── */
 .lp-prod{background:var(--lp-alt)}
-.lp-grid{display:grid;gap:0;align-items:start}
-.lp-item{padding:34px 0;border-top:1px solid var(--lp-line)}
-.lp-item:first-child{border-top:0;padding-top:0}
-.lp-kick{display:flex;align-items:center;gap:9px;margin:0 0 12px;font-size:.76rem;font-weight:800;
-         letter-spacing:.08em;text-transform:uppercase;color:var(--lp-blue)}
-.lp-kick .n{display:grid;place-items:center;width:26px;height:26px;border-radius:8px;
-            background:var(--lp-b050);font-variant-numeric:tabular-nums;letter-spacing:0}
-.lp-kick svg{width:17px;height:17px}
-.lp-item h3{margin:0 0 10px;font-size:clamp(1.2rem,1rem + 1.1vw,1.75rem);font-weight:800;line-height:1.25}
-.lp-item .d{margin:0 0 15px;color:var(--lp-mut)}
-.lp-item ul{display:grid;gap:9px}
-.lp-item li{display:flex;gap:10px;align-items:flex-start;font-size:.94rem;color:var(--lp-mut)}
-.lp-item li svg{flex:none;width:17px;height:17px;margin-top:4px;color:var(--lp-ok)}
-.lp-vin{margin-top:20px}
-.lp-stick{display:none}
-.lp-stage2{display:grid;min-width:0;min-height:380px}
-.lp-frame{grid-area:1/1;min-width:0;display:grid;align-content:start}
-@supports (timeline-scope:--a) and (animation-timeline:view()){
-  @media (prefers-reduced-motion:no-preference) and (min-width:1100px){
-    .lp-grid{grid-template-columns:minmax(0,1fr) minmax(0,1.04fr);gap:60px;
-             timeline-scope:--p1,--p2,--p3,--p4,--p5}
-    .lp-item{min-height:54vh;display:flex;flex-direction:column;justify-content:center;padding:22px 0}
-    .lp-item:first-child{padding-top:26px}
-    .lp-item:nth-child(1){view-timeline-name:--p1}
-    .lp-item:nth-child(2){view-timeline-name:--p2}
-    .lp-item:nth-child(3){view-timeline-name:--p3}
-    .lp-item:nth-child(4){view-timeline-name:--p4}
-    .lp-item:nth-child(5){view-timeline-name:--p5}
-    .lp-vin{display:none}
-    /* Dán DÍNH CẢ MỘT KHUNG NHÌN rồi canh giữa nội dung bên trong: khung xem luôn nằm
-       ngang tầm mắt và ngang hàng với phần chữ đang được canh giữa ở cột trái. Dán theo
-       top cố định thì khung xem treo lên đỉnh trong khi chữ ở giữa — lệch hẳn. */
-    .lp-stick{position:sticky;top:0;height:100vh;display:grid;align-content:center;padding:80px 0 24px}
-    .lp-frame{opacity:0;animation:lp-fr both;animation-timing-function:linear;animation-range:cover 0% cover 100%}
-    .lp-frame:nth-child(1){animation-timeline:--p1}
-    .lp-frame:nth-child(2){animation-timeline:--p2}
-    .lp-frame:nth-child(3){animation-timeline:--p3}
-    .lp-frame:nth-child(4){animation-timeline:--p4}
-    .lp-frame:nth-child(5){animation-timeline:--p5}
-    /* Mốc theo hình học THẬT: mục cao 74vh, khung nhìn 900 ⇒ dải cover dài 1566px, hai mục
-       cách nhau 666px = 42,5% dải. Lúc một mục ở CHÍNH GIỮA (50%) thì mục kề ở 7,5% và 92,5%
-       — phải tắt hẳn; lúc cuộn GIỮA hai mục (71% và 28,5%) thì cả hai quanh 50% để giao mượt. */
-    @keyframes lp-fr{0%,10%{opacity:0;transform:translateY(14px)}45%,55%{opacity:1;transform:none}
-                     90%,100%{opacity:0;transform:translateY(-14px)}}
-  }
+.lp-showcase{display:grid;gap:20px}
+@media(min-width:1024px){
+  /* Tỉ lệ 5:7 — cột nút đủ rộng cho hai dòng mô tả mà không nuốt chỗ của khung xem. */
+  /* stretch + space-between: cột nút CAO BẰNG cột khung xem, khoảng cách giữa các nút
+     tự dãn cho vừa. Để align-items:start thì cột trái hụt ~150px so với cột phải và
+     dưới cùng bên trái trống một mảng — đúng thứ nhìn ra ngay là lệch tỉ lệ. */
+  .lp-showcase{grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:24px;align-items:stretch}
+  .lp-tabs{align-content:space-between}
 }
+.lp-tabs{display:grid;gap:12px;min-width:0}
+
+.lp-tab{display:flex;gap:16px;align-items:flex-start;width:100%;padding:20px;text-align:left;
+        border:1px solid var(--lp-line);border-radius:var(--lp-r3);background:#fff;cursor:pointer;
+        transition:border-color var(--lp-t),box-shadow var(--lp-t),transform 160ms var(--lp-e)}
+.lp-tab:hover{border-color:var(--lp-b100)}
+.lp-tab.on{border-color:transparent;box-shadow:var(--lp-sh2);transform:translateX(4px)}
+.lp-tab .ic{flex:none;display:grid;place-items:center;width:52px;height:52px;border-radius:var(--lp-r2);
+            background:var(--lp-b025);color:var(--lp-blue);transition:background var(--lp-t),color var(--lp-t)}
+.lp-tab .ic svg{width:24px;height:24px}
+.lp-tab.on .ic{background:var(--lp-blue);color:#fff}
+.lp-tab .tx{display:block;min-width:0}
+.lp-tab .t{display:block;font-size:1.05rem;font-weight:800;letter-spacing:.02em;text-transform:uppercase;
+           color:var(--lp-mut);transition:color var(--lp-t)}
+.lp-tab.on .t{color:var(--lp-blue)}
+.lp-tab .h{display:block;margin-top:5px;font-size:.98rem;font-weight:600;line-height:1.4;color:var(--lp-ink)}
+.lp-tab .b{display:none}
+.lp-tab.on .b{display:block;margin-top:10px}
+.lp-tab .b span{display:block;position:relative;padding-left:15px;font-size:.88rem;line-height:1.5;
+                color:var(--lp-mut)}
+.lp-tab .b span + span{margin-top:3px}
+.lp-tab .b span::before{content:'';position:absolute;left:2px;top:.62em;width:5px;height:5px;
+                        border-radius:50%;background:var(--lp-b100)}
+
+.lp-panes{position:relative;min-width:0;display:grid;gap:16px}
+.lp-panel{min-width:0;border-radius:var(--lp-r4);background:var(--lp-navy);color:#fff;overflow:hidden;
+          box-shadow:var(--lp-sh2)}
+html.lpjs .lp-panel:not(.on){display:none}
+@media(prefers-reduced-motion:no-preference){
+  html.lpjs .lp-panel.on{animation:lp-pan 380ms var(--lp-e) both}
+}
+@keyframes lp-pan{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+/* Khe hình: TỈ LỆ CỐ ĐỊNH nên đổi mục không làm khung nhảy chiều cao — ảnh của chủ dự án
+   và khung minh hoạ CSS dùng chung một khung, muốn thay ảnh không phải sửa gì thêm. */
+.lp-pv{position:relative;aspect-ratio:16/10;background:linear-gradient(160deg,#12203f,#0A1024);
+       display:grid;place-items:center;padding:22px;overflow:hidden}
+.lp-pv-img{width:100%;height:100%;object-fit:cover;object-position:top center;border-radius:var(--lp-r2)}
+.lp-pv-mock{width:100%;max-width:460px}
+.lp-pv-mock .lp-vis{box-shadow:0 24px 60px -34px rgba(0,0,0,.85)}
+
+.lp-pd{padding:24px 24px 28px}
+@media(min-width:768px){.lp-pd{padding:28px 32px 32px}}
+.lp-pd .k{font-size:.78rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--lp-blue-br)}
+.lp-pd h3{margin-top:9px;font-size:clamp(1.2rem,1rem + 1vw,1.65rem);font-weight:800;line-height:1.28;color:#fff}
+.lp-pd .d{margin-top:11px;font-size:.97rem;line-height:1.62;color:rgba(255,255,255,.72);max-width:58ch}
+.lp-pd ul{display:grid;gap:9px;margin-top:18px}
+.lp-pd li{display:flex;gap:11px;align-items:flex-start;font-size:.93rem;line-height:1.55;color:rgba(255,255,255,.8)}
+.lp-pd li svg{flex:none;width:17px;height:17px;margin-top:3px;color:#7FE0A5}
+
+.lp-pnav{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 4px}
+html:not(.lpjs) .lp-pnav{display:none}
+.lp-pcount{font-size:1rem;font-weight:600;color:var(--lp-mut2);font-variant-numeric:tabular-nums}
+.lp-pcount b{font-size:1.5rem;font-weight:800;color:var(--lp-ink)}
+.lp-pdots{display:flex;gap:7px}
+.lp-pdots span{width:7px;height:7px;border-radius:var(--lp-pill);background:var(--lp-b100);
+               transition:width var(--lp-t) var(--lp-e),background var(--lp-t)}
+.lp-pdots span.on{width:24px;background:var(--lp-blue)}
 
 /* ── Khung minh hoạ dùng chung (sản phẩm + giải pháp) ────────────────────── */
 .lp-vis{border:1px solid var(--lp-line);border-radius:var(--lp-r3);background:#fff;
@@ -933,7 +964,7 @@ const JS = `(function(){
      lại thì hành vi không còn phụ thuộc việc có khung hình được vẽ hay không. Đo được:
      trong môi trường không vẽ đều, rAF chỉ chạy 2 lần trong CẢ MỘT GIÂY — thanh điều
      hướng kẹt nguyên trạng thái cũ, và cùng lớp lỗi đó từng làm chữ kẹt opacity:0. */
-  function beat(){ rvGuard(); rvScan(); onScroll(); }
+  function beat(){ rvGuard(); rvScan(); onScroll(); spTrongTam(); }
   addEventListener('scroll', beat, { passive: true });
   addEventListener('resize', beat, { passive: true });
   addEventListener('load', beat);
@@ -999,6 +1030,60 @@ const JS = `(function(){
     hero.addEventListener('focusout', function(e){ if (!hero.contains(e.relatedTarget)) chay(); });
   }
   chay();
+
+  /* ── BỘ TAB SẢN PHẨM: tự chạy lần lượt ───────────────────────────────────── */
+  var tabs = [].slice.call(D.querySelectorAll('.lp-tab')),
+      panes = [].slice.call(D.querySelectorAll('.lp-panel')),
+      dots2 = [].slice.call(D.querySelectorAll('.lp-pdots span')),
+      spCur = D.getElementById('spCur'), spWrap = D.querySelector('.lp-showcase'),
+      sp = 0, spTimer = null, spDung = false;
+  function spDen(k){
+    sp = (k + tabs.length) % tabs.length;
+    tabs.forEach(function(t, i){
+      var on = i === sp;
+      t.classList.toggle('on', on);
+      t.setAttribute('aria-selected', String(on));
+      t.tabIndex = on ? 0 : -1;               // bộ tab chỉ chiếm MỘT nấc Tab, đúng chuẩn
+    });
+    panes.forEach(function(pn, i){ pn.classList.toggle('on', i === sp); });
+    dots2.forEach(function(d, i){ d.classList.toggle('on', i === sp); });
+    if (spCur) spCur.textContent = String(sp + 1).padStart(2, '0');
+  }
+  function spChay(){
+    if (!spTimer && !spDung && !RM && tabs.length > 1) {
+      spTimer = setInterval(function(){ spDen(sp + 1); }, 5200);
+    }
+  }
+  function spNgung(){ if (spTimer) { clearInterval(spTimer); spTimer = null; } }
+  tabs.forEach(function(t, i){
+    t.addEventListener('click', function(){ spDen(i); spDung = true; spNgung(); });
+    /* Bấm tay là DỪNG HẲN tự chạy: người ta vừa chọn thứ muốn đọc, mà 5 giây sau nó tự
+       nhảy sang mục khác thì đó là giật mất trang khỏi tay người đọc. */
+    t.addEventListener('keydown', function(e){
+      var d = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1
+            : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1
+            : e.key === 'Home' ? -sp : e.key === 'End' ? tabs.length - 1 - sp : 0;
+      if (!d) return;
+      e.preventDefault();
+      spDung = true; spNgung();
+      spDen(sp + d);
+      tabs[sp].focus();
+    });
+  });
+  if (spWrap) {
+    spWrap.addEventListener('mouseenter', spNgung);
+    spWrap.addEventListener('mouseleave', spChay);
+    spWrap.addEventListener('focusin', spNgung);
+    spWrap.addEventListener('focusout', function(e){ if (!spWrap.contains(e.relatedTarget)) spChay(); });
+  }
+  /* Chỉ chạy khi khối đang ở trong tầm mắt: tự chạy lúc người ta còn ở hero thì tới nơi
+     đã nhảy sang mục 4, và đó là thứ trông như lỗi chứ không như hiệu ứng. */
+  function spTrongTam(){
+    if (!spWrap) return;
+    var r = spWrap.getBoundingClientRect();
+    if (r.top < innerHeight * 0.85 && r.bottom > innerHeight * 0.15) spChay();
+    else spNgung();
+  }
 
   /* ── THANH CTA NỔI ───────────────────────────────────────────────────────── */
   var dk = D.getElementById('lpDock'), rp = D.getElementById('lpReopen'),
@@ -1166,20 +1251,52 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
 
   // Hai bản dựng từ CÙNG một nguồn (PRODUCTS + VIS): bản trong dòng cho màn hẹp và trình
   // duyệt chưa hỗ trợ, bản dán dính cho màn rộng. Chép tay ra hai chỗ thì chúng sẽ trôi.
-  const prodItem = (x) => `<article class="lp-item">
-    <p class="lp-kick"><span class="n">${esc(x.n)}</span>${x.icon}${esc(x.kick)}</p>
-    <h3>${esc(x.h)}</h3>
-    <p class="d">${esc(x.d)}</p>
-    <ul>${x.bullets.map((b) => `<li>${I.check}<span>${esc(b)}</span></li>`).join('')}</ul>
-    <div class="lp-vin">${VIS[x.vis]}</div>
-  </article>`;
+  // Mỗi mục sản phẩm có KHE ẢNH riêng: thả sp-<khoá>.webp (hoặc .png/.jpg/.avif/.svg)
+  // vào apps/storefront/src/assets/ là ảnh thay khung minh hoạ dựng bằng CSS. Chưa có tệp
+  // thì dùng khung CSS — không nhánh nào để lại ô trống chờ ảnh.
+  const spHinh = (x) => {
+    const f = assetSrc('sp-' + x.key);
+    return f
+      ? `<img class="lp-pv-img" src="${esc(f)}" alt="" loading="lazy" decoding="async">`
+      : `<div class="lp-pv-mock">${VIS[x.vis]}</div>`;
+  };
+
+  // NÚT bên trái — bộ tab THẬT (role=tab), không phải thẻ trang trí: đi được bằng bàn
+  // phím, và trình đọc màn hình biết mục nào đang mở.
+  const prodTab = (x, k) => `<button class="lp-tab${k === 0 ? ' on' : ''}" type="button" role="tab" id="spT${k}" aria-controls="spP${k}" aria-selected="${k === 0}" tabindex="${k === 0 ? 0 : -1}">
+    <span class="ic">${x.icon}</span>
+    <span class="tx">
+      <span class="t">${esc(x.kick)}</span>
+      <span class="h">${esc(x.h)}</span>
+      <span class="b">${x.bullets.slice(0, 3).map((b) => `<span>${esc(b)}</span>`).join('')}</span>
+    </span>
+  </button>`;
+
+  // KHUNG bên phải: ảnh ở trên, nội dung của đúng mục đang mở ở dưới.
+  const prodPanel = (x, k) => `<div class="lp-panel${k === 0 ? ' on' : ''}" id="spP${k}" role="tabpanel" aria-labelledby="spT${k}">
+    <div class="lp-pv">${spHinh(x)}</div>
+    <div class="lp-pd">
+      <p class="k">${esc(x.kick)}</p>
+      <h3>${esc(x.h)}</h3>
+      <p class="d">${esc(x.d)}</p>
+      <ul>${x.bullets.map((b) => `<li>${I.check}<span>${esc(b)}</span></li>`).join('')}</ul>
+    </div>
+  </div>`;
   const prod = `<section class="lp-sec lp-prod" id="san-pham" aria-labelledby="lpProdH"><div class="ct">
-  <div class="lp-head"><p class="lp-eb rv">Sản phẩm</p>
-  <h2 class="lp-h2 rv" id="lpProdH">Một vòng qua thứ bạn <em>dùng mỗi ngày</em></h2>
-  <p class="lp-sub rv">Cuộn xuống — khung bên phải đổi theo đúng phần bạn đang đọc.</p></div>
-  <div class="lp-grid">
-    <div>${PRODUCTS.map(prodItem).join('')}</div>
-    <div class="lp-stick" aria-hidden="true"><div class="lp-stage2">${PRODUCTS.map((x) => `<div class="lp-frame">${VIS[x.vis]}</div>`).join('')}</div></div>
+  <div class="lp-head lp-head-mid rv"><p class="lp-eb">Sản phẩm</p>
+  <h2 class="lp-h2" id="lpProdH">Thứ bạn <em>dùng mỗi ngày</em></h2>
+  <p class="lp-sub">Các tính năng chính của nền tảng bán hàng.</p></div>
+  <div class="lp-showcase rv">
+    <div class="lp-tabs" role="tablist" aria-label="Chọn nhóm tính năng" aria-orientation="vertical">
+      ${PRODUCTS.map(prodTab).join('')}
+    </div>
+    <div class="lp-panes">
+      ${PRODUCTS.map(prodPanel).join('')}
+      <div class="lp-pnav">
+        <p class="lp-pcount"><b id="spCur">01</b> / ${String(PRODUCTS.length).padStart(2, '0')}</p>
+        <div class="lp-pdots" aria-hidden="true">${PRODUCTS.map((x, k) => `<span${k === 0 ? ' class="on"' : ''}></span>`).join('')}</div>
+      </div>
+    </div>
   </div>
 </div></section>`;
 

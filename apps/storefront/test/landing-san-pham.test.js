@@ -44,7 +44,10 @@ test('khối sản phẩm: nút bên trái, khe hình + nội dung bên phải',
 
 test('mỗi mục sản phẩm có khe ảnh riêng', () => {
   assert.match(SRC, /const f = assetSrc\('sp-' \+ x\.key\)/, 'thiếu khe ảnh theo khoá của từng mục');
-  assert.equal((SRC.match(/key: '/g) ?? []).length, 5, 'cả năm mục phải có khoá tra ảnh');
+  // Đếm trong ĐÚNG mảng PRODUCTS, không đếm cả file: FLAGS cũng có khoá tra ảnh riêng,
+  // đếm toàn văn bản thì con số trôi mỗi lần thêm khe ảnh ở mục khác.
+  const khoiSP = SRC.slice(SRC.indexOf('const PRODUCTS = ['), SRC.indexOf('const INDUSTRIES = ['));
+  assert.equal((khoiSP.match(/key: '/g) ?? []).length, 5, 'cả năm mục sản phẩm phải có khoá tra ảnh');
   // Chưa có tệp thì dùng khung minh hoạ CSS — KHÔNG để lại ô trống chờ ảnh.
   assert.match(SRC, /: `<div class="lp-pv-mock">\$\{VIS\[x\.vis\]\}<\/div>`/,
     'thiếu nhánh dự phòng khi chưa có tệp ảnh');
@@ -348,4 +351,28 @@ test('nút thừa hưởng phông của trang', () => {
   // cắn với thẻ a: quy tắc chung thắng mọi lớp nút và nuốt mất font-size riêng của chúng.
   assert.doesNotMatch(LUAT, /\.lp button\{font:inherit\}/,
     'không được nâng độ ưu tiên của reset phông');
+});
+
+test('mục Giải pháp: tiêu đề căn giữa, nền sáng, khe ảnh cho từng khối', () => {
+  assert.match(SRC, /<div class="lp-head lp-head-mid rv"><p class="lp-eb">Giải pháp tăng trưởng<\/p>/,
+    'tiêu đề mục Giải pháp phải căn giữa như các mục trên');
+  // Nền sáng, không còn navy. Ba mục sáng liền nhau dễ phẳng nên mục này lấy tông xanh
+  // rất nhạt để tự tách khỏi mục sản phẩm và mục ngành hàng.
+  assert.match(LUAT, /\.lp-grow\{background:var\(--lp-b025\)/, 'mục Giải pháp phải dùng nền sáng');
+  assert.doesNotMatch(LUAT, /\.lp-grow\{background:var\(--lp-navy\)/, 'không còn nền tối');
+  assert.doesNotMatch(SRC, /class="lp-sec lp-grow lp-dark"/, 'phải bỏ lớp nền tối khỏi section');
+  // Khe ảnh cho từng khối, và nhánh dự phòng khi chưa có tệp.
+  assert.match(SRC, /const t = assetSrc\('gp-' \+ f\.key\)/, 'thiếu khe ảnh theo khoá của từng khối');
+  assert.match(SRC, /: VIS\[f\.vis\];/, 'chưa có tệp thì phải dùng khung minh hoạ CSS, không để ô trống');
+  // FLAGS nằm SAU PRODUCTS trong file — cắt nhầm chiều thì lát cắt rỗng và phép đếm ra 0
+  // mà vẫn trông như một khẳng định thật.
+  const khoiGP = SRC.slice(SRC.indexOf('const FLAGS = ['), SRC.indexOf('const PLANS = ['));
+  assert.equal((khoiGP.match(/key: '/g) ?? []).length, 4, 'cả bốn khối giải pháp phải có khoá tra ảnh');
+  // Ảnh chèn vào dùng CHUNG khung với khung minh hoạ CSS, để thay được từng cái một mà
+  // bốn khối vẫn đồng bộ.
+  assert.match(LUAT, /\.lp-flag-img\{[^}]*border-radius:var\(--lp-r3\);[\s\S]{0,40}box-shadow:var\(--lp-sh2\)/,
+    'ảnh chèn phải cùng bo góc và đổ bóng với khung minh hoạ');
+  // Hiệu ứng lướt hai bên phải giữ nguyên: cả hai cột đều mang cờ .rv.
+  assert.match(SRC, /<div class="rv"><p class="lp-kick2">/, 'cột chữ phải giữ hiệu ứng lướt');
+  assert.match(SRC, /<div class="lp-flag-v rv">\$\{gpHinh\(f\)\}<\/div>/, 'cột hình phải giữ hiệu ứng lướt');
 });

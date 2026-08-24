@@ -635,8 +635,10 @@ main{display:block}
     mask-image:linear-gradient(180deg,transparent 0,#000 9%,#000 91%,transparent 100%)}
   html.lpjs .lp-track{position:absolute;inset:0 0 auto 0;
                       transition:transform 520ms var(--lp-e);will-change:transform}
-  html.lpjs .lp-tab{opacity:.5;transition:opacity var(--lp-t),border-color var(--lp-t),box-shadow var(--lp-t),transform 160ms var(--lp-e)}
-  html.lpjs .lp-tab.on{opacity:1}
+  /* KHÔNG làm mờ nút chưa mở: chữ mờ 50% thì đọc mệt và trông như bị vô hiệu hoá. Phân
+     biệt bằng thứ khác đã đủ rõ — nút đang mở nổi lên có bóng, ô biểu tượng xanh đặc,
+     tên mục màu xanh; nút chưa mở phẳng, ô biểu tượng nhạt, tên mục màu chữ phụ. */
+  html.lpjs .lp-tab{transition:border-color var(--lp-t),box-shadow var(--lp-t),transform 160ms var(--lp-e)}
 }
 .lp-tabs{min-width:0}
 .lp-track{display:grid;gap:12px}
@@ -916,7 +918,6 @@ html.lpjs .rv.in{opacity:1;transform:none;transition:opacity 520ms var(--lp-e),t
 @media(prefers-reduced-motion:reduce){
   html.lpjs .rv{opacity:1;transform:none}
   html.lpjs .lp-track{transition:none}
-  html.lpjs .lp-tab{opacity:1}
   .lp-hdr{transition:none}
 }
 `;
@@ -1059,7 +1060,7 @@ const JS = `(function(){
       spCur = D.getElementById('spCur'), spWrap = D.querySelector('.lp-showcase'),
       spBox = D.querySelector('.lp-tabs'), spRay = D.querySelector('.lp-track'),
       spPanes = D.querySelector('.lp-panes'),
-      sp = 0, spTimer = null, spDung = false;
+      sp = 0, spTimer = null;
 
   /* THANG MÁY cột trái.
      · Chiều cao khung cắt = chiều cao ĐÚNG của cột phải, đo lại mỗi lần đổi mục và mỗi
@@ -1098,29 +1099,37 @@ const JS = `(function(){
     setTimeout(spThang, 60);
   }
   function spChay(){
-    if (!spTimer && !spDung && !RM && tabs.length > 1) {
+    if (!spTimer && !RM && tabs.length > 1) {
       spTimer = setInterval(function(){ spDen(sp + 1); }, 5200);
     }
   }
   function spNgung(){ if (spTimer) { clearInterval(spTimer); spTimer = null; } }
   tabs.forEach(function(t, i){
-    t.addEventListener('click', function(){ spDen(i); spDung = true; spNgung(); });
-    /* Bấm tay là DỪNG HẲN tự chạy: người ta vừa chọn thứ muốn đọc, mà 5 giây sau nó tự
-       nhảy sang mục khác thì đó là giật mất trang khỏi tay người đọc. */
+    /* Bấm tay chỉ ĐẶT LẠI đồng hồ, không dừng hẳn. Bản trước dừng vĩnh viễn: bấm thử
+       một cái là băng đứng im mãi, và đó đúng là thứ trông như hỏng. Đặt lại đồng hồ vẫn
+       cho người đọc trọn một nhịp với mục vừa chọn, mà băng không chết. */
+    t.addEventListener('click', function(){ spDen(i); spNgung(); spChay(); });
     t.addEventListener('keydown', function(e){
       var d = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1
             : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1
             : e.key === 'Home' ? -sp : e.key === 'End' ? tabs.length - 1 - sp : 0;
       if (!d) return;
       e.preventDefault();
-      spDung = true; spNgung();
+      spNgung();
       spDen(sp + d);
       tabs[sp].focus();
     });
   });
+  /* Dừng khi trỏ vào CỘT NÚT, không phải cả khối. Gác cả khối thì người đọc để chuột
+     trên khung bên phải mà đọc là băng đứng im suốt — nhìn y như hỏng, và đó chính là
+     điều đã xảy ra. Trỏ vào cột nút thì khác: lúc đó người ta đang định bấm.
+     Tiêu điểm bàn phím vẫn gác cả khối: người dùng bàn phím không có cách nào khác để
+     giữ băng đứng yên trong lúc đọc. */
+  if (spBox) {
+    spBox.addEventListener('mouseenter', spNgung);
+    spBox.addEventListener('mouseleave', spChay);
+  }
   if (spWrap) {
-    spWrap.addEventListener('mouseenter', spNgung);
-    spWrap.addEventListener('mouseleave', spChay);
     spWrap.addEventListener('focusin', spNgung);
     spWrap.addEventListener('focusout', function(e){ if (!spWrap.contains(e.relatedTarget)) spChay(); });
   }

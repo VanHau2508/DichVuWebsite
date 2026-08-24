@@ -71,6 +71,10 @@ test('cột nút TRƯỢT như thang máy, hai cột cao bằng nhau', () => {
   // lần đổi mục, và đó chính là thứ làm "tỉ lệ không khớp".
   assert.match(LUAT, /\.lp-tab \.b\{display:block;margin-top:10px\}/,
     'mọi nút phải hiện gạch đầu dòng để chiều cao đồng đều');
+  // Không làm mờ nút chưa mở: chữ mờ 50% đọc mệt và trông như bị vô hiệu hoá. Phân biệt
+  // bằng bóng đổ, ô biểu tượng và màu tên mục là đủ.
+  assert.doesNotMatch(LUAT, /html\.lpjs \.lp-tab\{opacity:/,
+    'không được làm mờ nút chưa mở');
 });
 
 test('thang máy đưa nút đang mở về GIỮA khung, kẹp ở hai đầu', () => {
@@ -91,13 +95,19 @@ test('thang máy đưa nút đang mở về GIỮA khung, kẹp ở hai đầu',
 });
 
 test('bộ tab sản phẩm tự chạy nhưng nhường quyền cho người đọc', () => {
-  assert.match(SRC, /function spChay\(\)\{[\s\S]*?!spDung && !RM && tabs\.length > 1/,
+  assert.match(SRC, /function spChay\(\)\{[\s\S]*?!spTimer && !RM && tabs\.length > 1/,
     'không được tự chạy khi chỉ có một mục hoặc khi người dùng chọn giảm chuyển động');
-  // Bấm tay là DỪNG HẲN: vừa chọn thứ muốn đọc mà 5 giây sau nó tự nhảy đi thì là giật
-  // trang khỏi tay người đọc.
-  assert.match(SRC, /t\.addEventListener\('click', function\(\)\{ spDen\(i\); spDung = true; spNgung\(\); \}\)/,
-    'bấm tay phải dừng hẳn tự chạy');
-  assert.match(SRC, /spWrap\.addEventListener\('mouseenter', spNgung\)/, 'thiếu dừng khi trỏ vào');
+  // Bấm tay chỉ ĐẶT LẠI đồng hồ. Bản trước dừng VĨNH VIỄN: bấm thử một cái là băng đứng
+  // im mãi — chủ dự án gặp đúng chuyện đó và báo "chưa có sự chuyển động tự động".
+  assert.match(SRC, /t\.addEventListener\('click', function\(\)\{ spDen\(i\); spNgung\(\); spChay\(\); \}\)/,
+    'bấm tay chỉ được đặt lại đồng hồ, không được dừng hẳn');
+  assert.doesNotMatch(SRC, /spDung/, 'không còn cờ dừng-vĩnh-viễn nào được phép tồn tại');
+  // Dừng khi trỏ vào CỘT NÚT, không phải cả khối: gác cả khối thì để chuột trên khung
+  // bên phải mà đọc là băng đứng im suốt, nhìn y như hỏng.
+  assert.match(SRC, /spBox\.addEventListener\('mouseenter', spNgung\)/, 'thiếu dừng khi trỏ vào cột nút');
+  assert.match(SRC, /spBox\.addEventListener\('mouseleave', spChay\)/, 'thiếu chạy lại khi rời cột nút');
+  assert.doesNotMatch(SRC, /spWrap\.addEventListener\('mouseenter'/,
+    'không được gác chuột trên CẢ khối — đọc khung bên phải là băng chết');
   assert.match(SRC, /spWrap\.addEventListener\('focusin', spNgung\)/, 'thiếu dừng khi có tiêu điểm');
   // Chỉ chạy khi khối trong tầm mắt: chạy từ lúc người ta còn ở hero thì tới nơi đã nhảy
   // sang mục 4 — trông như lỗi chứ không như hiệu ứng.

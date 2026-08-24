@@ -176,7 +176,7 @@ test('trang DÙNG ĐƯỢC khi không có JS', () => {
 test('lớp tăng cường không phụ thuộc khung hình được vẽ', () => {
   // requestAnimationFrame chỉ chạy 2 lần trong CẢ MỘT GIÂY ở môi trường không vẽ đều
   // (đo được). Bọc handler cuộn trong rAF thì thanh điều hướng kẹt trạng thái cũ.
-  assert.match(SRC, /function beat\(\)\{ rvGuard\(\); rvScan\(\); onScroll\(\);/,
+  assert.match(SRC, /function beat\(\)\{ rvGuard\(\); rvScan\(\); rvXQuet\(\); onScroll\(\);/,
     'handler cuộn phải gọi thẳng, không bọc requestAnimationFrame');
   assert.doesNotMatch(SRC, /requestAnimationFrame\(onScroll\)/,
     'không được đưa onScroll qua requestAnimationFrame');
@@ -372,7 +372,48 @@ test('mục Giải pháp: tiêu đề căn giữa, nền sáng, khe ảnh cho t�
   // bốn khối vẫn đồng bộ.
   assert.match(LUAT, /\.lp-flag-img\{[^}]*border-radius:var\(--lp-r3\);[\s\S]{0,40}box-shadow:var\(--lp-sh2\)/,
     'ảnh chèn phải cùng bo góc và đổ bóng với khung minh hoạ');
-  // Hiệu ứng lướt hai bên phải giữ nguyên: cả hai cột đều mang cờ .rv.
-  assert.match(SRC, /<div class="rv"><p class="lp-kick2">/, 'cột chữ phải giữ hiệu ứng lướt');
-  assert.match(SRC, /<div class="lp-flag-v rv">\$\{gpHinh\(f\)\}<\/div>/, 'cột hình phải giữ hiệu ứng lướt');
+  // Hiệu ứng lướt: cả hai cột đều mang cờ .rv-x (lướt ngang hai chiều, xem chốt riêng).
+  assert.match(SRC, /<div class="rv-x \$\{dao \? 'rv-r' : 'rv-l'\}"><p class="lp-kick2">/,
+    'cột chữ phải mang cờ lướt ngang');
+  assert.match(SRC, /<div class="lp-flag-v rv-x \$\{dao \? 'rv-l' : 'rv-r'\}">\$\{gpHinh\(f\)\}<\/div>/,
+    'cột hình phải mang cờ lướt ngang, ngược bên với cột chữ');
+});
+
+test('mục Giải pháp lướt NGANG và ĐI RỒI VỀ', () => {
+  // Chủ dự án: trái vào từ trái, phải vào từ phải, và cuộn ngược lên thì lướt trở RA.
+  // Đo bằng trình duyệt trên hàng đầu:
+  //   chưa tới      trái x=-56 mờ=0   | phải x=+56 mờ=0
+  //   cuộn xuống    trái x=0   mờ=1   | phải x=0   mờ=1
+  //   cuộn ngược lên trái x=-56 mờ=0  | phải x=+56 mờ=0
+  //   cuộn xuống lại trái x=0  mờ=1   | phải x=0   mờ=1
+  assert.match(LUAT, /html\.lpjs \.rv-l\{transform:translateX\(calc\(-1 \* clamp\(/, 'cột trái phải lướt vào từ trái');
+  assert.match(LUAT, /html\.lpjs \.rv-r\{transform:translateX\(clamp\(/, 'cột phải phải lướt vào từ phải');
+  // Quãng lướt phải LUÔN nhỏ hơn lề khung chứa (clamp(20px,4.4vw,56px)). Đặt cứng 56px
+  // thì ở khung 1024px lề chỉ 45px và trang tràn 1020/1009 — đúng một cỡ, hai cỡ hai bên
+  // đều sạch nên rất dễ lọt nếu chỉ đo 360 và 1440.
+  assert.match(LUAT, /clamp\(16px,3\.2vw,44px\)/, 'quãng lướt phải co theo bề rộng, nhỏ hơn lề khung chứa');
+  // Màn hẹp: lướt DỌC. Hai cột xếp chồng nên "vào từ trái/phải" mất nghĩa, và trạng thái
+  // ẩn đỗ ngoài mép phải làm tràn 351/345 ở khung 360px.
+  assert.match(LUAT, /@media\(max-width:959px\)\{[\s\S]*?html\.lpjs \.rv-l,html\.lpjs \.rv-r\{transform:translateY\(22px\)\}/,
+    'dưới 960px phải lướt dọc, không lướt ngang');
+  // Transition khai ở TRẠNG THÁI GỐC, không phải ở .in: khai ở .in thì lượt đi RA biến
+  // mất tức thì, tức chỉ có nửa hiệu ứng.
+  assert.match(LUAT, /html\.lpjs \.rv-x\{opacity:0;transition:opacity 640ms/,
+    'transition phải khai ở trạng thái gốc để lượt đi ra cũng có chuyển động');
+  assert.doesNotMatch(LUAT, /html\.lpjs \.rv-x\.in\{[^}]*transition:/,
+    'không được khai transition ở .in — lượt đi ra sẽ mất chuyển động');
+  // ĐI RỒI VỀ: bộ quét KHÔNG được lọc phần tử ra khỏi danh sách như .rv làm.
+  assert.match(SRC, /rvX\[i\]\.classList\.toggle\('in', trong\);/,
+    'phải đặt lại cờ mỗi lượt quét, không phải thêm một lần rồi thôi');
+  assert.doesNotMatch(SRC, /rvX = rvX\.filter/, 'không được lọc .rv-x ra khỏi danh sách');
+  assert.match(SRC, /function beat\(\)\{ rvGuard\(\); rvScan\(\); rvXQuet\(\);/,
+    'bộ quét ngang phải chạy trong vòng cuộn');
+  // Hướng lướt bám VỊ TRÍ THẤY ĐƯỢC: hàng lẻ đảo bên bằng order, nếu bám thứ tự HTML thì
+  // cột bên trái sẽ vào từ bên phải — hai cột bay ngang qua nhau.
+  assert.match(SRC, /const dao = k % 2 === 1;/, 'phải biết hàng nào đảo bên');
+  // Lưới an toàn phải tính cả .rv-x, nếu không nó gỡ cờ lpjs khi trang chỉ còn .rv-x.
+  assert.match(SRC, /rvDone === 0 && \(rvs\.length \|\| rvX\.length\)/,
+    'lưới an toàn phải tính cả phần tử lướt ngang');
+  assert.match(LUAT, /html\.lpjs \.rv,html\.lpjs \.rv-x\{opacity:1;transform:none;transition:none\}/,
+    'giảm chuyển động thì cả hai loại đều hiện thẳng');
 });

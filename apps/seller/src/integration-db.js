@@ -23,7 +23,7 @@ export async function withIntegrationTenant(shopId, fn) {
 export async function resolveIntegrationWebhook(publicId) {
   if (!integrationDb) return null;
   const result = await integrationDb.query(
-    `SELECT integration_id, shop_id, provider, credential_ciphertext
+    `SELECT integration_id, shop_id, provider, credential_ciphertext, generation
        FROM resolve_integration_webhook($1)`, [publicId],
   );
   return result.rows[0] ?? null;

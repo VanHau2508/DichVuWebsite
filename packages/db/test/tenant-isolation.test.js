@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import {
   rw,
   integration,
+  expiry,
   owner,
   withTenant,
   withIntegrationTenant,
@@ -197,31 +198,47 @@ describe('CONNECTOR POS — cùng external id vẫn cô lập theo shop', () => 
   let ia, ib, wa, wb;
 
   before(async () => {
+    await owner.query(
+      `INSERT INTO inventory_levels (shop_id, variant_id, on_hand, reserved)
+       VALUES ($1,$2,10,0), ($3,$4,20,0)`,
+      [A.id, A.variantId, B.id, B.variantId],
+    );
     ia = (await owner.query(
       `INSERT INTO shop_integrations
-         (shop_id, provider, status, inventory_authority, credential_ciphertext, retailer)
-       VALUES ($1, 'kiotviet', 'active', 'external_master', 'cipher-a', 'retailer-a')
-       RETURNING id, webhook_public_id`, [A.id],
+         (shop_id, provider, status, inventory_authority, credential_ciphertext, retailer,
+          webhook_public_id, external_branch_ref, reconciled_at)
+       VALUES ($1, 'kiotviet', 'active', 'external_master', 'cipher-a', 'retailer-a',
+               $2, 'branch-a', now() - interval '10 minutes')
+       RETURNING id, webhook_public_id, generation`, [A.id, randomUUID()],
     )).rows[0];
     ib = (await owner.query(
       `INSERT INTO shop_integrations
-         (shop_id, provider, status, inventory_authority, credential_ciphertext, retailer)
-       VALUES ($1, 'kiotviet', 'active', 'external_master', 'cipher-b', 'retailer-b')
-       RETURNING id, webhook_public_id`, [B.id],
+         (shop_id, provider, status, inventory_authority, credential_ciphertext, retailer,
+          webhook_public_id, external_branch_ref, reconciled_at)
+       VALUES ($1, 'kiotviet', 'active', 'external_master', 'cipher-b', 'retailer-b',
+               $2, 'branch-b', now() - interval '10 minutes')
+       RETURNING id, webhook_public_id, generation`, [B.id, randomUUID()],
     )).rows[0];
     for (const [shop, connector, variant] of [[A, ia, A.variantId], [B, ib, B.variantId]]) {
       const webhook = await owner.query(
         `INSERT INTO integration_webhook_inbox
-           (shop_id, integration_id, provider_event_id, event_type, payload_hash, payload)
-         VALUES ($1,$2,'evt-chung','stock.update','hash','{}') RETURNING id`, [shop.id, connector.id],
+           (shop_id, integration_id, generation, provider_event_id, event_type, payload_hash, payload)
+         VALUES ($1,$2,$3,'evt-chung','stock.update','hash','{}') RETURNING id`,
+        [shop.id, connector.id, connector.generation],
       );
       if (shop.id === A.id) wa = webhook.rows[0].id;
       else wb = webhook.rows[0].id;
-      await owner.query(
-        `INSERT INTO integration_entity_refs
-           (shop_id, integration_id, entity_type, external_id, local_id, mapping_status)
-         VALUES ($1,$2,'variant','external-chung',$3,'mapped')`, [shop.id, connector.id, variant],
-      );
+      await withIntegrationTenant(shop.id, async (c) => {
+        await c.query(`SELECT set_config('app.integration_id', $1, true)`, [connector.id]);
+        await c.query(`SELECT set_config('app.integration_generation', $1, true)`, [String(connector.generation)]);
+        await c.query(
+          `INSERT INTO integration_entity_refs
+             (shop_id, integration_id, entity_type, external_id, local_id, mapping_status,
+              inventory_synced_at, inventory_generation)
+           VALUES (current_shop_id(),$1,'variant','external-chung',$2,'mapped',now(),$3)`,
+          [connector.id, variant, connector.generation],
+        );
+      });
       await owner.query(
         `INSERT INTO integration_sync_discrepancies
            (shop_id, integration_id, kind, dedupe_key, message)
@@ -256,10 +273,110 @@ describe('CONNECTOR POS — cùng external id vẫn cô lập theo shop', () => 
     assert.equal(a.rowCount, 1);
     assert.equal(a.rows[0].shop_id, A.id);
     assert.equal(a.rows[0].credential_ciphertext, 'cipher-a');
+    assert.equal(Number(a.rows[0].generation), Number(ia.generation));
     const none = await integration.query(`SELECT * FROM resolve_integration_webhook($1)`, [randomUUID()]);
     assert.equal(none.rowCount, 0);
     const direct = await integration.query(`SELECT id FROM shop_integrations`);
     assert.equal(direct.rowCount, 0, 'ngoài tenant context phải fail-closed');
+  });
+
+  test('app_rw không sửa on_hand của external_master; đúng connector + generation mới được ghi', async () => {
+    const blocked = await sqlstateOf(() => withTenant(A.id, (c) => c.query(
+      `UPDATE inventory_levels SET on_hand = on_hand + 1 WHERE variant_id = $1`, [A.variantId],
+    )));
+    assert.equal(blocked, 'PIV01');
+
+    const reservation = await withTenant(A.id, (c) => c.query(
+      `UPDATE inventory_levels SET reserved = reserved + 1 WHERE variant_id = $1`, [A.variantId],
+    ));
+    assert.equal(reservation.rowCount, 1, 'external_master chỉ khoá tồn vật lý, không khoá reservation checkout');
+
+    const stale = await sqlstateOf(() => withIntegrationTenant(A.id, async (c) => {
+      await c.query(`SELECT set_config('app.integration_id', $1, true)`, [ia.id]);
+      await c.query(`SELECT set_config('app.integration_generation', $1, true)`, [String(Number(ia.generation) + 1)]);
+      await c.query(`UPDATE inventory_levels SET on_hand = 11 WHERE variant_id = $1`, [A.variantId]);
+    }));
+    assert.equal(stale, 'PIV01', 'job generation cũ/sai không được ghi bản chiếu tồn');
+
+    const changed = await withIntegrationTenant(A.id, async (c) => {
+      await c.query(`SELECT set_config('app.integration_id', $1, true)`, [ia.id]);
+      await c.query(`SELECT set_config('app.integration_generation', $1, true)`, [String(ia.generation)]);
+      return c.query(`UPDATE inventory_levels SET on_hand = 11 WHERE variant_id = $1`, [A.variantId]);
+    });
+    assert.equal(changed.rowCount, 1);
+    const { rows } = await owner.query(
+      `SELECT shop_id, on_hand, reserved FROM inventory_levels
+        WHERE variant_id = ANY($1::uuid[]) ORDER BY shop_id`, [[A.variantId, B.variantId]],
+    );
+    assert.equal(Number(rows.find((r) => r.shop_id === A.id).on_hand), 11);
+    assert.equal(Number(rows.find((r) => r.shop_id === A.id).reserved), 1);
+    assert.equal(Number(rows.find((r) => r.shop_id === B.id).on_hand), 20, 'shop B phải nguyên vẹn');
+  });
+
+  test('đơn website đã gửi chỉ được app_integration cập nhật như bản chiếu', async () => {
+    await withIntegrationTenant(A.id, (c) => c.query(
+      `UPDATE orders
+          SET integration_id = $2, integration_generation = $3,
+              external_ref = 'kv-web-a', sync_status = 'synced'
+        WHERE id = $1`, [A.orderId, ia.id, ia.generation],
+    ));
+    const orderBlocked = await sqlstateOf(() => withTenant(A.id, (c) => c.query(
+      `UPDATE orders SET note = 'sửa riêng local' WHERE id = $1`, [A.orderId],
+    )));
+    assert.equal(orderBlocked, 'PIO01');
+    const lineBlocked = await sqlstateOf(() => withTenant(A.id, (c) => c.query(
+      `UPDATE order_lines SET title_snapshot = 'sửa riêng local' WHERE order_id = $1`, [A.orderId],
+    )));
+    assert.equal(lineBlocked, 'PIO01');
+
+    const observed = await withIntegrationTenant(A.id, (c) => c.query(
+      `UPDATE orders SET status = 'confirmed' WHERE id = $1`, [A.orderId],
+    ));
+    assert.equal(observed.rowCount, 1, 'connector phải cập nhật được trạng thái provider đã quan sát');
+
+    // app_expiry chỉ được tách liên kết khách khi ẩn danh; không được lợi dụng cùng
+    // ngoại lệ đó để gán đơn A sang hồ sơ khách thuộc shop B.
+    const { rows: [foreignCustomer] } = await owner.query(
+      `INSERT INTO customers (shop_id, full_name, phone) VALUES ($1, 'Khách B', '0900000001') RETURNING id`, [B.id],
+    );
+    const crossCustomer = await sqlstateOf(() => expiry.query(
+      `UPDATE orders
+          SET customer_name = '(đã ẩn danh)', customer_phone = NULL, customer_email = NULL,
+              shipping_address = NULL, client_ip_hash = NULL, anonymized_at = now(), customer_id = $2
+        WHERE id = $1`, [A.orderId, foreignCustomer.id],
+    ));
+    assert.equal(crossCustomer, 'PIO01', 'app_expiry không được gán customer_id tùy ý khi scrub PII');
+    assert.equal((await owner.query(`SELECT customer_id FROM orders WHERE id = $1`, [A.orderId])).rows[0].customer_id, null);
+    await owner.query(`DELETE FROM customers WHERE id = $1`, [foreignCustomer.id]);
+
+    const anonymized = await expiry.query(
+      `UPDATE orders
+          SET customer_name = '(đã ẩn danh)', customer_phone = NULL, customer_email = NULL,
+              shipping_address = NULL, client_ip_hash = NULL, anonymized_at = now()
+        WHERE id = $1`, [A.orderId],
+    );
+    assert.equal(anonymized.rowCount, 1, 'hạn lưu PII vẫn phải áp cho đơn ngoài');
+    const expiryBusinessWrite = await sqlstateOf(() => expiry.query(
+      `UPDATE orders SET status = 'cancelled' WHERE id = $1`, [A.orderId],
+    ));
+    assert.equal(expiryBusinessWrite, 'PIO01', 'ngoại lệ ẩn danh không được mở thao tác nghiệp vụ');
+    const pii = (await owner.query(
+      `SELECT customer_name, customer_phone, customer_email, shipping_address, client_ip_hash,
+              anonymized_at FROM orders WHERE id = $1`, [A.orderId],
+    )).rows[0];
+    assert.equal(pii.customer_name, '(đã ẩn danh)');
+    assert.equal(pii.customer_phone, null);
+    assert.equal(pii.customer_email, null);
+    assert.equal(pii.shipping_address, null);
+    assert.equal(pii.client_ip_hash, null);
+    assert.ok(pii.anonymized_at);
+
+    await withIntegrationTenant(A.id, (c) => c.query(
+      `UPDATE orders
+          SET integration_id = NULL, integration_generation = NULL,
+              external_ref = NULL, sync_status = 'not_required'
+        WHERE id = $1`, [A.orderId],
+    ));
   });
 
   test('sweep chỉ lộ UUID webhook tới hạn và phục hồi được claim processing bị treo', async () => {
@@ -287,6 +404,132 @@ describe('CONNECTOR POS — cùng external id vẫn cô lập theo shop', () => 
       [wa, wb, [wa, wb]],
     );
     assert.deepEqual(await dueIds(), [wa, wb].sort(), 'processing treo và retry tới hạn phải quay lại sweep');
+  });
+
+  test('generation mới supersede inbox cũ và cho phép cùng event id ở vòng đời mới', async () => {
+    const tag = randomUUID().slice(0, 8);
+    const client = await owner.connect();
+    try {
+      await client.query('BEGIN');
+      const shop = (await client.query(
+        `INSERT INTO shops (slug, name, status) VALUES ($1,$2,'active') RETURNING id`,
+        [`t-generation-${tag}`, `Shop generation ${tag}`],
+      )).rows[0];
+      const connector = (await client.query(
+        `INSERT INTO shop_integrations
+           (shop_id, provider, status, inventory_authority, credential_ciphertext, retailer,
+            webhook_public_id, external_branch_ref)
+         VALUES ($1,'kiotviet','degraded','local','cipher','retailer',$2,'branch')
+         RETURNING id, generation`, [shop.id, randomUUID()],
+      )).rows[0];
+      const oldInbox = (await client.query(
+        `INSERT INTO integration_webhook_inbox
+           (shop_id, integration_id, generation, provider_event_id, event_type, payload_hash, payload)
+         VALUES ($1,$2,$3,'evt-lap','stock.update','hash-0','{}') RETURNING id`,
+        [shop.id, connector.id, connector.generation],
+      )).rows[0];
+      await client.query('SAVEPOINT duplicate_event');
+      let duplicate = null;
+      try {
+        await client.query(
+          `INSERT INTO integration_webhook_inbox
+             (shop_id, integration_id, generation, provider_event_id, event_type, payload_hash, payload)
+           VALUES ($1,$2,$3,'evt-lap','stock.update','hash-trung','{}')`,
+          [shop.id, connector.id, connector.generation],
+        );
+      } catch (error) {
+        duplicate = error.code;
+        await client.query('ROLLBACK TO SAVEPOINT duplicate_event');
+      }
+      assert.equal(duplicate, SQLSTATE.UNIQUE_VIOLATION);
+
+      const rotated = (await client.query(
+        `UPDATE shop_integrations SET generation = generation + 1 WHERE id = $1 RETURNING generation`,
+        [connector.id],
+      )).rows[0];
+      const status = (await client.query(
+        `SELECT status, payload FROM integration_webhook_inbox WHERE id = $1`, [oldInbox.id],
+      )).rows[0];
+      assert.equal(status.status, 'superseded');
+      assert.deepEqual(status.payload, {}, 'payload generation cũ phải được xoá khi supersede');
+      const next = await client.query(
+        `INSERT INTO integration_webhook_inbox
+           (shop_id, integration_id, generation, provider_event_id, event_type, payload_hash, payload)
+         VALUES ($1,$2,$3,'evt-lap','stock.update','hash-1','{}')`,
+        [shop.id, connector.id, rotated.generation],
+      );
+      assert.equal(next.rowCount, 1, 'cùng provider event id ở generation mới là vòng đời độc lập');
+
+    } finally {
+      await client.query('ROLLBACK').catch(() => {});
+      client.release();
+    }
+  });
+
+  test('đổi cấu hình connector bắt buộc tăng generation trong cùng CAS', async () => {
+    const configWithoutGeneration = await sqlstateOf(() => withTenant(A.id, (c) => c.query(
+      `UPDATE shop_integrations SET external_branch_ref = 'branch-khong-cas' WHERE id = $1`,
+      [ia.id],
+    )));
+    assert.equal(configWithoutGeneration, '23514',
+      'đổi credential/chi nhánh/webhook mà không tăng generation phải bị DB chặn');
+  });
+
+  test('connector degraded + local phục hồi được sang active + external_master bằng đúng generation', async () => {
+    const tag = randomUUID().slice(0, 8);
+    const shop = (await owner.query(
+      `INSERT INTO shops (slug, name, status) VALUES ($1,$2,'active') RETURNING id`,
+      [`t-recovery-${tag}`, `Shop recovery ${tag}`],
+    )).rows[0];
+    const connector = (await owner.query(
+      `INSERT INTO shop_integrations
+         (shop_id, provider, status, inventory_authority, credential_ciphertext, retailer,
+          webhook_public_id, external_branch_ref, last_error)
+       VALUES ($1,'kiotviet','degraded','local','cipher','retailer',$2,'branch','mapping lỗi')
+       RETURNING id, generation`, [shop.id, randomUUID()],
+    )).rows[0];
+    try {
+      const localOrder = (await owner.query(
+        `INSERT INTO orders (shop_id, order_number, status, total_vnd)
+         VALUES ($1,1,'pending',100000) RETURNING id`, [shop.id],
+      )).rows[0];
+      const blockedByOpenOrder = await sqlstateOf(() => withIntegrationTenant(shop.id, async (c) => {
+        await c.query(`SELECT set_config('app.integration_id', $1, true)`, [connector.id]);
+        await c.query(`SELECT set_config('app.integration_generation', $1, true)`, [String(connector.generation)]);
+        await c.query(
+          `UPDATE shop_integrations
+              SET status = 'active', inventory_authority = 'external_master', last_error = NULL
+            WHERE id = $1 AND generation = $2`, [connector.id, connector.generation],
+        );
+      }));
+      assert.equal(blockedByOpenOrder, '23514', 'không cutover khi còn đơn local đang thực hiện');
+      await owner.query(`UPDATE orders SET status = 'cancelled' WHERE id = $1`, [localOrder.id]);
+
+      const recovered = await withIntegrationTenant(shop.id, async (c) => {
+        await c.query(`SELECT set_config('app.integration_id', $1, true)`, [connector.id]);
+        await c.query(`SELECT set_config('app.integration_generation', $1, true)`, [String(connector.generation)]);
+        return c.query(
+          `UPDATE shop_integrations
+              SET status = 'active', inventory_authority = 'external_master', last_error = NULL
+            WHERE id = $1 AND generation = $2 RETURNING status, inventory_authority`,
+          [connector.id, connector.generation],
+        );
+      });
+      assert.deepEqual(recovered.rows[0], { status: 'active', inventory_authority: 'external_master' });
+
+      const jump = await sqlstateOf(() => owner.query(
+        `UPDATE shop_integrations SET generation = generation + 2 WHERE id = $1`, [connector.id],
+      ));
+      assert.equal(jump, '23514');
+      const disableWithoutGeneration = await sqlstateOf(() => withTenant(shop.id, (c) => c.query(
+        `UPDATE shop_integrations SET status = 'disabled' WHERE id = $1`, [connector.id],
+      )));
+      assert.equal(disableWithoutGeneration, '23514');
+    } finally {
+      await owner.query(`DELETE FROM shop_integrations WHERE id = $1`, [connector.id]);
+      await owner.query(`DELETE FROM orders WHERE shop_id = $1`, [shop.id]);
+      await owner.query(`DELETE FROM shops WHERE id = $1`, [shop.id]);
+    }
   });
 });
 

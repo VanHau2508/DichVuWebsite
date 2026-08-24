@@ -9,6 +9,7 @@
  */
 import { test, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { owner, closeAll, withTenant, sqlstateOf, SQLSTATE } from './helpers.js';
 
 after(closeAll);
@@ -882,8 +883,27 @@ describe('Composite foreign key', () => {
   });
 });
 
-describe('Connector POS ngoài (0177) — quyền hẹp và fail-closed', () => {
+describe('Connector POS ngoài (0177–0178) — quyền hẹp, generation và fail-closed', () => {
   const TABLES = ['shop_integrations', 'integration_webhook_inbox', 'integration_entity_refs', 'integration_sync_discrepancies'];
+  const MIGRATION_0178 = readFileSync(new URL('../migrations/0178_kiotviet_connector_hardening.sql', import.meta.url), 'utf8');
+
+  test('backfill 0178 mở cả SELECT nguồn dưới FORCE RLS rồi thu hồi policy tạm', () => {
+    const policies = [
+      ['integration_0178_owner_config_update', 'shop_integrations'],
+      ['integration_0178_owner_inbox_update', 'integration_webhook_inbox'],
+      ['integration_0178_owner_orders_update', 'orders'],
+    ];
+    const firstBackfill = MIGRATION_0178.indexOf('UPDATE integration_webhook_inbox w');
+    assert.ok(firstBackfill > 0, 'phải tìm thấy backfill inbox');
+    for (const [policy, table] of policies) {
+      const create = `CREATE POLICY ${policy} ON ${table}\n  FOR ALL TO app_owner USING (true) WITH CHECK (true);`;
+      const createdAt = MIGRATION_0178.indexOf(create);
+      const droppedAt = MIGRATION_0178.indexOf(`DROP POLICY ${policy} ON ${table};`);
+      assert.ok(createdAt >= 0 && createdAt < firstBackfill,
+        `${policy} phải là FOR ALL trước backfill; UPDATE-only không đọc được bảng nguồn dưới FORCE RLS`);
+      assert.ok(droppedAt > firstBackfill, `${policy} phải được thu hồi sau backfill`);
+    }
+  });
 
   test('bốn bảng connector đều ENABLE + FORCE RLS', async () => {
     const { rows } = await owner.query(`
@@ -906,14 +926,20 @@ describe('Connector POS ngoài (0177) — quyền hẹp và fail-closed', () => 
        WHERE tablename = ANY($1::text[])
        ORDER BY tablename, policyname`, [TABLES]);
     assert.deepEqual(rows.map((r) => `${r.tablename}|${r.policyname}|${r.cmd}|${r.roles.join(',')}`), [
+      'integration_entity_refs|checkout_integration_refs|SELECT|app_checkout',
+      'integration_entity_refs|expiry_customer_ref_delete|DELETE|app_expiry',
+      'integration_entity_refs|integration_guard_refs|ALL|app_integration_guard',
       'integration_entity_refs|integration_refs|ALL|app_integration',
       'integration_entity_refs|tenant_isolation|ALL|app_rw',
       'integration_sync_discrepancies|integration_discrepancies|ALL|app_integration',
       'integration_sync_discrepancies|tenant_isolation|ALL|app_rw',
+      'integration_webhook_inbox|integration_guard_inbox|ALL|app_integration_guard',
       'integration_webhook_inbox|integration_inbox|ALL|app_integration',
       'integration_webhook_inbox|tenant_isolation|SELECT|app_rw',
       'shop_integrations|checkout_active_integration|SELECT|app_checkout',
+      'shop_integrations|checkout_transitioning_integration|SELECT|app_checkout',
       'shop_integrations|integration_config|ALL|app_integration',
+      'shop_integrations|integration_guard_config|ALL|app_integration_guard',
       'shop_integrations|tenant_isolation|ALL|app_rw',
     ]);
   });
@@ -931,6 +957,12 @@ describe('Connector POS ngoài (0177) — quyền hẹp và fail-closed', () => 
         integration_webhook_inbox: [true, true, true, false],
         integration_entity_refs: [true, true, true, false],
         integration_sync_discrepancies: [true, true, true, false],
+      },
+      app_integration_guard: {
+        shop_integrations: [true, false, true, false],
+        integration_webhook_inbox: [true, false, true, false],
+        integration_entity_refs: [true, false, true, false],
+        integration_sync_discrepancies: [false, false, false, false],
       },
     };
     for (const [role, tables] of Object.entries(expected)) {
@@ -989,7 +1021,8 @@ describe('Connector POS ngoài (0177) — quyền hẹp và fail-closed', () => 
   });
 
   test('checkout chỉ đọc độ tươi tồn, không đọc credential hay secret webhook', async () => {
-    const allowed = ['id', 'provider', 'status', 'inventory_authority', 'external_branch_ref', 'inventory_synced_at'];
+    const allowed = ['id', 'provider', 'status', 'inventory_authority', 'external_branch_ref',
+      'inventory_synced_at', 'generation', 'capabilities'];
     const { rows } = await owner.query(`
       SELECT column_name, has_column_privilege('app_checkout','shop_integrations',column_name,'SELECT') AS can_read
         FROM information_schema.columns
@@ -999,9 +1032,170 @@ describe('Connector POS ngoài (0177) — quyền hẹp và fail-closed', () => 
     for (const secret of ['credential_ciphertext', 'webhook_refs', 'webhook_public_id']) {
       assert.equal(rows.find((r) => r.column_name === secret)?.can_read, false, `checkout không được đọc ${secret}`);
     }
+
+    const { rows: refColumns } = await owner.query(`
+      SELECT column_name,
+             has_column_privilege('app_checkout','integration_entity_refs',column_name,'SELECT') AS can_read
+        FROM information_schema.columns
+       WHERE table_schema='public' AND table_name='integration_entity_refs'
+       ORDER BY ordinal_position`);
+    assert.deepEqual(refColumns.filter((r) => r.can_read).map((r) => r.column_name), [
+      'integration_id', 'entity_type', 'local_id', 'mapping_status',
+      'inventory_synced_at', 'inventory_generation',
+    ]);
+    for (const secret of ['external_id', 'raw_meta']) {
+      assert.equal(refColumns.find((r) => r.column_name === secret)?.can_read, false,
+        `checkout không được đọc integration_entity_refs.${secret}`);
+    }
   });
 
-  test('mỗi shop có tối đa một external_master và hai hàm xuyên-tenant đều hẹp', async () => {
+  test('vai guard là NOLOGIN, không BYPASSRLS và không còn là thành viên của app_owner', async () => {
+    const { rows: [role] } = await owner.query(`
+      SELECT rolcanlogin, rolsuper, rolbypassrls, rolinherit
+        FROM pg_roles WHERE rolname = 'app_integration_guard'`);
+    assert.deepEqual(role, {
+      rolcanlogin: false, rolsuper: false, rolbypassrls: false, rolinherit: false,
+    });
+    const { rows: membership } = await owner.query(`
+      SELECT 1
+        FROM pg_auth_members m
+        JOIN pg_roles member_role ON member_role.oid = m.member
+        JOIN pg_roles granted_role ON granted_role.oid = m.roleid
+       WHERE member_role.rolname = 'app_owner'
+         AND granted_role.rolname = 'app_integration_guard'`);
+    assert.equal(membership.length, 0, 'membership tạm trong migration phải được thu hồi');
+  });
+
+  test('app_integration chỉ được sửa đúng cột customer, variant và order cần cho bản chiếu', async () => {
+    const readableCustomer = ['id', 'shop_id', 'full_name', 'phone', 'status'];
+    const insertableCustomer = ['shop_id', 'full_name', 'phone'];
+    const updateableCustomer = ['full_name', 'phone', 'updated_at'];
+    const columnsFor = async (table, privilege) => (await owner.query(`
+      SELECT column_name
+        FROM information_schema.column_privileges
+       WHERE table_schema = 'public' AND table_name = $1
+         AND grantee = 'app_integration' AND privilege_type = $2
+       ORDER BY (SELECT ordinal_position FROM information_schema.columns c
+                  WHERE c.table_schema = 'public' AND c.table_name = $1
+                    AND c.column_name = information_schema.column_privileges.column_name)`,
+    [table, privilege])).rows.map((r) => r.column_name);
+
+    assert.deepEqual(await columnsFor('customers', 'SELECT'), readableCustomer);
+    assert.deepEqual(await columnsFor('customers', 'INSERT'), insertableCustomer);
+    assert.deepEqual(await columnsFor('customers', 'UPDATE'), updateableCustomer);
+    assert.deepEqual(await columnsFor('variants', 'UPDATE'), ['sku', 'price_vnd', 'barcode']);
+    assert.deepEqual(await columnsFor('orders', 'UPDATE'), [
+      'status', 'payment_status', 'paid_at', 'amount_paid_vnd',
+      'integration_id', 'external_ref', 'external_branch_ref',
+      'sync_status', 'sync_error', 'sync_updated_at', 'integration_generation',
+    ]);
+    for (const table of ['customers', 'variants', 'orders']) {
+      const { rows: [got] } = await owner.query(
+        `SELECT has_table_privilege('app_integration',$1,'UPDATE') AS can_update_all`, [table],
+      );
+      assert.equal(got.can_update_all, false, `${table} không được mở UPDATE toàn bảng`);
+    }
+
+    const { rows: policies } = await owner.query(`
+      SELECT tablename, policyname, cmd, roles::text[] AS roles
+        FROM pg_policies
+       WHERE tablename IN ('customers','variants','orders')
+         AND (roles::text[] && ARRAY['app_integration','app_integration_guard']::text[])
+       ORDER BY tablename, policyname`);
+    assert.deepEqual(policies.map((p) => `${p.tablename}|${p.policyname}|${p.cmd}|${p.roles.join(',')}`), [
+      'customers|integration_customers_insert|INSERT|app_integration',
+      'customers|integration_customers_select|SELECT|app_integration',
+      'customers|integration_customers_update|UPDATE|app_integration',
+      'orders|integration_guard_orders|ALL|app_integration_guard',
+      'orders|integration_orders|ALL|app_integration',
+      'variants|integration_variants|SELECT|app_integration',
+      'variants|integration_variants_update|UPDATE|app_integration',
+    ]);
+  });
+
+  test('generation và bằng chứng tồn có constraint ghép, webhook unique theo vòng đời', async () => {
+    const names = [
+      'integration_ref_inventory_stamp_check',
+      'integration_webhook_generation_check',
+      'integration_webhook_generation_event_unique',
+      'integration_webhook_inbox_status_check',
+      'orders_integration_generation_check',
+      'shop_integrations_active_bundle_check',
+      'shop_integrations_pending_bundle_check',
+    ];
+    const { rows } = await owner.query(`
+      SELECT conname, pg_get_constraintdef(oid) AS def
+        FROM pg_constraint
+       WHERE conname = ANY($1::text[])
+       ORDER BY conname`, [names]);
+    assert.deepEqual(rows.map((r) => r.conname), names.sort());
+    const byName = new Map(rows.map((r) => [r.conname, r.def]));
+    assert.match(byName.get('integration_webhook_generation_event_unique') ?? '',
+      /UNIQUE \(shop_id, integration_id, generation, event_type, provider_event_id\)/);
+    assert.match(byName.get('integration_webhook_inbox_status_check') ?? '', /superseded/);
+    assert.match(byName.get('integration_webhook_inbox_status_check') ?? '', /dead_letter/);
+    assert.match(byName.get('orders_integration_generation_check') ?? '', /integration_id IS NULL.*integration_generation IS NULL/s);
+    assert.match(byName.get('integration_ref_inventory_stamp_check') ?? '', /inventory_synced_at IS NULL.*inventory_generation IS NULL/s);
+    assert.match(byName.get('shop_integrations_pending_bundle_check') ?? '', /pending_generation = \(generation \+ 1\)/);
+
+    const { rows: generationColumns } = await owner.query(`
+      SELECT table_name, column_name, is_nullable, column_default
+        FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND (table_name, column_name) IN (
+           ('shop_integrations','generation'),
+           ('integration_webhook_inbox','generation'),
+           ('orders','integration_generation'))
+       ORDER BY table_name, column_name`);
+    assert.deepEqual(generationColumns.map((r) => [r.table_name, r.column_name, r.is_nullable]), [
+      ['integration_webhook_inbox', 'generation', 'NO'],
+      ['orders', 'integration_generation', 'YES'],
+      ['shop_integrations', 'generation', 'NO'],
+    ]);
+    assert.match(generationColumns.find((r) => r.table_name === 'shop_integrations')?.column_default ?? '', /0/);
+    assert.equal(generationColumns.find((r) => r.table_name === 'integration_webhook_inbox')?.column_default, null,
+      'inbox không được mặc định generation=0 vì đường ghi quên đóng dấu sẽ thành hợp lệ');
+  });
+
+  test('trigger DB chặn tồn và đơn ngoài, đồng thời supersede generation cũ', async () => {
+    const names = [
+      'external_order_lines_local_write_guard',
+      'external_order_local_update_guard',
+      'integration_generation_step_guard',
+      'integration_generation_supersede',
+      'inventory_external_master_insert_guard',
+      'inventory_external_master_update_guard',
+    ];
+    const { rows } = await owner.query(`
+      SELECT t.tgname, p.proname, t.tgenabled
+        FROM pg_trigger t
+        JOIN pg_proc p ON p.oid = t.tgfoid
+       WHERE NOT t.tgisinternal AND t.tgname = ANY($1::text[])
+       ORDER BY t.tgname`, [names]);
+    assert.deepEqual(rows.map((r) => [r.tgname, r.proname, r.tgenabled]), [
+      ['external_order_lines_local_write_guard', 'guard_external_order_lines_local_write', 'O'],
+      ['external_order_local_update_guard', 'guard_external_order_local_update', 'O'],
+      ['integration_generation_step_guard', 'enforce_integration_generation_step', 'O'],
+      ['integration_generation_supersede', 'supersede_integration_generation', 'O'],
+      ['inventory_external_master_insert_guard', 'guard_external_inventory_on_hand', 'O'],
+      ['inventory_external_master_update_guard', 'guard_external_inventory_on_hand', 'O'],
+    ]);
+
+    const { rows: [guard] } = await owner.query(`
+      SELECT pg_get_functiondef(p.oid) AS def, p.prosecdef,
+             r.rolname AS owner
+        FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner
+       WHERE p.proname = 'guard_external_order_local_update'`);
+    assert.match(guard?.def ?? '', /TG_OP = 'INSERT'.*NEW\.source IN \('kiotviet_pos',\s*'sapo_pos'\)/s,
+      'app_rw không được tự chèn đơn giả danh bản chiếu POS');
+    assert.match(guard?.def ?? '', /TG_OP = 'DELETE'.*OLD\.source IN \('kiotviet_pos',\s*'sapo_pos'\)/s,
+      'bản chiếu POS không được xoá bằng đường local');
+    assert.equal(guard?.prosecdef, true, 'trigger đơn ngoài phải đọc connector qua SECURITY DEFINER');
+    assert.equal(guard?.owner, 'app_integration_guard', 'trigger đơn ngoài phải thuộc vai guard NOLOGIN');
+    assert.match(guard?.def ?? '', /session_user/, 'trigger phải giữ actor gốc khi chạy dưới vai guard');
+  });
+
+  test('mỗi shop có tối đa một external_master và các hàm xuyên FORCE RLS thuộc vai guard', async () => {
     const { rows: [idx] } = await owner.query(`
       SELECT pg_get_indexdef(indexrelid) AS def, pg_get_expr(indpred, indrelid) AS pred
         FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
@@ -1012,13 +1206,38 @@ describe('Connector POS ngoài (0177) — quyền hẹp và fail-closed', () => 
     const { rows } = await owner.query(`
       SELECT p.proname, p.prosecdef, r.rolname AS owner
         FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner
-       WHERE p.proname IN ('resolve_integration_webhook','list_due_integrations','list_due_integration_webhooks')
+       WHERE p.proname IN ('resolve_integration_webhook','list_due_integrations','list_due_integration_webhooks',
+                           'supersede_integration_generation','external_master_allows_online_promotions',
+                           'lock_checkout_integration')
        ORDER BY p.proname`);
     assert.deepEqual(rows, [
-      { proname: 'list_due_integration_webhooks', prosecdef: true, owner: 'app_owner' },
-      { proname: 'list_due_integrations', prosecdef: true, owner: 'app_owner' },
-      { proname: 'resolve_integration_webhook', prosecdef: true, owner: 'app_owner' },
+      { proname: 'external_master_allows_online_promotions', prosecdef: true, owner: 'app_integration_guard' },
+      { proname: 'list_due_integration_webhooks', prosecdef: true, owner: 'app_integration_guard' },
+      { proname: 'list_due_integrations', prosecdef: true, owner: 'app_integration_guard' },
+      { proname: 'lock_checkout_integration', prosecdef: true, owner: 'app_integration_guard' },
+      { proname: 'resolve_integration_webhook', prosecdef: true, owner: 'app_integration_guard' },
+      { proname: 'supersede_integration_generation', prosecdef: true, owner: 'app_integration_guard' },
     ]);
+
+    for (const role of ['app_store', 'app_checkout', 'app_customer', 'app_customer_wishlist', 'app_rw']) {
+      const { rows: [got] } = await owner.query(
+        `SELECT has_function_privilege($1, 'external_master_allows_online_promotions()', 'EXECUTE') AS allowed`,
+        [role],
+      );
+      assert.equal(got.allowed, true, `${role} gọi đường giá phải được dùng chốt promotion ngoài`);
+    }
+    for (const role of ['app_platform', 'app_worker', 'app_integration']) {
+      const { rows: [got] } = await owner.query(
+        `SELECT has_function_privilege($1, 'external_master_allows_online_promotions()', 'EXECUTE') AS allowed`,
+        [role],
+      );
+      assert.equal(got.allowed, false, `${role} không được mượn helper SECURITY DEFINER ngoài nhu cầu`);
+    }
+    const { rows: [checkoutLock] } = await owner.query(`
+      SELECT has_function_privilege('app_checkout', 'lock_checkout_integration()', 'EXECUTE') AS execute,
+             has_table_privilege('app_checkout', 'shop_integrations', 'UPDATE') AS table_update`);
+    assert.deepEqual(checkoutLock, { execute: true, table_update: false },
+      'checkout được giữ khoá lifecycle qua hàm hẹp nhưng không được cấp quyền ghi bảng connector');
   });
 });
 

@@ -226,6 +226,12 @@ const loyaltyBlock = (s) => {
   return `<div class="card"><div style="font-weight:600;margin-bottom:8px">🎁 Bạn có ${esc(L.balance)} điểm${val}</div>${body}</div>`;
 };
 
+const externalDiscountNotice = (s) => (s.checkout_policy?.discounts_allowed === false
+  ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb">
+       <strong>Ưu đãi đang tạm khóa</strong>
+       <div class="muted" style="font-size:.85rem;margin-top:5px">Cửa hàng đang đồng bộ tồn kho với KiotViet. Trong giai đoạn pilot, mã giảm giá và đổi điểm chưa áp dụng; tổng tiền bên dưới là số tiền hiện hành.</div>
+     </div>` : '');
+
 export function renderError(shopName, msg) {
   return page('Có lỗi', shopName, `<div class="card empty"><h1>Rất tiếc</h1><p>${esc(msg)}</p>
     <a class="btn alt" href="/cart">Quay lại giỏ hàng</a></div>`);
@@ -247,10 +253,11 @@ export function renderCart(shopName, s) {
   if (!s.items.length) {
     return page('Giỏ hàng', shopName, `<div class="card empty"><p>Giỏ hàng trống.</p><a class="btn alt" href="/">Tiếp tục mua sắm</a></div>`);
   }
+  const discountsOn = s.checkout_policy?.discounts_allowed !== false;
   return page('Giỏ hàng', shopName, `<h1>Giỏ hàng</h1>
     <div class="card">${itemsBlock(s.items)}</div>
-    ${couponBlock(s)}
-    ${loyaltyBlock(s)}
+    ${discountsOn ? couponBlock(s) : externalDiscountNotice(s)}
+    ${discountsOn ? loyaltyBlock(s) : ''}
     <div class="card">${totalsBlock(s)}</div>
     <a class="btn" href="/checkout">Thanh toán</a>
     <a class="btn alt" href="/" style="margin-top:8px">Tiếp tục mua sắm</a>`);
@@ -262,7 +269,8 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
   const v = (x) => esc(x ?? '');
   // QR chỉ hiện khi shop ĐÃ bật thanh toán QR (opts.qrEnabled). Shop chỉ-COD → ẩn radio QR + ép COD
   // (chống ngõ-cụt: chọn QR ở shop chưa bật → fail(400) → trang lỗi cụt mất data).
-  const qrOn = opts.qrEnabled === true;
+  const codOnly = s.checkout_policy?.cod_only === true;
+  const qrOn = opts.qrEnabled === true && !codOnly;
   const pm = qrOn && pf.payment_method === 'qr' ? 'qr' : 'cod';
   const ch = opts.challenge;
   const provinceOpts = (sel) => PROVINCES.map((p) => `<option value="${esc(p)}"${sel === p ? ' selected' : ''}>${esc(p)}</option>`).join('');
@@ -329,6 +337,7 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
 
   return page('Thanh toán', shopName, `<h1>Thanh toán</h1>
     ${opts.error ? `<div class="card" style="border-color:#fca5a5;background:#fef2f2;color:#b91c1c"><strong>${esc(opts.error)}</strong></div>` : ''}
+    ${externalDiscountNotice(s)}
     <div class="co-grid">
       <aside class="co-summary">
         <details open class="co-sumbox">
@@ -358,6 +367,7 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
           <div class="card pay"><h2>Thanh toán</h2>
             <label><input type="radio" name="payment_method" value="cod"${pm === 'cod' ? ' checked' : ''}> Thanh toán khi nhận hàng (COD)</label>
             ${qrOn ? `<label><input type="radio" name="payment_method" value="qr"${pm === 'qr' ? ' checked' : ''}> Chuyển khoản QR (VietQR)</label>` : ''}
+            ${codOnly ? '<div class="muted" style="font-size:.85rem;margin-top:8px">Đơn hàng đồng bộ KiotViet hiện chỉ hỗ trợ COD trong giai đoạn pilot.</div>' : ''}
           </div>
           ${ch ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb"><h2>Xác minh</h2>
             <p class="muted">Để chống đặt hàng tự động, vui lòng trả lời: <strong>${esc(ch.a)} + ${esc(ch.b)} = ?</strong></p>

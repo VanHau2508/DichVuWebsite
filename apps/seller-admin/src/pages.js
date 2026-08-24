@@ -2896,8 +2896,11 @@ export function renderOrders(ctx, shopId, data, filter) {
   const flagged = orders.filter((o) => Number(o.same_ip_phones) >= SUSPICIOUS_MIN).length;
   const rows = orders.map((o) => {
     const susp = Number(o.same_ip_phones) >= SUSPICIOUS_MIN;
+    const externalReadOnly = ['kiotviet_pos', 'sapo_pos'].includes(o.source) || Boolean(o.external_ref);
     return [
-      { label: '', html: `<input type="checkbox" name="order_ids" value="${esc(o.id)}" form="bulkf" aria-label="Chọn đơn ${esc(o.order_number)}">` },
+      { label: '', html: externalReadOnly
+        ? `<span class="muted" title="Đơn đã thuộc hệ thống POS ngoài; không xử lý hàng loạt tại đây">—</span>`
+        : `<input type="checkbox" name="order_ids" value="${esc(o.id)}" form="bulkf" aria-label="Chọn đơn ${esc(o.order_number)}">` },
       { html: `<a href="/shops/${esc(shopId)}/orders/${esc(o.id)}">#${esc(o.order_number)}</a>` },
       { html: badge(o.status, STATUS[o.status] ?? o.status) },
       { html: `${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} <span class="muted">${esc(o.payment_method?.toUpperCase() ?? '')}</span>` },
@@ -3038,6 +3041,14 @@ export function renderOrders(ctx, shopId, data, filter) {
 export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returned, timelineFilter = '') {
   const totalVnd = Math.max(0, Number(o.payment_summary?.total_vnd ?? o.total_vnd) || 0);
   const orderDead = ['cancelled', 'returned', 'refunded'].includes(o.status);
+  // V1 chưa có contract sửa/giao/hoàn đã được xác minh với provider. Đơn POS luôn chỉ để
+  // quan sát; đơn website cũng tạm chỉ-đọc sau khi provider đã nhận (`external_ref`). DB vẫn
+  // là chốt cuối, còn guard này tránh mời người vận hành đi vào một loạt 409 có chủ ý.
+  const externalReadOnly = ['kiotviet_pos', 'sapo_pos'].includes(o.source) || Boolean(o.external_ref);
+  const externalReadOnlyNotice = externalReadOnly ? `<div class="notice">
+    <strong>Đơn này đang do hệ thống POS ngoài thực hiện.</strong>
+    <p class="muted" style="margin:6px 0 0">Trang quản trị chỉ hiển thị để đối chiếu. Hãy sửa trạng thái, tiền, giao hàng hoặc hoàn trả tại POS; kết quả sẽ đồng bộ về đây.</p>
+  </div>` : '';
   // Thiếu summary là lỗi hợp đồng giữa BFF và seller, không phải lý do để dựng lại công thức
   // tiền trong view. Bản fallback cũ đã trôi khỏi fulfillment_adjustment_vnd và có thể giấu
   // đúng khoản shop còn nợ khách. Giữ object 0 chỉ để render phần KHÔNG tài chính an toàn;
@@ -3068,17 +3079,17 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   const act = (path, label, cls = 'btn sm', extra = '', hoi = '') => `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/${path}">${extra}<button class="${cls}" type="submit"${hoi ? ` data-confirm="${esc(hoi)}"` : ''}>${label}</button></form>`;
   // "Sửa đơn" CHỈ khi đơn còn sửa được: chưa gửi hãng (pending/confirmed) VÀ chưa thanh toán.
   // Đơn đã trả / đã giao → seller từ chối (409) nên không hiện nút (khỏi dẫn user vào ngõ cụt).
-  const editable = paymentReady && ['pending', 'confirmed'].includes(o.status) && Number(payment.net_received_vnd) === 0;
+  const editable = paymentReady && !externalReadOnly && ['pending', 'confirmed'].includes(o.status) && Number(payment.net_received_vnd) === 0;
   const editAction = editable ? `<a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/edit">Sửa đơn</a>` : '';
   // Sửa đơn ĐÃ TRẢ (v2): đơn paid + chưa gửi hãng, owner/admin (perm 'refund' + step-up ở seller).
   // Giảm tổng → tự tạo phiếu hoàn phần chênh; tăng tổng chưa hỗ trợ. Nút dẫn sang trang riêng.
-  const editPaidAction = (paymentReady && o.payment_status === 'paid' && ['pending', 'confirmed'].includes(o.status) && REFUND_ROLES.has(ctx.role))
+  const editPaidAction = (paymentReady && !externalReadOnly && o.payment_status === 'paid' && ['pending', 'confirmed'].includes(o.status) && REFUND_ROLES.has(ctx.role))
     ? `<a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/edit-paid">Sửa đơn đã trả</a>` : '';
   // Nhận trả hàng (RMA 0078): đơn ĐÃ GIAO + còn hàng chưa trả (qty > returned_qty) — owner/admin
   // (perm 'refund' + step-up ở seller). Dẫn sang trang form riêng (chọn dòng + số lượng trả +
   // nhập lại kho). Trả HẾT mọi dòng → đơn "Hoàn hàng"; ẩn nút khi không còn gì để trả.
   const hasReturnable = (o.lines ?? []).some((l) => Number(l.qty) - Number(l.returned_qty ?? 0) > 0);
-  const returnAction = (paymentReady && o.status === 'delivered' && hasReturnable && REFUND_ROLES.has(ctx.role))
+  const returnAction = (paymentReady && !externalReadOnly && o.status === 'delivered' && hasReturnable && REFUND_ROLES.has(ctx.role))
     ? `<a class="btn warn sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/return">Nhận trả hàng</a>` : '';
   // GIAO MỘT PHẦN (0080): còn phải gửi = qty − shipped_qty − claim đang tạo. Nút "Đã giao xong" CHỈ
   // hiện khi đã gửi ĐỦ (fulfillment='fulfilled') — khớp guard seller (deliver partial → 409).
@@ -3087,7 +3098,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     planned: Number(l.planned_qty ?? 0),
     remaining: Math.max(0, Number(l.qty) - Number(l.shipped_qty ?? 0) - Number(l.planned_qty ?? 0)),
   })).filter((l) => l.remaining > 0);
-  const canShipManual = activeCases.length === 0 && ['confirmed', 'shipped'].includes(o.status) && remLines.length > 0;
+  const canShipManual = !externalReadOnly && activeCases.length === 0 && ['confirmed', 'shipped'].includes(o.status) && remLines.length > 0;
   // HUỶ ĐƠN (0117): đơn ĐÃ TRẢ TIỀN thì lý do là BẮT BUỘC — seller trả 400 nếu thiếu,
   // và lý do đi thẳng vào email cho khách. Nói rõ ngay tại nút là khách sẽ đọc được nó,
   // để người bán không gõ ghi chú nội bộ vào đây.
@@ -3113,19 +3124,19 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   // còn là một chiều, và câu hỏi phải nói đúng như vậy: doạ "không mở lại được" khi thật ra mở
   // lại được chỉ dạy người ta bỏ qua mọi câu hỏi khác của phần mềm.
   const hoiHuy = `Huỷ đơn #${o.order_number}? Khách sẽ nhận ngay email báo đơn đã huỷ. Mở lại được sau đó, nhưng chỉ khi hàng vẫn còn.`;
-  if (o.status === 'pending') { flowActions = act('confirm', 'Xác nhận đơn'); cancelAction = act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra, hoiHuy); }
-  else if (o.status === 'confirmed') cancelAction = act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra, hoiHuy);
+  if (!externalReadOnly && o.status === 'pending') { flowActions = act('confirm', 'Xác nhận đơn'); cancelAction = act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra, hoiHuy); }
+  else if (!externalReadOnly && o.status === 'confirmed') cancelAction = act('cancel', 'Huỷ đơn', 'btn warn sm', cancelExtra, hoiHuy);
   // MỞ LẠI ĐƠN ĐÃ HUỶ — trước đây màn hình này chỉ còn dòng "Không có thao tác." Huỷ nhầm một
   // đơn (hoặc khách gọi lại xin mua tiếp) là buộc phải gõ tay một đơn mới: mất số đơn khách đang
   // cầm, mất lịch sử. Ẩn nút khi đã có phiếu hoàn — lúc đó tiền đã về khách, mở lại là nói dối sổ.
-  else if (o.status === 'cancelled' && !(o.refunds ?? []).length) {
+  else if (!externalReadOnly && o.status === 'cancelled' && !(o.refunds ?? []).length) {
     flowActions = act('reopen', '↻ Mở lại đơn', 'btn alt sm', '',
       `Mở lại đơn #${o.order_number}? Đơn quay về "Chờ xử lý" và GIỮ CHỖ lại số hàng trong đơn — nếu hàng đã bán hết cho người khác thì không mở được. Khách sẽ nhận email báo đơn được mở lại.`);
   }
-  else if (o.status === 'shipped' && o.fulfillment_status === 'fulfilled' && activeCases.length === 0) flowActions = act('deliver', 'Đã giao xong');
+  else if (!externalReadOnly && o.status === 'shipped' && o.fulfillment_status === 'fulfilled' && activeCases.length === 0) flowActions = act('deliver', 'Đã giao xong');
   // BOM HÀNG / HOÀN VỀ (audit #58): đơn ĐANG GIAO khách không nhận → hàng về. Restock phần đã gửi +
   // nhả reserve phần chưa gửi (đơn tách bỏ dở) → tồn sạch. Hiện cho MỌI đơn shipped (đủ/một-phần).
-  if (o.status === 'shipped' && activeCases.length === 0 && ORDER_ROLES.has(ctx.role)) {
+  if (!externalReadOnly && o.status === 'shipped' && activeCases.length === 0 && ORDER_ROLES.has(ctx.role)) {
     flowActions += act('mark-returned', '↩ Bom hàng / Hoàn về', 'btn warn sm',
       '<label style="display:block;font-size:.82rem;margin-bottom:6px"><input type="checkbox" name="restock" checked style="width:auto"> Nhập lại kho (bỏ tick nếu hàng hỏng)</label>',
       `Đánh dấu đơn #${o.order_number} là BOM HÀNG? Khách nhận ngay email báo hoàn hàng, đơn đóng lại và không giao tiếp được. Chỉ dùng khi hàng đã thật sự quay về.`);
@@ -3158,7 +3169,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   // Hãng gửi TRỌN phần CÒN LẠI (một kiện hãng/đơn). ẨN khi COD chưa thu mà đã gửi một phần —
   // seller cấm tách COD-hãng (409) → tránh dẫn user vào ngõ cụt.
   const codSplitBlocked = o.payment_method === 'cod' && Number(payment.amount_due_vnd) > 0 && o.fulfillment_status !== 'unfulfilled';
-  const carrierCard = (activeCases.length === 0 && ['confirmed', 'shipped'].includes(o.status) && remLines.length > 0 && o.fulfillment_status !== 'fulfilled' && shipping?.connected && !codSplitBlocked) ? `
+  const carrierCard = (!externalReadOnly && activeCases.length === 0 && ['confirmed', 'shipped'].includes(o.status) && remLines.length > 0 && o.fulfillment_status !== 'fulfilled' && shipping?.connected && !codSplitBlocked) ? `
     <div class="card"><h2 style="margin-top:0">Tạo vận đơn qua ${esc((shipping.provider ?? '').toUpperCase())}${o.fulfillment_status === 'partial' ? ' (phần còn lại)' : ''}</h2>
       <p class="muted">Đẩy đơn sang hãng — hãng trả <strong>mã vận đơn + phí</strong>, đơn tự chuyển "Đang giao".
         ${o.payment_method === 'cod' && o.payment_status !== 'paid'
@@ -3186,7 +3197,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     </div>` : '';
   // Sổ tiền v2: mỗi lần thu là một chứng từ. Form cho phép nhập phần thực nhận, còn đảo sai
   // sót tạo thêm reversal trỏ đúng dòng cũ — không còn công tắc xoá sạch dấu vết.
-  const canRecordManual = paymentReady && !orderDead && Number(payment.amount_due_vnd) > 0 && PAYMENT_ROLES.has(ctx.role);
+  const canRecordManual = paymentReady && !externalReadOnly && !orderDead && Number(payment.amount_due_vnd) > 0 && PAYMENT_ROLES.has(ctx.role);
   const manualPaymentForm = canRecordManual ? `
     <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/payments/manual" class="gridform" style="margin-top:14px">
       <label>Số tiền thực nhận (đ)
@@ -3198,7 +3209,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     </form>` : '';
   const transactionRows = transactions.map((t) => {
     const reversal = t.entry_type === 'reversal';
-    const canReverse = paymentReady && !reversal && t.provider === 'manual' && !reversedTransactions.has(t.id)
+    const canReverse = paymentReady && !externalReadOnly && !reversal && t.provider === 'manual' && !reversedTransactions.has(t.id)
       && !(o.refunds ?? []).length && PAYMENT_ROLES.has(ctx.role);
     const source = { manual: 'Ghi nhận tay', legacy: 'Số dư mở sổ', sepay: 'SePay' }[t.provider] ?? t.provider;
     const status = { received: 'Đã nhận', underpaid: 'Chưa đủ', unmatched: 'Chưa khớp' }[t.status] ?? t.status;
@@ -3245,7 +3256,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   // (đơn giữ trạng thái, luỹ kế chạm tổng mới lật "Đã hoàn").
   const activeRequiredRefund = Math.max(0, ...activeCases.map((c) => Number(c.required_refund_vnd) || 0));
   const activeRefundMax = Math.max(0, Number(o.total_vnd) - Number(o.refunded_total_vnd ?? 0) - 1);
-  const refundAction = (paymentReady && o.payment_status === 'paid' && o.status !== 'refunded' && REFUND_ROLES.has(ctx.role))
+  const refundAction = (paymentReady && !externalReadOnly && o.payment_status === 'paid' && o.status !== 'refunded' && REFUND_ROLES.has(ctx.role))
     ? `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/refund" class="actions" style="align-items:end">
         <div><label>Số tiền hoàn (đ${activeCases.length ? ' — bắt buộc nhập khi đang xử lý giao một phần' : ' — để trống = hoàn toàn bộ'})</label><input name="amount_vnd" inputmode="numeric" style="width:200px"${activeCases.length ? ` required min="${esc(activeRequiredRefund || 1)}" max="${esc(activeRefundMax)}" value="${esc(Math.min(activeRequiredRefund || 1, activeRefundMax))}"` : ''} placeholder="vd 50000"></div>
         <div><label>Lý do (tuỳ chọn)</label><input name="reason" maxlength="500" style="width:180px" placeholder="khách trả 1 món…"></div>
@@ -3306,7 +3317,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   const moneyHint = (refundAction && returnAction)
     ? '“Hoàn tiền” = trả tiền, hàng KHÔNG quay về (gồm cả phí ship). “Nhận trả hàng” = khách gửi hàng về, tự hoàn tiền hàng và nhập lại kho.'
     : refundAction ? 'Hoàn tiền mà hàng không quay về — dùng cả khi cần trả lại phí ship.' : '';
-  const actionGroups = (grp('Xử lý đơn', flowActions)
+  const actionGroups = externalReadOnly ? '<div class="actions"><span class="muted">Không có thao tác cục bộ.</span></div>' : (grp('Xử lý đơn', flowActions)
     + grp('Sửa đơn', editAction + editPaidAction)
     + grp('Tiền &amp; hậu mãi', refundAction + returnAction, moneyHint)
     + grp('Huỷ đơn', cancelAction)) || (['delivered', 'returned'].includes(o.status) && !REFUND_ROLES.has(ctx.role)
@@ -3325,7 +3336,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   const coGiaoTay = (o.shipments ?? []).some((s) => !s.provider && s.status !== 'cancelled');
   const daVeShop = ['returned', 'refunded', 'cancelled'].includes(o.status);
   const phiGiaoTay = (o.shipments ?? []).find((s) => !s.provider && s.status !== 'cancelled')?.carrier_fee_vnd;
-  const shipCostCard = (coGiaoTay || daVeShop) ? `
+  const shipCostCard = (!externalReadOnly && (coGiaoTay || daVeShop)) ? `
     <div class="card"><h2>Chi phí vận chuyển thực trả</h2>
       <p class="muted" style="margin-top:0">Tiền cước shop bỏ ra cho đơn này. Nhập vào đây thì nó vào <strong>Báo cáo lãi lỗ</strong>; bỏ trống thì khoản lỗ đó không nằm ở đâu cả.</p>
       <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/ship-cost" class="gridform">
@@ -3343,9 +3354,9 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     accept_partial: 'Chấp nhận giao một phần', resent: 'Đã gửi bù', refunded_remainder: 'Đã hoàn phần thiếu',
     cancelled_remainder: 'Đã huỷ phần còn lại', other: 'Cách xử lý khác',
   };
-  const canResolveOrder = ORDER_ROLES.has(ctx.role);
-  const canReceiveReturn = INVENTORY_ROLES.has(ctx.role);
-  const canResolveRefund = REFUND_ROLES.has(ctx.role);
+  const canResolveOrder = !externalReadOnly && ORDER_ROLES.has(ctx.role);
+  const canReceiveReturn = !externalReadOnly && INVENTORY_ROLES.has(ctx.role);
+  const canResolveRefund = !externalReadOnly && REFUND_ROLES.has(ctx.role);
   const resolutionActions = (c) => {
     if (!['open', 'waiting_return'].includes(c.status)) return '';
     const remaining = Number(c.remaining_return_qty);
@@ -3524,7 +3535,9 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   const owed = Number(o.owed_vnd ?? 0);
   const cancelDebt = owed > 0
     ? `<div class="err"><strong>Còn nợ khách ${esc(money(owed))}</strong> — ${esc(OWED_WHY[o.owed_reason] ?? 'shop đang giữ tiền của khách')}.
-         Chuyển khoản lại cho khách, rồi bấm <em>Hoàn tiền</em> bên dưới để ghi nhận. Băng này biến mất khi đã hoàn đủ.</div>`
+         ${externalReadOnly
+      ? 'Hãy hoàn tiền tại POS ngoài; chứng từ đồng bộ về sẽ cập nhật khoản còn nợ.'
+      : 'Chuyển khoản lại cho khách, rồi bấm <em>Hoàn tiền</em> bên dưới để ghi nhận.'} Băng này biến mất khi đã hoàn đủ.</div>`
     : '';
   return layout(`Đơn #${o.order_number}`, ctx, `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
@@ -3535,6 +3548,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     ${edited ? `<div class="notice ok">✓ Đã lưu sửa đơn — tồn kho &amp; tổng tiền đã cập nhật theo thay đổi.${Number(edited) > 0 ? ` Đã tạo <strong>phiếu hoàn ${money(Number(edited))}</strong> — hãy chuyển khoản lại cho khách.` : ''}</div>` : ''}
     ${returned ? `<div class="notice ok">✓ Đã nhận trả hàng — đã tạo <strong>phiếu hoàn ${money(Number(returned.refund) || 0)}</strong> (tiền hàng, không gồm ship). Hãy chuyển khoản lại cho khách. Hàng ${returned.restock ? '<strong>đã nhập lại kho</strong>' : '<strong>KHÔNG</strong> nhập lại kho'}.</div>` : ''}
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${externalReadOnlyNotice}
     ${cancelDebt}
     ${o.status === 'cancelled' && o.cancel_reason ? `<div class="card" style="border-color:var(--bd)"><strong>Lý do huỷ:</strong> ${esc(o.cancel_reason)}<br><span class="muted" style="font-size:.85rem">Khách đã nhận lý do này qua email.</span></div>` : ''}
     ${orderSummaryBlocks}
@@ -3567,6 +3581,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     ${customerRequestCard}
     ${notificationCard}
     ${(() => {
+      if (externalReadOnly) return '';
       // Hai ca cùng cần người xử, KHÁC nhau ở chỗ ta biết gì:
       //   finalize_failed — hãng ĐÃ tạo, có mã, chỉ hỏng bước chốt → chỉ cần xác nhận.
       //   ambiguous       — request TIMEOUT, ta KHÔNG BIẾT hãng đã tạo chưa và KHÔNG CÓ mã.
@@ -6701,8 +6716,9 @@ export function renderIntegrations(ctx, shopId, data = {}, notice, err, probe = 
         <button class="btn" type="submit" style="margin-top:10px">Kiểm tra và đọc chi nhánh</button>
       </form>
       ${probe?.branches?.length ? `<hr style="margin:18px 0;border:0;border-top:1px solid var(--line,#ddd)"><h3>Chọn một chi nhánh cho V1</h3>
-        <form method="POST" action="${base}/kiotviet/activate">${probe.branches.map((branch, index) => `<label style="display:block;border:1px solid var(--line,#ddd);border-radius:8px;padding:10px;margin:8px 0"><input type="radio" name="branch_id" value="${esc(branch.id)}"${index === 0 ? ' checked' : ''}> <strong>${esc(branch.name)}</strong>${branch.address ? `<br><span class="muted">${esc(branch.address)}</span>` : ''}</label>`).join('')}<button class="btn" type="submit">Chạy đồng bộ thử</button></form>` : ''}
+        <form method="POST" action="${base}/kiotviet/activate"><input type="hidden" name="pending_token" value="${esc(probe.pending_token || '')}">${probe.branches.map((branch, index) => `<label style="display:block;border:1px solid var(--line,#ddd);border-radius:8px;padding:10px;margin:8px 0"><input type="radio" name="branch_id" value="${esc(branch.id)}"${index === 0 ? ' checked' : ''}> <strong>${esc(branch.name)}</strong>${branch.address ? `<br><span class="muted">${esc(branch.address)}</span>` : ''}</label>`).join('')}<button class="btn" type="submit">Chạy đồng bộ thử</button></form>` : ''}
       ${integration && integration.status !== 'disabled' ? `<form method="POST" action="${base}/${esc(integration.id)}/disable" style="margin-top:14px" data-confirm="Ngắt kết nối? Ánh xạ vẫn được giữ; nếu KiotViet đang làm chủ tồn thì checkout sẽ tạm khóa cho tới khi chuyển quyền an toàn."><button class="btn warn sm" type="submit">Ngắt kết nối an toàn</button></form>` : ''}
+      ${integration?.status === 'disabled' && integration.inventory_authority === 'external_master' ? `<form method="POST" action="${base}/${esc(integration.id)}/transfer-local" style="margin-top:14px" data-confirm="Chuyển bản chiếu tồn cuối thành tồn local? Bạn cần kiểm đếm lại kho thực tế sau thao tác này."><button class="btn warn sm" type="submit">Chuyển quyền tồn về nền tảng</button></form>` : ''}
     </div>` : ''}
     ${canManage && webhookRows ? `<details class="card"><summary><strong>Webhook KiotViet đã đăng ký tự động</strong></summary><p class="muted">Các URL dưới đây chỉ để đối chiếu vận hành. Secret chữ ký được mã hóa và không xuất hiện trên giao diện.</p>${webhookRows}</details>` : ''}
     <div class="card"><h2 style="margin-top:0">Ánh xạ sản phẩm</h2>

@@ -15,6 +15,23 @@ export class KiotVietError extends Error {
 
 const text = (value, max = 500) => String(value ?? '').trim().slice(0, max);
 
+/** Chỉ áp snapshot tồn khi số provider đủ phủ mọi reservation local đang còn hiệu lực. */
+export function canApplyKiotVietStock(providerOnHand, reserved) {
+  const provider = Number(providerOnHand);
+  const held = Number(reserved);
+  return Number.isSafeInteger(provider) && provider >= 0
+    && Number.isSafeInteger(held) && held >= 0 && provider >= held;
+}
+
+/** Event không có mốc không được ghi đè một snapshot đã có bằng chứng thứ tự. */
+export function isStaleKiotVietSnapshot(incomingAt, existingAt) {
+  if (!existingAt) return false;
+  const existingMs = existingAt instanceof Date ? existingAt.getTime() : Date.parse(existingAt);
+  if (!Number.isFinite(existingMs)) return false;
+  const incomingMs = incomingAt instanceof Date ? incomingAt.getTime() : Date.parse(incomingAt ?? '');
+  return !Number.isFinite(incomingMs) || incomingMs <= existingMs;
+}
+
 async function readResponse(res) {
   const raw = await res.text();
   let body = null;
@@ -29,6 +46,18 @@ function retryAfterMs(res) {
   if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
   const at = Date.parse(raw);
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
+}
+
+/** Backoff dùng chung cho job connector: không gọi lại sớm hơn thời điểm provider yêu cầu. */
+export function integrationRetryBackoffMs(error, attemptsMade, { baseMs = 2000, maxMs = 300_000 } = {}) {
+  const base = Number.isFinite(Number(baseMs)) ? Math.max(1, Math.trunc(Number(baseMs))) : 2000;
+  const cap = Number.isFinite(Number(maxMs)) ? Math.max(base, Math.trunc(Number(maxMs))) : 300_000;
+  const attempt = Number.isFinite(Number(attemptsMade)) ? Math.max(1, Math.trunc(Number(attemptsMade))) : 1;
+  const exponential = Math.min(cap, base * (2 ** Math.min(attempt - 1, 30)));
+  const providerDelay = error?.retryAfterMs == null ? NaN : Number(error.retryAfterMs);
+  return Number.isFinite(providerDelay) && providerDelay >= 0
+    ? Math.max(exponential, Math.trunc(providerDelay))
+    : exponential;
 }
 
 /** Client Public API KiotViet; cho phép chèn fetch/base URL để contract test không gọi mạng. */
@@ -151,6 +180,18 @@ export function createKiotVietClient({
         code: 'order_lookup_incomplete',
       });
     },
+    async listOrders({ currentItem = 0, pageSize = 100, lastModifiedFrom = null, branchId = null } = {}) {
+      const data = await request('GET', '/orders', { query: {
+        currentItem, pageSize: Math.min(Math.max(Number(pageSize) || 100, 1), 100),
+        ...(lastModifiedFrom ? { lastModifiedFrom } : {}),
+        ...(branchId ? { branchIds: branchId } : {}),
+        orderBy: 'modifiedDate', orderDirection: 'Asc',
+      } });
+      return {
+        rows: Array.isArray(data.data) ? data.data : [],
+        total: Number(data.total ?? data.totalItems ?? 0),
+      };
+    },
     async createOrder(order) {
       return request('POST', '/orders', { body: order });
     },
@@ -160,7 +201,7 @@ export function createKiotVietClient({
     async listProducts({ currentItem = 0, pageSize = 100, lastModifiedFrom = null } = {}) {
       const data = await request('GET', '/products', { query: {
         currentItem, pageSize: Math.min(Math.max(Number(pageSize) || 100, 1), 100),
-        includeInventory: true,
+        includeInventory: true, includeRemoveIds: true,
         ...(lastModifiedFrom ? { lastModifiedFrom } : {}),
       } });
       return {

@@ -686,6 +686,7 @@ services:
       DATABASE_URL_STORE: postgres://app_store:devpassword@postgres:5432/app
       DATABASE_URL_OWNER: postgres://app_owner:devpassword@postgres:5432/app
       DATABASE_URL_INTEGRATION: postgres://app_integration:devpassword@postgres:5432/app
+      DATABASE_URL_EXPIRY: postgres://app_expiry:devpassword@postgres:5432/app
       INTEGRATION_ENC_KEY: b1c2d3e4f5061728394a5b6c7d8e9fa0b1c2d3e4f5061728394a5b6c7d8e9fa0
       # Dùng cho platform/seller e2e: gọi thẳng service nội bộ, quản cookie tay.
       AUTH_URL: http://auth:3020

@@ -1400,6 +1400,15 @@ export async function createManualOrder(res, ctx, body) {
   // dở dang + nhả idempotency claim (retry sạch). Dispatcher seller đọc err.statusCode.
   const fail = (statusCode, msg) => { throw Object.assign(new Error(msg), { statusCode }); };
   const out = await withTenant(ctx.shopId, async (c) => {
+    const connector = (await c.query(
+      `SELECT id, status, inventory_authority FROM shop_integrations
+        WHERE inventory_authority = 'external_master'
+           OR (external_branch_ref IS NOT NULL AND status IN ('connecting','degraded'))
+        LIMIT 1 FOR SHARE`,
+    )).rows[0];
+    if (connector?.inventory_authority === 'external_master') {
+      fail(409, 'KiotViet đang làm chủ tồn vật lý; hãy tạo giao dịch bán tại KiotViet để tránh hai nơi cùng giữ hàng.');
+    }
     const requestHash = sha256(idemKey + JSON.stringify({ lines: lines0, name, phone, email, addressLine, province, paymentMethod, shipOverride }));
     const claim = await c.query(
       `INSERT INTO idempotency_keys (shop_id, key, request_hash, status)

@@ -30,7 +30,26 @@ const CO = new URL(process.env.CHECKOUT_URL ?? 'http://checkout:3060');
 const STORE = new URL(process.env.STOREFRONT_URL ?? 'http://storefront:3050');
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 5 });
+const integration = new pg.Pool({ connectionString: process.env.DATABASE_URL_INTEGRATION, max: 2 });
 const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic='user.invited' AND payload->>'to'=$1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
+
+async function withIntegration(shopId, integrationId, generation, fn) {
+  const c = await integration.connect();
+  try {
+    await c.query('BEGIN');
+    await c.query(`SELECT set_config('app.shop_id', $1, true)`, [shopId]);
+    await c.query(`SELECT set_config('app.integration_id', $1, true)`, [integrationId]);
+    await c.query(`SELECT set_config('app.integration_generation', $1, true)`, [String(generation)]);
+    const result = await fn(c);
+    await c.query('COMMIT');
+    return result;
+  } catch (error) {
+    await c.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    c.release();
+  }
+}
 
 let pass = 0, fail = 0;
 const G = '\x1b[32m', RED = '\x1b[31m', D = '\x1b[2m', X = '\x1b[0m', BOLD = '\x1b[1m';
@@ -61,10 +80,11 @@ const admLogin = async (e, p) => ck((await adm('POST', '/login', { origin: OADM,
 
 let HOST;
 // HTTP thô: cần đặt Host (định tuyến theo tên miền shop) + cookie giỏ + Idempotency-Key.
-function hit(target, method, path, { json, cartCookie, idem } = {}) {
+function hit(target, method, path, { json, cartCookie, idem, accept } = {}) {
   return new Promise((resolve, reject) => {
     const data = json !== undefined ? JSON.stringify(json) : null;
     const headers = { host: HOST, origin: `https://${HOST}` };
+    if (accept) headers.accept = accept;
     if (data != null) { headers['content-type'] = 'application/json'; headers['content-length'] = Buffer.byteLength(data); }
     if (cartCookie) headers.cookie = `__Host-cart=${cartCookie}`;
     if (idem) headers['idempotency-key'] = idem;
@@ -432,38 +452,113 @@ async function main() {
   ovB = (await lvlOf(B.vid)).safety_stock_qty;
   ovB === null ? ok('ô trống → bỏ ngoại lệ (NULL), không phải 0') : bad(`ô trống thành ${ovB}`, '');
 
-  // ── 13. CONNECTOR NGOÀI: TỒN CŨ/NGẮT KẾT NỐI PHẢI FAIL-CLOSED ────────────
-  sect('13. KiotViet external-master khóa checkout khi tồn cũ hoặc connector bị ngắt');
-  const L = await mkSP('Áo đồng bộ POS', 10);
-  const gioStale = await themGio(L.vid, 1);
-  const beforeStale = await lvlOf(L.vid);
+  // ── 13. CONNECTOR NGOÀI: FRESHNESS THEO SKU + GENERATION CAS ──────────────
+  sect('13. KiotViet external-master chỉ tin tồn mới của đúng từng SKU và generation');
+  const L = await mkSP('Áo POS tươi', 10);
+  const M = await mkSP('Áo POS cũ', 10);
+  // Fixture bắt đầu thẳng ở trạng thái hợp lệ sau cutover; đường chuyển authority và trigger
+  // được canh riêng ở invariant DB. Generation cố ý khác 0 để ca dưới bắt được code quên so CAS.
   const connector = (await owner.query(
     `INSERT INTO shop_integrations
        (shop_id,provider,status,inventory_authority,credential_ciphertext,retailer,
-        external_branch_ref,external_branch_name,inventory_synced_at)
-     VALUES ($1,'kiotviet','active','external_master','cipher-test','retailer-test','7','Chi nhánh 7',now()-interval '10 minutes')
-     RETURNING id`, [shopId],
+        external_branch_ref,external_branch_name,webhook_public_id,inventory_synced_at,generation)
+     VALUES ($1,'kiotviet','active','external_master','cipher-test','retailer-test','7','Chi nhánh 7',
+             gen_random_uuid(),now()-interval '1 day',4)
+     RETURNING id,generation`, [shopId],
   )).rows[0];
-  r = await chotGio(gioStale.cartCookie, 'kv-stale');
-  const afterStale = await lvlOf(L.vid);
+  await withIntegration(shopId, connector.id, connector.generation, (c) => c.query(
+    `INSERT INTO integration_entity_refs
+       (shop_id,integration_id,entity_type,external_id,local_id,mapping_status,
+        inventory_synced_at,inventory_generation,raw_meta)
+     VALUES (current_shop_id(),$1,'variant','kv-fresh',$2,'mapped',now(),$4,$5),
+            (current_shop_id(),$1,'variant','kv-stale',$3,'mapped',now()-interval '10 minutes',$4,$6)`,
+    [connector.id, L.vid, M.vid, connector.generation, { sku: 'KV-FRESH' }, { sku: 'KV-STALE' }],
+  ));
+  const gioA = await themGio(L.vid, 1);
+  const gioAB = await co('POST', '/cart/items', {
+    json: { variant_id: M.vid, qty: 1 }, cartCookie: gioA.cartCookie,
+  });
+  const beforeStaleA = await lvlOf(L.vid), beforeStaleB = await lvlOf(M.vid);
+  r = await chotGio(gioAB.cartCookie, 'kv-stale-one-sku');
+  const afterStaleA = await lvlOf(L.vid), afterStaleB = await lvlOf(M.vid);
   r.status === 503 && /5 phút/.test(r.json?.error ?? '')
-    && Number(afterStale.reserved) === Number(beforeStale.reserved)
-    ? ok('tồn quá 5 phút → 503 trước reserve, không để giữ chỗ rác')
-    : bad('checkout vẫn bán bằng tồn cũ hoặc đã giữ chỗ trước khi chặn', JSON.stringify({ status: r.status, body: r.json, beforeStale, afterStale }));
+    && Number(afterStaleA.reserved) === Number(beforeStaleA.reserved)
+    && Number(afterStaleB.reserved) === Number(beforeStaleB.reserved)
+    ? ok('SKU A tươi không mở khoá giỏ còn SKU B cũ; 503 xảy ra trước mọi reserve')
+    : bad('timestamp SKU khác đã mở nhầm checkout hoặc để lại reserve rác', JSON.stringify({ status: r.status, body: r.json, beforeStaleA, afterStaleA, beforeStaleB, afterStaleB }));
 
-  await owner.query(`UPDATE shop_integrations SET inventory_synced_at=now() WHERE id=$1`, [connector.id]);
-  r = await chotGio(gioStale.cartCookie, 'kv-fresh');
+  await withIntegration(shopId, connector.id, Number(connector.generation) - 1, (c) => c.query(
+    `UPDATE integration_entity_refs SET inventory_synced_at=now(),inventory_generation=$2
+      WHERE integration_id=$1 AND local_id=$3`, [connector.id, Number(connector.generation) - 1, M.vid],
+  ));
+  r = await chotGio(gioAB.cartCookie, 'kv-old-generation');
+  r.status === 503 ? ok('timestamp mới nhưng generation cũ vẫn bị chặn') : bad('checkout tin freshness của credential/branch đời cũ', r.raw);
+  await withIntegration(shopId, connector.id, connector.generation, (c) => c.query(
+    `UPDATE integration_entity_refs SET inventory_generation=$2
+      WHERE integration_id=$1 AND local_id=$3`, [connector.id, connector.generation, M.vid],
+  ));
+
+  const cartPage = await co('GET', '/cart', { cartCookie: gioAB.cartCookie, accept: 'text/html' });
+  const checkoutPage = await co('GET', '/checkout', { cartCookie: gioAB.cartCookie, accept: 'text/html' });
+  cartPage.status === 200 && /Ưu đãi đang tạm khóa/.test(cartPage.raw)
+    && !/action="\/cart\/(?:coupon|points)"/.test(cartPage.raw)
+    && checkoutPage.status === 200 && !/value="qr"/.test(checkoutPage.raw)
+    && /chỉ hỗ trợ COD/.test(checkoutPage.raw)
+    ? ok('UI external-master không mời mã giảm giá, đổi điểm hay QR chưa được pilot')
+    : bad('UI còn mời lựa chọn tài chính bị backend khóa', JSON.stringify({ cart: cartPage.raw.slice(0, 600), checkout: checkoutPage.raw.slice(0, 600) }));
+  r = await co('POST', '/checkout', {
+    json: { customer: { name: 'Khách', phone: sdt(), email: `k-${uniq()}@x.vn` }, address: { line: '1 Lê Lợi', province: 'Hà Nội' }, payment_method: 'qr' },
+    cartCookie: gioAB.cartCookie, idem: `ss-kv-qr-${uniq()}`,
+  });
+  r.status === 400 && r.json?.qr_unavailable === true
+    ? ok('POST thẳng QR vẫn fail-closed, không chỉ ẩn radio') : bad('API nhận QR chưa được pilot', r.raw);
+  r = await chotGio(gioAB.cartCookie, 'kv-fresh');
   r.status === 201 && r.json?.sync_status === 'pending'
-    ? ok('tồn vừa làm mới → đơn website được lưu local ở trạng thái chờ đồng bộ')
-    : bad('tồn mới nhưng checkout không tạo đơn pending', r.raw);
+    ? ok('cả hai SKU tươi đúng generation → lưu đơn website chờ đồng bộ')
+    : bad('freshness đầy đủ nhưng checkout không tạo đơn pending', r.raw);
+  const createdKvOrder = (await owner.query(
+    `SELECT id,integration_id,integration_generation,sync_status FROM orders
+      WHERE shop_id=$1 AND order_number=$2`, [shopId, r.json?.order_number],
+  )).rows[0];
   const queued = (await owner.query(
-    `SELECT count(*)::int n FROM outbox
-      WHERE shop_id=$1 AND topic='integration.order_created' AND payload->>'integration_id'=$2`,
-    [shopId, connector.id],
-  )).rows[0].n;
-  Number(queued) >= 1 ? ok('đơn website ghi outbox gửi KiotViet trong cùng giao dịch') : bad('thiếu outbox integration.order_created', '');
+    `SELECT payload FROM outbox
+      WHERE shop_id=$1 AND topic='integration.order_created'
+        AND payload->>'order_id'=$2 ORDER BY id DESC LIMIT 1`,
+    [shopId, createdKvOrder?.id],
+  )).rows[0];
+  createdKvOrder?.integration_id === connector.id
+    && Number(createdKvOrder.integration_generation) === Number(connector.generation)
+    && Number(queued?.payload?.generation) === Number(connector.generation)
+    ? ok('đơn và outbox cùng đóng dấu đúng connector generation')
+    : bad('đơn/outbox thiếu CAS generation', JSON.stringify({ createdKvOrder, queued }));
 
-  await owner.query(`UPDATE shop_integrations SET status='disabled' WHERE id=$1`, [connector.id]);
+  const gioRace = await themGio(L.vid, 1);
+  const [raceCheckout] = await Promise.all([
+    chotGio(gioRace.cartCookie, 'kv-disable-race'),
+    owner.query(
+      `UPDATE shop_integrations
+          SET status='disabled',generation=generation+1,credential_ciphertext=NULL,
+              webhook_public_id=NULL,webhook_refs='{}'::jsonb
+        WHERE id=$1`, [connector.id],
+    ),
+  ]);
+  const disabled = (await owner.query(
+    `SELECT status,inventory_authority,generation,credential_ciphertext,webhook_public_id
+       FROM shop_integrations WHERE id=$1`, [connector.id],
+  )).rows[0];
+  const raceOrder = raceCheckout.status === 201 ? (await owner.query(
+    `SELECT integration_generation,sync_status FROM orders WHERE shop_id=$1 AND order_number=$2`,
+    [shopId, raceCheckout.json?.order_number],
+  )).rows[0] : null;
+  disabled.status === 'disabled' && disabled.inventory_authority === 'external_master'
+    && Number(disabled.generation) === Number(connector.generation) + 1
+    && disabled.credential_ciphertext == null && disabled.webhook_public_id == null
+    && (raceCheckout.status === 503
+      || (raceCheckout.status === 201 && Number(raceOrder?.integration_generation) === Number(connector.generation)
+        && raceOrder?.sync_status === 'needs_attention'))
+    ? ok('đua checkout/ngắt kết nối tuyến tính: hoặc 503, hoặc đơn đời cũ bị đưa sang cần xử lý')
+    : bad('race tạo đơn thuộc generation disabled hoặc để đơn cũ tiếp tục pending', JSON.stringify({ raceCheckout, disabled, raceOrder }));
+
   const gioDisabled = await themGio(L.vid, 1);
   r = await chotGio(gioDisabled.cartCookie, 'kv-disabled');
   r.status === 503 && /tạm ngừng nhận đơn/.test(r.json?.error ?? '')
@@ -472,6 +567,7 @@ async function main() {
 
   console.log(`\n${pass} pass, ${fail} fail`);
   await owner.end();
+  await integration.end();
   process.exit(fail === 0 ? 0 : 1);
 }
 main().catch((e) => { console.error(e); process.exit(1); });

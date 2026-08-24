@@ -87,6 +87,34 @@ test('BFF ordersExportFields chuyển tiếp ĐỦ trường xuống seller', ()
   assert.deepEqual(thieu, [], 'BFF nuốt trường lọc → xuất ra cả đơn ngoài bộ lọc');
 });
 
+test('BFF giữ đúng mọi nguồn chỉ-đọc của seller cho cả danh sách và CSV', () => {
+  const seller = rd('apps/seller/src/orders.js');
+  const admin = rd('apps/seller-admin/src/server.js');
+  const literals = (text) => [...text.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+
+  const write = /const ORDER_SOURCES = new Set\(\[([^\]]+)\]\)/.exec(seller);
+  const readOnly = /const ORDER_FILTER_SOURCES = new Set\(\[\.\.\.ORDER_SOURCES,([^\]]+)\]\)/.exec(seller);
+  assert.ok(write && readOnly, 'không rút được hợp đồng nguồn đơn từ seller');
+  const expected = [...literals(write[1]), ...literals(readOnly[1])].sort();
+
+  const listStart = admin.indexOf('async function ordersList(');
+  const listEnd = admin.indexOf('\nasync function ', listStart + 1);
+  const listBody = admin.slice(listStart, listEnd);
+  const listMatch = /const source = \[([^\]]+)\]\.includes\(q\.get\('source'\)\)/.exec(listBody);
+
+  const exportStart = admin.indexOf('function ordersExportFields(');
+  const exportEnd = admin.indexOf('\n}', exportStart) + 2;
+  const exportBody = admin.slice(exportStart, exportEnd);
+  const exportMatch = /source: \[([^\]]+)\]\.includes\(f\.source\)/.exec(exportBody);
+
+  assert.ok(listMatch, 'không rút được allowlist nguồn ở danh sách đơn BFF');
+  assert.ok(exportMatch, 'không rút được allowlist nguồn ở xuất CSV BFF');
+  assert.deepEqual(literals(listMatch[1]).sort(), expected,
+    'danh sách admin nuốt một nguồn chỉ-đọc của seller — chọn POS sẽ hiện lại mọi đơn');
+  assert.deepEqual(literals(exportMatch[1]).sort(), expected,
+    'xuất CSV nuốt một nguồn chỉ-đọc của seller — file sẽ rộng hơn tập người bán đang xem');
+});
+
 // Biên ngày: MỘT quy tắc cho mọi bộ lọc "Từ ngày / Đến ngày". DB chạy UTC nên `::date` trần
 // cắt tại 7 giờ sáng giờ VN — đơn đặt lúc 0h–7h rơi sai ngày, và trang Đơn hàng nói khác
 // trang Báo cáo. Ba nơi phải dùng CHUNG date-range.js, không ai được tự chép lại.

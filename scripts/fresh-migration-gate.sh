@@ -22,8 +22,8 @@
 # Điểm 4 KHÔNG thừa: `migrate.js status` chỉ duyệt file nên nó mù với dòng thừa trong
 # schema_migrations. Đếm từ hai phía là cách duy nhất bịt cả hai chiều.
 #
-# BASELINE ĐẾM THEO FILE, KHÔNG THEO SỐ THỨ TỰ. Hôm nay là 172 file trong khi file mới
-# nhất mang số 0174 — dãy có khoảng trống (0157 chẳng hạn). Suy số lượng từ số thứ tự là
+# BASELINE ĐẾM THEO FILE, KHÔNG THEO SỐ THỨ TỰ. Hôm nay là 177 file trong khi file mới
+# nhất mang số 0179 — dãy có khoảng trống (0157 chẳng hạn). Suy số lượng từ số thứ tự là
 # sai ngay từ hôm nay.
 #
 # CÁCH DÙNG

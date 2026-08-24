@@ -121,3 +121,68 @@ test('BFF không hỏi mật khẩu vai không được quản lý credential PO
       `${name} phải chặn vai ngoài owner/admin trước interstitial`);
   }
 });
+
+function functionSource(source, name, nextName) {
+  const start = source.indexOf(`async function ${name}(`);
+  const end = source.indexOf(`async function ${nextName}(`, start + 1);
+  assert.ok(start >= 0 && end > start, `không cắt được hàm ${name}`);
+  return source.slice(start, end);
+}
+
+test('phiên probe KiotViet dùng token bất biến qua activate để tab cũ không nhận bundle mới', () => {
+  const probe = functionSource(integrationSource, 'probeKiotViet', 'activateKiotViet');
+  const activate = functionSource(integrationSource, 'activateKiotViet', 'disableIntegration');
+
+  assert.match(probe, /RETURNING id, pending_generation, pending_webhook_public_id/);
+  assert.match(probe, /pending_token:\s*row\.pending_webhook_public_id/,
+    'probe phải trả token của chính pending bundle vừa ghi');
+  assert.match(activate, /body\?\.pending_token/);
+  assert.match(activate, /current\.pending_webhook_public_id[\s\S]*?!== pendingToken/,
+    'activate phải từ chối token của tab probe cũ trước khi gọi provider');
+  assert.ok(activate.indexOf("!== pendingToken") < activate.indexOf('listBranches()'),
+    'token cũ phải bị chặn trước mọi side effect/provider call');
+  assert.match(activate, /pending_webhook_public_id = \$6[\s\S]*?current\.pending_generation, pendingToken/,
+    'CAS cuối phải dùng lại đúng token từ request, không chỉ tin snapshot vừa đọc');
+  assert.match(activate,
+    /catch \(error\) \{[\s\S]*?removeKiotVietWebhooks\(credentials, createdWebhookRefs\);[\s\S]*?throw error/,
+    'transaction DB lỗi sau khi gọi provider phải gỡ webhook vừa tạo trước khi ném lỗi');
+});
+
+test('webhook cùng định danh nhưng khác payload fail-closed và mở ca đối soát', () => {
+  const webhook = integrationSource.slice(integrationSource.indexOf('export async function handleKiotVietWebhook'));
+  assert.match(webhook, /SELECT id, payload_hash FROM integration_webhook_inbox/);
+  assert.match(webhook, /existing\.payload_hash !== payloadHash/,
+    'duplicate chỉ hợp lệ khi hash nội dung cũng giống nhau');
+  assert.match(webhook, /const dedupeKey = `webhook-collision:/);
+  assert.match(webhook, /'webhook_failed', 'critical', 'webhook'/,
+    'collision phải để lại discrepancy bền vững, không chỉ trả lỗi');
+  assert.match(webhook, /if \(accepted\.collision\) return send\(res, 409/,
+    'collision không được trả 202 như replay cùng nội dung');
+  assert.doesNotMatch(webhook, /existing_payload_hash:[^\n]*payload\b|received_payload_hash:[^\n]*payload\b/,
+    'discrepancy chỉ lưu hash, không nhân đôi raw payload có thể chứa PII');
+});
+
+test('webhook khóa độc quyền connector trước khi ghi inbox để không deadlock khi nâng khóa', () => {
+  const webhook = integrationSource.slice(integrationSource.indexOf('export async function handleKiotVietWebhook'));
+  const lockAt = webhook.indexOf('FOR UPDATE');
+  const inboxAt = webhook.indexOf('INSERT INTO integration_webhook_inbox');
+  const heartbeatAt = webhook.indexOf('UPDATE shop_integrations SET webhook_received_at');
+
+  assert.ok(lockAt >= 0 && inboxAt > lockAt && heartbeatAt > inboxAt,
+    'mọi webhook cùng connector phải xếp hàng bằng khóa độc quyền trước khi chạm inbox rồi heartbeat');
+  assert.doesNotMatch(webhook.slice(0, inboxAt), /FOR SHARE/,
+    'FOR SHARE rồi UPDATE cùng hàng tạo lock-upgrade deadlock khi hai webhook tới đồng thời');
+});
+
+test('retry đơn connector không tự nhận đơn của generation cũ', () => {
+  const retry = functionSource(integrationSource, 'retryDiscrepancy', 'handleKiotVietWebhook');
+  const guardAt = retry.indexOf('row.order_generation == null');
+  const enqueueAt = retry.indexOf('INSERT INTO outbox');
+
+  assert.match(retry, /o\.integration_generation AS order_generation/);
+  assert.ok(guardAt >= 0 && enqueueAt > guardAt,
+    'phải so generation của đơn trước khi đưa retry vào outbox');
+  assert.match(retry, /Number\(row\.order_generation\) !== Number\(row\.generation\)/);
+  assert.match(retry, /if \(out\.stale_order_generation\) return send\(res, 409/,
+    'người vận hành phải thấy 409 rõ ràng thay vì thông báo đã retry giả');
+});

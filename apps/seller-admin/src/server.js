@@ -456,7 +456,7 @@ async function ordersList(res, me, cookie, shopId, q) {
   const offset = Math.max(0, parseInt(q.get('offset') ?? '0', 10) || 0);
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   const payment = ['unpaid', 'pending', 'paid', 'refunded'].includes(q.get('payment')) ? q.get('payment') : '';
-  const source = ['web', 'manual', 'facebook', 'zalo', 'tiktok', 'other'].includes(q.get('source')) ? q.get('source') : '';
+  const source = ['web', 'manual', 'facebook', 'zalo', 'tiktok', 'other', 'kiotviet_pos', 'sapo_pos'].includes(q.get('source')) ? q.get('source') : '';
   // Đơn DI CƯ: '0' = bỏ đơn nhập từ sàn cũ, '1' = chỉ đơn đó, '' = không lọc (mặc định, để
   // tra cứu lịch sử khách vẫn ra đủ). Giá trị lạ rơi về '' như mọi bộ lọc khác trên trang này
   // — link cũ hoặc URL người dùng sửa tay không được làm vỡ danh sách.
@@ -1336,8 +1336,10 @@ async function integrationProbeStepUp(req, res, me, cookie, shopId) {
   return doIntegrationProbe(res, me, cookie, shopId, body);
 }
 
-async function doIntegrationActivate(res, me, cookie, shopId, branchId) {
-  const r = await sellerApi('POST', `/shops/${shopId}/integrations/kiotviet/activate`, { cookie, body: { branch_id: branchId }, timeoutMs: 15000 });
+async function doIntegrationActivate(res, me, cookie, shopId, branchId, pendingToken) {
+  const r = await sellerApi('POST', `/shops/${shopId}/integrations/kiotviet/activate`, {
+    cookie, body: { branch_id: branchId, pending_token: pendingToken }, timeoutMs: 15000,
+  });
   return integrationsPage(res, me, cookie, shopId, r.status === 202 ? (r.json?.message ?? 'Đã đưa đồng bộ thử vào hàng đợi.') : null,
     r.status === 202 ? null : (r.json?.error ?? 'Không kích hoạt được kết nối.'));
 }
@@ -1345,13 +1347,15 @@ async function doIntegrationActivate(res, me, cookie, shopId, branchId) {
 async function integrationActivate(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   if (!INTEGRATION_MANAGE_ROLES.has(roleFor(me, shopId))) return denyShop(res, me);
-  const branchId = String((await readForm(req)).branch_id ?? '').trim().slice(0, 200);
-  if (steppedUp(me)) return doIntegrationActivate(res, me, cookie, shopId, branchId);
+  const form = await readForm(req);
+  const branchId = String(form.branch_id ?? '').trim().slice(0, 200);
+  const pendingToken = String(form.pending_token ?? '').trim().slice(0, 100);
+  if (steppedUp(me)) return doIntegrationActivate(res, me, cookie, shopId, branchId, pendingToken);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'integrations');
   return sendHtml(res, 200, V.renderStepUpGate(ctx, {
     title: 'Xác nhận đồng bộ KiotViet', giaiThich: 'Đồng bộ thử có thể cập nhật bản chiếu tồn kho — nhập mật khẩu để tiếp tục.',
     action: `/shops/${shopId}/integrations/kiotviet/activate/step-up`, huyUrl: `/shops/${shopId}/integrations`,
-    hidden: [['branch_id', branchId]],
+    hidden: [['branch_id', branchId], ['pending_token', pendingToken]],
   }));
 }
 
@@ -1360,16 +1364,17 @@ async function integrationActivateStepUp(req, res, me, cookie, shopId) {
   if (!INTEGRATION_MANAGE_ROLES.has(roleFor(me, shopId))) return denyShop(res, me);
   const form = await readForm(req);
   const branchId = String(form.branch_id ?? '').trim().slice(0, 200);
+  const pendingToken = String(form.pending_token ?? '').trim().slice(0, 100);
   const auth = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(form.password ?? '') } });
   if (auth.status !== 200) {
     const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'integrations');
     return sendHtml(res, 401, V.renderStepUpGate(ctx, {
       title: 'Xác nhận đồng bộ KiotViet', giaiThich: 'Đồng bộ thử có thể cập nhật bản chiếu tồn kho — nhập mật khẩu để tiếp tục.',
       action: `/shops/${shopId}/integrations/kiotviet/activate/step-up`, huyUrl: `/shops/${shopId}/integrations`,
-      hidden: [['branch_id', branchId]], err: auth.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.',
+      hidden: [['branch_id', branchId], ['pending_token', pendingToken]], err: auth.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.',
     }));
   }
-  return doIntegrationActivate(res, me, cookie, shopId, branchId);
+  return doIntegrationActivate(res, me, cookie, shopId, branchId, pendingToken);
 }
 
 async function integrationDisableGate(res, me, cookie, shopId, integrationId, err = null) {
@@ -1406,6 +1411,39 @@ async function integrationDisableStepUp(req, res, me, cookie, shopId, integratio
   if (stepped.status !== 200) return integrationDisableGate(res, me, cookie, shopId, integrationId,
     stepped.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.');
   return doIntegrationDisable(res, me, cookie, shopId, integrationId);
+}
+
+async function integrationTransferLocalGate(res, me, cookie, shopId, integrationId, err = null) {
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'integrations');
+  return sendHtml(res, err ? 401 : 200, V.renderStepUpGate(ctx, {
+    title: 'Xác nhận chuyển quyền tồn về nền tảng',
+    giaiThich: 'Bản chiếu tồn cuối sẽ trở thành số bắt đầu của kho local. Sau bước này hãy kiểm đếm tồn thực tế trước khi mở bán lại.',
+    action: `/shops/${shopId}/integrations/${integrationId}/transfer-local/step-up`,
+    huyUrl: `/shops/${shopId}/integrations`, err,
+  }));
+}
+
+async function doIntegrationTransferLocal(res, me, cookie, shopId, integrationId) {
+  const r = await sellerApi('POST', `/shops/${shopId}/integrations/${integrationId}/transfer-local`, { cookie, body: {} });
+  return integrationsPage(res, me, cookie, shopId, r.status === 200 ? r.json?.message : null,
+    r.status === 200 ? null : (r.json?.error ?? 'Không chuyển được quyền tồn.'));
+}
+
+async function integrationTransferLocal(res, me, cookie, shopId, integrationId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (!INTEGRATION_MANAGE_ROLES.has(roleFor(me, shopId))) return denyShop(res, me);
+  return steppedUp(me) ? doIntegrationTransferLocal(res, me, cookie, shopId, integrationId)
+    : integrationTransferLocalGate(res, me, cookie, shopId, integrationId);
+}
+
+async function integrationTransferLocalStepUp(req, res, me, cookie, shopId, integrationId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  if (!INTEGRATION_MANAGE_ROLES.has(roleFor(me, shopId))) return denyShop(res, me);
+  const form = await readForm(req);
+  const stepped = await authApi('POST', '/auth/step-up', { cookie, body: { password: String(form.password ?? '') } });
+  if (stepped.status !== 200) return integrationTransferLocalGate(res, me, cookie, shopId, integrationId,
+    stepped.status === 429 ? 'Quá nhiều lần thử, đợi chút.' : 'Mật khẩu không đúng.');
+  return doIntegrationTransferLocal(res, me, cookie, shopId, integrationId);
 }
 
 async function integrationMap(req, res, me, cookie, shopId, refId) {
@@ -3068,7 +3106,7 @@ function ordersExportFields(f) {
     q: String(f.q ?? '').trim().slice(0, 100),
     from: DATE_RE.test(String(f.from ?? '').trim()) ? String(f.from).trim() : '',
     to: DATE_RE.test(String(f.to ?? '').trim()) ? String(f.to).trim() : '',
-    source: ['web', 'manual', 'facebook', 'zalo', 'tiktok', 'other'].includes(f.source) ? f.source : '',
+    source: ['web', 'manual', 'facebook', 'zalo', 'tiktok', 'other', 'kiotviet_pos', 'sapo_pos'].includes(f.source) ? f.source : '',
     // payment: allowlist khớp PAYMENT_STATUSES phía seller. Thiếu trường này thì dù hidden có
     // gửi lên, BFF vẫn nuốt — xuất ra MỌI đơn thay vì đơn đang lọc, tức phát tán SĐT + địa chỉ
     // khách vượt xa phạm vi người bán định lấy, và với shop lớn còn đâm thẳng vào trần 413.
@@ -4550,6 +4588,8 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/integrations/kiotviet/activate/step-up$`).exec(p)) && req.method === 'POST') return integrationActivateStepUp(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/integrations/${UUID}/disable$`).exec(p)) && req.method === 'POST') return integrationDisable(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/integrations/${UUID}/disable/step-up$`).exec(p)) && req.method === 'POST') return integrationDisableStepUp(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations/${UUID}/transfer-local$`).exec(p)) && req.method === 'POST') return integrationTransferLocal(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations/${UUID}/transfer-local/step-up$`).exec(p)) && req.method === 'POST') return integrationTransferLocalStepUp(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/integrations/mappings/${UUID}$`).exec(p)) && req.method === 'POST') return integrationMap(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/integrations/mappings/${UUID}/ignore$`).exec(p)) && req.method === 'POST') return integrationIgnore(res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/integrations/discrepancies/${UUID}/retry$`).exec(p)) && req.method === 'POST') return integrationRetry(res, me, cookie, m[1], m[2]);

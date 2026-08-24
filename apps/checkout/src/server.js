@@ -288,12 +288,43 @@ async function resolveCoupon(c, code, subtotal) {
   return discount > 0 ? { code: cp.code, kind: cp.kind, value: Number(cp.value), discount } : null;
 }
 
+// Pilot POS ngoài chỉ mở những lựa chọn làm đổi tổng tiền khi capability đúng boolean true.
+// Đọc và chốt đơn phải dùng cùng policy; nếu mỗi handler tự diễn giải JSON thì chuỗi "true"
+// hoặc một key gần giống rất dễ mở nhầm đường tiền. `lock` giữ hàng connector xuyên lúc chốt
+// để cutover không đổi authority ở giữa giao dịch.
+function policyTuConnector(connector) {
+  const integration = connector?.inventory_authority === 'external_master' ? connector : null;
+  const discountsAllowed = !integration || integration.capabilities?.preserve_line_price === true;
+  return {
+    integration,
+    external_master: !!integration,
+    discounts_allowed: discountsAllowed,
+    cod_only: !!integration,
+  };
+}
+async function checkoutPolicy(c, { lock = false } = {}) {
+  // Vai checkout cố ý không có quyền bảng trực tiếp trên credential connector.
+  // Cả đường render và đường chốt đều dùng projection SECURITY DEFINER hẹp; hàm giữ khóa
+  // dòng lifecycle tới hết transaction khi đường gọi cần bảo vệ cutover.
+  const connector = (await c.query(
+    `SELECT id, provider, status, inventory_authority, external_branch_ref, generation, capabilities
+       FROM lock_checkout_integration()`
+  )).rows[0] ?? null;
+  return policyTuConnector(connector);
+}
+const publicCheckoutPolicy = (policy) => ({
+  external_master: policy.external_master,
+  discounts_allowed: policy.discounts_allowed,
+  cod_only: policy.cod_only,
+});
+
 // customerId: khách ĐĂNG NHẬP → tóm tắt trừ luôn phần ĐỔI ĐIỂM. Trước đây phần điểm chỉ được
 // cộng vào ở handler /cart, nên TRANG GIỎ và TRANG CHECKOUT nói hai con số khác nhau: giỏ hiện
 // "−30.000₫ đổi điểm", checkout thì không, mà đơn tạo ra thì CÓ trừ. Nút "Đặt hàng · X" in ra
 // một con số không phải số sẽ thu. Gom vào đây = một luật cho mọi màn (và cho cả ô giam_seen
 // của vòng trung thực — thiếu nó thì khách đổi điểm bị 409 chặn đặt hàng ở mọi lần bấm).
-async function summarize(c, cartId, province = null, coords = null, customerId = null) {
+async function summarize(c, cartId, province = null, coords = null, customerId = null, knownPolicy = null) {
+  const policy = knownPolicy ?? await checkoutPolicy(c);
   const items = (await c.query(
     `SELECT ci.variant_id, ci.qty, v.price_vnd, v.weight_gram, v.title AS variant_title, v.sku, p.title AS product_title, p.slug,
             pe.price_vnd AS sale_price_vnd, pe.off_pct AS sale_off_pct,
@@ -328,13 +359,13 @@ async function summarize(c, cartId, province = null, coords = null, customerId =
     && regionOf(province) == null && !(cfg.threshold != null && subtotal >= cfg.threshold);
   // Mã giảm giá đang áp trên giỏ — re-validate theo subtotal hiện tại (mã hết hạn/không đủ đơn → bỏ qua).
   const cc = (await c.query(`SELECT coupon_code FROM carts WHERE id = $1`, [cartId])).rows[0]?.coupon_code;
-  const coupon = cc ? await resolveCoupon(c, cc, subtotal) : null;
+  const coupon = policy.discounts_allowed && cc ? await resolveCoupon(c, cc, subtotal) : null;
   const discount = coupon?.discount ?? 0;
   // ĐỔI ĐIỂM (0086) — chỉ XEM; chân lý vẫn là createOrderTx tính lại dưới khoá số dư. Ba trần
   // + ngưỡng tối thiểu phải KHỚP TỪNG CHỮ với chỗ chốt đơn, nếu không màn hình lại hứa một
   // đằng đơn tính một nẻo (đúng lớp lỗi vừa vá ở ngưỡng min_redeem_points).
   let pointsDiscount = 0, loyalty = null;
-  if (customerId) {
+  if (customerId && policy.discounts_allowed) {
     // GUC danh tính khách: RLS 2 trục của loyalty_balances cần nó (mirror handler /cart).
     await c.query(`SELECT set_config('app.customer_id', $1, true)`, [customerId]);
     const lc = (await c.query(`SELECT enabled, redeem_vnd_per_point, max_redeem_pct, min_redeem_points FROM shop_loyalty_config WHERE shop_id = current_shop_id()`)).rows[0];
@@ -355,7 +386,7 @@ async function summarize(c, cartId, province = null, coords = null, customerId =
   return { items: out, subtotal_vnd: subtotal, shipping_vnd: outOfRange ? null : shipping, discount_vnd: discount, coupon_code: coupon?.code ?? null,
     hidden_items: soMonAn, points_discount_vnd: pointsDiscount, ...(loyalty ? { loyalty } : {}),
     total_vnd: outOfRange ? null : subtotal - discount - pointsDiscount + shipping, fee_region_pending: feeRegionPending, ship_out_of_range: outOfRange,
-    distance_mode: cfg.mode === 'distance' };
+    distance_mode: cfg.mode === 'distance', checkout_policy: publicCheckoutPolicy(policy) };
 }
 
 // Shop có BẬT thanh toán QR (VietQR) đầy đủ chưa? Mặc định shop chỉ-COD KHÔNG có row → false →
@@ -563,8 +594,12 @@ async function applyCouponCore(c, token, code) {
   const cart = await findCart(c, token);
   if (!cart) fail(404, 'giỏ hàng không tồn tại');
   const clean = String(code ?? '').trim().toUpperCase().slice(0, 40);
+  const policy = await checkoutPolicy(c);
+  if (clean && !policy.discounts_allowed) {
+    fail(409, 'Mã giảm giá đang tạm khóa vì tồn kho do KiotViet quản lý; giá ưu đãi sẽ mở sau khi pilot xác minh đường tiền.');
+  }
   await c.query(`UPDATE carts SET coupon_code = $2, updated_at = now() WHERE id = $1`, [cart.id, clean || null]);
-  const summary = await summarize(c, cart.id);
+  const summary = await summarize(c, cart.id, null, null, null, policy);
   return { summary, tried: clean, applied: !!(clean && summary.coupon_code) };
 }
 async function applyCouponForm(req, res, form, ctx) {  // form trang giỏ → 303 /cart (hoặc render lỗi)
@@ -587,7 +622,12 @@ async function applyPointsForm(req, res, form, ctx) {
   try {
     await withTenant(ctx.shopId, async (c) => {
       const cart = await findCart(c, token);
-      if (cart) await c.query(`UPDATE carts SET points_redeem = $2, updated_at = now() WHERE id = $1`, [cart.id, want]);
+      if (!cart) return;
+      const policy = await checkoutPolicy(c);
+      if (want > 0 && !policy.discounts_allowed) {
+        fail(409, 'Đổi điểm đang tạm khóa vì tồn kho do KiotViet quản lý; ưu đãi sẽ mở sau khi pilot xác minh đường tiền.');
+      }
+      await c.query(`UPDATE carts SET points_redeem = $2, updated_at = now() WHERE id = $1`, [cart.id, want]);
     });
     return redirect(res, '/cart');
   } catch (err) {
@@ -837,20 +877,16 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     if (ctx.customerId) await c.query(`SELECT set_config('app.customer_id', $1, true)`, [ctx.customerId]);
 
     // Shop dùng POS ngoài vẫn giữ đơn website ở nền tảng, nhưng tồn vật lý có MỘT chủ.
-    // Nếu connector bị ngắt hoặc bản chiếu quá 5 phút thì dừng TRƯỚC reserve: bán tiếp trên
-    // số tồn cũ sẽ tạo một đơn mà cả shop lẫn KiotViet đều không thể thực hiện chắc chắn.
-    const integration = (await c.query(
-      `SELECT id, provider, status, external_branch_ref, inventory_synced_at
-         FROM shop_integrations
-        WHERE inventory_authority = 'external_master'
-        LIMIT 1`,
-    )).rows[0] ?? null;
-    if (integration && integration.status !== 'active') {
+    // Đồng hồ toàn connector không chứng minh SKU trong giỏ vừa được đọc; generation + độ tươi
+    // của TỪNG ref mới là bằng chứng checkout được phép tin.
+    const policy = await checkoutPolicy(c, { lock: true });
+    const integration = policy.integration;
+    if (integration && (integration.inventory_authority !== 'external_master'
+      || integration.status !== 'active')) {
       fail(503, 'Cửa hàng đang tạm ngừng nhận đơn vì kết nối tồn kho ngoài chưa sẵn sàng. Vui lòng thử lại sau.');
     }
-    if (integration && (!integration.inventory_synced_at
-      || Date.now() - new Date(integration.inventory_synced_at).getTime() > 5 * 60_000)) {
-      fail(503, 'Tồn kho của cửa hàng chưa được cập nhật trong 5 phút gần đây. Vui lòng thử lại sau.');
+    if (policy.cod_only && paymentMethod !== 'cod') {
+      fail(400, 'Kết nối KiotViet pilot hiện chỉ nhận COD; thanh toán trước sẽ mở sau khi API tiền được xác minh.', { qr_unavailable: true });
     }
 
     const cart = await findCart(c, token, { forUpdate: true });
@@ -866,6 +902,26 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
         ORDER BY ci.created_at`, [cart.id],
     )).rows;
     if (items.length === 0) fail(400, 'giỏ hàng trống');
+    if (integration) {
+      const variantIds = [...new Set(items.map((item) => item.variant_id))];
+      const refs = (await c.query(
+        `SELECT local_id, inventory_synced_at, inventory_generation
+           FROM integration_entity_refs
+          WHERE integration_id = $1 AND entity_type = 'variant'
+            AND mapping_status = 'mapped' AND local_id = ANY($2::uuid[])`,
+        [integration.id, variantIds],
+      )).rows;
+      const byVariant = new Map(refs.map((row) => [row.local_id, row]));
+      const stale = variantIds.filter((variantId) => {
+        const ref = byVariant.get(variantId);
+        const syncedAt = ref?.inventory_synced_at ? new Date(ref.inventory_synced_at).getTime() : NaN;
+        return !ref || Number(ref.inventory_generation) !== Number(integration.generation)
+          || !Number.isFinite(syncedAt) || Date.now() - syncedAt > 5 * 60_000;
+      });
+      if (stale.length) {
+        fail(503, 'Một sản phẩm trong giỏ chưa có tồn KiotViet được xác minh trong 5 phút gần đây. Vui lòng thử lại sau.');
+      }
+    }
 
     // ── Chống ĐƠN ẢO: TRẦN ĐỒNG THỜI số đơn CHƯA XỬ LÝ (pending) theo NGUỒN (hash IP) + SĐT.
     // KHOÁ TUẦN TỰ theo nguồn (advisory lock tx-scoped, thứ tự cố định IP→SĐT chống deadlock)
@@ -950,7 +1006,14 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     // đơn dùng lượt cuối → chỉ 1 đơn thắng (UPDATE khoá hàng coupon). Hết lượt → bỏ giảm (đơn
     // vẫn tạo, khách trả đủ) thay vì chặn checkout.
     let discount = 0, couponCode = null;
-    const cc = (await c.query(`SELECT coupon_code FROM carts WHERE id = $1`, [cart.id])).rows[0]?.coupon_code;
+    const storedCoupon = (await c.query(`SELECT coupon_code FROM carts WHERE id = $1`, [cart.id])).rows[0]?.coupon_code;
+    // Coupon stamp từ trước cutover không được làm checkout kẹt vĩnh viễn. Trang đã tính lại
+    // giá đầy đủ; form cũ còn giam_seen > 0 sẽ nhận 409 và dựng lại trước khi khách xác nhận.
+    // API không có vòng nhìn-lại giá, nên không được âm thầm bỏ coupon cũ rồi tạo đơn giá đủ.
+    if (!policy.discounts_allowed && storedCoupon && f.expectedGiam == null) {
+      fail(409, 'Ưu đãi trên giỏ không còn áp dụng khi đơn đồng bộ KiotViet.', { discount_vnd: 0, points_discount_vnd: 0 });
+    }
+    const cc = policy.discounts_allowed ? storedCoupon : null;
     if (cc) {
       const cp = await resolveCoupon(c, cc, subtotal);
       if (cp) {
@@ -969,8 +1032,16 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
     if (ctx.customerId) {
       const lc = (await c.query(`SELECT enabled, redeem_vnd_per_point, min_redeem_points, max_redeem_pct FROM shop_loyalty_config WHERE shop_id = current_shop_id()`)).rows[0];
       // want = số điểm khách muốn đổi: từ input JSON (f.pointsRedeem) hoặc đã stamp trên giỏ (form).
-      const want = f.pointsRedeem != null ? Math.max(0, Math.trunc(Number(f.pointsRedeem)) || 0)
+      const requestedPoints = f.pointsRedeem != null ? Math.max(0, Math.trunc(Number(f.pointsRedeem)) || 0)
         : Number((await c.query(`SELECT points_redeem FROM carts WHERE id = $1`, [cart.id])).rows[0]?.points_redeem ?? 0);
+      if (f.pointsRedeem != null && requestedPoints > 0 && !policy.discounts_allowed) {
+        fail(400, 'Đổi điểm tạm khóa cho đơn KiotViet cho tới khi tổng tiền provider được pilot xác minh.');
+      }
+      if (f.pointsRedeem == null && requestedPoints > 0 && !policy.discounts_allowed && f.expectedGiam == null) {
+        fail(409, 'Điểm đã chọn trên giỏ không còn áp dụng khi đơn đồng bộ KiotViet.', { discount_vnd: 0, points_discount_vnd: 0 });
+      }
+      // Giá trị đã stamp trước cutover là ý định cũ, không phải quyền áp ưu đãi sau cutover.
+      const want = policy.discounts_allowed ? requestedPoints : 0;
       if (lc?.enabled && want > 0) {
         const bal = (await c.query(`SELECT balance_points FROM loyalty_balances WHERE shop_id = current_shop_id() AND customer_id = $1 FOR UPDATE`, [ctx.customerId])).rows[0];
         const balance = bal ? Number(bal.balance_points) : 0;
@@ -1031,10 +1102,11 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
          points_redeemed, points_discount_vnd,
          -- Nguồn đơn (0119): đơn qua trang thanh toán LUÔN là 'web'. Ghi ngay tại đây
          -- chứ không suy ra sau, vì "suy ra" nghĩa là mỗi chỗ đọc lại đoán một kiểu.
-         source, integration_id, external_branch_ref, sync_status, sync_updated_at)
-       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'web', $19, $20, $21, now()) RETURNING id`,
+         source, integration_id, integration_generation, external_branch_ref, sync_status, sync_updated_at)
+       VALUES (current_shop_id(), $1, 'pending', 'unpaid', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'web', $19, $20, $21, $22, now()) RETURNING id`,
       [num, paymentMethod, name, phoneCanon ?? phone, email, address, subtotal, shipping, discount, total, hashToken(lookupToken), paymentRef, qrAccount, couponCode, ipHash, ctx.customerId ?? null, pointsRedeemed, pointsDiscount,
-        integration?.id ?? null, integration?.external_branch_ref ?? null, integration ? 'pending' : 'not_required'],
+        integration?.id ?? null, integration ? Number(integration.generation) : null,
+        integration?.external_branch_ref ?? null, integration ? 'pending' : 'not_required'],
     )).rows[0];
     // Sổ điểm ĐỔI (0086): ghi SAU khi có order.id → UNIQUE loyalty_ledger_redeem_once(shop,order)
     // = đúng 1 dòng/đơn. Số dư đã trừ ở trên (cùng tx, khoá FOR UPDATE) → nguyên tử. Nếu tx
@@ -1116,7 +1188,8 @@ async function createOrderTx(c, ctx, token, idemKey, f) {
       await c.query(
         `INSERT INTO outbox (shop_id, topic, payload)
          VALUES (current_shop_id(), 'integration.order_created', $1)`,
-        [{ integration_id: integration.id, order_id: order.id, order_number: Number(num) }],
+        [{ integration_id: integration.id, generation: Number(integration.generation),
+          order_id: order.id, order_number: Number(num) }],
       );
     }
 

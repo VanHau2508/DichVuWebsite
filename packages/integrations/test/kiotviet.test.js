@@ -3,8 +3,11 @@ import crypto from 'node:crypto';
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  canApplyKiotVietStock,
   createKiotVietClient,
   extractKiotVietNotifications,
+  integrationRetryBackoffMs,
+  isStaleKiotVietSnapshot,
   kiotVietBranchOnHand,
   verifyKiotVietSignature,
 } from '../src/kiotviet.js';
@@ -24,6 +27,14 @@ before(async () => {
     if (req.url.startsWith('/branches')) return res.end(JSON.stringify({ data: [{ id: 7, branchName: 'Chi nhánh chính' }] }));
     if (req.url === '/orders/code/KV-12') return res.end(JSON.stringify({ id: 91, code: 'KV-12' }));
     if (req.url === '/orders/code/KHONG-CO') { res.statusCode = 404; return res.end(JSON.stringify({ message: 'không thấy' })); }
+    if (req.url.startsWith('/orders?') && req.url.includes('lastModifiedFrom=rate-limit')) {
+      res.statusCode = 429;
+      res.setHeader('retry-after', '7');
+      return res.end(JSON.stringify({ message: 'thử lại sau' }));
+    }
+    if (req.url.startsWith('/orders?') && req.url.includes('currentItem=20')) {
+      return res.end(JSON.stringify({ data: [{ id: 92, status: 2 }], total: 37 }));
+    }
     if (req.url.startsWith('/orders?') && req.url.includes('lastModifiedFrom=full-scan')) {
       return res.end(JSON.stringify({
         data: Array.from({ length: 100 }, (_, i) => ({ id: i + 1, description: `đơn khác ${i}` })),
@@ -32,6 +43,7 @@ before(async () => {
     }
     if (req.url.startsWith('/orders?')) return res.end(JSON.stringify({ data: [{ id: 91, code: 'KV-12', description: '[NTG:ABC:12] đơn website' }] }));
     if (req.url === '/orders' && req.method === 'POST') return res.end(JSON.stringify({ id: 91, code: 'NTG-12' }));
+    if (req.url.startsWith('/products?')) return res.end(JSON.stringify({ data: [{ id: 501 }], removeId: [502], total: 1 }));
     if (req.url.startsWith('/invoices?')) return res.end(JSON.stringify({ data: [{ id: 501, status: 1, total: 100000 }], total: 1 }));
     if (req.url.startsWith('/webhooks') && req.method === 'GET') return res.end(JSON.stringify({ data: [{ id: 3, type: 'stock.update', url: 'https://api.example/hook' }] }));
     if (req.url === '/webhooks' && req.method === 'POST') return res.end(JSON.stringify({ id: 4, type: 'invoice.update' }));
@@ -50,10 +62,16 @@ test('client dùng OAuth, header retailer và tìm đơn theo code trước khi 
   assert.equal((await client.findOrderByCode('KV-12')).id, 91);
   assert.equal(await client.findOrderByCode('KHONG-CO'), null);
   assert.equal((await client.findOrderByMarker('[NTG:ABC:12]', { lastModifiedFrom: '2026-01-01' })).id, 91);
+  assert.deepEqual(await client.listOrders({ currentItem: 20, pageSize: 25, lastModifiedFrom: '2026-01-02', branchId: 7 }), {
+    rows: [{ id: 92, status: 2 }], total: 37,
+  });
   assert.equal((await client.createOrder({
     branchId: 7,
     orderDelivery: { receiver: 'Khách thử', contactNumber: '0900000000', address: '1 Đường A', price: 30000 },
   })).id, 91);
+  assert.deepEqual(await client.listProducts({ lastModifiedFrom: '2026-01-03' }), {
+    rows: [{ id: 501 }], removed: ['502'], total: 1,
+  });
   assert.equal((await client.listInvoices({ branchId: 7, lastModifiedFrom: '2026-01-01' })).rows[0].id, 501);
   assert.equal(seen.filter((r) => r.url === '/connect/token').length, 1, 'token được dùng lại trong vòng đời client');
   assert.ok(seen.filter((r) => r.url !== '/connect/token').every((r) => r.headers.retailer === 'shop-a'));
@@ -61,6 +79,40 @@ test('client dùng OAuth, header retailer và tìm đơn theo code trước khi 
   assert.deepEqual(JSON.parse(created.raw).orderDelivery, {
     receiver: 'Khách thử', contactNumber: '0900000000', address: '1 Đường A', price: 30000,
   });
+  const listed = seen.find((r) => r.url.startsWith('/orders?') && r.url.includes('currentItem=20'));
+  const query = new URL(listed.url, base).searchParams;
+  assert.deepEqual(Object.fromEntries(query), {
+    currentItem: '20', pageSize: '25', lastModifiedFrom: '2026-01-02', branchIds: '7',
+    orderBy: 'modifiedDate', orderDirection: 'Asc',
+  });
+  const products = seen.find((r) => r.url.startsWith('/products?'));
+  assert.deepEqual(Object.fromEntries(new URL(products.url, base).searchParams), {
+    currentItem: '0', pageSize: '100', includeInventory: 'true', includeRemoveIds: 'true',
+    lastModifiedFrom: '2026-01-03',
+  });
+});
+
+test('429 giữ Retry-After và backoff không gọi provider sớm hơn yêu cầu', async () => {
+  const client = createKiotVietClient({ clientId: 'cid', clientSecret: 'secret', retailer: 'shop-a', identityBase: base, apiBase: base });
+  await assert.rejects(
+    client.listOrders({ lastModifiedFrom: 'rate-limit' }),
+    (error) => error?.code === 'rate_limited'
+      && error?.statusCode === 503
+      && error?.retryAfterMs === 7000
+      && integrationRetryBackoffMs(error, 1, { baseMs: 1000, maxMs: 30_000 }) === 7000,
+  );
+  assert.equal(integrationRetryBackoffMs({ retryAfterMs: 7000 }, 1, { baseMs: 1000, maxMs: 5000 }), 7000);
+  assert.equal(integrationRetryBackoffMs(null, 1, { baseMs: 1000, maxMs: 5000 }), 1000);
+  assert.equal(integrationRetryBackoffMs(null, 4, { baseMs: 1000, maxMs: 5000 }), 5000);
+});
+
+test('snapshot connector fail-closed khi tồn không phủ reservation hoặc event thiếu thứ tự', () => {
+  assert.equal(canApplyKiotVietStock(5, 5), true);
+  assert.equal(canApplyKiotVietStock(4, 5), false);
+  assert.equal(canApplyKiotVietStock(NaN, 0), false);
+  assert.equal(isStaleKiotVietSnapshot('2026-01-02T00:00:00Z', '2026-01-01T00:00:00Z'), false);
+  assert.equal(isStaleKiotVietSnapshot('2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z'), true);
+  assert.equal(isStaleKiotVietSnapshot(null, '2026-01-02T00:00:00Z'), true);
 });
 
 test('không POST lại khi chưa quét hết tập đơn có thể chứa marker', async () => {

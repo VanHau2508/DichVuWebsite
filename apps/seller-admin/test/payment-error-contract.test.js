@@ -102,13 +102,13 @@ test('workflow đơn dùng role semantic, bảng cuộn và hướng dẫn tồn
   const detail = pages.slice(start, end);
   assert.match(detail, /const editPaidAction = \([^\n]*REFUND_ROLES\.has\(ctx\.role\)\)/);
   assert.match(detail, /const returnAction = \([^\n]*REFUND_ROLES\.has\(ctx\.role\)\)/);
-  assert.match(detail, /if \(o\.status === 'shipped'[^\n]*ORDER_ROLES\.has\(ctx\.role\)\)/);
+  assert.match(detail, /if \(!externalReadOnly && o\.status === 'shipped'[^\n]*ORDER_ROLES\.has\(ctx\.role\)\)/);
   assert.match(detail, /const canRecordManual = [^\n]*PAYMENT_ROLES\.has\(ctx\.role\)/);
   assert.match(detail, /const canReverse = [\s\S]*?PAYMENT_ROLES\.has\(ctx\.role\);/);
   assert.match(detail, /const refundAction = \([^\n]*REFUND_ROLES\.has\(ctx\.role\)\)/);
-  assert.match(detail, /const canResolveOrder = ORDER_ROLES\.has\(ctx\.role\);/);
-  assert.match(detail, /const canReceiveReturn = INVENTORY_ROLES\.has\(ctx\.role\);/);
-  assert.match(detail, /const canResolveRefund = REFUND_ROLES\.has\(ctx\.role\);/);
+  assert.match(detail, /const canResolveOrder = !externalReadOnly && ORDER_ROLES\.has\(ctx\.role\);/);
+  assert.match(detail, /const canReceiveReturn = !externalReadOnly && INVENTORY_ROLES\.has\(ctx\.role\);/);
+  assert.match(detail, /const canResolveRefund = !externalReadOnly && REFUND_ROLES\.has\(ctx\.role\);/);
   const refundBff = server.slice(server.indexOf('// ── Hoàn tiền (refund'), server.indexOf('// ── Nhận trả hàng'));
   assert.equal((refundBff.match(/if \(!REFUND_ROLES\.has\(roleFor\(me, shopId\)\)\)/g) ?? []).length, 2,
     'cả POST chuẩn bị và POST cuối của hoàn tiền thường phải dùng đúng REFUND_ROLES');
@@ -136,6 +136,31 @@ test('workflow đơn dùng role semantic, bảng cuộn và hướng dẫn tồn
   assert.match(detail, /Hàng đã được nhập lại tồn[\s\S]*?Không cộng tồn thủ công lần nữa/);
   assert.match(detail, /title_snapshot[\s\S]*?sku_snapshot/,
     'phiếu nhận hàng hoàn phải dùng tên và SKU, không bắt người dùng đọc UUID');
+});
+
+test('đơn POS và đơn website đã được provider nhận chỉ để quan sát trong admin', () => {
+  const start = pages.indexOf('export function renderOrderDetail(');
+  const end = pages.indexOf('\nexport function renderOrderEdit(', start);
+  const detail = pages.slice(start, end);
+  assert.match(detail, /const externalReadOnly = \['kiotviet_pos', 'sapo_pos'\]\.includes\(o\.source\) \|\| Boolean\(o\.external_ref\)/);
+  for (const action of ['editable', 'editPaidAction', 'returnAction', 'canShipManual', 'canRecordManual', 'refundAction']) {
+    const line = detail.split('\n').find((l) => l.includes(`const ${action} =`)) ?? '';
+    assert.match(line, /!externalReadOnly/, `${action} không được mời thao tác đơn do POS ngoài thực hiện`);
+  }
+  assert.match(detail, /if \(!externalReadOnly && o\.status === 'pending'\)/,
+    'xác nhận/huỷ đơn phải biến mất ở nguồn ngoài');
+  assert.match(detail, /const canResolveOrder = !externalReadOnly/,
+    'ca xử lý không được ghi cục bộ trên đơn nguồn ngoài');
+  assert.match(detail, /\$\{\(\(\) => \{\n      if \(externalReadOnly\) return '';/,
+    'khối phục hồi vận đơn cũng phải biến mất trên đơn nguồn ngoài');
+  assert.match(detail, /Không có thao tác cục bộ/);
+  assert.match(detail, /Hãy sửa trạng thái, tiền, giao hàng hoặc hoàn trả tại POS/);
+
+  const listStart = pages.indexOf('export function renderOrders(');
+  const listEnd = pages.indexOf('\nexport function renderOrderDetail(', listStart);
+  const list = pages.slice(listStart, listEnd);
+  assert.match(list, /externalReadOnly[\s\S]*?không xử lý hàng loạt tại đây/,
+    'danh sách không được cho chọn đơn ngoài vào form hàng loạt');
 });
 
 test('refund idempotency được khoá ở DB và replay chạy trước guard trạng thái', () => {

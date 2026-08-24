@@ -23,15 +23,15 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 
 | số đo | hôm nay | nguồn |
 |---|---:|---|
-| dòng mã ứng dụng | ~43.200 | `apps/*/src/*.js` |
-| dòng test | ~31.400 | `apps/*/test/*.{js,mjs}` |
-| migration | 175 tệp, mới nhất `0177` | `packages/db/migrations/` |
+| dòng mã ứng dụng | ~46.400 | `apps/*/src/*.js` |
+| dòng test | ~35.100 | `apps/*/test/*.{js,mjs}` |
+| migration | 177 tệp, mới nhất `0179` | `packages/db/migrations/` |
 | bộ unit | 39 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 107 | `MANIFEST_E2E_COUNT` |
-| bất biến DB | 9 bộ, 130 test TAP | `packages/db/test/*.test.js` |
+| bất biến DB | 9 bộ, 140 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 81 tệp | `docs/` |
 
-Tỉ lệ test/mã ≈ 0,71 — cao có chủ ý, xem §4.
+Tỉ lệ test/mã ≈ 0,76 — cao có chủ ý, xem §4.
 
 **Toàn bộ mã, chú thích, tài liệu, commit message đều TIẾNG VIỆT.** Giữ nguyên, không dịch sang
 tiếng Anh, không viết chú thích tiếng Anh trong file tiếng Việt.
@@ -75,7 +75,7 @@ với GitHub CI. Nó tự dựng PostgreSQL trắng trong project Compose riêng
 chạy đúng runner production **không seed**, rồi so ba chiều: số file = `MANIFEST_MIGRATION_COUNT`
 = số dòng thật trong `schema_migrations`, kèm 0 DRIFT / 0 pending. Tự dọn bằng `trap` ở mọi đường
 thoát, kể cả Ctrl-C. **Không chạm DB dev.** Thêm migration thì sửa `MANIFEST_MIGRATION_COUNT`
-trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 175 file / số cao nhất 0177).
+trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 177 file / số cao nhất 0179).
 
 Hook `scripts/hooks/pre-push` chạy `--fast` và **chặn push khi đỏ**. Cài một lần cho mỗi bản
 clone: `git config core.hooksPath scripts/hooks`.
@@ -125,7 +125,7 @@ Mỗi dòng dưới đây từng làm hỏng một thứ có thật. Chi tiết 
   `REVOKE ALL … FROM app_rw` **và** thêm policy chặn.
 - **Migration BẤT BIẾN.** Runner băm nội dung — sửa file cũ → `DRIFT` → cổng đỏ. Sửa gì cũng bằng
   file mới, đánh số tiếp.
-- **23 vai DB `app_*`, mỗi service/miền nhạy cảm một vai ít quyền nhất.** Đừng nới cho tiện. Có vai KHÔNG
+- **24 vai DB `app_*`, mỗi service/miền nhạy cảm một vai ít quyền nhất.** Đừng nới cho tiện. Có vai KHÔNG
   đăng nhập được, chỉ tồn tại để **sở hữu** một hàm `SECURITY DEFINER` hẹp (`app_resolution`).
 - **GRANT cấp BẢNG cũ vô hiệu hoá mọi tính toán cấp CỘT về sau.** `app_rw` có `UPDATE` cấp bảng
   trên `orders` từ `0021`, nên `GRANT UPDATE (cột_mới) TO vai_khác` KHÔNG hề chặn được `app_rw`
@@ -358,8 +358,11 @@ lỗi contract của Codex (`c.ok !== true` trong khi readiness dùng `status`).
 Bảy workflow, làm **dọc từng cái**, không redesign cả hệ thống một lượt:
 
 ~~`onboarding/go-live`~~ → ~~`bảng điều khiển "việc cần làm"`~~ → ~~`chi tiết đơn`~~
-→ **`đa kiện/ca xử lý` ← đang làm** → `checkout mobile của khách`
+→ ~~`đa kiện/ca xử lý`~~ → `checkout mobile của khách`
 → `catalog + nhập từ sàn` → `cài đặt`
+
+Thứ tự bảy workflow vẫn là bản đồ nợ UX, nhưng chủ dự án đã đổi ưu tiên sang connector POS.
+Không tự quay lại workflow kế tiếp trước khi lát cắt KiotViet hiện tại được review và đóng.
 
 Mỗi lát cắt đi đủ đường: **UI → route/BFF → API seller → giao dịch nghiệp vụ → DB/outbox →
 worker/provider → trạng thái quay lại UI.** Lập bản đồ đó **trước khi đụng UI** — giá trị nằm
@@ -424,7 +427,7 @@ một lát cắt riêng, không phải phần đuôi của lát cắt này.
 report MẬT, thì đó là một **quyết định sản phẩm mới**: phải đo lại toàn bộ dashboard, không tự
 thay trong một lát cắt khác.
 
-### 9.3b Đang dở: lát cắt 4 tách làm ba
+### 9.3b Lát cắt 4 đã đóng; ưu tiên hiện tại là connector POS
 
 Đợt đo 2 của `đa kiện/ca xử lý` ra ba nhánh việc, cố ý tách để không đụng `pages.js` cùng lúc:
 
@@ -442,6 +445,14 @@ KiotViet ở `docs/80`: KiotViet làm chủ tồn vật lý/POS, nền tảng l�
 online; admin nhìn cả hai nguồn nhưng không đếm doanh thu hai lần. Đây mới là **connector core
 cho pilot**, chưa được tuyên bố hỗ trợ KiotViet hoàn chỉnh trước khi thử bằng tài khoản thật và
 chưa làm xong hoàn trả hai chiều.
+
+Migration `0178` đang siết bản `0177`: CAS/generation cho credential + job, freshness từng
+variant, cursor order/invoice độc lập, webhook collision/dead-letter, advisory lock đối soát,
+đơn ngoài chỉ-đọc và COD-only cho external-master. Migration `0179` đưa trigger đơn ngoài sang
+vai `SECURITY DEFINER` NOLOGIN để checkout không phải đọc trực tiếp connector dưới FORCE RLS,
+đồng thời giữ actor bằng `session_user` và chặn gán customer chéo shop khi ẩn danh. Invoice chưa
+xác định được nguồn phải nằm ở `order_identity_pending`, chưa ghi doanh thu. Phạm vi hiện tại chỉ
+đủ cho pilot 1–3 shop; chưa có bằng chứng để tuyên bố tải 9.358 shop.
 
 Nhánh thi công: `codex/kiotviet-integration-core`. Chỉ merge khi full `scripts/ci-local.sh`
 exit 0 và có review độc lập. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn, không bị huỷ.

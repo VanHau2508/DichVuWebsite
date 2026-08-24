@@ -31,7 +31,7 @@ Ngắt kết nối không xoá mapping và không tự đổi quyền sở hữu
 tồn, sản phẩm liên kết tiếp tục bị khoá checkout cho tới khi có thao tác chuyển authority có
 kiểm soát.
 
-## Schema 0177 và least privilege
+## Schema 0177–0179 và least privilege
 
 Migration `0177_kiotviet_integration_core.sql` thêm:
 
@@ -41,6 +41,22 @@ Migration `0177_kiotviet_integration_core.sql` thêm:
 - `integration_sync_discrepancies`: hàng đợi ca cần xử lý;
 - barcode biến thể và metadata đồng bộ trên `orders`.
 
+Migration `0178_kiotviet_connector_hardening.sql` siết các bất biến chỉ lộ sau lượt review:
+
+- mỗi cấu hình connector có `generation`; inbox, order và mọi job đều mang đúng generation;
+- credential mới nằm trong một bundle `pending_*`, probe không ghi đè kết nối đang chạy;
+- độ tươi tồn nằm trên từng mapping biến thể, không suy từ đồng hồ chung của shop;
+- cursor order và invoice tách riêng, chỉ tiến sau khi đã chứng minh quét hết;
+- webhook hết lượt bị đưa vào `dead_letter` và xóa payload; đổi generation cũng xóa payload cũ;
+- đơn POS và đơn website đã được KiotViet nhận bị khóa sửa cục bộ ở DB.
+
+Migration `0179_checkout_external_order_guard.sql` sửa đường checkout sau khi chạy thật phát
+hiện trigger đang chạy dưới vai gọi và đọc trực tiếp `shop_integrations`, làm đơn
+`external_master` chết vì thiếu quyền. Trigger nay là `SECURITY DEFINER`, thuộc vai
+`app_integration_guard` NOLOGIN, nhưng vẫn dùng `session_user` để giữ các nhánh actor
+`app_checkout`/`app_expiry`/`app_integration` và fail-closed đúng mục đích. Đường ẩn danh cũng
+không thể gán `customer_id` của shop khác.
+
 Cả bốn bảng tenant đều `ENABLE + FORCE RLS`, FK tenant mang `shop_id`. Vai mới
 `app_integration` không có `BYPASSRLS`; endpoint webhook chỉ dùng SECURITY DEFINER để đổi
 `webhook_public_id` thành đúng hai UUID định tuyến, sau đó mọi dữ liệu nghiệp vụ vẫn đi qua
@@ -48,6 +64,8 @@ transaction có `set_config('app.shop_id', ..., true)`.
 
 Credential được mã hoá AES-256-GCM bằng `INTEGRATION_ENC_KEY`; webhook dùng secret riêng cho
 từng connector. Giao diện không trả ciphertext, client secret, webhook secret hay payload thô.
+Các hàm cần đi xuyên `FORCE RLS` thuộc vai `app_integration_guard` NOLOGIN; vai này chỉ có
+quyền đúng các bảng connector cần định tuyến và không được dùng làm tài khoản dịch vụ.
 
 ## Luồng đã dựng
 
@@ -57,6 +75,11 @@ Owner/admin nhập retailer + client ID + client secret, qua step-up, gọi OAut
 chi nhánh. Chọn đúng một chi nhánh, đăng ký năm webhook rồi đưa initial sync vào outbox. Chỉ
 khi catalog/tồn đã đối soát và không còn mapping bắt buộc bị treo thì worker chuyển connector
 sang `active/external_master`.
+
+Probe và activate là hai pha có CAS: form activate phải mang `pending_token` của đúng lần probe.
+Tab cũ không thể nhận credential/chi nhánh của tab mới. Ngắt connector đóng lifecycle và tăng
+generation trước khi gọi mạng, xóa credential + URL webhook trong DB; chuyển quyền tồn về
+`local` là một thao tác step-up riêng, không phải tác dụng phụ của nút ngắt.
 
 ### Catalog và tồn
 
@@ -68,6 +91,11 @@ Checkout đọc độ tươi của bản chiếu qua quyền cột hẹp. Connec
 disable/degraded hoặc tồn cũ quá 5 phút thì sản phẩm liên kết dừng checkout, không rơi về tồn
 local cũ.
 
+Độ tươi được kiểm cho **từng variant trong giỏ** và phải thuộc đúng generation hiện hành. Một
+SKU vừa đồng bộ không được làm SKU khác hết hạn trở thành “tươi”. Full reconciliation và
+webhook catalog/tồn dùng cùng advisory lock theo connector; `ModifiedDate` cũ hơn snapshot đã
+lưu không được ghi đè dữ liệu mới.
+
 ### Website → KiotViet
 
 Đơn website ghi `sync_status='pending'` và outbox trong cùng giao dịch. Worker khoá dòng đơn
@@ -76,8 +104,11 @@ chứng minh chưa có đơn cũ. Phép quét tối đa 50 trang mà chưa hết
 `order_lookup_incomplete`, không được hiểu thành “không có đơn”.
 
 Payload mang dòng hàng đã mapping, khách, `orderDelivery.receiver/contactNumber/address/price`,
-phương thức và số tiền đã thu. Lỗi provider hoặc mapping tạo ca “Cần xử lý”; retry vẫn dùng
-cùng marker nên không tạo đơn thứ hai.
+phương thức và số tiền đã thu. Trong pilot hiện tại, đơn external-master chỉ nhận COD; QR,
+coupon, đổi điểm và khuyến mại online đều fail-closed cho tới khi capability boolean
+`preserve_line_price=true` được bật sau phép thử giá dòng thật. Lỗi provider hoặc mapping tạo
+ca “Cần xử lý”; retry vẫn dùng cùng marker và generation nên không tạo đơn thứ hai hoặc gửi
+đơn cũ sang credential/chi nhánh mới.
 
 ### KiotViet POS → nền tảng
 
@@ -86,20 +117,30 @@ Webhook hợp lệ được ghi inbox idempotent và trả `202` nhanh; xử lý
 đã huỷ chỉ được quan sát. Reconciliation định kỳ đọc lại sản phẩm, tồn, đơn và hóa đơn để sửa
 webhook mất, trễ hoặc đảo thứ tự.
 
+Nếu hóa đơn có `OrderId`/`OrderCode` hoặc marker nền tảng nhưng chưa nối chắc chắn được với đơn
+website, nó ở trạng thái `order_identity_pending` và **chưa ghi doanh thu**. Snapshot phục hồi
+chỉ giữ trường nghiệp vụ cần thiết, không giữ tên, số điện thoại, địa chỉ hay payment payload
+thô. Giao dịch POS snapshot luôn `unit_cost_vnd` để báo cáo lãi lỗ không dùng giá vốn hiện tại.
+
 ## Giao diện vận hành
 
 Trang “Kết nối POS” có trạng thái, chi nhánh, lần đồng bộ/đối soát, độ trễ, mapping lỗi, trung
 tâm đồng bộ và ngắt kết nối an toàn. Owner/admin quản lý credential; catalog manager xử lý
 mapping; order manager xem và retry lỗi đơn. Danh sách/chi tiết đơn có badge nguồn và trạng
-thái đồng bộ. Màn hình dùng SSR/form thường, không cần JavaScript và phải giữ được ở 360px.
+thái đồng bộ. Đơn `kiotviet_pos`/`sapo_pos`, hoặc đơn website đã có `external_ref`, chỉ để quan
+sát: admin không mời sửa/xác nhận/giao/hủy/thu tiền/hoàn trả; DB trả `409/PIO01` nếu route mới
+quên gác. Màn hình dùng SSR/form thường, không cần JavaScript và phải giữ được ở 360px.
 
-## Bằng chứng kiểm thử trước full CI
+## Bằng chứng kiểm thử
 
-- adapter/unit liên quan: 41/41;
-- schema + least privilege: 50/50;
-- cô lập tenant: 30/30;
-- connector E2E Docker: 21/21;
-- migration DB trắng: 175 migration, 0 DRIFT, 0 pending.
+- unit theo manifest: 262/262;
+- adapter KiotViet: 8/8;
+- checkout policy KiotViet: 7/7;
+- toàn bộ 9 bộ bất biến DB trên stack PostgreSQL: 140/140;
+- migration DB trắng: 177/177, 0 DRIFT, 0 pending.
+
+E2E connector hiện đã chạy 38/38 trên stack pilot; kết quả full CI được chốt ở SHA bàn giao sau
+khi cổng đầy đủ chạy xong. Không dùng số của migration 0177/0178 để tuyên bố 0179 đã xanh.
 
 E2E đã đột biến các điểm dễ xanh giả: webhook trùng, ignore mapping qua reconciliation, hai
 job gửi cùng đơn, invoice vọng lại, chữ ký sai, step-up sai và ngắt connector còn authority.
@@ -112,6 +153,8 @@ job gửi cùng đơn, invoice vọng lại, chữ ký sai, step-up sai và ng�
    hoàn tiền chỉ từ trạng thái đơn.
 3. Đo mục tiêu webhook <30 giây và reconciliation 5–10 phút bằng 1–3 shop pilot.
 4. Chỉ sau pilot mới quyết định Sapo và POS Lite; không sao chép adapter KiotViet bằng đổi tên.
+5. Connector hiện đủ để pilot 1–3 shop. Chưa có bằng chứng tải, rate-limit và vận hành để tuyên
+   bố sẵn sàng cho 9.358 shop; mở rộng chỉ sau số đo từ tài khoản thật và chaos test provider.
 
 ## Lỗi phương pháp đã bắt trong lúc làm
 

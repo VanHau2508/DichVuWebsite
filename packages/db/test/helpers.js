@@ -4,9 +4,10 @@ import { randomUUID } from 'node:crypto';
 export const rw = new pg.Pool({ connectionString: process.env.DATABASE_URL_RW, max: 5 });
 export const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 3 });
 export const integration = new pg.Pool({ connectionString: process.env.DATABASE_URL_INTEGRATION, max: 3 });
+export const expiry = new pg.Pool({ connectionString: process.env.DATABASE_URL_EXPIRY, max: 2 });
 
 export async function closeAll() {
-  await Promise.all([rw.end(), owner.end(), integration.end()]);
+  await Promise.all([rw.end(), owner.end(), integration.end(), expiry.end()]);
 }
 
 /**

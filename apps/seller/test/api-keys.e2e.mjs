@@ -17,6 +17,7 @@ const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
 const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 4 });
+const integration = new pg.Pool({ connectionString: process.env.DATABASE_URL_INTEGRATION, max: 2 });
 const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
 
 let pass = 0, fail = 0;
@@ -27,6 +28,21 @@ const sect = (m) => console.log(`\n${B}${m}${X}`);
 const uniq = () => Math.random().toString(36).slice(2, 10);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ck = (sc) => { for (const c of sc ?? []) { const m = /^__Host-session=([^;]*)/.exec(c); if (m) return m[1]; } return null; };
+async function withIntegration(shopId, fn) {
+  const c = await integration.connect();
+  try {
+    await c.query('BEGIN');
+    await c.query(`SELECT set_config('app.shop_id', $1, true)`, [shopId]);
+    const result = await fn(c);
+    await c.query('COMMIT');
+    return result;
+  } catch (error) {
+    await c.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    c.release();
+  }
+}
 
 async function rq(base, method, path, { body, cookie, origin, bearer } = {}) {
   const h = {};
@@ -189,11 +205,11 @@ async function main() {
     `INSERT INTO shop_counters (shop_id,name,value) VALUES ($1,'order_number',1)
      ON CONFLICT (shop_id,name) DO UPDATE SET value=shop_counters.value+1 RETURNING value`, [A.shopId],
   )).rows[0].value;
-  await owner.query(
+  await withIntegration(A.shopId, (c) => c.query(
     `INSERT INTO orders (shop_id,order_number,status,payment_status,total_vnd,source,sync_status,customer_name)
      VALUES ($1,$2,'delivered','paid',250000,'kiotviet_pos','synced','Khách lẻ POS')`,
     [A.shopId, posNumber],
-  );
+  ));
   r = await a.get('/orders?limit=100');
   const all = r.json?.orders ?? [];
   all.some((o) => o.source === 'facebook') && all.some((o) => o.source === 'manual') && all.some((o) => o.source === 'kiotviet_pos')
@@ -253,7 +269,13 @@ async function main() {
   r.status === 401 ? ok('Bearer không liệt kê được khoá') : bad(`Bearer đọc được danh sách khoá (${r.status})!`, r.raw);
 
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
+  await integration.end();
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);
 }
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch(async (e) => {
+  console.error(e);
+  await integration.end().catch(() => {});
+  await owner.end().catch(() => {});
+  process.exit(1);
+});

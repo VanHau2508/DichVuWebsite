@@ -440,7 +440,7 @@ thay trong một lát cắt khác.
 Lát cắt 4 coi như đóng ở phần A+B. C chưa khoá, và **không mặc nhiên là việc kế tiếp**.
 
 Đợt đo phân tầng gói đã khoá quyết định kinh doanh trong `docs/79`, nhưng chủ dự án đổi ưu tiên
-sang chiến lược **tích hợp POS trước, POS riêng sau**. Lát cắt đang thi công là nền connector
+sang chiến lược **tích hợp POS trước, POS riêng sau**. Lát cắt vừa thi công xong trên nhánh là nền connector
 KiotViet ở `docs/80`: KiotViet làm chủ tồn vật lý/POS, nền tảng làm chủ website/checkout/đơn
 online; admin nhìn cả hai nguồn nhưng không đếm doanh thu hai lần. Đây mới là **connector core
 cho pilot**, chưa được tuyên bố hỗ trợ KiotViet hoàn chỉnh trước khi thử bằng tài khoản thật và
@@ -455,8 +455,9 @@ vai `SECURITY DEFINER` NOLOGIN để checkout không phải đọc trực tiếp
 Invoice chưa xác định được nguồn phải nằm ở `order_identity_pending`, chưa ghi doanh thu. Phạm vi hiện tại chỉ
 đủ cho pilot 1–3 shop; chưa có bằng chứng để tuyên bố tải 9.358 shop.
 
-Nhánh thi công: `codex/kiotviet-integration-core`. Chỉ merge khi full `scripts/ci-local.sh`
-exit 0 và có review độc lập. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn, không bị huỷ.
+Nhánh thi công: `codex/kiotviet-integration-core`. Full `scripts/ci-local.sh` đã exit 0 tại
+`adb5c5d`; chỉ merge sau review độc lập. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn,
+không bị huỷ.
 
 Nguyên nhân tràn ngang của trang **Tồn an toàn** đã được vá trên nhánh connector: con trực tiếp
 của `.filters` có `min-width:0;max-width:100%`, để nhãn "Tỉ lệ giữ an toàn cho toàn shop (%)"

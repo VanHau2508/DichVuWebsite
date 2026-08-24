@@ -144,8 +144,9 @@ quên gác. Màn hình dùng SSR/form thường, không cần JavaScript và ph�
 - toàn bộ 9 bộ bất biến DB trên stack PostgreSQL: 140/140;
 - migration DB trắng: 178/178, 0 DRIFT, 0 pending.
 
-E2E connector hiện đã chạy 38/38 trên stack pilot; kết quả full CI được chốt ở SHA bàn giao sau
-khi cổng đầy đủ chạy xong. Không dùng số của migration 0177/0178/0179 để tuyên bố 0180 đã xanh.
+E2E connector hiện đã chạy 38/38 trên stack pilot. Full CI local tại `adb5c5d` đã chạy đủ 114
+mục với 0 đỏ: 263 unit, 178 migration từ DB trắng, 140 bất biến DB, 107 E2E và 3 smoke.
+Đây là bằng chứng của mã nguồn/stack dev; nó không thay thế spike bằng credential KiotViet thật.
 
 E2E đã đột biến các điểm dễ xanh giả: webhook trùng, ignore mapping qua reconciliation, hai
 job gửi cùng đơn, invoice vọng lại, chữ ký sai, step-up sai và ngắt connector còn authority.

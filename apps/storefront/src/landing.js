@@ -155,25 +155,25 @@ const STEPS = [
 // 4 khối tính năng xen kẽ (chữ ↔ hình đổi bên, hiệu ứng trượt vào khi cuộn).
 const FLAGS = [
   {
-    kick: 'Đường tiền', icon: I.wallet, vis: 'qr',
+    kick: 'Đường tiền', key: 'duong-tien', icon: I.wallet, vis: 'qr',
     h: 'Tiền của bạn không qua tay ai',
     d: 'Khác với sàn thương mại điện tử, ở đây khách thanh toán là tiền vào thẳng tài khoản ngân hàng CỦA BẠN — nền tảng không giữ hộ, không đối soát chậm, không phí rút tiền.',
     bullets: ['Mỗi shop một cấu hình VietQR riêng, tiền về tài khoản riêng', 'Hệ thống tự khớp tiền vào với đơn hàng', 'Sao kê rõ ràng — bạn luôn biết đồng nào của đơn nào'],
   },
   {
-    kick: 'Chống thất thoát', icon: I.shield, vis: 'guard',
+    kick: 'Chống thất thoát', key: 'chong-that-thoat', icon: I.shield, vis: 'guard',
     h: 'Bớt đơn ảo, bớt bom hàng',
     d: 'Bán COD ở Việt Nam sợ nhất đơn ảo. Nền tảng chặn từ gốc — không cần bạn phải ngồi soi từng đơn.',
     bullets: ['Đơn COD quá hạn không nhận — tự huỷ, nhả lại tồn kho', 'Chặn spam đặt đơn hàng loạt từ cùng một nguồn', 'Tự gắn cờ cảnh báo số điện thoại đặt bất thường'],
   },
   {
-    kick: 'Khách quen', icon: I.users, vis: 'loyal',
+    kick: 'Khách quen', key: 'khach-quen', icon: I.users, vis: 'loyal',
     h: 'Khách mua một lần, quay lại nhiều lần',
     d: 'Đơn đầu tiên là quảng cáo, đơn thứ hai mới là lãi. Đủ công cụ để khách cũ quay lại mà không tốn thêm tiền quảng cáo.',
     bullets: ['Điểm thưởng tích luỹ — mua càng nhiều, ưu đãi càng lớn', 'Tài khoản khách hàng: lịch sử đơn, sổ địa chỉ, đặt lại nhanh', 'CRM-lite: biết ai mua gì, bao nhiêu lần, lần cuối khi nào'],
   },
   {
-    kick: 'An toàn', icon: I.doc, vis: 'safe',
+    kick: 'An toàn', key: 'an-toan', icon: I.doc, vis: 'safe',
     h: 'Bạn ngủ ngon, hệ thống tự lo',
     d: 'Máy chủ, HTTPS, sao lưu, giám sát — phần việc "ngầm" nhưng sống còn, chúng tôi trực thay bạn.',
     bullets: ['Sao lưu mã hoá định kỳ, khôi phục được khi có sự cố', 'HTTPS tự động cho cả tên miền riêng của bạn', 'Dữ liệu là của bạn — xuất toàn bộ ra file bất cứ lúc nào'],
@@ -810,26 +810,31 @@ html:not(.lpjs) .lp-pnav{display:none}
 }
 
 /* ── GIẢI PHÁP TĂNG TRƯỞNG (giữ chuyển động, dựng lại cách trình bày) ─────── */
-.lp-grow{background:var(--lp-navy);color:#fff}
-.lp-grow .lp-h2,.lp-grow h3{color:#fff}
-.lp-grow .lp-sub{color:rgba(255,255,255,.66)}
-.lp-grow .lp-eb{color:var(--lp-blue-br)}
-.lp-flag{display:grid;gap:28px;padding:44px 0;border-top:1px solid rgba(255,255,255,.1)}
+/* Nền SÁNG, không còn navy. Ba mục sáng liền nhau thì dễ phẳng, nên mục này lấy một
+   tông xanh rất nhạt để tự tách khỏi mục sản phẩm (#F5F6F8) và mục ngành hàng (trắng)
+   mà không cần đổi hẳn sang nền tối. */
+.lp-grow{background:var(--lp-b025);
+         background-image:radial-gradient(90% 60% at 50% 0,#fff 0,transparent 62%)}
+.lp-flag{display:grid;gap:28px;padding:44px 0;border-top:1px solid var(--lp-line)}
 .lp-flag:first-of-type{border-top:0}
 @media(min-width:960px){
   .lp-flag{grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:52px;align-items:center;padding:52px 0}
   .lp-flag.rev .lp-flag-v{order:-1}
 }
 .lp-flag>*{min-width:0}
-.lp-kick2{display:inline-flex;align-items:center;gap:8px;margin:0 0 14px;padding:6px 14px;
-          border-radius:var(--lp-pill);background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);
-          font-size:.76rem;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:#fff}
+.lp-kick2{display:inline-flex;align-items:center;gap:8px;margin:0 0 14px;padding:7px 15px;
+          border-radius:var(--lp-pill);background:var(--lp-b050);border:1px solid var(--lp-b100);
+          font-size:.76rem;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--lp-blue)}
 .lp-kick2 svg{width:15px;height:15px}
 .lp-flag h3{font-size:clamp(1.25rem,1rem + 1.2vw,1.85rem);font-weight:800;line-height:1.24}
-.lp-flag .d{margin-top:12px;color:rgba(255,255,255,.7)}
+.lp-flag .d{margin-top:12px;color:var(--lp-mut)}
 .lp-flag ul{display:grid;gap:10px;margin-top:18px}
-.lp-flag li{display:flex;gap:11px;align-items:flex-start;font-size:.94rem;color:rgba(255,255,255,.78)}
-.lp-flag li svg{flex:none;width:17px;height:17px;margin-top:4px;color:#7FE0A5}
+.lp-flag li{display:flex;gap:11px;align-items:flex-start;font-size:.94rem;color:var(--lp-mut)}
+.lp-flag li svg{flex:none;width:17px;height:17px;margin-top:4px;color:var(--lp-ok)}
+/* Ảnh do chủ dự án chèn dùng CHUNG khung với khung minh hoạ CSS: cùng bo góc, cùng đổ
+   bóng, nên thay ảnh không phải sửa gì và bốn khối vẫn đồng bộ dù mới thay được một cái. */
+.lp-flag-img{width:100%;height:auto;display:block;border-radius:var(--lp-r3);
+             box-shadow:var(--lp-sh2)}
 
 /* ── NGÀNH HÀNG: băng chạy ────────────────────────────────────────────────── */
 .lp-ind{background:#fff;padding:56px 0}
@@ -1408,14 +1413,23 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
   </div>
 </div></section>`;
 
-  const grow = `<section class="lp-sec lp-grow lp-dark" id="giai-phap" aria-labelledby="lpGrowH"><div class="ct">
-  <div class="lp-head"><p class="lp-eb rv">Giải pháp tăng trưởng</p>
-  <h2 class="lp-h2 rv" id="lpGrowH">Làm thật những việc <em>khó nhất</em> của bán hàng online</h2>
-  <p class="lp-sub rv">Bốn chỗ mà người bán mất tiền nhiều nhất mà thường không nhìn thấy. Đây là cách chúng tôi chặn từ gốc.</p></div>
+  // Khe ảnh cho từng khối giải pháp: thả gp-<khoá>.webp (hoặc .png/.jpg/.avif/.svg) vào
+  // apps/storefront/src/assets/ — gp-duong-tien, gp-chong-that-thoat, gp-khach-quen,
+  // gp-an-toan. Chưa có tệp thì dùng khung minh hoạ CSS, không để lại ô trống chờ ảnh.
+  const gpHinh = (f) => {
+    const t = assetSrc('gp-' + f.key);
+    return t
+      ? `<img class="lp-flag-img" src="${esc(t)}" alt="" loading="lazy" decoding="async">`
+      : VIS[f.vis];
+  };
+  const grow = `<section class="lp-sec lp-grow" id="giai-phap" aria-labelledby="lpGrowH"><div class="ct">
+  <div class="lp-head lp-head-mid rv"><p class="lp-eb">Giải pháp tăng trưởng</p>
+  <h2 class="lp-h2" id="lpGrowH">Làm thật những việc <em>khó nhất</em></h2>
+  <p class="lp-sub">Bốn chỗ mà người bán mất tiền nhiều nhất mà thường không nhìn thấy. Đây là cách chúng tôi chặn từ gốc.</p></div>
   ${FLAGS.map((f, k) => `<div class="lp-flag${k % 2 ? ' rev' : ''}">
     <div class="rv"><p class="lp-kick2">${f.icon}${esc(f.kick)}</p><h3>${esc(f.h)}</h3><p class="d">${esc(f.d)}</p>
       <ul>${f.bullets.map((b) => `<li>${I.check}<span>${esc(b)}</span></li>`).join('')}</ul></div>
-    <div class="lp-flag-v rv">${VIS[f.vis]}</div>
+    <div class="lp-flag-v rv">${gpHinh(f)}</div>
   </div>`).join('')}
 </div></section>`;
 

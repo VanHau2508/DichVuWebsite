@@ -50,13 +50,44 @@ test('mỗi mục sản phẩm có khe ảnh riêng', () => {
   assert.match(LUAT, /\.lp-pv\{[^}]*aspect-ratio:16\/10/, 'khe hình phải khoá tỉ lệ');
 });
 
-test('hai cột sản phẩm CAO BẰNG NHAU', () => {
-  // Đo được: để align-items:start thì cột nút 635px trong khi cột khung 784px — dưới cùng
-  // bên trái trống một mảng, đúng thứ nhìn ra ngay là lệch tỉ lệ. Sau khi vá: 784 và 784.
+test('cột nút TRƯỢT như thang máy, hai cột cao bằng nhau', () => {
   assert.match(LUAT, /\.lp-showcase\{grid-template-columns:minmax\(0,5fr\) minmax\(0,7fr\);gap:24px;align-items:stretch\}/,
     'lưới hai cột phải kéo hai bên bằng nhau');
-  assert.match(LUAT, /\.lp-tabs\{align-content:space-between\}/,
-    'các nút phải dãn đều cho hết chiều cao cột');
+  // MẤU CHỐT của thang máy: ray phải RA KHỎI DÒNG CHẢY. Để nó trong dòng chảy thì chính
+  // nó kéo chiều cao hàng lưới lên bằng chiều cao cả năm nút, khung cắt cao đúng bằng nội
+  // dung, phần tràn bằng 0 — và thang máy đứng im. Đo được đúng như vậy trước khi vá:
+  // khung 1079 = ray 1079, trượt 0px ở cả năm mục.
+  assert.match(LUAT, /html\.lpjs \.lp-track\{position:absolute;inset:0 0 auto 0;/,
+    'ray phải đặt tuyệt đối, nếu không nó tự kéo chiều cao hàng và thang máy đứng im');
+  assert.match(LUAT, /html\.lpjs \.lp-tabs\{position:relative;overflow:hidden;/,
+    'khung cắt phải là gốc toạ độ và phải cắt');
+  assert.match(LUAT, /html\.lpjs \.lp-tabs\{[^}]*mask-image:linear-gradient\(180deg,transparent/,
+    'hai mép phải mờ dần, cho biết danh sách còn tiếp');
+  // Chiều cao khung KHÔNG đặt bằng JS: stretch đã cho đúng chiều cao cột phải, đặt tay
+  // là thêm một chỗ có thể trôi lệch.
+  assert.doesNotMatch(SRC, /spBox\.style\.height = Math\.round/,
+    'không đặt chiều cao khung bằng JS — để align-items:stretch lo');
+  // Mọi nút đều hiện gạch đầu dòng: chỉ nút đang mở mới có thì chiều cao nhảy loạn mỗi
+  // lần đổi mục, và đó chính là thứ làm "tỉ lệ không khớp".
+  assert.match(LUAT, /\.lp-tab \.b\{display:block;margin-top:10px\}/,
+    'mọi nút phải hiện gạch đầu dòng để chiều cao đồng đều');
+});
+
+test('thang máy đưa nút đang mở về GIỮA khung, kẹp ở hai đầu', () => {
+  assert.match(SRC, /var giua = nut\.offsetTop \+ nut\.offsetHeight \/ 2 - cao \/ 2;/,
+    'phải canh TÂM nút vào TÂM khung');
+  assert.match(SRC, /var tran = Math\.max\(0, spRay\.scrollHeight - cao\);/, 'thiếu mức tràn');
+  assert.match(SRC, /Math\.max\(0, Math\.min\(giua, tran\)\)/,
+    'phải kẹp trong [0, tràn], nếu không lộ khoảng trống ở đầu hoặc cuối danh sách');
+  // Đo lại SAU khi panel mới đã lên: chiều cao cột phải đổi theo mục, đo trước thì ray
+  // trượt theo con số của mục CŨ và hai cột lệch đúng một nhịp.
+  assert.match(SRC, /requestAnimationFrame\(spThang\);\s*\n\s*setTimeout\(spThang, 60\);/,
+    'phải đo lại sau khi panel mới đã lên');
+  assert.match(SRC, /addEventListener\('resize', spThang/, 'thiếu tính lại khi đổi cỡ cửa sổ');
+  // Dưới 1024px không cắt không trượt: cột trái xếp trên cột phải, thang máy ở đó chỉ tổ
+  // giấu mất các nút còn lại.
+  assert.match(SRC, /if \(innerWidth < 1024\) \{ spRay\.style\.transform = ''; return; \}/,
+    'màn hẹp phải tắt thang máy');
 });
 
 test('bộ tab sản phẩm tự chạy nhưng nhường quyền cho người đọc', () => {

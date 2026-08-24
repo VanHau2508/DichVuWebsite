@@ -620,9 +620,26 @@ main{display:block}
      tự dãn cho vừa. Để align-items:start thì cột trái hụt ~150px so với cột phải và
      dưới cùng bên trái trống một mảng — đúng thứ nhìn ra ngay là lệch tỉ lệ. */
   .lp-showcase{grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:24px;align-items:stretch}
-  .lp-tabs{align-content:space-between}
+  /* THANG MÁY: khung cắt cố định chiều cao (JS đặt bằng đúng chiều cao cột phải), ray bên
+     trong TRƯỢT để nút đang mở về giữa khung. Nút trên/dưới ló ra rồi mờ dần ở hai mép —
+     đó là thứ cho biết danh sách còn tiếp, thay vì một cột đứng im.
+     Chiều cao do JS đặt: nếu để CSS đoán một con số thì hai cột lại lệch nhau ngay khi
+     nội dung mục đổi. Không JS ⇒ không cắt, không trượt, năm nút hiện đủ (xem dưới). */
+  /* Ray đặt TUYỆT ĐỐI trong khung cắt. Đây là mấu chốt: để ray nằm trong dòng chảy thì
+     chính nó kéo chiều cao hàng lưới lên bằng chiều cao của cả năm nút, khung cắt cao
+     đúng bằng nội dung, phần tràn bằng 0 — và thang máy đứng im. Ra khỏi dòng chảy thì
+     chiều cao hàng do MỘT MÌNH cột phải quyết, khung cắt nhận đúng chiều cao đó qua
+     align-items:stretch, và phần tràn mới có thật để mà trượt. */
+  html.lpjs .lp-tabs{position:relative;overflow:hidden;
+    -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 9%,#000 91%,transparent 100%);
+    mask-image:linear-gradient(180deg,transparent 0,#000 9%,#000 91%,transparent 100%)}
+  html.lpjs .lp-track{position:absolute;inset:0 0 auto 0;
+                      transition:transform 520ms var(--lp-e);will-change:transform}
+  html.lpjs .lp-tab{opacity:.5;transition:opacity var(--lp-t),border-color var(--lp-t),box-shadow var(--lp-t),transform 160ms var(--lp-e)}
+  html.lpjs .lp-tab.on{opacity:1}
 }
-.lp-tabs{display:grid;gap:12px;min-width:0}
+.lp-tabs{min-width:0}
+.lp-track{display:grid;gap:12px}
 
 .lp-tab{display:flex;gap:16px;align-items:flex-start;width:100%;padding:20px;text-align:left;
         border:1px solid var(--lp-line);border-radius:var(--lp-r3);background:#fff;cursor:pointer;
@@ -638,10 +655,10 @@ main{display:block}
            color:var(--lp-mut);transition:color var(--lp-t)}
 .lp-tab.on .t{color:var(--lp-blue)}
 .lp-tab .h{display:block;margin-top:5px;font-size:.98rem;font-weight:600;line-height:1.4;color:var(--lp-ink)}
-.lp-tab .b{display:none}
-.lp-tab.on .b{display:block;margin-top:10px}
+.lp-tab .b{display:block;margin-top:10px}
 .lp-tab .b span{display:block;position:relative;padding-left:15px;font-size:.88rem;line-height:1.5;
-                color:var(--lp-mut)}
+                color:var(--lp-mut2);transition:color var(--lp-t)}
+.lp-tab.on .b span{color:var(--lp-mut)}
 .lp-tab .b span + span{margin-top:3px}
 .lp-tab .b span::before{content:'';position:absolute;left:2px;top:.62em;width:5px;height:5px;
                         border-radius:50%;background:var(--lp-b100)}
@@ -898,6 +915,8 @@ html.lpjs .rv{opacity:0;transform:translateY(18px)}
 html.lpjs .rv.in{opacity:1;transform:none;transition:opacity 520ms var(--lp-e),transform 520ms var(--lp-e)}
 @media(prefers-reduced-motion:reduce){
   html.lpjs .rv{opacity:1;transform:none}
+  html.lpjs .lp-track{transition:none}
+  html.lpjs .lp-tab{opacity:1}
   .lp-hdr{transition:none}
 }
 `;
@@ -965,6 +984,8 @@ const JS = `(function(){
      trong môi trường không vẽ đều, rAF chỉ chạy 2 lần trong CẢ MỘT GIÂY — thanh điều
      hướng kẹt nguyên trạng thái cũ, và cùng lớp lỗi đó từng làm chữ kẹt opacity:0. */
   function beat(){ rvGuard(); rvScan(); onScroll(); spTrongTam(); }
+  addEventListener('resize', spThang, { passive: true });
+  if (D.fonts && D.fonts.ready) D.fonts.ready.then(spThang);
   addEventListener('scroll', beat, { passive: true });
   addEventListener('resize', beat, { passive: true });
   addEventListener('load', beat);
@@ -1036,7 +1057,30 @@ const JS = `(function(){
       panes = [].slice.call(D.querySelectorAll('.lp-panel')),
       dots2 = [].slice.call(D.querySelectorAll('.lp-pdots span')),
       spCur = D.getElementById('spCur'), spWrap = D.querySelector('.lp-showcase'),
+      spBox = D.querySelector('.lp-tabs'), spRay = D.querySelector('.lp-track'),
+      spPanes = D.querySelector('.lp-panes'),
       sp = 0, spTimer = null, spDung = false;
+
+  /* THANG MÁY cột trái.
+     · Chiều cao khung cắt = chiều cao ĐÚNG của cột phải, đo lại mỗi lần đổi mục và mỗi
+       lần đổi cỡ cửa sổ. Nếu để CSS đoán một con số cố định thì hai cột lệch nhau ngay
+       khi nội dung mục đổi — đúng thứ vừa bị bác.
+     · Ray trượt để nút đang mở về GIỮA khung, kẹp trong [0, tràn] để không lộ khoảng
+       trống ở đầu hay cuối danh sách.
+     · Dưới 1024px không cắt không trượt: cột trái xếp dọc trên cột phải, thang máy ở đó
+       chỉ tổ giấu mất các nút còn lại. */
+  function spThang(){
+    if (!spBox || !spRay) return;
+    if (innerWidth < 1024) { spRay.style.transform = ''; return; }
+    /* Chiều cao khung cắt KHÔNG đặt bằng JS nữa: ray đã ra khỏi dòng chảy nên
+       align-items:stretch tự cho khung đúng chiều cao cột phải. Đặt tay thì thừa, và
+       thừa ở đây nghĩa là thêm một chỗ có thể trôi lệch. */
+    var cao = spBox.clientHeight, nut = tabs[sp];
+    if (!cao || !nut) return;
+    var giua = nut.offsetTop + nut.offsetHeight / 2 - cao / 2;
+    var tran = Math.max(0, spRay.scrollHeight - cao);
+    spRay.style.transform = 'translateY(' + (-Math.max(0, Math.min(giua, tran))) + 'px)';
+  }
   function spDen(k){
     sp = (k + tabs.length) % tabs.length;
     tabs.forEach(function(t, i){
@@ -1048,6 +1092,10 @@ const JS = `(function(){
     panes.forEach(function(pn, i){ pn.classList.toggle('on', i === sp); });
     dots2.forEach(function(d, i){ d.classList.toggle('on', i === sp); });
     if (spCur) spCur.textContent = String(sp + 1).padStart(2, '0');
+    /* Đo SAU khi panel mới đã lên: chiều cao cột phải đổi theo mục, đo trước thì ray
+       trượt theo con số của mục CŨ và hai cột lệch đúng một nhịp. */
+    requestAnimationFrame(spThang);
+    setTimeout(spThang, 60);
   }
   function spChay(){
     if (!spTimer && !spDung && !RM && tabs.length > 1) {
@@ -1126,6 +1174,7 @@ const JS = `(function(){
   });
   addEventListener('focusout', function(){ dk.hidden = false; });
 
+  spThang();
   rvScan(); dockPos(); dock();
 })();
 `;
@@ -1287,8 +1336,10 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
   <h2 class="lp-h2" id="lpProdH">Thứ bạn <em>dùng mỗi ngày</em></h2>
   <p class="lp-sub">Các tính năng chính của nền tảng bán hàng.</p></div>
   <div class="lp-showcase rv">
-    <div class="lp-tabs" role="tablist" aria-label="Chọn nhóm tính năng" aria-orientation="vertical">
-      ${PRODUCTS.map(prodTab).join('')}
+    <div class="lp-tabs">
+      <div class="lp-track" role="tablist" aria-label="Chọn nhóm tính năng" aria-orientation="vertical">
+        ${PRODUCTS.map(prodTab).join('')}
+      </div>
     </div>
     <div class="lp-panes">
       ${PRODUCTS.map(prodPanel).join('')}

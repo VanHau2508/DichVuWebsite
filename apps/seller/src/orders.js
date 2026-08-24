@@ -1152,14 +1152,22 @@ async function refundOrder(res, ctx, body, params) {
     let idem = await refundIdempotency(c, dbKey, fingerprint);
     if (idem) return idem;
     const o = (await c.query(
-      `SELECT id, order_number, status, payment_status, customer_email, total_vnd
-         FROM orders WHERE id = $1 FOR UPDATE`, [orderId],
+      `SELECT id, order_number, status, payment_status, customer_email, total_vnd,
+              source, external_ref, integration_id
+          FROM orders WHERE id = $1 FOR UPDATE`, [orderId],
     )).rows[0];
     if (!o) return { code: 404 };
     // Request đồng thời trên CÙNG đơn chờ ở FOR UPDATE. Khi được đánh thức, transaction đầu
     // đã commit idempotency row nên phải đọc lại trước guard payment_status.
     idem = await refundIdempotency(c, dbKey, fingerprint);
     if (idem) return idem;
+    if (o.source === 'kiotviet_pos' || o.source === 'sapo_pos'
+      || o.external_ref != null || o.integration_id != null) return {
+      code: 409,
+      errorCode: 'external_refund_not_ready',
+      msg: 'đơn thuộc POS ngoài nên chưa thể ghi hoàn tiền cục bộ',
+      action: 'Thực hiện hoàn tại POS/provider; connector hoàn tiền hai chiều sẽ mở sau khi API được xác minh.',
+    };
     if (o.payment_status !== 'paid') return { code: 409, msg: 'chỉ hoàn được đơn đã thanh toán' };
     if (o.status === 'refunded') return { code: 409, msg: 'đơn đã hoàn tiền' };
     const activeCase = await activeResolutionCaseForOrder(c, orderId);

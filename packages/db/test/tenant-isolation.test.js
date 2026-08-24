@@ -329,6 +329,12 @@ describe('CONNECTOR POS — cùng external id vẫn cô lập theo shop', () => 
     )));
     assert.equal(lineBlocked, 'PIO01');
 
+    const refundBlocked = await sqlstateOf(() => withTenant(A.id, (c) => c.query(
+      `INSERT INTO refunds (shop_id, order_id, amount_vnd, reason)
+       VALUES (current_shop_id(), $1, 1, 'không được ghi cục bộ')`, [A.orderId],
+    )));
+    assert.equal(refundBlocked, 'PIF01', 'đơn ngoài không được tạo refund cục bộ');
+
     const observed = await withIntegrationTenant(A.id, (c) => c.query(
       `UPDATE orders SET status = 'confirmed' WHERE id = $1`, [A.orderId],
     ));

@@ -757,7 +757,7 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
     const ctx = { user, role, shopId, ip: clientIp(req) };
     await route.fn(res, ctx, body, params, url.searchParams);
   } catch (err) {
-    const externalOwnershipGuard = ['PIV01','PIO01'].includes(err.code);
+    const externalOwnershipGuard = ['PIV01','PIO01','PIF01'].includes(err.code);
     const status = externalOwnershipGuard ? 409 : (err.statusCode ?? 500);
     if (status >= 500) log('error', 'handler_error', { path: url.pathname, message: err.message, stack: err.stack });
     // 413: có thể còn body đang tới mà ta không đọc hết → đóng kết nối sau phản hồi

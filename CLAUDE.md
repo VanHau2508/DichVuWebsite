@@ -25,7 +25,7 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 |---|---:|---|
 | dòng mã ứng dụng | ~46.400 | `apps/*/src/*.js` |
 | dòng test | ~35.100 | `apps/*/test/*.{js,mjs}` |
-| migration | 177 tệp, mới nhất `0179` | `packages/db/migrations/` |
+| migration | 178 tệp, mới nhất `0180` | `packages/db/migrations/` |
 | bộ unit | 39 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 107 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 140 test TAP | `packages/db/test/*.test.js` |
@@ -75,7 +75,7 @@ với GitHub CI. Nó tự dựng PostgreSQL trắng trong project Compose riêng
 chạy đúng runner production **không seed**, rồi so ba chiều: số file = `MANIFEST_MIGRATION_COUNT`
 = số dòng thật trong `schema_migrations`, kèm 0 DRIFT / 0 pending. Tự dọn bằng `trap` ở mọi đường
 thoát, kể cả Ctrl-C. **Không chạm DB dev.** Thêm migration thì sửa `MANIFEST_MIGRATION_COUNT`
-trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 177 file / số cao nhất 0179).
+trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 178 file / số cao nhất 0180).
 
 Hook `scripts/hooks/pre-push` chạy `--fast` và **chặn push khi đỏ**. Cài một lần cho mỗi bản
 clone: `git config core.hooksPath scripts/hooks`.
@@ -450,8 +450,9 @@ Migration `0178` đang siết bản `0177`: CAS/generation cho credential + job,
 variant, cursor order/invoice độc lập, webhook collision/dead-letter, advisory lock đối soát,
 đơn ngoài chỉ-đọc và COD-only cho external-master. Migration `0179` đưa trigger đơn ngoài sang
 vai `SECURITY DEFINER` NOLOGIN để checkout không phải đọc trực tiếp connector dưới FORCE RLS,
-đồng thời giữ actor bằng `session_user` và chặn gán customer chéo shop khi ẩn danh. Invoice chưa
-xác định được nguồn phải nằm ở `order_identity_pending`, chưa ghi doanh thu. Phạm vi hiện tại chỉ
+đồng thời giữ actor bằng `session_user` và chặn gán customer chéo shop khi ẩn danh. Migration
+`0180` chặn ghi refund cục bộ cho đơn POS ngoài cho tới khi API hoàn tiền provider được xác minh.
+Invoice chưa xác định được nguồn phải nằm ở `order_identity_pending`, chưa ghi doanh thu. Phạm vi hiện tại chỉ
 đủ cho pilot 1–3 shop; chưa có bằng chứng để tuyên bố tải 9.358 shop.
 
 Nhánh thi công: `codex/kiotviet-integration-core`. Chỉ merge khi full `scripts/ci-local.sh`

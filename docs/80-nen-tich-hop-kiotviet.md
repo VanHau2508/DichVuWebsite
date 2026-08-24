@@ -31,7 +31,7 @@ Ngắt kết nối không xoá mapping và không tự đổi quyền sở hữu
 tồn, sản phẩm liên kết tiếp tục bị khoá checkout cho tới khi có thao tác chuyển authority có
 kiểm soát.
 
-## Schema 0177–0179 và least privilege
+## Schema 0177–0180 và least privilege
 
 Migration `0177_kiotviet_integration_core.sql` thêm:
 
@@ -56,6 +56,11 @@ hiện trigger đang chạy dưới vai gọi và đọc trực tiếp `shop_int
 `app_integration_guard` NOLOGIN, nhưng vẫn dùng `session_user` để giữ các nhánh actor
 `app_checkout`/`app_expiry`/`app_integration` và fail-closed đúng mục đích. Đường ẩn danh cũng
 không thể gán `customer_id` của shop khác.
+
+Migration `0180_external_order_refund_guard.sql` chặn lớp còn lại của cùng bất biến: không
+được ghi `refunds` cục bộ cho đơn POS ngoài, đơn đã có `external_ref`, hoặc đơn đang gắn
+connector. Vì API hoàn tiền KiotViet chưa được xác minh bằng tài khoản thật, hệ thống trả
+fail-closed và yêu cầu hoàn ở provider; không tạo bút toán nền tảng rồi để hai sổ lệch nhau.
 
 Cả bốn bảng tenant đều `ENABLE + FORCE RLS`, FK tenant mang `shop_id`. Vai mới
 `app_integration` không có `BYPASSRLS`; endpoint webhook chỉ dùng SECURITY DEFINER để đổi
@@ -137,10 +142,10 @@ quên gác. Màn hình dùng SSR/form thường, không cần JavaScript và ph�
 - adapter KiotViet: 8/8;
 - checkout policy KiotViet: 7/7;
 - toàn bộ 9 bộ bất biến DB trên stack PostgreSQL: 140/140;
-- migration DB trắng: 177/177, 0 DRIFT, 0 pending.
+- migration DB trắng: 178/178, 0 DRIFT, 0 pending.
 
 E2E connector hiện đã chạy 38/38 trên stack pilot; kết quả full CI được chốt ở SHA bàn giao sau
-khi cổng đầy đủ chạy xong. Không dùng số của migration 0177/0178 để tuyên bố 0179 đã xanh.
+khi cổng đầy đủ chạy xong. Không dùng số của migration 0177/0178/0179 để tuyên bố 0180 đã xanh.
 
 E2E đã đột biến các điểm dễ xanh giả: webhook trùng, ignore mapping qua reconciliation, hai
 job gửi cùng đơn, invoice vọng lại, chữ ký sai, step-up sai và ngắt connector còn authority.

@@ -28,41 +28,63 @@ const SRC = readFileSync(new URL('../src/landing.js', import.meta.url), 'utf8');
 // đã đỏ giả vì đúng chuyện đó, và cùng lỗi ở chiều ngược lại thì XANH GIẢ.
 const LUAT = SRC.replace(/\/\*[\s\S]*?\*\//g, '');
 
-test('khối sản phẩm dựng từ MỘT nguồn cho cả hai bố cục', () => {
-  // Bản trong dòng (màn hẹp / trình duyệt chưa hỗ trợ) và bản dán dính (màn rộng) phải
-  // cùng đọc PRODUCTS + VIS. Chép tay ra hai chỗ thì hai bản sẽ trôi, và trôi âm thầm:
-  // không có phép so nào phát hiện được vì cả hai đều "có nội dung".
-  assert.match(SRC, /const PRODUCTS = \[/, 'thiếu nguồn dữ liệu PRODUCTS');
-  assert.equal((SRC.match(/PRODUCTS\.map\(/g) ?? []).length, 2,
-    'phải đúng hai lần dựng từ PRODUCTS: bản trong dòng và bản dán dính');
-  assert.match(SRC, /\$\{VIS\[x\.vis\]\}/, 'khung minh hoạ phải lấy từ VIS theo dữ liệu, không viết cứng');
+test('khối sản phẩm: nút bên trái, khe hình + nội dung bên phải', () => {
+  // Bố cục cũ (cột phải dán dính đổi theo cuộn) đo ra 5/5 nhưng NHÌN thì mỗi màn hình một
+  // khoảng trống lớn và hai cột không bao giờ ngang hàng. Chủ dự án bác. Nay là bộ tab.
+  assert.match(SRC, /const prodTab = \(x, k\) =>/, 'thiếu bộ dựng nút bên trái');
+  assert.match(SRC, /const prodPanel = \(x, k\) =>/, 'thiếu bộ dựng khung bên phải');
+  assert.equal((SRC.match(/PRODUCTS\.map\(/g) ?? []).length, 3,
+    'nút, khung và chấm điều hướng đều dựng từ CÙNG mảng PRODUCTS — chép tay thì sẽ trôi');
+  // Bộ tab THẬT, không phải thẻ trang trí gắn onclick.
+  assert.match(SRC, /role="tab" id="spT\$\{k\}" aria-controls="spP\$\{k\}"/, 'nút phải là tab thật');
+  assert.match(SRC, /role="tabpanel" aria-labelledby="spT\$\{k\}"/, 'khung phải là tabpanel thật');
 });
 
-test('bố cục dán dính chỉ bật khi ĐỦ rộng cho CẢ HAI cột', () => {
-  const m = /and \(min-width:(\d+)px\)\{\s*\.lp-grid\{/.exec(SRC);
-  assert.ok(m, 'không tìm thấy mốc bật bố cục dán dính của .lp-grid');
-  assert.ok(Number(m[1]) >= 1100,
-    `mốc ${m[1]}px quá hẹp: ở 1024px cột phải chỉ ~457px trong khi khung minh hoạ cần 496px`);
+test('mỗi mục sản phẩm có khe ảnh riêng', () => {
+  assert.match(SRC, /const f = assetSrc\('sp-' \+ x\.key\)/, 'thiếu khe ảnh theo khoá của từng mục');
+  assert.equal((SRC.match(/key: '/g) ?? []).length, 5, 'cả năm mục phải có khoá tra ảnh');
+  // Chưa có tệp thì dùng khung minh hoạ CSS — KHÔNG để lại ô trống chờ ảnh.
+  assert.match(SRC, /: `<div class="lp-pv-mock">\$\{VIS\[x\.vis\]\}<\/div>`/,
+    'thiếu nhánh dự phòng khi chưa có tệp ảnh');
+  // Khe hình phải có tỉ lệ cố định, nếu không đổi mục là khung nhảy chiều cao.
+  assert.match(LUAT, /\.lp-pv\{[^}]*aspect-ratio:16\/10/, 'khe hình phải khoá tỉ lệ');
 });
 
-test('bố cục dán dính có ĐỦ ba cổng an toàn', () => {
-  const khoi = SRC.slice(SRC.indexOf('@supports (timeline-scope'));
-  assert.match(khoi, /@supports \(timeline-scope:--a\) and \(animation-timeline:view\(\)\)/,
-    'thiếu cổng @supports — trình duyệt cũ sẽ nhận cột phải trắng trơn');
-  assert.match(khoi, /prefers-reduced-motion:no-preference/,
-    'thiếu cổng giảm chuyển động');
-  assert.match(khoi, /min-width:1[1-9]\d\dpx/, 'thiếu cổng bề rộng');
-  // Mặc định (ngoài mọi cổng) cột phải PHẢI ẩn và khung trong dòng PHẢI hiện — nếu ngược
-  // lại thì trình duyệt không qua cổng sẽ mất trắng phần minh hoạ.
-  assert.match(SRC, /\.lp-stick\{display:none\}/,
-    'mặc định phải ẩn cột dán dính, chỉ bật bên trong @supports');
-  assert.ok(SRC.indexOf('.lp-vin{display:none}') > SRC.indexOf('@supports (timeline-scope'),
-    'chỉ được ẩn khung trong dòng BÊN TRONG @supports');
+test('hai cột sản phẩm CAO BẰNG NHAU', () => {
+  // Đo được: để align-items:start thì cột nút 635px trong khi cột khung 784px — dưới cùng
+  // bên trái trống một mảng, đúng thứ nhìn ra ngay là lệch tỉ lệ. Sau khi vá: 784 và 784.
+  assert.match(LUAT, /\.lp-showcase\{grid-template-columns:minmax\(0,5fr\) minmax\(0,7fr\);gap:24px;align-items:stretch\}/,
+    'lưới hai cột phải kéo hai bên bằng nhau');
+  assert.match(LUAT, /\.lp-tabs\{align-content:space-between\}/,
+    'các nút phải dãn đều cho hết chiều cao cột');
 });
 
-test('animation theo cuộn khai linear', () => {
-  assert.match(SRC, /\.lp-frame\{[^}]*animation-timing-function:linear/,
-    'thiếu linear: easing mặc định `ease` làm khung kề còn mở 54% lúc khung chính đã 100%');
+test('bộ tab sản phẩm tự chạy nhưng nhường quyền cho người đọc', () => {
+  assert.match(SRC, /function spChay\(\)\{[\s\S]*?!spDung && !RM && tabs\.length > 1/,
+    'không được tự chạy khi chỉ có một mục hoặc khi người dùng chọn giảm chuyển động');
+  // Bấm tay là DỪNG HẲN: vừa chọn thứ muốn đọc mà 5 giây sau nó tự nhảy đi thì là giật
+  // trang khỏi tay người đọc.
+  assert.match(SRC, /t\.addEventListener\('click', function\(\)\{ spDen\(i\); spDung = true; spNgung\(\); \}\)/,
+    'bấm tay phải dừng hẳn tự chạy');
+  assert.match(SRC, /spWrap\.addEventListener\('mouseenter', spNgung\)/, 'thiếu dừng khi trỏ vào');
+  assert.match(SRC, /spWrap\.addEventListener\('focusin', spNgung\)/, 'thiếu dừng khi có tiêu điểm');
+  // Chỉ chạy khi khối trong tầm mắt: chạy từ lúc người ta còn ở hero thì tới nơi đã nhảy
+  // sang mục 4 — trông như lỗi chứ không như hiệu ứng.
+  assert.match(SRC, /function spTrongTam\(\)/, 'thiếu cổng chỉ-chạy-khi-trong-tầm-mắt');
+  assert.match(SRC, /function beat\(\)\{ rvGuard\(\); rvScan\(\); onScroll\(\); spTrongTam\(\); \}/,
+    'cổng tầm mắt phải được gọi trong vòng cuộn');
+  // Bàn phím: mũi tên đổi mục, và bộ tab chỉ chiếm MỘT nấc Tab.
+  assert.match(SRC, /t\.tabIndex = on \? 0 : -1/, 'bộ tab phải chỉ chiếm một nấc Tab');
+  assert.match(SRC, /e\.key === 'ArrowDown' \|\| e\.key === 'ArrowRight'/, 'thiếu điều hướng bằng mũi tên');
+});
+
+test('không JS thì MỌI khung sản phẩm vẫn hiện', () => {
+  // Quy tắc ẩn nằm sau html.lpjs — cờ do chính JS gắn. Không JS ⇒ năm khung xếp dọc, đủ
+  // chữ, không mất một dòng nào.
+  assert.match(LUAT, /html\.lpjs \.lp-panel:not\(\.on\)\{display:none\}/,
+    'quy tắc ẩn khung PHẢI nằm sau cờ lpjs');
+  assert.match(LUAT, /html:not\(\.lpjs\) \.lp-pnav\{display:none\}/,
+    'không JS thì bộ đếm/chấm vô nghĩa, phải ẩn');
 });
 
 test('ba chốt chống tràn ngang đã đo được', () => {
@@ -102,7 +124,7 @@ test('trang DÙNG ĐƯỢC khi không có JS', () => {
 test('lớp tăng cường không phụ thuộc khung hình được vẽ', () => {
   // requestAnimationFrame chỉ chạy 2 lần trong CẢ MỘT GIÂY ở môi trường không vẽ đều
   // (đo được). Bọc handler cuộn trong rAF thì thanh điều hướng kẹt trạng thái cũ.
-  assert.match(SRC, /function beat\(\)\{ rvGuard\(\); rvScan\(\); onScroll\(\); \}/,
+  assert.match(SRC, /function beat\(\)\{ rvGuard\(\); rvScan\(\); onScroll\(\);/,
     'handler cuộn phải gọi thẳng, không bọc requestAnimationFrame');
   assert.doesNotMatch(SRC, /requestAnimationFrame\(onScroll\)/,
     'không được đưa onScroll qua requestAnimationFrame');

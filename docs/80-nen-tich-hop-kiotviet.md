@@ -138,7 +138,7 @@ quên gác. Màn hình dùng SSR/form thường, không cần JavaScript và ph�
 
 ## Bằng chứng kiểm thử
 
-- unit theo manifest: 262/262;
+- unit theo manifest: 263/263;
 - adapter KiotViet: 8/8;
 - checkout policy KiotViet: 7/7;
 - toàn bộ 9 bộ bất biến DB trên stack PostgreSQL: 140/140;

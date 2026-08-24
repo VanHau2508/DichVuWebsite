@@ -541,6 +541,13 @@ describe('CONNECTOR POS — cùng external id vẫn cô lập theo shop', () => 
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe('COMPOSITE FOREIGN KEY — lớp phòng thủ khi RLS thất bại', () => {
+  // Connector POS cố ý chuyển fixture A/B thành đơn external trong một suite khác.
+  // Dùng cặp shop riêng để phép đo FK không bị trigger nghiệp vụ POS che mất SQLSTATE
+  // đang kiểm, đồng thời không làm thay đổi số đơn mà các suite còn lại đang đếm.
+  let FK;
+  before(async () => { FK = await seedTwoShops(); });
+  after(async () => { await cleanupShops(FK); });
+
   test('order_line không trỏ được sang variant của shop khác', async () => {
     const code = await sqlstateOf(() =>
       // Chạy bằng OWNER (bỏ qua RLS) để cô lập đúng cơ chế đang kiểm: khoá ngoại.
@@ -548,7 +555,7 @@ describe('COMPOSITE FOREIGN KEY — lớp phòng thủ khi RLS thất bại', ()
         `INSERT INTO order_lines
            (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty)
          VALUES ($1, $2, $3, 'X', 'X', 1, 1)`,
-        [A.id, A.orderId, B.variantId], // ← variant của shop B
+        [FK.a.id, FK.a.orderId, FK.b.variantId], // ← variant của shop B
       ),
     );
     assert.equal(code, SQLSTATE.FOREIGN_KEY_VIOLATION, 'composite FK phải chặn tham chiếu chéo shop');
@@ -560,7 +567,7 @@ describe('COMPOSITE FOREIGN KEY — lớp phòng thủ khi RLS thất bại', ()
         `INSERT INTO order_lines
            (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty)
          VALUES ($1, $2, $3, 'X', 'X', 1, 1)`,
-        [A.id, B.orderId, A.variantId], // ← order của shop B
+        [FK.a.id, FK.b.orderId, FK.a.variantId], // ← order của shop B
       ),
     );
     assert.equal(code, SQLSTATE.FOREIGN_KEY_VIOLATION);
@@ -570,7 +577,7 @@ describe('COMPOSITE FOREIGN KEY — lớp phòng thủ khi RLS thất bại', ()
     const code = await sqlstateOf(() =>
       owner.query(
         `INSERT INTO variants (shop_id, product_id, sku, price_vnd) VALUES ($1, $2, $3, 1)`,
-        [A.id, B.productId, `x-${randomUUID().slice(0, 8)}`],
+        [FK.a.id, FK.b.productId, `x-${randomUUID().slice(0, 8)}`],
       ),
     );
     assert.equal(code, SQLSTATE.FOREIGN_KEY_VIOLATION);
@@ -580,7 +587,7 @@ describe('COMPOSITE FOREIGN KEY — lớp phòng thủ khi RLS thất bại', ()
     const code = await sqlstateOf(() => owner.query(
       `INSERT INTO product_source_refs (shop_id, source, kind, external_id, product_id)
        VALUES ($1, 'tiktok', 'product', $2, $3)`,
-      [A.id, `cross-${randomUUID()}`, B.productId],
+      [FK.a.id, `cross-${randomUUID()}`, FK.b.productId],
     ));
     assert.equal(code, SQLSTATE.FOREIGN_KEY_VIOLATION);
   });
@@ -593,7 +600,7 @@ describe('COMPOSITE FOREIGN KEY — lớp phòng thủ khi RLS thất bại', ()
            (shop_id, order_id, variant_id, title_snapshot, sku_snapshot, unit_price_vnd, qty)
          SELECT $1, $2, v.id, 'X', v.sku, v.price_vnd, 1
          FROM variants v WHERE v.id = $3`,
-        [A.id, A.orderId, B.variantId],
+        [FK.a.id, FK.a.orderId, FK.b.variantId],
       ),
     );
     assert.equal(r.rowCount, 0);

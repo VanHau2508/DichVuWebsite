@@ -458,9 +458,10 @@ Invoice chưa xác định được nguồn phải nằm ở `order_identity_pen
 Nhánh thi công: `codex/kiotviet-integration-core`. Chỉ merge khi full `scripts/ci-local.sh`
 exit 0 và có review độc lập. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn, không bị huỷ.
 
-Nợ đã ghi, chưa xử lý: trang **Tồn an toàn tràn 377/360** ở cả JS bật lẫn tắt — thủ phạm là ô
-nhập "Tỉ lệ giữ an toàn cho toàn shop (%)" trong form đầu trang (`pages.js:6022`), không phải
-bảng, nên nằm ngoài Brief B.
+Nguyên nhân tràn ngang của trang **Tồn an toàn** đã được vá trên nhánh connector: con trực tiếp
+của `.filters` có `min-width:0;max-width:100%`, để nhãn "Tỉ lệ giữ an toàn cho toàn shop (%)"
+không giữ intrinsic width 377px. Chốt nguồn nằm ở `apps/seller-admin/test/table-cards.test.js`;
+phép đo Chromium 360px cả JS bật/tắt vẫn cần chạy lại khi môi trường trình duyệt sẵn sàng.
 
 ### 9.4 Bắt đầu một phiên mới thế nào
 

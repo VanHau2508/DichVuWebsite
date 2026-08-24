@@ -79,3 +79,10 @@ test('ADMIN_JS không dựng lại việc gán nhãn — một việc chỉ có 
   assert.doesNotMatch(js, /classList\.add\(\s*'cards'\s*\)/,
     'JS không được thêm lớp cards nữa; CSS móc thẳng vào thuộc tính');
 });
+
+test('khối lọc co được trong viewport 360px', () => {
+  // Trang Tồn an toàn từng rộng 377px dù bảng đã card-hoá: nhãn dài làm flex item giữ
+  // intrinsic min-width. max-width chỉ giới hạn hộp, còn min-width:0 mới cho phép nó co.
+  assert.match(code, /\.filters>div\{flex:0 0 auto;min-width:0;max-width:100%\}/,
+    'con trực tiếp của .filters phải co được và không rộng hơn viewport mobile');
+});

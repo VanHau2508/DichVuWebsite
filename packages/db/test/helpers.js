@@ -134,22 +134,36 @@ export async function seedTwoShops() {
 /** Xoá đúng dữ liệu đã tạo, theo thứ tự ngược của khoá ngoại. */
 export async function cleanupShops(shops) {
   const ids = Object.values(shops).map((s) => s.id);
-  for (const table of [
-    'integration_webhook_inbox',
-    'integration_entity_refs',
-    'integration_sync_discrepancies',
-    'order_lines',
-    'orders',
-    'shop_integrations',
-    'variants',
-    'products',
-    'shop_counters',
-    'idempotency_keys',
-    'outbox',
-    'audit_logs',
-    'domains',
-  ]) {
-    await owner.query(`DELETE FROM ${table} WHERE shop_id = ANY($1::uuid[])`, [ids]);
+  const c = await owner.connect();
+  try {
+    await c.query('BEGIN');
+    // Test fixtures may have been promoted to external POS orders. The production
+    // trigger must reject local deletes in that state; cleanup is the one place where
+    // the superuser may disable triggers transaction-locally instead of weakening them.
+    await c.query('SET LOCAL session_replication_role = replica');
+    for (const table of [
+      'integration_webhook_inbox',
+      'integration_entity_refs',
+      'integration_sync_discrepancies',
+      'order_lines',
+      'orders',
+      'shop_integrations',
+      'variants',
+      'products',
+      'shop_counters',
+      'idempotency_keys',
+      'outbox',
+      'audit_logs',
+      'domains',
+    ]) {
+      await c.query(`DELETE FROM ${table} WHERE shop_id = ANY($1::uuid[])`, [ids]);
+    }
+    await c.query(`DELETE FROM shops WHERE id = ANY($1::uuid[])`, [ids]);
+    await c.query('COMMIT');
+  } catch (error) {
+    await c.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    c.release();
   }
-  await owner.query(`DELETE FROM shops WHERE id = ANY($1::uuid[])`, [ids]);
 }

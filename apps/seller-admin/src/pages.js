@@ -341,7 +341,7 @@ textarea{min-height:80px;resize:vertical}
 .actgrp .actions{margin-top:8px;align-items:flex-start}
 .actgrp .actions form{display:flex;flex-direction:column;gap:6px}
 .actgrp-h{font-size:.82rem;margin:8px 0 0;line-height:1.5}
-.filters{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.filters>div{flex:0 0 auto}
+.filters{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.filters>div{flex:0 0 auto;min-width:0;max-width:100%}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}@media(max-width:560px){.grid2{grid-template-columns:1fr}}
 .inline{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}.inline input{width:auto}
 .num{font-variant-numeric:tabular-nums}.right{text-align:right}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}

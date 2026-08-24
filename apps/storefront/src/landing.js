@@ -285,6 +285,13 @@ main{display:block}
    thành (0,2,1), thắng cả .lp-nav a ⇒ mục điều hướng nhận màu chữ thân trang, tức
    gần như vô hình trên nền tối. Kết luận: MỌI thẻ a phải tự khai màu ở lớp của nó. */
 .lp a{text-decoration:none}
+/* Nút KHÔNG tự thừa hưởng phông của trang — đó là mặc định của trình duyệt chứ không
+   phải lỗi hiếm gặp. Đo được: nút thẻ sản phẩm dựng bằng Arial 13,33px trong khi bản
+   sao dựng bằng div thì đúng Be Vietnam Pro 16,64px, cao 211 so với 241 — hai bộ thẻ
+   lệch nhau nên mối nối vòng lặp lộ ra, và quan trọng hơn là MỌI nút trên trang đang
+   sai phông. Dùng bộ chọn phần tử TRẦN (độ ưu tiên 0,0,1) để mọi quy tắc lớp đều thắng
+   được nó — đặt ở lớp cao hơn là lặp lại đúng cái bẫy đã cắn với thẻ a. */
+button{font:inherit}
 .lp :focus-visible{outline:3px solid rgba(0,69,255,.5);outline-offset:2px;border-radius:5px}
 .lp-dark :focus-visible{outline-color:rgba(255,255,255,.8)}
 .lp-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
@@ -633,15 +640,46 @@ main{display:block}
   html.lpjs .lp-tabs{position:relative;overflow:hidden;
     -webkit-mask-image:linear-gradient(180deg,transparent 0,#000 9%,#000 91%,transparent 100%);
     mask-image:linear-gradient(180deg,transparent 0,#000 9%,#000 91%,transparent 100%)}
-  html.lpjs .lp-track{position:absolute;inset:0 0 auto 0;
-                      transition:transform 520ms var(--lp-e);will-change:transform}
+  /* THANG MÁY CUỘN LIÊN TỤC. Bản trước nhảy từng nấc và đo ra thế này: ray đứng ở
+     0px, 0px, −154px, −329px, −295px cho năm mục — mục 1 và 2 CÙNG một chỗ, mục 4 và 5
+     CÙNG một chỗ, tức 2/4 nhịp ray không hề nhúc nhích. Nhìn vào thì đúng là "đứng im".
+     Nay ray chạy đều, không nghỉ: hai bộ thẻ giống hệt nhau xếp nối đuôi, ray trôi tới
+     -50% rồi lặp — đúng chỗ bộ thứ hai trùng khít vị trí bộ thứ nhất, nên mắt không
+     thấy mối nối. Thẻ nào trôi qua giữa khung thì thẻ đó sáng lên và khung bên phải đổi
+     theo. Tốc độ do JS đặt theo chiều cao thật của một bộ, để thêm bớt mục không làm
+     băng chạy nhanh hay chậm đi. */
+  html.lpjs .lp-track{position:absolute;inset:0 0 auto 0;will-change:transform}
+  @media(prefers-reduced-motion:no-preference){
+    html.lpjs .lp-track{animation:lp-thang var(--lp-tg,28s) linear infinite}
+  }
+  /* Quãng đường một vòng KHÔNG dùng -50%. Đo được: ray cao 2291px nên nửa ray là 1146px,
+     trong khi một bộ thẻ chỉ cao 1079px — lề dưới của thẻ cuối mỗi bộ bị thu ra ngoài
+     chiều cao bộ, nên hai con số lệch 67px và mỗi vòng lặp giật đúng ngần ấy. Nay JS đo
+     KHOẢNG CÁCH THẬT giữa đỉnh bộ một và đỉnh bộ hai rồi truyền vào --lp-dy: đó đúng bằng
+     chu kỳ lặp, nên mối nối trùng khít bất kể lề co giãn thế nào. */
+  @keyframes lp-thang{from{transform:translateY(0)}to{transform:translateY(var(--lp-dy,-1000px))}}
+  /* Dừng khi trỏ vào cột nút hoặc khi có tiêu điểm bàn phím trong khối — khai bằng CSS
+     nên không cần một handler nào, và không có trạng thái JS nào để trôi lệch. */
+  html.lpjs .lp-tabs:hover .lp-track,
+  html.lpjs .lp-showcase:focus-within .lp-track{animation-play-state:paused}
+  html.lpjs .lp-showcase.ngu .lp-track{animation-play-state:paused}
+  html.lpjs .lp-tab.bong{cursor:pointer}
   /* KHÔNG làm mờ nút chưa mở: chữ mờ 50% thì đọc mệt và trông như bị vô hiệu hoá. Phân
      biệt bằng thứ khác đã đủ rõ — nút đang mở nổi lên có bóng, ô biểu tượng xanh đặc,
      tên mục màu xanh; nút chưa mở phẳng, ô biểu tượng nhạt, tên mục màu chữ phụ. */
   html.lpjs .lp-tab{transition:border-color var(--lp-t),box-shadow var(--lp-t),transform 160ms var(--lp-e)}
 }
 .lp-tabs{min-width:0}
-.lp-track{display:grid;gap:12px}
+/* Khoảng cách bằng margin-bottom trên TỪNG nút, không bằng gap của lưới. Lý do là phép
+   toán vòng lặp: ray chứa HAI bộ giống hệt nhau và chạy tới -50%, nên nửa ray phải bằng
+   ĐÚNG một bộ KỂ CẢ khoảng cách đuôi. Dùng gap thì 10 thẻ chỉ có 9 khoảng, nửa ray hụt
+   mất một khoảng và mỗi vòng lệch 12px — chạy vài vòng là thấy giật ở mối nối. */
+.lp-tab{margin-bottom:12px}
+/* Bản BÓNG chỉ có nghĩa khi thang máy đang chạy. Không JS thì không có băng; dưới
+   1024px thì thang máy tắt và cột nút xếp dọc trên cột phải — để bản bóng ở đó là người
+   dùng thấy đủ năm mục HAI LẦN. Đo được đúng vậy: 10 nút ở khung 390px. */
+html:not(.lpjs) .lp-set + .lp-set{display:none}
+@media(max-width:1023px){.lp-set + .lp-set{display:none}}
 
 .lp-tab{display:flex;gap:16px;align-items:flex-start;width:100%;padding:20px;text-align:left;
         border:1px solid var(--lp-line);border-radius:var(--lp-r3);background:#fff;cursor:pointer;
@@ -985,8 +1023,8 @@ const JS = `(function(){
      trong môi trường không vẽ đều, rAF chỉ chạy 2 lần trong CẢ MỘT GIÂY — thanh điều
      hướng kẹt nguyên trạng thái cũ, và cùng lớp lỗi đó từng làm chữ kẹt opacity:0. */
   function beat(){ rvGuard(); rvScan(); onScroll(); spTrongTam(); }
-  addEventListener('resize', spThang, { passive: true });
-  if (D.fonts && D.fonts.ready) D.fonts.ready.then(spThang);
+  addEventListener('resize', spNhip, { passive: true });
+  if (D.fonts && D.fonts.ready) D.fonts.ready.then(spNhip);
   addEventListener('scroll', beat, { passive: true });
   addEventListener('resize', beat, { passive: true });
   addEventListener('load', beat);
@@ -1053,93 +1091,91 @@ const JS = `(function(){
   }
   chay();
 
-  /* ── BỘ TAB SẢN PHẨM: tự chạy lần lượt ───────────────────────────────────── */
-  var tabs = [].slice.call(D.querySelectorAll('.lp-tab')),
+  /* ── BỘ TAB SẢN PHẨM: cột nút cuộn liên tục như thang máy ────────────────── */
+  var tabs = [].slice.call(D.querySelectorAll('.lp-tab[role="tab"]')),
+      moiThe = [].slice.call(D.querySelectorAll('.lp-tab')),
       panes = [].slice.call(D.querySelectorAll('.lp-panel')),
       dots2 = [].slice.call(D.querySelectorAll('.lp-pdots span')),
       spCur = D.getElementById('spCur'), spWrap = D.querySelector('.lp-showcase'),
       spBox = D.querySelector('.lp-tabs'), spRay = D.querySelector('.lp-track'),
-      spPanes = D.querySelector('.lp-panes'),
-      sp = 0, spTimer = null;
+      spBo = D.querySelector('.lp-set'), spBo2 = D.querySelectorAll('.lp-set')[1],
+      sp = 0, spKhoa = -1;
 
-  /* THANG MÁY cột trái.
-     · Chiều cao khung cắt = chiều cao ĐÚNG của cột phải, đo lại mỗi lần đổi mục và mỗi
-       lần đổi cỡ cửa sổ. Nếu để CSS đoán một con số cố định thì hai cột lệch nhau ngay
-       khi nội dung mục đổi — đúng thứ vừa bị bác.
-     · Ray trượt để nút đang mở về GIỮA khung, kẹp trong [0, tràn] để không lộ khoảng
-       trống ở đầu hay cuối danh sách.
-     · Dưới 1024px không cắt không trượt: cột trái xếp dọc trên cột phải, thang máy ở đó
-       chỉ tổ giấu mất các nút còn lại. */
-  function spThang(){
-    if (!spBox || !spRay) return;
-    if (innerWidth < 1024) { spRay.style.transform = ''; return; }
-    /* Chiều cao khung cắt KHÔNG đặt bằng JS nữa: ray đã ra khỏi dòng chảy nên
-       align-items:stretch tự cho khung đúng chiều cao cột phải. Đặt tay thì thừa, và
-       thừa ở đây nghĩa là thêm một chỗ có thể trôi lệch. */
-    var cao = spBox.clientHeight, nut = tabs[sp];
-    if (!cao || !nut) return;
-    var giua = nut.offsetTop + nut.offsetHeight / 2 - cao / 2;
-    var tran = Math.max(0, spRay.scrollHeight - cao);
-    spRay.style.transform = 'translateY(' + (-Math.max(0, Math.min(giua, tran))) + 'px)';
-  }
   function spDen(k){
     sp = (k + tabs.length) % tabs.length;
     tabs.forEach(function(t, i){
       var on = i === sp;
-      t.classList.toggle('on', on);
       t.setAttribute('aria-selected', String(on));
       t.tabIndex = on ? 0 : -1;               // bộ tab chỉ chiếm MỘT nấc Tab, đúng chuẩn
     });
+    moiThe.forEach(function(t){ t.classList.toggle('on', Number(t.dataset.i) === sp); });
     panes.forEach(function(pn, i){ pn.classList.toggle('on', i === sp); });
     dots2.forEach(function(d, i){ d.classList.toggle('on', i === sp); });
     if (spCur) spCur.textContent = String(sp + 1).padStart(2, '0');
-    /* Đo SAU khi panel mới đã lên: chiều cao cột phải đổi theo mục, đo trước thì ray
-       trượt theo con số của mục CŨ và hai cột lệch đúng một nhịp. */
-    requestAnimationFrame(spThang);
-    setTimeout(spThang, 60);
   }
-  function spChay(){
-    if (!spTimer && !RM && tabs.length > 1) {
-      spTimer = setInterval(function(){ spDen(sp + 1); }, 5200);
-    }
+
+  /* Tốc độ tính theo chiều cao THẬT của một bộ, không đặt cứng một con số giây: thêm hay
+     bớt một mục thì băng vẫn trôi đúng bằng ấy pixel mỗi giây. 38px/giây là tốc độ đọc
+     kịp mà không sốt ruột. */
+  function spNhip(){
+    if (!spBo || !spBo2 || !spRay) return;
+    var dy = spBo2.offsetTop - spBo.offsetTop;     // chu kỳ lặp, đo bằng vị trí thật
+    if (!(dy > 0)) return;
+    spRay.style.setProperty('--lp-dy', (-dy) + 'px');
+    spRay.style.setProperty('--lp-tg', Math.max(12, Math.round(dy / 38)) + 's');
   }
-  function spNgung(){ if (spTimer) { clearInterval(spTimer); spTimer = null; } }
+
+  /* Thẻ nào đang ở GIỮA khung thì thẻ đó sáng, và khung bên phải đổi theo. Đọc vị trí
+     thật bằng getBoundingClientRect thay vì tự tính từ tiến độ animation: animation chạy
+     trên luồng dựng hình, tự tính thì sớm muộn cũng lệch khỏi thứ mắt đang thấy. */
+  function spQuet(){
+    if (!spBox || spKhoa >= 0 || innerWidth < 1024) return;
+    var b = spBox.getBoundingClientRect(), tam = b.top + b.height / 2;
+    var gan = -1, lech = 1e9;
+    moiThe.forEach(function(t){
+      var r = t.getBoundingClientRect();
+      if (r.bottom < b.top || r.top > b.bottom) return;   // ngoài khung thì bỏ qua
+      var d = Math.abs(r.top + r.height / 2 - tam);
+      if (d < lech) { lech = d; gan = Number(t.dataset.i); }
+    });
+    if (gan >= 0 && gan !== sp) spDen(gan);
+  }
+  setInterval(spQuet, 140);
+
+  /* Bấm được cả trên bản BÓNG: nếu chỉ bản thật ăn thì một nửa số thẻ đang trôi qua mắt
+     bấm không có phản ứng, và người dùng không có cách nào đoán ra vì sao. */
+  if (spRay) spRay.addEventListener('click', function(e){
+    var t = e.target.closest('.lp-tab');
+    if (!t) return;
+    spKhoa = Number(t.dataset.i);
+    spDen(spKhoa);
+  });
+  /* Mở khoá khi trỏ rời cột nút: lúc đó người ta đã đọc xong mục vừa chọn. Không mở khoá
+     thì băng vẫn trôi nhưng khung bên phải đứng yên mãi — hai bên nói hai chuyện khác
+     nhau, tệ hơn cả đứng im cả hai. */
+  if (spBox) spBox.addEventListener('mouseleave', function(){ spKhoa = -1; });
+
   tabs.forEach(function(t, i){
-    /* Bấm tay chỉ ĐẶT LẠI đồng hồ, không dừng hẳn. Bản trước dừng vĩnh viễn: bấm thử
-       một cái là băng đứng im mãi, và đó đúng là thứ trông như hỏng. Đặt lại đồng hồ vẫn
-       cho người đọc trọn một nhịp với mục vừa chọn, mà băng không chết. */
-    t.addEventListener('click', function(){ spDen(i); spNgung(); spChay(); });
     t.addEventListener('keydown', function(e){
       var d = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1
             : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1
             : e.key === 'Home' ? -sp : e.key === 'End' ? tabs.length - 1 - sp : 0;
       if (!d) return;
       e.preventDefault();
-      spNgung();
       spDen(sp + d);
+      spKhoa = sp;
       tabs[sp].focus();
     });
   });
-  /* Dừng khi trỏ vào CỘT NÚT, không phải cả khối. Gác cả khối thì người đọc để chuột
-     trên khung bên phải mà đọc là băng đứng im suốt — nhìn y như hỏng, và đó chính là
-     điều đã xảy ra. Trỏ vào cột nút thì khác: lúc đó người ta đang định bấm.
-     Tiêu điểm bàn phím vẫn gác cả khối: người dùng bàn phím không có cách nào khác để
-     giữ băng đứng yên trong lúc đọc. */
-  if (spBox) {
-    spBox.addEventListener('mouseenter', spNgung);
-    spBox.addEventListener('mouseleave', spChay);
-  }
-  if (spWrap) {
-    spWrap.addEventListener('focusin', spNgung);
-    spWrap.addEventListener('focusout', function(e){ if (!spWrap.contains(e.relatedTarget)) spChay(); });
-  }
-  /* Chỉ chạy khi khối đang ở trong tầm mắt: tự chạy lúc người ta còn ở hero thì tới nơi
-     đã nhảy sang mục 4, và đó là thứ trông như lỗi chứ không như hiệu ứng. */
+  if (spWrap) spWrap.addEventListener('focusout', function(e){
+    if (!spWrap.contains(e.relatedTarget)) spKhoa = -1;
+  });
+
+  /* Ngủ khi khối ra khỏi tầm mắt: băng chạy dưới đáy trang không ai thấy chỉ tổ tốn pin. */
   function spTrongTam(){
     if (!spWrap) return;
     var r = spWrap.getBoundingClientRect();
-    if (r.top < innerHeight * 0.85 && r.bottom > innerHeight * 0.15) spChay();
-    else spNgung();
+    spWrap.classList.toggle('ngu', !(r.top < innerHeight * 0.95 && r.bottom > innerHeight * 0.05));
   }
 
   /* ── THANH CTA NỔI ───────────────────────────────────────────────────────── */
@@ -1183,7 +1219,7 @@ const JS = `(function(){
   });
   addEventListener('focusout', function(){ dk.hidden = false; });
 
-  spThang();
+  spNhip(); spTrongTam();
   rvScan(); dockPos(); dock();
 })();
 `;
@@ -1321,7 +1357,7 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
 
   // NÚT bên trái — bộ tab THẬT (role=tab), không phải thẻ trang trí: đi được bằng bàn
   // phím, và trình đọc màn hình biết mục nào đang mở.
-  const prodTab = (x, k) => `<button class="lp-tab${k === 0 ? ' on' : ''}" type="button" role="tab" id="spT${k}" aria-controls="spP${k}" aria-selected="${k === 0}" tabindex="${k === 0 ? 0 : -1}">
+  const prodTab = (x, k) => `<button class="lp-tab${k === 0 ? ' on' : ''}" type="button" data-i="${k}" role="tab" id="spT${k}" aria-controls="spP${k}" aria-selected="${k === 0}" tabindex="${k === 0 ? 0 : -1}">
     <span class="ic">${x.icon}</span>
     <span class="tx">
       <span class="t">${esc(x.kick)}</span>
@@ -1329,6 +1365,15 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
       <span class="b">${x.bullets.slice(0, 3).map((b) => `<span>${esc(b)}</span>`).join('')}</span>
     </span>
   </button>`;
+
+  const prodBong = (x, k) => `<div class="lp-tab bong" data-i="${k}">
+    <span class="ic">${x.icon}</span>
+    <span class="tx">
+      <span class="t">${esc(x.kick)}</span>
+      <span class="h">${esc(x.h)}</span>
+      <span class="b">${x.bullets.slice(0, 3).map((b) => `<span>${esc(b)}</span>`).join('')}</span>
+    </span>
+  </div>`;
 
   // KHUNG bên phải: ảnh ở trên, nội dung của đúng mục đang mở ở dưới.
   const prodPanel = (x, k) => `<div class="lp-panel${k === 0 ? ' on' : ''}" id="spP${k}" role="tabpanel" aria-labelledby="spT${k}">
@@ -1346,8 +1391,11 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
   <p class="lp-sub">Các tính năng chính của nền tảng bán hàng.</p></div>
   <div class="lp-showcase rv">
     <div class="lp-tabs">
-      <div class="lp-track" role="tablist" aria-label="Chọn nhóm tính năng" aria-orientation="vertical">
-        ${PRODUCTS.map(prodTab).join('')}
+      <div class="lp-track">
+        <div class="lp-set" role="tablist" aria-label="Chọn nhóm tính năng" aria-orientation="vertical">
+          ${PRODUCTS.map(prodTab).join('')}
+        </div>
+        <div class="lp-set" aria-hidden="true">${PRODUCTS.map(prodBong).join('')}</div>
       </div>
     </div>
     <div class="lp-panes">

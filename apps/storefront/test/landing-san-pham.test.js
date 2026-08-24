@@ -29,15 +29,17 @@ const SRC = readFileSync(new URL('../src/landing.js', import.meta.url), 'utf8');
 const LUAT = SRC.replace(/\/\*[\s\S]*?\*\//g, '');
 
 test('khối sản phẩm: nút bên trái, khe hình + nội dung bên phải', () => {
-  // Bố cục cũ (cột phải dán dính đổi theo cuộn) đo ra 5/5 nhưng NHÌN thì mỗi màn hình một
-  // khoảng trống lớn và hai cột không bao giờ ngang hàng. Chủ dự án bác. Nay là bộ tab.
   assert.match(SRC, /const prodTab = \(x, k\) =>/, 'thiếu bộ dựng nút bên trái');
+  assert.match(SRC, /const prodBong = \(x, k\) =>/, 'thiếu bộ dựng bản bóng để chạy vòng');
   assert.match(SRC, /const prodPanel = \(x, k\) =>/, 'thiếu bộ dựng khung bên phải');
-  assert.equal((SRC.match(/PRODUCTS\.map\(/g) ?? []).length, 3,
-    'nút, khung và chấm điều hướng đều dựng từ CÙNG mảng PRODUCTS — chép tay thì sẽ trôi');
-  // Bộ tab THẬT, không phải thẻ trang trí gắn onclick.
+  assert.equal((SRC.match(/PRODUCTS\.map\(/g) ?? []).length, 4,
+    'nút, bản bóng, khung và chấm điều hướng đều dựng từ CÙNG mảng PRODUCTS');
   assert.match(SRC, /role="tab" id="spT\$\{k\}" aria-controls="spP\$\{k\}"/, 'nút phải là tab thật');
   assert.match(SRC, /role="tabpanel" aria-labelledby="spT\$\{k\}"/, 'khung phải là tabpanel thật');
+  // Bản bóng chỉ để MẮT thấy băng chạy vòng: không phải nút, không id, không nhận tiêu
+  // điểm. Nếu là button thì trình đọc màn hình nghe mọi mục hai lần và Tab đi vào bản sao.
+  assert.match(SRC, /<div class="lp-tab bong" data-i="\$\{k\}">/, 'bản bóng phải là div trơ');
+  assert.match(SRC, /<div class="lp-set" aria-hidden="true">/, 'bản bóng phải ẩn khỏi cây trợ năng');
 });
 
 test('mỗi mục sản phẩm có khe ảnh riêng', () => {
@@ -77,46 +79,52 @@ test('cột nút TRƯỢT như thang máy, hai cột cao bằng nhau', () => {
     'không được làm mờ nút chưa mở');
 });
 
-test('thang máy đưa nút đang mở về GIỮA khung, kẹp ở hai đầu', () => {
-  assert.match(SRC, /var giua = nut\.offsetTop \+ nut\.offsetHeight \/ 2 - cao \/ 2;/,
-    'phải canh TÂM nút vào TÂM khung');
-  assert.match(SRC, /var tran = Math\.max\(0, spRay\.scrollHeight - cao\);/, 'thiếu mức tràn');
-  assert.match(SRC, /Math\.max\(0, Math\.min\(giua, tran\)\)/,
-    'phải kẹp trong [0, tràn], nếu không lộ khoảng trống ở đầu hoặc cuối danh sách');
-  // Đo lại SAU khi panel mới đã lên: chiều cao cột phải đổi theo mục, đo trước thì ray
-  // trượt theo con số của mục CŨ và hai cột lệch đúng một nhịp.
-  assert.match(SRC, /requestAnimationFrame\(spThang\);\s*\n\s*setTimeout\(spThang, 60\);/,
-    'phải đo lại sau khi panel mới đã lên');
-  assert.match(SRC, /addEventListener\('resize', spThang/, 'thiếu tính lại khi đổi cỡ cửa sổ');
-  // Dưới 1024px không cắt không trượt: cột trái xếp trên cột phải, thang máy ở đó chỉ tổ
-  // giấu mất các nút còn lại.
-  assert.match(SRC, /if \(innerWidth < 1024\) \{ spRay\.style\.transform = ''; return; \}/,
-    'màn hẹp phải tắt thang máy');
+test('thang máy CUỘN LIÊN TỤC, mối nối trùng khít', () => {
+  // Bản nhảy-từng-nấc đo ra: ray đứng ở 0, 0, −154, −329, −295px cho năm mục — mục 1 và
+  // 2 CÙNG một chỗ, mục 4 và 5 CÙNG một chỗ, tức 2/4 nhịp không nhúc nhích. Chủ dự án
+  // nhìn vào đúng là "đứng im". Nay ray chạy đều không nghỉ.
+  assert.match(LUAT, /html\.lpjs \.lp-track\{animation:lp-thang var\(--lp-tg,28s\) linear infinite\}/,
+    'ray phải chạy animation liên tục, tuyến tính, vô hạn');
+  assert.doesNotMatch(SRC, /transition:transform 520ms/, 'không còn cơ chế nhảy từng nấc');
+  // Quãng đường một vòng KHÔNG dùng -50%: đo được ray cao 2291px nên nửa ray là 1146px
+  // trong khi một bộ thẻ chỉ cao 1079px — lề dưới thẻ cuối bị thu ra ngoài chiều cao bộ,
+  // hai số lệch 67px và mỗi vòng giật đúng ngần ấy.
+  assert.match(LUAT, /@keyframes lp-thang\{from\{transform:translateY\(0\)\}to\{transform:translateY\(var\(--lp-dy,-1000px\)\)\}\}/,
+    'quãng đường phải lấy từ biến đo được, không dùng -50%');
+  assert.match(SRC, /var dy = spBo2\.offsetTop - spBo\.offsetTop;/,
+    'chu kỳ lặp phải đo bằng KHOẢNG CÁCH THẬT giữa đỉnh hai bộ');
+  assert.match(SRC, /Math\.max\(12, Math\.round\(dy \/ 38\)\)/,
+    'nhịp tính theo chiều cao thật để thêm bớt mục không làm băng nhanh chậm đi');
+  // Dừng khai bằng CSS: không handler, không trạng thái JS nào để trôi lệch.
+  assert.match(LUAT, /html\.lpjs \.lp-tabs:hover \.lp-track,\s*\n\s*html\.lpjs \.lp-showcase:focus-within \.lp-track\{animation-play-state:paused\}/,
+    'phải dừng khi trỏ vào cột nút hoặc có tiêu điểm bàn phím');
+  assert.match(LUAT, /@media\(prefers-reduced-motion:no-preference\)\{\s*\n\s*html\.lpjs \.lp-track\{animation:/,
+    'băng chỉ chạy khi người dùng không chọn giảm chuyển động');
 });
 
-test('bộ tab sản phẩm tự chạy nhưng nhường quyền cho người đọc', () => {
-  assert.match(SRC, /function spChay\(\)\{[\s\S]*?!spTimer && !RM && tabs\.length > 1/,
-    'không được tự chạy khi chỉ có một mục hoặc khi người dùng chọn giảm chuyển động');
-  // Bấm tay chỉ ĐẶT LẠI đồng hồ. Bản trước dừng VĨNH VIỄN: bấm thử một cái là băng đứng
-  // im mãi — chủ dự án gặp đúng chuyện đó và báo "chưa có sự chuyển động tự động".
-  assert.match(SRC, /t\.addEventListener\('click', function\(\)\{ spDen\(i\); spNgung\(\); spChay\(\); \}\)/,
-    'bấm tay chỉ được đặt lại đồng hồ, không được dừng hẳn');
-  assert.doesNotMatch(SRC, /spDung/, 'không còn cờ dừng-vĩnh-viễn nào được phép tồn tại');
-  // Dừng khi trỏ vào CỘT NÚT, không phải cả khối: gác cả khối thì để chuột trên khung
-  // bên phải mà đọc là băng đứng im suốt, nhìn y như hỏng.
-  assert.match(SRC, /spBox\.addEventListener\('mouseenter', spNgung\)/, 'thiếu dừng khi trỏ vào cột nút');
-  assert.match(SRC, /spBox\.addEventListener\('mouseleave', spChay\)/, 'thiếu chạy lại khi rời cột nút');
-  assert.doesNotMatch(SRC, /spWrap\.addEventListener\('mouseenter'/,
-    'không được gác chuột trên CẢ khối — đọc khung bên phải là băng chết');
-  assert.match(SRC, /spWrap\.addEventListener\('focusin', spNgung\)/, 'thiếu dừng khi có tiêu điểm');
-  // Chỉ chạy khi khối trong tầm mắt: chạy từ lúc người ta còn ở hero thì tới nơi đã nhảy
-  // sang mục 4 — trông như lỗi chứ không như hiệu ứng.
-  assert.match(SRC, /function spTrongTam\(\)/, 'thiếu cổng chỉ-chạy-khi-trong-tầm-mắt');
-  assert.match(SRC, /function beat\(\)\{ rvGuard\(\); rvScan\(\); onScroll\(\); spTrongTam\(\); \}/,
-    'cổng tầm mắt phải được gọi trong vòng cuộn');
-  // Bàn phím: mũi tên đổi mục, và bộ tab chỉ chiếm MỘT nấc Tab.
-  assert.match(SRC, /t\.tabIndex = on \? 0 : -1/, 'bộ tab phải chỉ chiếm một nấc Tab');
-  assert.match(SRC, /e\.key === 'ArrowDown' \|\| e\.key === 'ArrowRight'/, 'thiếu điều hướng bằng mũi tên');
+test('thẻ trôi qua GIỮA khung thì sáng, và khung bên phải đổi theo', () => {
+  assert.match(SRC, /var b = spBox\.getBoundingClientRect\(\), tam = b\.top \+ b\.height \/ 2;/,
+    'phải lấy thẻ gần TÂM khung nhất');
+  // Đọc vị trí thật thay vì tự tính từ tiến độ animation: animation chạy trên luồng dựng
+  // hình, tự tính thì sớm muộn cũng lệch khỏi thứ mắt đang thấy.
+  assert.match(SRC, /setInterval\(spQuet, 140\)/, 'thiếu vòng quét vị trí');
+  assert.doesNotMatch(SRC, /requestAnimationFrame\(spQuet\)/,
+    'không dùng requestAnimationFrame: đo được nó chỉ chạy 2 lần trong cả một giây ở môi trường không vẽ đều');
+  // Bấm được cả trên bản bóng: chỉ bản thật ăn thì một nửa số thẻ trôi qua mắt bấm không
+  // có phản ứng, và người dùng không đoán ra vì sao.
+  assert.match(SRC, /spRay\.addEventListener\('click', function\(e\)\{\s*\n\s*var t = e\.target\.closest\('\.lp-tab'\);/,
+    'bấm phải nhận trên cả bản bóng');
+  assert.match(SRC, /spBox\.addEventListener\('mouseleave', function\(\)\{ spKhoa = -1; \}\)/,
+    'phải mở khoá khi trỏ rời cột nút, nếu không băng trôi mà khung bên phải đứng yên mãi');
+  assert.match(SRC, /spWrap\.classList\.toggle\('ngu'/, 'phải ngủ khi khối ra khỏi tầm mắt');
+});
+
+test('bản bóng chỉ tồn tại khi thang máy đang chạy', () => {
+  // Đo được: ở khung 390px bản bóng vẫn hiện nên người dùng thấy đủ năm mục HAI LẦN.
+  assert.match(LUAT, /html:not\(\.lpjs\) \.lp-set \+ \.lp-set\{display:none\}/,
+    'không JS thì không có băng, phải bỏ bản bóng');
+  assert.match(LUAT, /@media\(max-width:1023px\)\{\.lp-set \+ \.lp-set\{display:none\}\}/,
+    'dưới 1024px thang máy tắt, phải bỏ bản bóng');
 });
 
 test('không JS thì MỌI khung sản phẩm vẫn hiện', () => {
@@ -327,4 +335,17 @@ test('có ảnh: ảnh THAY bảng ở màn rộng, bảng giữ cho điện tho
   assert.ok(LUAT.indexOf('@media(max-width:899px){.lp-cmp-img{display:none}}')
             > LUAT.indexOf('.lp-cmp-img{margin:0 0 32px}'),
     'lệnh ẩn ảnh phải nằm sau phần khai .lp-cmp-img, nếu không bị đè im lặng');
+});
+
+test('nút thừa hưởng phông của trang', () => {
+  // Mặc định của trình duyệt: <button> KHÔNG thừa hưởng font-family/size của trang. Đo
+  // được trên bản trước: nút thẻ sản phẩm dựng bằng Arial 13,33px cao 211px, trong khi
+  // bản sao dựng bằng div thì đúng Be Vietnam Pro 16,64px cao 241px — mối nối vòng lặp
+  // lộ ra, và quan trọng hơn là MỌI nút trên trang đang sai phông.
+  assert.match(LUAT, /(^|\n)button\{font:inherit\}/,
+    'thiếu reset phông cho nút — mọi nút sẽ dựng bằng phông mặc định của trình duyệt');
+  // Phải là bộ chọn phần tử TRẦN (0,0,1). Đặt ở lớp cao hơn là lặp lại đúng cái bẫy đã
+  // cắn với thẻ a: quy tắc chung thắng mọi lớp nút và nuốt mất font-size riêng của chúng.
+  assert.doesNotMatch(LUAT, /\.lp button\{font:inherit\}/,
+    'không được nâng độ ưu tiên của reset phông');
 });

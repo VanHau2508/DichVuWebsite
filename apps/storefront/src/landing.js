@@ -958,8 +958,32 @@ html:not(.lpjs) .lp-pnav{display:none}
    Không có JS thì quy tắc này không tồn tại, nên trang không bao giờ kẹt opacity:0. ── */
 html.lpjs .rv{opacity:0;transform:translateY(18px)}
 html.lpjs .rv.in{opacity:1;transform:none;transition:opacity 520ms var(--lp-e),transform 520ms var(--lp-e)}
+
+/* LƯỚT NGANG HAI CHIỀU — khác .rv ở hai điểm, và cả hai đều là yêu cầu của chủ dự án:
+   · lướt theo chiều NGANG, mỗi cột vào từ đúng phía nó đứng;
+   · ĐI RỒI VỀ: cuộn ngược lên thì hai cột lướt trở ra hai bên, chứ không phải hiện một
+     lần rồi ở lại vĩnh viễn như .rv.
+   Transition khai ngay ở trạng thái gốc (không phải ở .in như .rv): có thế thì lượt đi
+   RA mới có chuyển động, nếu khai ở .in thì gỡ .in là biến mất tức thì. */
+html.lpjs .rv-x{opacity:0;transition:opacity 640ms var(--lp-e),transform 640ms var(--lp-e)}
+/* Quãng lướt phải LUÔN NHỎ HƠN lề của khung chứa (.ct dùng clamp(20px,4.4vw,56px)).
+   Đặt cứng 56px thì ở khung 1024px lề chỉ 45px, cột phải đỗ 11px ngoài mép và trang
+   tràn 1020/1009 — chỉ ở đúng cỡ đó, hai cỡ hai bên đều sạch. Cùng dạng clamp nhưng
+   hệ số nhỏ hơn thì khoảng cách an toàn giữ được ở MỌI bề rộng, không phải vá từng mốc. */
+html.lpjs .rv-l{transform:translateX(calc(-1 * clamp(16px,3.2vw,44px)))}
+html.lpjs .rv-r{transform:translateX(clamp(16px,3.2vw,44px))}
+html.lpjs .rv-x.in{opacity:1;transform:none}
+@media(max-width:959px){
+  /* Màn hẹp: lướt DỌC, không lướt ngang. Hai lý do, cả hai đều đo được:
+     · dưới 960px hai cột xếp chồng lên nhau nên "vào từ trái / vào từ phải" mất hết ý
+       nghĩa — chỉ còn là hai khối cùng giật ngang;
+     · trạng thái ẩn đỗ 26px ngoài mép phải làm trang tràn 351/345 ở khung 360px. Không
+       thấy bằng scrollWidth vì body có overflow-x:hidden — tràn bị biến thành CẮT, đúng
+       cái bẫy đã ghi ở CLAUDE.md §4. */
+  html.lpjs .rv-l,html.lpjs .rv-r{transform:translateY(22px)}
+}
 @media(prefers-reduced-motion:reduce){
-  html.lpjs .rv{opacity:1;transform:none}
+  html.lpjs .rv,html.lpjs .rv-x{opacity:1;transform:none;transition:none}
   html.lpjs .lp-track{transition:none}
   .lp-hdr{transition:none}
 }
@@ -995,7 +1019,25 @@ const JS = `(function(){
       return false;
     });
   }
-  if (RM) { rvs.forEach(function(e){ e.classList.add('in'); }); rvs = []; }
+  /* LƯỚT NGANG HAI CHIỀU. Khác .rv ở chỗ KHÔNG lọc phần tử ra khỏi danh sách sau lần
+     hiện đầu: mỗi lượt quét đều đặt lại cờ theo việc phần tử có đang trong khung nhìn
+     hay không, nên cuộn ngược lên là hai cột lướt trở ra hai bên. Đó chính là thứ .rv
+     không làm được — nó là hiệu ứng một-lần theo thiết kế, cố ý. */
+  var rvX = [].slice.call(D.querySelectorAll('.rv-x'));
+  function rvXQuet(){
+    if (!rvX.length) return;
+    var h = innerHeight;
+    for (var i = 0; i < rvX.length; i++) {
+      var r = rvX[i].getBoundingClientRect();
+      var trong = r.top < h * 0.88 && r.bottom > h * 0.12;
+      rvX[i].classList.toggle('in', trong);
+      if (trong) rvDone++;      // tính vào lưới an toàn chung, xem rvGuard
+    }
+  }
+  if (RM) {
+    rvs.forEach(function(e){ e.classList.add('in'); }); rvs = [];
+    rvX.forEach(function(e){ e.classList.add('in'); });
+  }
   /* Lưới an toàn hẹn giờ từ LẦN CUỘN ĐẦU, không từ lúc nạp: đứng đọc hero vài giây
      là bình thường, không phải hỏng. Đã cuộn mà không gì hiện được thì gỡ cờ lpjs
      — thà mất hiệu ứng còn hơn mất chữ. */
@@ -1003,7 +1045,7 @@ const JS = `(function(){
     if (rvArmed) return;
     rvArmed = true;
     setTimeout(function(){
-      if (rvDone === 0 && rvs.length) { root.classList.remove('lpjs'); rvs = []; }
+      if (rvDone === 0 && (rvs.length || rvX.length)) { root.classList.remove('lpjs'); rvs = []; }
     }, 1500);
   }
 
@@ -1027,7 +1069,7 @@ const JS = `(function(){
      lại thì hành vi không còn phụ thuộc việc có khung hình được vẽ hay không. Đo được:
      trong môi trường không vẽ đều, rAF chỉ chạy 2 lần trong CẢ MỘT GIÂY — thanh điều
      hướng kẹt nguyên trạng thái cũ, và cùng lớp lỗi đó từng làm chữ kẹt opacity:0. */
-  function beat(){ rvGuard(); rvScan(); onScroll(); spTrongTam(); }
+  function beat(){ rvGuard(); rvScan(); rvXQuet(); onScroll(); spTrongTam(); }
   addEventListener('resize', spNhip, { passive: true });
   if (D.fonts && D.fonts.ready) D.fonts.ready.then(spNhip);
   addEventListener('scroll', beat, { passive: true });
@@ -1225,7 +1267,7 @@ const JS = `(function(){
   addEventListener('focusout', function(){ dk.hidden = false; });
 
   spNhip(); spTrongTam();
-  rvScan(); dockPos(); dock();
+  rvScan(); rvXQuet(); dockPos(); dock();
 })();
 `;
 
@@ -1426,11 +1468,17 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
   <div class="lp-head lp-head-mid rv"><p class="lp-eb">Giải pháp tăng trưởng</p>
   <h2 class="lp-h2" id="lpGrowH">Làm thật những việc <em>khó nhất</em></h2>
   <p class="lp-sub">Bốn chỗ mà người bán mất tiền nhiều nhất mà thường không nhìn thấy. Đây là cách chúng tôi chặn từ gốc.</p></div>
-  ${FLAGS.map((f, k) => `<div class="lp-flag${k % 2 ? ' rev' : ''}">
-    <div class="rv"><p class="lp-kick2">${f.icon}${esc(f.kick)}</p><h3>${esc(f.h)}</h3><p class="d">${esc(f.d)}</p>
+  ${FLAGS.map((f, k) => {
+    // Hàng lẻ đảo bên (lp-flag.rev đẩy cột hình sang trái bằng order), nên hướng lướt
+    // phải bám VỊ TRÍ THẤY ĐƯỢC chứ không bám thứ tự trong HTML — nếu không thì hàng đảo
+    // sẽ có cột bên trái lướt vào từ bên phải, tức là bay ngang qua nhau.
+    const dao = k % 2 === 1;
+    return `<div class="lp-flag${dao ? ' rev' : ''}">
+    <div class="rv-x ${dao ? 'rv-r' : 'rv-l'}"><p class="lp-kick2">${f.icon}${esc(f.kick)}</p><h3>${esc(f.h)}</h3><p class="d">${esc(f.d)}</p>
       <ul>${f.bullets.map((b) => `<li>${I.check}<span>${esc(b)}</span></li>`).join('')}</ul></div>
-    <div class="lp-flag-v rv">${gpHinh(f)}</div>
-  </div>`).join('')}
+    <div class="lp-flag-v rv-x ${dao ? 'rv-l' : 'rv-r'}">${gpHinh(f)}</div>
+  </div>`;
+  }).join('')}
 </div></section>`;
 
   const chip = (x) => `<span class="lp-chip"><span class="i">${x.icon}</span>${esc(x.name)}</span>`;

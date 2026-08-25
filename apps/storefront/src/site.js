@@ -237,7 +237,7 @@ export function siteFooter(brand, contactEmail, contactPhone) {
  * cũng không phát `script-src`, nên chèn script vào chỉ tạo ra một thẻ chết và một lỗi CSP
  * trong console: thà không chèn. Trang phải DÙNG ĐƯỢC khi thiếu cả hai — JS là lớp tăng cường.
  */
-export function sitePage({ title, description, brand = 'Nền Tảng', contactEmail = 'lienhe@nentang.vn', contactPhone = '', active = '', extraCss = '', body, shell = true, nonce = '', js = '' }) {
+export function sitePage({ title, description, brand = 'TikFlash', contactEmail = 'lienhe@nentang.vn', contactPhone = '', active = '', extraCss = '', body, shell = true, nonce = '', js = '' }) {
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>

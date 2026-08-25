@@ -120,10 +120,14 @@ MANIFEST_UNIT_FILES=(
   # Chốt nguồn cho khối sản phẩm trang chủ: CSS thuần, không phụ thuộc JS và giữ bố cục
   # đồng bộ khi cuộn ở các bề rộng đã đo.
   apps/storefront/test/landing-san-pham.test.js
+  # Mục NGÀNH HÀNG: băng thẻ lướt ngang dựng theo hình dạng hồ sơ khách hàng. Chốt cả nội
+  # dung trung thực (phải nói rõ đây là cửa hàng mẫu) và những dòng CSS mà mất đi sẽ làm
+  # lỗi bố cục quay lại.
+  apps/storefront/test/landing-nganh-hang.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=41
+MANIFEST_UNIT_COUNT=42
 MANIFEST_E2E_COUNT=107
 # Số FILE migration, KHÔNG phải số thứ tự cao nhất. Dãy có khoảng trống (0157 chẳng hạn)
 # nên hôm nay là 180 file trong khi file mới nhất mang số 0182 — suy số lượng từ số thứ tự

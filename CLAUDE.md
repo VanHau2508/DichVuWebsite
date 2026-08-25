@@ -23,15 +23,15 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 
 | số đo | hôm nay | nguồn |
 |---|---:|---|
-| dòng mã ứng dụng | ~43.200 | `apps/*/src/*.js` |
-| dòng test | ~31.400 | `apps/*/test/*.{js,mjs}` |
+| dòng mã ứng dụng | ~45.300 | `apps/*/src/*.js` |
+| dòng test | ~32.900 | `apps/*/test/*.{js,mjs}` |
 | migration | 174 tệp, mới nhất `0176` | `packages/db/migrations/` |
-| bộ unit | 38 | `MANIFEST_UNIT_COUNT` |
+| bộ unit | 40 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 106 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 120 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 80 tệp | `docs/` |
 
-Tỉ lệ test/mã ≈ 0,71 — cao có chủ ý, xem §4.
+Tỉ lệ test/mã ≈ 0,73 — cao có chủ ý, xem §4.
 
 **Toàn bộ mã, chú thích, tài liệu, commit message đều TIẾNG VIỆT.** Giữ nguyên, không dịch sang
 tiếng Anh, không viết chú thích tiếng Anh trong file tiếng Việt.
@@ -283,6 +283,17 @@ Những lỗi này **không nằm ở sản phẩm mà ở cách kiểm chứng*
   tệ hơn: `:not([class])` tính như bộ chọn thuộc tính nên thành (0,2,1), thắng cả
   `.lp-nav a`. Cùng lớp lỗi: `.lp-drawer a` (0,2,1) làm nút xanh trong ngăn kéo có chữ đen.
   **Mọi thẻ a tự khai màu ở lớp của nó**, đừng đặt màu chung.
+- **Quy tắc nền `.lp ul{margin:0}` (0,1,1) NUỐT `margin-top:auto` của một lớp trần
+  (0,1,0) — im lặng.** Không phải chuyện riêng của thẻ `a`: mọi reset viết dạng
+  `<lớp> <phần-tử>` đều cao hơn một lớp đơn. Hậu quả đo được ở băng thẻ ngành hàng: hàng
+  đồ nghề đáng lẽ dán đáy thẻ thì trôi lên giữa, gạch ngang lệch 35px so với thẻ bên cạnh
+  — và không có thông báo nào, chỉ là một hàng răng cưa. Viết `.lp-nh .lp-nh-tg` là xong.
+- **Phép đo tràn ngang phải BIẾT khối nào cuộn ngang được.** Băng thẻ trong
+  `overflow-x:auto` cố ý cho nội dung vượt mép — probe đếm thẳng `right > vw` sẽ báo đỏ
+  giả cho đúng cách xử lý nội dung rộng mà chính sổ tay này yêu cầu. Tha tổ tiên
+  `auto|scroll`, **KHÔNG tha `hidden`**: `body{overflow-x:hidden}` vẫn là giấu lỗi. Sửa
+  probe xong phải đột biến lại chính probe (chèn một khối rộng 3000px ngoài mọi khối cuộn
+  — vẫn phải bắt được), nếu không là tự mở một điểm mù.
 - **Khai `display` đè mất `display:none` của thuộc tính `hidden`.** Ngăn kéo đóng vẫn nằm
   trong bố cục, chỉ trượt ra ngoài mép bằng `transform` — bấm Tab là đi thẳng vào một menu
   không nhìn thấy. Luôn thêm `[hidden]{display:none}` cho phần tử có khai `display`.
@@ -516,6 +527,14 @@ làm chúng kẹt `opacity:0` vĩnh viễn (đo được 4/37 phần tử hiện
 Đã **bỏ ba lời chứng thực khách hàng dựng lên** ("Chị Hương", "Anh Tuấn", "Chị Mai"): kho
 chưa triển khai và chưa có khách thật (§0), trong khi chính chú thích đầu file tuyên bố
 không bịa số khách hàng. Có chốt cấm dựng lại cho tới khi có trích dẫn thật.
+
+Mục **Ngành hàng** đã đổi từ băng chữ chạy sang **băng thẻ lướt ngang có lọc theo ngành**,
+dựng đúng hình dạng một hồ sơ khách hàng (ảnh bìa · nhãn ngành · tên · mô tả · đồ nghề) để
+sau này thay được bằng cửa hàng thật: mỗi thẻ có khe ảnh `nh-<khoá>` trong
+`apps/storefront/src/assets/`, chưa có tệp thì dựng khung minh hoạ. Vì kho chưa có khách
+thật, thẻ hôm nay là **cửa hàng MẪU** và mục tự nói rõ điều đó ngay dưới băng — chốt
+`landing-nganh-hang.test.js` bắt cả hai đầu: mất dòng đó là đỏ, đặt tên nghe như một shop
+có thật cũng đỏ. Đo: 0/9 bề rộng tràn ở cả nhánh JS và không-JS, 23/23 đột biến đỏ.
 
 Nợ đã ghi, chưa xử lý: trang **Tồn an toàn tràn 377/360** ở cả JS bật lẫn tắt — thủ phạm là ô
 nhập "Tỉ lệ giữ an toàn cho toàn shop (%)" trong form đầu trang (`pages.js:6022`), không phải

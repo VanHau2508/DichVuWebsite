@@ -3,7 +3,7 @@
  *
  * BỐ CỤC: thanh điều hướng nổi ẩn/hiện theo chiều cuộn · hero băng 3 banner đổi được · dải cam
  * kết · bảng so sánh với thị trường · khối sản phẩm hai cột đồng bộ khi cuộn · giải pháp tăng
- * trưởng trên nền tối · băng ngành hàng · bảng giá · hỏi đáp · CTA cuối · chân trang · thanh CTA
+ * trưởng trên nền tối · băng thẻ ngành hàng lướt ngang có lọc · bảng giá · hỏi đáp · CTA cuối · chân trang · thanh CTA
  * nổi. Trang tự mang header/footer riêng (sitePage với shell:false) vì bộ điều hướng của nó
  * khác hẳn các trang công ty còn lại.
  *
@@ -161,19 +161,86 @@ const PRODUCTS = [
   },
 ];
 
+// ── NGÀNH HÀNG — mỗi ngành MỘT THẺ trong băng lướt ngang ─────────────────────
+// Bố cục thẻ (ảnh bìa · nhãn ngành · tên · mô tả · đồ nghề) cố ý dựng theo hình dạng
+// một CASE STUDY để sau này thay được bằng cửa hàng thật của khách: chỉ cần đổi `h`,
+// `d` và thả ảnh vào khe `nh-<khoá>` là thẻ thành hồ sơ khách hàng, không phải sửa CSS.
+// CHƯA CÓ KHÁCH THẬT (CLAUDE.md §0) nên hôm nay đây là CỬA HÀNG MẪU và mục có một
+// dòng nói rõ điều đó — bịa tên shop là thứ đối thủ kiểm chứng được trong một phút.
+// `tags` chỉ được nêu tính năng CÓ THẬT trong hệ thống.
 const INDUSTRIES = [
-  { icon: I.shirt, name: 'Thời trang' },
-  { icon: I.cosmetic, name: 'Mỹ phẩm' },
-  { icon: I.sofa, name: 'Nội thất' },
-  { icon: I.device, name: 'Điện tử' },
-  { icon: I.baby, name: 'Mẹ & Bé' },
-  { icon: I.food, name: 'Thực phẩm' },
-  { icon: I.book, name: 'Nhà sách' },
-  { icon: I.gift, name: 'Quà tặng · Handmade' },
-  { icon: I.coffee, name: 'Cà phê & Trà' },
-  { icon: I.dumbbell, name: 'Thể thao' },
-  { icon: I.paw, name: 'Thú cưng' },
-  { icon: I.gem, name: 'Trang sức' },
+  {
+    key: 'thoi-trang', icon: I.shirt, name: 'Thời trang',
+    h: 'Cửa hàng thời trang',
+    d: 'Một mã hàng nhiều size nhiều màu, mỗi biến thể một tồn riêng. Hết size nào thì size đó tự ngưng bán, khách không đặt được đơn mà bạn không có hàng.',
+    tags: ['Biến thể size · màu', 'Flash sale theo giờ'],
+  },
+  {
+    key: 'my-pham', icon: I.cosmetic, name: 'Mỹ phẩm',
+    h: 'Cửa hàng mỹ phẩm',
+    d: 'Ngành sống bằng khách mua lại. Danh sách khách quen là của bạn — không sàn nào đứng giữa, nhắc đúng người vào đúng đợt.',
+    tags: ['Khách quen · điểm thưởng', 'Mã giảm giá riêng'],
+  },
+  {
+    key: 'noi-that', icon: I.sofa, name: 'Nội thất',
+    h: 'Cửa hàng nội thất',
+    d: 'Hàng cồng kềnh nên phí giao khác nhau theo vùng. Biểu phí tính theo nơi nhận, không đổ đồng một giá rồi lỗ ở đơn xa.',
+    tags: ['Phí ship theo vùng', 'Ảnh nhiều góc'],
+  },
+  {
+    key: 'dien-tu', icon: I.device, name: 'Điện tử',
+    h: 'Cửa hàng điện tử',
+    d: 'Giá trị đơn cao nên đơn ảo COD là rủi ro thật. Đơn quá hạn không nhận sẽ tự huỷ và nhả lại tồn, còn bảo hành đi theo một luồng riêng.',
+    tags: ['Yêu cầu hậu mãi · RMA', 'Lá chắn đơn ảo'],
+  },
+  {
+    key: 'me-be', icon: I.baby, name: 'Mẹ & Bé',
+    h: 'Cửa hàng mẹ & bé',
+    d: 'Khách cần giao nhanh và cần biết còn hàng thật hay không. Tồn hiển thị đã trừ phần đang giữ cho đơn chưa xong, không phải con số trong kho.',
+    tags: ['Tồn an toàn', 'GHN · GHTK'],
+  },
+  {
+    key: 'thuc-pham', icon: I.food, name: 'Thực phẩm',
+    h: 'Cửa hàng thực phẩm',
+    d: 'Bán theo ngày, tồn thay đổi từng giờ. Đặt ngưỡng giữ an toàn cho từng mặt hàng để không bán quá số hàng thật sự còn.',
+    tags: ['Tồn an toàn theo mặt hàng', 'COD · VietQR'],
+  },
+  {
+    key: 'nha-sach', icon: I.book, name: 'Nhà sách',
+    h: 'Nhà sách trực tuyến',
+    d: 'Vài nghìn đầu sách thì nhập tay là hết ngày. Nhập cả danh mục từ tệp Excel hoặc từ sàn cũ, rồi xếp vào danh mục hai cấp.',
+    tags: ['Nhập hàng loạt từ tệp', 'Danh mục hai cấp'],
+  },
+  {
+    key: 'qua-tang', icon: I.gift, name: 'Quà tặng · Handmade',
+    h: 'Cửa hàng quà tặng',
+    d: 'Bán theo mùa và theo dịp. Đợt khuyến mãi hẹn giờ trước, tới giờ tự chạy và tự tắt, không phải thức canh.',
+    tags: ['Khuyến mãi hẹn giờ', 'Ảnh nhiều góc'],
+  },
+  {
+    key: 'ca-phe', icon: I.coffee, name: 'Cà phê & Trà',
+    h: 'Cửa hàng cà phê & trà',
+    d: 'Khách quay lại đều đặn nếu bạn nhớ họ. Điểm thưởng tích theo hoá đơn và đổi thẳng thành tiền giảm, chạy sẵn trong hệ thống, không cần app rời.',
+    tags: ['Điểm thưởng · đổi điểm', 'Khách quen của shop'],
+  },
+  {
+    key: 'the-thao', icon: I.dumbbell, name: 'Thể thao',
+    h: 'Cửa hàng đồ thể thao',
+    d: 'Nhiều size, nhiều mẫu, hay hết cục bộ. Mỗi biến thể một mã và một tồn riêng nên báo cáo bán chạy đọc được ở mức size.',
+    tags: ['Biến thể size', 'Báo cáo bán chạy'],
+  },
+  {
+    key: 'thu-cung', icon: I.paw, name: 'Thú cưng',
+    h: 'Cửa hàng thú cưng',
+    d: 'Đồ ăn và đồ dùng mua lại theo chu kỳ. Lịch sử mua của từng khách nằm trong tay bạn để nhắc đúng lúc họ sắp hết hàng.',
+    tags: ['Khách quen', 'Phí ship theo vùng'],
+  },
+  {
+    key: 'trang-suc', icon: I.gem, name: 'Trang sức',
+    h: 'Cửa hàng trang sức',
+    d: 'Đơn giá trị cao thì đường tiền phải rõ. Khách quét VietQR là tiền vào thẳng tài khoản ngân hàng của bạn, hệ thống tự khớp tiền với đơn.',
+    tags: ['VietQR — tiền về thẳng', 'Ảnh cận cảnh'],
+  },
 ];
 
 const STEPS = [
@@ -943,20 +1010,106 @@ html:not(.lpjs) .lp-loi-arr{display:none}
 .lp-flag-img{width:100%;height:auto;display:block;border-radius:var(--lp-r3);
              box-shadow:var(--lp-sh2)}
 
-/* ── NGÀNH HÀNG: băng chạy ────────────────────────────────────────────────── */
-.lp-ind{background:#fff;padding:56px 0}
+/* ── NGÀNH HÀNG: băng thẻ lướt ngang ──────────────────────────────────────── */
+/* Nền xanh rất nhạt: mục nằm giữa "Lợi ích" (trắng) và "Bảng giá" (xám), hai mục
+   cùng tông kề nhau thì mắt đọc thành một mục dài. */
+.lp-ind{background:var(--lp-b025);padding:56px 0}
 @media(min-width:1024px){.lp-ind{padding:88px 0}}
-.lp-mq{overflow:hidden;padding:7px 0}
-.lp-mq-in{display:flex}
-.lp-mq-set{display:flex;flex-wrap:wrap;justify-content:center;gap:12px;width:100%}
-.lp-mq-set.clone{display:none}
-.lp-chip{display:inline-flex;align-items:center;gap:10px;padding:9px 18px 9px 9px;white-space:nowrap;
+
+/* Hàng lọc theo ngành. Không JS thì các nút này KHÔNG làm gì (ẩn hẳn ở cuối khối
+   CSS này) — băng vẫn đủ 12 thẻ và vẫn vuốt được, nên không mất nội dung nào. */
+/* Màn hẹp: MỘT HÀNG cuộn ngang, không xuống dòng. Đo được ở 390px: 13 chip xuống dòng
+   thành BẢY hàng, đẩy thẻ đầu tiên xuống dưới mép màn hình — người dùng cuộn tới mục này
+   chỉ thấy một rừng nút, không thấy thứ mà nút đó lọc. */
+.lp-nh-loc{display:flex;flex-wrap:nowrap;overflow-x:auto;overscroll-behavior-x:contain;gap:9px;
+           margin:0 0 22px;padding:2px clamp(20px,4.4vw,56px) 8px;
+           scroll-padding-inline:clamp(20px,4.4vw,56px)}
+@media(min-width:960px){
+  .lp-nh-loc{flex-wrap:wrap;justify-content:center;overflow:visible;margin-bottom:28px}
+}
+html.lpjs .lp-nh-loc{scrollbar-width:none}
+html.lpjs .lp-nh-loc::-webkit-scrollbar{display:none}
+.lp-chip{display:inline-flex;align-items:center;gap:9px;padding:7px 15px 7px 7px;white-space:nowrap;
          border:1px solid var(--lp-line);border-radius:var(--lp-pill);background:#fff;font-weight:600;
-         font-size:.93rem;color:var(--lp-ink);transition:border-color var(--lp-t),transform 140ms var(--lp-e)}
-.lp-chip:hover{border-color:var(--lp-b100);transform:translateY(-2px)}
-.lp-chip .i{display:grid;place-items:center;width:32px;height:32px;border-radius:var(--lp-pill);
-            background:var(--lp-b025);color:var(--lp-blue);flex:none}
-.lp-chip .i svg{width:17px;height:17px}
+         font-size:.87rem;color:var(--lp-ink);cursor:pointer;
+         transition:border-color var(--lp-t),background var(--lp-t),color var(--lp-t)}
+.lp-chip:hover{border-color:var(--lp-b100)}
+.lp-chip .i{display:grid;place-items:center;width:26px;height:26px;border-radius:var(--lp-pill);
+            background:var(--lp-b025);color:var(--lp-blue);flex:none;transition:background var(--lp-t),color var(--lp-t)}
+.lp-chip .i svg{width:15px;height:15px}
+.lp-chip[aria-pressed="true"]{background:var(--lp-blue);border-color:var(--lp-blue);color:#fff}
+.lp-chip[aria-pressed="true"] .i{background:rgba(255,255,255,.18);color:#fff}
+
+/* Băng TRÀN RA HAI MÉP khung nội dung: đệm trong bằng đúng đệm của .ct nên thẻ đầu
+   thẳng hàng với tiêu đề, còn thẻ cuối cùng ló ra khỏi mép phải — đó là tín hiệu
+   "còn nữa, vuốt tiếp" mà không cần chữ nào. Cuộn ngang nằm TRONG băng, không phải
+   ở trang: cuộn của trang thì mọi mục khác trôi theo. */
+.lp-nh-box{position:relative}
+.lp-nh-ray{display:flex;gap:20px;overflow-x:auto;overscroll-behavior-x:contain;
+           scroll-snap-type:x mandatory;padding:6px clamp(20px,4.4vw,56px) 10px;
+           scroll-padding-inline:clamp(20px,4.4vw,56px)}
+/* Thanh cuộn chỉ giấu khi CÓ mũi tên thay thế. Không JS mà cũng giấu thanh cuộn thì
+   người dùng chuột không còn cách nào biết băng lướt được. */
+html.lpjs .lp-nh-ray{scrollbar-width:none}
+html.lpjs .lp-nh-ray::-webkit-scrollbar{display:none}
+.lp-nh{flex:0 0 var(--lp-nhw,min(80vw,310px));scroll-snap-align:start;display:flex;flex-direction:column;
+       background:#fff;border:1px solid var(--lp-line);border-radius:var(--lp-r3);overflow:hidden;
+       transition:border-color var(--lp-t),box-shadow var(--lp-t),transform 160ms var(--lp-e)}
+.lp-nh:hover{border-color:var(--lp-b100);box-shadow:var(--lp-sh2);transform:translateY(-4px)}
+@media(min-width:720px){.lp-nh{--lp-nhw:min(46vw,330px)}}
+@media(min-width:1080px){.lp-nh{--lp-nhw:336px}}
+/* Ảnh bìa giữ TỈ LỆ CỐ ĐỊNH: mười hai thẻ mà chỉ thay được vài ảnh thì ảnh cao thấp
+   khác nhau sẽ đẩy phần chữ lệch nhau — object-fit cắt ảnh, không cắt bố cục. */
+.lp-nh-anh{position:relative;aspect-ratio:16/10;background:var(--lp-b050);overflow:hidden}
+.lp-nh-anh img{width:100%;height:100%;display:block;object-fit:cover}
+/* Ba tông luân phiên cho khung minh hoạ. Mười hai thẻ cùng MỘT nền xanh xếp cạnh nhau
+   đọc thành một dải phẳng — mắt không tách được thẻ nào với thẻ nào. Đây là khung TẠM,
+   thay bằng ảnh thật là hết luân phiên, nên tông phải cùng họ màu thương hiệu. */
+.lp-nh-mock{position:absolute;inset:0;display:grid;place-items:center;
+            background:radial-gradient(120% 120% at 30% 15%,#1553F0 0%,var(--lp-blue) 45%,#0038CC 100%)}
+.lp-nh-mock.t2{background:radial-gradient(120% 120% at 30% 15%,#1B2E6E 0%,#101B45 48%,var(--lp-navy) 100%)}
+.lp-nh-mock.t3{background:radial-gradient(120% 120% at 30% 15%,#48A0FF 0%,var(--lp-blue-br) 42%,#0B4FD6 100%)}
+.lp-nh-mock::before{content:'';position:absolute;inset:0;opacity:.22;
+  background-image:linear-gradient(rgba(255,255,255,.5) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(255,255,255,.5) 1px,transparent 1px);
+  background-size:34px 34px}
+.lp-nh-mock svg{position:relative;width:52px;height:52px;color:#fff;opacity:.95}
+.lp-nh-ndu{display:flex;flex-direction:column;flex:1;padding:18px 20px 20px}
+.lp-nh-pill{display:inline-flex;align-items:center;gap:7px;align-self:flex-start;
+            padding:5px 12px 5px 5px;border-radius:var(--lp-pill);background:var(--lp-b025);
+            color:var(--lp-blue);font-size:.78rem;font-weight:800;letter-spacing:.02em}
+.lp-nh-pill .i{display:grid;place-items:center;width:22px;height:22px;border-radius:var(--lp-pill);
+               background:#fff;flex:none}
+.lp-nh-pill .i svg{width:13px;height:13px}
+.lp-nh h3{margin-top:12px;font-size:1.08rem;font-weight:800;line-height:1.3}
+/* margin-bottom ở đây + margin-top:auto ở hàng đồ nghề = hàng đồ nghề DÁN ĐÁY thẻ.
+   Mười hai thẻ có mô tả dài ngắn khác nhau; để hàng đồ nghề trôi theo chữ thì mỗi thẻ
+   một độ cao gạch ngang, nhìn thành một hàng răng cưa. */
+.lp-nh .d{margin-top:9px;margin-bottom:16px;font-size:.9rem;line-height:1.6;color:var(--lp-mut)}
+/* Phải viết .lp-nh .lp-nh-tg chứ không phải .lp-nh-tg: quy tắc nền .lp ul{margin:0}
+   có độ ưu tiên (0,1,1), cao hơn một lớp trần (0,1,0) ⇒ margin-top:auto bị nuốt và thẻ
+   nào ít đồ nghề thì hàng đó trôi lên giữa thẻ. Đo được: thẻ Nội thất có gạch ngang cao
+   hơn ba thẻ bên cạnh 58px, đủ để cả hàng nhìn như răng cưa. */
+.lp-nh .lp-nh-tg{display:flex;flex-wrap:wrap;gap:7px;margin-top:auto;padding-top:14px;
+          border-top:1px solid var(--lp-line)}
+.lp-nh-tg li{padding:4px 10px;border-radius:var(--lp-pill);background:var(--lp-alt);
+             font-size:.76rem;font-weight:600;color:var(--lp-mut)}
+/* Thẻ bị lọc ra dùng [hidden]: phải khai lại display:none vì .lp-nh có display:flex,
+   mà khai display thắng thuộc tính hidden — đúng cái bẫy đã cắn ở ngăn kéo menu. */
+.lp-nh[hidden]{display:none}
+
+.lp-nh-dieu{display:flex;justify-content:center;align-items:center;gap:12px;margin-top:24px}
+.lp-nh-arr{display:grid;place-items:center;width:44px;height:44px;border-radius:var(--lp-pill);
+           border:1px solid var(--lp-line);background:#fff;color:var(--lp-ink);cursor:pointer;
+           transition:background var(--lp-t),border-color var(--lp-t),color var(--lp-t)}
+.lp-nh-arr:hover{background:var(--lp-blue);border-color:var(--lp-blue);color:#fff}
+.lp-nh-dem{min-width:78px;text-align:center;font-size:.85rem;font-weight:600;color:var(--lp-mut);
+           font-variant-numeric:tabular-nums}
+.lp-nh-note{margin-top:20px;text-align:center;font-size:.84rem;line-height:1.6;color:var(--lp-mut2)}
+/* Không JS: mũi tên không bấm được thì đừng bày ra, và hàng lọc cũng vậy. Đặt SAU
+   mọi khai display ở trên — cùng độ ưu tiên thì quy tắc viết sau thắng, @media không
+   cộng thêm độ ưu tiên nào (đã đốt một lượt vì đặt nhầm thứ tự). */
+html:not(.lpjs) .lp-nh-dieu,html:not(.lpjs) .lp-nh-loc{display:none}
 
 /* ── BẢNG GIÁ ────────────────────────────────────────────────────────────── */
 .lp-price{background:var(--lp-alt)}
@@ -1176,7 +1329,7 @@ const JS = `(function(){
      lại thì hành vi không còn phụ thuộc việc có khung hình được vẽ hay không. Đo được:
      trong môi trường không vẽ đều, rAF chỉ chạy 2 lần trong CẢ MỘT GIÂY — thanh điều
      hướng kẹt nguyên trạng thái cũ, và cùng lớp lỗi đó từng làm chữ kẹt opacity:0. */
-  function beat(){ rvGuard(); rvScan(); rvXQuet(); onScroll(); spTrongTam(); liTrongTam(); }
+  function beat(){ rvGuard(); rvScan(); rvXQuet(); onScroll(); spTrongTam(); liTrongTam(); nhTrongTam(); }
   addEventListener('resize', spNhip, { passive: true });
   if (D.fonts && D.fonts.ready) D.fonts.ready.then(spNhip);
   addEventListener('scroll', beat, { passive: true });
@@ -1378,6 +1531,88 @@ const JS = `(function(){
     if (r.top < innerHeight * 0.85 && r.bottom > innerHeight * 0.15) liChay(); else liNgung();
   }
 
+  /* ── MỤC NGÀNH HÀNG: băng thẻ lướt ngang, có lọc theo ngành ──────────────── */
+  var nhRay = D.getElementById('nhRay'),
+      nhThes = nhRay ? [].slice.call(nhRay.querySelectorAll('.lp-nh')) : [],
+      nhLocs = [].slice.call(D.querySelectorAll('.lp-nh-loc .lp-chip')),
+      nhP = D.getElementById('nhPrev'), nhN = D.getElementById('nhNext'),
+      nhDem = D.getElementById('nhDem'), nhTimer = null;
+  /* Thẻ đang HIỆN, không phải toàn bộ thẻ: lọc xong mà vẫn đếm theo mảng gốc thì
+     bộ đếm nói "3 / 12" trong khi băng chỉ còn 1 thẻ. */
+  function nhHien(){ return nhThes.filter(function(e){ return !e.hidden; }); }
+  /* Vị trí đọc TỪ scrollLeft THẬT, không giữ một biến chỉ số riêng: người dùng vuốt
+     tay hoặc kéo thanh cuộn thì biến kia lệch ngay, và mũi tên nhảy về chỗ cũ. */
+  function nhChiSo(){
+    var ds = nhHien(); if (!ds.length || !nhRay) return 0;
+    var x = nhRay.scrollLeft, k = 0, gan = Infinity;
+    for (var i = 0; i < ds.length; i++) {
+      var d = Math.abs(ds[i].offsetLeft - nhRay.offsetLeft - x);
+      if (d < gan) { gan = d; k = i; }
+    }
+    return k;
+  }
+  function nhVe(){
+    if (!nhRay) return;
+    var ds = nhHien(), k = nhChiSo();
+    /* Bộ đếm nói vị trí; mũi tên KHÔNG bị khoá ở hai đầu. Khoá mũi tên "sau" ở thẻ cuối
+       trong khi đồng hồ tự chạy vẫn quay về đầu là hai lời nói ngược nhau trên cùng một
+       băng — và một nút mờ đi ngay lúc người ta đang bấm liên tục trông như trang lỗi. */
+    if (nhDem) nhDem.textContent = (ds.length ? k + 1 : 0) + ' / ' + ds.length;
+  }
+  function nhDen(k, tuc){
+    var ds = nhHien(); if (!nhRay || !ds.length) return;
+    k = (k + ds.length) % ds.length;
+    nhRay.scrollTo({ left: ds[k].offsetLeft - nhRay.offsetLeft, behavior: (tuc || RM) ? 'instant' : 'smooth' });
+    nhVe();
+  }
+  /* Tới cuối thì quay về đầu, không đứng im: băng đứng im ở thẻ cuối trông y hệt
+     một băng hỏng — cùng lý do đã ghi ở băng sản phẩm. */
+  function nhBuoc(d){
+    var ds = nhHien(); if (!nhRay || !ds.length) return;
+    var het = nhRay.scrollWidth - nhRay.clientWidth;
+    if (d > 0 && nhRay.scrollLeft >= het - 2) return nhDen(0);
+    if (d < 0 && nhRay.scrollLeft <= 2) return nhDen(ds.length - 1);
+    nhDen(nhChiSo() + d);
+  }
+  function nhChay(){
+    if (!nhTimer && !RM && nhRay && nhHien().length > 1) nhTimer = setInterval(function(){ nhBuoc(1); }, 5200);
+  }
+  function nhNgung(){ if (nhTimer) { clearInterval(nhTimer); nhTimer = null; } }
+  /* Bấm chỉ ĐẶT LẠI đồng hồ, không dừng hẳn. */
+  function nhTay(d){ nhBuoc(d); nhNgung(); nhChay(); }
+  if (nhP) nhP.addEventListener('click', function(){ nhTay(-1); });
+  if (nhN) nhN.addEventListener('click', function(){ nhTay(1); });
+  if (nhRay) {
+    nhRay.addEventListener('scroll', nhVe, { passive: true });
+    nhRay.addEventListener('mouseenter', nhNgung);
+    nhRay.addEventListener('mouseleave', nhChay);
+    nhRay.addEventListener('focusin', nhNgung);
+    nhRay.addEventListener('focusout', function(e){ if (!nhRay.contains(e.relatedTarget)) nhChay(); });
+    /* Vuốt tay: dừng hẳn đồng hồ trong lúc ngón còn trên màn, rồi chạy lại. Không có
+       nhánh này thì đang vuốt dở bị đồng hồ giật băng về chỗ khác. */
+    nhRay.addEventListener('touchstart', nhNgung, { passive: true });
+    nhRay.addEventListener('touchend', nhChay, { passive: true });
+    nhRay.addEventListener('keydown', function(e){
+      var d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (!d) return;
+      e.preventDefault(); nhTay(d);
+    });
+  }
+  nhLocs.forEach(function(b){
+    b.addEventListener('click', function(){
+      var k = b.dataset.loc || '';
+      nhLocs.forEach(function(o){ o.setAttribute('aria-pressed', String(o === b)); });
+      nhThes.forEach(function(t){ t.hidden = !!k && t.dataset.nh !== k; });
+      if (nhRay) nhRay.scrollTo({ left: 0, behavior: 'instant' });
+      nhVe(); nhNgung(); nhChay();
+    });
+  });
+  function nhTrongTam(){
+    if (!nhRay) return;
+    var r = nhRay.getBoundingClientRect();
+    if (r.top < innerHeight * 0.9 && r.bottom > innerHeight * 0.1) nhChay(); else nhNgung();
+  }
+
   /* ── THANH CTA NỔI ───────────────────────────────────────────────────────── */
   var dk = D.getElementById('lpDock'), rp = D.getElementById('lpReopen'),
       KEY = 'lp-dock-dong', thayCuoi = false;
@@ -1419,7 +1654,7 @@ const JS = `(function(){
   });
   addEventListener('focusout', function(){ dk.hidden = false; });
 
-  spNhip(); spTrongTam(); liTrongTam();
+  spNhip(); spTrongTam(); liTrongTam(); nhVe(); nhTrongTam();
   rvScan(); rvXQuet(); dockPos(); dock();
 })();
 `;
@@ -1670,16 +1905,55 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
   </div>
 </div></section>`;
 
-  const chip = (x) => `<span class="lp-chip"><span class="i">${x.icon}</span>${esc(x.name)}</span>`;
-  const half = Math.ceil(INDUSTRIES.length / 2);
-  const mq = (items, rev) => { const set = items.map(chip).join('');
-    return `<div class="lp-mq${rev ? ' rev' : ''}"><div class="lp-mq-in"><div class="lp-mq-set">${set}</div><div class="lp-mq-set clone" aria-hidden="true">${set}</div></div></div>`; };
+  // ── MỤC NGÀNH HÀNG ────────────────────────────────────────────────────────
+  // Ảnh bìa của từng thẻ đọc từ khe `nh-<khoá>` — thả tệp vào apps/storefront/src/assets/
+  // là thẻ đổi ảnh, không phải sửa mã. Chưa có tệp thì dựng khung xanh có biểu tượng
+  // ngành, KHÔNG để ô trống: ô trống trên một băng 12 thẻ trông như trang hỏng.
+  const nhAnh = (x, k) => {
+    const t = assetSrc('nh-' + x.key);
+    return `<div class="lp-nh-anh">${t
+      ? `<img src="${esc(t)}" alt="Ảnh cửa hàng mẫu ngành ${esc(x.name)}" loading="lazy" decoding="async">`
+      : `<div class="lp-nh-mock t${(k % 3) + 1}" aria-hidden="true">${x.icon}</div>`}</div>`;
+  };
+  const nhThe = (x, k) => `<article class="lp-nh" data-nh="${esc(x.key)}">
+    ${nhAnh(x, k)}
+    <div class="lp-nh-ndu">
+      <p class="lp-nh-pill"><span class="i">${x.icon}</span>${esc(x.name)}</p>
+      <h3>${esc(x.h)}</h3>
+      <p class="d">${esc(x.d)}</p>
+      <ul class="lp-nh-tg">${x.tags.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>
+    </div>
+  </article>`;
+  const nhLoc = (x) => `<button class="lp-chip" type="button" data-loc="${esc(x.key)}" aria-pressed="false">
+    <span class="i">${x.icon}</span>${esc(x.name)}</button>`;
   const ind = `<section class="lp-ind" id="nganh-hang" aria-labelledby="lpIndH"><div class="ct">
-  <div class="lp-head"><p class="lp-eb rv">Ngành hàng</p>
-  <h2 class="lp-h2 rv" id="lpIndH">Kinh doanh gì cũng <em>dựng được cửa hàng hợp gu</em></h2></div>
+  <div class="lp-head lp-head-mid rv">
+    <p class="lp-eb">Ngành hàng</p>
+    <h2 class="lp-h2" id="lpIndH">Kinh doanh gì cũng dựng được cửa hàng hợp gu</h2>
+    <p class="lp-sub">Mỗi ngành một cửa hàng mẫu dựng sẵn — đổi logo, màu và sản phẩm là thành của bạn.</p>
+  </div>
 </div>
-${mq(INDUSTRIES.slice(0, half), false)}
-${mq(INDUSTRIES.slice(half), true)}
+  <div class="lp-nh-loc rv" role="group" aria-label="Lọc theo ngành hàng">
+    <button class="lp-chip" type="button" data-loc="" aria-pressed="true"><span class="i">${I.store}</span>Tất cả</button>
+    ${INDUSTRIES.map(nhLoc).join('')}
+  </div>
+  <div class="lp-nh-box rv">
+    <div class="lp-nh-ray" id="nhRay" tabindex="0" role="region" aria-label="Cửa hàng mẫu theo ngành hàng">
+      ${INDUSTRIES.map(nhThe).join('')}
+    </div>
+  </div>
+  <div class="ct">
+    <div class="lp-nh-dieu">
+      <button class="lp-nh-arr" id="nhPrev" type="button" aria-label="Xem thẻ trước">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+      <p class="lp-nh-dem" id="nhDem" aria-live="polite">1 / ${INDUSTRIES.length}</p>
+      <button class="lp-nh-arr" id="nhNext" type="button" aria-label="Xem thẻ sau">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+    <p class="lp-nh-note">Đây là cửa hàng <strong>mẫu</strong> do chúng tôi dựng theo từng ngành — chưa phải khách hàng thật. Khi có shop đồng ý cho nêu tên, mục này sẽ là họ.</p>
+  </div>
 </section>`;
 
   const price = `<section class="lp-sec lp-price" id="bang-gia" aria-labelledby="lpPriceH"><div class="ct">

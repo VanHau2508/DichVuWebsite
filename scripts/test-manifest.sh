@@ -122,10 +122,16 @@ MANIFEST_UNIT_FILES=(
   # easing mặc định làm hai khung chồng lên nhau. E2E không thấy lớp này vì chúng khớp CHỮ
   # trong HTML chứ không dựng bố cục — trang tràn ngang vẫn đủ chữ và vẫn 200.
   apps/storefront/test/landing-san-pham.test.js
+  # Mục NGÀNH HÀNG: băng thẻ lướt ngang dựng theo hình dạng hồ sơ khách hàng. Hai nhóm chốt
+  # khác nhau trong cùng một bộ — nội dung TRUNG THỰC (kho chưa có khách thật, mục phải tự
+  # nói rõ đây là cửa hàng mẫu; ba lời chứng thực bịa ra đã bị gỡ khỏi trang này một lần)
+  # và những dòng mà mất đi thì lỗi đã đo quay lại: .lp ul (0,1,1) nuốt margin-top:auto của
+  # một lớp trần, khai display đè [hidden], luật ẩn nhánh không-JS đặt sai thứ tự cascade.
+  apps/storefront/test/landing-nganh-hang.test.js
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=39
+MANIFEST_UNIT_COUNT=40
 MANIFEST_E2E_COUNT=106
 # Số FILE migration, KHÔNG phải số thứ tự cao nhất. Dãy có khoảng trống (0157 chẳng hạn)
 # nên hôm nay là 174 file trong khi file mới nhất mang số 0176 — suy số lượng từ số thứ tự

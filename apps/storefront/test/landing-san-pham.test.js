@@ -246,8 +246,8 @@ test('khối tiêu đề mục trải đúng bề rộng nội dung', () => {
   // khi bảng ngay dưới trải hết — đó là cảm giác lệch tỉ lệ, và nó lặp ở MỌI mục.
   assert.match(SRC, /\.lp-head\{margin-bottom:48px;display:grid;grid-template-columns:/,
     'từ 1024px khối tiêu đề phải chia hai cột');
-  assert.equal((SRC.match(/<div class="lp-head[ "]/g) ?? []).length, 6,
-    'cả sáu mục phải dùng chung lớp nhịp .lp-head (kể cả biến thể căn giữa)');
+  assert.equal((SRC.match(/<div class="lp-head[ "]/g) ?? []).length, 7,
+    'mọi khối tiêu đề mục phải dùng chung lớp nhịp .lp-head (kể cả biến thể căn giữa)');
   // Biến thể căn giữa phải HUỶ lưới hai cột, nếu không tiêu đề vẫn bị ghim vào cột trái
   // trong khi text-align:center chỉ căn chữ bên trong cột đó — trông càng lệch hơn.
   assert.match(SRC, /\.lp-head-mid\{display:block\}/,
@@ -416,4 +416,45 @@ test('mục Giải pháp lướt NGANG và ĐI RỒI VỀ', () => {
     'lưới an toàn phải tính cả phần tử lướt ngang');
   assert.match(LUAT, /html\.lpjs \.rv,html\.lpjs \.rv-x\{opacity:1;transform:none;transition:none\}/,
     'giảm chuyển động thì cả hai loại đều hiện thẳng');
+});
+
+test('mục Lợi ích: thẻ lớn nửa xanh nửa trắng, có mũi tên, tự chạy', () => {
+  assert.match(SRC, /const LOI_ICH = \[/, 'thiếu mảng dữ liệu lợi ích');
+  assert.equal((SRC.match(/LOI_ICH\.map\(/g) ?? []).length, 2,
+    'nút và khung xem đều dựng từ CÙNG mảng LOI_ICH');
+  // Tiêu đề lấy TÊN THƯƠNG HIỆU từ tham số, không viết cứng: đổi PLATFORM_BRAND là đổi
+  // được cả trang, không phải đi sửa từng chỗ.
+  assert.match(SRC, /Lợi ích \$\{esc\(brand\)\} mang đến/, 'tiêu đề phải lấy tên thương hiệu từ dữ liệu');
+  // Bộ tab thật, có mũi tên trước/sau.
+  assert.match(SRC, /role="tab" id="liT\$\{k\}" aria-controls="liP\$\{k\}"/, 'nút phải là tab thật');
+  assert.match(SRC, /id="liPrev"/, 'thiếu mũi tên trước');
+  assert.match(SRC, /id="liNext"/, 'thiếu mũi tên sau');
+  // Bấm chỉ đặt lại đồng hồ — cùng lý do như băng sản phẩm: dừng vĩnh viễn thì bấm thử
+  // một cái là băng chết và trông y hệt một băng hỏng.
+  assert.match(SRC, /t\.addEventListener\('click', function\(\)\{ liDen\(i\); liNgung\(\); liChay\(\); \}\)/,
+    'bấm tay không được dừng hẳn tự chạy');
+  assert.match(SRC, /!liTimer && !RM && liNuts\.length > 1/, 'không tự chạy khi người dùng chọn giảm chuyển động');
+  assert.match(SRC, /function liTrongTam\(\)/, 'phải ngủ khi khối ngoài tầm mắt');
+  // Khe ảnh cho từng lợi ích + nhánh dự phòng.
+  assert.match(SRC, /const t = assetSrc\('li-' \+ x\.key\)/, 'thiếu khe ảnh theo khoá của từng lợi ích');
+  assert.match(SRC, /: `<div class="lp-lp-mock">\$\{VIS\[x\.vis\]\}<\/div>`/, 'thiếu nhánh dự phòng khi chưa có ảnh');
+  // Không JS thì mọi khung hiện đủ — quy tắc ẩn nằm sau cờ lpjs.
+  assert.match(LUAT, /html\.lpjs \.lp-lp:not\(\.on\)\{display:none\}/, 'quy tắc ẩn phải nằm sau cờ lpjs');
+  // brandMark chỉ là RUỘT của thẻ thương hiệu. Bọc nó trong thẻ KHÔNG mang lớp .lp-brand
+  // thì ô biểu tượng biến mất và tên nhận màu thân trang — gần như vô hình trên nền xanh.
+  assert.match(SRC, /<p class="lp-loi-brand lp-brand">\$\{brandMark\}<\/p>/,
+    'khối thương hiệu phải mang lớp .lp-brand, nếu không ô biểu tượng biến mất');
+});
+
+test('không còn tên Evotech trong mã sản phẩm', () => {
+  assert.doesNotMatch(SRC, /Evotech/, 'đã đổi sang TikFlash');
+  assert.match(SRC, /const CMP_COLS = \['TikFlash'/, 'cột so sánh phải mang tên mới');
+});
+
+test('không JS thì mũi tên mục Lợi ích phải biến mất', () => {
+  // Một nút chết mời người ta bấm còn tệ hơn là không có nút.
+  assert.match(LUAT, /html:not\(\.lpjs\) \.lp-loi-arr\{display:none\}/, 'thiếu ẩn mũi tên khi không JS');
+  // Cùng độ ưu tiên thì cái viết SAU thắng — @media không cộng thêm gì.
+  assert.ok(LUAT.indexOf('html:not(.lpjs) .lp-loi-arr{display:none}') > LUAT.indexOf('.lp-loi-arr.sau{right:-23px}'),
+    'quy tắc ẩn phải nằm sau khối media, nếu không bị đè im lặng');
 });

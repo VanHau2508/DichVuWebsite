@@ -325,7 +325,7 @@ const ROOT_HOSTS = new Set((process.env.PLATFORM_ROOT_HOSTS ?? 'nentang.vn,www.n
 const LANDING_CFG = {
   contactEmail: process.env.PLATFORM_CONTACT_EMAIL ?? 'lienhe@nentang.vn',
   contactPhone: process.env.PLATFORM_CONTACT_PHONE ?? '',
-  brand: process.env.PLATFORM_BRAND ?? 'Nền Tảng',
+  brand: process.env.PLATFORM_BRAND ?? 'TikFlash',
 };
 
 function sendHtml(res, status, html, { shopSlug, cache, preview, nonce, noindex } = {}) {

@@ -76,7 +76,7 @@ export function renderAbout(cfg = {}) {
   </div>
 </div></section>
 ${ctaBlock(contactEmail)}`;
-  return sitePage({ title: `Giới thiệu — ${esc(cfg.brand ?? 'Nền Tảng')}`, description: 'Sứ mệnh của chúng tôi: giúp người Việt bán hàng online với một cửa hàng chuyên nghiệp mà không cần biết kỹ thuật.', active: '', extraCss: COMPANY_CSS, body, ...cfg });
+  return sitePage({ title: `Giới thiệu — ${esc(cfg.brand ?? 'TikFlash')}`, description: 'Sứ mệnh của chúng tôi: giúp người Việt bán hàng online với một cửa hàng chuyên nghiệp mà không cần biết kỹ thuật.', active: '', extraCss: COMPANY_CSS, body, ...cfg });
 }
 
 // ── TRUNG TÂM HỖ TRỢ ─────────────────────────────────────────────────────────
@@ -105,12 +105,12 @@ export function renderSupport(cfg = {}) {
   <div class="note" style="text-align:center">Không tìm thấy câu trả lời? Gửi email cho chúng tôi tại <a href="${mailtoHref(contactEmail, 'Cần hỗ trợ')}">${esc(contactEmail)}</a> — chúng tôi phản hồi sớm nhất.</div>
 </div></section>
 ${ctaBlock(contactEmail)}`;
-  return sitePage({ title: `Trung tâm hỗ trợ — ${esc(cfg.brand ?? 'Nền Tảng')}`, description: 'Trung tâm hỗ trợ: hướng dẫn bắt đầu, thanh toán, tên miền, quản lý đơn hàng và giải đáp thắc mắc.', active: 'support', extraCss: COMPANY_CSS, body, ...cfg });
+  return sitePage({ title: `Trung tâm hỗ trợ — ${esc(cfg.brand ?? 'TikFlash')}`, description: 'Trung tâm hỗ trợ: hướng dẫn bắt đầu, thanh toán, tên miền, quản lý đơn hàng và giải đáp thắc mắc.', active: 'support', extraCss: COMPANY_CSS, body, ...cfg });
 }
 
 // ── ĐIỀU KHOẢN (bản mẫu — cần rà soát pháp lý) ───────────────────────────────
 export function renderTerms(cfg = {}) {
-  const { contactEmail = 'lienhe@nentang.vn', brand = 'Nền Tảng' } = cfg;
+  const { contactEmail = 'lienhe@nentang.vn', brand = 'TikFlash' } = cfg;
   const body = `${pageHero(`${I.doc}Pháp lý`, 'Điều khoản dịch vụ', 'Cập nhật: Tháng 7, 2026')}
 <section class="sec"><div class="wrap">
   <div class="note">Đây là <strong>bản mẫu</strong> để bạn tham khảo. Trước khi áp dụng chính thức, hãy rà soát với luật sư và điền thông tin công ty thật (tên pháp nhân, địa chỉ, mã số thuế).</div>
@@ -145,7 +145,7 @@ export function renderTerms(cfg = {}) {
 // Nội dung phải nói ĐÚNG những gì hệ thống làm thật; đừng chép mẫu chung chung rồi mô tả
 // sai — sai còn tệ hơn không có.
 export function renderPrivacy(cfg = {}) {
-  const { contactEmail = 'lienhe@nentang.vn', brand = 'Nền Tảng' } = cfg;
+  const { contactEmail = 'lienhe@nentang.vn', brand = 'TikFlash' } = cfg;
   const body = `${pageHero(`${I.shield}Pháp lý`, 'Chính sách bảo vệ dữ liệu cá nhân', 'Cập nhật: Tháng 8, 2026')}
 <section class="sec"><div class="wrap">
   <div class="note">Đây là <strong>bản mẫu</strong> mô tả đúng cách hệ thống đang hoạt động. Trước khi áp dụng chính thức, hãy rà soát với luật sư và điền thông tin pháp nhân thật (tên công ty, địa chỉ, mã số thuế, người phụ trách bảo vệ dữ liệu).</div>
@@ -193,7 +193,7 @@ export function renderPrivacy(cfg = {}) {
 // Trước đợt này thông tin liên hệ chỉ nằm lọt trong mục 7 của Điều khoản. Khách doanh
 // nghiệp đi tìm "Liên hệ" sẽ không lục Điều khoản để tìm — họ đóng tab.
 export function renderContact(cfg = {}) {
-  const { contactEmail = 'lienhe@nentang.vn', contactPhone = '', brand = 'Nền Tảng' } = cfg;
+  const { contactEmail = 'lienhe@nentang.vn', contactPhone = '', brand = 'TikFlash' } = cfg;
   const body = `${pageHero(`${I.headset}Liên hệ`, 'Nói chuyện với người thật', 'Bạn không phải điền biểu mẫu rồi chờ. Gửi email hoặc gọi, có người trả lời.')}
 <section class="sec"><div class="wrap">
   <div class="support-grid">
@@ -296,7 +296,7 @@ export function renderBlogList(cfg = {}) {
   const body = `${pageHero(`${I.book}Blog`, 'Kiến thức bán hàng online cho người Việt', 'Mẹo bán hàng, thanh toán, xây thương hiệu — cập nhật thường xuyên.')}
 <section class="sec"><div class="wrap"><div class="blog-grid">${cards}</div></div></section>
 ${ctaBlock(contactEmail)}`;
-  return sitePage({ title: `Blog — ${esc(cfg.brand ?? 'Nền Tảng')}`, description: 'Blog nền tảng: mẹo bán hàng online, thanh toán, chụp ảnh sản phẩm và xây thương hiệu cho người Việt.', active: 'blog', extraCss: COMPANY_CSS, body, ...cfg });
+  return sitePage({ title: `Blog — ${esc(cfg.brand ?? 'TikFlash')}`, description: 'Blog nền tảng: mẹo bán hàng online, thanh toán, chụp ảnh sản phẩm và xây thương hiệu cho người Việt.', active: 'blog', extraCss: COMPANY_CSS, body, ...cfg });
 }
 
 export const findPost = (slug) => POSTS.find((p) => p.slug === slug) ?? null;
@@ -314,5 +314,5 @@ export function renderBlogPost(cfg, post) {
   </div>
 </div></section>
 ${ctaBlock(contactEmail)}`;
-  return sitePage({ title: `${esc(post.title)} — ${esc((cfg && cfg.brand) ?? 'Nền Tảng')}`, description: post.excerpt, active: 'blog', extraCss: COMPANY_CSS, body, ...(cfg ?? {}) });
+  return sitePage({ title: `${esc(post.title)} — ${esc((cfg && cfg.brand) ?? 'TikFlash')}`, description: post.excerpt, active: 'blog', extraCss: COMPANY_CSS, body, ...(cfg ?? {}) });
 }

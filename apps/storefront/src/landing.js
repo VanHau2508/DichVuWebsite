@@ -49,6 +49,36 @@ const BANNERS = [
   },
 ];
 
+// Mục LỢI ÍCH: danh sách bên trái trên nền xanh, khung xem bên phải trên nền trắng.
+// Mỗi mục có khe ảnh riêng — thả li-<khoá>.webp (hoặc .png/.jpg/.avif/.svg) vào
+// apps/storefront/src/assets/. Chưa có tệp thì dùng khung minh hoạ CSS, không để ô trống.
+const LOI_ICH = [
+  {
+    icon: I.users, key: 'du-lieu', vis: 'loyal',
+    t: 'Sở hữu 100% dữ liệu khách hàng',
+    d: 'Kênh bán của riêng bạn: tên miền riêng, danh sách khách riêng, không sàn nào đứng giữa bạn và người mua.',
+    h: 'Sở hữu 100% dữ liệu khách hàng với kênh bán riêng của bạn',
+  },
+  {
+    icon: I.wallet, key: 'tien-ve', vis: 'qr',
+    t: 'Tiền về thẳng tài khoản của bạn',
+    d: 'Khách quét VietQR là tiền vào ngân hàng của bạn. Không ví trung gian, không giữ hộ, không phí rút.',
+    h: 'Tiền khách trả vào thẳng tài khoản ngân hàng của bạn',
+  },
+  {
+    icon: I.bolt, key: 'mang-yeu', vis: 'shop',
+    t: 'Bán được cả khi mạng yếu',
+    d: 'Trang bán và trang đặt hàng dựng sẵn ở máy chủ, chạy được cả khi trình duyệt không có JavaScript.',
+    h: 'Không mất đơn vì trang trắng khi mạng chập chờn',
+  },
+  {
+    icon: I.box, key: 'nghiep-vu', vis: 'orders',
+    t: 'Đủ nghiệp vụ để bán thật',
+    d: 'Đơn hàng, tồn kho theo biến thể, GHN/GHTK, khuyến mãi, đối soát — không phải ghép từ năm công cụ rời.',
+    h: 'Đủ đồ nghề để bán, không phải ghép từ năm công cụ rời',
+  },
+];
+
 const NAV = [
   { href: '#san-pham', label: 'Sản phẩm' },
   { href: '#loi-ich', label: 'So sánh' },
@@ -62,7 +92,7 @@ const NAV = [
 // Dòng cuối là chỗ CHÚNG TA THUA. Bảng so sánh thắng mọi ô thì người đọc trừ điểm
 // ngay, và đó là phản ứng đúng. Số liệu của bên khác mô tả CÁCH VẬN HÀNH phổ biến,
 // không phải báo giá — không bịa con số của đối thủ.
-const CMP_COLS = ['Evotech', 'Nền tảng phổ thông', 'Sàn TMĐT'];
+const CMP_COLS = ['TikFlash', 'Nền tảng phổ thông', 'Sàn TMĐT'];
 const CMP = [
   ['Hoa hồng trên mỗi đơn',
     ['ok', '<b>0%.</b> Bạn giữ trọn doanh thu, chỉ trả phí thuê bao cố định'],
@@ -809,6 +839,83 @@ html:not(.lpjs) .lp-pnav{display:none}
   .lp-qr{grid-template-columns:1fr}
 }
 
+/* ── MỤC LỢI ÍCH: một tấm thẻ lớn, nửa trái xanh, nửa phải trắng ─────────────
+   Nửa trái là danh sách lợi ích trên nền xanh đặc; nửa phải là khung xem có khe ảnh.
+   Hai nút mũi tên đè lên mép trái/phải của thẻ. Cùng cơ chế tab như mục Sản phẩm nhưng
+   KHÔNG có thang máy: lặp lại đúng một hiệu ứng ở hai mục liền nhau thì thành nhàm, và
+   ở đây danh sách chỉ bốn mục nên hiện đủ được. ── */
+.lp-loi-sec{background:#fff}
+.lp-loi{position:relative;display:grid;border-radius:var(--lp-r4);overflow:hidden;
+        box-shadow:var(--lp-sh2);background:#fff}
+@media(min-width:960px){
+  /* 5:7 — nửa trái đủ chỗ cho hai dòng mô tả, nửa phải rộng hơn để ảnh có đất. */
+  .lp-loi{grid-template-columns:minmax(0,5fr) minmax(0,7fr);align-items:stretch}
+}
+.lp-loi>*{min-width:0}
+
+.lp-loi-l{position:relative;padding:26px 20px;background:linear-gradient(160deg,#1553F0,var(--lp-blue) 55%,#0038CC)}
+@media(min-width:960px){.lp-loi-l{padding:32px 26px}}
+/* Lưới mờ chìm dưới nền xanh — cùng thủ pháp với ảnh mẫu, dựng bằng gradient nên không
+   tốn thêm một tệp ảnh nào. */
+.lp-loi-l::before{content:'';position:absolute;inset:0;opacity:.16;pointer-events:none;
+  background-image:linear-gradient(#fff 1px,transparent 1px),linear-gradient(90deg,#fff 1px,transparent 1px);
+  background-size:44px 44px}
+.lp-loi-brand{position:relative;justify-content:center;margin:0 0 20px;color:#fff;font-size:1.12rem}
+.lp-loi-brand .mk{background:#fff;color:var(--lp-blue)}
+.lp-loi-list{position:relative;display:grid;gap:12px}
+
+.lp-li{display:flex;gap:14px;align-items:flex-start;width:100%;padding:16px;text-align:left;
+       border:1px solid rgba(255,255,255,.22);border-radius:var(--lp-r2);cursor:pointer;
+       background:rgba(255,255,255,.10);
+       transition:background var(--lp-t),border-color var(--lp-t),transform 160ms var(--lp-e)}
+.lp-li:hover{background:rgba(255,255,255,.18)}
+.lp-li.on{background:#fff;border-color:#fff;box-shadow:var(--lp-sh)}
+.lp-li .ic{flex:none;display:grid;place-items:center;width:44px;height:44px;border-radius:var(--lp-r2);
+           background:rgba(255,255,255,.18);color:#fff;transition:background var(--lp-t),color var(--lp-t)}
+.lp-li .ic svg{width:21px;height:21px}
+.lp-li.on .ic{background:var(--lp-b050);color:var(--lp-blue)}
+.lp-li .tx{display:block;min-width:0}
+.lp-li .t{display:block;font-size:1rem;font-weight:800;line-height:1.35;color:#fff}
+.lp-li.on .t{color:var(--lp-ink)}
+.lp-li .d{display:block;margin-top:6px;font-size:.88rem;line-height:1.55;color:rgba(255,255,255,.8)}
+.lp-li.on .d{color:var(--lp-mut)}
+
+.lp-loi-r{position:relative;display:grid;padding:26px 20px}
+@media(min-width:960px){.lp-loi-r{padding:34px 32px}}
+.lp-lp{grid-area:1/1;min-width:0;display:flex;flex-direction:column}
+html.lpjs .lp-lp:not(.on){display:none}
+@media(prefers-reduced-motion:no-preference){
+  html.lpjs .lp-lp.on{animation:lp-pan 380ms var(--lp-e) both}
+}
+.lp-lp .k{font-size:.8rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--lp-mut2)}
+.lp-lp h3{margin-top:10px;font-size:clamp(1.15rem,.95rem + 1vw,1.6rem);font-weight:800;line-height:1.32;
+          color:var(--lp-blue);max-width:22ch}
+.lp-lp .gach{display:block;width:64px;height:3px;margin-top:16px;border-radius:2px;background:var(--lp-blue)}
+.lp-lp-v{margin-top:20px;flex:1;display:grid;align-content:start}
+.lp-lp-img{width:100%;height:auto;display:block;border-radius:var(--lp-r2)}
+.lp-lp-mock{width:100%;max-width:440px;margin-inline:auto}
+
+/* Mũi tên đè lên mép thẻ. Ẩn ở màn hẹp: chỗ đó đã chật, và danh sách bên trái vốn đã
+   hiện đủ bốn mục nên bấm thẳng vào mục là xong. */
+.lp-loi-arr{display:none}
+@media(min-width:1100px){
+  .lp-loi-arr{position:absolute;top:50%;z-index:2;display:grid;place-items:center;
+              width:46px;height:46px;margin-top:-23px;border-radius:var(--lp-pill);border:1px solid var(--lp-line);
+              background:#fff;color:var(--lp-ink);cursor:pointer;box-shadow:var(--lp-sh);
+              transition:background var(--lp-t),color var(--lp-t)}
+  .lp-loi-arr:hover{background:var(--lp-blue);border-color:var(--lp-blue);color:#fff}
+  .lp-loi-arr.truoc{left:-23px}
+  .lp-loi-arr.sau{right:-23px}
+  /* Thẻ phải thôi cắt thì mũi tên đè mép mới thấy được. */
+  .lp-loi{overflow:visible}
+  .lp-loi-l{border-radius:var(--lp-r4) 0 0 var(--lp-r4)}
+  .lp-loi-r{border-radius:0 var(--lp-r4) var(--lp-r4) 0;background:#fff}
+}
+/* Không JS thì mũi tên bấm không làm gì — một nút chết mời người ta bấm còn tệ hơn là
+   không có nút. Quy tắc này PHẢI nằm SAU khối media ở trên: cùng độ ưu tiên thì cái viết
+   sau mới thắng, @media không cộng thêm gì. */
+html:not(.lpjs) .lp-loi-arr{display:none}
+
 /* ── GIẢI PHÁP TĂNG TRƯỞNG (giữ chuyển động, dựng lại cách trình bày) ─────── */
 /* Nền SÁNG, không còn navy. Ba mục sáng liền nhau thì dễ phẳng, nên mục này lấy một
    tông xanh rất nhạt để tự tách khỏi mục sản phẩm (#F5F6F8) và mục ngành hàng (trắng)
@@ -1069,7 +1176,7 @@ const JS = `(function(){
      lại thì hành vi không còn phụ thuộc việc có khung hình được vẽ hay không. Đo được:
      trong môi trường không vẽ đều, rAF chỉ chạy 2 lần trong CẢ MỘT GIÂY — thanh điều
      hướng kẹt nguyên trạng thái cũ, và cùng lớp lỗi đó từng làm chữ kẹt opacity:0. */
-  function beat(){ rvGuard(); rvScan(); rvXQuet(); onScroll(); spTrongTam(); }
+  function beat(){ rvGuard(); rvScan(); rvXQuet(); onScroll(); spTrongTam(); liTrongTam(); }
   addEventListener('resize', spNhip, { passive: true });
   if (D.fonts && D.fonts.ready) D.fonts.ready.then(spNhip);
   addEventListener('scroll', beat, { passive: true });
@@ -1225,6 +1332,52 @@ const JS = `(function(){
     spWrap.classList.toggle('ngu', !(r.top < innerHeight * 0.95 && r.bottom > innerHeight * 0.05));
   }
 
+  /* ── MỤC LỢI ÍCH: bộ tab có mũi tên, tự chạy ─────────────────────────────── */
+  var liNuts = [].slice.call(D.querySelectorAll('.lp-li')),
+      liKhungs = [].slice.call(D.querySelectorAll('.lp-lp')),
+      liThe = D.querySelector('.lp-loi'),
+      li = 0, liTimer = null;
+  function liDen(k){
+    li = (k + liNuts.length) % liNuts.length;
+    liNuts.forEach(function(t, i){
+      var on = i === li;
+      t.classList.toggle('on', on);
+      t.setAttribute('aria-selected', String(on));
+      t.tabIndex = on ? 0 : -1;
+    });
+    liKhungs.forEach(function(pn, i){ pn.classList.toggle('on', i === li); });
+  }
+  function liChay(){
+    if (!liTimer && !RM && liNuts.length > 1) liTimer = setInterval(function(){ liDen(li + 1); }, 5600);
+  }
+  function liNgung(){ if (liTimer) { clearInterval(liTimer); liTimer = null; } }
+  liNuts.forEach(function(t, i){
+    /* Bấm chỉ ĐẶT LẠI đồng hồ, không dừng hẳn — cùng lý do như băng sản phẩm: dừng vĩnh
+       viễn thì bấm thử một cái là băng chết, và trông y hệt một băng hỏng. */
+    t.addEventListener('click', function(){ liDen(i); liNgung(); liChay(); });
+    t.addEventListener('keydown', function(e){
+      var d = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1
+            : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
+      if (!d) return;
+      e.preventDefault(); liNgung(); liDen(li + d); liNuts[li].focus(); liChay();
+    });
+  });
+  var liP = D.getElementById('liPrev'), liN = D.getElementById('liNext');
+  if (liP) liP.addEventListener('click', function(){ liDen(li - 1); liNgung(); liChay(); });
+  if (liN) liN.addEventListener('click', function(){ liDen(li + 1); liNgung(); liChay(); });
+  if (liThe) {
+    liThe.addEventListener('mouseenter', liNgung);
+    liThe.addEventListener('mouseleave', liChay);
+    liThe.addEventListener('focusin', liNgung);
+    liThe.addEventListener('focusout', function(e){ if (!liThe.contains(e.relatedTarget)) liChay(); });
+  }
+  /* Chỉ chạy khi khối trong tầm mắt — chạy dưới đáy trang thì tới nơi đã nhảy mất mấy mục. */
+  function liTrongTam(){
+    if (!liThe) return;
+    var r = liThe.getBoundingClientRect();
+    if (r.top < innerHeight * 0.85 && r.bottom > innerHeight * 0.15) liChay(); else liNgung();
+  }
+
   /* ── THANH CTA NỔI ───────────────────────────────────────────────────────── */
   var dk = D.getElementById('lpDock'), rp = D.getElementById('lpReopen'),
       KEY = 'lp-dock-dong', thayCuoi = false;
@@ -1266,7 +1419,7 @@ const JS = `(function(){
   });
   addEventListener('focusout', function(){ dk.hidden = false; });
 
-  spNhip(); spTrongTam();
+  spNhip(); spTrongTam(); liTrongTam();
   rvScan(); rvXQuet(); dockPos(); dock();
 })();
 `;
@@ -1279,7 +1432,7 @@ const MK = {
 const MK_SR = { ok: 'Có', mid: 'Một phần', no: 'Không' };
 const AR = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M13 6l6 6-6 6"/></svg>`;
 
-export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone = '', brand = 'Nền Tảng', assets = new Map(), nonce = '' } = {}) {
+export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone = '', brand = 'TikFlash', assets = new Map(), nonce = '' } = {}) {
   // Ảnh THẬT tuỳ chọn: thả file vào apps/storefront/src/assets/ (vd hero.webp) → hiện ảnh
   // thật; chưa có file → dùng khung dựng bằng CSS. Không có nhánh nào làm vỡ bố cục.
   const assetSrc = (base) => { for (const e of ['webp', 'avif', 'png', 'jpg', 'jpeg', 'svg']) { const f = base + '.' + e; if (assets && assets.has && assets.has(f)) return '/assets/' + f; } return null; };
@@ -1481,6 +1634,42 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
   }).join('')}
 </div></section>`;
 
+  // ── MỤC LỢI ÍCH ──────────────────────────────────────────────────────────
+  const liHinh = (x) => {
+    const t = assetSrc('li-' + x.key);
+    return t
+      ? `<img class="lp-lp-img" src="${esc(t)}" alt="" loading="lazy" decoding="async">`
+      : `<div class="lp-lp-mock">${VIS[x.vis]}</div>`;
+  };
+  const liNut = (x, k) => `<button class="lp-li${k === 0 ? ' on' : ''}" type="button" data-li="${k}" role="tab" id="liT${k}" aria-controls="liP${k}" aria-selected="${k === 0}" tabindex="${k === 0 ? 0 : -1}">
+    <span class="ic">${x.icon}</span>
+    <span class="tx"><span class="t">${esc(x.t)}</span><span class="d">${esc(x.d)}</span></span>
+  </button>`;
+  const liKhung = (x, k) => `<div class="lp-lp${k === 0 ? ' on' : ''}" id="liP${k}" role="tabpanel" aria-labelledby="liT${k}">
+    <p class="k">Lợi ích giải pháp</p>
+    <h3>${esc(x.h)}</h3>
+    <span class="gach" aria-hidden="true"></span>
+    <div class="lp-lp-v">${liHinh(x)}</div>
+  </div>`;
+  const loiIch = `<section class="lp-sec lp-loi-sec" id="uu-diem" aria-labelledby="lpLoiH"><div class="ct">
+  <div class="lp-head lp-head-mid rv">
+  <h2 class="lp-h2" id="lpLoiH">Lợi ích ${esc(brand)} mang đến</h2>
+  <p class="lp-sub">Bốn thứ người bán được thêm ngay từ ngày đầu, không phải chờ lên gói.</p></div>
+  <div class="lp-loi rv">
+    <button class="lp-loi-arr truoc" id="liPrev" type="button" aria-label="Lợi ích trước">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+    </button>
+    <div class="lp-loi-l">
+      <p class="lp-loi-brand lp-brand">${brandMark}</p>
+      <div class="lp-loi-list" role="tablist" aria-label="Chọn lợi ích">${LOI_ICH.map(liNut).join('')}</div>
+    </div>
+    <div class="lp-loi-r">${LOI_ICH.map(liKhung).join('')}</div>
+    <button class="lp-loi-arr sau" id="liNext" type="button" aria-label="Lợi ích sau">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+  </div>
+</div></section>`;
+
   const chip = (x) => `<span class="lp-chip"><span class="i">${x.icon}</span>${esc(x.name)}</span>`;
   const half = Math.ceil(INDUSTRIES.length / 2);
   const mq = (items, rev) => { const set = items.map(chip).join('');
@@ -1558,7 +1747,7 @@ ${mq(INDUSTRIES.slice(half), true)}
   <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h2l2.4 12.3a2 2 0 0 0 2 1.7h7.7a2 2 0 0 0 2-1.6L21 8H6"/><circle cx="10" cy="20" r="1"/><circle cx="17" cy="20" r="1"/></svg>
 </button>` : '';
 
-  const body = `<div class="lp">${header}<main id="main">${hero}${cmp}${prod}${grow}${ind}${price}${faq}${final}</main>${footer}${dock}</div>`;
+  const body = `<div class="lp">${header}<main id="main">${hero}${cmp}${prod}${loiIch}${grow}${ind}${price}${faq}${final}</main>${footer}${dock}</div>`;
 
   return sitePage({
     title: `${esc(brand)} — Nền tảng website bán hàng cho người Việt, tiền về thẳng tài khoản bạn`,

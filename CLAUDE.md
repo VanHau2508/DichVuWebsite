@@ -23,15 +23,15 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 
 | số đo | hôm nay | nguồn |
 |---|---:|---|
-| dòng mã ứng dụng | ~46.400 | `apps/*/src/*.js` |
-| dòng test | ~35.100 | `apps/*/test/*.{js,mjs}` |
+| dòng mã ứng dụng | ~48.600 | `apps/*/src/*.js` |
+| dòng test | ~36.500 | `apps/*/test/*.{js,mjs}` |
 | migration | 180 tệp, mới nhất `0182` | `packages/db/migrations/` |
-| bộ unit | 40 | `MANIFEST_UNIT_COUNT` |
+| bộ unit | 42 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 107 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 144 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 81 tệp | `docs/` |
 
-Tỉ lệ test/mã ≈ 0,76 — cao có chủ ý, xem §4.
+Tỉ lệ test/mã ≈ 0,75 — cao có chủ ý, xem §4.
 
 **Toàn bộ mã, chú thích, tài liệu, commit message đều TIẾNG VIỆT.** Giữ nguyên, không dịch sang
 tiếng Anh, không viết chú thích tiếng Anh trong file tiếng Việt.

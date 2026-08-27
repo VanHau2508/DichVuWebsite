@@ -63,7 +63,7 @@ e2e). Chỉ được nói "xanh" khi lệnh đầy đủ `exit 0`. Danh sách te
 đám mây và CI máy: `scripts/test-manifest.sh` — thêm/bớt bộ test thì phải sửa con số trong đó
 cùng commit, nếu không cổng đỏ.
 
-Hôm nay: **40 bộ unit · 107 bộ e2e · 9 bộ DB (143 test theo tổng kết TAP) · 3 smoke.**
+Hôm nay: **42 bộ unit · 107 bộ e2e · 9 bộ DB (144 test theo tổng kết TAP) · 3 smoke.**
 
 ---
 

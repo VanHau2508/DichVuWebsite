@@ -668,7 +668,8 @@ async function main() {
     const initialRetryCase = (await owner.query(
       `SELECT id,status FROM integration_sync_discrepancies
         WHERE shop_id=$1 AND integration_id=$2 AND entity_type='order' AND local_id=$3
-        ORDER BY id DESC LIMIT 1`, [shop.shopId, active.id, retryFailureOrder.id],
+          AND status='open'
+        ORDER BY created_at DESC, id DESC LIMIT 1`, [shop.shopId, active.id, retryFailureOrder.id],
     )).rows[0];
     const retryFailurePath = initialRetryCase?.id
       ? `/shops/${shop.shopId}/integrations/discrepancies/${initialRetryCase.id}/retry` : null;

@@ -1560,10 +1560,16 @@ function buildKiotVietWebsiteOrder(order, lines, integration, marker) {
 async function markWebsiteOrderNeedsAttention(shopId, payload, reason, intentId = null) {
   return withIntegrationTenant(shopId, async (c) => {
     await lockIntegrationGeneration(c, payload.integration_id, payload.generation);
-    if (intentId) await c.query(
+    const resolvedIntentId = intentId ?? (await c.query(
+      `SELECT id FROM integration_order_send_intents
+        WHERE integration_id = $1 AND generation = $2 AND order_id = $3
+        ORDER BY created_at DESC LIMIT 1`,
+      [payload.integration_id, Number(payload.generation), payload.order_id],
+    )).rows[0]?.id ?? null;
+    if (resolvedIntentId) await c.query(
       `UPDATE integration_order_send_intents
           SET state = 'needs_attention', lookup_state = 'inconclusive', last_error = $2, updated_at = now()
-        WHERE id = $1`, [intentId, reason],
+        WHERE id = $1 AND state <> 'sent'`, [resolvedIntentId, reason],
     );
     await c.query(
       `UPDATE orders SET sync_status = 'needs_attention', sync_error = $2, sync_updated_at = now()
@@ -1626,8 +1632,10 @@ async function prepareWebsiteOrderSend(shopId, payload) {
     }
     const marker = deterministicOrderCode(shopId, order.id, order.order_number);
     const requestHash = websiteOrderRequestHash(order, lines);
+    let manualRetry = false;
     let intent = (await c.query(
-      `SELECT id, state, request_hash, attempt_started_at, provider_external_id, provider_code, lookup_state
+      `SELECT id, state, request_hash, attempt_started_at, provider_external_id, provider_code, lookup_state,
+              last_retry_discrepancy_id
          FROM integration_order_send_intents
         WHERE integration_id = $1 AND generation = $2 AND order_id = $3 FOR UPDATE`,
       [integration.id, Number(payload.generation), order.id],
@@ -1637,35 +1645,38 @@ async function prepareWebsiteOrderSend(shopId, payload) {
         `UPDATE orders SET sync_status = 'needs_attention', sync_error = $2, sync_updated_at = now() WHERE id = $1`,
         [order.id, 'Nội dung đơn đã đổi sau khi tạo bằng chứng gửi; cần xác nhận thủ công trước khi gửi lại.'],
       );
+      await upsertDiscrepancy(c, integration.id, {
+        kind: 'order_identity_pending', severity: 'critical', dedupeKey: `order-identity:${order.id}`,
+        message: 'Nội dung đơn đã đổi sau bằng chứng gửi; cần kiểm tra KiotViet trước khi thử lại.',
+        entityType: 'order', localId: order.id,
+        details: { reason: 'request_hash_mismatch' },
+      });
       return { done: true };
     }
     if (payload.manual_retry_confirmed === true) {
-      // A retry from the operator is the only escape from an ambiguous attempt. The
-      // confirmation is recorded as proven_absent; it never turns an in-flight or
-      // provider-linked intent back into a blind POST.
-      if (!intent || !['attempted', 'needs_attention'].includes(intent.state)
-        || intent.provider_external_id || intent.provider_code) {
+      // Confirmation is a one-use nonce issued by the consumed discrepancy. It may only
+      // advance needs_attention; attempted means a provider call may already be in flight.
+      const retryDiscrepancyId = String(payload.discrepancy_id ?? '').trim();
+      if (!UUID_RE.test(retryDiscrepancyId) || !intent || intent.state !== 'needs_attention'
+        || intent.provider_external_id || intent.provider_code
+        || intent.last_retry_discrepancy_id === retryDiscrepancyId) {
         throw new KiotVietError('Đơn không còn ở trạng thái có thể xác nhận gửi lại', {
-          status: 409, code: 'order_retry_not_allowed',
+          status: 409, code: 'order_retry_already_consumed',
         });
       }
-      const reset = (await c.query(
+      const consumed = (await c.query(
         `UPDATE integration_order_send_intents
-            SET state = 'prepared', attempt_started_at = NULL, lookup_state = 'proven_absent',
-                last_error = 'Người vận hành đã xác nhận KiotViet chưa nhận đơn.', updated_at = now()
-          WHERE id = $1 AND state IN ('attempted','needs_attention')
+            SET last_retry_discrepancy_id = $2, last_error = 'Người vận hành đã xác nhận KiotViet chưa nhận đơn.', updated_at = now()
+          WHERE id = $1 AND state = 'needs_attention'
             AND provider_external_id IS NULL AND provider_code IS NULL
-          RETURNING id`, [intent.id],
+            AND (last_retry_discrepancy_id IS NULL OR last_retry_discrepancy_id <> $2)
+          RETURNING id`, [intent.id, retryDiscrepancyId],
       )).rows[0];
-      if (!reset) throw new KiotVietError('Đơn đã được xử lý bởi một lượt khác', {
-        status: 409, code: 'order_retry_race',
+      if (!consumed) throw new KiotVietError('Đơn đã được xử lý bởi một lượt khác', {
+        status: 409, code: 'order_retry_already_consumed',
       });
-      await c.query(
-        `UPDATE orders SET sync_status = 'pending', sync_error = NULL, sync_updated_at = now()
-          WHERE id = $1 AND external_ref IS NULL AND integration_generation = $2`,
-        [order.id, Number(payload.generation)],
-      );
-      intent = { ...intent, state: 'prepared', attempt_started_at: null, lookup_state: 'proven_absent' };
+      intent = { ...intent, last_retry_discrepancy_id: retryDiscrepancyId };
+      manualRetry = true;
     }
     if (!intent) intent = (await c.query(
       `INSERT INTO integration_order_send_intents
@@ -1674,7 +1685,7 @@ async function prepareWebsiteOrderSend(shopId, payload) {
                attempt_started_at, provider_external_id, provider_code, lookup_state`,
       [integration.id, Number(payload.generation), order.id, marker, requestHash],
     )).rows[0];
-    return { integration, order, lines, marker, intent, done: false };
+    return { integration, order, lines, marker, intent, manualRetry, done: false };
   });
 }
 
@@ -1733,13 +1744,13 @@ async function finalizeWebsiteOrderSend(shopId, payload, intentId, external, mar
 async function sendWebsiteOrderToKiotViet(shopId, payload) {
   const prepared = await prepareWebsiteOrderSend(shopId, payload);
   if (!prepared || prepared.done) return;
-  const { integration, order, lines, marker, intent } = prepared;
+  const { integration, order, lines, marker, intent, manualRetry } = prepared;
   const client = integrationClient(integration);
   const since = new Date(new Date(order.created_at).getTime() - 10 * 60_000).toISOString();
 
   // A committed attempted intent is the durable boundary. Once it exists, a marker scan
-  // may prove presence but never absence; only a provider's exact code lookup can permit
-  // another POST after an interrupted attempt.
+  // may prove presence but never absence. A manually confirmed retry may proceed after an
+  // inconclusive scan, but it must still pass the one-use state CAS below.
   if (intent.state !== 'prepared') {
     const lookup = intent.provider_code && client.lookupOrderByCode
       ? await client.lookupOrderByCode(intent.provider_code)
@@ -1755,7 +1766,7 @@ async function sendWebsiteOrderToKiotViet(shopId, payload) {
       await finalizeWebsiteOrderSend(shopId, payload, intent.id, found, marker, integration.id);
       return;
     }
-    if (lookup?.state !== 'proven_absent') {
+    if (lookup?.state !== 'proven_absent' && !(manualRetry && lookup?.state === 'inconclusive')) {
       await markWebsiteOrderNeedsAttention(shopId, payload,
         'Không thể chứng minh đơn KiotViet cũ chưa tồn tại; retry tự động đã bị dừng để tránh tạo đơn trùng.', intent.id);
       return;
@@ -1765,10 +1776,11 @@ async function sendWebsiteOrderToKiotViet(shopId, payload) {
   const marked = await withIntegrationTenant(shopId, async (c) => {
     const row = (await c.query(
       `UPDATE integration_order_send_intents
-          SET state = 'attempted', attempt_started_at = coalesce(attempt_started_at, now()),
+          SET state = 'attempted', attempt_started_at = now(),
               lookup_state = 'unknown', updated_at = now()
-        WHERE id = $1 AND state = 'prepared'
-        RETURNING id`, [intent.id],
+        WHERE id = $1 AND (state = 'prepared'
+          OR (state = 'needs_attention' AND last_retry_discrepancy_id = $2))
+        RETURNING id`, [intent.id, manualRetry ? payload.discrepancy_id : null],
     )).rows[0];
     return Boolean(row);
   });
@@ -2757,6 +2769,17 @@ async function processIntegrationJob(topic, payload, shopId) {
         WHERE id = $1 AND generation = $3`,
       [payload.integration_id, message, Number(payload.generation), fatalConfig],
     )).catch(() => {});
+    const retryOrderTopic = topic === 'integration.order_retry_requested';
+    const retryNoop = retryOrderTopic && error instanceof KiotVietError
+      && ['order_retry_already_consumed', 'order_retry_not_allowed', 'order_retry_race'].includes(error.code);
+    if (retryNoop) return;
+    // A manually confirmed retry has already consumed a human action. Provider 4xx/5xx,
+    // timeout, or a process error must open a new case, never spend that action again via
+    // BullMQ's automatic attempts.
+    if (retryOrderTopic) {
+      await markWebsiteOrderNeedsAttention(shopId, payload, message).catch(() => {});
+      return;
+    }
     const permanentOrderError = topic === 'integration.order_created'
       && error instanceof KiotVietError && Number(error.statusCode) < 500;
     if (permanentOrderError) {

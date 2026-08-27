@@ -1462,10 +1462,11 @@ async function integrationIgnore(res, me, cookie, shopId, refId) {
     r.status === 200 ? null : (r.json?.error ?? 'Không bỏ qua được sản phẩm này.'));
 }
 
-async function integrationRetry(res, me, cookie, shopId, discrepancyId) {
+async function integrationRetry(req, res, me, cookie, shopId, discrepancyId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
+  const form = await readForm(req);
   const r = await sellerApi('POST', `/shops/${shopId}/integrations/discrepancies/${discrepancyId}/retry`, {
-    cookie, body: { confirm_provider_absent: '1' },
+    cookie, body: { confirm_provider_absent: String(form.confirm_provider_absent ?? '') },
   });
   return integrationsPage(res, me, cookie, shopId, r.status === 202 ? (r.json?.message ?? 'Đã đưa vào hàng đợi.') : null,
     r.status === 202 ? null : (r.json?.error ?? 'Không thử lại được.'));
@@ -4594,7 +4595,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/integrations/${UUID}/transfer-local/step-up$`).exec(p)) && req.method === 'POST') return integrationTransferLocalStepUp(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/integrations/mappings/${UUID}$`).exec(p)) && req.method === 'POST') return integrationMap(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/integrations/mappings/${UUID}/ignore$`).exec(p)) && req.method === 'POST') return integrationIgnore(res, me, cookie, m[1], m[2]);
-    if ((m = new RegExp(`^/shops/${UUID}/integrations/discrepancies/${UUID}/retry$`).exec(p)) && req.method === 'POST') return integrationRetry(res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/integrations/discrepancies/${UUID}/retry$`).exec(p)) && req.method === 'POST') return integrationRetry(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/billing$`).exec(p)) && req.method === 'GET') return billingPage(res, me, cookie, m[1], null, null);
     if ((m = new RegExp(`^/shops/${UUID}/billing/charge$`).exec(p)) && req.method === 'POST') return billingCharge(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/messenger$`).exec(p)) && req.method === 'POST') return messengerConnect(req, res, me, cookie, m[1]);

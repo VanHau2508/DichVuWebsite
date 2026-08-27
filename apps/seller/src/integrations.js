@@ -452,20 +452,31 @@ async function retryDiscrepancy(res, ctx, _body, params) {
   const body = _body ?? {};
   const out = await withTenant(ctx.shopId, async (c) => {
     const row = (await c.query(
-      `SELECT d.id, d.integration_id, d.entity_type, d.external_ref, d.local_id,
-               i.generation, i.status AS integration_status,
-               o.integration_generation AS order_generation, o.sync_status AS order_sync_status,
-               o.external_ref AS order_external_ref
-          FROM integration_sync_discrepancies d
+      `SELECT d.id, d.integration_id, d.entity_type, d.external_ref, d.local_id, d.status AS discrepancy_status,
+              i.generation, i.status AS integration_status
+         FROM integration_sync_discrepancies d
          JOIN shop_integrations i ON i.id = d.integration_id
-         LEFT JOIN orders o ON d.entity_type = 'order' AND o.id = d.local_id
-           AND o.integration_id = d.integration_id
-        WHERE d.id = $1 AND d.status = 'open'`,
+        WHERE d.id = $1
+        FOR UPDATE OF d, i`,
       [discrepancyId],
     )).rows[0];
     if (!row) return null;
     const retryOrder = row.entity_type === 'order' && row.local_id;
     const retryInvoice = row.entity_type === 'invoice' && row.external_ref;
+    if (retryOrder) {
+      const order = (await c.query(
+        `SELECT integration_generation AS order_generation, sync_status AS order_sync_status,
+                external_ref AS order_external_ref
+           FROM orders
+          WHERE id = $1 AND integration_id = $2
+          FOR UPDATE`, [row.local_id, row.integration_id],
+      )).rows[0];
+      Object.assign(row, order ?? {
+        order_generation: null, order_sync_status: null, order_external_ref: null,
+      });
+    }
+    if (retryOrder && row.discrepancy_status !== 'open') return { ...row, retry_already_consumed: true };
+    if (!retryOrder && row.discrepancy_status !== 'open') return null;
     if (retryOrder && String(body.confirm_provider_absent ?? '') !== '1') {
       return { ...row, confirmation_required: true };
     }
@@ -480,6 +491,19 @@ async function retryDiscrepancy(res, ctx, _body, params) {
       actorId: ctx.user.id, ip: ctx.ip,
       metadata: { discrepancy_id: row.id, order_id: row.local_id, provider_absent: true },
     });
+    if (retryOrder) {
+      const consumed = (await c.query(
+        `UPDATE integration_sync_discrepancies
+            SET status = 'resolved', resolved_at = now(), updated_at = now()
+          WHERE id = $1 AND status = 'open'
+          RETURNING id`, [row.id],
+      )).rows[0];
+      if (!consumed) return { ...row, retry_already_consumed: true };
+      await c.query(
+        `UPDATE orders SET sync_status = 'pending', sync_error = NULL, sync_updated_at = now()
+          WHERE id = $1 AND sync_status = 'needs_attention' AND external_ref IS NULL`, [row.local_id],
+      );
+    }
     await c.query(
       `INSERT INTO outbox (shop_id, topic, payload)
        VALUES (current_shop_id(), $1, $2)`,
@@ -495,6 +519,9 @@ async function retryDiscrepancy(res, ctx, _body, params) {
     return { ...row, retry_order: Boolean(retryOrder), retry_invoice: Boolean(retryInvoice) };
   });
   if (!out) return send(res, 404, { error: 'ca đồng bộ không còn mở' });
+  if (out.retry_already_consumed) return send(res, 409, {
+    error: 'Xác nhận retry này đã được sử dụng hoặc ca đã đóng; cần kiểm tra trạng thái đơn trước khi thử lại.',
+  });
   if (out.confirmation_required) return send(res, 400, {
     error: 'Chỉ thử lại sau khi đã kiểm tra KiotViet không có đơn mang mã Nền Tảng; gửi confirm_provider_absent=1 để xác nhận.',
   });

@@ -28,7 +28,7 @@ test('send intent tồn tại trước khi worker gọi provider', () => {
   const insert = worker.indexOf('INSERT INTO integration_order_send_intents');
   const create = worker.indexOf('client.createOrder(');
   assert.ok(insert >= 0 && create > insert);
-  assert.match(worker, /state = 'attempted', attempt_started_at = coalesce/);
+  assert.match(worker, /state = 'attempted', attempt_started_at = now/);
   assert.match(worker, /state = 'needs_attention'/);
   assert.match(worker, /UPDATE integration_order_send_intents[\s\S]*state = 'needs_attention'[\s\S]*last_error = \$2/);
   const requestHashBody = /function websiteOrderRequestHash[\s\S]*?const body = \{([\s\S]*?)\n  \};/.exec(worker)?.[1] ?? '';
@@ -40,6 +40,9 @@ test('retry đơn mơ hồ phải có xác nhận và đi qua topic riêng', () 
   assert.match(seller, /confirm_provider_absent/);
   assert.match(seller, /integration\.order_retry_requested/);
   assert.match(worker, /manual_retry_confirmed === true/);
-  assert.match(worker, /lookup_state = 'proven_absent'/);
-  assert.match(worker, /state IN \('attempted','needs_attention'\)/);
+  assert.match(worker, /lookup\?\.state !== 'proven_absent'/);
+  assert.match(worker, /intent\.state !== 'needs_attention'/);
+  assert.match(worker, /last_retry_discrepancy_id/);
+  assert.doesNotMatch(worker, /state IN \('attempted','needs_attention'\)/,
+    'retry không được reset attempted thành prepared');
 });

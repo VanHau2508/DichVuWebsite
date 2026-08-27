@@ -883,11 +883,29 @@ describe('Composite foreign key', () => {
   });
 });
 
-describe('Connector POS ngoài (0177–0181) — quyền hẹp, claim và fail-closed', () => {
+describe('Connector POS ngoài (0177–0182) — quyền hẹp, claim và fail-closed', () => {
   const TABLES = ['shop_integrations', 'integration_webhook_inbox', 'integration_entity_refs',
     'integration_sync_discrepancies', 'integration_order_send_intents'];
   const MIGRATION_0178 = readFileSync(new URL('../migrations/0178_kiotviet_connector_hardening.sql', import.meta.url), 'utf8');
   const MIGRATION_0181 = readFileSync(new URL('../migrations/0181_kiotviet_claim_and_send_intent.sql', import.meta.url), 'utf8');
+  const MIGRATION_0182 = readFileSync(new URL('../migrations/0182_kiotviet_retry_confirmation.sql', import.meta.url), 'utf8');
+
+  test('nonce retry nằm trên send-intent và FK giữ cùng tenant với discrepancy', async () => {
+    assert.match(MIGRATION_0182, /last_retry_discrepancy_id/);
+    const { rows: [column] } = await owner.query(`
+      SELECT is_nullable, data_type
+        FROM information_schema.columns
+       WHERE table_schema='public' AND table_name='integration_order_send_intents'
+         AND column_name='last_retry_discrepancy_id'`);
+    assert.deepEqual(column, { is_nullable: 'YES', data_type: 'uuid' });
+    const { rows: [fk] } = await owner.query(`
+      SELECT conname, pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+       WHERE conname='integration_order_send_intents_retry_discrepancy_fk'`);
+    assert.equal(fk?.conname, 'integration_order_send_intents_retry_discrepancy_fk');
+    assert.match(fk.definition, /FOREIGN KEY \(shop_id, last_retry_discrepancy_id\)/);
+    assert.match(fk.definition, /integration_sync_discrepancies/);
+  });
 
   test('claim lock dùng một hàm SQL chung và checkout chỉ đọc shop_id', async () => {
     assert.match(MIGRATION_0181, /CREATE FUNCTION kiotviet_entity_claim_lock_key\(/);

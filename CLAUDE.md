@@ -25,10 +25,10 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 |---|---:|---|
 | dòng mã ứng dụng | ~46.400 | `apps/*/src/*.js` |
 | dòng test | ~35.100 | `apps/*/test/*.{js,mjs}` |
-| migration | 179 tệp, mới nhất `0181` | `packages/db/migrations/` |
+| migration | 180 tệp, mới nhất `0182` | `packages/db/migrations/` |
 | bộ unit | 40 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 107 | `MANIFEST_E2E_COUNT` |
-| bất biến DB | 9 bộ, 143 test TAP | `packages/db/test/*.test.js` |
+| bất biến DB | 9 bộ, 144 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 81 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,76 — cao có chủ ý, xem §4.
@@ -75,7 +75,7 @@ với GitHub CI. Nó tự dựng PostgreSQL trắng trong project Compose riêng
 chạy đúng runner production **không seed**, rồi so ba chiều: số file = `MANIFEST_MIGRATION_COUNT`
 = số dòng thật trong `schema_migrations`, kèm 0 DRIFT / 0 pending. Tự dọn bằng `trap` ở mọi đường
 thoát, kể cả Ctrl-C. **Không chạm DB dev.** Thêm migration thì sửa `MANIFEST_MIGRATION_COUNT`
-trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 179 file / số cao nhất 0181).
+trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 180 file / số cao nhất 0182).
 
 Hook `scripts/hooks/pre-push` chạy `--fast` và **chặn push khi đỏ**. Cài một lần cho mỗi bản
 clone: `git config core.hooksPath scripts/hooks`.
@@ -454,6 +454,8 @@ vai `SECURITY DEFINER` NOLOGIN để checkout không phải đọc trực tiếp
 `0180` chặn ghi refund cục bộ cho đơn POS ngoài cho tới khi API hoàn tiền provider được xác minh.
 Migration `0181` dùng một advisory-key chuẩn cho claim catalog và ghi send-intent đã commit trước
 network I/O, để retry mơ hồ dừng ở `needs_attention` thay vì POST đơn lần hai.
+Migration `0182` dùng nonce discrepancy một lần cho retry thủ công, không reset `attempted`,
+và bắt lỗi provider sau xác nhận về `needs_attention` thay vì để BullMQ POST lại.
 Invoice chưa xác định được nguồn phải nằm ở `order_identity_pending`, chưa ghi doanh thu. Phạm vi hiện tại chỉ
 đủ cho pilot 1–3 shop; chưa có bằng chứng để tuyên bố tải 9.358 shop.
 

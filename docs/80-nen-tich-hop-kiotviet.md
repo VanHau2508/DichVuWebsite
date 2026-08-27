@@ -31,7 +31,7 @@ Ngắt kết nối không xoá mapping và không tự đổi quyền sở hữu
 tồn, sản phẩm liên kết tiếp tục bị khoá checkout cho tới khi có thao tác chuyển authority có
 kiểm soát.
 
-## Schema 0177–0181 và least privilege
+## Schema 0177–0182 và least privilege
 
 Migration `0177_kiotviet_integration_core.sql` thêm:
 
@@ -121,6 +121,14 @@ một lần thử, marker deterministic chỉ được dùng để chứng minh 
 không tìm thấy không chứng minh vắng mặt: nếu không có lookup chính xác trả
 `proven_absent`, đơn chuyển `needs_attention` và không POST mù lần hai.
 
+Migration `0182_kiotviet_retry_confirmation.sql` đóng đường quay lại có thể tạo đơn trùng:
+
+- một xác nhận của người vận hành mang đúng `discrepancy_id` làm nonce và chỉ được dùng một lần;
+- chỉ discrepancy `open` mới phát hành được retry; gửi lại cùng nonce hoặc retry đồng thời bị từ chối;
+- không reset `attempted` thành `prepared`. Retry thủ công chỉ tiến từ `needs_attention`, và lỗi
+  provider sau lượt đã xác nhận mở ca mới thay vì để BullMQ tự POST lại;
+- form admin dùng checkbox bắt buộc, không hidden field hay `window.confirm()` ký thay người vận hành.
+
 Payload mang dòng hàng đã mapping, khách, `orderDelivery.receiver/contactNumber/address/price`,
 phương thức và số tiền đã thu. Trong pilot hiện tại, đơn external-master chỉ nhận COD; QR,
 coupon, đổi điểm và khuyến mại online đều fail-closed cho tới khi capability boolean
@@ -154,11 +162,11 @@ quên gác. Màn hình dùng SSR/form thường, không cần JavaScript và ph�
 - unit theo manifest: 266/266;
 - adapter KiotViet: 8/8;
 - checkout policy KiotViet: 7/7;
-- toàn bộ 9 bộ bất biến DB trên stack PostgreSQL: 143/143;
-- migration DB trắng: 179/179, 0 DRIFT, 0 pending.
+- toàn bộ 9 bộ bất biến DB trên stack PostgreSQL: 144/144;
+- migration DB trắng: 180/180, 0 DRIFT, 0 pending.
 
-E2E connector hiện đã chạy 38/38 trên stack pilot. Full CI local trên working tree cuối đã chạy đủ 114
-mục với 0 đỏ: 266 unit, 179 migration từ DB trắng, 143 bất biến DB, 107 E2E và 3 smoke.
+E2E connector hiện đã chạy 45/45 trên stack pilot. Full CI local trên working tree cuối đã chạy đủ 114
+mục với 0 đỏ: 267 unit, 180 migration từ DB trắng, 144 bất biến DB, 107 E2E và 3 smoke.
 Đây là bằng chứng của mã nguồn/stack dev; nó không thay thế spike bằng credential KiotViet thật.
 
 E2E đã đột biến các điểm dễ xanh giả: webhook trùng, ignore mapping qua reconciliation, hai

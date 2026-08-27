@@ -179,7 +179,7 @@ test('retry đơn connector không tự nhận đơn của generation cũ', () =
   const guardAt = retry.indexOf('row.order_generation == null');
   const enqueueAt = retry.indexOf('INSERT INTO outbox');
 
-  assert.match(retry, /o\.integration_generation AS order_generation/);
+  assert.match(retry, /SELECT integration_generation AS order_generation/);
   assert.ok(guardAt >= 0 && enqueueAt > guardAt,
     'phải so generation của đơn trước khi đưa retry vào outbox');
   assert.match(retry, /Number\(row\.order_generation\) !== Number\(row\.generation\)/);

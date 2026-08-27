@@ -122,6 +122,7 @@ function startKiotVietStub() {
   const removedProducts = [];
   const createdOrders = [];
   const orderFailures = [];
+  const orderFailuresAfterCreate = [];
   const orderAttempts = [];
   let nextId = 100;
   let nextOrderId = 10000;
@@ -168,6 +169,11 @@ function startKiotVietStub() {
       }
       const row = { ...body, id: nextOrderId++, code: `DH-${nextOrderId}`, ModifiedDate: new Date().toISOString() };
       createdOrders.push(row);
+      const failAfterCreate = orderFailuresAfterCreate.shift();
+      if (failAfterCreate) {
+        res.statusCode = failAfterCreate;
+        return res.end(JSON.stringify({ message: `ghi được đơn nhưng mất phản hồi ${failAfterCreate}` }));
+      }
       return res.end(JSON.stringify(row));
     }
     if (req.url?.startsWith('/invoices?') && req.method === 'GET') return res.end(JSON.stringify({ data: [], total: 0 }));
@@ -190,7 +196,7 @@ function startKiotVietStub() {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(9103, '0.0.0.0', () => resolve({
-      registered, deleted, products, removedProducts, createdOrders, orderFailures, orderAttempts,
+      registered, deleted, products, removedProducts, createdOrders, orderFailures, orderFailuresAfterCreate, orderAttempts,
       close: () => new Promise((done) => server.close(done)),
     }));
   });
@@ -578,27 +584,47 @@ async function main() {
     )).rows[0];
     const retryPath = attentionCase?.id
       ? `/shops/${shop.shopId}/integrations/discrepancies/${attentionCase.id}/retry` : null;
+    const retryPage = await admin('GET', base, { cookie });
+    const retryFormPresent = retryPage.status === 200
+      && new RegExp(`action="${base}/discrepancies/${attentionCase?.id ?? 'missing'}/retry"`).test(retryPage.body)
+      && /name="confirm_provider_absent" value="1" required/.test(retryPage.body)
+      && !/data-confirm="Chỉ xác nhận sau khi/.test(retryPage.body);
+    retryFormPresent
+      ? ok('màn admin hiển thị checkbox xác nhận thật, không ký thay bằng hidden/JS')
+      : bad('màn admin chưa có checkbox xác nhận retry no-JS', retryPage.body);
     const retryWithoutConfirmation = retryPath
-      ? await json(SELLER, 'POST', retryPath, { cookie: sellerCookie, origin: OS, body: {} })
+      ? await admin('POST', retryPath, { cookie, form: {} })
       : { status: 0, json: null };
-    retryWithoutConfirmation.status === 400 && stub.orderAttempts.length === 1
-      ? ok('retry đơn cần xử lý không có xác nhận provider_absent → 400, không tạo outbox mới')
+    const caseAfterMissingConfirmation = attentionCase?.id ? (await owner.query(
+      `SELECT status FROM integration_sync_discrepancies WHERE id=$1`, [attentionCase.id],
+    )).rows[0] : null;
+    retryWithoutConfirmation.status === 400 && caseAfterMissingConfirmation?.status === 'open'
+      && stub.orderAttempts.length === 1
+      ? ok('retry admin không có xác nhận → 400, ca vẫn mở và không tạo outbox mới')
       : bad('retry không xác nhận vẫn được phép', JSON.stringify({ retryWithoutConfirmation, attempts: stub.orderAttempts.length }));
 
     // Ca 429/503 đã được ghi nhận là mơ hồ; sau khi người vận hành xác nhận provider
     // chưa nhận, lần gửi duy nhất còn lại phải đi qua đường retry riêng.
     stub.orderFailures.length = 0;
     const retryConfirmed = retryPath
-      ? await json(SELLER, 'POST', retryPath, {
-        cookie: sellerCookie, origin: OS, body: { confirm_provider_absent: '1' },
+      ? await admin('POST', retryPath, {
+        cookie, form: { confirm_provider_absent: '1' },
       }) : { status: 0, json: null };
     const retriedOutbound = await waitFor(async () => {
       const row = (await owner.query(`SELECT sync_status,external_ref FROM orders WHERE id=$1`, [outbound.id])).rows[0];
       return row?.sync_status === 'synced' && row.external_ref ? row : null;
     }, 20000);
-    retryConfirmed.status === 202 && retriedOutbound && stub.createdOrders.length === 1
-      ? ok('xác nhận provider_absent → retry thật tự phục hồi về synced, đúng một đơn provider')
+    retryConfirmed.status === 200 && /Đã đưa đơn vào hàng đợi gửi lại an toàn/.test(retryConfirmed.body)
+      && retriedOutbound && stub.createdOrders.length === 1
+      ? ok('checkbox xác nhận → BFF xếp retry thật, phục hồi về synced và đúng một đơn provider')
       : bad('retry đã xác nhận không phục hồi được đơn hoặc tạo trùng', JSON.stringify({ retryConfirmed, retriedOutbound, count: stub.createdOrders.length }));
+
+    const consumedAgain = await admin('POST', retryPath, {
+      cookie, form: { confirm_provider_absent: '1' },
+    });
+    consumedAgain.status === 400 && /đã đóng|đã được sử dụng/i.test(consumedAgain.body)
+      ? ok('nonce retry đã dùng không thể ký lại lần hai')
+      : bad('retry đã dùng vẫn được chấp nhận', JSON.stringify({ status: consumedAgain.status, body: consumedAgain.body }));
 
     const crashGapReset = await withIntegration(shop.shopId, active.id, active.generation, async (c) => (await c.query(
       `UPDATE orders SET external_ref=NULL,sync_status='pending',sync_error=NULL,sync_updated_at=now()
@@ -1073,6 +1099,93 @@ async function main() {
       && outboundAfterMutation.status === 'confirmed' && outboundAfterMutation.external_ref
       ? ok('đơn provider đã nhận chỉ-đọc ở UI và route sửa bị DB chặn 409')
       : bad('đơn ngoài vẫn mời hoặc cho phép thao tác local', JSON.stringify({ ...orderDetailChecks, detail: detail.body.slice(0, 500), mutation }));
+
+    sect('4b. Retry nonce chống đua và provider ghi đơn rồi mất phản hồi');
+
+    // Hai tab có thể bấm cùng một ca. Provider vẫn còn marker cũ trong fixture nên
+    // worker sẽ finalize bằng lookup, nhưng chỉ một request được phép tiêu thụ nonce.
+    const raceCase = await withIntegration(shop.shopId, active.id, active.generation, async (c) => {
+      await c.query(
+        `UPDATE orders SET external_ref=NULL,sync_status='needs_attention',sync_error='fixture race',sync_updated_at=now()
+          WHERE id=$1 AND integration_generation=$2`, [outbound.id, Number(active.generation)],
+      );
+      await c.query(
+        `UPDATE integration_order_send_intents
+            SET state='needs_attention', provider_external_id=NULL, provider_code=NULL,
+                lookup_state='inconclusive', last_retry_discrepancy_id=NULL, updated_at=now()
+          WHERE order_id=$1 AND integration_id=$2 AND generation=$3`,
+        [outbound.id, active.id, Number(active.generation)],
+      );
+      return (await c.query(
+        `INSERT INTO integration_sync_discrepancies
+           (shop_id,integration_id,kind,severity,status,entity_type,local_id,dedupe_key,message,details)
+         VALUES (current_shop_id(),$1,'provider_rejected','critical','open','order',$2,$3,'fixture retry race',$4)
+         RETURNING id`,
+        [active.id, outbound.id, `order-race:${outbound.id}`, { fixture: true }],
+      )).rows[0].id;
+    });
+    const racePath = `/shops/${shop.shopId}/integrations/discrepancies/${raceCase}/retry`;
+    const attemptsBeforeRace = stub.orderAttempts.length;
+    const [raceA, raceB] = await Promise.all([
+      admin('POST', racePath, { cookie, form: { confirm_provider_absent: '1' } }),
+      admin('POST', racePath, { cookie, form: { confirm_provider_absent: '1' } }),
+    ]);
+    const raceStatuses = [raceA.status, raceB.status].sort((a, b) => a - b);
+    const raceResolved = (await owner.query(
+      `SELECT status FROM integration_sync_discrepancies WHERE id=$1`, [raceCase],
+    )).rows[0]?.status;
+    const raceSynced = await waitFor(async () => {
+      const row = (await owner.query(`SELECT sync_status,external_ref FROM orders WHERE id=$1`, [outbound.id])).rows[0];
+      return row?.sync_status === 'synced' && row.external_ref ? row : null;
+    }, 20000);
+    raceStatuses[0] === 200 && raceStatuses[1] === 400 && raceResolved === 'resolved'
+      && raceSynced && stub.orderAttempts.length === attemptsBeforeRace
+      ? ok('hai retry đồng thời → một BFF chấp nhận, một bị từ chối, không POST thừa')
+      : bad('retry đồng thời vẫn có thể gửi đôi', JSON.stringify({ raceStatuses, raceResolved, raceSynced, attempts: stub.orderAttempts.length, attemptsBeforeRace }));
+
+    // Provider có thể ghi đơn rồi trả 503. Lượt gửi kế tiếp phải lookup marker và finalize,
+    // tuyệt đối không POST lần hai.
+    const afterWriteOrder = await withIntegration(shop.shopId, active.id, active.generation, async (c) => {
+      const number = (await c.query(
+        `INSERT INTO shop_counters (shop_id,name,value) VALUES (current_shop_id(),'order_number',1)
+         ON CONFLICT (shop_id,name) DO UPDATE SET value=shop_counters.value+1 RETURNING value`,
+      )).rows[0].value;
+      const order = (await c.query(
+        `INSERT INTO orders
+           (shop_id,order_number,status,payment_status,payment_method,customer_name,customer_phone,customer_email,
+            shipping_address,subtotal_vnd,shipping_vnd,total_vnd,source,integration_id,integration_generation,
+            external_branch_ref,sync_status,sync_updated_at)
+         VALUES (current_shop_id(),$1,'pending','unpaid','cod','Khách after-write','0900000011','after-write@example.test',$2,
+                 45000,0,45000,'web',$3,$4,'7','pending',now()) RETURNING id` ,
+        [number, { line: '1 Đường B', ward: 'Phường C', district: 'Quận D', province: 'TP.HCM' },
+          active.id, Number(active.generation)],
+      )).rows[0];
+      await c.query(
+        `INSERT INTO order_lines
+           (shop_id,order_id,variant_id,title_snapshot,sku_snapshot,unit_price_vnd,qty)
+         VALUES (current_shop_id(),$1,$2,'Áo POS','POS-501',45000,1)`, [order.id, variantId],
+      );
+      return order;
+    });
+    stub.orderFailuresAfterCreate.push(503);
+    await owner.query(
+      `INSERT INTO outbox (shop_id,topic,payload)
+       VALUES ($1,'integration.order_created',$2)`,
+      [shop.shopId, { integration_id: active.id, generation: Number(active.generation), order_id: afterWriteOrder.id }],
+    );
+    const providerCountBeforeAfterWrite = stub.createdOrders.length;
+    const attemptsBeforeAfterWrite = stub.orderAttempts.length;
+    const afterWriteSynced = await waitFor(async () => {
+      const row = (await owner.query(
+        `SELECT sync_status,external_ref FROM orders WHERE id=$1`, [afterWriteOrder.id],
+      )).rows[0];
+      return row?.sync_status === 'synced' && row.external_ref
+        ? row : null;
+    }, 30000);
+    afterWriteSynced && stub.createdOrders.length === providerCountBeforeAfterWrite + 1
+      && stub.orderAttempts.length === attemptsBeforeAfterWrite + 1
+      ? ok('provider ghi đơn rồi trả 503 → worker lookup marker và phục hồi, không POST lần hai')
+      : bad('lỗi sau khi provider ghi đơn vẫn tạo đơn trùng hoặc kẹt', JSON.stringify({ afterWriteSynced, attempts: stub.orderAttempts.length, attemptsBeforeAfterWrite, count: stub.createdOrders.length }));
 
     sect('5. Rotate credential đổi generation, vô hiệu secret/job cũ');
     const staleFixture = await withIntegration(shop.shopId, active.id, active.generation, async (c) => {

@@ -587,7 +587,7 @@ async function main() {
     const retryPage = await admin('GET', base, { cookie });
     const retryFormPresent = retryPage.status === 200
       && new RegExp(`action="${base}/discrepancies/${attentionCase?.id ?? 'missing'}/retry"`).test(retryPage.body)
-      && /name="confirm_provider_absent" value="1" required/.test(retryPage.body)
+      && /<input type="checkbox" name="confirm_provider_absent" value="1" required/.test(retryPage.body)
       && !/data-confirm="Chỉ xác nhận sau khi/.test(retryPage.body);
     retryFormPresent
       ? ok('màn admin hiển thị checkbox xác nhận thật, không ký thay bằng hidden/JS')
@@ -625,6 +625,96 @@ async function main() {
     consumedAgain.status === 400 && /đã đóng|đã được sử dụng/i.test(consumedAgain.body)
       ? ok('nonce retry đã dùng không thể ký lại lần hai')
       : bad('retry đã dùng vẫn được chấp nhận', JSON.stringify({ status: consumedAgain.status, body: consumedAgain.body }));
+
+    // Retry thủ công đã tiêu thụ xác nhận của người vận hành trước khi gọi provider. Nếu
+    // provider lỗi trước khi tạo đơn, phải mở ca mới nhìn thấy được thay vì để đơn chờ vô hạn.
+    const retryFailureOrder = await withIntegration(shop.shopId, active.id, active.generation, async (c) => {
+      const number = (await c.query(
+        `INSERT INTO shop_counters (shop_id,name,value) VALUES (current_shop_id(),'order_number',1)
+         ON CONFLICT (shop_id,name) DO UPDATE SET value=shop_counters.value+1 RETURNING value`,
+      )).rows[0].value;
+      const order = (await c.query(
+        `INSERT INTO orders
+           (shop_id,order_number,status,payment_status,payment_method,customer_name,customer_phone,customer_email,
+            shipping_address,subtotal_vnd,shipping_vnd,total_vnd,source,integration_id,integration_generation,
+            external_branch_ref,sync_status,sync_updated_at)
+         VALUES (current_shop_id(),$1,'pending','unpaid','cod','Khách retry lỗi','0900000012','retry-failure@example.test',$2,
+                 45000,0,45000,'web',$3,$4,'7','pending',now()) RETURNING id`,
+        [number, { line: '1 Đường Retry', ward: 'Phường C', district: 'Quận D', province: 'TP.HCM' },
+          active.id, Number(active.generation)],
+      )).rows[0];
+      await c.query(
+        `INSERT INTO order_lines
+           (shop_id,order_id,variant_id,title_snapshot,sku_snapshot,unit_price_vnd,qty)
+         VALUES (current_shop_id(),$1,$2,'Áo POS','POS-501',45000,1)`, [order.id, variantId],
+      );
+      return order;
+    });
+    stub.orderFailures.push(429, 503);
+    await owner.query(
+      `INSERT INTO outbox (shop_id,topic,payload)
+       VALUES ($1,'integration.order_created',$2)`,
+      [shop.shopId, { integration_id: active.id, generation: Number(active.generation), order_id: retryFailureOrder.id }],
+    );
+    const initialRetryAttention = await waitFor(async () => {
+      const row = (await owner.query(
+        `SELECT sync_status,external_ref FROM orders WHERE id=$1`, [retryFailureOrder.id],
+      )).rows[0];
+      return row?.sync_status === 'needs_attention' ? row : null;
+    }, 30000);
+    const initialRetryIntent = (await owner.query(
+      `SELECT state FROM integration_order_send_intents WHERE order_id=$1`, [retryFailureOrder.id],
+    )).rows[0];
+    const initialRetryCase = (await owner.query(
+      `SELECT id,status FROM integration_sync_discrepancies
+        WHERE shop_id=$1 AND integration_id=$2 AND entity_type='order' AND local_id=$3
+        ORDER BY id DESC LIMIT 1`, [shop.shopId, active.id, retryFailureOrder.id],
+    )).rows[0];
+    const retryFailurePath = initialRetryCase?.id
+      ? `/shops/${shop.shopId}/integrations/discrepancies/${initialRetryCase.id}/retry` : null;
+    const attemptsBeforeRetryFailure = stub.orderAttempts.length;
+    const providerOrdersBeforeRetryFailure = stub.createdOrders.length;
+    stub.orderFailures.length = 0;
+    stub.orderFailures.push(503);
+    const retryFailureResponse = retryFailurePath
+      ? await admin('POST', retryFailurePath, { cookie, form: { confirm_provider_absent: '1' } })
+      : { status: 0, body: '' };
+    const retryFailureAttention = await waitFor(async () => {
+      const row = (await owner.query(
+        `SELECT sync_status,sync_error,external_ref FROM orders WHERE id=$1`, [retryFailureOrder.id],
+      )).rows[0];
+      return row?.sync_status === 'needs_attention' && row.sync_error ? row : null;
+    }, 30000);
+    const retryFailureIntent = (await owner.query(
+      `SELECT state,last_retry_discrepancy_id FROM integration_order_send_intents WHERE order_id=$1`,
+      [retryFailureOrder.id],
+    )).rows[0];
+    const retryFailureCases = (await owner.query(
+      `SELECT id,status FROM integration_sync_discrepancies
+        WHERE shop_id=$1 AND integration_id=$2 AND entity_type='order' AND local_id=$3 AND status='open'
+        ORDER BY id`, [shop.shopId, active.id, retryFailureOrder.id],
+    )).rows;
+    initialRetryAttention && initialRetryIntent?.state === 'needs_attention' && initialRetryCase?.id
+      && retryFailureResponse.status === 200 && retryFailureAttention?.external_ref == null
+      && retryFailureIntent?.state === 'needs_attention'
+      && retryFailureIntent.last_retry_discrepancy_id === initialRetryCase.id
+      && retryFailureCases.length === 1 && retryFailureCases[0].id !== initialRetryCase.id
+      && stub.orderAttempts.length === attemptsBeforeRetryFailure + 1
+      && stub.createdOrders.length === providerOrdersBeforeRetryFailure
+      ? ok('manual retry 503 trước khi provider tạo đơn → đơn vẫn cần xử lý, lỗi và ca mới hiện rõ')
+      : bad('manual retry lỗi đã rơi khỏi hàng đợi xử lý hoặc tạo đơn ngầm', JSON.stringify({
+        initialRetryAttention, initialRetryIntent, initialRetryCase, retryFailureResponse,
+        retryFailureAttention, retryFailureIntent, retryFailureCases,
+        attempts: stub.orderAttempts.length, attemptsBeforeRetryFailure,
+        providerOrders: stub.createdOrders.length, providerOrdersBeforeRetryFailure,
+      }));
+
+    // Fixture F11 đã kiểm xong. Đưa nó về trạng thái kết thúc trước ca POS proof để guard
+    // crash-gap toàn cục không bị chặn bởi một đơn web không liên quan.
+    await withIntegration(shop.shopId, active.id, active.generation, (c) => c.query(
+      `UPDATE orders SET status='cancelled', sync_status='not_required', sync_error=NULL, sync_updated_at=now()
+        WHERE id=$1`, [retryFailureOrder.id],
+    ));
 
     const crashGapReset = await withIntegration(shop.shopId, active.id, active.generation, async (c) => (await c.query(
       `UPDATE orders SET external_ref=NULL,sync_status='pending',sync_error=NULL,sync_updated_at=now()
@@ -1009,7 +1099,7 @@ async function main() {
         [shop.shopId, active.id],
       )).rows[0];
       return row?.source === 'kiotviet_pos' ? row : null;
-    }, 15000);
+    }, 30000);
     const posProofRef = (await owner.query(
       `SELECT local_id,mapping_status,raw_meta FROM integration_entity_refs
         WHERE shop_id=$1 AND integration_id=$2 AND entity_type='order' AND external_id='8204'`,

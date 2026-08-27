@@ -165,7 +165,7 @@ quên gác. Màn hình dùng SSR/form thường, không cần JavaScript và ph�
 - toàn bộ 9 bộ bất biến DB trên stack PostgreSQL: 144/144;
 - migration DB trắng: 180/180, 0 DRIFT, 0 pending.
 
-E2E connector hiện đã chạy 45/45 trên stack pilot. Full CI local trên working tree cuối đã chạy đủ 114
+E2E connector hiện đã chạy 46/46 trên stack pilot. Full CI local trên working tree cuối đã chạy đủ 114
 mục với 0 đỏ: 267 unit, 180 migration từ DB trắng, 144 bất biến DB, 107 E2E và 3 smoke.
 Đây là bằng chứng của mã nguồn/stack dev; nó không thay thế spike bằng credential KiotViet thật.
 

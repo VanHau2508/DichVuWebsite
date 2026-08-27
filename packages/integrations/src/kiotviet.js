@@ -157,6 +157,10 @@ export function createKiotVietClient({
     async findOrderByCode(code) {
       return request('GET', `/orders/code/${encodeURIComponent(text(code, 100))}`, { allowNotFound: true });
     },
+    async lookupOrderByCode(code) {
+      const order = await this.findOrderByCode(code);
+      return order ? { state: 'found', order } : { state: 'proven_absent' };
+    },
     async findOrderByMarker(marker, { lastModifiedFrom, maxPages = 50 } = {}) {
       const wanted = text(marker, 200);
       let currentItem = 0;
@@ -168,17 +172,18 @@ export function createKiotVietClient({
         } });
         const rows = Array.isArray(data.data) ? data.data : [];
         const found = rows.find((row) => String(row.description ?? row.Description ?? '').includes(wanted));
-        if (found) return found;
+        if (found) return { state: 'found', order: found };
         currentItem += rows.length;
-        if (rows.length < 100 || (Number(data.total) > 0 && currentItem >= Number(data.total))) return null;
+        if (rows.length < 100 || (Number(data.total) > 0 && currentItem >= Number(data.total))) {
+          // Offset pagination is mutable: a complete-looking response cannot prove absence
+          // while provider updates may reorder later pages.
+          return { state: 'inconclusive' };
+        }
       }
       // Không được biến "đã nhìn 5.000 đơn" thành "đơn chắc chắn chưa tồn tại". Provider có
       // thể đã tạo đơn rồi worker chết trước khi ghi external_ref; POST tiếp trong tình huống
       // chưa quét hết sẽ nhân đôi đơn và giữ tồn hai lần ở KiotViet.
-      throw new KiotVietError('Không thể xác minh đơn cũ vì tập kết quả KiotViet vượt giới hạn quét an toàn', {
-        status: 503,
-        code: 'order_lookup_incomplete',
-      });
+      return { state: 'inconclusive' };
     },
     async listOrders({ currentItem = 0, pageSize = 100, lastModifiedFrom = null, branchId = null } = {}) {
       const data = await request('GET', '/orders', { query: {

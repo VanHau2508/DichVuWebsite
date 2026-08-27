@@ -31,7 +31,7 @@ Ngắt kết nối không xoá mapping và không tự đổi quyền sở hữu
 tồn, sản phẩm liên kết tiếp tục bị khoá checkout cho tới khi có thao tác chuyển authority có
 kiểm soát.
 
-## Schema 0177–0180 và least privilege
+## Schema 0177–0181 và least privilege
 
 Migration `0177_kiotviet_integration_core.sql` thêm:
 
@@ -62,7 +62,19 @@ Migration `0180_external_order_refund_guard.sql` chặn lớp còn lại của c
 connector. Vì API hoàn tiền KiotViet chưa được xác minh bằng tài khoản thật, hệ thống trả
 fail-closed và yêu cầu hoàn ở provider; không tạo bút toán nền tảng rồi để hai sổ lệch nhau.
 
-Cả bốn bảng tenant đều `ENABLE + FORCE RLS`, FK tenant mang `shop_id`. Vai mới
+Migration `0181_kiotviet_claim_and_send_intent.sql` đóng hai cửa sổ cạnh tranh còn lại:
+
+- auto-sync catalog và map thủ công dùng cùng hàm sinh advisory key theo
+  `(integration_id, entity_type, local_id)`; mapping đang có luôn thắng, còn hai claim mới
+  cùng lượt đều thành conflict, không dùng thứ tự provider để phân xử;
+- đơn website ghi `send-intent` trong transaction đã commit trước network I/O. Sau một lần
+  thử, marker scan bằng offset chỉ được phép chứng minh có; nếu không có lookup chính xác thì
+  kết quả là `inconclusive` và đơn chuyển `needs_attention`, không POST mù lần hai.
+
+Checkout được cấp thêm đúng `SELECT(shop_id)` trên `shop_integrations` để trigger external
+inventory trả mã nghiệp vụ `PIV01` thay vì lỗi quyền thô `42501`.
+
+Cả năm bảng tenant đều `ENABLE + FORCE RLS`, FK tenant mang `shop_id`. Vai mới
 `app_integration` không có `BYPASSRLS`; endpoint webhook chỉ dùng SECURITY DEFINER để đổi
 `webhook_public_id` thành đúng hai UUID định tuyến, sau đó mọi dữ liệu nghiệp vụ vẫn đi qua
 transaction có `set_config('app.shop_id', ..., true)`.
@@ -103,10 +115,11 @@ lưu không được ghi đè dữ liệu mới.
 
 ### Website → KiotViet
 
-Đơn website ghi `sync_status='pending'` và outbox trong cùng giao dịch. Worker khoá dòng đơn
-`FOR UPDATE` xuyên suốt lần gửi, tìm marker deterministic trước khi POST và chỉ gửi khi đã
-chứng minh chưa có đơn cũ. Phép quét tối đa 50 trang mà chưa hết kết quả phải fail-closed với
-`order_lookup_incomplete`, không được hiểu thành “không có đơn”.
+Đơn website ghi `sync_status='pending'` và outbox trong cùng giao dịch. Worker ghi một
+`send-intent` rồi commit trước khi gọi mạng. Lần POST đầu được phép đi qua bằng chứng đó; sau
+một lần thử, marker deterministic chỉ được dùng để chứng minh provider đã nhận. Offset scan
+không tìm thấy không chứng minh vắng mặt: nếu không có lookup chính xác trả
+`proven_absent`, đơn chuyển `needs_attention` và không POST mù lần hai.
 
 Payload mang dòng hàng đã mapping, khách, `orderDelivery.receiver/contactNumber/address/price`,
 phương thức và số tiền đã thu. Trong pilot hiện tại, đơn external-master chỉ nhận COD; QR,
@@ -138,14 +151,14 @@ quên gác. Màn hình dùng SSR/form thường, không cần JavaScript và ph�
 
 ## Bằng chứng kiểm thử
 
-- unit theo manifest: 263/263;
+- unit theo manifest: 266/266;
 - adapter KiotViet: 8/8;
 - checkout policy KiotViet: 7/7;
-- toàn bộ 9 bộ bất biến DB trên stack PostgreSQL: 140/140;
-- migration DB trắng: 178/178, 0 DRIFT, 0 pending.
+- toàn bộ 9 bộ bất biến DB trên stack PostgreSQL: 143/143;
+- migration DB trắng: 179/179, 0 DRIFT, 0 pending.
 
-E2E connector hiện đã chạy 38/38 trên stack pilot. Full CI local tại `adb5c5d` đã chạy đủ 114
-mục với 0 đỏ: 263 unit, 178 migration từ DB trắng, 140 bất biến DB, 107 E2E và 3 smoke.
+E2E connector hiện đã chạy 38/38 trên stack pilot. Full CI local trên working tree cuối đã chạy đủ 114
+mục với 0 đỏ: 266 unit, 179 migration từ DB trắng, 143 bất biến DB, 107 E2E và 3 smoke.
 Đây là bằng chứng của mã nguồn/stack dev; nó không thay thế spike bằng credential KiotViet thật.
 
 E2E đã đột biến các điểm dễ xanh giả: webhook trùng, ignore mapping qua reconciliation, hai

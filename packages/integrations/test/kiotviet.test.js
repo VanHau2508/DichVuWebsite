@@ -61,7 +61,8 @@ test('client dùng OAuth, header retailer và tìm đơn theo code trước khi 
   assert.deepEqual(await client.listBranches(), [{ id: '7', name: 'Chi nhánh chính', address: null }]);
   assert.equal((await client.findOrderByCode('KV-12')).id, 91);
   assert.equal(await client.findOrderByCode('KHONG-CO'), null);
-  assert.equal((await client.findOrderByMarker('[NTG:ABC:12]', { lastModifiedFrom: '2026-01-01' })).id, 91);
+  assert.equal((await client.findOrderByMarker('[NTG:ABC:12]', { lastModifiedFrom: '2026-01-01' })).state, 'found');
+  assert.equal((await client.findOrderByMarker('[NTG:ABC:12]', { lastModifiedFrom: '2026-01-01' })).order.id, 91);
   assert.deepEqual(await client.listOrders({ currentItem: 20, pageSize: 25, lastModifiedFrom: '2026-01-02', branchId: 7 }), {
     rows: [{ id: 92, status: 2 }], total: 37,
   });
@@ -115,12 +116,11 @@ test('snapshot connector fail-closed khi tồn không phủ reservation hoặc e
   assert.equal(isStaleKiotVietSnapshot(null, '2026-01-02T00:00:00Z'), true);
 });
 
-test('không POST lại khi chưa quét hết tập đơn có thể chứa marker', async () => {
+test('marker scan không bao giờ tự kết luận absence từ offset pagination', async () => {
   const client = createKiotVietClient({ clientId: 'cid', clientSecret: 'secret', retailer: 'shop-a', identityBase: base, apiBase: base });
-  await assert.rejects(
-    client.findOrderByMarker('[NTG:KHONG-CO:99]', { lastModifiedFrom: 'full-scan', maxPages: 2 }),
-    (error) => error?.code === 'order_lookup_incomplete' && error?.statusCode === 503,
-  );
+  const lookup = await client.findOrderByMarker('[NTG:KHONG-CO:99]', { lastModifiedFrom: 'full-scan', maxPages: 2 });
+  assert.equal(lookup.state, 'inconclusive');
+  assert.equal((await client.lookupOrderByCode('KHONG-CO')).state, 'proven_absent');
 });
 
 test('chữ ký webhook đúng thân byte; đổi một byte phải đỏ', () => {

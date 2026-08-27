@@ -15,10 +15,12 @@ import { randomUUID } from 'node:crypto';
 import {
   rw,
   integration,
+  checkout,
   expiry,
   owner,
   withTenant,
   withIntegrationTenant,
+  withCheckoutTenant,
   seedTwoShops,
   cleanupShops,
   sqlstateOf,
@@ -258,6 +260,16 @@ describe('CONNECTOR POS — cùng external id vẫn cô lập theo shop', () => 
     for (const [table, ids] of Object.entries(rows)) {
       assert.deepEqual(ids, [A.id], `${table} không được lộ shop B`);
     }
+  });
+
+  test('app_checkout nhận PIV01 khi cố ghi on_hand external-master, không lộ 42501', async () => {
+    const code = await sqlstateOf(() => withCheckoutTenant(A.id, (c) => c.query(
+      `UPDATE inventory_levels SET on_hand = on_hand + 1 WHERE variant_id = $1`, [A.variantId],
+    )));
+    assert.equal(code, 'PIV01');
+    const { rows: [grant] } = await owner.query(`
+      SELECT has_column_privilege('app_checkout','shop_integrations','shop_id','SELECT') AS can_read`);
+    assert.equal(grant.can_read, true);
   });
 
   test('UPDATE theo UUID của connector shop B chạm 0 dòng', async () => {

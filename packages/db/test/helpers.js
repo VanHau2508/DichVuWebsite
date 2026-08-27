@@ -5,9 +5,10 @@ export const rw = new pg.Pool({ connectionString: process.env.DATABASE_URL_RW, m
 export const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 3 });
 export const integration = new pg.Pool({ connectionString: process.env.DATABASE_URL_INTEGRATION, max: 3 });
 export const expiry = new pg.Pool({ connectionString: process.env.DATABASE_URL_EXPIRY, max: 2 });
+export const checkout = new pg.Pool({ connectionString: process.env.DATABASE_URL_CHECKOUT, max: 2 });
 
 export async function closeAll() {
-  await Promise.all([rw.end(), owner.end(), integration.end(), expiry.end()]);
+  await Promise.all([rw.end(), owner.end(), integration.end(), expiry.end(), checkout.end()]);
 }
 
 /**
@@ -55,6 +56,20 @@ export async function withIntegrationTenant(shopId, fn) {
   } finally {
     client.release();
   }
+}
+
+export async function withCheckoutTenant(shopId, fn) {
+  const client = await checkout.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT set_config('app.shop_id', $1, true)`, [shopId]);
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally { client.release(); }
 }
 
 /** Bắt SQLSTATE thay vì so khớp chuỗi thông báo — thông báo đổi theo phiên bản. */
@@ -142,6 +157,7 @@ export async function cleanupShops(shops) {
     // the superuser may disable triggers transaction-locally instead of weakening them.
     await c.query('SET LOCAL session_replication_role = replica');
     for (const table of [
+      'integration_order_send_intents',
       'integration_webhook_inbox',
       'integration_entity_refs',
       'integration_sync_discrepancies',

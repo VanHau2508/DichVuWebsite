@@ -63,7 +63,7 @@ e2e). Chỉ được nói "xanh" khi lệnh đầy đủ `exit 0`. Danh sách te
 đám mây và CI máy: `scripts/test-manifest.sh` — thêm/bớt bộ test thì phải sửa con số trong đó
 cùng commit, nếu không cổng đỏ.
 
-Hôm nay: **35 bộ unit · 106 bộ e2e · 9 bộ DB (115 test theo tổng kết TAP) · 3 smoke.**
+Hôm nay: **40 bộ unit · 107 bộ e2e · 9 bộ DB (143 test theo tổng kết TAP) · 3 smoke.**
 
 ---
 
@@ -108,8 +108,8 @@ quyết định bảo mật — đừng nới cho tiện.
   "tôi không viết GRANT" ≠ "vai đó không có quyền". Bảng mới không dành cho tenant thì phải
   `REVOKE ALL … FROM app_rw` **và** thêm policy chặn.
 - **Migration là BẤT BIẾN.** Runner băm nội dung; sửa file cũ → `DRIFT` → cổng đỏ. Sửa gì cũng
-  bằng file mới. Hiện có **166 tệp**, mới nhất `0172`.
-- **Cổng DB** (`packages/db/test/`, 9 tệp, 115 test theo tổng kết TAP) canh RLS, composite FK,
+  bằng file mới. Hiện có **179 tệp**, mới nhất `0181`.
+- **Cổng DB** (`packages/db/test/`, 9 tệp, 143 test theo tổng kết TAP) canh RLS, composite FK,
   least-privilege, cô lập tenant và các hàng rào nghiệp vụ mới cho go-live, thông báo, yêu cầu
   hậu mãi/RMA.
 
@@ -203,7 +203,7 @@ cư từ sàn khác (CSV + ảnh theo URL).
 shop tự trả tiền thuê bao + ân hạn + khoá · kênh hỗ trợ hai chiều · backup mã hoá + PITR ·
 giám sát + cảnh báo đường tiền · đo luồng dùng tính năng.
 
-**Chất lượng:** 106 bộ e2e, hàng nghìn khẳng định; kiểm toán tấn công 0 crit/0 high; nhiều đợt
+**Chất lượng:** 107 bộ e2e, hàng nghìn khẳng định; kiểm toán tấn công 0 crit/0 high; nhiều đợt
 săn "lỗi hợp thành" đã vá hàng chục lỗ tiền/kho/quyền.
 
 ---

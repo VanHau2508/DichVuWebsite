@@ -25,10 +25,10 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 |---|---:|---|
 | dòng mã ứng dụng | ~46.400 | `apps/*/src/*.js` |
 | dòng test | ~35.100 | `apps/*/test/*.{js,mjs}` |
-| migration | 178 tệp, mới nhất `0180` | `packages/db/migrations/` |
-| bộ unit | 39 | `MANIFEST_UNIT_COUNT` |
+| migration | 179 tệp, mới nhất `0181` | `packages/db/migrations/` |
+| bộ unit | 40 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 107 | `MANIFEST_E2E_COUNT` |
-| bất biến DB | 9 bộ, 140 test TAP | `packages/db/test/*.test.js` |
+| bất biến DB | 9 bộ, 143 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 81 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,76 — cao có chủ ý, xem §4.
@@ -75,7 +75,7 @@ với GitHub CI. Nó tự dựng PostgreSQL trắng trong project Compose riêng
 chạy đúng runner production **không seed**, rồi so ba chiều: số file = `MANIFEST_MIGRATION_COUNT`
 = số dòng thật trong `schema_migrations`, kèm 0 DRIFT / 0 pending. Tự dọn bằng `trap` ở mọi đường
 thoát, kể cả Ctrl-C. **Không chạm DB dev.** Thêm migration thì sửa `MANIFEST_MIGRATION_COUNT`
-trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 178 file / số cao nhất 0180).
+trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 179 file / số cao nhất 0181).
 
 Hook `scripts/hooks/pre-push` chạy `--fast` và **chặn push khi đỏ**. Cài một lần cho mỗi bản
 clone: `git config core.hooksPath scripts/hooks`.
@@ -219,7 +219,7 @@ Những lỗi này **không nằm ở sản phẩm mà ở cách kiểm chứng*
   MỘT `.map()` — chốt đòi "≥7 link" sẽ đỏ dù mã đúng.
 - **Mọi bộ e2e đều đăng nhập bằng `owner`** — vai có sẵn mọi quyền. Nghĩa là NHÁNH THIẾU
   QUYỀN của giao diện gần như chưa từng được đi qua: vai `catalog_manager` gặp trang lỗi ngay
-  sau khi đăng nhập suốt một thời gian dài mà 106 bộ e2e vẫn xanh. Đụng tới quyền thì phải
+  sau khi đăng nhập suốt một thời gian dài mà 107 bộ e2e vẫn xanh. Đụng tới quyền thì phải
   `addMember(staff, shopId, '<vai>')` rồi đăng nhập lại bằng vai đó, không suy từ bảng quyền.
 - **Sửa `src` xong mà quên `restart` container ⇒ ĐỎ GIẢ trông y hệt lỗi sản phẩm.** `src` của
   các service (trừ worker) có bind-mount nên tệp trên đĩa đổi ngay, **nhưng tiến trình Node đã
@@ -452,11 +452,13 @@ variant, cursor order/invoice độc lập, webhook collision/dead-letter, advis
 vai `SECURITY DEFINER` NOLOGIN để checkout không phải đọc trực tiếp connector dưới FORCE RLS,
 đồng thời giữ actor bằng `session_user` và chặn gán customer chéo shop khi ẩn danh. Migration
 `0180` chặn ghi refund cục bộ cho đơn POS ngoài cho tới khi API hoàn tiền provider được xác minh.
+Migration `0181` dùng một advisory-key chuẩn cho claim catalog và ghi send-intent đã commit trước
+network I/O, để retry mơ hồ dừng ở `needs_attention` thay vì POST đơn lần hai.
 Invoice chưa xác định được nguồn phải nằm ở `order_identity_pending`, chưa ghi doanh thu. Phạm vi hiện tại chỉ
 đủ cho pilot 1–3 shop; chưa có bằng chứng để tuyên bố tải 9.358 shop.
 
-Nhánh thi công: `codex/kiotviet-integration-core`. Full `scripts/ci-local.sh` đã exit 0 tại
-`adb5c5d`; chỉ merge sau review độc lập. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn,
+Nhánh thi công: `codex/kiotviet-integration-core`. Full `scripts/ci-local.sh` đã exit 0 trên
+working tree cuối của lát cắt; chỉ merge sau review độc lập. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn,
 không bị huỷ.
 
 Nguyên nhân tràn ngang của trang **Tồn an toàn** đã được vá trên nhánh connector: con trực tiếp

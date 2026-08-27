@@ -351,6 +351,13 @@ async function mapEntity(res, ctx, body, params) {
     const table = ref.entity_type === 'product' ? 'products' : 'variants';
     const exists = (await c.query(`SELECT id FROM ${table} WHERE id = $1`, [localId])).rowCount === 1;
     if (!exists) return { missing: true };
+    // Keep manual mapping on the same advisory key as automatic catalog sync. The row
+    // unique index is only the last line of defence; the shared lock turns a race into a
+    // deterministic 409 instead of a transaction-wide 23505 rollback.
+    await c.query(
+      `SELECT pg_advisory_xact_lock(kiotviet_entity_claim_lock_key($1, $2, $3))`,
+      [ref.integration_id, ref.entity_type, localId],
+    );
     const occupied = (await c.query(
       `SELECT external_id FROM integration_entity_refs
         WHERE integration_id = $1 AND entity_type = $2 AND local_id = $3

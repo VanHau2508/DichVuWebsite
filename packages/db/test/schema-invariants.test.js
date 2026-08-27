@@ -883,9 +883,50 @@ describe('Composite foreign key', () => {
   });
 });
 
-describe('Connector POS ngoài (0177–0178) — quyền hẹp, generation và fail-closed', () => {
-  const TABLES = ['shop_integrations', 'integration_webhook_inbox', 'integration_entity_refs', 'integration_sync_discrepancies'];
+describe('Connector POS ngoài (0177–0181) — quyền hẹp, claim và fail-closed', () => {
+  const TABLES = ['shop_integrations', 'integration_webhook_inbox', 'integration_entity_refs',
+    'integration_sync_discrepancies', 'integration_order_send_intents'];
   const MIGRATION_0178 = readFileSync(new URL('../migrations/0178_kiotviet_connector_hardening.sql', import.meta.url), 'utf8');
+  const MIGRATION_0181 = readFileSync(new URL('../migrations/0181_kiotviet_claim_and_send_intent.sql', import.meta.url), 'utf8');
+
+  test('claim lock dùng một hàm SQL chung và checkout chỉ đọc shop_id', async () => {
+    assert.match(MIGRATION_0181, /CREATE FUNCTION kiotviet_entity_claim_lock_key\(/);
+    assert.match(MIGRATION_0181, /kiotviet:entity-claim:/);
+    const { rows: [grant] } = await owner.query(`
+      SELECT has_column_privilege('app_checkout','shop_integrations','shop_id','SELECT') AS can_read`);
+    assert.equal(grant.can_read, true);
+    const { rows: [fn] } = await owner.query(`
+      SELECT has_function_privilege('app_integration','kiotviet_entity_claim_lock_key(uuid,text,uuid)','EXECUTE') AS can_exec`);
+    assert.equal(fn.can_exec, true);
+  });
+
+  test('send-intent chỉ cho worker ghi; seller chỉ được xem hàng đợi của tenant', async () => {
+    const { rows: [rw] } = await owner.query(`
+      SELECT has_table_privilege('app_rw','integration_order_send_intents','SELECT') AS sel,
+             has_table_privilege('app_rw','integration_order_send_intents','INSERT') AS ins,
+             has_table_privilege('app_rw','integration_order_send_intents','UPDATE') AS upd,
+             has_table_privilege('app_rw','integration_order_send_intents','DELETE') AS del`);
+    assert.deepEqual(rw, { sel: true, ins: false, upd: false, del: false });
+    const { rows: [worker] } = await owner.query(`
+      SELECT has_table_privilege('app_integration','integration_order_send_intents','SELECT') AS sel,
+             has_table_privilege('app_integration','integration_order_send_intents','INSERT') AS ins,
+             has_table_privilege('app_integration','integration_order_send_intents','UPDATE') AS upd,
+             has_table_privilege('app_integration','integration_order_send_intents','DELETE') AS del`);
+    assert.deepEqual(worker, { sel: true, ins: true, upd: true, del: false });
+    const { rows: policies } = await owner.query(`
+      SELECT policyname, cmd, roles::text[] AS roles,
+             regexp_replace(coalesce(qual, ''), '[()[:space:]]', '', 'g') AS using_expr,
+             regexp_replace(coalesce(with_check, ''), '[()[:space:]]', '', 'g') AS check_expr
+        FROM pg_policies
+       WHERE tablename = 'integration_order_send_intents'
+       ORDER BY policyname`);
+    assert.deepEqual(policies.map((p) =>
+      `${p.policyname}|${p.cmd}|${p.roles.join(',')}|${p.using_expr}|${p.check_expr}`), [
+      'send_intent_guard|SELECT|app_integration_guard|true|',
+      'send_intent_integration|ALL|app_integration|shop_id=current_shop_id|shop_id=current_shop_id',
+      'send_intent_rw_select|SELECT|app_rw|shop_id=current_shop_id|',
+    ]);
+  });
 
   test('backfill 0178 mở cả SELECT nguồn dưới FORCE RLS rồi thu hồi policy tạm', () => {
     const policies = [
@@ -905,14 +946,15 @@ describe('Connector POS ngoài (0177–0178) — quyền hẹp, generation và f
     }
   });
 
-  test('bốn bảng connector đều ENABLE + FORCE RLS', async () => {
+  test('năm bảng connector đều ENABLE + FORCE RLS', async () => {
     const { rows } = await owner.query(`
       SELECT relname, relrowsecurity, relforcerowsecurity
         FROM pg_class
        WHERE relname = ANY($1::text[]) ORDER BY relname`, [TABLES]);
-    assert.equal(rows.length, 4);
+    assert.equal(rows.length, 5);
     assert.deepEqual(rows.map((r) => [r.relname, r.relrowsecurity, r.relforcerowsecurity]), [
       ['integration_entity_refs', true, true],
+      ['integration_order_send_intents', true, true],
       ['integration_sync_discrepancies', true, true],
       ['integration_webhook_inbox', true, true],
       ['shop_integrations', true, true],
@@ -931,6 +973,9 @@ describe('Connector POS ngoài (0177–0178) — quyền hẹp, generation và f
       'integration_entity_refs|integration_guard_refs|ALL|app_integration_guard',
       'integration_entity_refs|integration_refs|ALL|app_integration',
       'integration_entity_refs|tenant_isolation|ALL|app_rw',
+      'integration_order_send_intents|send_intent_guard|SELECT|app_integration_guard',
+      'integration_order_send_intents|send_intent_integration|ALL|app_integration',
+      'integration_order_send_intents|send_intent_rw_select|SELECT|app_rw',
       'integration_sync_discrepancies|integration_discrepancies|ALL|app_integration',
       'integration_sync_discrepancies|tenant_isolation|ALL|app_rw',
       'integration_webhook_inbox|integration_guard_inbox|ALL|app_integration_guard',
@@ -950,18 +995,21 @@ describe('Connector POS ngoài (0177–0178) — quyền hẹp, generation và f
         shop_integrations: [true, true, true, true],
         integration_webhook_inbox: [true, false, false, false],
         integration_entity_refs: [true, true, true, true],
+        integration_order_send_intents: [true, false, false, false],
         integration_sync_discrepancies: [true, false, true, false],
       },
       app_integration: {
         shop_integrations: [true, false, true, false],
         integration_webhook_inbox: [true, true, true, false],
         integration_entity_refs: [true, true, true, false],
+        integration_order_send_intents: [true, true, true, false],
         integration_sync_discrepancies: [true, true, true, false],
       },
       app_integration_guard: {
         shop_integrations: [true, false, true, false],
         integration_webhook_inbox: [true, false, true, false],
         integration_entity_refs: [true, false, true, false],
+        integration_order_send_intents: [true, false, false, false],
         integration_sync_discrepancies: [false, false, false, false],
       },
     };
@@ -1021,7 +1069,7 @@ describe('Connector POS ngoài (0177–0178) — quyền hẹp, generation và f
   });
 
   test('checkout chỉ đọc độ tươi tồn, không đọc credential hay secret webhook', async () => {
-    const allowed = ['id', 'provider', 'status', 'inventory_authority', 'external_branch_ref',
+    const allowed = ['id', 'shop_id', 'provider', 'status', 'inventory_authority', 'external_branch_ref',
       'inventory_synced_at', 'generation', 'capabilities'];
     const { rows } = await owner.query(`
       SELECT column_name, has_column_privilege('app_checkout','shop_integrations',column_name,'SELECT') AS can_read

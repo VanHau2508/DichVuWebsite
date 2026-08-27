@@ -33,6 +33,7 @@ MANIFEST_UNIT_FILES=(
   packages/customer-input/test/phone.test.js
   apps/seller/test/import-amount.test.js
   apps/seller/test/adapter-tiktok.test.js
+  apps/seller/test/kiotviet-claim.test.js
   apps/seller/test/html-to-text.test.js
   apps/seller/test/xlsx-read.test.js
   apps/seller/test/xlsx-guard.test.js
@@ -119,13 +120,13 @@ MANIFEST_UNIT_FILES=(
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=39
+MANIFEST_UNIT_COUNT=40
 MANIFEST_E2E_COUNT=107
 # Số FILE migration, KHÔNG phải số thứ tự cao nhất. Dãy có khoảng trống (0157 chẳng hạn)
-# nên hôm nay là 178 file trong khi file mới nhất mang số 0180 — suy số lượng từ số thứ tự
+# nên hôm nay là 179 file trong khi file mới nhất mang số 0181 — suy số lượng từ số thứ tự
 # là sai ngay từ hôm nay. scripts/fresh-migration-gate.sh so BẰNG với con số này, và so
 # thêm với số dòng thực trong schema_migrations của một DB TRẮNG.
-MANIFEST_MIGRATION_COUNT=178
+MANIFEST_MIGRATION_COUNT=179
 
 manifest_unit_files() {
   shopt -s nullglob

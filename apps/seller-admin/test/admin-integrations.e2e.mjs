@@ -139,6 +139,14 @@ function startKiotVietStub() {
       res.statusCode = 404;
       return res.end(JSON.stringify({ message: 'không tìm thấy sản phẩm' }));
     }
+    const orderByCode = /^\/orders\/code\/([^/?]+)$/.exec(req.url ?? '');
+    if (orderByCode && req.method === 'GET') {
+      const code = decodeURIComponent(orderByCode[1]);
+      const row = createdOrders.find((order) => String(order.Code ?? order.code ?? '') === code);
+      if (row) return res.end(JSON.stringify(row));
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ message: 'không tìm thấy đơn' }));
+    }
     if (req.url?.startsWith('/orders?') && req.method === 'GET') {
       const query = new URL(req.url, 'http://kiotviet.stub').searchParams;
       const after = Date.parse(query.get('lastModifiedFrom') ?? '');
@@ -507,21 +515,41 @@ async function main() {
        VALUES ($1,'integration.order_created',$2)`,
       [shop.shopId, { integration_id: active.id, generation: Number(active.generation), order_id: outbound.id }],
     );
+    const attentionOutbound = await waitFor(async () => {
+      const row = (await owner.query(`SELECT sync_status,external_ref FROM orders WHERE id=$1`, [outbound.id])).rows[0];
+      return row?.sync_status === 'needs_attention' ? row : null;
+    }, 30000);
+    const attentionIntent = (await owner.query(
+      `SELECT state,lookup_state FROM integration_order_send_intents WHERE order_id=$1`, [outbound.id],
+    )).rows[0];
+    await sleep(1000);
+    attentionOutbound && attentionIntent?.state === 'needs_attention'
+      && attentionIntent.lookup_state === 'inconclusive' && stub.createdOrders.length === 0
+      && stub.orderAttempts.length === 1
+      ? ok('provider trả lỗi sau send-intent → không retry mù, mở ca cần xử lý thay vì đoán absence')
+      : bad('retry mơ hồ đã tạo đơn trùng hoặc không mở ca', JSON.stringify({ attentionOutbound, attentionIntent, attempts: stub.orderAttempts.length, count: stub.createdOrders.length }));
+
+    await withIntegration(shop.shopId, active.id, active.generation, (c) => c.query(
+      `UPDATE integration_order_send_intents
+          SET state='prepared', attempt_started_at=NULL, lookup_state='unknown', last_error=NULL, updated_at=now()
+        WHERE order_id=$1 AND state='needs_attention'`, [outbound.id],
+    ));
+    const crashGapReset = await withIntegration(shop.shopId, active.id, active.generation, async (c) => (await c.query(
+      `UPDATE orders SET external_ref=NULL,sync_status='pending',sync_error=NULL,sync_updated_at=now()
+        WHERE id=$1 AND integration_generation=$2
+        RETURNING external_ref,sync_status`, [outbound.id, Number(active.generation)],
+    )).rows[0]);
+    stub.orderFailures.length = 0;
+    await owner.query(
+      `INSERT INTO outbox (shop_id,topic,payload)
+       VALUES ($1,'integration.order_created',$2)`,
+      [shop.shopId, { integration_id: active.id, generation: Number(active.generation), order_id: outbound.id }],
+    );
     const syncedOutbound = await waitFor(async () => {
       const row = (await owner.query(`SELECT sync_status,external_ref FROM orders WHERE id=$1`, [outbound.id])).rows[0];
-      return row?.sync_status === 'synced' ? row : null;
-    }, 30000);
-    await sleep(1000);
-    const sentOrder = stub.createdOrders[0];
-    syncedOutbound && stub.createdOrders.length === 1
-      && stub.orderAttempts.length >= 3
-      && sentOrder?.orderDelivery?.receiver === 'Nguyễn Khách'
-      && sentOrder?.orderDelivery?.contactNumber === '0900000000'
-      && sentOrder?.orderDelivery?.address === '1 Đường A, Phường B, Quận C, TP.HCM'
-      && Number(sentOrder?.orderDelivery?.price) === 30000
-      ? ok('429 + 503 được retry, cuối cùng chỉ tạo một đơn KiotViet với đủ dữ liệu giao hàng')
-      : bad('retry gửi đơn bị trùng hoặc thiếu orderDelivery', JSON.stringify({ syncedOutbound, attempts: stub.orderAttempts.length, count: stub.createdOrders.length, sentOrder }));
-
+      return row?.sync_status === 'synced' && row.external_ref ? row : null;
+    }, 20000);
+    const firstExternalRef = syncedOutbound?.external_ref;
     await withIntegration(shop.shopId, active.id, active.generation, (c) => c.query(
       `UPDATE orders SET external_ref=NULL,sync_status='pending',sync_error=NULL,sync_updated_at=now()
         WHERE id=$1 AND integration_generation=$2`, [outbound.id, Number(active.generation)],
@@ -535,9 +563,15 @@ async function main() {
       const row = (await owner.query(`SELECT sync_status,external_ref FROM orders WHERE id=$1`, [outbound.id])).rows[0];
       return row?.sync_status === 'synced' && row.external_ref ? row : null;
     }, 20000);
-    recoveredOutbound?.external_ref === syncedOutbound.external_ref && stub.createdOrders.length === 1
-      ? ok('mất mapping sau khi provider đã tạo → quét marker phục hồi, không POST đơn thứ hai')
-      : bad('cửa sổ provider-success/DB-missing đã nhân đôi đơn', JSON.stringify({ recoveredOutbound, syncedOutbound, count: stub.createdOrders.length }));
+    const sentOrder = stub.createdOrders[0];
+    crashGapReset?.external_ref == null && crashGapReset?.sync_status === 'pending'
+      && firstExternalRef && recoveredOutbound?.external_ref === firstExternalRef && stub.createdOrders.length === 1
+      && sentOrder?.orderDelivery?.receiver === 'Nguyễn Khách'
+      && sentOrder?.orderDelivery?.contactNumber === '0900000000'
+      && sentOrder?.orderDelivery?.address === '1 Đường A, Phường B, Quận C, TP.HCM'
+      && Number(sentOrder?.orderDelivery?.price) === 30000
+       ? ok('mất mapping sau khi provider đã tạo → lookup chính xác phục hồi, không POST đơn thứ hai')
+      : bad('cửa sổ provider-success/DB-missing đã nhân đôi đơn', JSON.stringify({ crashGapReset, recoveredOutbound, syncedOutbound, count: stub.createdOrders.length }));
 
     const invoicePayload = (eventId, invoiceId, status, extra = {}) => ({
       Id: eventId, Notifications: [{ Action: 'update', Data: [{

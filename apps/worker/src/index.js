@@ -1013,6 +1013,15 @@ async function upsertDiscrepancy(c, integrationId, { kind, severity = 'warning',
   );
 }
 
+// Auto-sync and manual mapping must serialize claims for the same local variant.
+// The SQL function is the single source of truth for the advisory-lock key.
+async function lockKiotVietEntityClaim(c, integrationId, entityType, localId) {
+  await c.query(
+    `SELECT pg_advisory_xact_lock(kiotviet_entity_claim_lock_key($1, $2, $3))`,
+    [integrationId, entityType, localId],
+  );
+}
+
 async function applyProjectedStock(c, integrationId, variantId, externalRef, providerOnHand) {
   // INSERT trước rồi mới khoá: hai webhook đầu tiên cho cùng biến thể có thể chạy đồng thời.
   // SELECT-không-thấy rồi cùng INSERT sẽ làm một job vỡ unique và bỏ cả lô webhook.
@@ -1083,6 +1092,12 @@ async function applyProviderVariantFields(c, integrationId, refId, variantId, ex
               inventory_generation = NULL, updated_at = now()
         WHERE id = $1`, [refId],
     );
+    // Không để bản chiếu cũ tiếp tục cung cấp external_id cho đường gửi đơn sau khi
+    // SKU/barcode đã trở nên mơ hồ. Mapping conflict phải khóa cả catalog lẫn outbound.
+    await c.query(
+      `DELETE FROM product_source_refs
+        WHERE source = 'kiotviet' AND kind = 'variant' AND external_id = $1`, [externalId],
+    );
     await upsertDiscrepancy(c, integrationId, {
       kind: barcode && collision.barcode === barcode ? 'duplicate_barcode' : 'duplicate_sku',
       severity: 'critical', dedupeKey: `catalog-field:${externalId}`,
@@ -1112,7 +1127,12 @@ async function applyKiotVietProducts(shopId, integration, rows) {
   return withIntegrationTenant(shopId, async (c) => {
     const lifecycle = await lockIntegrationGeneration(c, integration.id, integration.generation);
     let unresolved = 0;
-    for (const row of rows) {
+    // Resolve all claims before writing any mapping. This makes two previously-unmapped
+    // provider rows targeting one variant a conflict as a group instead of "first row wins".
+    const plans = [];
+    const sortedRows = [...rows].sort((a, b) => asId(a.id ?? a.Id ?? a.productId ?? a.ProductId)
+      .localeCompare(asId(b.id ?? b.Id ?? b.productId ?? b.ProductId)));
+    for (const row of sortedRows) {
       const externalId = asId(row.id ?? row.Id ?? row.productId ?? row.ProductId);
       if (!externalId) continue;
       const sku = String(row.code ?? row.Code ?? '').trim();
@@ -1125,6 +1145,59 @@ async function applyKiotVietProducts(shopId, integration, rows) {
       )).rows[0];
       if (modifiedAt && existing?.external_updated_at
         && modifiedAt < new Date(existing.external_updated_at)) continue;
+      if (existing?.mapping_status === 'ignored') {
+        plans.push({ row, externalId, sku, barcode, modifiedAt, existing,
+          pinned: null, unique: [], local: null, claim: null, owner: null });
+        continue;
+      }
+      const pinned = (await c.query(
+        `SELECT v.id, v.product_id
+           FROM integration_entity_refs r JOIN variants v ON v.id = r.local_id
+          WHERE r.integration_id = $1 AND r.entity_type = 'variant' AND r.external_id = $2
+            AND r.mapping_status = 'mapped'`, [integration.id, externalId],
+      )).rows[0];
+      const candidates = pinned ? [pinned] : (await c.query(
+        `SELECT id, product_id FROM variants
+          WHERE ($1 <> '' AND sku = $1) OR ($2 <> '' AND barcode = $2)
+          ORDER BY id`, [sku, barcode],
+      )).rows;
+      const unique = [...new Map(candidates.map((it) => [it.id, it])).values()];
+      const local = unique[0] ?? null;
+      let claim = unique.length === 1 && local ? 'new' : null;
+      let owner = null;
+      if (claim === 'new') {
+        await lockKiotVietEntityClaim(c, integration.id, 'variant', local.id);
+        owner = (await c.query(
+          `SELECT external_id FROM integration_entity_refs
+             WHERE integration_id = $1 AND entity_type = 'variant' AND local_id = $2
+               AND mapping_status = 'mapped'
+             LIMIT 1`, [integration.id, local.id],
+        )).rows[0] ?? null;
+        if (owner && owner.external_id !== externalId) claim = 'occupied';
+        if (owner && owner.external_id === externalId) claim = 'existing';
+      }
+      plans.push({ row, externalId, sku, barcode, modifiedAt, existing, pinned, unique, local, claim, owner });
+    }
+    const newClaims = new Map();
+    for (const plan of plans) {
+      if (plan.claim !== 'new') continue;
+      const key = String(plan.local.id);
+      const list = newClaims.get(key) ?? [];
+      list.push(plan);
+      newClaims.set(key, list);
+    }
+    for (const list of newClaims.values()) {
+      if (list.length > 1) {
+        const externalIds = list.map((plan) => plan.externalId);
+        for (const plan of list) {
+          plan.claim = 'batch_conflict';
+          plan.batchExternalIds = externalIds;
+        }
+      }
+    }
+
+    for (const plan of plans) {
+      const { row, externalId, sku, barcode, modifiedAt, existing, pinned, unique, local } = plan;
       if (existing?.mapping_status === 'ignored') {
         // "Không bán trên website" là quyết định vận hành bền vững, không phải lỗi ánh xạ
         // tạm thời. Đồng bộ sau chỉ làm mới metadata; không được tự biến nó lại thành unmapped.
@@ -1145,23 +1218,12 @@ async function applyKiotVietProducts(shopId, integration, rows) {
         );
         continue;
       }
-      const pinned = (await c.query(
-        `SELECT v.id, v.product_id
-           FROM integration_entity_refs r JOIN variants v ON v.id = r.local_id
-          WHERE r.integration_id = $1 AND r.entity_type = 'variant' AND r.external_id = $2
-            AND r.mapping_status = 'mapped'`, [integration.id, externalId],
-      )).rows[0];
-      const candidates = pinned ? [pinned] : (await c.query(
-        `SELECT id, product_id FROM variants
-          WHERE ($1 <> '' AND sku = $1) OR ($2 <> '' AND barcode = $2)
-          ORDER BY id`, [sku, barcode],
-      )).rows;
-      const unique = [...new Map(candidates.map((it) => [it.id, it])).values()];
-      const mappingStatus = unique.length === 1 ? 'mapped' : unique.length > 1 ? 'conflict' : 'unmapped';
-      const local = unique[0] ?? null;
       const onHand = branchInventory(row, integration.external_branch_ref);
       const basePrice = asInt(row.basePrice ?? row.BasePrice ?? row.price ?? row.Price);
-      const inventoryStamped = mappingStatus === 'mapped' && local && onHand != null;
+      const isConflict = unique.length > 1 || plan.claim === 'occupied' || plan.claim === 'batch_conflict';
+      const mappingStatus = isConflict ? 'conflict' : unique.length === 1 ? 'mapped' : 'unmapped';
+      const mappingLocal = isConflict ? null : local;
+      const inventoryStamped = mappingStatus === 'mapped' && mappingLocal && onHand != null;
       const saved = (await c.query(
         `INSERT INTO integration_entity_refs
            (shop_id, integration_id, entity_type, external_id, local_id, mapping_status,
@@ -1174,7 +1236,7 @@ async function applyKiotVietProducts(shopId, integration, rows) {
                         inventory_generation = EXCLUDED.inventory_generation,
                         raw_meta = EXCLUDED.raw_meta, updated_at = now()
          RETURNING id`,
-        [integration.id, externalId, local?.id ?? null, mappingStatus,
+        [integration.id, externalId, mappingLocal?.id ?? null, mappingStatus,
           modifiedAt?.toISOString() ?? null,
           inventoryStamped ? new Date().toISOString() : null,
           inventoryStamped ? Number(integration.generation) : null, {
@@ -1182,16 +1244,26 @@ async function applyKiotVietProducts(shopId, integration, rows) {
           base_price_vnd: basePrice, provider_on_hand: onHand,
         }],
       )).rows[0];
-      if (!local || unique.length !== 1) {
+      if (!local || unique.length !== 1 || isConflict) {
         unresolved += 1;
+        const conflictLocalId = local?.id ?? plan.owner?.local_id ?? null;
+        const conflictKind = barcode && plan.owner?.external_id
+          ? 'duplicate_barcode' : unique.length > 1 || isConflict ? (barcode ? 'duplicate_barcode' : 'duplicate_sku') : 'unmapped_sku';
+        const batch = plan.batchExternalIds ?? null;
+        const conflictReason = plan.claim === 'occupied'
+          ? 'Biến thể nội bộ đã thuộc một sản phẩm KiotViet khác; không cướp mapping đang chạy.'
+          : plan.claim === 'batch_conflict'
+            ? 'Nhiều sản phẩm KiotViet mới cùng nhận một biến thể trong cùng lượt; cần chọn thủ công.'
+            : unique.length > 1
+              ? 'SKU/barcode KiotViet khớp nhiều biến thể nội bộ; hệ thống không tự đoán.'
+              : 'Sản phẩm KiotViet chưa khớp biến thể nội bộ.';
         await upsertDiscrepancy(c, integration.id, {
-          kind: unique.length > 1 ? (barcode ? 'duplicate_barcode' : 'duplicate_sku') : 'unmapped_sku',
-          dedupeKey: `mapping:${externalId}`,
-          message: unique.length > 1
-            ? 'SKU/barcode KiotViet khớp nhiều biến thể nội bộ; hệ thống không tự đoán.'
-            : 'Sản phẩm KiotViet chưa khớp biến thể nội bộ.',
-          entityType: 'variant', externalRef: externalId,
-          details: { sku: sku || null, barcode: barcode || null, candidate_ids: unique.map((it) => it.id) },
+          kind: conflictKind,
+          dedupeKey: batch ? `local-variant:${local.id}` : `mapping:${externalId}`,
+          message: conflictReason,
+          entityType: 'variant', externalRef: externalId, localId: conflictLocalId,
+          details: { sku: sku || null, barcode: barcode || null, candidate_ids: unique.map((it) => it.id),
+            conflicting_external_id: plan.owner?.external_id ?? null, conflicting_external_ids: batch },
         });
         continue;
       }
@@ -1449,11 +1521,64 @@ function deterministicOrderCode(shopId, orderId, orderNumber) {
   return `[NTG:${String(shopId).toLowerCase()}:${String(orderId).toLowerCase()}:${orderNumber}]`;
 }
 
-async function sendWebsiteOrderToKiotViet(shopId, payload) {
-  // Giữ khoá dòng đơn qua cả lần gọi provider. Đây là ngoại lệ có chủ ý cho ranh giới
-  // exactly-once: hai outbox/retry cùng tới sẽ không thể cùng quét "chưa thấy" rồi POST hai
-  // lần. Nếu worker chết sau khi KiotViet nhận nhưng trước COMMIT, lượt sau quét marker đầy
-  // đủ để nhận lại đơn cũ; phép quét chưa đầy đủ thì fail-closed ở adapter.
+function websiteOrderRequestHash(order, lines) {
+  const body = {
+    order_id: order.id, order_number: order.order_number,
+    customer_name: order.customer_name, customer_phone: order.customer_phone,
+    customer_email: order.customer_email, shipping_address: order.shipping_address,
+    subtotal_vnd: order.subtotal_vnd, shipping_vnd: order.shipping_vnd,
+    discount_vnd: order.discount_vnd, total_vnd: order.total_vnd,
+    payment_method: order.payment_method, payment_status: order.payment_status,
+    points_discount_vnd: order.points_discount_vnd,
+    lines: lines.map((line) => ({ variant_id: line.variant_id, external_id: line.external_id,
+      unit_price_vnd: line.unit_price_vnd, qty: line.qty, sku_snapshot: line.sku_snapshot })),
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
+}
+
+function buildKiotVietWebsiteOrder(order, lines, integration, marker) {
+  const address = order.shipping_address ?? {};
+  const deliveryAddress = [address.line, address.ward, address.district, address.province].filter(Boolean).join(', ');
+  const method = { card: 'Card', qr: 'Transfer', transfer: 'Transfer' }[order.payment_method] ?? 'Cash';
+  return {
+    branchId: /^\d+$/.test(integration.external_branch_ref) ? Number(integration.external_branch_ref) : integration.external_branch_ref,
+    description: `${marker} Đơn website Nền Tảng #${order.order_number}`,
+    purchaseDate: new Date(order.created_at).toISOString(), makeInvoice: false, method,
+    totalPayment: order.payment_status === 'paid' ? Number(order.total_vnd) : 0,
+    discount: Number(order.discount_vnd) + Number(order.points_discount_vnd ?? 0),
+    customer: { name: order.customer_name, contactNumber: order.customer_phone,
+      email: order.customer_email || undefined, address: deliveryAddress },
+    orderDelivery: { receiver: order.customer_name, contactNumber: order.customer_phone,
+      address: deliveryAddress, price: Number(order.shipping_vnd) },
+    orderDetails: lines.map((line) => ({
+      productId: /^\d+$/.test(line.external_id) ? Number(line.external_id) : line.external_id,
+      quantity: Number(line.qty), price: Number(line.unit_price_vnd), discount: 0, note: line.sku_snapshot,
+    })),
+  };
+}
+
+async function markWebsiteOrderNeedsAttention(shopId, payload, reason, intentId = null) {
+  return withIntegrationTenant(shopId, async (c) => {
+    await lockIntegrationGeneration(c, payload.integration_id, payload.generation);
+    if (intentId) await c.query(
+      `UPDATE integration_order_send_intents
+          SET state = 'needs_attention', lookup_state = 'inconclusive', last_error = $2, updated_at = now()
+        WHERE id = $1`, [intentId, reason],
+    );
+    await c.query(
+      `UPDATE orders SET sync_status = 'needs_attention', sync_error = $2, sync_updated_at = now()
+        WHERE id = $1 AND integration_generation = $3 AND sync_status <> 'synced'`,
+      [payload.order_id, reason, Number(payload.generation)],
+    );
+    await upsertDiscrepancy(c, payload.integration_id, {
+      kind: 'order_identity_pending', severity: 'critical', dedupeKey: `order-identity:${payload.order_id}`,
+      message: 'Không chứng minh được đơn KiotViet đã nhận hay chưa; đã dừng retry tự động để tránh tạo đơn trùng.',
+      entityType: 'order', localId: payload.order_id, details: { reason },
+    });
+  });
+}
+
+async function prepareWebsiteOrderSend(shopId, payload) {
   return withIntegrationTenant(shopId, async (c) => {
     const integration = (await c.query(
       `SELECT id, provider, status, credential_ciphertext, external_branch_ref, generation
@@ -1465,32 +1590,27 @@ async function sendWebsiteOrderToKiotViet(shopId, payload) {
               points_discount_vnd, created_at, sync_status, external_ref, integration_generation
          FROM orders WHERE id = $1 FOR UPDATE`, [payload.order_id],
     )).rows[0];
-    if (!integration || !order || integration.provider !== 'kiotviet') return;
+    if (!integration || !order || integration.provider !== 'kiotviet') return null;
     if (Number(order.integration_generation) !== Number(payload.generation)
       || Number(integration.generation) !== Number(payload.generation)) throw new StaleIntegrationJob();
-    if (order.external_ref && order.sync_status === 'synced') return;
-    if (!['pending','confirmed'].includes(order.status)) {
+    if (order.external_ref && order.sync_status === 'synced') return { done: true };
+    if (!['pending', 'confirmed'].includes(order.status)) {
       await c.query(
         `UPDATE orders SET sync_status = 'not_required', sync_error = NULL, sync_updated_at = now()
           WHERE id = $1 AND external_ref IS NULL`, [order.id],
       );
-      return;
+      return { done: true };
+    }
+    if (integration.status !== 'active' || !integration.credential_ciphertext) {
+      throw new KiotVietError('Kết nối KiotViet chưa sẵn sàng để nhận đơn', { status: 503, code: 'provider_unavailable' });
     }
     const lines = (await c.query(
-      `SELECT l.variant_id, l.title_snapshot, l.sku_snapshot, l.unit_price_vnd, l.qty,
-              r.external_id
+      `SELECT l.variant_id, l.title_snapshot, l.sku_snapshot, l.unit_price_vnd, l.qty, r.external_id
          FROM order_lines l
          LEFT JOIN product_source_refs r ON r.variant_id = l.variant_id
            AND r.source = 'kiotviet' AND r.kind = 'variant'
          WHERE l.order_id = $1 ORDER BY l.id`, [payload.order_id],
     )).rows;
-    if (integration.status !== 'active'
-      || !integration.credential_ciphertext
-      || Number(integration.generation) !== Number(payload.generation)) {
-      throw new KiotVietError('Kết nối KiotViet chưa sẵn sàng để nhận đơn', {
-        status: 503, code: 'provider_unavailable',
-      });
-    }
     const missing = lines.filter((line) => !line.external_id);
     if (missing.length) {
       await c.query(
@@ -1502,61 +1622,50 @@ async function sendWebsiteOrderToKiotViet(shopId, payload) {
         message: 'Đơn website chưa gửi được vì có sản phẩm chưa ánh xạ KiotViet.',
         entityType: 'order', localId: order.id, details: { variant_ids: missing.map((line) => line.variant_id) },
       });
-      return;
+      return { done: true };
     }
     const marker = deterministicOrderCode(shopId, order.id, order.order_number);
-    const client = integrationClient(integration);
-    const since = new Date(new Date(order.created_at).getTime() - 10 * 60_000).toISOString();
-    // Public API không công bố trường `code` khi tạo order. Marker trong description + quét
-    // theo lastModifiedFrom là lớp phục hồi cho cửa sổ "provider đã tạo, worker chết trước
-    // khi ghi external_ref"; retry sẽ tìm lại đơn thay vì POST lần hai.
-    let external = await client.findOrderByMarker(marker, { lastModifiedFrom: since });
-    if (external) {
-      const foundBranch = asId(external.BranchId ?? external.branchId);
-      if (foundBranch && foundBranch !== asId(integration.external_branch_ref)) {
-        throw new KiotVietError('Tìm thấy marker đơn ở chi nhánh khác; dừng gửi để không nhận nhầm đơn ngoài', {
-          status: 409, code: 'order_marker_conflict',
-        });
-      }
+    const requestHash = websiteOrderRequestHash(order, lines);
+    let intent = (await c.query(
+      `SELECT id, state, request_hash, attempt_started_at, provider_external_id, provider_code, lookup_state
+         FROM integration_order_send_intents
+        WHERE integration_id = $1 AND generation = $2 AND order_id = $3 FOR UPDATE`,
+      [integration.id, Number(payload.generation), order.id],
+    )).rows[0];
+    if (intent && intent.request_hash !== requestHash) {
+      await c.query(
+        `UPDATE orders SET sync_status = 'needs_attention', sync_error = $2, sync_updated_at = now() WHERE id = $1`,
+        [order.id, 'Nội dung đơn đã đổi sau khi tạo bằng chứng gửi; cần xác nhận thủ công trước khi gửi lại.'],
+      );
+      return { done: true };
     }
-    if (!external) {
-      const address = order.shipping_address ?? {};
-      const deliveryAddress = [address.line, address.ward, address.district, address.province].filter(Boolean).join(', ');
-      const method = { card: 'Card', qr: 'Transfer', transfer: 'Transfer' }[order.payment_method] ?? 'Cash';
-      external = await client.createOrder({
-        branchId: /^\d+$/.test(integration.external_branch_ref) ? Number(integration.external_branch_ref) : integration.external_branch_ref,
-        description: `${marker} Đơn website Nền Tảng #${order.order_number}`,
-        purchaseDate: new Date(order.created_at).toISOString(),
-        makeInvoice: false,
-        method,
-        totalPayment: order.payment_status === 'paid' ? Number(order.total_vnd) : 0,
-        discount: Number(order.discount_vnd) + Number(order.points_discount_vnd ?? 0),
-        customer: {
-          name: order.customer_name,
-          contactNumber: order.customer_phone,
-          email: order.customer_email || undefined,
-          address: deliveryAddress,
-        },
-        orderDelivery: {
-          receiver: order.customer_name,
-          contactNumber: order.customer_phone,
-          address: deliveryAddress,
-          price: Number(order.shipping_vnd),
-        },
-        orderDetails: lines.map((line) => ({
-          productId: /^\d+$/.test(line.external_id) ? Number(line.external_id) : line.external_id,
-          quantity: Number(line.qty), price: Number(line.unit_price_vnd), discount: 0,
-          note: line.sku_snapshot,
-        })),
-      });
-    }
-    const externalId = asId(external.id ?? external.Id);
-    if (!externalId) throw new Error('KiotViet tạo đơn nhưng không trả id');
-    const providerCode = asId(external.code ?? external.Code) || null;
+    if (!intent) intent = (await c.query(
+      `INSERT INTO integration_order_send_intents
+         (shop_id, integration_id, generation, order_id, marker, request_hash)
+       VALUES (current_shop_id(), $1, $2, $3, $4, $5) RETURNING id, state, request_hash,
+               attempt_started_at, provider_external_id, provider_code, lookup_state`,
+      [integration.id, Number(payload.generation), order.id, marker, requestHash],
+    )).rows[0];
+    return { integration, order, lines, marker, intent, done: false };
+  });
+}
+
+async function finalizeWebsiteOrderSend(shopId, payload, intentId, external, marker, integrationId) {
+  const externalId = asId(external?.id ?? external?.Id);
+  if (!externalId) throw new Error('KiotViet tạo đơn nhưng không trả id');
+  const providerCode = asId(external?.code ?? external?.Code) || null;
+  return withIntegrationTenant(shopId, async (c) => {
+    await lockIntegrationGeneration(c, integrationId, payload.generation);
+    const order = (await c.query(
+      `SELECT id, status, external_ref FROM orders WHERE id = $1 FOR UPDATE`, [payload.order_id],
+    )).rows[0];
+    if (!order) return;
+    if (order.external_ref && order.external_ref !== externalId) throw new KiotVietError(
+      'Đơn website đã nối tới một đơn KiotViet khác; cần xử lý thủ công', { status: 409, code: 'order_marker_conflict' },
+    );
     await c.query(
       `UPDATE orders SET external_ref = $2, status = CASE WHEN status = 'pending' THEN 'confirmed' ELSE status END,
-                         sync_status = 'synced', sync_error = NULL,
-                         sync_updated_at = now()
+                         sync_status = 'synced', sync_error = NULL, sync_updated_at = now()
         WHERE id = $1 AND integration_generation = $3`,
       [order.id, externalId, Number(payload.generation)],
     );
@@ -1570,20 +1679,75 @@ async function sendWebsiteOrderToKiotViet(shopId, payload) {
        VALUES (current_shop_id(), $1, 'order', $2, $3, 'mapped', $4)
        ON CONFLICT (shop_id, integration_id, entity_type, external_id)
        DO UPDATE SET local_id = EXCLUDED.local_id, mapping_status = 'mapped', raw_meta = EXCLUDED.raw_meta, updated_at = now()`,
-      [integration.id, externalId, order.id, { marker, provider_code: providerCode }],
+      [integrationId, externalId, order.id, { marker, provider_code: providerCode }],
+    );
+    await c.query(
+      `UPDATE integration_order_send_intents
+          SET state = 'sent', lookup_state = 'found', provider_external_id = $2,
+              provider_code = $3, last_error = NULL, updated_at = now()
+        WHERE id = $1`, [intentId, externalId, providerCode],
     );
     await c.query(
       `UPDATE integration_sync_discrepancies
           SET status = 'resolved', resolved_at = now(), updated_at = now()
         WHERE integration_id = $1 AND status = 'open'
-          AND dedupe_key IN ($2,$3,$4)`,
-      [integration.id, `order-provider:${order.id}`, `order-mapping:${order.id}`, `order-dead-letter:${order.id}`],
+          AND dedupe_key IN ($2,$3,$4,$5)`,
+      [integrationId, `order-provider:${order.id}`, `order-mapping:${order.id}`,
+        `order-dead-letter:${order.id}`, `order-identity:${order.id}`],
     );
     await c.query(
       `UPDATE shop_integrations SET orders_synced_at = now(), last_error = NULL, updated_at = now()
-        WHERE id = $1 AND generation = $2`, [integration.id, integration.generation],
+        WHERE id = $1 AND generation = $2`, [integrationId, Number(payload.generation)],
     );
   });
+}
+
+async function sendWebsiteOrderToKiotViet(shopId, payload) {
+  const prepared = await prepareWebsiteOrderSend(shopId, payload);
+  if (!prepared || prepared.done) return;
+  const { integration, order, lines, marker, intent } = prepared;
+  const client = integrationClient(integration);
+  const since = new Date(new Date(order.created_at).getTime() - 10 * 60_000).toISOString();
+
+  // A committed attempted intent is the durable boundary. Once it exists, a marker scan
+  // may prove presence but never absence; only a provider's exact code lookup can permit
+  // another POST after an interrupted attempt.
+  if (intent.state !== 'prepared') {
+    const lookup = intent.provider_code && client.lookupOrderByCode
+      ? await client.lookupOrderByCode(intent.provider_code)
+      : await client.findOrderByMarker(marker, { lastModifiedFrom: since });
+    if (lookup?.state === 'found') {
+      const found = lookup.order;
+      const foundBranch = asId(found.BranchId ?? found.branchId);
+      if (foundBranch && foundBranch !== asId(integration.external_branch_ref)) {
+        throw new KiotVietError('Tìm thấy marker đơn ở chi nhánh khác; dừng gửi để không nhận nhầm đơn ngoài', {
+          status: 409, code: 'order_marker_conflict',
+        });
+      }
+      await finalizeWebsiteOrderSend(shopId, payload, intent.id, found, marker, integration.id);
+      return;
+    }
+    if (lookup?.state !== 'proven_absent') {
+      await markWebsiteOrderNeedsAttention(shopId, payload,
+        'Không thể chứng minh đơn KiotViet cũ chưa tồn tại; retry tự động đã bị dừng để tránh tạo đơn trùng.', intent.id);
+      return;
+    }
+  }
+
+  const marked = await withIntegrationTenant(shopId, async (c) => {
+    const row = (await c.query(
+      `UPDATE integration_order_send_intents
+          SET state = 'attempted', attempt_started_at = coalesce(attempt_started_at, now()),
+              lookup_state = 'unknown', updated_at = now()
+        WHERE id = $1 AND state = 'prepared'
+        RETURNING id`, [intent.id],
+    )).rows[0];
+    return Boolean(row);
+  });
+  if (!marked) return;
+
+  const external = await client.createOrder(buildKiotVietWebsiteOrder(order, lines, integration, marker));
+  await finalizeWebsiteOrderSend(shopId, payload, intent.id, external, marker, integration.id);
 }
 
 async function applyStockWebhook(shopId, integrationId, generation, events) {
@@ -2566,6 +2730,13 @@ async function processIntegrationJob(topic, payload, shopId) {
     if (permanentOrderError) {
       await withIntegrationTenant(shopId, async (c) => {
         await lockIntegrationGeneration(c, payload.integration_id, payload.generation);
+        await c.query(
+          `UPDATE integration_order_send_intents
+              SET state = 'needs_attention', lookup_state = 'inconclusive', last_error = $2, updated_at = now()
+            WHERE integration_id = $1 AND generation = $3 AND order_id = $4
+              AND state <> 'sent'`,
+          [payload.integration_id, message, Number(payload.generation), payload.order_id],
+        );
         await c.query(
           `UPDATE orders SET sync_status = 'needs_attention', sync_error = $2, sync_updated_at = now()
             WHERE id = $1 AND integration_generation = $3 AND sync_status <> 'synced'`,

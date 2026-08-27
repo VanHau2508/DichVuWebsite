@@ -1464,7 +1464,9 @@ async function integrationIgnore(res, me, cookie, shopId, refId) {
 
 async function integrationRetry(res, me, cookie, shopId, discrepancyId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
-  const r = await sellerApi('POST', `/shops/${shopId}/integrations/discrepancies/${discrepancyId}/retry`, { cookie, body: {} });
+  const r = await sellerApi('POST', `/shops/${shopId}/integrations/discrepancies/${discrepancyId}/retry`, {
+    cookie, body: { confirm_provider_absent: '1' },
+  });
   return integrationsPage(res, me, cookie, shopId, r.status === 202 ? (r.json?.message ?? 'Đã đưa vào hàng đợi.') : null,
     r.status === 202 ? null : (r.json?.error ?? 'Không thử lại được.'));
 }

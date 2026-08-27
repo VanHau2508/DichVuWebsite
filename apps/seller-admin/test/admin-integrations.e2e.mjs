@@ -356,6 +356,48 @@ async function main() {
 
     sect('4. Hóa đơn POS chỉ nhập khi hoàn tất + đủ tiền, và không nhân đôi đơn website');
     const sellerCookie = await login(shop.email, shop.password);
+
+    // Hai sản phẩm provider mới cùng SKU phải cùng rơi vào conflict. Nếu chỉ kiểm
+    // bằng regex thì việc bỏ batch_conflict vẫn có thể lọt; ca này đi qua worker thật.
+    const batchSku = `BATCH-${uniq()}`;
+    const batchProduct = await json(SELLER, 'POST', `/shops/${shop.shopId}/products`, {
+      cookie: sellerCookie, origin: OS, body: {
+        title: 'Biến thể trùng SKU', slug: `batch-${uniq()}`, price_vnd: 39000, status: 'active',
+        variants: [{ sku: batchSku, price_vnd: 39000 }],
+      },
+    });
+    const batchDetail = await json(
+      SELLER, 'GET', `/shops/${shop.shopId}/products/${batchProduct.json.id}`, { cookie: sellerCookie },
+    );
+    const batchVariantId = batchDetail.json?.variants?.[0]?.id;
+    stub.products.push(
+      { Id: 601, Code: batchSku, Name: 'Bản provider A', ModifiedDate: new Date().toISOString(), Inventories: [{ BranchId: 7, OnHand: 4 }] },
+      { Id: 602, Code: batchSku, Name: 'Bản provider B', ModifiedDate: new Date().toISOString(), Inventories: [{ BranchId: 7, OnHand: 6 }] },
+    );
+    const batchReconcile = (await owner.query(
+      `INSERT INTO outbox (shop_id,topic,payload)
+       VALUES ($1,'integration.reconcile_requested',$2) RETURNING id`,
+      [shop.shopId, { integration_id: active.id, generation: Number(active.generation), reason: 'test_batch_conflict' }],
+    )).rows[0];
+    const batchRefs = await waitFor(async () => {
+      const rows = (await owner.query(
+        `SELECT external_id,local_id,mapping_status
+           FROM integration_entity_refs
+          WHERE shop_id=$1 AND integration_id=$2 AND entity_type='variant'
+            AND external_id IN ('601','602') ORDER BY external_id`,
+        [shop.shopId, active.id],
+      )).rows;
+      return rows.length === 2 && rows.every((row) => row.mapping_status === 'conflict' && row.local_id == null)
+        ? rows : null;
+    }, 30000);
+    const batchSources = Number((await owner.query(
+      `SELECT count(*)::int AS n FROM product_source_refs
+        WHERE shop_id=$1 AND source='kiotviet' AND kind='variant' AND external_id IN ('601','602')`,
+      [shop.shopId],
+    )).rows[0]?.n ?? -1);
+    batchRefs && batchSources === 0 && batchVariantId
+      ? ok('hai sản phẩm KiotViet mới cùng SKU → cả hai conflict, không gửi nhầm mapping')
+      : bad('batch conflict không được áp dụng theo hành vi', JSON.stringify({ batchReconcile, batchRefs, batchSources, batchVariantId }));
     const createdProduct = await json(SELLER, 'POST', `/shops/${shop.shopId}/products`, {
       cookie: sellerCookie, origin: OS, body: {
         title: 'Áo POS', slug: `ao-pos-${uniq()}`, price_vnd: 45000, status: 'active',
@@ -529,17 +571,40 @@ async function main() {
       ? ok('provider trả lỗi sau send-intent → không retry mù, mở ca cần xử lý thay vì đoán absence')
       : bad('retry mơ hồ đã tạo đơn trùng hoặc không mở ca', JSON.stringify({ attentionOutbound, attentionIntent, attempts: stub.orderAttempts.length, count: stub.createdOrders.length }));
 
-    await withIntegration(shop.shopId, active.id, active.generation, (c) => c.query(
-      `UPDATE integration_order_send_intents
-          SET state='prepared', attempt_started_at=NULL, lookup_state='unknown', last_error=NULL, updated_at=now()
-        WHERE order_id=$1 AND state='needs_attention'`, [outbound.id],
-    ));
+    const attentionCase = (await owner.query(
+      `SELECT id FROM integration_sync_discrepancies
+        WHERE shop_id=$1 AND integration_id=$2 AND entity_type='order' AND local_id=$3 AND status='open'
+        ORDER BY id DESC LIMIT 1`, [shop.shopId, active.id, outbound.id],
+    )).rows[0];
+    const retryPath = attentionCase?.id
+      ? `/shops/${shop.shopId}/integrations/discrepancies/${attentionCase.id}/retry` : null;
+    const retryWithoutConfirmation = retryPath
+      ? await json(SELLER, 'POST', retryPath, { cookie: sellerCookie, origin: OS, body: {} })
+      : { status: 0, json: null };
+    retryWithoutConfirmation.status === 400 && stub.orderAttempts.length === 1
+      ? ok('retry đơn cần xử lý không có xác nhận provider_absent → 400, không tạo outbox mới')
+      : bad('retry không xác nhận vẫn được phép', JSON.stringify({ retryWithoutConfirmation, attempts: stub.orderAttempts.length }));
+
+    // Ca 429/503 đã được ghi nhận là mơ hồ; sau khi người vận hành xác nhận provider
+    // chưa nhận, lần gửi duy nhất còn lại phải đi qua đường retry riêng.
+    stub.orderFailures.length = 0;
+    const retryConfirmed = retryPath
+      ? await json(SELLER, 'POST', retryPath, {
+        cookie: sellerCookie, origin: OS, body: { confirm_provider_absent: '1' },
+      }) : { status: 0, json: null };
+    const retriedOutbound = await waitFor(async () => {
+      const row = (await owner.query(`SELECT sync_status,external_ref FROM orders WHERE id=$1`, [outbound.id])).rows[0];
+      return row?.sync_status === 'synced' && row.external_ref ? row : null;
+    }, 20000);
+    retryConfirmed.status === 202 && retriedOutbound && stub.createdOrders.length === 1
+      ? ok('xác nhận provider_absent → retry thật tự phục hồi về synced, đúng một đơn provider')
+      : bad('retry đã xác nhận không phục hồi được đơn hoặc tạo trùng', JSON.stringify({ retryConfirmed, retriedOutbound, count: stub.createdOrders.length }));
+
     const crashGapReset = await withIntegration(shop.shopId, active.id, active.generation, async (c) => (await c.query(
       `UPDATE orders SET external_ref=NULL,sync_status='pending',sync_error=NULL,sync_updated_at=now()
         WHERE id=$1 AND integration_generation=$2
         RETURNING external_ref,sync_status`, [outbound.id, Number(active.generation)],
     )).rows[0]);
-    stub.orderFailures.length = 0;
     await owner.query(
       `INSERT INTO outbox (shop_id,topic,payload)
        VALUES ($1,'integration.order_created',$2)`,

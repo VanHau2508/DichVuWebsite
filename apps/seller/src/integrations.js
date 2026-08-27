@@ -449,12 +449,14 @@ async function ignoreEntity(res, ctx, _body, params) {
 
 async function retryDiscrepancy(res, ctx, _body, params) {
   const discrepancyId = params[1];
+  const body = _body ?? {};
   const out = await withTenant(ctx.shopId, async (c) => {
     const row = (await c.query(
       `SELECT d.id, d.integration_id, d.entity_type, d.external_ref, d.local_id,
-              i.generation, i.status AS integration_status,
-              o.integration_generation AS order_generation
-         FROM integration_sync_discrepancies d
+               i.generation, i.status AS integration_status,
+               o.integration_generation AS order_generation, o.sync_status AS order_sync_status,
+               o.external_ref AS order_external_ref
+          FROM integration_sync_discrepancies d
          JOIN shop_integrations i ON i.id = d.integration_id
          LEFT JOIN orders o ON d.entity_type = 'order' AND o.id = d.local_id
            AND o.integration_id = d.integration_id
@@ -464,17 +466,28 @@ async function retryDiscrepancy(res, ctx, _body, params) {
     if (!row) return null;
     const retryOrder = row.entity_type === 'order' && row.local_id;
     const retryInvoice = row.entity_type === 'invoice' && row.external_ref;
+    if (retryOrder && String(body.confirm_provider_absent ?? '') !== '1') {
+      return { ...row, confirmation_required: true };
+    }
     if (retryOrder && (row.order_generation == null
       || Number(row.order_generation) !== Number(row.generation))) {
       return { ...row, stale_order_generation: true };
     }
+    if (retryOrder && (row.order_sync_status !== 'needs_attention' || row.order_external_ref)) {
+      return { ...row, retry_not_allowed: true };
+    }
+    if (retryOrder) await audit(c, 'integration.order_retry_confirmed', {
+      actorId: ctx.user.id, ip: ctx.ip,
+      metadata: { discrepancy_id: row.id, order_id: row.local_id, provider_absent: true },
+    });
     await c.query(
       `INSERT INTO outbox (shop_id, topic, payload)
        VALUES (current_shop_id(), $1, $2)`,
-      [retryOrder ? 'integration.order_created'
+      [retryOrder ? 'integration.order_retry_requested'
         : retryInvoice ? 'integration.invoice_retry_requested'
           : 'integration.reconcile_requested', retryOrder
-        ? { integration_id: row.integration_id, generation: row.generation, order_id: row.local_id }
+        ? { integration_id: row.integration_id, generation: row.generation, order_id: row.local_id,
+            discrepancy_id: row.id, manual_retry_confirmed: true }
         : retryInvoice
           ? { integration_id: row.integration_id, generation: row.generation, external_id: row.external_ref, discrepancy_id: row.id }
           : { integration_id: row.integration_id, generation: row.generation, discrepancy_id: row.id }],
@@ -482,8 +495,14 @@ async function retryDiscrepancy(res, ctx, _body, params) {
     return { ...row, retry_order: Boolean(retryOrder), retry_invoice: Boolean(retryInvoice) };
   });
   if (!out) return send(res, 404, { error: 'ca đồng bộ không còn mở' });
+  if (out.confirmation_required) return send(res, 400, {
+    error: 'Chỉ thử lại sau khi đã kiểm tra KiotViet không có đơn mang mã Nền Tảng; gửi confirm_provider_absent=1 để xác nhận.',
+  });
   if (out.stale_order_generation) return send(res, 409, {
     error: 'Đơn thuộc cấu hình POS cũ; không tự gửi sang credential hoặc chi nhánh mới. Cần xác nhận nhận lại đơn có kiểm soát.',
+  });
+  if (out.retry_not_allowed) return send(res, 409, {
+    error: 'Đơn không còn ở trạng thái cần xử lý hoặc đã có định danh KiotViet; không tự gửi lại.',
   });
   return send(res, 202, { ok: true, message: out.retry_order
     ? 'Đã đưa đơn vào hàng đợi gửi lại an toàn.'

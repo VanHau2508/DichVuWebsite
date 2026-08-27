@@ -1639,6 +1639,34 @@ async function prepareWebsiteOrderSend(shopId, payload) {
       );
       return { done: true };
     }
+    if (payload.manual_retry_confirmed === true) {
+      // A retry from the operator is the only escape from an ambiguous attempt. The
+      // confirmation is recorded as proven_absent; it never turns an in-flight or
+      // provider-linked intent back into a blind POST.
+      if (!intent || !['attempted', 'needs_attention'].includes(intent.state)
+        || intent.provider_external_id || intent.provider_code) {
+        throw new KiotVietError('Đơn không còn ở trạng thái có thể xác nhận gửi lại', {
+          status: 409, code: 'order_retry_not_allowed',
+        });
+      }
+      const reset = (await c.query(
+        `UPDATE integration_order_send_intents
+            SET state = 'prepared', attempt_started_at = NULL, lookup_state = 'proven_absent',
+                last_error = 'Người vận hành đã xác nhận KiotViet chưa nhận đơn.', updated_at = now()
+          WHERE id = $1 AND state IN ('attempted','needs_attention')
+            AND provider_external_id IS NULL AND provider_code IS NULL
+          RETURNING id`, [intent.id],
+      )).rows[0];
+      if (!reset) throw new KiotVietError('Đơn đã được xử lý bởi một lượt khác', {
+        status: 409, code: 'order_retry_race',
+      });
+      await c.query(
+        `UPDATE orders SET sync_status = 'pending', sync_error = NULL, sync_updated_at = now()
+          WHERE id = $1 AND external_ref IS NULL AND integration_generation = $2`,
+        [order.id, Number(payload.generation)],
+      );
+      intent = { ...intent, state: 'prepared', attempt_started_at: null, lookup_state: 'proven_absent' };
+    }
     if (!intent) intent = (await c.query(
       `INSERT INTO integration_order_send_intents
          (shop_id, integration_id, generation, order_id, marker, request_hash)
@@ -2703,6 +2731,10 @@ async function processIntegrationJob(topic, payload, shopId) {
     }
     if (topic === 'integration.order_created') {
       await sendWebsiteOrderToKiotViet(shopId, payload);
+      return;
+    }
+    if (topic === 'integration.order_retry_requested') {
+      await sendWebsiteOrderToKiotViet(shopId, { ...payload, manual_retry_confirmed: true });
       return;
     }
     if (topic === 'integration.webhook_received') {

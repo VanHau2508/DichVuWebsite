@@ -35,3 +35,11 @@ test('send intent tồn tại trước khi worker gọi provider', () => {
   assert.doesNotMatch(requestHashBody, /\bstatus:/,
     'request hash không được chứa trạng thái mà finalize tự đổi pending → confirmed');
 });
+
+test('retry đơn mơ hồ phải có xác nhận và đi qua topic riêng', () => {
+  assert.match(seller, /confirm_provider_absent/);
+  assert.match(seller, /integration\.order_retry_requested/);
+  assert.match(worker, /manual_retry_confirmed === true/);
+  assert.match(worker, /lookup_state = 'proven_absent'/);
+  assert.match(worker, /state IN \('attempted','needs_attention'\)/);
+});

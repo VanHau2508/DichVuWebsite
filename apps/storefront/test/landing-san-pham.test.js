@@ -423,9 +423,13 @@ test('mục Giải pháp lướt NGANG và ĐI RỒI VỀ', () => {
   // Hướng lướt bám VỊ TRÍ THẤY ĐƯỢC: hàng lẻ đảo bên bằng order, nếu bám thứ tự HTML thì
   // cột bên trái sẽ vào từ bên phải — hai cột bay ngang qua nhau.
   assert.match(SRC, /const dao = k % 2 === 1;/, 'phải biết hàng nào đảo bên');
-  // Lưới an toàn phải tính cả .rv-x, nếu không nó gỡ cờ lpjs khi trang chỉ còn .rv-x.
+  // Lưới an toàn phải tính cả .rv-x, nếu không fallback sẽ bỏ sót cả khối lướt ngang.
   assert.match(SRC, /rvDone === 0 && \(rvs\.length \|\| rvX\.length\)/,
     'lưới an toàn phải tính cả phần tử lướt ngang');
+  assert.match(SRC, /rvs\.forEach\(function\(e\)\{ e\.classList\.add\('in'\); \}\);/,
+    'fallback phải hiện phần tử bị kẹt');
+  assert.doesNotMatch(SRC, /root\.classList\.remove\('lpjs'\)/,
+    'fallback không được gỡ cờ lpjs vì sẽ làm các carousel chồng lên nhau');
   assert.match(LUAT, /html\.lpjs \.rv,html\.lpjs \.rv-x\{opacity:1;transform:none;transition:none\}/,
     'giảm chuyển động thì cả hai loại đều hiện thẳng');
 });

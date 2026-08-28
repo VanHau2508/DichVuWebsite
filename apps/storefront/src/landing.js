@@ -1300,13 +1300,17 @@ const JS = `(function(){
     rvX.forEach(function(e){ e.classList.add('in'); });
   }
   /* Lưới an toàn hẹn giờ từ LẦN CUỘN ĐẦU, không từ lúc nạp: đứng đọc hero vài giây
-     là bình thường, không phải hỏng. Đã cuộn mà không gì hiện được thì gỡ cờ lpjs
-     — thà mất hiệu ứng còn hơn mất chữ. */
+     là bình thường, không phải hỏng. Nếu hiệu ứng không quét được thì hiện thẳng các
+     phần tử đang kẹt, nhưng GIỮ cờ lpjs — cờ này còn điều khiển các carousel khác. */
   function rvGuard(){
     if (rvArmed) return;
     rvArmed = true;
     setTimeout(function(){
-      if (rvDone === 0 && (rvs.length || rvX.length)) { root.classList.remove('lpjs'); rvs = []; }
+      if (rvDone === 0 && (rvs.length || rvX.length)) {
+        rvs.forEach(function(e){ e.classList.add('in'); });
+        rvX.forEach(function(e){ e.classList.add('in'); });
+        rvs = []; rvX = [];
+      }
     }, 1500);
   }
 

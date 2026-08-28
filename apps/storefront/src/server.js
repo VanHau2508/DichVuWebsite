@@ -328,7 +328,7 @@ const LANDING_CFG = {
   brand: process.env.PLATFORM_BRAND ?? 'TikFlash',
 };
 
-function sendHtml(res, status, html, { shopSlug, cache, preview, nonce, noindex } = {}) {
+function sendHtml(res, status, html, { shopSlug, cache, preview, nonce, noindex, noStore } = {}) {
   const headers = {
     'content-type': 'text/html; charset=utf-8',
     'x-content-type-options': 'nosniff',
@@ -358,6 +358,10 @@ function sendHtml(res, status, html, { shopSlug, cache, preview, nonce, noindex 
     // không thêm một trạng thái nữa để người bán quên.
     headers['x-robots-tag'] = 'noindex, follow';
     headers['cache-control'] = 'no-store'; // đừng để CDN giữ bản noindex sau khi đã có hàng
+  } else if (noStore) {
+    // Landing HTML contains a fresh CSP nonce on every response. Never let a browser or
+    // intermediary reuse the body independently from its matching CSP header.
+    headers['cache-control'] = 'no-store';
   } else if (cache) {
     // CHỈ đặt Cache-Control cho trang cache được (home/product/category).
     // Trang 404/bảo trì KHÔNG đặt → để Caddy làm chủ no-store trên /cart /checkout
@@ -492,12 +496,12 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
       }
       if (url.pathname === '/') {
         // Trang chủ mang lớp JS tăng cường (thanh điều hướng theo chiều cuộn, carousel banner,
-        // thanh CTA nổi). Script là TĨNH — không nội suy dữ liệu người dùng, trang chủ cũng
-        // không nhận đầu vào nào — nên dùng lại nonce trong cửa sổ cache 60s vẫn an toàn, đúng
-        // như trang cửa hàng đang làm cho badge giỏ. Thiếu JS thì trang vẫn đủ nội dung và bấm
-        // được: xem chú thích LỚP TĂNG CƯỜNG trong landing.js.
+        // thanh CTA nổi). HTML có CSP nonce động, nên không cache công khai: một proxy có thể
+        // phục vụ thân HTML cũ cùng header CSP mới và chặn script, làm các panel chồng lên nhau.
+        // Thiếu JS thì trang vẫn đủ nội dung và bấm được: xem chú thích LỚP TĂNG CƯỜNG trong
+        // landing.js.
         const nonceLanding = crypto.randomBytes(16).toString('base64');
-        return sendHtml(res, 200, renderLanding({ ...LANDING_CFG, assets: ASSETS, nonce: nonceLanding }), { cache: true, nonce: nonceLanding });
+        return sendHtml(res, 200, renderLanding({ ...LANDING_CFG, assets: ASSETS, nonce: nonceLanding }), { noStore: true, nonce: nonceLanding });
       }
       if (url.pathname === '/gioi-thieu') return sendHtml(res, 200, renderAbout(LANDING_CFG), { cache: true });
       if (url.pathname === '/ho-tro') return sendHtml(res, 200, renderSupport(LANDING_CFG), { cache: true });

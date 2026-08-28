@@ -1330,7 +1330,7 @@ const JS = `(function(){
      lại thì hành vi không còn phụ thuộc việc có khung hình được vẽ hay không. Đo được:
      trong môi trường không vẽ đều, rAF chỉ chạy 2 lần trong CẢ MỘT GIÂY — thanh điều
      hướng kẹt nguyên trạng thái cũ, và cùng lớp lỗi đó từng làm chữ kẹt opacity:0. */
-  function beat(){ rvGuard(); rvScan(); rvXQuet(); onScroll(); spTrongTam(); liTrongTam(); nhTrongTam(); }
+  function beat(){ rvScan(); rvXQuet(); rvGuard(); onScroll(); spTrongTam(); liTrongTam(); nhTrongTam(); }
   addEventListener('resize', spNhip, { passive: true });
   if (D.fonts && D.fonts.ready) D.fonts.ready.then(spNhip);
   addEventListener('scroll', beat, { passive: true });

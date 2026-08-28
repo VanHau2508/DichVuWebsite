@@ -23,6 +23,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const SRC = readFileSync(new URL('../src/landing.js', import.meta.url), 'utf8');
+const SERVER = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
 // CSS đã CẮT CHÚ THÍCH. Chú thích ở file này mô tả chính những quy tắc từng gây lỗi, nên
 // khớp regex trên toàn văn bản là khớp phải lời kể chứ không phải luật đang chạy — một chốt
 // đã đỏ giả vì đúng chuyện đó, và cùng lỗi ở chiều ngược lại thì XANH GIẢ.
@@ -173,11 +174,22 @@ test('trang DÙNG ĐƯỢC khi không có JS', () => {
   assert.match(SRC, /k === 0 \? ' on' : ''/, 'slide đầu phải mở sẵn từ server');
 });
 
+test('landing có nonce CSP phải no-store', () => {
+  assert.match(SERVER, /function sendHtml\([^)]*noStore/,
+    'sendHtml phải nhận cờ noStore');
+  assert.match(SERVER, /else if \(noStore\)\s*\{[\s\S]*?headers\['cache-control'\] = 'no-store'/,
+    'noStore phải phát Cache-Control: no-store');
+  assert.match(SERVER, /const nonceLanding = crypto\.randomBytes\(16\)\.toString\('base64'\);[\s\S]*?\{ noStore: true, nonce: nonceLanding \}\);/,
+    'landing phải dùng noStore cùng nonce trong thân HTML');
+  assert.doesNotMatch(SERVER, /\{ cache: true, nonce: nonceLanding \}/,
+    'landing không được cache công khai khi nonce động');
+});
+
 test('lớp tăng cường không phụ thuộc khung hình được vẽ', () => {
   // requestAnimationFrame chỉ chạy 2 lần trong CẢ MỘT GIÂY ở môi trường không vẽ đều
   // (đo được). Bọc handler cuộn trong rAF thì thanh điều hướng kẹt trạng thái cũ.
-  assert.match(SRC, /function beat\(\)\{ rvGuard\(\); rvScan\(\); rvXQuet\(\); onScroll\(\);/,
-    'handler cuộn phải gọi thẳng, không bọc requestAnimationFrame');
+  assert.match(SRC, /function beat\(\)\{ rvScan\(\); rvXQuet\(\); rvGuard\(\); onScroll\(\);/,
+    'handler cuộn phải quét trước khi bật lưới an toàn, không bọc requestAnimationFrame');
   assert.doesNotMatch(SRC, /requestAnimationFrame\(onScroll\)/,
     'không được đưa onScroll qua requestAnimationFrame');
 });
@@ -406,8 +418,8 @@ test('mục Giải pháp lướt NGANG và ĐI RỒI VỀ', () => {
   assert.match(SRC, /rvX\[i\]\.classList\.toggle\('in', trong\);/,
     'phải đặt lại cờ mỗi lượt quét, không phải thêm một lần rồi thôi');
   assert.doesNotMatch(SRC, /rvX = rvX\.filter/, 'không được lọc .rv-x ra khỏi danh sách');
-  assert.match(SRC, /function beat\(\)\{ rvGuard\(\); rvScan\(\); rvXQuet\(\);/,
-    'bộ quét ngang phải chạy trong vòng cuộn');
+  assert.match(SRC, /function beat\(\)\{ rvScan\(\); rvXQuet\(\); rvGuard\(\);/,
+    'bộ quét ngang phải chạy sau khi quét hiệu ứng hiện dần');
   // Hướng lướt bám VỊ TRÍ THẤY ĐƯỢC: hàng lẻ đảo bên bằng order, nếu bám thứ tự HTML thì
   // cột bên trái sẽ vào từ bên phải — hai cột bay ngang qua nhau.
   assert.match(SRC, /const dao = k % 2 === 1;/, 'phải biết hàng nào đảo bên');

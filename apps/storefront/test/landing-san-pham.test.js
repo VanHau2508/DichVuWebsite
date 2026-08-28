@@ -457,13 +457,17 @@ test('carousel banner dùng heading đúng cấp và chấm không giả làm ta
     'banner đầu là h1, các banner còn lại là h2');
   assert.match(LUAT, /\.lp-hero h1,\.lp-hero h2\{font-size:/,
     'h1 và h2 trong hero phải dùng cùng cỡ chữ');
+  assert.equal((LUAT.match(/\.lp-hero h1,\.lp-hero h2\{font-size:/g) ?? []).length, 2,
+    'cả CSS gốc và media mobile phải giữ cùng cỡ chữ cho h1/h2');
   const dots = SRC.slice(SRC.indexOf('<div class="lp-dots"'), SRC.indexOf('<div class="lp-arr"'));
-  assert.match(dots, /<div class="lp-dots" aria-label="Chọn banner">/,
-    'chấm banner phải giữ nhãn nhưng không khai tablist khi không có panel');
+  assert.match(dots, /<div class="lp-dots" role="group" aria-label="Chọn banner">/,
+    'chấm banner phải có nhóm có tên nhưng không khai tablist khi không có panel');
   assert.doesNotMatch(dots, /role="tablist"|role="tab"/,
     'chấm banner không được tự nhận là tab nếu thiếu hợp đồng tab');
   assert.match(dots, /aria-current="\$\{k === 0\}"/,
     'chấm banner phải đánh dấu vị trí hiện tại bằng aria-current');
+  assert.match(LUAT, /html:not\(\.lpjs\) \.lp-ctl\{display:none\}/,
+    'không JS thì nhóm điều khiển carousel phải biến mất, không để nút chết');
 });
 
 test('không JS thì mũi tên mục Lợi ích phải biến mất', () => {

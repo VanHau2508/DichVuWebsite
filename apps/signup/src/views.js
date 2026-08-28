@@ -21,7 +21,7 @@ function layout(title, body, { heading = 'Bán hàng online<br><em>không cần 
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>${esc(title)} · Nền Tảng</title>
+<title>${esc(title)} · TikFlash</title>
 <style>
   :root{--ink0:#000;--ink:#161823;--mut:#6b6f76;--faint:#9ea1a8;--line:#e4e6e8;--line2:#d0d3d6;
     --pri:#0fa3a3;--prid:#0b8585;--prip:#087272;--wash:#e8f6f6;--card:#fff;--surf:#f5f6f7}
@@ -90,7 +90,7 @@ function layout(title, body, { heading = 'Bán hàng online<br><em>không cần 
 </style></head><body>
 <div class="au">
   <section class="au-l">
-    <a class="au-brand" href="/"><i>N</i>Nền Tảng</a>
+    <a class="au-brand" href="/"><i>T</i>TikFlash</a>
     <div class="au-mid">
       <h2>${heading}</h2>
       <p>Nền tảng giúp bạn tạo website bán hàng riêng, quản lý đơn — kho — vận chuyển — tiền ở một chỗ.</p>

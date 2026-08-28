@@ -53,7 +53,7 @@ async function ensureKiotVietWebhooks(client, publicId, secret) {
       const url = webhookUrl(publicId, type);
       const found = existing.find((row) => row.type === type && row.url === url && row.isActive !== false);
       const row = found ?? await client.registerWebhook({
-        type, url, secret, description: `Nền Tảng đồng bộ ${type}`,
+        type, url, secret, description: `TikFlash đồng bộ ${type}`,
       });
       const id = String(row.id ?? row.Id ?? '');
       if (!id) throw new Error(`KiotViet không trả ID cho webhook ${type}`);
@@ -523,7 +523,7 @@ async function retryDiscrepancy(res, ctx, _body, params) {
     error: 'Xác nhận retry này đã được sử dụng hoặc ca đã đóng; cần kiểm tra trạng thái đơn trước khi thử lại.',
   });
   if (out.confirmation_required) return send(res, 400, {
-    error: 'Chỉ thử lại sau khi đã kiểm tra KiotViet không có đơn mang mã Nền Tảng; gửi confirm_provider_absent=1 để xác nhận.',
+    error: 'Chỉ thử lại sau khi đã kiểm tra KiotViet không có đơn mang mã TikFlash; gửi confirm_provider_absent=1 để xác nhận.',
   });
   if (out.stale_order_generation) return send(res, 409, {
     error: 'Đơn thuộc cấu hình POS cũ; không tự gửi sang credential hoặc chi nhánh mới. Cần xác nhận nhận lại đơn có kiểm soát.',

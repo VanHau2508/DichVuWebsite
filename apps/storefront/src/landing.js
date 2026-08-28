@@ -617,6 +617,7 @@ button{font:inherit}
 @media(max-width:1023px){.lp-float{display:none}}
 
 .lp-ctl{display:flex;flex-direction:column;align-items:center;gap:16px;margin-top:auto;padding-top:26px}
+html:not(.lpjs) .lp-ctl{display:none}
 @media(min-width:1024px){.lp-ctl{flex-direction:row;justify-content:space-between;align-items:center;padding-top:30px}}
 .lp-count{font-weight:600;font-size:1.15rem;color:rgba(255,255,255,.5);font-variant-numeric:tabular-nums}
 .lp-count b{font-size:1.75rem;font-weight:800;color:#fff}
@@ -1735,7 +1736,7 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
         <button class="lp-pause" id="lpPause" type="button" aria-pressed="false" aria-label="Tạm dừng băng giới thiệu">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
         </button>
-        <div class="lp-dots" aria-label="Chọn banner">
+        <div class="lp-dots" role="group" aria-label="Chọn banner">
           ${BANNERS.map((b, k) => `<button type="button" aria-current="${k === 0}" aria-label="Banner ${k + 1}: ${esc(b.h)}"></button>`).join('')}
         </div>
         <div class="lp-arr">

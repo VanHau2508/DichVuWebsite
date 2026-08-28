@@ -140,7 +140,7 @@ test('đăng ký webhook gửi đúng envelope chính thức và có thể gỡ 
   const sent = seen.find((r) => r.url === '/webhooks' && r.method === 'POST');
   assert.deepEqual(JSON.parse(sent.raw), { Webhook: {
     Type: 'invoice.update', Url: 'https://api.example/invoice', IsActive: true,
-    Description: 'Nền Tảng POS connector', Secret: 'c2VjcmV0',
+    Description: 'TikFlash POS connector', Secret: 'c2VjcmV0',
   } });
 });
 

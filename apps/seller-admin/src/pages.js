@@ -2136,7 +2136,7 @@ function authSplit(title, body, { heading = 'Bán hàng online<br><em>không c�
 <meta name="robots" content="noindex"><title>${esc(title)}</title><style>${STYLE}</style></head><body>
 <div class="au">
   <section class="au-l">
-    <a class="au-brand" href="/"><i>N</i>Nền Tảng</a>
+    <a class="au-brand" href="/"><i>T</i>TikFlash</a>
     <div class="au-mid">
       <h2>${heading}</h2>
       <p>Nền tảng giúp bạn tạo website bán hàng riêng, quản lý đơn — kho — vận chuyển — tiền ở một chỗ.</p>
@@ -6690,7 +6690,7 @@ export function renderIntegrations(ctx, shopId, data = {}, notice, err, probe = 
   const discrepancyCards = (data.discrepancies ?? []).map((row) => `<div class="card" style="margin:10px 0;border-color:${row.severity === 'critical' ? '#fca5a5' : '#fcd34d'}">
     <div class="actions" style="justify-content:space-between"><strong>${esc(row.message)}</strong><span class="badge ${row.severity === 'critical' ? 'cancelled' : 'wait'}">${row.severity === 'critical' ? 'Quan trọng' : 'Cảnh báo'}</span></div>
     <p class="muted" style="margin:6px 0">${esc(row.kind)} · ${dt(row.created_at)}</p>
-    ${canRetry ? `<form method="POST" action="${base}/discrepancies/${esc(row.id)}/retry">${row.entity_type === 'order' ? '<label style="display:block;margin:8px 0;color:#92400e"><input type="checkbox" name="confirm_provider_absent" value="1" required> Tôi đã kiểm tra KiotViet và xác nhận chưa có đơn mang mã Nền Tảng của đơn này.</label>' : ''}<button class="btn sm" type="submit">${row.entity_type === 'order' ? 'Xác nhận chưa có đơn rồi gửi lại' : 'Thử đối soát lại'}</button></form>` : ''}
+    ${canRetry ? `<form method="POST" action="${base}/discrepancies/${esc(row.id)}/retry">${row.entity_type === 'order' ? '<label style="display:block;margin:8px 0;color:#92400e"><input type="checkbox" name="confirm_provider_absent" value="1" required> Tôi đã kiểm tra KiotViet và xác nhận chưa có đơn mang mã TikFlash của đơn này.</label>' : ''}<button class="btn sm" type="submit">${row.entity_type === 'order' ? 'Xác nhận chưa có đơn rồi gửi lại' : 'Thử đối soát lại'}</button></form>` : ''}
   </div>`).join('');
   return layout('Kết nối POS', { ...ctx, active: 'integrations' }, `<h1>Kết nối POS</h1>
     <p class="muted" style="margin:-6px 0 14px">Đồng bộ KiotViet với website mà không bắt khách tại quầy vào website đặt hàng.</p>

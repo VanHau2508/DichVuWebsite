@@ -232,7 +232,7 @@ export function createKiotVietClient({
       const data = await request('GET', '/webhooks', { query: { pageSize: 100 } });
       return Array.isArray(data.data) ? data.data : [];
     },
-    async registerWebhook({ type, url, secret, description = 'Nền Tảng POS connector' }) {
+    async registerWebhook({ type, url, secret, description = 'TikFlash POS connector' }) {
       return request('POST', '/webhooks', { body: { Webhook: {
         Type: text(type, 80), Url: text(url, 1000), IsActive: true,
         Description: text(description, 240), Secret: text(secret, 500),

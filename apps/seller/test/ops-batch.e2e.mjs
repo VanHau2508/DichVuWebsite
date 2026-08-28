@@ -120,6 +120,15 @@ async function main() {
   r.status === 200 ? ok('đặt ngưỡng sắp hết = 8 + email liên hệ') : bad('settings lỗi', r.raw);
   const st = await rq(SELLER, 'GET', `/shops/${A.shopId}/stats`, { cookie: A.cookie });
   (st.json.low_stock ?? []).length >= 1 ? ok(`tổng quan hiện ${st.json.low_stock.length} biến thể sắp hết`) : bad('thiếu low_stock trong stats', JSON.stringify(st.json.low_stock));
+  const todoCodes = new Set((st.json.todo_items ?? []).map((x) => x.code));
+  const coreTodo = (st.json.todo_items ?? []).filter((x) => ['to_confirm', 'to_ship', 'unpaid', 'partial_payments'].includes(x.code));
+  st.status === 200 && /^\d{4}-\d\d-\d\dT/.test(st.json.generated_at ?? '') && Array.isArray(st.json.partial?.failed)
+    ? ok('stats mở rộng có generated_at + partial.failed') : bad('stats thiếu contract snapshot', JSON.stringify(st.json));
+  st.json.sync?.mode === 'local' && st.json.sync?.status === 'not_connected' && st.json.sync?.lag_seconds === null
+    ? ok('shop local hiển thị nguồn nội bộ và độ trễ chưa từng đồng bộ là —') : bad('sync local sai', JSON.stringify(st.json.sync));
+  coreTodo.length === 4 && coreTodo.every((x) => x.available === true && x.count === st.json.todo?.[x.code])
+    && todoCodes.has('owed') && todoCodes.has('low_stock')
+    ? ok('todo_items giữ đủ mã + khớp các số lõi trong todo cũ') : bad('todo_items lệch todo legacy', JSON.stringify(st.json.todo_items));
 
   // Ca phân biệt ATS với tồn vật lý: 10 on_hand, không reserve nhưng giữ an toàn 4 → ATS 6.
   // Ngưỡng 8 phải bắt được ở cả Tổng quan và danh sách sản phẩm dù on_hand-reserved vẫn là 10.

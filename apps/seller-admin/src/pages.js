@@ -2239,13 +2239,17 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   // này" thì phải nhớ để sửa, và sẽ không ai nhớ.
   const statusCards = S.map((x) => `<a class="metric" style="text-decoration:none;color:inherit;display:block" href="${base}/orders?status=${x.k}&migrated=0">
       <div class="l"><span class="sdot" style="background:${x.c}"></span>${esc(x.label)}</div><div class="v">${esc(st[x.k] ?? 0)}</div></a>`).join('');
-  const top = (s?.top_products ?? []);
+  const partialFailed = new Set(Array.isArray(s?.partial?.failed) ? s.partial.failed : []);
+  const topUnavailable = partialFailed.has('top_products');
+  const seriesUnavailable = partialFailed.has('series');
+  const lowUnavailable = partialFailed.has('low_stock');
+  const top = topUnavailable ? [] : (s?.top_products ?? []);
   const maxTop = Math.max(...top.map((t) => Number(t.revenue) || 0), 1);
   const topRows = top.map((t) => `<tr>
       <td><div class="pcell">${t.image_url ? `<img class="pthumb" src="${esc(t.image_url)}" alt="" loading="lazy" width="40" height="40">` : `<span class="pthumb ph">${IC_IMG}</span>`}<div style="min-width:0">${esc(t.title)}<div class="muted" style="font-size:.8rem">${esc(t.sku ?? '')}</div></div></div></td>
       <td class="num right">${esc(t.qty)}</td>
       <td class="num right"><strong>${money(t.revenue)}</strong><div class="mbar"><i style="width:${Math.round((Number(t.revenue) || 0) / maxTop * 100)}%"></i></div></td></tr>`).join('');
-  const chart = revenueChart(s?.series);
+  const chart = seriesUnavailable ? '' : revenueChart(s?.series);
   // Checklist đọc nguyên contract readiness từ seller. Client không tự tính và nút mở bán vẫn
   // bị backend kiểm tra lại, nên sửa HTML/request không thể tự khai shop đã sẵn sàng.
   let setupCard = '';
@@ -2353,7 +2357,22 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   // Chủ shop mở trang quản lý là để biết HÔM NAY phải làm gì, không phải để ngắm doanh thu.
   // Mỗi ô = 1 việc tồn đọng + link tới đúng trang ĐÃ LỌC SẴN. Ô có việc (n>0) mới nổi màu;
   // hết việc thì xám và không dẫn đi đâu gấp. Sạch việc → hiện lời chúc thay vì lưới trống.
-  const td = s?.todo ?? {};
+  const td = s?.todo ?? null;
+  const todoItems = Array.isArray(s?.todo_items) ? s.todo_items : [];
+  const todoByCode = new Map(todoItems.map((item) => [String(item?.code ?? ''), item]));
+  const failedGroups = partialFailed;
+  const readTodo = (code, field) => {
+    const item = todoByCode.get(code);
+    if (item) {
+      // API đánh dấu từng mục; một truy vấn nhóm có thể lỗi trong khi KPI lõi vẫn hợp lệ.
+      const available = item.available !== false;
+      const count = available && item.count != null && Number.isFinite(Number(item.count)) ? Number(item.count) : null;
+      return { available, count };
+    }
+    if (!td || failedGroups.has('todo')) return { available: false, count: null };
+    const count = Number(td[field]);
+    return { available: Number.isFinite(count), count: Number.isFinite(count) ? count : null };
+  };
   // docs/44 §7: "Ô số liệu LÀ LINK — bấm vào con số phải nhảy tới danh sách ĐÃ LỌC SẴN".
   // Hai ô dưới đây trước đây dẫn tới danh sách ĐẦY ĐỦ: báo "3 đơn chưa thu tiền" rồi mở ra
   // 400 đơn. Người bán phải tự đi tìm 3 đơn đó — tệ hơn không có link, vì nó dạy người ta
@@ -2375,73 +2394,90 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   //   1 = tiền/người đang chờ mình  · 2 = dòng đơn hằng ngày · 3 = giữ cửa hàng chạy.
   // Mười một ô đồng hạng thì mắt rơi vào ô có số to nhất, mà số to nhất thường là "Sắp hết
   // hàng" — việc ít gấp nhất trong danh sách.
-  const TODO = [
+  const TODO_REGISTRY = [
     // ĐỨNG ĐẦU, và cố ý đứng trước cả đơn chờ xác nhận: mọi ô khác chỉ là tiền của shop về
     // CHẬM, ô này là tiền của NGƯỜI KHÁC đang nằm trong túi shop. Nhãn mang theo SỐ TIỀN vì
     // số đơn không nói lên mức độ — 1 đơn nợ 20 triệu gấp gáp hơn 11 đơn nợ 500 nghìn.
-    { tier: 1, see: ORDER_ROLES, n: Number(td.owed_count ?? 0), label: `Còn nợ khách${Number(td.owed_vnd ?? 0) > 0 ? ` · ${money(td.owed_vnd)}` : ''}`, href: `${base}/orders/owed`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '↩' },
-    { tier: 1, see: ORDER_ROLES, n: Number(td.order_requests ?? 0), label: 'Yêu cầu khách chờ xử lý', href: `${base}/order-requests?status=requested`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '↩' },
-    { tier: 1, see: ORDER_ROLES, n: Number(td.resolution_cases ?? 0), label: 'Ca giao hàng cần xử lý', href: `${base}/resolution-cases?status=active`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '↔' },
-    { tier: 1, see: ORDER_ROLES, n: Number(td.shipment_attention ?? 0), label: 'Vận đơn cần xử lý', href: `${base}/overview#shipment-attention`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '🚚' },
+    { code: 'owed', field: 'owed_count', tier: 1, see: ORDER_ROLES, label: () => `Còn nợ khách${Number(td?.owed_vnd ?? 0) > 0 ? ` · ${money(td.owed_vnd)}` : ''}`, href: (base) => `${base}/orders/owed`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '↩' },
+    { code: 'order_requests', field: 'order_requests', tier: 1, see: ORDER_ROLES, label: () => 'Yêu cầu khách chờ xử lý', href: (base) => `${base}/order-requests?status=requested`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '↩' },
+    { code: 'resolution_cases', field: 'resolution_cases', tier: 1, see: ORDER_ROLES, label: () => 'Ca giao hàng cần xử lý', href: (base) => `${base}/resolution-cases?status=active`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '↔' },
+    { code: 'shipment_attention', field: 'shipment_attention', tier: 1, see: ORDER_ROLES, label: () => 'Vận đơn cần xử lý', href: (base) => `${base}/overview#shipment-attention`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '🚚' },
     // `migrated=0` khớp với dashboard.js (`WHERE NOT is_migrated`) — cùng lý do đã ghi ở
     // statusCards. Ô tiền (unpaid/partial) KHÔNG cần: PAYMENT_ACTIONABLE_SQL trong owed.js
     // đã mang sẵn `NOT o.is_migrated`, nên đếm và danh sách vốn đã cùng một tập.
-    { tier: 2, see: ORDER_ROLES, n: Number(td.to_confirm ?? 0), label: 'Đơn chờ xác nhận', href: `${base}/orders?status=pending&migrated=0`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '🕐' },
-    { tier: 2, see: ORDER_ROLES, n: Number(td.to_ship ?? 0), label: 'Đơn chờ gửi hàng', href: `${base}/orders?status=confirmed&migrated=0`, tone: 'var(--indigo)', bg: 'var(--indigobg)', bd: 'var(--indigo)', icon: '📦' },
-    { tier: 2, see: ORDER_ROLES, n: Number(td.unpaid ?? 0), label: 'Đơn chưa thu tiền', href: `${base}/orders?payment=unpaid`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '💰' },
-    { tier: 2, see: ORDER_ROLES, n: Number(td.partial_payments ?? 0), label: 'Đơn thu một phần', href: `${base}/orders?payment=pending`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '◐' },
-    { tier: 3, see: ORDER_ROLES, n: Number(td.notification_failures ?? 0), label: 'Thông báo gửi thất bại', href: `${base}/notification-deliveries?status=failed`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '✉' },
+    { code: 'to_confirm', field: 'to_confirm', tier: 2, see: ORDER_ROLES, label: () => 'Đơn chờ xác nhận', href: (base) => `${base}/orders?status=pending&migrated=0`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '🕐' },
+    { code: 'to_ship', field: 'to_ship', tier: 2, see: ORDER_ROLES, label: () => 'Đơn chờ gửi hàng', href: (base) => `${base}/orders?status=confirmed&migrated=0`, tone: 'var(--indigo)', bg: 'var(--indigobg)', bd: 'var(--indigo)', icon: '📦' },
+    { code: 'unpaid', field: 'unpaid', tier: 2, see: ORDER_ROLES, label: () => 'Đơn chưa thu tiền', href: (base) => `${base}/orders?payment=unpaid`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '💰' },
+    { code: 'partial_payments', field: 'partial_payments', tier: 2, see: ORDER_ROLES, label: () => 'Đơn thu một phần', href: (base) => `${base}/orders?payment=pending`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '◐' },
+    { code: 'notification_failures', field: 'notification_failures', tier: 3, see: ORDER_ROLES, label: () => 'Thông báo gửi thất bại', href: (base) => `${base}/notification-deliveries?status=failed`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '✉' },
     // `?status=pending` TƯỜNG MINH. Trước đây link trần ăn may vào mặc định `status='pending'`
     // ở seller/reviews.js — đổi mặc định là con số dẫn tới danh sách khác mà không lỗi nào
     // hiện ra. Đúng lớp lỗi mà `payment=unpaid` và `stock=low` đã phải vá một lần rồi.
-    { tier: 3, see: CONTENT_ROLES, n: Number(td.reviews_pending ?? 0), label: 'Đánh giá chờ duyệt', href: `${base}/reviews?status=pending`, tone: 'var(--pri)', bg: 'var(--wash)', bd: 'var(--pri)', icon: '⭐' },
-    { tier: 3, see: CATALOG_ROLES, n: Number(td.low_stock ?? 0), label: 'Sắp hết hàng', href: `${base}/products?stock=low`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '⚠' },
-  ].filter((x) => x.see.has(ctx.role));
-  // Đếm trên các ô CÒN LẠI sau khi lọc quyền. Cộng cả ô đã ẩn thì câu "7 việc đang chờ bạn"
-  // nói về việc người này không thấy và không làm được — một con số không hành động được.
-  const openWork = TODO.reduce((a, x) => a + x.n, 0);
+    { code: 'reviews_pending', field: 'reviews_pending', tier: 3, see: CONTENT_ROLES, label: () => 'Đánh giá chờ duyệt', href: (base) => `${base}/reviews?status=pending`, tone: 'var(--pri)', bg: 'var(--wash)', bd: 'var(--pri)', icon: '⭐' },
+    { code: 'low_stock', field: 'low_stock', tier: 3, see: CATALOG_ROLES, label: () => 'Sắp hết hàng', href: (base) => `${base}/products?stock=low`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '⚠' },
+  ];
+  const severityTier = { 'khẩn': 1, 'chờ': 2, 'theo_dõi': 3 };
+  // Số liệu vận hành là thông tin chung của Tổng quan. Vai không có quyền trang đích
+  // vẫn nhìn thấy con số, nhưng không được nhận một thẻ/link mời bấm vào 403.
+  const TODO = TODO_REGISTRY.map((x) => {
+    const value = readTodo(x.code, x.field);
+    const item = todoByCode.get(x.code);
+    return {
+      ...x, canOpen: x.see.has(ctx.role), n: value.count, available: value.available,
+      label: x.label(value), href: x.href(base), tier: severityTier[item?.severity] ?? x.tier,
+    };
+  });
+  const todoUnavailable = TODO.some((x) => !x.available);
+  // Chỉ cộng số đã xác minh; null là "chưa lấy được", không phải 0.
+  const openWork = TODO.reduce((a, x) => a + (x.available && Number.isFinite(x.n) ? x.n : 0), 0);
+  // Tổng hợp mọi số liệu mà Tổng quan đã trả, kể cả số của trang đích vai hiện tại không mở
+  // được. Đây là thông tin vận hành chung; quyền chỉ gác lối thao tác bên dưới.
   // "Không còn việc tồn đọng — cửa hàng đang chạy êm" là câu ĐÚNG cho shop đang chạy, và
   // là lời nói dối cho shop vừa mở: 0 việc vì 0 khách, mà 0 khách vì chưa có gì để bán.
   // Câu đầu tiên chủ shop mới đọc phải nói đúng tình trạng, không phải trấn an.
   // setup chỉ khác null khi shop còn 'onboarding'; setup.products = có SP đang bán + còn tồn.
   const notSellable = !!setup && !setup.products;
   const todoCell = (x) => {
+    if (!x.available) return `<div class="todo-cell unavailable" aria-label="${esc(x.label)}: Chưa lấy được dữ liệu" style="opacity:.72">
+      <div class="todo-n">—</div><div class="todo-l">${x.icon} ${esc(x.label)}</div>
+      <div class="muted" style="font-size:.76rem;margin-top:4px">Chưa lấy được dữ liệu</div></div>`;
     const on = x.n > 0;
+    const inner = `<div class="todo-n" style="${on ? `color:${x.tone}` : ''}">${esc(x.n)}</div>
+      <div class="todo-l">${x.icon} ${esc(x.label)}</div>`;
+    if (!x.canOpen) return `<div class="todo-cell readonly${on ? ' on' : ''}" aria-label="${esc(x.label)}: ${x.n}"
+      style="${on ? `background:${x.bg};border-color:${x.bd}` : ''}">${inner}</div>`;
     return `<a class="todo-cell${on ? ' on' : ''}" href="${x.href}"
       style="${on ? `background:${x.bg};border-color:${x.bd}` : ''}"
-      aria-label="${esc(x.label)}: ${x.n}">
-      <div class="todo-n" style="${on ? `color:${x.tone}` : ''}">${esc(x.n)}</div>
-      <div class="todo-l">${x.icon} ${esc(x.label)}</div></a>`;
+      aria-label="${esc(x.label)}: ${x.n}">${inner}</a>`;
   };
   // BA NHÓM, mỗi nhóm nói rõ AI ĐANG CHỜ. Đây là phần biến khối này từ mười một con số xếp
   // cạnh nhau thành một thứ tự làm việc: đọc từ trên xuống đúng bằng thứ tự nên xử lý, và bỏ
   // qua được CẢ NHÓM khi chưa tới lượt. Không phân nhóm thì mắt rơi vào ô có SỐ TO NHẤT, mà
   // số to nhất gần như luôn là "Sắp hết hàng" — việc ít gấp nhất trong cả danh sách.
-  // Nhóm rỗng (vai không thấy ô nào trong nhóm) thì bỏ hẳn cả tiêu đề, không để đầu đề trơ.
+  // Nhóm rỗng chỉ xảy ra khi API không trả contract; quyền không làm mất số liệu khỏi nhóm.
   const NHOM = [
     [1, 'Khách đang chờ bạn', 'Tiền của khách hoặc yêu cầu khách đã gửi. Chậm ở đây mất niềm tin, không chỉ mất thời gian.'],
     [2, 'Đơn hàng hôm nay', 'Dòng chảy bình thường: xác nhận, gửi hàng, thu tiền.'],
-    // Câu mô tả KHÔNG được kể tên những việc trong nhóm: nhóm này lọc theo vai, nên
-    // `order_manager` chỉ còn đúng ô "Thông báo gửi thất bại" mà lại đọc một câu nhắc tới
-    // tồn kho và đánh giá — hai thứ họ không nhìn thấy và không mở được. Nói chung, đúng cho
-    // mọi vai. Thấy được lỗi này khi render thử ba vai, không chốt mã nguồn nào bắt nổi.
+    // Câu mô tả không kể tên từng việc trong nhóm: mọi vai mở Tổng quan đều thấy số liệu
+    // vận hành chung, kể cả khi một số ô chỉ đọc vì trang đích không thuộc quyền của họ.
     [3, 'Giữ cửa hàng chạy', 'Không gấp trong ngày, nhưng bỏ lâu thì hỏng âm thầm — không có ai báo.'],
   ];
   const todoGroups = NHOM.map(([t, ten, mo]) => {
     const cells = TODO.filter((x) => x.tier === t);
     if (!cells.length) return '';
-    const con = cells.reduce((a, x) => a + x.n, 0);
+    const con = cells.reduce((a, x) => a + (x.available && Number.isFinite(x.n) ? x.n : 0), 0);
     return `<div style="margin-top:18px">
       <div style="font-weight:600;font-size:.92rem">${esc(ten)}${con > 0 ? ` <span class="muted" style="font-weight:400">· ${esc(con)} việc</span>` : ''}</div>
       <div class="muted" style="font-size:.8rem;margin-top:2px">${esc(mo)}</div>
       <div class="todo-grid" style="margin-top:10px">${cells.map(todoCell).join('')}</div></div>`;
   }).join('');
-  // Vai không thấy ô nào thì KHÔNG dựng khối rỗng: một tiêu đề "Việc cần làm" với vùng trống
-  // bên dưới đọc như trang hỏng, chứ không như "phần này không dành cho bạn".
+  // Nếu API không trả contract thì không dựng một lưới rỗng gây hiểu nhầm; quyền không làm
+  // mất ô vì các ô chỉ đọc vẫn là số liệu vận hành chung.
   const todoCard = !TODO.length ? '' : `<div class="card">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
       <h2 style="margin:0">Việc cần làm</h2>
-      ${openWork > 0 ? `<span class="muted" style="font-size:.88rem">${esc(openWork)} việc đang chờ bạn</span>`
+      ${openWork > 0 ? `<span class="muted" style="font-size:.88rem">${esc(openWork)} việc đang chờ cửa hàng</span>`
+        : todoUnavailable ? '<span class="muted" style="font-size:.88rem">Một số dữ liệu chưa lấy được</span>'
         : notSellable ? '<span class="muted" style="font-size:.88rem">Chưa có đơn — cửa hàng chưa bán được</span>'
         : '<span class="muted" style="font-size:.88rem">✓ Không còn việc tồn đọng</span>'}
     </div>
@@ -2450,6 +2486,9 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   // Không dựng bộ lọc giả cho shipments: mỗi dòng dẫn tới đúng chi tiết đơn, nơi đã có hai
   // thao tác đối soát an toàn (xác nhận hãng đã tạo hoặc mở khoá sau khi kiểm tra portal).
   const shipmentAttention = Array.isArray(s?.shipment_attention) ? s.shipment_attention : [];
+  const shipmentTodo = TODO.find((x) => x.code === 'shipment_attention');
+  const shipmentCount = shipmentTodo?.n;
+  const shipmentUnavailable = failedGroups.has('shipment_attention') || shipmentTodo?.available === false;
   const shipmentAttentionRows = shipmentAttention.map((item) => {
     const statusText = item.provider_status === 'ambiguous'
       ? 'Chưa rõ hãng đã tạo hay chưa'
@@ -2463,15 +2502,33 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
       { style: 'text-align:right', html: `<a class="btn alt sm" href="${href}">Mở đơn phục hồi</a>` },
     ];
   });
-  const shipmentAttentionCard = (Number(td.shipment_attention ?? 0) > 0 || shipmentAttention.length > 0)
+  const shipmentAttentionCard = (shipmentUnavailable || (Number.isFinite(shipmentCount) && shipmentCount > 0) || shipmentAttention.length > 0)
     ? `<div class="card" id="shipment-attention" style="border-color:var(--bad)">
       <div class="toolbar"><div><h2 style="margin:0">Vận đơn cần xử lý</h2><p class="muted" style="margin:5px 0 0">Kiểm tra trên portal hãng trước khi thao tác; không tạo lại mù vì có thể sinh hai vận đơn và thu COD hai lần.</p></div></div>
-      ${shipmentAttentionRows.length ? `<div class="tblscroll">${tblCards({
+      ${shipmentUnavailable ? '<div class="notice">Chưa lấy được danh sách vận đơn cần xử lý. Không tự động tạo lại vận đơn.</div>' : shipmentAttentionRows.length ? `<div class="tblscroll">${tblCards({
         head: [{ html: 'Đơn' }, { html: 'Hãng' }, { html: 'Tình trạng' }, { html: 'Mã vận đơn' }, { html: '', label: '' }],
         rows: shipmentAttentionRows,
       })}</div>` : '<div class="empty-state">Các vận đơn cần phục hồi vừa được xử lý xong.</div>'}
-      ${Number(td.shipment_attention ?? 0) > shipmentAttention.length ? `<p class="muted" style="font-size:.82rem;margin-bottom:0">Đang hiện ${esc(shipmentAttention.length)} ca mới nhất trong tổng ${esc(td.shipment_attention)} ca.</p>` : ''}
+      ${Number.isFinite(shipmentCount) && shipmentCount > shipmentAttention.length ? `<p class="muted" style="font-size:.82rem;margin-bottom:0">Đang hiện ${esc(shipmentAttention.length)} ca mới nhất trong tổng ${esc(shipmentCount)} ca.</p>` : ''}
     </div>` : '';
+
+  const sync = s?.sync ?? null;
+  const syncStatus = {
+    not_connected: 'Chưa kết nối', connecting: 'Đang kết nối', active: 'Đang hoạt động',
+    degraded: 'Đang có vấn đề', disabled: 'Đã tắt',
+  }[sync?.status] ?? 'Chưa có dữ liệu';
+  const syncSource = sync?.provider ? String(sync.provider).toUpperCase() : (sync?.mode === 'local' ? 'Kho nội bộ' : '—');
+  const syncFreshness = sync?.freshness_at ? dt(sync.freshness_at) : 'Chưa có lần đồng bộ';
+  // `Number(null)` is 0; distinguish "chưa từng đồng bộ" from a real zero lag.
+  const syncLag = sync?.lag_seconds != null && Number.isFinite(Number(sync.lag_seconds))
+    ? `${Math.max(0, Number(sync.lag_seconds))} giây` : '—';
+  const syncCard = failedGroups.has('sync')
+    ? `<div class="card"><h2 style="margin-top:0">Đồng bộ tồn kho</h2><p class="muted">Chưa lấy được trạng thái đồng bộ. Không dùng dữ liệu này để quyết định checkout.</p></div>`
+    : `<div class="card"><div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap"><h2 style="margin:0">Đồng bộ tồn kho</h2><span class="badge">${esc(syncStatus)}</span></div>
+      <div class="metrics" style="margin:14px 0 0"><div class="metric"><div class="l">Nguồn</div><div class="v" style="font-size:1.05rem">${esc(syncSource)}</div></div>
+        <div class="metric"><div class="l">Lần cập nhật gần nhất</div><div class="v" style="font-size:1.05rem">${esc(syncFreshness)}</div></div>
+        <div class="metric"><div class="l">Độ trễ</div><div class="v" style="font-size:1.05rem">${esc(syncLag)}</div></div>
+        <div class="metric"><div class="l">Ca lệch đang mở</div><div class="v" style="font-size:1.05rem">${esc(Number(sync?.discrepancies_open ?? 0))}</div></div></div></div>`;
 
   // Nút pill THÍCH ỨNG: còn việc tồn → dẫn thẳng tới việc đầu tiên đang có (đúng danh sách
   // đã lọc vừa làm ở lô trước); sạch việc → mời thêm sản phẩm. Một dải hero nói y hệt nhau
@@ -2482,7 +2539,7 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   // vào một ngày không còn việc tồn đọng thì nút to nhất trên trang dẫn thẳng vào 403. Lỗi
   // này sống được lâu vì nó CHỈ hiện khi mọi ô đều bằng 0 — trạng thái mà không fixture nào
   // dựng, và mọi bộ e2e thì đăng nhập bằng owner.
-  const firstOpen = TODO.find((x) => x.n > 0);
+  const firstOpen = TODO.find((x) => x.canOpen && x.available && x.n > 0);
   const cta = firstOpen
     ? { href: firstOpen.href, label: `${firstOpen.label} (${firstOpen.n})` }
     : CATALOG_ROLES.has(ctx.role)
@@ -2500,7 +2557,8 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
     <span aria-hidden="true">${dots}</span>
     <div class="hb-in">
       <h1 id="hb-shop" class="hb-shop">${esc(ctx.shopName || 'Cửa hàng của bạn')}</h1>
-      <p class="hb-line">${openWork > 0 ? `Bạn có <strong>${esc(openWork)}</strong> việc đang chờ xử lý.`
+      <p class="hb-line">${openWork > 0 ? `Cửa hàng có <strong>${esc(openWork)}</strong> việc đang chờ xử lý.`
+        : todoUnavailable ? 'Một số dữ liệu vận hành chưa lấy được — hãy thử tải lại trước khi kết luận cửa hàng đã sạch việc.'
         : notSellable ? 'Khách chưa mua được gì — cần ít nhất một sản phẩm <strong>đang bán và còn hàng</strong>.'
         : 'Không còn việc tồn đọng — cửa hàng đang chạy êm.'}</p>
       <a class="hb-cta" href="${cta.href}">${esc(cta.label)}</a>
@@ -2541,11 +2599,12 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
     ${setupCard ? `<div class="hero-lift">${setupCard}</div>` : ''}
     ${(notice || setupCard) ? todoCard : `<div class="hero-lift">${todoCard}</div>`}
     ${shipmentAttentionCard}
+    ${syncCard}
     <div class="dash-hero">
       <p class="eyebrow">Doanh thu 7 ngày gần nhất</p>
       <div class="hero-num">${money(d7)}</div>
       <div class="hero-sub">${delta}<span>Hôm nay <strong>${money(rev.today ?? 0)}</strong> · ${esc(s?.orders_today ?? 0)} đơn mới</span></div>
-      ${chart || '<p class="muted" style="margin:14px 0 0">Chưa có dữ liệu doanh thu để vẽ biểu đồ.</p>'}
+      ${seriesUnavailable ? '<p class="muted" style="margin:14px 0 0">Chưa lấy được dữ liệu doanh thu theo ngày. Các KPI lõi vẫn hiển thị.</p>' : chart || '<p class="muted" style="margin:14px 0 0">Chưa có dữ liệu doanh thu để vẽ biểu đồ.</p>'}
     </div>
     <div class="metrics">
       ${metric('Doanh thu hôm nay', money(rev.today ?? 0), `${esc(s?.orders_today ?? 0)} đơn mới`)}
@@ -2557,9 +2616,9 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
       <div class="metrics" style="margin-bottom:0">${statusCards}</div>
       <p class="muted" style="font-size:.82rem;margin-bottom:0">Bấm vào một ô để xem danh sách đơn ở trạng thái đó.</p></div>
     <div class="card"><h2 style="margin-top:0">Bán chạy 30 ngày</h2>
-      ${top.length ? `<table><thead><tr><th>Sản phẩm</th><th class="right">Đã bán</th><th class="right">Doanh thu</th></tr></thead><tbody>${topRows}</tbody></table>`
+      ${topUnavailable ? '<p class="muted">Chưa lấy được dữ liệu bán chạy. Vui lòng thử lại sau.</p>' : top.length ? `<table><thead><tr><th>Sản phẩm</th><th class="right">Đã bán</th><th class="right">Doanh thu</th></tr></thead><tbody>${topRows}</tbody></table>`
         : '<p class="muted">Chưa có đơn đã thanh toán trong 30 ngày.</p>'}</div>
-    ${(s?.low_stock ?? []).length ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb"><h2 style="margin-top:0">⚠ Sắp hết hàng</h2>
+    ${lowUnavailable ? `<div class="card" style="border-color:var(--warn);background:var(--warnbg)"><h2 style="margin-top:0">⚠ Sắp hết hàng</h2><p class="muted">Chưa lấy được dữ liệu tồn kho. Không hiển thị số 0 giả.</p></div>` : (s?.low_stock ?? []).length ? `<div class="card" style="border-color:#fcd34d;background:#fffbeb"><h2 style="margin-top:0">⚠ Sắp hết hàng</h2>
       <table><thead><tr><th>Sản phẩm</th><th class="right">Còn bán được</th></tr></thead><tbody>
         ${s.low_stock.map((l) => `<tr><td>${esc(l.title)}${l.variant_title ? ` <span class="muted">${esc(l.variant_title)}</span>` : ''} <span class="muted" style="font-size:.8rem">${esc(l.sku ?? '')}</span></td>
           <td class="num right"><strong style="color:${l.available <= 0 ? '#b91c1c' : '#b45309'}">${esc(l.available)}</strong></td></tr>`).join('')}

@@ -545,10 +545,12 @@ làm chúng kẹt `opacity:0` vĩnh viễn (đo được 4/37 phần tử hiện
 chưa triển khai và chưa có khách thật (§0), trong khi chính chú thích đầu file tuyên bố
 không bịa số khách hàng. Có chốt cấm dựng lại cho tới khi có trích dẫn thật.
 
-Nhánh connector đã merge vào `main` tại `2e13602`; landing đã fast-forward vào `main` tại
-`13a288b`. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn, không bị huỷ. Commit dọn tiếp
-theo (đồng bộ thương hiệu, heading và ARIA cho carousel) đang chờ review độc lập trên nhánh
-`codex/landing-polish`.
+Nhánh connector đã vào `main` tại `2e13602` và các bản vá landing đã fast-forward tiếp tới
+`2061d93`. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn, không bị huỷ. Lát cắt hiện tại
+đang thi công Trung tâm vận hành trên nhánh `codex/operations-center`; chưa merge hoặc push,
+đang chờ review độc lập sau khi full gate trên môi trường đã áp đủ migration.
+
+Chi tiết hợp đồng `/stats`, registry việc cần làm và các giới hạn của lát cắt nằm ở `docs/81`.
 
 Nguyên nhân tràn ngang của trang **Tồn an toàn** đã được vá trên nhánh connector: con trực tiếp
 của `.filters` có `min-width:0;max-width:100%`, để nhãn "Tỉ lệ giữ an toàn cho toàn shop (%)"

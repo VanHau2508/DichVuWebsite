@@ -1,14 +1,13 @@
-// UNIT: hộp "Việc cần làm" trên Tổng quan — mỗi ô phải DẪN TỚI THỨ NÓ ĐẾM, và chỉ hiện cho
-// vai mở được trang đích.
+// UNIT: hộp "Việc cần làm" trên Tổng quan — mỗi ô phải HIỂN THỊ THỨ NÓ ĐẾM; chỉ link/nút
+// dẫn tới trang đích mới bị gác theo vai.
 //
 // VÌ SAO CÓ BỘ NÀY. Hai lớp lỗi đo được trên nhánh trước, cả hai đều VÔ HÌNH với e2e hiện có
 // (mọi bộ e2e đều đăng nhập bằng owner — vai có đủ mọi quyền, nên không bộ nào đi qua nhánh
 // thiếu quyền):
 //
-//   1. QUYỀN. sideNav lọc mục theo ORDER_ROLES/CATALOG_ROLES/CONTENT_ROLES, lưới việc thì
-//      KHÔNG lọc gì. Vai `order_manager` (chỉ orders.read/write) thấy "Đánh giá chờ duyệt"
-//      → /reviews cần content.write → 403, và "Sắp hết hàng" → /products cần catalog.read
-//      → 403. Hai ô dẫn thẳng vào tường, trong khi thanh điều hướng đã giấu đúng hai mục đó.
+//   1. QUYỀN. Vai `order_manager` (chỉ orders.read/write) vẫn phải thấy số "Đánh giá chờ
+//      duyệt" và "Sắp hết hàng" như thông tin vận hành chung, nhưng không được thấy link
+//      tới /reviews hoặc /products vì hai trang đó sẽ 403.
 //
 //   2. ĐẾM MỘT TẬP, MỞ RA TẬP KHÁC. dashboard.js đếm trạng thái đơn với `WHERE NOT
 //      is_migrated` (đơn nhập từ sàn cũ là lịch sử, không phải việc cần làm — 0104), còn
@@ -82,11 +81,11 @@ test('Set vai của sideNav khớp ma trận quyền THẬT của seller', () =>
   assert.deepEqual(viPham, [], 'lưới việc/nav mời bấm vào trang mà vai đó bị 403');
 });
 
-test('mỗi ô "Việc cần làm" khai đúng một Set vai (see:) và một tầng (tier:)', () => {
+test('registry "Việc cần làm" khai đúng một Set vai (see:) và một tầng (tier:)', () => {
   const than = thanRenderOverview();
-  const i = than.indexOf('const TODO = [');
-  assert.ok(i > 0, 'không tìm thấy mảng TODO — mốc chết');
-  const mang = than.slice(i, than.indexOf('\n  ].filter(', i));
+  const i = than.indexOf('const TODO_REGISTRY = [');
+  assert.ok(i > 0, 'không tìm thấy registry TODO — mốc chết');
+  const mang = than.slice(i, than.indexOf('\n  ];', i));
   assert.ok(mang.length > 200, 'cắt hụt mảng TODO — mốc chết');
   // Mỗi phần tử bắt đầu bằng `{ tier:`; đếm theo `label:` để không phụ thuộc thứ tự khoá.
   const soO = (mang.match(/\blabel:/g) ?? []).length;
@@ -99,7 +98,8 @@ test('mỗi ô "Việc cần làm" khai đúng một Set vai (see:) và một t�
     assert.ok(SET_QUYEN[m[1]], `ô dùng ${m[1]} — chưa khai trong SET_QUYEN nên KHÔNG được đối chiếu với rbac.js`);
   }
   // Lọc phải thật sự chạy, không chỉ khai dữ liệu rồi bỏ đó.
-  assert.match(than, /\.filter\(\(x\) => x\.see\.has\(ctx\.role\)\)/);
+  assert.match(than, /canOpen: x\.see\.has\(ctx\.role\)/);
+  assert.match(than, /if \(!x\.canOpen\) return `<div class="todo-cell readonly/);
 });
 
 test('hai ô từng dẫn vào 403 nay gắn đúng Set vai', () => {
@@ -108,7 +108,7 @@ test('hai ô từng dẫn vào 403 nay gắn đúng Set vai', () => {
   // Cắt theo DÒNG, không theo cặp ngoặc: mỗi ô nằm gọn một dòng, còn `[^{}]*` không băng qua
   // được `${base}` bên trong chính ô đó nên luôn khớp rỗng và test xanh giả.
   const dongO = (nhan) => {
-    const d = than.split('\n').find((x) => x.includes(`label: '${nhan}'`));
+    const d = than.split('\n').find((x) => x.includes(`label: () => '${nhan}'`));
     assert.ok(d, `không tìm thấy ô "${nhan}" — mốc chết, sửa lại bộ test`);
     return d;
   };
@@ -259,7 +259,7 @@ const SO_DICH_TRANG = 2;
 // Biểu thức href KHÔNG phải `${base}/…`. Mỗi cái phải khai rõ nó là gì — thêm một tầng gián
 // tiếp mới (`href="${abc.href}"` chẳng hạn) là mở một lối đi mà manifest trên không thấy.
 const HREF_GIAN_TIEP = {
-  '${x.href}': 'render ô TODO và thẻ SUGG — cả hai mảng đã .filter(see.has(ctx.role))',
+  '${x.href}': 'render ô TODO (gác link bằng canOpen) và thẻ SUGG (lọc theo see.has(ctx.role))',
   '${href}': 'render dòng vận đơn — biến cục bộ dựng từ `${base}/orders/…`, đã có trong manifest',
   '${cta.href}': 'nút hero — lấy từ TODO đã lọc, hoặc nhánh dự phòng gác bằng CATALOG_ROLES',
   '${esc(safeHref)}': 'link readiness động — đi qua allowlist noiBo()',

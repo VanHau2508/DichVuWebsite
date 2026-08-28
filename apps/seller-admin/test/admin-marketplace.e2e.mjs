@@ -343,17 +343,19 @@ async function main() {
   const om = await addMember(staff, A.shopId, 'order_manager');
   const omOv = await adm('GET', `/shops/${A.shopId}/overview`, { cookie: om.cookie });
   omOv.status === 200 ? ok('order_manager mở được Tổng quan') : bad('order_manager không mở được Tổng quan', String(omOv.status));
-  // Chỉ xét các ô trong lưới TODO. Trang còn một card tồn thấp lịch sử ở phần báo cáo phía
-  // dưới; tìm chữ trên toàn HTML sẽ kết luận nhầm rằng ô TODO vẫn hiện dù `.filter(see)` đã
-  // bỏ nó. Chốt vào đúng bề mặt người dùng đang kiểm, không dựa vào nhãn có thể xuất hiện ở
-  // một khối khác.
-  const omTodo = [...omOv.body.matchAll(/<a class="todo-cell[^"]*"[^>]*>[\s\S]*?<\/a>/g)]
+  // Vai không có quyền trang đích vẫn phải thấy số liệu vận hành chung; chỉ thẻ/link
+  // dẫn tới 403 mới bị đổi thành div không tương tác.
+  const omReadonly = [...omOv.body.matchAll(/<div class="todo-cell readonly[^>]*aria-label="([^"]+)"/g)]
+    .map((m) => m[1]).join('\n');
+  const omLinked = [...omOv.body.matchAll(/<a class="todo-cell[^>]*"[^>]*>[\s\S]*?<\/a>/g)]
     .map((m) => m[0]).join('\n');
-  !/Đánh giá chờ duyệt/.test(omTodo) && !/Sắp hết hàng/.test(omTodo)
-    ? ok('order_manager KHÔNG thấy ô "Đánh giá chờ duyệt" và "Sắp hết hàng"')
-    : bad('lưới việc vẫn mời vai thiếu quyền bấm vào trang sẽ 403');
-  /Đơn chờ xác nhận/.test(omTodo)
-    ? ok('order_manager vẫn thấy đủ ô đơn hàng thuộc phạm vi của mình') : bad('lọc quyền cắt nhầm ô đơn hàng');
+  /Đánh giá chờ duyệt/.test(omReadonly) && /Sắp hết hàng/.test(omReadonly)
+    && !/href="[^"]*\/reviews\?status=pending"/.test(omLinked)
+    && !/href="[^"]*\/products\?stock=low"/.test(omLinked)
+    ? ok('order_manager vẫn thấy số đánh giá/tồn thấp nhưng không có link 403')
+    : bad('lưới việc ẩn nhầm số liệu hoặc vẫn mời bấm vào trang 403');
+  /Đơn chờ xác nhận/.test(omLinked)
+    ? ok('order_manager vẫn có link tới ô đơn hàng thuộc phạm vi của mình') : bad('gác quyền cắt nhầm link đơn hàng');
   // Chính sách đã chọn: tổng hợp tồn thấp là thông tin vận hành chung trên Tổng quan, nhưng
   // lối sửa ngưỡng chỉ dành cho owner/admin. Giữ dữ liệu, ẩn hành động không có quyền.
   const lowStockBlock = (body) => {
@@ -390,7 +392,7 @@ async function main() {
   new RegExp(`href="/shops/${A.shopId}/domains"`).test(ownerSugg)
     ? ok('owner vẫn thấy gợi ý "Tên miền riêng"') : bad('cắt nhầm gợi ý của owner', ownerSugg.slice(0, 320));
   // Chứng minh tiền đề: hai trang đó THẬT SỰ từ chối vai này. Không có bước này thì khẳng
-  // định trên chỉ nói "ô bị ẩn", không nói được "ẩn vì đúng lý do".
+  // định trên chỉ nói "link bị gỡ", không nói được "gỡ vì đúng lý do".
   const omRv = await adm('GET', `/shops/${A.shopId}/reviews?status=pending`, { cookie: om.cookie });
   const omSp = await adm('GET', `/shops/${A.shopId}/products?stock=low`, { cookie: om.cookie });
   omRv.status === 403 && omSp.status === 403

@@ -21,8 +21,39 @@ const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 const DAYS = 14; // độ dài chuỗi doanh thu theo ngày (biểu đồ Tổng quan)
 
+const TODO_DEFS = [
+  { code: 'owed', field: 'owed_count', severity: 'khẩn', source: 'web' },
+  { code: 'order_requests', field: 'order_requests', severity: 'khẩn', source: 'web' },
+  { code: 'resolution_cases', field: 'resolution_cases', severity: 'khẩn', source: 'system' },
+  { code: 'shipment_attention', field: 'shipment_attention', severity: 'khẩn', source: 'system' },
+  { code: 'to_confirm', field: 'to_confirm', severity: 'chờ', source: 'web' },
+  { code: 'to_ship', field: 'to_ship', severity: 'chờ', source: 'web' },
+  { code: 'unpaid', field: 'unpaid', severity: 'chờ', source: 'web' },
+  { code: 'partial_payments', field: 'partial_payments', severity: 'chờ', source: 'web' },
+  { code: 'notification_failures', field: 'notification_failures', severity: 'theo_dõi', source: 'system' },
+  { code: 'reviews_pending', field: 'reviews_pending', severity: 'theo_dõi', source: 'system' },
+  { code: 'low_stock', field: 'low_stock', severity: 'theo_dõi', source: 'system' },
+];
+
 async function stats(res, ctx) {
   const out = await withTenant(ctx.shopId, async (c) => {
+    const partial = [];
+    // Optional dashboard groups recover to a savepoint so one unavailable widget never
+    // turns its count into a misleading zero or aborts the rest of the snapshot.
+    async function optional(name, fn, fallback = null) {
+      const savepoint = `dashboard_${name}`;
+      await c.query(`SAVEPOINT ${savepoint}`);
+      try {
+        const value = await fn();
+        await c.query(`RELEASE SAVEPOINT ${savepoint}`);
+        return value;
+      } catch (err) {
+        await c.query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+        await c.query(`RELEASE SAVEPOINT ${savepoint}`);
+        partial.push(name);
+        return fallback;
+      }
+    }
     const k = (await c.query(`
       SELECT
         coalesce(sum(total_vnd) FILTER (WHERE paid_at IS NOT NULL
@@ -62,7 +93,7 @@ async function stats(res, ctx) {
       WHERE o.paid_at IS NOT NULL AND NOT o.is_migrated AND r.kind <> 'edit_adjustment'`)).rows[0];
     // Bán chạy 30 ngày + ẢNH: gộp theo tên/sku (snapshot), lấy biến thể GẦN NHẤT làm đại
     // diện → resolve ảnh (ưu tiên ảnh riêng biến thể, không có thì ảnh chính sản phẩm).
-    const top = (await c.query(`
+    const top = await optional('top_products', async () => (await c.query(`
       SELECT t.title, t.sku, t.qty, t.revenue,
              (SELECT m.public_key FROM media m
                 JOIN variants v ON v.product_id = m.product_id
@@ -77,10 +108,11 @@ async function stats(res, ctx) {
            WHERE o.paid_at >= now() - interval '30 days' AND NOT o.is_migrated
            GROUP BY l.title_snapshot, l.sku_snapshot
            ORDER BY revenue DESC LIMIT 5
-        ) t`)).rows;
+        ) t`)).rows, []);
     // Doanh thu THEO NGÀY (14 ngày, giờ VN) — generate_series lấp ngày trống = 0 để biểu
     // đồ không "nhảy cóc". LEFT JOIN theo ngày đã quy đổi múi giờ VN.
-    const series = (await c.query(`
+    const series = await optional('series', async () => {
+      const rows = (await c.query(`
       SELECT to_char(d, 'YYYY-MM-DD') AS day, coalesce(sum(o.total_vnd), 0)::bigint AS revenue
         FROM generate_series(
                date_trunc('day', now() AT TIME ZONE 'Asia/Ho_Chi_Minh') - interval '${DAYS - 1} days',
@@ -96,19 +128,21 @@ async function stats(res, ctx) {
         FROM refunds r JOIN orders o ON o.id = r.order_id
        WHERE o.paid_at IS NOT NULL AND NOT o.is_migrated AND r.kind <> 'edit_adjustment' AND r.created_at >= now() - interval '${DAYS + 1} days'
        GROUP BY 1`)).rows;
-    const rfMap = new Map(rfByDay.map((r) => [r.day, Number(r.refunded)]));
-    for (const s of series) s.revenue = Number(s.revenue) - (rfMap.get(s.day) ?? 0);
+      const rfMap = new Map(rfByDay.map((r) => [r.day, Number(r.refunded)]));
+      for (const s of rows) s.revenue = Number(s.revenue) - (rfMap.get(s.day) ?? 0);
+      return rows;
+    }, []);
     // Sắp hết hàng ONLINE: cùng ATS đã trừ vùng đệm với storefront/checkout.
-    const low = (await c.query(`
+    const low = await optional('low_stock', async () => (await c.query(`
       SELECT p.title, v.sku, v.title AS variant_title, (${AVAIL_SQL})::int AS available
         FROM variants v
         JOIN products p ON p.id = v.product_id AND p.status = 'active' AND p.deleted_at IS NULL
         JOIN inventory_levels il ON il.variant_id = v.id
        WHERE ${AVAIL_SQL} <= coalesce((SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5)
-       ORDER BY available ASC LIMIT 10`)).rows;
+       ORDER BY available ASC LIMIT 10`)).rows, []);
     // Hai trạng thái này đều chặn tạo vận đơn mới để tránh hãng thu COD hai lần. Đưa tối đa
     // 10 ca mới nhất lên Tổng quan; thao tác phục hồi thật vẫn nằm trong chi tiết từng đơn.
-    const shipmentAttention = (await c.query(`
+    const shipmentAttention = await optional('shipment_attention', async () => (await c.query(`
       SELECT s.id AS shipment_id, s.order_id, o.order_number, s.provider,
              s.provider_status, s.tracking_number, s.created_at
         FROM shipments s
@@ -117,12 +151,12 @@ async function stats(res, ctx) {
          AND s.provider_status IN ('ambiguous','finalize_failed')
          AND NOT o.is_migrated
        ORDER BY s.created_at DESC, s.id DESC
-       LIMIT 10`)).rows;
+       LIMIT 10`)).rows, []);
     // "VIỆC CẦN LÀM" (hộp hành động kiểu TikTok Shop): 2 tín hiệu còn thiếu so với payload cũ.
     //   - đánh giá CHỜ DUYỆT: khách đã viết nhưng chưa hiện lên storefront → mất social proof.
     //   - TỔNG số biến thể sắp hết: `low` ở trên bị LIMIT 10 (bảng hiển thị), không dùng để
     //     đếm được; muốn hiện đúng "23 mục sắp hết" phải đếm riêng không giới hạn.
-    const todo = (await c.query(`
+    const todo = await optional('todo', async () => (await c.query(`
       SELECT
         (SELECT count(*)::int FROM product_reviews WHERE status = 'pending') AS reviews_pending,
         (SELECT count(*)::int
@@ -146,11 +180,61 @@ async function stats(res, ctx) {
           WHERE s.status = 'created'
             AND s.provider_status IN ('ambiguous','finalize_failed')
             AND NOT o.is_migrated
-        ) AS shipment_attention`)).rows[0];
-    return { k, rf, top, low, shipmentAttention, series, todo };
+        ) AS shipment_attention`)).rows[0], null);
+    const sync = await optional('sync', async () => {
+      const row = (await c.query(`
+        SELECT i.provider, i.status, i.inventory_authority, i.inventory_synced_at,
+               EXTRACT(EPOCH FROM (now() - i.inventory_synced_at))::bigint AS lag_seconds,
+               (SELECT count(*)::int FROM integration_sync_discrepancies d
+                  WHERE d.shop_id = i.shop_id AND d.integration_id = i.id AND d.status = 'open') AS discrepancies_open
+          FROM shop_integrations i
+         WHERE i.shop_id = current_shop_id()
+         ORDER BY (i.inventory_authority = 'external_master') DESC, i.id
+         LIMIT 1`)).rows[0];
+      return row ? {
+        mode: row.inventory_authority,
+        source: row.provider,
+        provider: row.provider,
+        status: row.status,
+        freshness_at: row.inventory_synced_at,
+        lag_seconds: row.lag_seconds == null ? null : Number(row.lag_seconds),
+        discrepancies_open: Number(row.discrepancies_open ?? 0),
+      } : {
+        mode: 'local', source: 'local', provider: null, status: 'not_connected',
+        freshness_at: null, lag_seconds: null, discrepancies_open: 0,
+      };
+    }, null);
+    return { k, rf, top, low, shipmentAttention, series, todo, sync, partial };
   });
   const n = (x) => Number(x ?? 0);
+  // Giữ nguyên hình dạng `todo` cũ để client cũ không phải xử lý null cả object. Bốn số
+  // trạng thái đơn đã có trong KPI lõi; chỉ các mục lấy từ truy vấn tùy chọn mới mất khi
+  // nhóm todo lỗi. `todo_items[].available` nói rõ từng mục nào đã được xác minh.
+  const todo = {
+    to_confirm: n(out.k.n_pending),
+    to_ship: n(out.k.n_confirmed),
+    unpaid: n(out.k.n_unpaid),
+    partial_payments: n(out.k.n_partial),
+    reviews_pending: out.todo ? n(out.todo.reviews_pending) : null,
+    low_stock: out.todo ? n(out.todo.low_stock_count) : null,
+    owed_count: out.todo ? n(out.todo.owed_count) : null,
+    owed_vnd: out.todo ? n(out.todo.owed_vnd) : null,
+    resolution_cases: out.todo ? n(out.todo.resolution_cases_open) : null,
+    notification_failures: out.todo ? n(out.todo.notification_failures) : null,
+    order_requests: out.todo ? n(out.todo.order_requests_pending) : null,
+    shipment_attention: out.todo ? n(out.todo.shipment_attention) : null,
+  };
+  const CORE_TODO_FIELDS = new Set(['to_confirm', 'to_ship', 'unpaid', 'partial_payments']);
+  const todoItems = TODO_DEFS.map((d) => {
+    const available = CORE_TODO_FIELDS.has(d.field) || !!out.todo;
+    return {
+      code: d.code, count: available ? todo[d.field] : null, severity: d.severity, source: d.source, available,
+    };
+  });
   return send(res, 200, {
+    generated_at: new Date().toISOString(),
+    partial: { failed: out.partial },
+    sync: out.sync,
     revenue: {
       today: n(out.k.rev_today) - n(out.rf.rf_today), d7: n(out.k.rev_7d) - n(out.rf.rf_7d),
       prev7: n(out.k.rev_prev7) - n(out.rf.rf_prev7), all: n(out.k.rev_all) - n(out.rf.rf_all),
@@ -179,20 +263,8 @@ async function stats(res, ctx) {
     })),
     // Hộp "Việc cần làm" trên Tổng quan: mỗi số là 1 việc chủ shop phải xử lý HÔM NAY,
     // kèm link tới đúng trang lọc sẵn (mẫu màn hình chính của TikTok Shop / Shopee).
-    todo: {
-      to_confirm: n(out.k.n_pending),      // đơn mới, chờ xác nhận
-      to_ship: n(out.k.n_confirmed),       // đã xác nhận, chờ giao cho hãng vận chuyển
-      unpaid: n(out.k.n_unpaid),           // chưa thu được khoản nào
-      partial_payments: n(out.k.n_partial), // đã thu một phần, còn thiếu
-      reviews_pending: n(out.todo.reviews_pending),
-      low_stock: n(out.todo.low_stock_count),
-      owed_count: n(out.todo.owed_count),   // số đơn shop đang giữ tiền của khách
-      owed_vnd: n(out.todo.owed_vnd),       // tổng tiền phải trả lại khách
-      resolution_cases: n(out.todo.resolution_cases_open),
-      notification_failures: n(out.todo.notification_failures),
-      order_requests: n(out.todo.order_requests_pending),
-      shipment_attention: n(out.todo.shipment_attention),
-    },
+    todo,
+    todo_items: todoItems,
   });
 }
 

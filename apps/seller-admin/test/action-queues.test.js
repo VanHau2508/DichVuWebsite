@@ -66,12 +66,47 @@ test('dashboard đưa vận đơn chưa chốt vào hàng đợi có hành độ
   assert.match(dashboard, /AND NOT o\.is_migrated/);
   assert.match(dashboard, /AS shipment_attention/);
   assert.match(dashboard, /shipment_attention: out\.shipmentAttention\.map/);
-  assert.match(dashboard, /shipment_attention: n\(out\.todo\.shipment_attention\)/);
-  assert.match(pages, /label: 'Vận đơn cần xử lý'.*overview#shipment-attention/s);
+  assert.match(dashboard, /shipment_attention: out\.todo \? n\(out\.todo\.shipment_attention\) : null/);
+  assert.match(pages, /label: \(\) => 'Vận đơn cần xử lý'.*overview#shipment-attention/s);
   assert.match(pages, /id="shipment-attention"/);
   assert.match(pages, /orders\/\$\{esc\(item\.order_id\)\}\?timeline=shipment/);
   assert.match(pages, /Chưa rõ hãng đã tạo hay chưa/);
   assert.match(pages, /Hãng đã tạo nhưng hệ thống chưa chốt đơn/);
+});
+
+test('stats mở rộng theo hợp đồng trung tâm vận hành và không biến lỗi tùy chọn thành số 0', () => {
+  assert.match(dashboard, /generated_at: new Date\(\)\.toISOString\(\)/);
+  assert.match(dashboard, /partial: \{ failed: out\.partial \}/);
+  assert.match(dashboard, /sync: out\.sync/);
+  assert.match(dashboard, /todo_items: todoItems/);
+  assert.match(dashboard, /const available = CORE_TODO_FIELDS\.has\(d\.field\) \|\| !!out\.todo/);
+  assert.match(dashboard, /optional\('top_products'/);
+  assert.match(dashboard, /optional\('series'/);
+  assert.match(dashboard, /optional\('low_stock'/);
+  assert.match(dashboard, /optional\('todo'/);
+  assert.match(dashboard, /optional\('sync'/);
+  // Seller API không được trở thành nơi dựng đường dẫn hoặc quyền của seller-admin.
+  const responseStart = dashboard.indexOf('return send(res, 200, {');
+  const responseEnd = dashboard.indexOf('\n}\n\nexport const DASHBOARD_ROUTES', responseStart);
+  const responseTail = dashboard.slice(responseStart, responseEnd > responseStart ? responseEnd : undefined);
+  assert.doesNotMatch(responseTail, /href:/);
+  assert.doesNotMatch(responseTail, /perm:/);
+});
+
+test('renderOverview giữ chỗ cho dữ liệu chưa lấy được thay vì render số 0 giả', () => {
+  assert.match(pages, /const todoByCode = new Map/);
+  assert.match(pages, /item\.available !== false/);
+  assert.match(pages, /Chưa lấy được dữ liệu/);
+  assert.match(pages, /todoUnavailable/);
+  assert.match(pages, /topUnavailable/);
+  assert.match(pages, /seriesUnavailable/);
+  assert.match(pages, /lowUnavailable/);
+  assert.match(pages, /failedGroups\.has\('sync'\)/);
+});
+
+test('trạng thái đồng bộ chưa từng chạy không hiển thị độ trễ 0 giây giả', () => {
+  assert.match(pages, /sync\?\.lag_seconds != null && Number\.isFinite\(Number\(sync\.lag_seconds\)\)/);
+  assert.match(pages, /\? `\$\{Math\.max\(0, Number\(sync\.lag_seconds\)\)\} giây` : '—'/);
 });
 
 test('thao tác đơn giữ cả lời giải thích và hành động tiếp theo từ seller', () => {

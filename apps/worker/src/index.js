@@ -43,7 +43,7 @@ const INTEGRATION_WEBHOOK_ATTEMPTS = Number(process.env.INTEGRATION_WEBHOOK_ATTE
 const FROM = process.env.EMAIL_FROM ?? 'no-reply@nentang.vn';
 // Thương hiệu + email liên hệ nền tảng cho NỘI DUNG nhắc hạn thuê bao (dunning) —
 // cùng mặc định với storefront (trang công ty) để copy nhất quán.
-const PLATFORM_BRAND = process.env.PLATFORM_BRAND ?? 'Nền Tảng';
+const PLATFORM_BRAND = process.env.PLATFORM_BRAND ?? 'TikFlash';
 const BILLING_CONTACT = process.env.PLATFORM_CONTACT_EMAIL ?? 'lienhe@nentang.vn';
 
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 4 });
@@ -1542,7 +1542,7 @@ function buildKiotVietWebsiteOrder(order, lines, integration, marker) {
   const method = { card: 'Card', qr: 'Transfer', transfer: 'Transfer' }[order.payment_method] ?? 'Cash';
   return {
     branchId: /^\d+$/.test(integration.external_branch_ref) ? Number(integration.external_branch_ref) : integration.external_branch_ref,
-    description: `${marker} Đơn website Nền Tảng #${order.order_number}`,
+    description: `${marker} Đơn website ${PLATFORM_BRAND} #${order.order_number}`,
     purchaseDate: new Date(order.created_at).toISOString(), makeInvoice: false, method,
     totalPayment: order.payment_status === 'paid' ? Number(order.total_vnd) : 0,
     discount: Number(order.discount_vnd) + Number(order.points_discount_vnd ?? 0),

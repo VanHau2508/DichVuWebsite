@@ -533,7 +533,7 @@ button{font:inherit}
 @keyframes lp-in{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
 /* KHÔNG viết hoa: ở cỡ này dấu tiếng Việt (ồ, ế, ữ) chạm vào chân dòng trên, đo được
    trên chính ảnh chụp. Chữ thường cỡ lớn cũng là kiểu chữ sang hơn. */
-.lp-hero h1{font-size:clamp(1.9rem,1.2rem + 2.6vw,3.35rem);font-weight:800;line-height:1.16;
+.lp-hero h1,.lp-hero h2{font-size:clamp(1.9rem,1.2rem + 2.6vw,3.35rem);font-weight:800;line-height:1.16;
             letter-spacing:-.025em;color:#fff;max-width:17ch}
 .lp-hero .lead{margin-top:20px;font-size:clamp(1rem,.94rem + .3vw,1.14rem);line-height:1.6;
                color:rgba(255,255,255,.76);max-width:50ch}
@@ -562,7 +562,7 @@ button{font:inherit}
    không đẩy nút và cụm điều khiển xuống dưới mép. Cắt CÓ CHỦ Ý, khác hẳn cắt vì tràn:
    phần bị che không mang thông tin nào mà chỗ khác trên trang chưa nói. */
 @media(max-width:1023px){
-  .lp-hero h1{font-size:clamp(1.72rem,1.05rem + 2.6vw,2.4rem)}
+  .lp-hero h1,.lp-hero h2{font-size:clamp(1.72rem,1.05rem + 2.6vw,2.4rem)}
   .lp-hero .lead{font-size:.98rem;line-height:1.55;max-width:44ch}
   /* Ba dòng tin cậy chiếm gần 90px trên điện thoại. Giữ hai dòng đắt nhất; dòng thứ ba
      ("không giữ tiền") được nói lại đầy đủ ở mục Giải pháp nên không mất thông tin. */
@@ -1704,7 +1704,7 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
   // Hero: slide ĐẦU mang class "on" ngay từ server — không JS thì nó vẫn là slide đang hiện,
   // đủ tiêu đề, đủ mô tả, đủ nút. Các slide sau chỉ là bổ sung.
   const slide = (b, k) => `<div class="lp-slide${k === 0 ? ' on' : ''}" role="group" aria-roledescription="banner" aria-label="Banner ${k + 1} trên ${BANNERS.length}">
-      <h1>${esc(b.h)}</h1>
+      <h${k === 0 ? 1 : 2}>${esc(b.h)}</h${k === 0 ? 1 : 2}>
       <p class="lead">${esc(b.d)}</p>
       <a class="lp-btn lp-knob" href="${esc(b.href)}">${esc(b.cta)}<i>${AR}</i></a>
     </div>`;
@@ -1735,8 +1735,8 @@ export function renderLanding({ contactEmail = 'lienhe@nentang.vn', contactPhone
         <button class="lp-pause" id="lpPause" type="button" aria-pressed="false" aria-label="Tạm dừng băng giới thiệu">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
         </button>
-        <div class="lp-dots" role="tablist" aria-label="Chọn banner">
-          ${BANNERS.map((b, k) => `<button type="button" role="tab" aria-current="${k === 0}" aria-label="Banner ${k + 1}: ${esc(b.h)}"></button>`).join('')}
+        <div class="lp-dots" aria-label="Chọn banner">
+          ${BANNERS.map((b, k) => `<button type="button" aria-current="${k === 0}" aria-label="Banner ${k + 1}: ${esc(b.h)}"></button>`).join('')}
         </div>
         <div class="lp-arr">
           <button id="lpPrev" type="button" aria-label="Banner trước"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H6M11 6l-6 6 6 6"/></svg></button>

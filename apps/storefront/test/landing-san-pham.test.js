@@ -451,6 +451,21 @@ test('không còn tên Evotech trong mã sản phẩm', () => {
   assert.match(SRC, /const CMP_COLS = \['TikFlash'/, 'cột so sánh phải mang tên mới');
 });
 
+test('carousel banner dùng heading đúng cấp và chấm không giả làm tab', () => {
+  assert.match(SRC,
+    /<h\$\{k === 0 \? 1 : 2\}>\$\{esc\(b\.h\)\}<\/h\$\{k === 0 \? 1 : 2\}>/,
+    'banner đầu là h1, các banner còn lại là h2');
+  assert.match(LUAT, /\.lp-hero h1,\.lp-hero h2\{font-size:/,
+    'h1 và h2 trong hero phải dùng cùng cỡ chữ');
+  const dots = SRC.slice(SRC.indexOf('<div class="lp-dots"'), SRC.indexOf('<div class="lp-arr"'));
+  assert.match(dots, /<div class="lp-dots" aria-label="Chọn banner">/,
+    'chấm banner phải giữ nhãn nhưng không khai tablist khi không có panel');
+  assert.doesNotMatch(dots, /role="tablist"|role="tab"/,
+    'chấm banner không được tự nhận là tab nếu thiếu hợp đồng tab');
+  assert.match(dots, /aria-current="\$\{k === 0\}"/,
+    'chấm banner phải đánh dấu vị trí hiện tại bằng aria-current');
+});
+
 test('không JS thì mũi tên mục Lợi ích phải biến mất', () => {
   // Một nút chết mời người ta bấm còn tệ hơn là không có nút.
   assert.match(LUAT, /html:not\(\.lpjs\) \.lp-loi-arr\{display:none\}/, 'thiếu ẩn mũi tên khi không JS');

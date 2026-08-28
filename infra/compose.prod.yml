@@ -413,7 +413,7 @@ services:
       LOYALTY_SWEEP_MS: ${LOYALTY_SWEEP_MS:-300000}
       SIGNUP_SWEEP_MS: ${SIGNUP_SWEEP_MS:-300000}
       # Thương hiệu + email liên hệ nền tảng trong email/Telegram NHẮC HẠN thuê bao.
-      PLATFORM_BRAND: ${PLATFORM_BRAND:-Nền Tảng}
+      PLATFORM_BRAND: ${PLATFORM_BRAND:-TikFlash}
       PLATFORM_CONTACT_EMAIL: ${PLATFORM_CONTACT_EMAIL:-lienhe@nentang.vn}
       # Poll vận đơn hãng VC (0044): khoá PHẢI khớp seller; sweep mặc định 10 phút.
       SHIPPING_ENC_KEY: ${SHIPPING_ENC_KEY:?}
@@ -468,7 +468,7 @@ services:
       MEDIA_PUBLIC_BASE: ${MEDIA_PUBLIC_BASE:?}
       # Trang CÔNG TY trên apex nentang.vn (landing + Giới thiệu/Hỗ trợ/Điều khoản/Blog).
       PLATFORM_ROOT_HOSTS: ${PLATFORM_ROOT_HOSTS:-nentang.vn,www.nentang.vn}
-      PLATFORM_BRAND: ${PLATFORM_BRAND:-Nền Tảng}
+      PLATFORM_BRAND: ${PLATFORM_BRAND:-TikFlash}
       PLATFORM_CONTACT_EMAIL: ${PLATFORM_CONTACT_EMAIL:-lienhe@nentang.vn}
       PLATFORM_CONTACT_PHONE: ${PLATFORM_CONTACT_PHONE:-}
       REDIS_URL: redis://redis:6379               # rate-limit đọc/tìm-kiếm per-IP (Đợt 6.2); vắng → fail-open

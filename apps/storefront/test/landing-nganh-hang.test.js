@@ -87,6 +87,8 @@ test('băng thẻ tự nó cuộn ngang được, không kéo cả trang tràn t
   // trên điện thoại là cả trang lắc lư.
   assert.match(LUAT, /\.lp-nh-ray\{[^}]*overflow-x:auto/, 'băng thẻ phải tự cuộn ngang');
   assert.match(LUAT, /\.lp-nh-ray\{[^}]*scroll-snap-type:x mandatory/, 'thiếu điểm dừng khi vuốt');
+  assert.match(LUAT, /\.lp-nh-ray\.nh-tu-chay\{[^}]*scroll-snap-type:none/,
+    'tự chạy liên tục phải tắt snap để không giật từng thẻ');
   assert.match(LUAT, /\.lp-nh\{[^}]*scroll-snap-align:start/, 'thẻ phải khai điểm dừng của nó');
   // Thanh cuộn CHỈ được giấu khi có mũi tên thay thế. Giấu cả ở nhánh không JS thì người
   // dùng chuột không còn cách nào biết băng lướt được — mất 11 thẻ mà không báo gì.
@@ -123,24 +125,32 @@ test('thẻ bị lọc ra phải biến mất thật, không chỉ mất chữ',
     'thiếu bộ lọc thẻ đang hiện');
 });
 
-test('băng chạy vòng ở cả hai đầu và tự chạy khi vào tầm mắt', () => {
-  // Tới thẻ cuối mà đứng im trông y hệt một băng hỏng — cùng lý do đã ghi ở băng sản phẩm.
-  assert.match(SRC, /if \(d > 0 && nhRay\.scrollLeft >= het - 2\) return nhDen\(0\);/,
-    'thiếu nhánh quay về đầu khi đã tới cuối');
-  assert.match(SRC, /if \(d < 0 && nhRay\.scrollLeft <= 2\) return nhDen\(ds\.length - 1\);/,
-    'thiếu nhánh vòng về cuối khi đang ở đầu');
+test('băng tự lướt đều sang trái và nối vòng không giật', () => {
+  // Một bản bóng ẩn khỏi trợ năng cho phép chuẩn hoá scrollLeft tại cùng một hình ảnh,
+  // thay vì giật ngược từ thẻ cuối về thẻ đầu.
+  assert.match(SRC, /var b = t\.cloneNode\(true\);[\s\S]*?b\.setAttribute\('aria-hidden', 'true'\);/,
+    'thiếu bản bóng aria-hidden để nối vòng liền mạch');
+  assert.match(SRC, /return b && !b\.hidden \? b\.offsetLeft - ds\[0\]\.offsetLeft : 0;/,
+    'độ dài vòng phải đo từ DOM thật sau khi lọc');
+  assert.match(SRC, /nhRay\.scrollLeft \+= 1;[\s\S]*?nhRay\.scrollLeft -= dai;/,
+    'mỗi nhịp phải đẩy băng sang trái rồi chuẩn hoá ở đúng một vòng');
+  assert.match(SRC, /nhTimer = setInterval\(nhNhip, 24\);/,
+    'tự chạy phải là nhịp ngắn liên tục, không phải nhảy một thẻ sau nhiều giây');
   // Chỉ chạy khi khối trong tầm mắt: chạy dưới đáy trang thì cuộn tới nơi đã nhảy mất mấy thẻ.
   assert.match(SRC, /function nhTrongTam\(\)\{/, 'thiếu cổng tầm mắt cho đồng hồ tự chạy');
   assert.match(SRC, /function beat\(\)\{[^}]*nhTrongTam\(\);/, 'cổng tầm mắt không được gọi mỗi nhịp cuộn');
   // Giảm chuyển động thì TẮT hẳn đồng hồ, không chỉ bỏ hiệu ứng mượt.
-  assert.match(SRC, /if \(!nhTimer && !RM && nhRay && nhHien\(\)\.length > 1\)/,
+  assert.match(SRC, /if \(!nhTimer && !RM && nhTrong && !nhDangDung\(\) && nhRay && nhHien\(\)\.length > 1\)/,
     'đồng hồ tự chạy phải tắt khi người dùng xin giảm chuyển động');
-  // Bấm chỉ ĐẶT LẠI đồng hồ. Dừng vĩnh viễn thì bấm thử một cái là băng chết.
-  assert.match(SRC, /function nhTay\(d\)\{ nhBuoc\(d\); nhNgung\(\); nhChay\(\); \}/,
-    'bấm mũi tên phải đặt lại đồng hồ, không giết nó');
+  // Hover/focus/touch phải dừng thật, kể cả beat() tiếp tục gọi cổng tầm mắt.
+  assert.match(SRC, /function nhDangDung\(\)\{ return nhTro \|\| nhNet \|\| nhCham; \}/,
+    'thiếu trạng thái bảo vệ thao tác người dùng khỏi đồng hồ tự chạy');
+  // Bấm chỉ tạm dừng; dừng vĩnh viễn thì bấm thử một cái là băng chết.
+  assert.match(SRC, /function nhTay\(d\)\{ nhNgung\(\); nhBuoc\(d\); nhHenChay\(\); \}/,
+    'bấm mũi tên phải hẹn chạy lại, không giết băng');
   // Vị trí đọc từ scrollLeft THẬT: giữ một biến chỉ số riêng thì người dùng vuốt tay xong
   // mũi tên nhảy về chỗ cũ.
-  assert.match(SRC, /var x = nhRay\.scrollLeft, k = 0, gan = Infinity;/,
+  assert.match(SRC, /var x = nhRay\.scrollLeft, dai = nhDoDaiVong\(\), k = 0, gan = Infinity;/,
     'vị trí thẻ phải đọc từ scrollLeft, không từ một biến đếm riêng');
 });
 

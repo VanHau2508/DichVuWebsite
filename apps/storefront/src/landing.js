@@ -1049,6 +1049,7 @@ html.lpjs .lp-nh-loc::-webkit-scrollbar{display:none}
 .lp-nh-ray{display:flex;gap:20px;overflow-x:auto;overscroll-behavior-x:contain;
            scroll-snap-type:x mandatory;padding:6px clamp(20px,4.4vw,56px) 10px;
            scroll-padding-inline:clamp(20px,4.4vw,56px)}
+.lp-nh-ray.nh-tu-chay{scroll-snap-type:none;scroll-behavior:auto}
 /* Thanh cuộn chỉ giấu khi CÓ mũi tên thay thế. Không JS mà cũng giấu thanh cuộn thì
    người dùng chuột không còn cách nào biết băng lướt được. */
 html.lpjs .lp-nh-ray{scrollbar-width:none}
@@ -1541,15 +1542,37 @@ const JS = `(function(){
       nhThes = nhRay ? [].slice.call(nhRay.querySelectorAll('.lp-nh')) : [],
       nhLocs = [].slice.call(D.querySelectorAll('.lp-nh-loc .lp-chip')),
       nhP = D.getElementById('nhPrev'), nhN = D.getElementById('nhNext'),
-      nhDem = D.getElementById('nhDem'), nhTimer = null;
+      nhDem = D.getElementById('nhDem'), nhTimer = null, nhHen = null,
+      nhBongs = [], nhTrong = false, nhTro = false, nhNet = false, nhCham = false;
+  /* Bản bóng tạo vòng lặp liền mạch: khi nửa thứ hai tới đúng vị trí của nửa đầu,
+     scrollLeft được chuẩn hoá mà mắt vẫn thấy cùng một thẻ. Bản bóng không tham gia
+     bộ đếm, bộ lọc hay cây trợ năng. */
+  if (nhRay && nhThes.length > 1) {
+    nhThes.forEach(function(t){
+      var b = t.cloneNode(true);
+      b.classList.add('lp-nh-bong');
+      b.setAttribute('aria-hidden', 'true');
+      nhRay.appendChild(b); nhBongs.push(b);
+    });
+  }
   /* Thẻ đang HIỆN, không phải toàn bộ thẻ: lọc xong mà vẫn đếm theo mảng gốc thì
      bộ đếm nói "3 / 12" trong khi băng chỉ còn 1 thẻ. */
   function nhHien(){ return nhThes.filter(function(e){ return !e.hidden; }); }
   /* Vị trí đọc TỪ scrollLeft THẬT, không giữ một biến chỉ số riêng: người dùng vuốt
      tay hoặc kéo thanh cuộn thì biến kia lệch ngay, và mũi tên nhảy về chỗ cũ. */
+  function nhDoDaiVong(){
+    var ds = nhHien(); if (!ds.length || !nhBongs.length) return 0;
+    var i = nhThes.indexOf(ds[0]), b = nhBongs[i];
+    return b && !b.hidden ? b.offsetLeft - ds[0].offsetLeft : 0;
+  }
+  function nhChuanHoa(){
+    var dai = nhDoDaiVong();
+    if (nhRay && dai > 0 && nhRay.scrollLeft >= dai) nhRay.scrollLeft -= dai;
+  }
   function nhChiSo(){
     var ds = nhHien(); if (!ds.length || !nhRay) return 0;
-    var x = nhRay.scrollLeft, k = 0, gan = Infinity;
+    var x = nhRay.scrollLeft, dai = nhDoDaiVong(), k = 0, gan = Infinity;
+    if (dai > 0) x %= dai;
     for (var i = 0; i < ds.length; i++) {
       var d = Math.abs(ds[i].offsetLeft - nhRay.offsetLeft - x);
       if (d < gan) { gan = d; k = i; }
@@ -1570,33 +1593,47 @@ const JS = `(function(){
     nhRay.scrollTo({ left: ds[k].offsetLeft - nhRay.offsetLeft, behavior: (tuc || RM) ? 'instant' : 'smooth' });
     nhVe();
   }
-  /* Tới cuối thì quay về đầu, không đứng im: băng đứng im ở thẻ cuối trông y hệt
-     một băng hỏng — cùng lý do đã ghi ở băng sản phẩm. */
   function nhBuoc(d){
     var ds = nhHien(); if (!nhRay || !ds.length) return;
-    var het = nhRay.scrollWidth - nhRay.clientWidth;
-    if (d > 0 && nhRay.scrollLeft >= het - 2) return nhDen(0);
-    if (d < 0 && nhRay.scrollLeft <= 2) return nhDen(ds.length - 1);
+    nhChuanHoa();
     nhDen(nhChiSo() + d);
   }
-  function nhChay(){
-    if (!nhTimer && !RM && nhRay && nhHien().length > 1) nhTimer = setInterval(function(){ nhBuoc(1); }, 5200);
+  function nhNhip(){
+    var dai = nhDoDaiVong(); if (!nhRay || dai <= 0) return;
+    nhRay.scrollLeft += 1;
+    if (nhRay.scrollLeft >= dai) nhRay.scrollLeft -= dai;
   }
-  function nhNgung(){ if (nhTimer) { clearInterval(nhTimer); nhTimer = null; } }
-  /* Bấm chỉ ĐẶT LẠI đồng hồ, không dừng hẳn. */
-  function nhTay(d){ nhBuoc(d); nhNgung(); nhChay(); }
+  function nhDangDung(){ return nhTro || nhNet || nhCham; }
+  function nhChay(){
+    if (!nhTimer && !RM && nhTrong && !nhDangDung() && nhRay && nhHien().length > 1) {
+      nhRay.classList.add('nh-tu-chay');
+      nhTimer = setInterval(nhNhip, 24);
+    }
+  }
+  function nhNgung(){
+    if (nhTimer) { clearInterval(nhTimer); nhTimer = null; }
+    if (nhRay) nhRay.classList.remove('nh-tu-chay');
+  }
+  function nhHenChay(){
+    if (nhHen) clearTimeout(nhHen);
+    nhHen = setTimeout(function(){ nhHen = null; nhChay(); }, 700);
+  }
+  /* Thao tác tay được ưu tiên; băng tiếp tục tự chạy sau khi hiệu ứng chuyển thẻ xong. */
+  function nhTay(d){ nhNgung(); nhBuoc(d); nhHenChay(); }
   if (nhP) nhP.addEventListener('click', function(){ nhTay(-1); });
   if (nhN) nhN.addEventListener('click', function(){ nhTay(1); });
   if (nhRay) {
     nhRay.addEventListener('scroll', nhVe, { passive: true });
-    nhRay.addEventListener('mouseenter', nhNgung);
-    nhRay.addEventListener('mouseleave', nhChay);
-    nhRay.addEventListener('focusin', nhNgung);
-    nhRay.addEventListener('focusout', function(e){ if (!nhRay.contains(e.relatedTarget)) nhChay(); });
+    nhRay.addEventListener('mouseenter', function(){ nhTro = true; nhNgung(); });
+    nhRay.addEventListener('mouseleave', function(){ nhTro = false; nhChay(); });
+    nhRay.addEventListener('focusin', function(){ nhNet = true; nhNgung(); });
+    nhRay.addEventListener('focusout', function(e){
+      if (!nhRay.contains(e.relatedTarget)) { nhNet = false; nhChay(); }
+    });
     /* Vuốt tay: dừng hẳn đồng hồ trong lúc ngón còn trên màn, rồi chạy lại. Không có
        nhánh này thì đang vuốt dở bị đồng hồ giật băng về chỗ khác. */
-    nhRay.addEventListener('touchstart', nhNgung, { passive: true });
-    nhRay.addEventListener('touchend', nhChay, { passive: true });
+    nhRay.addEventListener('touchstart', function(){ nhCham = true; nhNgung(); }, { passive: true });
+    nhRay.addEventListener('touchend', function(){ nhCham = false; nhHenChay(); }, { passive: true });
     nhRay.addEventListener('keydown', function(e){
       var d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
       if (!d) return;
@@ -1608,6 +1645,7 @@ const JS = `(function(){
       var k = b.dataset.loc || '';
       nhLocs.forEach(function(o){ o.setAttribute('aria-pressed', String(o === b)); });
       nhThes.forEach(function(t){ t.hidden = !!k && t.dataset.nh !== k; });
+      nhBongs.forEach(function(t, i){ t.hidden = nhThes[i].hidden; });
       if (nhRay) nhRay.scrollTo({ left: 0, behavior: 'instant' });
       nhVe(); nhNgung(); nhChay();
     });
@@ -1615,7 +1653,8 @@ const JS = `(function(){
   function nhTrongTam(){
     if (!nhRay) return;
     var r = nhRay.getBoundingClientRect();
-    if (r.top < innerHeight * 0.9 && r.bottom > innerHeight * 0.1) nhChay(); else nhNgung();
+    nhTrong = r.top < innerHeight * 0.9 && r.bottom > innerHeight * 0.1;
+    if (nhTrong) nhChay(); else nhNgung();
   }
 
   /* ── THANH CTA NỔI ───────────────────────────────────────────────────────── */

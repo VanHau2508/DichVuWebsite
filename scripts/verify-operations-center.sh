@@ -76,6 +76,33 @@ else
   ok "noi lai danh sach voi todo -> contracts do"
 fi
 
+# Mutation 4: drift the producer-side name while the seller-admin consumer keeps the old one.
+restore
+sed -i "s/optional('shipment_attention'/optional('shipments'/" "$DASH"
+if run_contracts; then
+  bad "doi ten nhom partial mot phia van xanh"
+else
+  ok "doi ten nhom partial mot phia -> contracts do"
+fi
+
+# Mutation 5: disconnect the helper from the partial array returned in the response.
+restore
+sed -i 's/withOptionalDashboardGroup(c, partial, name, fn, fallback)/withOptionalDashboardGroup(c, [], name, fn, fallback)/' "$DASH"
+if run_contracts; then
+  bad "cat day noi partial van xanh"
+else
+  ok "cat day noi partial -> contracts do"
+fi
+
+# Mutation 6: keep a successful savepoint open instead of releasing it.
+restore
+sed -i '0,/    await client.query(`RELEASE SAVEPOINT ${savepoint}`);/s//    \/\/ mutation removed successful release/' "$CONTRACT"
+if run_contracts; then
+  bad "bo release savepoint thanh cong van xanh"
+else
+  ok "bo release savepoint thanh cong -> contracts do"
+fi
+
 restore
 printf '\n%d pass, %d fail\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

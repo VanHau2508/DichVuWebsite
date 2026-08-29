@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const pages = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'pages.js'), 'utf8');
+const operationsCenter = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'operations-center.js'), 'utf8');
 const server = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'server.js'), 'utf8');
 const dashboard = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'seller', 'src', 'dashboard.js'), 'utf8');
 const { withOptionalDashboardGroup } = await import('../../seller/src/dashboard-contract.js');
@@ -96,6 +97,16 @@ test('stats mở rộng theo hợp đồng trung tâm vận hành và không bi�
   assert.doesNotMatch(responseTail, /perm:/);
 });
 
+test('tên nhóm partial khớp hai service và helper nhận đúng mảng partial của response', () => {
+  const produced = [...dashboard.matchAll(/\boptional\('([^']+)'/g)].map((m) => m[1]);
+  const consumed = [
+    ...pages.matchAll(/\b(?:partialFailed|failedGroups)\.has\('([^']+)'\)/g),
+    ...operationsCenter.matchAll(/\bfailedGroups\.has\('([^']+)'\)/g),
+  ].map((m) => m[1]);
+  assert.deepEqual([...new Set(produced)].sort(), [...new Set(consumed)].sort());
+  assert.match(dashboard, /withOptionalDashboardGroup\(c, partial, name, fn, fallback\)/);
+});
+
 test('renderOverview giữ chỗ cho dữ liệu chưa lấy được thay vì render số 0 giả', () => {
   assert.match(pages, /const todoByCode = new Map/);
   assert.match(pages, /item\.available !== false/);
@@ -128,6 +139,20 @@ test('nhóm stats tùy chọn ghi nhận lỗi thật qua savepoint, không ch�
   ]);
 });
 
+test('nhóm stats tùy chọn thành công trả kết quả và giải phóng savepoint', async () => {
+  const calls = [];
+  const client = { query: async (sql) => { calls.push(sql); } };
+  const partial = [];
+  const expected = [{ id: 'row-1' }];
+  const value = await withOptionalDashboardGroup(client, partial, 'series', async () => expected, []);
+  assert.equal(value, expected);
+  assert.deepEqual(partial, []);
+  assert.deepEqual(calls, [
+    'SAVEPOINT dashboard_series',
+    'RELEASE SAVEPOINT dashboard_series',
+  ]);
+});
+
 test('danh sách vận đơn không bị che khi riêng truy vấn todo bị lỗi', () => {
   const state = shipmentAttentionPresentation(
     new Set(['todo']),
@@ -135,8 +160,13 @@ test('danh sách vận đơn không bị che khi riêng truy vấn todo bị l�
     [{ order_id: 'T1' }, { order_id: 'T2' }],
   );
   assert.deepEqual(state, { unavailable: false, count: null, shouldRender: true });
+  assert.deepEqual(
+    shipmentAttentionPresentation(new Set(['shipment_attention']), { available: true, n: 7 }, []),
+    { unavailable: true, count: 7, shouldRender: true },
+  );
   assert.match(pages, /shipmentAttentionPresentation\(failedGroups, shipmentTodo, shipmentAttention\)/);
   assert.match(pages, /const shipmentAttentionCard = shipmentState\.shouldRender/);
+  assert.match(pages, /Có \$\{esc\(shipmentCount\)\} ca đang mở nhưng chưa đọc được danh sách/);
 });
 
 test('sync đếm mọi discrepancy đang mở của shop, không chỉ integration được chọn hiển thị', () => {

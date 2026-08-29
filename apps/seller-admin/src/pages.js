@@ -2504,6 +2504,13 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
       { style: 'text-align:right', html: `<a class="btn alt sm" href="${href}">Mở đơn phục hồi</a>` },
     ];
   });
+  const shipmentCountNote = shipmentUnavailable
+    ? Number.isFinite(shipmentCount) && shipmentCount > 0
+      ? `<p class="muted" style="font-size:.82rem;margin-bottom:0">Có ${esc(shipmentCount)} ca đang mở nhưng chưa đọc được danh sách.</p>`
+      : ''
+    : Number.isFinite(shipmentCount) && shipmentCount > shipmentAttention.length
+      ? `<p class="muted" style="font-size:.82rem;margin-bottom:0">Đang hiện ${esc(shipmentAttention.length)} ca mới nhất trong tổng ${esc(shipmentCount)} ca.</p>`
+      : '';
   const shipmentAttentionCard = shipmentState.shouldRender
     ? `<div class="card" id="shipment-attention" style="border-color:var(--bad)">
       <div class="toolbar"><div><h2 style="margin:0">Vận đơn cần xử lý</h2><p class="muted" style="margin:5px 0 0">Kiểm tra trên portal hãng trước khi thao tác; không tạo lại mù vì có thể sinh hai vận đơn và thu COD hai lần.</p></div></div>
@@ -2511,7 +2518,7 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
         head: [{ html: 'Đơn' }, { html: 'Hãng' }, { html: 'Tình trạng' }, { html: 'Mã vận đơn' }, { html: '', label: '' }],
         rows: shipmentAttentionRows,
       })}</div>` : '<div class="empty-state">Các vận đơn cần phục hồi vừa được xử lý xong.</div>'}
-      ${Number.isFinite(shipmentCount) && shipmentCount > shipmentAttention.length ? `<p class="muted" style="font-size:.82rem;margin-bottom:0">Đang hiện ${esc(shipmentAttention.length)} ca mới nhất trong tổng ${esc(shipmentCount)} ca.</p>` : ''}
+      ${shipmentCountNote}
     </div>` : '';
 
   const sync = s?.sync ?? null;

@@ -28,8 +28,8 @@ và có thẻ riêng cho độ tươi tồn kho.
 
 ## Kiểm chứng
 
-- Unit manifest: 316/316; contract operations-center: 25/25; mutation gồm cả chốt ghi
-  `partial.failed` thật và tách danh sách vận đơn: 4/4.
+- Unit manifest: 318/318; contract operations-center: 27/27; mutation gồm chốt ghi
+  `partial.failed`, từ vựng liên service, dây nối response và tách danh sách vận đơn: 7/7.
 - E2E `ops-batch`: 15/15 sau restart seller/seller-admin.
 - Fresh migration: 180 migration, 0 drift, 0 pending; security scan: 0 phát hiện.
 - DB invariant cần chạy trên DB đã áp đủ migration. DB dev hiện tại còn drift lịch sử ở `0178`,

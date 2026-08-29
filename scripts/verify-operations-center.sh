@@ -9,6 +9,8 @@ cd "$ROOT"
 
 PAGES="apps/seller-admin/src/pages.js"
 DASH="apps/seller/src/dashboard.js"
+CONTRACT="apps/seller/src/dashboard-contract.js"
+ADMIN_CONTRACT="apps/seller-admin/src/operations-center.js"
 TESTS=(apps/seller-admin/test/action-queues.test.js apps/seller-admin/test/dashboard-viec.test.js)
 BAK="$(mktemp -d)"
 pass=0
@@ -20,6 +22,8 @@ bad() { fail=$((fail + 1)); printf '  FAIL %s\n' "$1"; }
 restore() {
   cp "$BAK/pages.js" "$PAGES"
   cp "$BAK/dashboard.js" "$DASH"
+  cp "$BAK/dashboard-contract.js" "$CONTRACT"
+  cp "$BAK/operations-center.js" "$ADMIN_CONTRACT"
 }
 cleanup() {
   restore
@@ -29,6 +33,8 @@ trap cleanup EXIT INT TERM
 
 cp "$PAGES" "$BAK/pages.js"
 cp "$DASH" "$BAK/dashboard.js"
+cp "$CONTRACT" "$BAK/dashboard-contract.js"
+cp "$ADMIN_CONTRACT" "$BAK/operations-center.js"
 
 run_contracts() {
   node --test "${TESTS[@]}" >/dev/null 2>&1
@@ -52,13 +58,22 @@ else
   ok "bo action gate -> contracts do"
 fi
 
-# Mutation 2: remove the partial-data contract from the stats response.
+# Mutation 2: remove the actual failure recording from the savepoint helper.
 restore
-sed -i 's/partial: { failed: out\.partial },/partial: { failed: [] },/' "$DASH"
+sed -i 's/    partial\.push(name);//' "$CONTRACT"
 if run_contracts; then
-  bad "bo partial.failed van xanh"
+  bad "bo ghi partial.failed van xanh"
 else
-  ok "bo partial.failed -> contracts do"
+  ok "bo ghi partial.failed -> contracts do"
+fi
+
+# Mutation 3: couple list availability back to the independent `todo` count query.
+restore
+sed -i "s/const unavailable = failedGroups\.has('shipment_attention')/const unavailable = failedGroups.has('shipment_attention') || todoItem?.available === false/" "$ADMIN_CONTRACT"
+if run_contracts; then
+  bad "noi lai danh sach voi todo van xanh"
+else
+  ok "noi lai danh sach voi todo -> contracts do"
 fi
 
 restore

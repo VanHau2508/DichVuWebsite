@@ -29,7 +29,7 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 | bộ unit | 42 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 107 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 144 test TAP | `packages/db/test/*.test.js` |
-| tài liệu | 81 tệp | `docs/` |
+| tài liệu | 82 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,75 — cao có chủ ý, xem §4.
 
@@ -88,7 +88,7 @@ clone: `git config core.hooksPath scripts/hooks`.
 apps/<service>/src/     mã service        apps/<service>/test/    test của nó
 packages/               mã DÙNG CHUNG     packages/db/migrations/ toàn bộ SQL
 infra/compose.*.yml     dàn dịch vụ       scripts/                cổng, seed, vận hành
-docs/                   81 tệp ghi chép   .github/workflows/ci.yml cổng đám mây
+docs/                   82 tệp ghi chép   .github/workflows/ci.yml cổng đám mây
 ```
 
 | việc cần sửa | file |

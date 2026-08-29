@@ -6,9 +6,10 @@ mới được thêm theo kiểu additive để client cũ tiếp tục hoạt �
 
 ## Hợp đồng `/stats`
 
-- `generated_at`: thời điểm tạo snapshot theo ISO-8601.
+- `generated_at`: thời điểm bắt đầu đọc snapshot trong transaction, theo ISO-8601.
 - `partial.failed`: danh sách nhóm tùy chọn không đọc được; lỗi không bị biến thành số `0`.
-- `sync`: `mode`, `provider`, `status`, `freshness_at`, `lag_seconds` và số discrepancy đang mở.
+- `sync`: `mode`, `provider`, `status`, `freshness_at`, `lag_seconds` và tổng số discrepancy
+  đang mở của shop (không chỉ connector đang được chọn để hiển thị).
 - `todo_items[]`: mã việc, số đếm, mức độ, nguồn và cờ `available`.
 - Trường cũ `revenue`, `series`, `status`, `top_products`, `low_stock`, `shipment_attention` và
   `todo` vẫn được trả. Bốn số trạng thái đơn trong `todo` lấy từ KPI lõi ngay cả khi nhóm todo
@@ -27,7 +28,8 @@ và có thẻ riêng cho độ tươi tồn kho.
 
 ## Kiểm chứng
 
-- Unit manifest: 313/313; contract operations-center: 22/22; mutation: 3/3.
+- Unit manifest: 316/316; contract operations-center: 25/25; mutation gồm cả chốt ghi
+  `partial.failed` thật và tách danh sách vận đơn: 4/4.
 - E2E `ops-batch`: 15/15 sau restart seller/seller-admin.
 - Fresh migration: 180 migration, 0 drift, 0 pending; security scan: 0 phát hiện.
 - DB invariant cần chạy trên DB đã áp đủ migration. DB dev hiện tại còn drift lịch sử ở `0178`,

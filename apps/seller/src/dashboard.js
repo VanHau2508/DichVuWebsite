@@ -13,6 +13,7 @@
  */
 import { send } from './http.js';
 import { withTenant } from './db.js';
+import { withOptionalDashboardGroup } from './dashboard-contract.js';
 import { OWED_SQL, PAYMENT_PARTIAL_SQL, PAYMENT_UNPAID_SQL } from '../owed.js';
 import { AVAIL_SQL } from '../safety-stock.js';
 
@@ -38,22 +39,12 @@ const TODO_DEFS = [
 async function stats(res, ctx) {
   const out = await withTenant(ctx.shopId, async (c) => {
     const partial = [];
+    // Mốc snapshot lấy ngay đầu transaction, trước mọi truy vấn nghiệp vụ. Không dùng đồng
+    // hồ ứng dụng sau COMMIT vì lúc đó nó chỉ còn là thời điểm gửi response.
+    const generatedAt = (await c.query('SELECT now() AS generated_at')).rows[0].generated_at;
     // Optional dashboard groups recover to a savepoint so one unavailable widget never
     // turns its count into a misleading zero or aborts the rest of the snapshot.
-    async function optional(name, fn, fallback = null) {
-      const savepoint = `dashboard_${name}`;
-      await c.query(`SAVEPOINT ${savepoint}`);
-      try {
-        const value = await fn();
-        await c.query(`RELEASE SAVEPOINT ${savepoint}`);
-        return value;
-      } catch (err) {
-        await c.query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
-        await c.query(`RELEASE SAVEPOINT ${savepoint}`);
-        partial.push(name);
-        return fallback;
-      }
-    }
+    const optional = (name, fn, fallback = null) => withOptionalDashboardGroup(c, partial, name, fn, fallback);
     const k = (await c.query(`
       SELECT
         coalesce(sum(total_vnd) FILTER (WHERE paid_at IS NOT NULL
@@ -186,7 +177,7 @@ async function stats(res, ctx) {
         SELECT i.provider, i.status, i.inventory_authority, i.inventory_synced_at,
                EXTRACT(EPOCH FROM (now() - i.inventory_synced_at))::bigint AS lag_seconds,
                (SELECT count(*)::int FROM integration_sync_discrepancies d
-                  WHERE d.shop_id = i.shop_id AND d.integration_id = i.id AND d.status = 'open') AS discrepancies_open
+                  WHERE d.shop_id = current_shop_id() AND d.status = 'open') AS discrepancies_open
           FROM shop_integrations i
          WHERE i.shop_id = current_shop_id()
          ORDER BY (i.inventory_authority = 'external_master') DESC, i.id
@@ -204,7 +195,7 @@ async function stats(res, ctx) {
         freshness_at: null, lag_seconds: null, discrepancies_open: 0,
       };
     }, null);
-    return { k, rf, top, low, shipmentAttention, series, todo, sync, partial };
+    return { generatedAt, k, rf, top, low, shipmentAttention, series, todo, sync, partial };
   });
   const n = (x) => Number(x ?? 0);
   // Giữ nguyên hình dạng `todo` cũ để client cũ không phải xử lý null cả object. Bốn số
@@ -232,7 +223,7 @@ async function stats(res, ctx) {
     };
   });
   return send(res, 200, {
-    generated_at: new Date().toISOString(),
+    generated_at: out.generatedAt,
     partial: { failed: out.partial },
     sync: out.sync,
     revenue: {

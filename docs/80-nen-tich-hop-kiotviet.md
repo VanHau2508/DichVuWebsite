@@ -159,14 +159,15 @@ quên gác. Màn hình dùng SSR/form thường, không cần JavaScript và ph�
 
 ## Bằng chứng kiểm thử
 
-- unit theo manifest: 313/313 (working tree hiện tại);
+- unit theo manifest: 316/316 (working tree hiện tại);
 - adapter KiotViet: 8/8;
 - checkout policy KiotViet: 7/7;
 - toàn bộ 9 bộ bất biến DB trên stack PostgreSQL: 144/144;
 - migration DB trắng: 180/180, 0 DRIFT, 0 pending.
 
 E2E connector đã chạy 46/46 trên stack pilot trước lát cắt Trung tâm vận hành. Lát cắt này mới
-chạy focused `ops-batch` 15/15, mutation 3/3, fresh migration 180/180 và browser probe; chưa
+chạy focused operations-center 25/25, `ops-batch` 15/15, mutation 4/4, fresh migration 180/180
+và browser probe; chưa
 tuyên bố full CI 107 E2E trên working tree vì DB dev hiện tại còn drift lịch sử tại migration
 0178. Lần full CI xanh gần nhất trên mốc `2061d93` là 309 unit, 107 E2E và 3 smoke.
 Đây là bằng chứng của mã nguồn/stack dev; nó không thay thế spike bằng credential KiotViet thật.

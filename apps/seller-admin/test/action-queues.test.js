@@ -6,6 +6,8 @@ import path from 'node:path';
 const pages = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'pages.js'), 'utf8');
 const server = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'server.js'), 'utf8');
 const dashboard = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'seller', 'src', 'dashboard.js'), 'utf8');
+const { withOptionalDashboardGroup } = await import('../../seller/src/dashboard-contract.js');
+const { shipmentAttentionPresentation } = await import('../src/operations-center.js');
 
 test('notification queue has SSR render, failed-email retry form, and escaped output helpers', () => {
   assert.match(pages, /export function renderNotificationDeliveries\(/);
@@ -75,7 +77,8 @@ test('dashboard đưa vận đơn chưa chốt vào hàng đợi có hành độ
 });
 
 test('stats mở rộng theo hợp đồng trung tâm vận hành và không biến lỗi tùy chọn thành số 0', () => {
-  assert.match(dashboard, /generated_at: new Date\(\)\.toISOString\(\)/);
+  assert.match(dashboard, /const generatedAt = \(await c\.query\('SELECT now\(\) AS generated_at'\)\)/);
+  assert.match(dashboard, /generated_at: out\.generatedAt/);
   assert.match(dashboard, /partial: \{ failed: out\.partial \}/);
   assert.match(dashboard, /sync: out\.sync/);
   assert.match(dashboard, /todo_items: todoItems/);
@@ -107,6 +110,38 @@ test('renderOverview giữ chỗ cho dữ liệu chưa lấy được thay vì r
 test('trạng thái đồng bộ chưa từng chạy không hiển thị độ trễ 0 giây giả', () => {
   assert.match(pages, /sync\?\.lag_seconds != null && Number\.isFinite\(Number\(sync\.lag_seconds\)\)/);
   assert.match(pages, /\? `\$\{Math\.max\(0, Number\(sync\.lag_seconds\)\)\} giây` : '—'/);
+});
+
+test('nhóm stats tùy chọn ghi nhận lỗi thật qua savepoint, không chỉ ghim response', async () => {
+  const calls = [];
+  const client = { query: async (sql) => { calls.push(sql); } };
+  const partial = [];
+  const value = await withOptionalDashboardGroup(client, partial, 'low_stock', async () => {
+    throw new Error('fixture intentionally fails');
+  }, []);
+  assert.deepEqual(value, []);
+  assert.deepEqual(partial, ['low_stock']);
+  assert.deepEqual(calls, [
+    'SAVEPOINT dashboard_low_stock',
+    'ROLLBACK TO SAVEPOINT dashboard_low_stock',
+    'RELEASE SAVEPOINT dashboard_low_stock',
+  ]);
+});
+
+test('danh sách vận đơn không bị che khi riêng truy vấn todo bị lỗi', () => {
+  const state = shipmentAttentionPresentation(
+    new Set(['todo']),
+    { available: false, n: null },
+    [{ order_id: 'T1' }, { order_id: 'T2' }],
+  );
+  assert.deepEqual(state, { unavailable: false, count: null, shouldRender: true });
+  assert.match(pages, /shipmentAttentionPresentation\(failedGroups, shipmentTodo, shipmentAttention\)/);
+  assert.match(pages, /const shipmentAttentionCard = shipmentState\.shouldRender/);
+});
+
+test('sync đếm mọi discrepancy đang mở của shop, không chỉ integration được chọn hiển thị', () => {
+  assert.match(dashboard, /WHERE d\.shop_id = current_shop_id\(\) AND d\.status = 'open'/);
+  assert.doesNotMatch(dashboard, /d\.integration_id = i\.id AND d\.status = 'open'/);
 });
 
 test('thao tác đơn giữ cả lời giải thích và hành động tiếp theo từ seller', () => {

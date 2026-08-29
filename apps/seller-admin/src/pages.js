@@ -8,6 +8,7 @@ import { presetChoices, getPreset } from '../presets.js';
 import {
   CATALOG_ROLES, ORDER_ROLES, CONTENT_ROLES, REFUND_ROLES, PAYMENT_ROLES, INVENTORY_ROLES,
 } from './roles.js';
+import { shipmentAttentionPresentation } from './operations-center.js';
 
 // Trang ĐĂNG KÝ nằm ở site công khai (nentang.vn/signup) chứ KHÔNG phải trên admin — Caddy
 // định tuyến `/signup*` sang service `signup`, còn admin ở tên miền khác. Nên link "chưa có
@@ -2487,8 +2488,9 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   // thao tác đối soát an toàn (xác nhận hãng đã tạo hoặc mở khoá sau khi kiểm tra portal).
   const shipmentAttention = Array.isArray(s?.shipment_attention) ? s.shipment_attention : [];
   const shipmentTodo = TODO.find((x) => x.code === 'shipment_attention');
-  const shipmentCount = shipmentTodo?.n;
-  const shipmentUnavailable = failedGroups.has('shipment_attention') || shipmentTodo?.available === false;
+  const shipmentState = shipmentAttentionPresentation(failedGroups, shipmentTodo, shipmentAttention);
+  const shipmentCount = shipmentState.count;
+  const shipmentUnavailable = shipmentState.unavailable;
   const shipmentAttentionRows = shipmentAttention.map((item) => {
     const statusText = item.provider_status === 'ambiguous'
       ? 'Chưa rõ hãng đã tạo hay chưa'
@@ -2502,7 +2504,7 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
       { style: 'text-align:right', html: `<a class="btn alt sm" href="${href}">Mở đơn phục hồi</a>` },
     ];
   });
-  const shipmentAttentionCard = (shipmentUnavailable || (Number.isFinite(shipmentCount) && shipmentCount > 0) || shipmentAttention.length > 0)
+  const shipmentAttentionCard = shipmentState.shouldRender
     ? `<div class="card" id="shipment-attention" style="border-color:var(--bad)">
       <div class="toolbar"><div><h2 style="margin:0">Vận đơn cần xử lý</h2><p class="muted" style="margin:5px 0 0">Kiểm tra trên portal hãng trước khi thao tác; không tạo lại mù vì có thể sinh hai vận đơn và thu COD hai lần.</p></div></div>
       ${shipmentUnavailable ? '<div class="notice">Chưa lấy được danh sách vận đơn cần xử lý. Không tự động tạo lại vận đơn.</div>' : shipmentAttentionRows.length ? `<div class="tblscroll">${tblCards({

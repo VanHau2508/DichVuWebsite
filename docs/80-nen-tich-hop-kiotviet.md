@@ -165,12 +165,13 @@ quên gác. Màn hình dùng SSR/form thường, không cần JavaScript và ph�
 - toàn bộ 9 bộ bất biến DB trên stack PostgreSQL: 144/144;
 - migration DB trắng: 180/180, 0 DRIFT, 0 pending.
 
-E2E connector đã chạy 46/46 trên stack pilot trước lát cắt Trung tâm vận hành. Lát cắt này mới
-chạy focused operations-center 27/27, `ops-batch` 15/15, mutation 7/7, fresh migration 180/180
-và browser probe; chưa
-tuyên bố full CI 107 E2E trên working tree vì DB dev hiện tại còn drift lịch sử tại migration
-0178. Lần full CI xanh gần nhất trên mốc `2061d93` là 309 unit, 107 E2E và 3 smoke.
-Đây là bằng chứng của mã nguồn/stack dev; nó không thay thế spike bằng credential KiotViet thật.
+E2E connector đã chạy 46/46 trên stack pilot trước lát cắt Trung tâm vận hành. Lát cắt này đạt
+focused operations-center 27/27, `ops-batch` 15/15, mutation 7/7 và browser probe. Sau khi
+đóng lát cắt, cổng đầy đủ trên DB không drift đạt 318 unit, 144 bất biến DB, 107/107 E2E,
+smoke 8·27·32 và migration DB trắng 180/180, 0 DRIFT, 0 pending; audit phụ thuộc 13/13 gói
+không có lỗ hổng. Hai bước phụ của `ci-local.sh` cần CA proxy để chạy trong môi trường sandbox,
+không phải lỗi mã. Đây là bằng chứng của mã nguồn/stack dev; nó không thay thế spike bằng
+credential KiotViet thật.
 
 E2E đã đột biến các điểm dễ xanh giả: webhook trùng, ignore mapping qua reconciliation, hai
 job gửi cùng đơn, invoice vọng lại, chữ ký sai, step-up sai và ngắt connector còn authority.

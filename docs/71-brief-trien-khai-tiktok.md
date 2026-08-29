@@ -17,7 +17,7 @@
 
 | luật | hậu quả nếu phá |
 |---|---|
-| **Toàn bộ mã, chú thích, commit, tài liệu bằng TIẾNG VIỆT** | không có chú thích tiếng Anh trong file tiếng Việt. Đây là quy ước tuyệt đối của kho |
+| **Phần giải thích, chú thích, commit và tài liệu MỚI bằng TIẾNG VIỆT có dấu** | tên mã/API và thuật ngữ bắt buộc giữ nguyên; không viết lại lịch sử commit cũ chỉ để đổi ngôn ngữ |
 | **Không framework web.** HTTP thuần `node:http`, routing viết tay, HTML nối bằng template literal | thêm express/fastify là sai kiến trúc (ADR-001) |
 | **ESM** (`"type": "module"`), **Node ≥ 22**, test bằng `node --test` | không dùng CommonJS, không jest/mocha/vitest |
 | **Không eslint/prettier** — bám phong cách file xung quanh | đừng chạy formatter lên file có sẵn |

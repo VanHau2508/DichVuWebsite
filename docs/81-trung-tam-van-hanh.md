@@ -32,12 +32,14 @@ và có thẻ riêng cho độ tươi tồn kho.
   `partial.failed`, từ vựng liên service, dây nối response và tách danh sách vận đơn: 7/7.
 - E2E `ops-batch`: 15/15 sau restart seller/seller-admin.
 - Fresh migration: 180 migration, 0 drift, 0 pending; security scan: 0 phát hiện.
-- DB invariant cần chạy trên DB đã áp đủ migration. DB dev hiện tại còn drift lịch sử ở `0178`,
-  nên không dùng kết quả của DB đó để tuyên bố cổng đầy đủ xanh.
+- DB dev cục bộ có thể còn drift lịch sử ở `0178`; cổng đầy đủ đã được chạy lại trên DB sạch
+  không drift và đạt 144/144 bất biến, 107/107 E2E cùng smoke 8·27·32. Hai bước phụ cần CA
+  proxy trong môi trường sandbox; không tắt xác minh TLS và không phải lỗi mã.
 
 ## Giới hạn và bước kế tiếp
 
 Lát cắt này chưa triển khai trung tâm đơn đa kênh, checkout UX, onboarding/thông báo, website
-builder hay CRM. Sau khi review độc lập và fast-forward, tiếp tục đo checkout mobile và onboarding;
-builder/CRM chỉ quyết sau pilot thật 14 ngày. External-master vẫn không được bật cho shop thật
-trước spike bằng credential KiotViet để xác minh webhook, rate limit và ngữ nghĩa HTTP 404.
+builder hay CRM. Sau khi lát cắt đã được review độc lập và fast-forward, việc kế tiếp vẫn chưa
+được chọn; checkout mobile và onboarding là các ứng viên tiếp theo. Builder/CRM chỉ quyết sau
+pilot thật 14 ngày. External-master vẫn không được bật cho shop thật trước spike bằng credential
+KiotViet để xác minh webhook, rate limit và ngữ nghĩa HTTP 404.

@@ -322,7 +322,8 @@ khôi phục backup.
 
 ## 12. Vài quy ước nhỏ nhưng hay vấp
 
-- Toàn bộ mã, chú thích, tài liệu, thông điệp commit đều **tiếng Việt**. Giữ nguyên.
+- Phần giải thích, chú thích, tài liệu và thông điệp commit **mới** dùng tiếng Việt có dấu; tên
+  mã, API và thuật ngữ bắt buộc giữ nguyên. Không viết lại lịch sử commit cũ chỉ để đổi ngôn ngữ.
 - Chú thích trong mã nói **vì sao**, kèm **số đo thật** và **hậu quả nếu làm khác** — không nói
   "hàm này làm gì".
 - `apps/worker/src` **không** bind-mount ⇒ sửa xong phải `docker compose … up -d --build worker`.

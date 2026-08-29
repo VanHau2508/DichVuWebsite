@@ -33,8 +33,8 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 
 Tỉ lệ test/mã ≈ 0,75 — cao có chủ ý, xem §4.
 
-**Toàn bộ mã, chú thích, tài liệu, commit message đều TIẾNG VIỆT.** Giữ nguyên, không dịch sang
-tiếng Anh, không viết chú thích tiếng Anh trong file tiếng Việt.
+**Phần giải thích, chú thích, tài liệu và commit message MỚI dùng tiếng Việt có dấu.** Tên mã,
+API và thuật ngữ bắt buộc giữ nguyên; không viết lại lịch sử commit cũ chỉ để đổi ngôn ngữ.
 
 ---
 
@@ -191,6 +191,12 @@ Những lỗi này **không nằm ở sản phẩm mà ở cách kiểm chứng*
 - **Xanh vì lý do sai.** Khẳng định đi qua một chốt *khác* rồi tưởng đã canh chốt mình muốn.
   → **Luật: một chốt chỉ được coi là có test khi có đột biến gỡ nó và test ĐỎ, và ca thử phải đi
   qua ĐÚNG chốt đó.**
+- **Đột biến sửa dòng mà test ghim nguyên văn chỉ chứng minh chính tả.** Phải gỡ cơ chế thật,
+  rồi đo hậu quả ở đúng bề mặt người dùng nhìn thấy.
+- **Một chốt thường có ba mảnh:** cơ chế → dây nối → điểm phát ra. Test mảnh đầu và mảnh cuối
+  không có nghĩa là đã canh cả chuỗi; phải cắt thử mảnh giữa.
+- **Từ vựng đi qua biên giới service là hợp đồng.** So BẰNG hai tập tên; đổi tên một phía phải
+  ĐỎ, đổi tên nhất quán cả hai phía phải XANH.
 - **Fixture nói dối.** Bộ dựng dữ liệu tạo hình dạng mà mã sản phẩm không bao giờ sinh ra (từng
   đẻ 19,8 triệu "nợ ảo"). Kiểm bất biến của chính fixture trước khi tin nó.
 - **Fixture "đẹp" che lỗi.** Shop ngày-60 ghi đủ mọi cột nên không bắt được lỗi lazy. Dữ liệu
@@ -428,7 +434,8 @@ Bảy workflow, làm **dọc từng cái**, không redesign cả hệ thống m�
 → `catalog + nhập từ sàn` → `cài đặt`
 
 Thứ tự bảy workflow vẫn là bản đồ nợ UX, nhưng chủ dự án đã đổi ưu tiên sang connector POS.
-Không tự quay lại workflow kế tiếp trước khi lát cắt KiotViet hiện tại được review và đóng.
+Thứ tự đó chỉ là bản đồ nợ UX; lát cắt KiotViet và Trung tâm vận hành đã đóng, còn việc kế tiếp
+chưa được chọn — xem §9.3b.
 
 Mỗi lát cắt đi đủ đường: **UI → route/BFF → API seller → giao dịch nghiệp vụ → DB/outbox →
 worker/provider → trạng thái quay lại UI.** Lập bản đồ đó **trước khi đụng UI** — giá trị nằm
@@ -493,7 +500,7 @@ một lát cắt riêng, không phải phần đuôi của lát cắt này.
 report MẬT, thì đó là một **quyết định sản phẩm mới**: phải đo lại toàn bộ dashboard, không tự
 thay trong một lát cắt khác.
 
-### 9.3b Lát cắt 4 đã đóng; ưu tiên hiện tại là connector POS
+### 9.3b Lát cắt 4 và Trung tâm vận hành đã đóng; việc kế tiếp chưa chọn
 
 Đợt đo 2 của `đa kiện/ca xử lý` ra ba nhánh việc, cố ý tách để không đụng `pages.js` cùng lúc:
 
@@ -546,16 +553,25 @@ chưa triển khai và chưa có khách thật (§0), trong khi chính chú thí
 không bịa số khách hàng. Có chốt cấm dựng lại cho tới khi có trích dẫn thật.
 
 Nhánh connector đã vào `main` tại `2e13602` và các bản vá landing đã fast-forward tiếp tới
-`2061d93`. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn, không bị huỷ. Lát cắt hiện tại
-đang thi công Trung tâm vận hành trên nhánh `codex/operations-center`; chưa merge hoặc push,
-đang chờ review độc lập sau khi full gate trên môi trường đã áp đủ migration.
+`2061d93`. Phần phân tầng gói vẫn còn giá trị nhưng tạm hoãn, không bị huỷ. **Trung tâm vận
+hành đã ĐÓNG:** nhánh `codex/operations-center` fast-forward vào `main` tại `48d87c4` — ba
+commit `f9a3f1e` → `a794df2` → `48d87c4`, không merge commit. Lát cắt mở rộng `/stats` theo
+kiểu additive (`generated_at`, `partial.failed`, `sync`, `todo_items[]`) và đổi lưới việc cần
+làm sang `TODO_REGISTRY`: ô số liệu vẫn render, chỉ lối đi bị gác theo vai. Cổng đầy đủ trên
+DB không drift đạt 318 unit · 144 bất biến DB · 107/107 E2E · smoke 8·27·32 · migration DB
+trắng 180/180, 0 DRIFT, 0 pending; audit phụ thuộc 13/13 gói không có lỗ hổng.
+
+Ba vòng review chéo đều bắt được lỗ đo mà lượt trước không nhìn thấy: vòng 1 gỡ cơ chế ghi
+`partial.failed` và tách lỗi truy vấn danh sách vận đơn; vòng 2 bắt dây nối `partial` và từ
+vựng nhóm giữa hai service; vòng chốt thêm phép so tập tên hai phía, test nhánh thành công của
+savepoint và câu chữ fail-closed. Các chốt đều bị đột biến thật làm đỏ trước khi lát cắt đóng.
 
 Chi tiết hợp đồng `/stats`, registry việc cần làm và các giới hạn của lát cắt nằm ở `docs/81`.
 
 Nguyên nhân tràn ngang của trang **Tồn an toàn** đã được vá trên nhánh connector: con trực tiếp
 của `.filters` có `min-width:0;max-width:100%`, để nhãn "Tỉ lệ giữ an toàn cho toàn shop (%)"
 không giữ intrinsic width 377px. Chốt nguồn nằm ở `apps/seller-admin/test/table-cards.test.js`;
-phép đo Chromium 360px cả JS bật/tắt vẫn cần chạy lại khi môi trường trình duyệt sẵn sàng.
+phép đo Chromium 360px cả JS bật/tắt đã xác nhận 0 tràn ngang.
 
 Mục **Ngành hàng** đã đổi từ băng chữ chạy sang **băng thẻ lướt ngang có lọc theo ngành**,
 dựng đúng hình dạng một hồ sơ khách hàng (ảnh bìa · nhãn ngành · tên · mô tả · đồ nghề) để
@@ -564,10 +580,6 @@ sau này thay được bằng cửa hàng thật: mỗi thẻ có khe ảnh `nh-
 thật, thẻ hôm nay là **cửa hàng MẪU** và mục tự nói rõ điều đó ngay dưới băng — chốt
 `landing-nganh-hang.test.js` bắt cả hai đầu: mất dòng đó là đỏ, đặt tên nghe như một shop
 có thật cũng đỏ. Đo: 0/9 bề rộng tràn ở cả nhánh JS và không-JS, 23/23 đột biến đỏ.
-
-Nợ đã ghi, chưa xử lý: trang **Tồn an toàn tràn 377/360** ở cả JS bật lẫn tắt — thủ phạm là ô
-nhập "Tỉ lệ giữ an toàn cho toàn shop (%)" trong form đầu trang (`pages.js:6022`), không phải
-bảng, nên nằm ngoài Brief B.
 
 ### 9.4 Bắt đầu một phiên mới thế nào
 

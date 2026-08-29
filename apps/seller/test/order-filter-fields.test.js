@@ -35,7 +35,7 @@ const MIEN_TRU = {
 test('buildOrderFilter đọc đúng bộ trường ta nghĩ (mốc nhận dạng còn sống)', () => {
   const src = rd('apps/seller/src/orders.js');
   const doc = [...src.matchAll(/query\.get\('([a-z_]+)'\)/g)].map((m) => m[1]);
-  for (const f of ['q', 'from', 'to', 'source', 'payment', 'status', 'migrated']) {
+  for (const f of ['q', 'from', 'to', 'source', 'payment', 'status', 'migrated', 'sync_status', 'attention']) {
     assert.ok(doc.includes(f), `buildOrderFilter không còn đọc "${f}" — mốc chết, sửa lại bộ test`);
   }
 });
@@ -64,7 +64,7 @@ test('form Lọc / tab trạng thái / phân trang / nút Xuất CSV đều mang
     { ten: 'hidden của nút Xuất CSV', doan: /const exportBtn = [\s\S]*?Xuất CSV<\/button><\/form>/.exec(than)?.[0] },
     { ten: 'form Lọc', doan: /<form method="GET"[\s\S]*?<\/form>/.exec(than)?.[0] },
   ];
-  const CAN = ['status', 'q', 'from', 'to', 'source', 'payment', 'migrated'];
+  const CAN = ['status', 'q', 'from', 'to', 'source', 'payment', 'migrated', 'sync_status', 'attention'];
   const viPham = [];
   for (const n of NOI) {
     if (!n.doan) { viPham.push(`${n.ten} — KHÔNG tìm thấy trong renderOrders (mốc chết, sửa bộ test)`); continue; }
@@ -82,9 +82,43 @@ test('BFF ordersExportFields chuyển tiếp ĐỦ trường xuống seller', ()
   const i = s.indexOf('function ordersExportFields(');
   assert.ok(i > 0, 'không tìm thấy ordersExportFields — mốc chết');
   const than = s.slice(i, s.indexOf('\n}', i) + 2);
-  const thieu = ['status', 'q', 'from', 'to', 'source', 'payment', 'migrated']
+  const thieu = ['status', 'q', 'from', 'to', 'source', 'payment', 'migrated', 'sync_status', 'attention']
     .filter((f) => !new RegExp(`^\\s*${f}:`, 'm').test(than));
   assert.deepEqual(thieu, [], 'BFF nuốt trường lọc → xuất ra cả đơn ngoài bộ lọc');
+});
+
+test('BFF danh sách chuyển tiếp đủ hai trục đồng bộ và việc cần xử lý', () => {
+  const src = rd('apps/seller-admin/src/server.js');
+  const start = src.indexOf('async function ordersList(');
+  const end = src.indexOf('\nasync function ', start + 1);
+  assert.ok(start >= 0 && end > start, 'không tìm thấy ordersList — mốc chết');
+  const body = src.slice(start, end);
+  assert.match(body, /q\.get\('sync_status'\)/,
+    'BFF không đọc sync_status từ URL');
+  assert.match(body, /q\.get\('attention'\)/,
+    'BFF không đọc attention từ URL');
+  assert.match(body, /qs\.set\('sync_status',\s*syncStatus\)/,
+    'BFF đọc sync_status nhưng không chuyển tiếp xuống seller');
+  assert.match(body, /qs\.set\('attention',\s*attention\)/,
+    'BFF đọc attention nhưng không chuyển tiếp xuống seller');
+});
+
+test('form Lọc không khai trùng tên control', () => {
+  const pages = rd('apps/seller-admin/src/pages.js');
+  const start = pages.indexOf('export function renderOrders(');
+  const end = pages.indexOf('\nexport function ', start + 10);
+  assert.ok(start >= 0 && end > start, 'không tìm thấy renderOrders — mốc chết');
+  const body = pages.slice(start, end);
+  const form = /<form method="GET" class="filters">[\s\S]*?<\/form>/.exec(body)?.[0];
+  assert.ok(form, 'không tìm thấy form Lọc — mốc chết');
+
+  // Một tên xuất hiện hai lần (hidden + select) làm URLSearchParams.get() lấy giá trị
+  // hidden trước, nên thao tác đổi bộ lọc trên giao diện bị nuốt mà không báo lỗi.
+  const names = ['status', 'payment', 'migrated', 'q', 'from', 'to', 'source', 'sync_status', 'attention'];
+  const duplicates = names
+    .map((name) => [name, (form.match(new RegExp(`name="${name}"`, 'g')) ?? []).length])
+    .filter(([, count]) => count !== 1);
+  assert.deepEqual(duplicates, [], 'mỗi bộ lọc phải có đúng một control trong form Lọc');
 });
 
 test('BFF giữ đúng mọi nguồn chỉ-đọc của seller cho cả danh sách và CSV', () => {

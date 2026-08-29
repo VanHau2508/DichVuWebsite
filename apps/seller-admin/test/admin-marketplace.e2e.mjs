@@ -24,6 +24,7 @@ const WORKER = process.env.WORKER_URL ?? 'http://worker:3080';
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 const OADM = process.env.ADMIN_ORIGIN ?? 'https://admin.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 4 });
+const integrationDb = new pg.Pool({ connectionString: process.env.DATABASE_URL_INTEGRATION, max: 2 });
 const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic='user.invited' AND payload->>'to'=$1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
 
 let pass = 0, fail = 0;
@@ -82,6 +83,26 @@ function co(host, method, path, { body, cartToken, idemKey } = {}) {
 }
 const login = async (email, password) => ck((await rq(AUTH, 'POST', '/auth/login', { body: { email, password }, origin: OA })).sc);
 const uidOf = async (email) => (await owner.query('SELECT id FROM users WHERE email=$1', [email])).rows[0]?.id ?? null;
+
+// Fixture connector dùng đúng vai app_integration để ghi các cột POS ngoài; owner không
+// được dùng làm đường giả lập vì trigger 0178 phải tiếp tục canh mọi ghi cục bộ.
+async function withIntegration(shopId, integrationId, fn) {
+  const c = await integrationDb.connect();
+  try {
+    await c.query('BEGIN');
+    await c.query(`SELECT set_config('app.shop_id', $1, true)`, [shopId]);
+    await c.query(`SELECT set_config('app.integration_id', $1, true)`, [integrationId]);
+    await c.query(`SELECT set_config('app.integration_generation', '0', true)`);
+    const out = await fn(c);
+    await c.query('COMMIT');
+    return out;
+  } catch (error) {
+    await c.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    c.release();
+  }
+}
 
 async function makeStaff() {
   const email = `staff-${uniq()}@nentang.vn`, password = 'staff strong passphrase';
@@ -230,6 +251,9 @@ async function main() {
   await fetch(`${WORKER}/internal/prodstats-sweep`, { method: 'POST' });
   const sold2 = (await owner.query('SELECT sold_count FROM products WHERE id=$1', [P.pid])).rows[0].sold_count;
   sold2 === 3 ? ok('đơn đã huỷ (dù có paid_at) KHÔNG cộng vào đã bán — vẫn 3') : bad('đơn huỷ bị tính vào đã bán', `=${sold2}, phải 3`);
+  // Hoàn nguyên dấu ever-paid chỉ dùng cho phép đo sold_count; nếu để lại, đơn huỷ này
+  // trở thành một ca payment thật và làm nhiễu assertion attention=open ở phần đa kênh.
+  await owner.query(`UPDATE orders SET paid_at = NULL WHERE id = $1`, [o3.orderId]);
 
   sect('7. Sort "Bán chạy" hoạt động');
   body = await sf(A.host, '/products?sort=best');
@@ -437,8 +461,119 @@ async function main() {
     ? ok('giá trị migrated rác bị bỏ qua như mọi bộ lọc khác (không vỡ trang, không chip giả)')
     : bad('migrated rác không được chuẩn hoá', `${demDong(dsRac.body)} dòng`);
 
+  // ── 12. Trung tâm đơn đa kênh: hai trục lọc + quay lại đúng ngữ cảnh ───────
+  // Dựng sau toàn bộ phép đo cũ để các order fixture mới không làm lệch số đếm của
+  // dashboard/tab ở trên. Ba đơn đều đã thu đủ tiền nên không rơi nhầm vào attention=payment.
+  sect('12. Trung tâm đơn: lọc đồng bộ/ca xử lý và giữ ngữ cảnh chi tiết');
+  const filterPending = await placeOrder(A, P.vid, 1);
+  const filterSync = await placeOrder(A, P.vid, 1);
+  const filterShipment = await placeOrder(A, P.vid, 1);
+  for (const fixture of [filterPending, filterSync, filterShipment]) {
+    await owner.query(
+      `UPDATE orders
+          SET payment_status='paid', paid_at=now(), amount_paid_vnd=total_vnd
+        WHERE id=$1`, [fixture.orderId],
+    );
+  }
+
+  // Một integration/discrepancy thật để attention=sync không chỉ tình cờ trùng với
+  // sync_status. Ghi cột connector qua app_integration, giữ trigger 0178 trong đường chạy.
+  const fixtureIntegration = (await owner.query(
+    `INSERT INTO shop_integrations
+       (shop_id,provider,status,inventory_authority,credential_ciphertext,webhook_public_id,external_branch_ref)
+     VALUES ($1,'kiotviet','connecting','local','e2e-fixture',gen_random_uuid(),'BR-E2E')
+     RETURNING id`, [A.shopId],
+  )).rows[0].id;
+  const externalRef = `KV-E2E-${uniq()}`;
+  await withIntegration(A.shopId, fixtureIntegration, (c) => c.query(
+    `UPDATE orders
+        SET integration_id=$1, external_ref=$2, external_branch_ref='BR-E2E',
+            integration_generation=0, sync_status='synced', sync_error='fixture: provider cần đối soát', sync_updated_at=now()
+      WHERE id=$3`, [fixtureIntegration, externalRef, filterSync.orderId],
+  ));
+  await owner.query(
+    `INSERT INTO integration_sync_discrepancies
+       (shop_id,integration_id,kind,severity,status,entity_type,external_ref,local_id,dedupe_key,message)
+     VALUES ($1,$2,'provider_rejected','warning','open','order',$3,$4,$5,'fixture discrepancy cho bộ lọc')`,
+    [A.shopId, fixtureIntegration, externalRef, filterSync.orderId, `e2e-filter-${uniq()}`],
+  );
+  await withIntegration(A.shopId, fixtureIntegration, (c) => c.query(
+    `UPDATE orders
+        SET sync_status='pending', sync_error=NULL, sync_updated_at=now()
+      WHERE id=$1`, [filterPending.orderId],
+  ));
+  const shipmentRef = `KV-SHIP-${uniq()}`;
+  await withIntegration(A.shopId, fixtureIntegration, (c) => c.query(
+    `UPDATE orders
+        SET integration_id=$1, external_ref=$2, external_branch_ref='BR-E2E',
+            integration_generation=0, sync_status='synced', sync_error=NULL, sync_updated_at=now()
+      WHERE id=$3`, [fixtureIntegration, shipmentRef, filterShipment.orderId],
+  ));
+  const shipmentFixture = (await owner.query(
+    `INSERT INTO shipments (shop_id,order_id,provider,status,provider_status,tracking_number)
+     VALUES ($1,$2,'fixture-carrier','created','ambiguous','TRK-E2E') RETURNING id`,
+    [A.shopId, filterShipment.orderId],
+  )).rows[0].id;
+
+  const sellerOrders = async (query) => rq(
+    SELLER, 'GET', `/shops/${A.shopId}/orders${query}`, { cookie: A.cookie, origin: OS },
+  );
+  const orderIds = (response) => new Set((response.json?.orders ?? []).map((row) => row.id));
+  const only = (response, expected) => response.status === 200
+    && Number(response.json?.total) === 1 && orderIds(response).size === 1
+    && orderIds(response).has(expected);
+  const syncPending = await sellerOrders('?sync_status=pending&limit=100');
+  only(syncPending, filterPending.orderId)
+    ? ok('seller lọc sync_status=pending → đúng một đơn đang chờ đồng bộ')
+    : bad('lọc sync_status=pending trả sai tập', JSON.stringify({ status: syncPending.status, total: syncPending.json?.total, ids: [...orderIds(syncPending)] }));
+  const syncAttention = await sellerOrders('?attention=sync&limit=100');
+  only(syncAttention, filterSync.orderId)
+    ? ok('attention=sync bắt đúng discrepancy mở dù sync_status đã synced')
+    : bad('attention=sync không bắt discrepancy mở', JSON.stringify({ status: syncAttention.status, total: syncAttention.json?.total, ids: [...orderIds(syncAttention)] }));
+  const shipmentAttention = await sellerOrders('?attention=shipment&limit=100');
+  only(shipmentAttention, filterShipment.orderId)
+    ? ok('attention=shipment bắt đúng vận đơn ambiguous')
+    : bad('attention=shipment trả sai tập', JSON.stringify({ status: shipmentAttention.status, total: shipmentAttention.json?.total, ids: [...orderIds(shipmentAttention)] }));
+  const allAttention = await sellerOrders('?attention=open&limit=100');
+  const openIds = orderIds(allAttention);
+  allAttention.status === 200 && openIds.size === 2
+    && openIds.has(filterSync.orderId) && openIds.has(filterShipment.orderId)
+    && !openIds.has(filterPending.orderId)
+    ? ok('attention=open hợp nhất đúng hai loại ca và không kéo đơn pending sạch vào')
+    : bad('attention=open hợp nhất sai tập', JSON.stringify({ status: allAttention.status, total: allAttention.json?.total, ids: [...openIds] }));
+  const invalidFilters = await sellerOrders('?sync_status=not-a-status&attention=not-a-kind&limit=100');
+  invalidFilters.status === 200 && orderIds(invalidFilters).has(filterPending.orderId)
+    && orderIds(invalidFilters).has(filterSync.orderId) && orderIds(invalidFilters).has(filterShipment.orderId)
+    ? ok('giá trị sync_status/attention lạ bị bỏ qua, không thành lỗi 400/500')
+    : bad('filter lạ làm hỏng danh sách', JSON.stringify({ status: invalidFilters.status, total: invalidFilters.json?.total }));
+
+  // BFF phải hiển thị đủ mã ngoài/chi nhánh/lỗi để người vận hành biết đang đối soát gì,
+  // không chỉ một badge nguồn chung chung.
+  const syncList = await adm('GET', `/shops/${A.shopId}/orders?attention=sync`, { cookie: A.cookie });
+  syncList.status === 200 && syncList.body.includes(externalRef)
+    && syncList.body.includes('BR-E2E') && syncList.body.includes('fixture: provider cần đối soát')
+    && !syncList.body.includes(shipmentRef) && !syncList.body.includes(filterPending.orderId)
+    ? ok('BFF danh sách hiện mã ngoài, chi nhánh ngoài và lỗi đồng bộ')
+    : bad('BFF danh sách thiếu metadata connector', syncList.body.slice(0, 1200));
+  const back = `/shops/${A.shopId}/orders?attention=sync`;
+  const detail = await adm('GET', `/shops/${A.shopId}/orders/${filterSync.orderId}?back=${encodeURIComponent(back)}`, { cookie: A.cookie });
+  detail.status === 200 && detail.body.includes(`href="${back}"`)
+    && detail.body.includes('timeline=payment') && detail.body.includes('back=%2Fshops%2F')
+    ? ok('chi tiết đơn giữ nguyên bộ lọc attention khi quay lại và đổi tab timeline')
+    : bad('chi tiết làm mất context quay lại', detail.body.slice(0, 1600));
+  const maliciousBack = encodeURIComponent(`https://evil.example/shops/${A.shopId}/orders?attention=sync`);
+  const unsafeDetail = await adm('GET', `/shops/${A.shopId}/orders/${filterSync.orderId}?back=${maliciousBack}`, { cookie: A.cookie });
+  unsafeDetail.status === 200 && !unsafeDetail.body.includes('evil.example')
+    && unsafeDetail.body.includes(`href="/shops/${A.shopId}/orders"`)
+    ? ok('back tuyệt đối ngoài shop bị loại, không mở redirect')
+    : bad('back không an toàn lọt vào HTML', unsafeDetail.body.slice(0, 900));
+
+  shipmentFixture ? ok('fixture filter dùng discrepancy và shipment thật trong DB')
+    : bad('fixture vận đơn không được ghi vào DB');
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
+  await integrationDb.end();
   process.exit(fail ? 1 : 0);
 }
-main().catch(async (e) => { console.error('admin marketplace e2e lỗi:', e); await owner.end(); process.exit(1); });
+main().catch(async (e) => { console.error('admin marketplace e2e lỗi:', e); await owner.end(); await integrationDb.end(); process.exit(1); });

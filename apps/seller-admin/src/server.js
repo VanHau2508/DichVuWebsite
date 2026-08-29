@@ -457,6 +457,11 @@ async function ordersList(res, me, cookie, shopId, q) {
   const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   const payment = ['unpaid', 'pending', 'paid', 'refunded'].includes(q.get('payment')) ? q.get('payment') : '';
   const source = ['web', 'manual', 'facebook', 'zalo', 'tiktok', 'other', 'kiotviet_pos', 'sapo_pos'].includes(q.get('source')) ? q.get('source') : '';
+  const syncStatus = ['not_required', 'pending', 'synced', 'needs_attention'].includes(q.get('sync_status')) ? q.get('sync_status') : '';
+  const rawAttention = String(q.get('attention') ?? '').trim().toLowerCase();
+  const attention = (rawAttention === '1' || rawAttention === 'true' || rawAttention === 'all' || rawAttention === 'any') ? 'open'
+    : rawAttention === 'customer_request' ? 'request'
+      : ['open', 'sync', 'shipment', 'resolution', 'payment', 'notification', 'request'].includes(rawAttention) ? rawAttention : '';
   // Đơn DI CƯ: '0' = bỏ đơn nhập từ sàn cũ, '1' = chỉ đơn đó, '' = không lọc (mặc định, để
   // tra cứu lịch sử khách vẫn ra đủ). Giá trị lạ rơi về '' như mọi bộ lọc khác trên trang này
   // — link cũ hoặc URL người dùng sửa tay không được làm vỡ danh sách.
@@ -465,6 +470,8 @@ async function ordersList(res, me, cookie, shopId, q) {
   if (source) qs.set('source', source);
   if (payment) qs.set('payment', payment);
   if (migrated) qs.set('migrated', migrated);
+  if (syncStatus) qs.set('sync_status', syncStatus);
+  if (attention) qs.set('attention', attention);
   if (search) qs.set('q', search);
   if (from) qs.set('from', from);
   if (to) qs.set('to', to);
@@ -490,7 +497,24 @@ async function ordersList(res, me, cookie, shopId, q) {
     ?? bo(soOk('bulkpay_ok'), soOk('bulkpay_skip'), 'ghi nhận đã thu tiền')
     ?? bo(soOk('bulkship_ok'), soOk('bulkship_skip'), 'chuyển sang đang giao');
   const actionError = String(q.get('error') ?? '').trim().slice(0, 500) || null;
-  return sendHtmlJs(res, 200, (nonce) => V.renderOrders({ ...ctx, nonce }, shopId, r.json, { status, payment, source, migrated, q: search, from, to, limit, offset, bulk, actionError }));
+  return sendHtmlJs(res, 200, (nonce) => V.renderOrders({ ...ctx, nonce }, shopId, r.json, {
+    status, payment, source, migrated, syncStatus, attention, q: search, from, to, limit, offset, bulk, actionError,
+  }));
+}
+
+// `back` chỉ nhận đường dẫn danh sách đơn của chính shop và một bộ query đã biết. Không
+// bao giờ render URL tùy ý từ trình duyệt thành link quay lại (tránh open redirect).
+function safeOrdersBack(shopId, raw) {
+  if (!raw) return null;
+  try {
+    const u = new URL(String(raw), 'http://internal');
+    if (u.origin !== 'http://internal' || u.pathname !== `/shops/${shopId}/orders`) return null;
+    const allowed = new Set(['status', 'q', 'from', 'to', 'source', 'payment', 'migrated', 'sync_status', 'attention', 'limit', 'offset']);
+    for (const key of u.searchParams.keys()) if (!allowed.has(key)) return null;
+    return `${u.pathname}${u.search}`;
+  } catch {
+    return null;
+  }
 }
 
 // ── Tạo đơn thủ công (nhân viên chốt đơn Facebook/Zalo rồi gõ vào) ─────────────
@@ -601,7 +625,7 @@ async function orderNewSubmit(req, res, me, cookie, shopId) {
   return orderNewPage(res, me, cookie, shopId, r.json?.error ?? 'Không tạo được đơn.', form, f.get('picker_q') ?? '');
 }
 
-async function orderDetail(res, me, cookie, shopId, oid, err, edited, returned, timelineFilter = '') {
+async function orderDetail(res, me, cookie, shopId, oid, err, edited, returned, timelineFilter = '', backRaw = null) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const r = await sellerApi('GET', `/shops/${shopId}/orders/${oid}`, { cookie });
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
@@ -614,7 +638,8 @@ async function orderDetail(res, me, cookie, shopId, oid, err, edited, returned, 
   const shipping = needShipping
     ? await sellerApi('GET', `/shops/${shopId}/shipping`, { cookie }).then((sr) => (sr.status === 200 ? sr.json : null)).catch(() => null)
     : null;
-  return sendHtmlJs(res, err ? 409 : 200, (nonce) => V.renderOrderDetail({ ...ctx, nonce }, shopId, r.json, err, shipping, edited, returned, timelineFilter));
+  const backUrl = safeOrdersBack(shopId, backRaw);
+  return sendHtmlJs(res, err ? 409 : 200, (nonce) => V.renderOrderDetail({ ...ctx, nonce }, shopId, r.json, err, shipping, edited, returned, timelineFilter, backUrl));
 }
 
 // ── SỬA ĐƠN (BFF forward → seller POST .../edit) ──────────────────────────────
@@ -1479,7 +1504,7 @@ async function integrationRetry(req, res, me, cookie, shopId, discrepancyId) {
 // Form hàng loạt mang sẵn bộ lọc ở hidden; hàm này chỉ việc trả lại đúng nó.
 function veLai(shopId, params, them) {
   const sp = new URLSearchParams();
-  for (const k of ['status', 'q', 'from', 'to', 'source', 'payment', 'migrated', 'limit', 'offset']) {
+  for (const k of ['status', 'q', 'from', 'to', 'source', 'payment', 'migrated', 'sync_status', 'attention', 'limit', 'offset']) {
     const v = (params.get(k) ?? '').trim();
     if (v) sp.set(k, v);
   }
@@ -1516,7 +1541,7 @@ async function ordersBulkShip(req, res, me, cookie, shopId) {
 // ĐÃ NHẬN TIỀN HÀNG LOẠT (COD): đây là ghi sổ tài chính, không còn dùng quyền
 // orders.write của thanh hàng loạt. Chỉ owner thấy nút, BFF giữ nguyên danh sách đã chọn
 // và bộ lọc qua interstitial mật khẩu; seller vẫn cưỡng chế payment.write + step-up.
-const BULK_ORDER_FILTERS = ['status', 'q', 'from', 'to', 'source', 'payment', 'limit', 'offset'];
+const BULK_ORDER_FILTERS = ['status', 'q', 'from', 'to', 'source', 'payment', 'migrated', 'sync_status', 'attention', 'limit', 'offset'];
 function bulkPaymentFields(params) {
   const hidden = params.getAll('order_ids')
     .filter((x) => UUID_RE.test(x)).slice(0, 100).map((id) => ['order_ids', id]);
@@ -3118,6 +3143,15 @@ function ordersExportFields(f) {
     // quan đang xem tập KHÔNG gồm đơn di cư; nuốt trường này là file xuất ra rộng hơn thứ
     // họ nhìn thấy trên màn hình.
     migrated: ['0', '1'].includes(String(f.migrated ?? '')) ? String(f.migrated) : '',
+    // Hai trục của Trung tâm đơn phải đi cùng CSV; nếu không file chứa cả đơn đang đồng bộ
+    // hoặc ca đã xử lý xong dù màn hình chỉ đang xem một nhóm hẹp.
+    sync_status: ['not_required', 'pending', 'synced', 'needs_attention'].includes(f.sync_status) ? f.sync_status : '',
+    attention: (() => {
+      const v = String(f.attention ?? '').trim().toLowerCase();
+      if (['1', 'true', 'all', 'any'].includes(v)) return 'open';
+      if (v === 'customer_request') return 'request';
+      return ['open', 'sync', 'shipment', 'resolution', 'payment', 'notification', 'request'].includes(v) ? v : '';
+    })(),
   };
 }
 async function doOrdersExport(res, me, cookie, shopId, fields) {
@@ -4349,7 +4383,7 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/orders/print-batch$`).exec(p)) && req.method === 'GET') return ordersPrintBatch(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/orders/export$`).exec(p)) && req.method === 'POST') return ordersExportCreate(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/export/step-up$`).exec(p)) && req.method === 'POST') return ordersExportStepUp(req, res, me, cookie, m[1]);
-    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}$`).exec(p)) && req.method === 'GET') return orderDetail(res, me, cookie, m[1], m[2], null, url.searchParams.get('edited') === '1' ? (url.searchParams.get('refund') ?? '1') : null, url.searchParams.get('returned') === '1' ? { refund: url.searchParams.get('refund') ?? '0', restock: url.searchParams.get('restock') === '1' } : null, url.searchParams.get('timeline') ?? '');
+    if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}$`).exec(p)) && req.method === 'GET') return orderDetail(res, me, cookie, m[1], m[2], null, url.searchParams.get('edited') === '1' ? (url.searchParams.get('refund') ?? '1') : null, url.searchParams.get('returned') === '1' ? { refund: url.searchParams.get('refund') ?? '0', restock: url.searchParams.get('restock') === '1' } : null, url.searchParams.get('timeline') ?? '', url.searchParams.get('back'));
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/edit$`).exec(p)) && req.method === 'GET') return orderEditPage(res, me, cookie, m[1], m[2], null, null, url.searchParams.get('q') ?? '');
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/edit$`).exec(p)) && req.method === 'POST') return orderEditSubmit(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/orders/${UUID}/edit-paid$`).exec(p)) && req.method === 'GET') return orderEditPaidPage(res, me, cookie, m[1], m[2], null, null, url.searchParams.get('q') ?? '');

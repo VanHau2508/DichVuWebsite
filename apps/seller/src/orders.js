@@ -105,6 +105,44 @@ export async function activeResolutionCaseForOrder(c, orderId) {
 const ORDER_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded', 'returned'];
 // Allowlist khớp CHECK constraint của DB (0002). 'pending' = chờ đối soát chuyển khoản.
 const PAYMENT_STATUSES = ['unpaid', 'pending', 'paid', 'refunded'];
+// Trạng thái đồng bộ là một trục riêng với trạng thái nghiệp vụ của đơn. Giữ allowlist ở
+// seller để URL lạ rơi về "không lọc", không biến thành SQL hoặc lỗi 500.
+export const ORDER_SYNC_STATUSES = ['not_required', 'pending', 'synced', 'needs_attention'];
+// Bộ lọc attention là hợp đồng của Trung tâm đơn đa kênh. `open` gom mọi tín hiệu cần người
+// xử lý; các giá trị còn lại giúp nhân viên đi thẳng tới đúng loại ca.
+export const ORDER_ATTENTION_FILTERS = ['open', 'sync', 'shipment', 'resolution', 'payment', 'notification', 'request'];
+
+const ORDER_ATTENTION_SQL = Object.freeze({
+  sync: `(o.sync_status = 'needs_attention' OR EXISTS (
+    SELECT 1 FROM integration_sync_discrepancies d
+     WHERE d.shop_id = o.shop_id AND d.entity_type = 'order' AND d.local_id = o.id AND d.status = 'open'
+  ))`,
+  shipment: `EXISTS (
+    SELECT 1 FROM shipments s
+     WHERE s.shop_id = o.shop_id AND s.order_id = o.id AND s.status = 'created'
+       AND s.provider_status IN ('ambiguous', 'finalize_failed')
+  )`,
+  resolution: `EXISTS (
+    SELECT 1 FROM order_resolution_cases rc
+     WHERE rc.shop_id = o.shop_id AND rc.order_id = o.id AND rc.status IN ('open', 'waiting_return')
+  )`,
+  payment: `(${OWED_SQL}) > 0`,
+  notification: `EXISTS (
+    SELECT 1 FROM notification_deliveries nd
+     WHERE nd.shop_id = o.shop_id AND nd.order_id = o.id AND nd.status = 'failed'
+  )`,
+  request: `EXISTS (
+    SELECT 1 FROM order_requests rq
+     WHERE rq.shop_id = o.shop_id AND rq.order_id = o.id AND rq.status = 'requested'
+  )`,
+});
+const ALL_ORDER_ATTENTION_SQL = `(${ORDER_ATTENTION_FILTERS.slice(1).map((k) => ORDER_ATTENTION_SQL[k]).join(' OR ')})`;
+const normalizeOrderAttention = (value) => {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (raw === '1' || raw === 'true' || raw === 'all' || raw === 'any') return 'open';
+  if (raw === 'customer_request') return 'request';
+  return ORDER_ATTENTION_FILTERS.includes(raw) ? raw : '';
+};
 // Bộ lọc đơn dùng CHUNG cho danh sách và xuất CSV — MỘT nguồn sự thật, để "xuất theo bộ lọc
 // đang xem" không bao giờ lệch với thứ người bán đang nhìn.
 //
@@ -117,7 +155,7 @@ const PAYMENT_STATUSES = ['unpaid', 'pending', 'paid', 'refunded'];
 //
 // Các cột cục bộ để trần; predicate thanh toán dùng alias `o` vì nó chứa nhiều biểu thức SQL
 // dùng chung. Mọi query gọi helper này vì vậy phải khai báo `FROM orders o`.
-function buildOrderFilter(query) {
+export function buildOrderFilter(query) {
   const where = [];
   const args = [];
   // Tìm: mã đơn (nếu q toàn số) hoặc tên/điện thoại khách (ILIKE, escape wildcard).
@@ -187,6 +225,17 @@ function buildOrderFilter(query) {
   const migrated = (query.get('migrated') ?? '').trim();
   if (migrated === '0') where.push('NOT o.is_migrated');
   else if (migrated === '1') where.push('o.is_migrated');
+  // Đồng bộ là trục riêng với trạng thái đơn. Đơn POS có thể đã giao xong nhưng vẫn cần
+  // đối soát, nên không suy `sync_status` từ `status` nghiệp vụ.
+  const syncStatus = (query.get('sync_status') ?? '').trim();
+  if (ORDER_SYNC_STATUSES.includes(syncStatus)) {
+    args.push(syncStatus);
+    where.push(`o.sync_status = $${args.length}`);
+  }
+  // `attention=open` gom các ca thật đang mở; bộ lọc chuyên biệt dùng cùng predicate với
+  // cờ trả về ở từng dòng để số đếm, danh sách và badge không thể lệch nhau.
+  const attention = normalizeOrderAttention(query.get('attention'));
+  if (attention) where.push(attention === 'open' ? ALL_ORDER_ATTENTION_SQL : ORDER_ATTENTION_SQL[attention]);
   // Lọc theo TÌNH TRẠNG THANH TOÁN. Ô "Đơn chưa thu tiền" ở Tổng quan bấm vào đây —
   // docs/44 §7: bấm vào con số phải ra ĐÚNG danh sách đã lọc, không phải danh sách đầy đủ.
   // Ô báo "3 đơn chưa thu" mà mở ra 400 đơn thì tệ hơn không có link: người bán mất niềm
@@ -207,7 +256,9 @@ function buildOrderFilter(query) {
     whereSql: where.length ? 'WHERE ' + where.join(' AND ') : '',
     status: ORDER_STATUSES.includes(status) ? status : '',
     payment: PAYMENT_STATUSES.includes(payment) ? payment : '',
-    migrated: migrated === '0' || migrated === '1' ? migrated : '', from, to, q,
+    migrated: migrated === '0' || migrated === '1' ? migrated : '',
+    syncStatus: ORDER_SYNC_STATUSES.includes(syncStatus) ? syncStatus : '',
+    attention, from, to, q,
   };
 }
 
@@ -228,16 +279,35 @@ async function listOrders(res, ctx, _b, _p, query) {
              count(*) FILTER (WHERE status = 'refunded')  AS refunded,
              count(*) FILTER (WHERE status = 'returned')  AS returned
         FROM orders o ${whereNoStatusSql}`, countArgs)).rows[0];
-    const rows = (await c.query(
+    const rawRows = (await c.query(
       `SELECT o.id, o.order_number, o.status, o.payment_status, o.payment_method, o.total_vnd, o.customer_name, o.created_at, o.source, o.is_migrated,
-              o.sync_status, o.sync_error, o.external_ref, o.external_branch_ref,
+              o.sync_status, o.sync_error, o.sync_updated_at, o.external_ref, o.external_branch_ref,
+              ${ORDER_ATTENTION_SQL.sync} AS attention_sync,
+              ${ORDER_ATTENTION_SQL.shipment} AS attention_shipment,
+              ${ORDER_ATTENTION_SQL.resolution} AS attention_resolution,
+              ${ORDER_ATTENTION_SQL.payment} AS attention_payment,
+              ${ORDER_ATTENTION_SQL.notification} AS attention_notification,
+              ${ORDER_ATTENTION_SQL.request} AS attention_request,
               (SELECT count(DISTINCT o2.customer_phone)::int FROM orders o2
                  WHERE o2.shop_id = current_shop_id() AND o2.client_ip_hash = o.client_ip_hash
                    AND o2.client_ip_hash IS NOT NULL AND o2.status = 'pending') AS same_ip_phones
          FROM orders o ${whereSql} ORDER BY o.order_number DESC LIMIT ${limit} OFFSET ${offset}`, args,
     )).rows;
+    const orders = rawRows.map((row) => {
+      const attention = [
+        row.attention_sync ? 'sync' : null,
+        row.attention_shipment ? 'shipment' : null,
+        row.attention_resolution ? 'resolution' : null,
+        row.attention_payment ? 'payment' : null,
+        row.attention_notification ? 'notification' : null,
+        row.attention_request ? 'request' : null,
+      ].filter(Boolean);
+      const { attention_sync, attention_shipment, attention_resolution, attention_payment,
+        attention_notification, attention_request, ...order } = row;
+      return { ...order, attention, attention_count: attention.length };
+    });
     const n = (x) => Number(x ?? 0);
-    return { total, orders: rows, counts: {
+    return { total, orders, counts: {
       '': n(cnt.all_n), pending: n(cnt.pending), confirmed: n(cnt.confirmed), shipped: n(cnt.shipped),
       delivered: n(cnt.delivered), cancelled: n(cnt.cancelled), refunded: n(cnt.refunded), returned: n(cnt.returned),
     } };

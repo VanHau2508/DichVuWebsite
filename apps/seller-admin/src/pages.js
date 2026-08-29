@@ -41,6 +41,14 @@ const PAYMENT_DISPLAY = {
   unpaid: ['unpaid', 'Chưa thu'], partial: ['pending', 'Thu một phần'], paid: ['paid', 'Đã thu đủ'],
   overpaid: ['returned', 'Khách chuyển dư'], refund_due: ['returned', 'Cần hoàn khách'], refunded: ['refunded', 'Đã hoàn'],
 };
+const ORDER_SYNC_LABEL = Object.freeze({
+  not_required: 'Không cần đồng bộ', pending: 'Đang đồng bộ',
+  synced: 'Đã đồng bộ', needs_attention: 'Cần xử lý',
+});
+const ORDER_ATTENTION_LABEL = Object.freeze({
+  sync: 'Lỗi đồng bộ', shipment: 'Vận đơn', resolution: 'Ca giao hàng', payment: 'Tiền',
+  notification: 'Thông báo', request: 'Yêu cầu khách',
+});
 const EVENT_LABEL = {
   'order.created': 'Đơn được tạo', 'order.confirmed': 'Đã xác nhận đơn', 'order.cancelled': 'Đã huỷ đơn',
   'order.reopened': 'Đã mở lại đơn', 'payment.received': 'Đã ghi nhận khoản thu',
@@ -2957,7 +2965,16 @@ export function renderOrderNew(ctx, shopId, variants, idem, err, form, picker) {
 
 // filter.payment: tình trạng thanh toán đang lọc (đến từ ô số liệu ở Tổng quan).
 export function renderOrders(ctx, shopId, data, filter) {
+  filter = filter ?? {};
   const orders = data.orders ?? [];
+  // Link chi tiết mang theo đúng bộ lọc hiện tại để nút quay lại không đưa người vận hành
+  // về một danh sách khác, đặc biệt khi đi vào từ ô việc cần xử lý trên Tổng quan.
+  const detailParams = new URLSearchParams(Object.entries({
+    status: filter.status, q: filter.q, from: filter.from, to: filter.to, source: filter.source,
+    payment: filter.payment, migrated: filter.migrated, sync_status: filter.syncStatus, attention: filter.attention,
+    limit: filter.limit !== 20 ? filter.limit : '', offset: filter.offset,
+  }).filter(([, value]) => value !== '' && value != null && value !== 0));
+  const detailBack = `/shops/${shopId}/orders${detailParams.toString() ? `?${detailParams}` : ''}`;
   // Cảnh báo khi 1 NGUỒN (mạng/kết nối) có ≥4 SĐT KHÁC NHAU đơn chưa xử lý — dấu hiệu 1 kẻ
   // giả nhiều khách. Đếm SĐT phân biệt (không đếm số đơn thô) để tránh báo nhầm mạng chung (CGNAT).
   const SUSPICIOUS_MIN = 4;
@@ -2965,19 +2982,32 @@ export function renderOrders(ctx, shopId, data, filter) {
   const rows = orders.map((o) => {
     const susp = Number(o.same_ip_phones) >= SUSPICIOUS_MIN;
     const externalReadOnly = ['kiotviet_pos', 'sapo_pos'].includes(o.source) || Boolean(o.external_ref);
+    const syncMeta = [
+      o.sync_status ? badge(o.sync_status, ORDER_SYNC_LABEL[o.sync_status] ?? o.sync_status) : '<span class="muted">—</span>',
+      o.sync_updated_at ? `<div class="muted" style="font-size:.78rem;margin-top:4px">Cập nhật ${dt(o.sync_updated_at)}</div>` : '',
+      o.sync_error ? `<div class="err" style="font-size:.8rem;margin-top:4px;overflow-wrap:anywhere">${esc(o.sync_error)}</div>` : '',
+    ].filter(Boolean).join('');
+    const externalMeta = [
+      o.external_ref != null && String(o.external_ref) !== ''
+        ? `<div><span class="muted">Mã:</span> <code>${esc(o.external_ref)}</code></div>` : '',
+      o.external_branch_ref != null && String(o.external_branch_ref) !== ''
+        ? `<div><span class="muted">Chi nhánh:</span> <code>${esc(o.external_branch_ref)}</code></div>` : '',
+    ].filter(Boolean).join('');
     return [
       { label: '', html: externalReadOnly
         ? `<span class="muted" title="Đơn đã thuộc hệ thống POS ngoài; không xử lý hàng loạt tại đây">—</span>`
         : `<input type="checkbox" name="order_ids" value="${esc(o.id)}" form="bulkf" aria-label="Chọn đơn ${esc(o.order_number)}">` },
-      { html: `<a href="/shops/${esc(shopId)}/orders/${esc(o.id)}">#${esc(o.order_number)}</a>` },
+      { html: `<a href="/shops/${esc(shopId)}/orders/${esc(o.id)}${detailParams.toString() ? `?back=${encodeURIComponent(detailBack)}` : ''}">#${esc(o.order_number)}</a>` },
       { html: badge(o.status, STATUS[o.status] ?? o.status) },
       { html: `${badge(o.payment_status, PAY[o.payment_status] ?? o.payment_status)} <span class="muted">${esc(o.payment_method?.toUpperCase() ?? '')}</span>` },
       { html: `${esc(o.customer_name)}${susp ? ` <span class="badge cancelled" title="Cùng nguồn mạng với ${esc(o.same_ip_phones)} SĐT khác nhau đang chờ xử lý — kiểm tra kẻo đơn ảo">⚠ ${esc(o.same_ip_phones)} SĐT cùng nguồn</span>` : ''}` },
-      { html: o.source ? `<span class="badge">${esc(ORDER_SOURCE_LABEL[o.source] ?? o.source)}</span>${
-        o.sync_status === 'pending' ? ' <span class="badge wait">Đang đồng bộ</span>'
-        : o.sync_status === 'needs_attention' ? ' <span class="badge cancelled">Cần xử lý</span>'
-        : o.sync_status === 'synced' ? ' <span class="badge ok">Đã đồng bộ</span>' : ''}`
+      { html: o.source ? `<span class="badge">${esc(ORDER_SOURCE_LABEL[o.source] ?? o.source)}</span>`
         : (o.is_migrated ? '<span class="muted">Nhập từ sàn cũ</span>' : '<span class="muted">—</span>') },
+      { cls: o.sync_error ? 'stack' : '', html: syncMeta },
+      { html: externalMeta || '<span class="muted">—</span>' },
+      { html: Array.isArray(o.attention) && o.attention.length
+        ? o.attention.map((kind) => `<span class="badge cancelled">${esc(ORDER_ATTENTION_LABEL[kind] ?? kind)}</span>`).join(' ')
+        : '<span class="muted">—</span>' },
       { cls: 'muted', html: dt(o.created_at) },
       { style: 'text-align:right', html: `<strong>${money(o.total_vnd)}</strong>` },
     ];
@@ -2992,13 +3022,13 @@ export function renderOrders(ctx, shopId, data, filter) {
   // `limit` cũng phải đi theo: chọn 100 dòng rồi bấm "Sau →" mà rơi về 20 thì người bán mất
   // chỗ đang đứng và phải chọn lại — đúng kiểu mất-bộ-lọc mà chú thích trên đang nói tới.
   const limQ = filter.limit && filter.limit !== 20 ? `&limit=${esc(filter.limit)}` : '';
-  const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}&migrated=${esc(filter.migrated ?? '')}${limQ}&offset=${o}`;
+  const nav = (o) => `?status=${esc(filter.status ?? '')}&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}&migrated=${esc(filter.migrated ?? '')}&sync_status=${esc(filter.syncStatus ?? '')}&attention=${esc(filter.attention ?? '')}${limQ}&offset=${o}`;
   // TAB trạng thái kèm SỐ ĐẾM (thay <select> cũ) — mẫu quen thuộc của TikTok Shop/Shopee:
   // nhìn là biết "còn 12 đơn chờ xác nhận", bấm 1 phát là lọc. Số đếm tôn trọng ô tìm kiếm
   // + khoảng ngày đang áp (nhưng không tính chính mệnh đề trạng thái) nên luôn khớp kết quả.
   // Giữ nguyên q/from/to khi đổi tab để không mất bộ lọc người dùng đang xem.
   const cnts = data.counts ?? {};
-  const keep = `&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}&migrated=${esc(filter.migrated ?? '')}${limQ}`;
+  const keep = `&q=${qenc}&from=${esc(filter.from ?? '')}&to=${esc(filter.to ?? '')}&source=${esc(filter.source ?? '')}&payment=${esc(filter.payment ?? '')}&migrated=${esc(filter.migrated ?? '')}&sync_status=${esc(filter.syncStatus ?? '')}&attention=${esc(filter.attention ?? '')}${limQ}`;
   const statusTabs = `<div class="stabs" role="tablist" aria-label="Lọc theo trạng thái">${
     STATUSES.map((s) => {
       const on = (filter.status ?? '') === s;
@@ -3018,6 +3048,7 @@ export function renderOrders(ctx, shopId, data, filter) {
   const chipHref = (bo) => `?${new URLSearchParams(Object.entries({
     status: filter.status, q: filter.q, from: filter.from, to: filter.to,
     source: filter.source, payment: filter.payment, migrated: filter.migrated,
+    sync_status: filter.syncStatus, attention: filter.attention,
   }).filter(([k, v]) => k !== bo && v)).toString()}`;
   // Nhãn nói theo NGHIỆP VỤ, không theo tên tham số: "migrated=0" không nói được gì với
   // người bán, còn "không gồm đơn nhập từ sàn cũ" thì giải thích luôn vì sao số ở đây khác
@@ -3026,6 +3057,8 @@ export function renderOrders(ctx, shopId, data, filter) {
   const chips = [
     filter.payment ? [PAYMENT_LABEL[filter.payment] ?? filter.payment, chipHref('payment')] : null,
     filter.migrated ? [MIGRATED_LABEL[filter.migrated], chipHref('migrated')] : null,
+    filter.syncStatus ? [ORDER_SYNC_LABEL[filter.syncStatus] ?? filter.syncStatus, chipHref('sync_status')] : null,
+    filter.attention ? [`Việc: ${ORDER_ATTENTION_LABEL[filter.attention] ?? filter.attention}`, chipHref('attention')] : null,
   ].filter(Boolean);
   const filterChips = chips.length
     ? `<p class="muted" style="margin:0 0 10px">Đang lọc: ${chips.map(([lbl, href]) =>
@@ -3046,6 +3079,8 @@ export function renderOrders(ctx, shopId, data, filter) {
         <input type="hidden" name="source" value="${esc(filter.source ?? '')}">
         <input type="hidden" name="payment" value="${esc(filter.payment ?? '')}">
         <input type="hidden" name="migrated" value="${esc(filter.migrated ?? '')}">
+        <input type="hidden" name="sync_status" value="${esc(filter.syncStatus ?? '')}">
+        <input type="hidden" name="attention" value="${esc(filter.attention ?? '')}">
         <button class="btn alt" type="submit">⬇ Xuất CSV</button></form>` : '';
   return layout('Đơn hàng', ctx, `<div class="toolbar"><h1 style="margin:0">Đơn hàng</h1>
       <span class="actions">${exportBtn}<a class="btn" href="/shops/${esc(shopId)}/orders/new">+ Tạo đơn</a></span></div>
@@ -3055,8 +3090,8 @@ export function renderOrders(ctx, shopId, data, filter) {
          ĐƠN ĐẦU TIÊN xuống y=938, tức DƯỚI mép màn hình (812) — chủ shop mở "Đơn hàng" trên
          điện thoại thấy đúng một rừng ô lọc và KHÔNG thấy đơn nào. Thứ họ vào để xem bị đẩy
          khỏi tầm mắt. <details> thuần CSS: máy tính mở sẵn (đủ chỗ), điện thoại gập lại. -->
-    <details class="card filt-wrap"${(filter.q || filter.from || filter.to || filter.source) ? ' open' : ''}>
-      <summary class="filt-sum">Lọc &amp; tìm đơn${(filter.q || filter.from || filter.to || filter.source) ? ' <strong>(đang lọc)</strong>' : ''}</summary>
+    <details class="card filt-wrap"${(filter.q || filter.from || filter.to || filter.source || filter.syncStatus || filter.attention) ? ' open' : ''}>
+      <summary class="filt-sum">Lọc &amp; tìm đơn${(filter.q || filter.from || filter.to || filter.source || filter.syncStatus || filter.attention) ? ' <strong>(đang lọc)</strong>' : ''}</summary>
       <form method="GET" class="filters">
       <input type="hidden" name="status" value="${esc(filter.status ?? '')}">
       <input type="hidden" name="payment" value="${esc(filter.payment ?? '')}">
@@ -3066,6 +3101,10 @@ export function renderOrders(ctx, shopId, data, filter) {
       <div><label>Đến ngày</label><input type="date" name="to" value="${esc(filter.to ?? '')}"></div>
       <div><label>Nguồn</label><select name="source"><option value="">— Tất cả —</option>${
         Object.entries(ORDER_SOURCE_LABEL).map(([k, lbl]) => `<option value="${esc(k)}"${(filter.source ?? '') === k ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}</select></div>
+      <div><label>Đồng bộ</label><select name="sync_status"><option value="">— Tất cả —</option>${
+        Object.entries(ORDER_SYNC_LABEL).map(([k, lbl]) => `<option value="${esc(k)}"${(filter.syncStatus ?? '') === k ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}</select></div>
+      <div><label>Việc cần xử lý</label><select name="attention"><option value="">— Tất cả —</option>${
+        [['open', 'Mọi việc đang mở'], ...Object.entries(ORDER_ATTENTION_LABEL)].map(([k, lbl]) => `<option value="${esc(k)}"${(filter.attention ?? '') === k ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}</select></div>
       <div><button class="btn alt sm" type="submit">Lọc</button></div>
     </form></details>
     <div class="card">
@@ -3078,7 +3117,7 @@ export function renderOrders(ctx, shopId, data, filter) {
       <form id="bulkf" method="POST" action="/shops/${esc(shopId)}/orders/bulk-confirm" class="actions" style="margin-bottom:10px">
         <!-- Bộ lọc đang xem đi kèm để làm xong còn QUAY VỀ ĐÚNG CHỖ ĐANG ĐỨNG (xem veLai ở BFF).
              Thiếu mấy dòng này là người bán bị đá về tab "Tất cả" sau mỗi lượt hàng loạt. -->
-        ${['status', 'q', 'from', 'to', 'source', 'payment', 'migrated'].map((k) => `<input type="hidden" name="${k}" value="${esc(filter[k] ?? '')}">`).join('')}
+        ${[['status', 'status'], ['q', 'q'], ['from', 'from'], ['to', 'to'], ['source', 'source'], ['payment', 'payment'], ['migrated', 'migrated'], ['sync_status', 'syncStatus'], ['attention', 'attention']].map(([name, key]) => `<input type="hidden" name="${name}" value="${esc(filter[key] ?? '')}">`).join('')}
         <input type="hidden" name="limit" value="${esc(filter.limit ?? '')}">
         <input type="hidden" name="offset" value="${esc(filter.offset ?? '')}">
         <button class="btn sm" type="submit">✓ Xác nhận các đơn đã chọn</button>
@@ -3092,7 +3131,8 @@ export function renderOrders(ctx, shopId, data, filter) {
     head: [
       { html: '<input type="checkbox" data-bulk-all="order_ids" form="bulkf" hidden aria-label="Chọn tất cả đơn trên trang">', label: '' },
       { html: 'Đơn' }, { html: 'Trạng thái' }, { html: 'Thanh toán' }, { html: 'Khách' },
-      { html: 'Nguồn' }, { html: 'Thời gian' }, { html: 'Tổng', style: 'text-align:right' },
+      { html: 'Nguồn' }, { html: 'Đồng bộ' }, { html: 'Mã ngoài' }, { html: 'Cần xử lý' },
+      { html: 'Thời gian' }, { html: 'Tổng', style: 'text-align:right' },
     ],
     rows,
   })}
@@ -3106,7 +3146,11 @@ export function renderOrders(ctx, shopId, data, filter) {
     <a class="btn alt" href="/">← Về bảng điều khiển</a>`);
 }
 
-export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returned, timelineFilter = '') {
+export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returned, timelineFilter = '', backUrl = null) {
+  const orderListPath = `/shops/${shopId}/orders`;
+  const orderListHref = typeof backUrl === 'string'
+    && (backUrl === orderListPath || backUrl.startsWith(`${orderListPath}?`))
+    ? backUrl : orderListPath;
   const totalVnd = Math.max(0, Number(o.payment_summary?.total_vnd ?? o.total_vnd) || 0);
   const orderDead = ['cancelled', 'returned', 'refunded'].includes(o.status);
   // V1 chưa có contract sửa/giao/hoàn đã được xác minh với provider. Đơn POS luôn chỉ để
@@ -3117,6 +3161,15 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     <strong>Đơn này đang do hệ thống POS ngoài thực hiện.</strong>
     <p class="muted" style="margin:6px 0 0">Trang quản trị chỉ hiển thị để đối chiếu. Hãy sửa trạng thái, tiền, giao hàng hoặc hoàn trả tại POS; kết quả sẽ đồng bộ về đây.</p>
   </div>` : '';
+  const syncStatus = o.sync_status ?? 'not_required';
+  const syncCard = `<div class="card" style="border-color:${syncStatus === 'needs_attention' ? '#fca5a5' : syncStatus === 'pending' ? '#93c5fd' : 'var(--bd)'}">
+    <h2 style="margin-top:0">Đồng bộ POS</h2>
+    <p style="margin:0"><strong>Trạng thái:</strong> ${badge(syncStatus, ORDER_SYNC_LABEL[syncStatus] ?? syncStatus)}</p>
+    ${o.external_ref != null && String(o.external_ref) !== '' ? `<p class="muted" style="margin:8px 0 0">Mã ngoài: <code>${esc(o.external_ref)}</code></p>` : ''}
+    ${o.external_branch_ref != null && String(o.external_branch_ref) !== '' ? `<p class="muted" style="margin:6px 0 0">Chi nhánh ngoài: <code>${esc(o.external_branch_ref)}</code></p>` : ''}
+    ${o.sync_updated_at ? `<p class="muted" style="margin:6px 0 0">Cập nhật gần nhất: ${dt(o.sync_updated_at)}</p>` : ''}
+    ${o.sync_error ? `<p class="err" style="margin:8px 0 0;overflow-wrap:anywhere">${esc(o.sync_error)}</p>` : ''}
+  </div>`;
   // Thiếu summary là lỗi hợp đồng giữa BFF và seller, không phải lý do để dựng lại công thức
   // tiền trong view. Bản fallback cũ đã trôi khỏi fulfillment_adjustment_vnd và có thể giấu
   // đúng khoản shop còn nợ khách. Giữ object 0 chỉ để render phần KHÔNG tài chính an toàn;
@@ -3565,7 +3618,12 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     return parts.join(' · ');
   };
   const timelineTabs = [['', 'Tất cả'], ['order', 'Đơn hàng'], ['payment', 'Tiền'], ['shipment', 'Vận chuyển'], ['notification', 'Thông báo']]
-    .map(([key, label]) => `<a class="stab${timelineKey === key ? ' on' : ''}" href="/shops/${esc(shopId)}/orders/${esc(o.id)}${key ? `?timeline=${key}` : ''}">${label}</a>`).join('');
+    .map(([key, label]) => {
+      const qp = new URLSearchParams();
+      if (key) qp.set('timeline', key);
+      if (orderListHref !== `/shops/${shopId}/orders`) qp.set('back', orderListHref);
+      return `<a class="stab${timelineKey === key ? ' on' : ''}" href="/shops/${esc(shopId)}/orders/${esc(o.id)}${qp.toString() ? `?${esc(qp.toString())}` : ''}">${label}</a>`;
+    }).join('');
   const timelineCard = `<div class="card" id="nhat-ky"><h2>Nhật ký đơn hàng</h2><nav class="stabs" aria-label="Lọc nhật ký">${timelineTabs}</nav>
     ${visibleTimeline.length ? `<div>${visibleTimeline.map((e) => `<div style="display:grid;grid-template-columns:minmax(125px,auto) minmax(0,1fr);gap:14px;padding:12px 0;border-bottom:1px solid var(--row)">
       <div class="muted">${dt(e.occurred_at ?? e.recorded_at)}</div><div style="min-width:0;overflow-wrap:anywhere"><strong>${esc(EVENT_LABEL[e.event_type] ?? e.event_type)}</strong>
@@ -3609,7 +3667,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     : '';
   return layout(`Đơn #${o.order_number}`, ctx, `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
-      <a class="muted" href="/shops/${esc(shopId)}/orders">← Danh sách đơn</a>
+      <a class="muted" href="${esc(orderListHref)}">← Danh sách đơn</a>
       <a class="btn alt sm" href="/shops/${esc(shopId)}/orders/${esc(o.id)}/print" target="_blank" rel="noopener">🖨 In đơn</a>
     </div>
     <h1>Đơn hàng #${esc(o.order_number)}</h1>
@@ -3681,10 +3739,7 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
         o.source_ref ? ` · ${/^https?:\/\//i.test(o.source_ref)
           ? `<a href="${esc(o.source_ref)}" target="_blank" rel="noopener noreferrer">mở hội thoại ↗</a>`
           : esc(o.source_ref)}` : ''}</p>` : ''}
-      ${o.sync_status && o.sync_status !== 'not_required' ? `<div class="card" style="margin:10px 0;border-color:${o.sync_status === 'needs_attention' ? '#fca5a5' : '#93c5fd'}"><strong>${
-        o.sync_status === 'synced' ? 'Đã đồng bộ với hệ thống POS'
-        : o.sync_status === 'needs_attention' ? 'Đồng bộ cần xử lý'
-        : 'Đang chờ hệ thống POS xác nhận'}</strong>${o.external_ref ? `<p class="muted" style="margin:6px 0 0">Mã ngoài: <code>${esc(o.external_ref)}</code></p>` : ''}${o.sync_error ? `<p class="err" style="margin:6px 0 0">${esc(o.sync_error)}</p>` : ''}</div>` : ''}
+      ${syncCard}
       ${o.shipping_address ? `<p class="muted">${esc(typeof o.shipping_address === 'object' ? [o.shipping_address.line, o.shipping_address.province].filter(Boolean).join(', ') || JSON.stringify(o.shipping_address) : o.shipping_address)}</p>` : ''}
       <p class="muted">Tạo: ${dt(o.created_at)}</p></div>`);
 }

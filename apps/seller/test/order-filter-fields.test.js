@@ -59,6 +59,30 @@ function attentionSourceContract(src) {
   return { expected, sqlKeys, columns };
 }
 
+function vocabularyArray(text, pattern, label) {
+  const match = pattern.exec(text);
+  assert.ok(match, `không tìm thấy ${label} — mốc chết`);
+  const values = [...match[1].matchAll(/['"]([a-z_]+)['"]/g)].map((m) => m[1]);
+  assert.ok(values.length, `${label} rỗng — mốc chết`);
+  return values;
+}
+
+function vocabularyLabelKeys(text, name) {
+  const match = new RegExp(`const ${name} = Object\\.freeze\\(\\{([\\s\\S]*?)\\}\\);`).exec(text);
+  assert.ok(match, `không tìm thấy ${name} — mốc chết`);
+  const keys = [...match[1].matchAll(/(?:^|,)\s*([a-z_]+)\s*:/gm)].map((m) => m[1]);
+  assert.ok(keys.length, `${name} rỗng — mốc chết`);
+  return keys;
+}
+
+function sorted(values) {
+  return [...values].sort();
+}
+
+function withoutOpen(values) {
+  return values.filter((value) => value !== 'open');
+}
+
 // Trường lọc KHÔNG mang theo được, kèm lý do (danh sách ngắn + có lý do thì người sau đọc được).
 const MIEN_TRU = {
   limit: 'BFF đóng cứng limit=20, không phải bộ lọc người dùng chọn',
@@ -196,6 +220,76 @@ test('mỗi alias attention trong SELECT dùng đúng ORDER_ATTENTION_SQL tươn
     const matches = columns.filter((column) => column.expressionKey === key && column.aliasKey === key);
     assert.equal(matches.length, 1,
       `attention_${key} phải dùng chính ORDER_ATTENTION_SQL.${key}, không chép tay biểu thức`);
+  }
+});
+
+test('seller, BFF và nhãn dùng cùng từ vựng attention/sync_status', () => {
+  const seller = rd('apps/seller/src/orders.js');
+  const admin = rd('apps/seller-admin/src/server.js');
+  const pages = rd('apps/seller-admin/src/pages.js');
+  const listStart = admin.indexOf('async function ordersList(');
+  const listEnd = admin.indexOf('\nasync function ', listStart + 1);
+  assert.ok(listStart >= 0 && listEnd > listStart, 'không tìm thấy ordersList — mốc chết');
+  const listBody = admin.slice(listStart, listEnd);
+  const exportStart = admin.indexOf('function ordersExportFields(');
+  const exportEnd = admin.indexOf('\nasync function doOrdersExport', exportStart);
+  assert.ok(exportStart >= 0 && exportEnd > exportStart, 'không tìm thấy ordersExportFields — mốc chết');
+  const exportBody = admin.slice(exportStart, exportEnd);
+
+  const sellerAttention = vocabularyArray(
+    seller,
+    /export const ORDER_ATTENTION_FILTERS\s*=\s*(\[[^\]]*\]);/,
+    'ORDER_ATTENTION_FILTERS',
+  );
+  const sellerSync = vocabularyArray(
+    seller,
+    /export const ORDER_SYNC_STATUSES\s*=\s*(\[[^\]]*\]);/,
+    'ORDER_SYNC_STATUSES',
+  );
+  const listAttention = vocabularyArray(
+    listBody,
+    /(\[[^\]]*\])\.includes\(rawAttention\)/,
+    'allowlist attention của ordersList',
+  );
+  const listSync = vocabularyArray(
+    listBody,
+    /(\[[^\]]*\])\.includes\(q\.get\('sync_status'\)\)/,
+    'allowlist sync_status của ordersList',
+  );
+  const exportAttention = vocabularyArray(
+    exportBody,
+    /(\[[^\]]*\])\.includes\(v\)\s*\?\s*v\s*:/,
+    'allowlist attention của ordersExportFields',
+  );
+  const exportSync = vocabularyArray(
+    exportBody,
+    /(\[[^\]]*\])\.includes\(f\.sync_status\)/,
+    'allowlist sync_status của ordersExportFields',
+  );
+  const labelAttention = vocabularyLabelKeys(pages, 'ORDER_ATTENTION_LABEL');
+  const labelSync = vocabularyLabelKeys(pages, 'ORDER_SYNC_LABEL');
+
+  for (const [name, values] of [
+    ['ORDER_ATTENTION_FILTERS phía seller', sellerAttention],
+    ['allowlist attention của ordersList', listAttention],
+    ['allowlist attention của ordersExportFields', exportAttention],
+  ]) {
+    assert.ok(values.includes('open'), `${name} phải có trục hợp nhất "open"`);
+  }
+  assert.ok(!labelAttention.includes('open'), 'ORDER_ATTENTION_LABEL không được khai "open" — đây là phép hợp nhất');
+  assert.deepEqual(sorted(withoutOpen(listAttention)), sorted(withoutOpen(sellerAttention)),
+    'ordersList lệch từ vựng attention so với seller');
+  assert.deepEqual(sorted(withoutOpen(exportAttention)), sorted(withoutOpen(sellerAttention)),
+    'ordersExportFields lệch từ vựng attention so với seller');
+  assert.deepEqual(sorted(labelAttention), sorted(withoutOpen(sellerAttention)),
+    'ORDER_ATTENTION_LABEL lệch từ vựng attention so với seller');
+
+  for (const [name, values] of [
+    ['allowlist sync_status của ordersList', listSync],
+    ['allowlist sync_status của ordersExportFields', exportSync],
+    ['ORDER_SYNC_LABEL', labelSync],
+  ]) {
+    assert.deepEqual(sorted(values), sorted(sellerSync), `${name} lệch từ vựng sync_status so với seller`);
   }
 });
 

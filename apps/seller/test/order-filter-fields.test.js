@@ -26,6 +26,39 @@ import { join } from 'node:path';
 const ROOT = join(import.meta.dirname, '..', '..', '..');
 const rd = (p) => readFileSync(join(ROOT, p), 'utf8');
 
+// Rút hợp đồng ngay từ nguồn seller. Không ghi lại danh sách trục ở bộ test: đổi tên
+// một trục nhất quán ở filter, SQL và cột SELECT vẫn phải là thay đổi hợp lệ.
+function attentionSourceContract(src) {
+  const filtersMatch = /export const ORDER_ATTENTION_FILTERS\s*=\s*\[([\s\S]*?)\];/.exec(src);
+  assert.ok(filtersMatch, 'không tìm thấy ORDER_ATTENTION_FILTERS — mốc chết');
+  const filters = [...filtersMatch[1].matchAll(/['"]([a-z_]+)['"]/g)].map((m) => m[1]);
+  const expected = filters.filter((key) => key !== 'open');
+
+  const sqlStart = src.indexOf('const ORDER_ATTENTION_SQL = Object.freeze({');
+  assert.ok(sqlStart >= 0, 'không tìm thấy ORDER_ATTENTION_SQL — mốc chết');
+  const sqlEnd = src.indexOf('\n});', sqlStart);
+  assert.ok(sqlEnd > sqlStart, 'không tìm thấy điểm kết thúc ORDER_ATTENTION_SQL — mốc chết');
+  const sqlBody = src.slice(sqlStart, sqlEnd);
+  const sqlKeys = [...sqlBody.matchAll(/^\s*([a-z_]+):\s*`/gm)].map((m) => m[1]);
+
+  const listStart = src.indexOf('async function listOrders(');
+  assert.ok(listStart >= 0, 'không tìm thấy listOrders — mốc chết');
+  const selectStart = src.indexOf('SELECT o.id', listStart);
+  const selectEnd = src.indexOf('FROM orders o ${whereSql}', selectStart);
+  assert.ok(selectStart > listStart && selectEnd > selectStart,
+    'không tìm thấy SELECT dòng của listOrders — mốc chết');
+  const rowSelect = src.slice(selectStart, selectEnd);
+  // Lấy alias ĐỘC LẬP với biểu thức bên trái. Nhờ vậy `false AS attention_shipment`
+  // vẫn bị nhìn thấy, rồi chốt thứ hai mới khẳng định biểu thức đó là nguồn chung.
+  const columns = [...rowSelect.matchAll(/^\s*(.*?)\s+AS\s+(attention_[a-z_]+)\s*,?\s*$/gm)]
+    .map((m) => ({
+      expressionKey: /^\$\{\s*ORDER_ATTENTION_SQL\.([a-z_]+)\s*\}$/.exec(m[1].trim())?.[1] ?? null,
+      aliasKey: m[2].replace(/^attention_/, ''),
+    }));
+
+  return { expected, sqlKeys, columns };
+}
+
 // Trường lọc KHÔNG mang theo được, kèm lý do (danh sách ngắn + có lý do thì người sau đọc được).
 const MIEN_TRU = {
   limit: 'BFF đóng cứng limit=20, không phải bộ lọc người dùng chọn',
@@ -147,6 +180,23 @@ test('BFF giữ đúng mọi nguồn chỉ-đọc của seller cho cả danh sá
     'danh sách admin nuốt một nguồn chỉ-đọc của seller — chọn POS sẽ hiện lại mọi đơn');
   assert.deepEqual(literals(exportMatch[1]).sort(), expected,
     'xuất CSV nuốt một nguồn chỉ-đọc của seller — file sẽ rộng hơn tập người bán đang xem');
+});
+
+test('listOrders khai đủ và chỉ đủ cột attention theo ORDER_ATTENTION_FILTERS', () => {
+  const { expected, sqlKeys, columns } = attentionSourceContract(rd('apps/seller/src/orders.js'));
+  assert.deepEqual(sqlKeys.sort(), expected.slice().sort(),
+    'ORDER_ATTENTION_SQL phải phủ đúng mọi trục attention (trừ open)');
+  assert.deepEqual(columns.map((column) => column.aliasKey).sort(), expected.slice().sort(),
+    'SELECT dòng phải có đúng một alias attention cho mỗi trục');
+});
+
+test('mỗi alias attention trong SELECT dùng đúng ORDER_ATTENTION_SQL tương ứng', () => {
+  const { expected, columns } = attentionSourceContract(rd('apps/seller/src/orders.js'));
+  for (const key of expected) {
+    const matches = columns.filter((column) => column.expressionKey === key && column.aliasKey === key);
+    assert.equal(matches.length, 1,
+      `attention_${key} phải dùng chính ORDER_ATTENTION_SQL.${key}, không chép tay biểu thức`);
+  }
 });
 
 // Biên ngày: MỘT quy tắc cho mọi bộ lọc "Từ ngày / Đến ngày". DB chạy UTC nên `::date` trần

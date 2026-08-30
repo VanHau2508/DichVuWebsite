@@ -46,7 +46,7 @@ const ORDER_SYNC_LABEL = Object.freeze({
   synced: 'Đã đồng bộ', needs_attention: 'Cần xử lý',
 });
 const ORDER_ATTENTION_LABEL = Object.freeze({
-  sync: 'Lỗi đồng bộ', shipment: 'Vận đơn', resolution: 'Ca giao hàng', payment: 'Tiền',
+  sync: 'Lỗi đồng bộ', shipment: 'Vận đơn', resolution: 'Ca giao hàng', payment: 'Còn nợ khách',
   notification: 'Thông báo', request: 'Yêu cầu khách',
 });
 const EVENT_LABEL = {

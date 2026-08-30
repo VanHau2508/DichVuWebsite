@@ -463,7 +463,8 @@ async function main() {
 
   // ── 12. Trung tâm đơn đa kênh: hai trục lọc + quay lại đúng ngữ cảnh ───────
   // Dựng sau toàn bộ phép đo cũ để các order fixture mới không làm lệch số đếm của
-  // dashboard/tab ở trên. Ba đơn đều đã thu đủ tiền nên không rơi nhầm vào attention=payment.
+  // dashboard/tab ở trên. Ba đơn đầu đã thu đủ tiền nên không rơi nhầm vào attention=payment;
+  // fixture thứ tư cố ý là đơn đã thu rồi huỷ để OWED_SQL > 0 và canh trục payment thật.
   sect('12. Trung tâm đơn: lọc đồng bộ/ca xử lý và giữ ngữ cảnh chi tiết');
   const filterPending = await placeOrder(A, P.vid, 1);
   const filterSync = await placeOrder(A, P.vid, 1);
@@ -475,6 +476,19 @@ async function main() {
         WHERE id=$1`, [fixture.orderId],
     );
   }
+  const filterPayment = await placeOrder(A, P.vid, 1);
+  await owner.query(
+    `UPDATE orders
+        SET payment_status='paid', paid_at=now(), amount_paid_vnd=total_vnd
+      WHERE id=$1`, [filterPayment.orderId],
+  );
+  const paymentCancel = await rq(
+    SELLER, 'POST', `/shops/${A.shopId}/orders/${filterPayment.orderId}/cancel`,
+    { body: { reason: 'fixture attention payment' }, cookie: A.cookie, origin: OS },
+  );
+  paymentCancel.status === 200
+    ? ok('fixture payment: đơn đã thu rồi huỷ → OWED_SQL > 0')
+    : bad('không dựng được fixture payment', `${paymentCancel.status} ${paymentCancel.raw}`);
 
   // Một integration/discrepancy thật để attention=sync không chỉ tình cờ trùng với
   // sync_status. Ghi cột connector qua app_integration, giữ trigger 0178 trong đường chạy.
@@ -527,23 +541,39 @@ async function main() {
     ? ok('seller lọc sync_status=pending → đúng một đơn đang chờ đồng bộ')
     : bad('lọc sync_status=pending trả sai tập', JSON.stringify({ status: syncPending.status, total: syncPending.json?.total, ids: [...orderIds(syncPending)] }));
   const syncAttention = await sellerOrders('?attention=sync&limit=100');
-  only(syncAttention, filterSync.orderId)
+  const syncOrder = syncAttention.json?.orders?.find((row) => row.id === filterSync.orderId);
+  only(syncAttention, filterSync.orderId) && Array.isArray(syncOrder?.attention)
+    && syncOrder.attention.includes('sync') && Number(syncOrder.attention_count) >= 1
     ? ok('attention=sync bắt đúng discrepancy mở dù sync_status đã synced')
-    : bad('attention=sync không bắt discrepancy mở', JSON.stringify({ status: syncAttention.status, total: syncAttention.json?.total, ids: [...orderIds(syncAttention)] }));
+    : bad('attention=sync không bắt discrepancy/cờ dòng', JSON.stringify({ status: syncAttention.status, total: syncAttention.json?.total, ids: [...orderIds(syncAttention)], row: syncOrder }));
   const shipmentAttention = await sellerOrders('?attention=shipment&limit=100');
-  only(shipmentAttention, filterShipment.orderId)
+  const shipmentOrder = shipmentAttention.json?.orders?.find((row) => row.id === filterShipment.orderId);
+  only(shipmentAttention, filterShipment.orderId) && Array.isArray(shipmentOrder?.attention)
+    && shipmentOrder.attention.includes('shipment') && Number(shipmentOrder.attention_count) >= 1
     ? ok('attention=shipment bắt đúng vận đơn ambiguous')
-    : bad('attention=shipment trả sai tập', JSON.stringify({ status: shipmentAttention.status, total: shipmentAttention.json?.total, ids: [...orderIds(shipmentAttention)] }));
+    : bad('attention=shipment trả sai tập/cờ dòng', JSON.stringify({ status: shipmentAttention.status, total: shipmentAttention.json?.total, ids: [...orderIds(shipmentAttention)], row: shipmentOrder }));
+  const paymentAttention = await sellerOrders('?attention=payment&limit=100');
+  const paymentOrder = paymentAttention.json?.orders?.find((row) => row.id === filterPayment.orderId);
+  only(paymentAttention, filterPayment.orderId) && Array.isArray(paymentOrder?.attention)
+    && paymentOrder.attention.includes('payment') && Number(paymentOrder.attention_count) >= 1
+    ? ok('attention=payment bắt đúng đơn OWED_SQL > 0 và gắn cờ payment')
+    : bad('attention=payment trả sai tập/cờ dòng', JSON.stringify({ status: paymentAttention.status, total: paymentAttention.json?.total, ids: [...orderIds(paymentAttention)], row: paymentOrder }));
+  const pendingOrder = syncPending.json?.orders?.find((row) => row.id === filterPending.orderId);
+  Array.isArray(pendingOrder?.attention) && pendingOrder.attention.length === 0
+    && Number(pendingOrder.attention_count) === 0
+    ? ok('đơn sạch filterPending có attention=[] và attention_count=0')
+    : bad('đơn sạch bị gắn cờ attention', JSON.stringify({ row: pendingOrder }));
   const allAttention = await sellerOrders('?attention=open&limit=100');
   const openIds = orderIds(allAttention);
-  allAttention.status === 200 && openIds.size === 2
+  allAttention.status === 200 && openIds.size === 3
     && openIds.has(filterSync.orderId) && openIds.has(filterShipment.orderId)
-    && !openIds.has(filterPending.orderId)
-    ? ok('attention=open hợp nhất đúng hai loại ca và không kéo đơn pending sạch vào')
+    && openIds.has(filterPayment.orderId) && !openIds.has(filterPending.orderId)
+    ? ok('attention=open hợp nhất đúng ba loại ca và không kéo đơn pending sạch vào')
     : bad('attention=open hợp nhất sai tập', JSON.stringify({ status: allAttention.status, total: allAttention.json?.total, ids: [...openIds] }));
   const invalidFilters = await sellerOrders('?sync_status=not-a-status&attention=not-a-kind&limit=100');
   invalidFilters.status === 200 && orderIds(invalidFilters).has(filterPending.orderId)
     && orderIds(invalidFilters).has(filterSync.orderId) && orderIds(invalidFilters).has(filterShipment.orderId)
+    && orderIds(invalidFilters).has(filterPayment.orderId)
     ? ok('giá trị sync_status/attention lạ bị bỏ qua, không thành lỗi 400/500')
     : bad('filter lạ làm hỏng danh sách', JSON.stringify({ status: invalidFilters.status, total: invalidFilters.json?.total }));
 
@@ -555,6 +585,26 @@ async function main() {
     && !syncList.body.includes(shipmentRef) && !syncList.body.includes(filterPending.orderId)
     ? ok('BFF danh sách hiện mã ngoài, chi nhánh ngoài và lỗi đồng bộ')
     : bad('BFF danh sách thiếu metadata connector', syncList.body.slice(0, 1200));
+  const rowFor = (html, orderId) => [...html.matchAll(/<tr\b[\s\S]*?<\/tr>/g)]
+    .map((match) => match[0]).find((row) => row.includes(`/orders/${orderId}`)) ?? '';
+  const attentionCellFor = (html, orderId) => {
+    const row = rowFor(html, orderId);
+    return /<td[^>]*data-label="Cần xử lý"[^>]*>([\s\S]*?)<\/td>/.exec(row)?.[1] ?? '';
+  };
+  const syncAttentionCell = attentionCellFor(syncList.body, filterSync.orderId);
+  const paymentList = await adm('GET', `/shops/${A.shopId}/orders?attention=payment`, { cookie: A.cookie });
+  const paymentAttentionCell = attentionCellFor(paymentList.body, filterPayment.orderId);
+  const cleanList = await adm('GET', `/shops/${A.shopId}/orders?sync_status=pending`, { cookie: A.cookie });
+  const cleanAttentionCell = attentionCellFor(cleanList.body, filterPending.orderId);
+  /<span class="badge cancelled">Lỗi đồng bộ<\/span>/.test(syncAttentionCell)
+    ? ok('HTML render badge "Lỗi đồng bộ" trên đúng dòng sync')
+    : bad('HTML không render badge attention=sync', syncAttentionCell || syncList.body.slice(0, 1200));
+  /<span class="badge cancelled">Còn nợ khách<\/span>/.test(paymentAttentionCell)
+    ? ok('HTML render badge "Còn nợ khách" trên đúng dòng payment')
+    : bad('HTML không render badge attention=payment', paymentAttentionCell || paymentList.body.slice(0, 1200));
+  !/<span class="badge\b/.test(cleanAttentionCell) && /—/.test(cleanAttentionCell)
+    ? ok('HTML đơn sạch không render badge attention')
+    : bad('HTML đơn sạch vẫn render badge attention', cleanAttentionCell || cleanList.body.slice(0, 1200));
   const back = `/shops/${A.shopId}/orders?attention=sync`;
   const detail = await adm('GET', `/shops/${A.shopId}/orders/${filterSync.orderId}?back=${encodeURIComponent(back)}`, { cookie: A.cookie });
   detail.status === 200 && detail.body.includes(`href="${back}"`)

@@ -42,7 +42,7 @@ const FONTFACE = `@font-face{font-family:'Be Vietnam Pro';font-style:normal;font
 @font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/bevietnampro-800-latin-ext.woff2) format('woff2');unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
 @font-face{font-family:'Be Vietnam Pro';font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/bevietnampro-800-latin.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}`;
 const STYLE = `${FONTFACE}
-*{box-sizing:border-box}
+*{box-sizing:border-box}[hidden]{display:none!important}
 :root{
   --bg:#ffffff;--surf:#f5f8fd;--card:#ffffff;--ink:#0d1526;--soft:#3f4d66;--mut:#59647a;--bd:#e6ebf3;
   --pri:#2463eb;--prid:#1b48c0;--pri2:#7c3aed;--brand:#2463eb;--brand2:#7c3aed;--brandd:#1b48c0;--wash:#eef4ff;--good:#0e9f6e;
@@ -282,9 +282,10 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
       <input name="email" type="email" autocomplete="email" value="${v(pf.email)}" placeholder="ban@email.com" style="margin-top:5px">
       <div style="color:#6b7280;font-size:.82rem;margin-top:4px">Nhận email xác nhận đơn, cập nhật khi giao hàng, và mã tra cứu đơn.</div>
     </div>`;
-  // Nút định vị GPS (0089) — CHỈ khi shop ship theo km + có geocoder (opts.gps). type=button → không submit.
-  const gpsBtn = opts.gps ? `<button type="button" id="use-gps" class="btn alt" style="width:auto;padding:10px 16px;margin-bottom:6px">📍 Dùng vị trí hiện tại</button>
-      <div id="gps-hint" class="muted" style="font-size:.85rem;margin-bottom:8px"></div>` : '';
+  // Nút định vị GPS (0089) — CHỈ khi shop ship theo km + có geocoder (opts.gps). Hidden SSR
+  // để no-JS không mời bấm một nút chết; script chỉ mở khi browser thật sự có geolocation.
+  const gpsBtn = opts.gps ? `<button type="button" id="use-gps" class="btn alt" hidden style="width:auto;padding:10px 16px;margin-bottom:6px">📍 Dùng vị trí hiện tại</button>
+      <div id="gps-hint" class="muted" hidden style="font-size:.85rem;margin-bottom:8px"></div>` : '';
 
   // Khách ĐĂNG NHẬP + có địa chỉ đã lưu → CHỌN NHANH (radio no-JS). Chọn "địa chỉ khác" (:checked)
   // mở ô nhập tay. Địa chỉ đã lưu KHÔNG required (khách có thể chọn radio) — server validate.
@@ -388,8 +389,9 @@ export function renderCheckout(shopName, s, idemToken, opts = {}) {
 // THÂN script (chỉ nonce). Tắt JS/từ chối GPS/lỗi → không đụng form (fallback no-JS trọn vẹn).
 function gpsScript(nonce) {
   return `<script nonce="${esc(nonce)}">(function(){
-  var btn=document.getElementById('use-gps'); if(!btn||!navigator.geolocation) return;
-  var lat=document.getElementById('f-lat'), lng=document.getElementById('f-lng'), hint=document.getElementById('gps-hint');
+  var btn=document.getElementById('use-gps'), hint=document.getElementById('gps-hint'); if(!btn||!navigator.geolocation) return;
+  btn.hidden=false; if(hint) hint.hidden=false;
+  var lat=document.getElementById('f-lat'), lng=document.getElementById('f-lng');
   var prov=document.querySelector('select[name=province]'), line=document.querySelector('textarea[name=address_line]');
   var shipSeen=document.querySelector('input[name=ship_seen]'), newRadio=document.getElementById('addr-new');
   function say(t){ if(hint) hint.textContent=t; }

@@ -75,6 +75,19 @@ test('external-master chỉ hiện COD dù shop đã bật QR; shop local vẫn 
   assert.match(external, /chỉ hỗ trợ COD trong giai đoạn pilot/);
 });
 
+test('nút GPS không trở thành nút chết khi tắt JavaScript', async () => {
+  const { renderCheckout } = await pagesUnderTest;
+  const summaryLocal = summary({ external_master: false, discounts_allowed: true, cod_only: false });
+  const html = renderCheckout('Shop', summaryLocal, 'idem-gps', { gps: true, nonce: 'nonce-gps' });
+
+  // GPS chỉ có tác dụng khi script chạy; hidden SSR giữ no-JS checkout không mời bấm một
+  // control không thể hoạt động. Script chỉ mở lại control sau khi browser có geolocation.
+  assert.match(html, /\[hidden\]\{display:none!important\}/);
+  assert.match(html, /<button[^>]*id="use-gps"[^>]*\shidden(?:\s|>)/);
+  assert.match(html, /<div[^>]*id="gps-hint"[^>]*\shidden(?:\s|>)/);
+  assert.match(html, /btn\.hidden=false; if\(hint\) hint\.hidden=false;/);
+});
+
 test('policy ưu đãi KiotViet là một nguồn server-side và fail-closed theo boolean thật', () => {
   assert.match(checkoutSource, /function policyTuConnector\([^)]+\)[\s\S]*?preserve_line_price === true;/);
   assert.match(checkoutSource, /const policy = knownPolicy \?\? await checkoutPolicy\(c\);/);

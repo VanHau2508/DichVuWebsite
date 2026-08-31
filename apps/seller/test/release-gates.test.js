@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -201,15 +202,29 @@ test('ci-local đối chiếu số test TAP DB với bảng số đo §0', () =>
     'bước 3 phải lấy số pass TAP từ log DB');
   const extraction = /db_declared=\$\(sed -nE '([^']+)' CLAUDE\.md \| head -1\)/.exec(step);
   assert.ok(extraction, 'bước 3 phải đọc số bất biến DB đã khai trong §0');
-  const sedParts = /^s\/(.*)\/(.*)\/p$/.exec(extraction[1]);
-  assert.ok(sedParts, 'mốc chết: phép rút số TAP đổi khỏi dạng sed s///p');
-  const sedPattern = new RegExp(sedParts[1]);
-  const sedReplacement = sedParts[2];
-  const sedResults = read('CLAUDE.md').split(/\r?\n/).flatMap((line) => {
-    const match = sedPattern.exec(line);
-    if (!match) return [];
-    return [sedReplacement.replace(/\\(\d+)/g, (_, index) => match[Number(index)] ?? '')];
-  });
+  const sedPath = process.platform === 'win32'
+    ? ['C:\\Program Files\\Git\\usr\\bin\\sed.exe', 'C:\\Program Files\\Git\\bin\\sed.exe']
+      .find((candidate) => fs.existsSync(candidate))
+    : 'sed';
+  let sedResults;
+  if (sedPath) {
+    sedResults = execFileSync(sedPath, ['-nE', extraction[1], 'CLAUDE.md'], {
+      cwd: root,
+      encoding: 'utf8',
+    }).trim().split(/\r?\n/).filter(Boolean);
+  } else {
+    // Keep the source gate test runnable in minimal Node images without sed; CI and Git
+    // for Windows both take the real command path above.
+    const sedParts = /^s\/(.*)\/(.*)\/p$/.exec(extraction[1]);
+    assert.ok(sedParts, 'mốc chết: phép rút số TAP đổi khỏi dạng sed s///p');
+    const sedPattern = new RegExp(sedParts[1]);
+    const sedReplacement = sedParts[2];
+    sedResults = read('CLAUDE.md').split(/\r?\n/).flatMap((line) => {
+      const match = sedPattern.exec(line);
+      if (!match) return [];
+      return [sedReplacement.replace(/\\(\d+)/g, (_, index) => match[Number(index)] ?? '')];
+    });
+  }
   assert.equal(sedResults.length, 1,
     'mốc chết: phép rút số TAP phải khớp đúng một hàng trong CLAUDE.md');
   const declared = sedResults[0];

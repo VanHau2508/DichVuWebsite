@@ -96,6 +96,10 @@ Chạy trên nhánh `codex/ux-onboarding-golive-fix`:
 Lượt full mất gần 58 phút vì DB dev đã tích tới 7.632 shop. Đây không phải lỗi của lát cắt nhưng
 là lý do không nên chạy chồng nhiều lượt và cần lên kế hoạch dọn DB dev có backup riêng.
 
+Bản cập nhật trên nhánh `codex/onboarding-readiness-connector` đã kiểm chứng thêm readiness
+`21/21`, onboarding admin `55/55`, xử lý sự cố `46/46` và mutation `3/3` (gỡ connector,
+freshness, allowlist retry đều đỏ; hoàn nguyên xanh). Nhánh chưa merge/push.
+
 ---
 
 ## 5. Còn nợ

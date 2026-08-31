@@ -4,6 +4,10 @@
 > `verify-*.sh` (19) + `smoke-*.sh` (edge/readiness/tls) + `security-scan.sh` đã vào CI.
 > Guard "rỗng = xanh giả" ở CẢ BA job. Các fix guard được kiểm bằng chạy thử pass+fail path.
 
+Con số `19` ở phần lịch sử A7 là số tại thời điểm tài liệu được viết. Hiện manifest mutation có
+`22` script; `verify-onboarding-readiness.sh` bổ sung ba chốt cho readiness connector và retry
+email onboarding, còn các script cũ không bị đổi.
+
 ## 1. Vấn đề A7 giải
 
 Trước A7, triết lý "kiểm chứng bằng chạy thật" (mutation testing + smoke) đã có dưới dạng

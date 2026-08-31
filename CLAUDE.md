@@ -576,6 +576,8 @@ Nhánh `codex/onboarding-readiness-connector` đang thi công phần readiness t
 retry thông báo onboarding; **chưa merge, chưa push**. Shop `external_master` chỉ được coi là
 sẵn sàng khi connector active, có biến thể đã mapping đúng generation và dấu đồng bộ còn tươi;
 email `shop.onboarding_nudge` được retry qua cùng chuỗi outbox/PII TTL, không cần `order_id`.
+Harness `scripts/verify-onboarding-readiness.sh` đã canh ba chốt bằng E2E thật: gỡ connector,
+nới freshness và bỏ allowlist onboarding đều phải đỏ; hoàn nguyên phải xanh.
 
 Nguyên nhân tràn ngang của trang **Tồn an toàn** đã được vá trên nhánh connector: con trực tiếp
 của `.filters` có `min-width:0;max-width:100%`, để nhãn "Tỉ lệ giữ an toàn cho toàn shop (%)"

@@ -59,7 +59,7 @@ async function computeReadiness(c, ctx) {
     `SELECT id, provider, status, inventory_authority, generation
        FROM shop_integrations
       WHERE shop_id = current_shop_id() AND inventory_authority = 'external_master'
-      ORDER BY id LIMIT 1 FOR SHARE`,
+      ORDER BY id LIMIT 1`,
   )).rows[0] ?? null;
 
   // Đây là dry-run chỉ đọc: chọn đúng một biến thể mà checkout thật có thể bán, dùng cùng
@@ -127,7 +127,7 @@ async function computeReadiness(c, ctx) {
     : integration.status !== 'active'
       ? 'Kết nối tồn kho ngoài chưa sẵn sàng'
       : externalSample
-        ? 'Tồn kho KiotViet đã đồng bộ'
+        ? 'Có sản phẩm KiotViet đã đồng bộ tồn'
         : 'Chưa có sản phẩm KiotViet đã đồng bộ tồn';
   const connectorDetail = integration ? {
     provider: integration.provider,

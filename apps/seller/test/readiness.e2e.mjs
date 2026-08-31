@@ -21,6 +21,12 @@ const integrationDb = new pg.Pool({ connectionString: process.env.DATABASE_URL_I
 
 let pass = 0, fail = 0;
 const G = '\x1b[32m', R = '\x1b[31m', X = '\x1b[0m';
+let poolsClosed = false;
+async function closePools() {
+  if (poolsClosed) return;
+  poolsClosed = true;
+  await Promise.all([owner.end().catch(() => {}), rw.end().catch(() => {}), integrationDb.end().catch(() => {})]);
+}
 const ok = (msg) => { pass++; console.log(`  ${G}PASS${X} ${msg}`); };
 const bad = (msg, detail = '') => { fail++; console.log(`  ${R}FAIL${X} ${msg}${detail ? ` — ${detail}` : ''}`); };
 const uniq = () => Math.random().toString(36).slice(2, 10);
@@ -343,12 +349,12 @@ async function main() {
     : bad('connector đã sẵn sàng nhưng readiness vẫn chặn', JSON.stringify({ activeSource, activeDry, status: activeGoLive.status, body: activeGoLive.json }));
 
   console.log(`\n${pass} pass, ${fail} fail`);
-  await Promise.all([owner.end(), rw.end(), integrationDb.end()]);
+  await closePools();
   process.exit(fail ? 1 : 0);
 }
 
 main().catch(async (err) => {
   console.error(err);
-  await Promise.all([owner.end().catch(() => {}), rw.end().catch(() => {}), integrationDb.end().catch(() => {})]);
+  await closePools();
   process.exit(1);
 });

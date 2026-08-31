@@ -572,8 +572,8 @@ savepoint và câu chữ fail-closed. Các chốt đều bị đột biến th�
 
 Chi tiết hợp đồng `/stats`, registry việc cần làm và các giới hạn của lát cắt nằm ở `docs/81`.
 
-Nhánh `codex/onboarding-readiness-connector` đang thi công phần readiness theo nguồn tồn và
-retry thông báo onboarding; **chưa merge, chưa push**. Shop `external_master` chỉ được coi là
+Nhánh `codex/onboarding-readiness-connector` đã thi công phần readiness theo nguồn tồn và
+retry thông báo onboarding; **đã push, chưa merge**. Shop `external_master` chỉ được coi là
 sẵn sàng khi connector active, có biến thể đã mapping đúng generation và dấu đồng bộ còn tươi;
 email `shop.onboarding_nudge` được retry qua cùng chuỗi outbox/PII TTL, không cần `order_id`.
 Harness `scripts/verify-onboarding-readiness.sh` đã canh ba chốt bằng E2E thật: gỡ connector,

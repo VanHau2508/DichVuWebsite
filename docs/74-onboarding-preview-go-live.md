@@ -98,14 +98,14 @@ là lý do không nên chạy chồng nhiều lượt và cần lên kế hoạc
 
 Bản cập nhật trên nhánh `codex/onboarding-readiness-connector` đã kiểm chứng thêm readiness
 `21/21`, onboarding admin `55/55`, xử lý sự cố `46/46` và mutation `3/3` (gỡ connector,
-freshness, allowlist retry đều đỏ; hoàn nguyên xanh). Nhánh chưa merge/push.
+freshness, allowlist retry đều đỏ; hoàn nguyên xanh). Nhánh đã push, chưa merge.
 
 ---
 
 ## 5. Còn nợ
 
 - Bản cập nhật readiness connector + retry onboarding đang ở nhánh
-  `codex/onboarding-readiness-connector`, chưa merge hoặc push; cần review độc lập rồi mới
+  `codex/onboarding-readiness-connector`, đã push nhưng chưa merge; cần review độc lập rồi mới
   fast-forward vào `main`.
 - IP LAN của hostname dev đang cũ; chỉ ảnh hưởng link `nip.io`, không ảnh hưởng CI nội bộ.
 - Connector KiotViet mới đủ lõi cho pilot; trước khi bật `external_master` cho shop thật phải

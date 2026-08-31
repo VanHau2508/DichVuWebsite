@@ -136,3 +136,73 @@ test('baseline migration đếm theo FILE, không theo số thứ tự cao nhấ
   assert.ok(Math.max(...nums) > actual,
     'nếu số thứ tự cao nhất == số file thì dãy đã liền, và bộ này mất ý nghĩa cảnh báo — đọc lại chú thích trước khi sửa');
 });
+
+test('bảng số đo §0 khớp các nguồn đếm được và không bắt nhầm ghi chép lịch sử', () => {
+  const claude = read('CLAUDE.md');
+  const manifest = read('scripts/test-manifest.sh');
+  const lines = claude.split(/\r?\n/);
+  const row = (label) => {
+    const found = lines.find((line) => line.includes(`| ${label} |`));
+    assert.ok(found, `mốc chết: không tìm thấy hàng | ${label} | trong §0`);
+    return found;
+  };
+  const metric = (label, pattern) => {
+    const match = pattern.exec(row(label));
+    assert.ok(match, `mốc chết: hàng ${label} đổi hình dạng`);
+    return match;
+  };
+  const manifestCount = (name) => {
+    const match = new RegExp(`^${name}=(\\d+)$`, 'm').exec(manifest);
+    assert.ok(match, `mốc chết: không tìm thấy ${name}`);
+    return Number(match[1]);
+  };
+
+  const migrationFiles = fs.readdirSync(path.join(root, 'packages/db/migrations'))
+    .filter((file) => file.endsWith('.sql'));
+  const migrationRow = metric('migration',
+    /\|\s*migration\s*\|\s*(\d+)\s+tệp,\s*mới nhất\s+`(\d{4})`\s*\|/);
+  const latestMigration = Math.max(...migrationFiles.map((file) => Number(file.slice(0, 4))));
+  assert.equal(Number(migrationRow[1]), migrationFiles.length,
+    'số migration trong §0 phải bằng số file thực tế');
+  assert.equal(Number(migrationRow[1]), manifestCount('MANIFEST_MIGRATION_COUNT'),
+    '§0 và manifest phải cùng một số migration');
+  assert.equal(Number(migrationRow[2]), latestMigration,
+    'số hiệu migration mới nhất trong §0 phải bằng file cao nhất');
+
+  const unitRow = metric('bộ unit', /\|\s*bộ unit\s*\|\s*(\d+)\s*\|/);
+  const e2eRow = metric('bộ e2e', /\|\s*bộ e2e\s*\|\s*(\d+)\s*\|/);
+  assert.equal(Number(unitRow[1]), manifestCount('MANIFEST_UNIT_COUNT'));
+  assert.equal(Number(e2eRow[1]), manifestCount('MANIFEST_E2E_COUNT'));
+
+  const docsRow = metric('tài liệu', /\|\s*tài liệu\s*\|\s*(\d+)\s+tệp\s*\|/);
+  const docsCopyLine = lines.find((line) => /^\s*docs\/\s+\d+\s+tệp ghi chép\b/.test(line));
+  assert.ok(docsCopyLine, 'mốc chết: không tìm thấy bản sao số tài liệu ở §2');
+  const docsCopy = /^\s*docs\/\s+(\d+)\s+tệp ghi chép\b/.exec(docsCopyLine);
+  assert.ok(docsCopy, 'mốc chết: bản sao số tài liệu đổi hình dạng');
+  const docsCount = fs.readdirSync(path.join(root, 'docs'))
+    .filter((file) => file.endsWith('.md')).length;
+  assert.equal(Number(docsRow[1]), docsCount, 'số tài liệu trong §0 phải bằng docs/*.md');
+  assert.equal(Number(docsCopy[1]), Number(docsRow[1]),
+    'hai bản sao số tài liệu phải bằng nhau');
+
+  const dbRow = metric('bất biến DB', /\|\s*bất biến DB\s*\|\s*(\d+)\s+bộ,\s*\d+\s+test TAP\s*\|/);
+  const dbTestCount = fs.readdirSync(path.join(root, 'packages/db/test'))
+    .filter((file) => file.endsWith('.test.js')).length;
+  assert.equal(Number(dbRow[1]), dbTestCount,
+    'số bộ bất biến DB trong §0 phải bằng số file test DB');
+});
+
+test('ci-local đối chiếu số test TAP DB với bảng số đo §0', () => {
+  const source = read('scripts/ci-local.sh');
+  const code = source.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+  const step = code.slice(code.indexOf('step "3. Cô lập tenant'), code.indexOf('if [ "$FAST" -eq 1 ]'));
+  assert.ok(step.length > 0, 'mốc chết: không tìm thấy bước 3 của ci-local.sh');
+  assert.match(step, /db_pass=\$\(grep[^\n]*va-db\.log[^\n]*\)/,
+    'bước 3 phải lấy số pass TAP từ log DB');
+  assert.match(step, /db_declared=\$\(sed[^\n]*CLAUDE\.md[^\n]*\)/,
+    'bước 3 phải đọc số bất biến DB đã khai trong §0');
+  assert.match(step, /\[\s*"\$db_pass"\s+!=\s+"\$db_declared"\s*\]/,
+    'bước 3 phải so BẰNG số TAP với số khai trong §0');
+  assert.match(step, /mốc chết/,
+    'bước 3 phải fail-closed khi không rút được mốc số liệu');
+});

@@ -84,7 +84,15 @@ fi
 step "3. Cô lập tenant + bất biến schema"
 clear_rl
 if $COMPOSE exec -T dbtest sh -c 'n=$(ls test/*.test.js 2>/dev/null | wc -l); [ "$n" -ge 3 ] || exit 9; node --test test/*.test.js' > /tmp/va-db.log 2>&1; then
-  pass "bất biến DB $(grep -E '^# pass' /tmp/va-db.log | tr -d '#')"
+  db_pass=$(grep -E '^# pass [0-9]+$' /tmp/va-db.log | tail -1 | awk '{print $3}')
+  db_declared=$(sed -nE 's/^\| bất biến DB \| ([0-9]+) bộ,.*$/\1/p' CLAUDE.md | head -1)
+  if [ -z "$db_pass" ] || [ -z "$db_declared" ]; then
+    fail "bất biến DB — mốc chết: không rút được số TAP hoặc số khai trong CLAUDE.md"
+  elif [ "$db_pass" != "$db_declared" ]; then
+    fail "bất biến DB lệch số: TAP=$db_pass, CLAUDE.md §0=$db_declared — sửa trong cùng commit"
+  else
+    pass "bất biến DB pass $db_pass"
+  fi
 else
   fail "bất biến DB ĐỎ — xem /tmp/va-db.log"
 fi

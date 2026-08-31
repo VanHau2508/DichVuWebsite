@@ -108,7 +108,7 @@ quyết định bảo mật — đừng nới cho tiện.
   "tôi không viết GRANT" ≠ "vai đó không có quyền". Bảng mới không dành cho tenant thì phải
   `REVOKE ALL … FROM app_rw` **và** thêm policy chặn.
 - **Migration là BẤT BIẾN.** Runner băm nội dung; sửa file cũ → `DRIFT` → cổng đỏ. Sửa gì cũng
-  bằng file mới. Hiện có **180 tệp**, mới nhất `0182`.
+  bằng file mới. Hiện có **181 tệp**, mới nhất `0183`.
 - **Cổng DB** (`packages/db/test/`, 9 tệp, 144 test theo tổng kết TAP) canh RLS, composite FK,
   least-privilege, cô lập tenant và các hàng rào nghiệp vụ mới cho go-live, thông báo, yêu cầu
   hậu mãi/RMA.

@@ -123,7 +123,7 @@ test('fresh-migration gate cô lập tuyệt đối và luôn tự dọn', () =>
 });
 
 test('baseline migration đếm theo FILE, không theo số thứ tự cao nhất', () => {
-  // Hôm nay 180 file nhưng file mới nhất mang số 0182 — dãy có khoảng trống. Suy số lượng
+  // Hôm nay 181 file nhưng file mới nhất mang số 0183 — dãy có khoảng trống. Suy số lượng
   // từ số thứ tự là sai NGAY TỪ HÔM NAY, không phải rủi ro tương lai.
   const manifest = read('scripts/test-manifest.sh');
   const declared = Number(/MANIFEST_MIGRATION_COUNT=(\d+)/.exec(manifest)?.[1]);

@@ -31,7 +31,7 @@ Ngắt kết nối không xoá mapping và không tự đổi quyền sở hữu
 tồn, sản phẩm liên kết tiếp tục bị khoá checkout cho tới khi có thao tác chuyển authority có
 kiểm soát.
 
-## Schema 0177–0182 và least privilege
+## Schema 0177–0183 và least privilege
 
 Migration `0177_kiotviet_integration_core.sql` thêm:
 
@@ -129,6 +129,13 @@ Migration `0182_kiotviet_retry_confirmation.sql` đóng đường quay lại có
   provider sau lượt đã xác nhận mở ca mới thay vì để BullMQ tự POST lại;
 - form admin dùng checkbox bắt buộc, không hidden field hay `window.confirm()` ký thay người vận hành.
 
+Migration `0183_external_master_go_live_guard.sql` dựng lại cùng chốt nguồn tồn trong hàm
+`activate_current_shop_after_readiness()` của DB. Với shop `external_master`, connector phải
+`active` và biến thể mẫu phải có ref `mapped` đúng `generation`; độ tươi `inventory_synced_at`
+không đưa vào chốt này vì đó là điều kiện nhất thời của readiness/checkout. Hàm vẫn thuộc
+`app_go_live`, giữ nguyên ACL qua choreography GRANT → CREATE OR REPLACE → ALTER OWNER → REVOKE,
+và shop đã `active` không bị hồi tố.
+
 Payload mang dòng hàng đã mapping, khách, `orderDelivery.receiver/contactNumber/address/price`,
 phương thức và số tiền đã thu. Trong pilot hiện tại, đơn external-master chỉ nhận COD; QR,
 coupon, đổi điểm và khuyến mại online đều fail-closed cho tới khi capability boolean
@@ -159,16 +166,16 @@ quên gác. Màn hình dùng SSR/form thường, không cần JavaScript và ph�
 
 ## Bằng chứng kiểm thử
 
-- unit theo manifest: 318/318 (working tree hiện tại);
+- unit theo manifest: 323/323 (working tree hiện tại);
 - adapter KiotViet: 8/8;
 - checkout policy KiotViet: 7/7;
 - toàn bộ 9 bộ bất biến DB trên stack PostgreSQL: 144/144;
-- migration DB trắng: 180/180, 0 DRIFT, 0 pending.
+- migration DB trắng: 181/181, 0 DRIFT, 0 pending.
 
 E2E connector đã chạy 46/46 trên stack pilot trước lát cắt Trung tâm vận hành. Lát cắt này đạt
 focused operations-center 27/27, `ops-batch` 15/15, mutation 7/7 và browser probe. Sau khi
-đóng lát cắt, cổng đầy đủ trên DB không drift đạt 318 unit, 144 bất biến DB, 107/107 E2E,
-smoke 8·27·32 và migration DB trắng 180/180, 0 DRIFT, 0 pending; audit phụ thuộc 13/13 gói
+đóng lát cắt, cổng đầy đủ trên DB không drift đạt 323 unit, 144 bất biến DB, 107/107 E2E,
+smoke 8·27·32 và migration DB trắng 181/181, 0 DRIFT, 0 pending; audit phụ thuộc 13/13 gói
 không có lỗ hổng. Hai bước phụ của `ci-local.sh` cần CA proxy để chạy trong môi trường sandbox,
 không phải lỗi mã. Đây là bằng chứng của mã nguồn/stack dev; nó không thay thế spike bằng
 credential KiotViet thật.

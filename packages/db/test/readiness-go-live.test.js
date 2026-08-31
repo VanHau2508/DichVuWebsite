@@ -9,7 +9,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { rw, owner, withTenant, sqlstateOf, SQLSTATE, closeAll } from './helpers.js';
+import { rw, owner, withTenant, withIntegrationTenant, sqlstateOf, SQLSTATE, closeAll } from './helpers.js';
 
 const platform = new pg.Pool({ connectionString: process.env.DATABASE_URL_PLATFORM, max: 2 });
 const made = [];
@@ -76,6 +76,37 @@ async function makeReady(shopId) {
   return { productId: product.id, variantId: variant.id };
 }
 
+async function attachExternal(shopId, variantId, {
+  status = 'active', generation = 0, refGeneration = generation,
+  mappingStatus = 'mapped', stale = true,
+  } = {}) {
+  const integration = (await owner.query(
+    `INSERT INTO shop_integrations
+       (shop_id, provider, status, inventory_authority, credential_ciphertext,
+        webhook_public_id, external_branch_ref, generation)
+     VALUES ($1, 'kiotviet', $2, 'external_master', 'fixture-credential', gen_random_uuid(), 'branch-1', $3)
+     RETURNING id`, [shopId, status, generation],
+  )).rows[0];
+  await withIntegrationTenant(shopId, async (c) => {
+    const stamped = mappingStatus === 'mapped';
+    await c.query(
+      `SELECT set_config('app.integration_id', $1, true),
+              set_config('app.integration_generation', $2, true)`,
+      [integration.id, String(refGeneration)],
+    );
+    await c.query(
+      `INSERT INTO integration_entity_refs
+         (shop_id, integration_id, entity_type, external_id, local_id, mapping_status,
+          inventory_synced_at, inventory_generation)
+       VALUES ($1, $2, 'variant', $3, $4, $5,
+               CASE WHEN $6 THEN CASE WHEN $7 THEN now() - interval '10 minutes' ELSE now() END END,
+               CASE WHEN $6 THEN $8::bigint ELSE NULL END)`,
+      [shopId, integration.id, `fixture-${randomUUID()}`, variantId, mappingStatus, stamped, stale, refGeneration],
+    );
+  });
+  return integration;
+}
+
 async function assertGuardBlocked(shopId, label) {
   const result = await withTenant(shopId, (c) => c.query(
     `SELECT status, went_live_at FROM activate_current_shop_after_readiness()`,
@@ -91,6 +122,8 @@ async function assertGuardBlocked(shopId, label) {
 after(async () => {
   if (made.length) {
     await owner.query(`UPDATE pages SET published_revision_id = NULL WHERE shop_id = ANY($1::uuid[])`, [made]);
+    await owner.query(`DELETE FROM integration_entity_refs WHERE shop_id = ANY($1::uuid[])`, [made]);
+    await owner.query(`DELETE FROM shop_integrations WHERE shop_id = ANY($1::uuid[])`, [made]);
     for (const table of ['page_revisions', 'pages', 'inventory_levels', 'variants', 'products', 'domains']) {
       await owner.query(`DELETE FROM ${table} WHERE shop_id = ANY($1::uuid[])`, [made]);
     }
@@ -215,6 +248,51 @@ test('hàm DB tự kiểm từng blocker catalog/ATS/orphan/shipping/contact/pol
   ));
   assert.equal(activated.rowCount, 1, 'đủ lại mọi blocker thì hàm mới mở shop');
   assert.equal(activated.rows[0].status, 'active');
+});
+
+test('hàm DB mirror blocker external-master bền vững nhưng không hồi tố freshness', async () => {
+  const degraded = await makeShop('external-degraded');
+  const degradedFixture = await makeReady(degraded.id);
+  await attachExternal(degraded.id, degradedFixture.variantId, { status: 'degraded' });
+  await assertGuardBlocked(degraded.id, 'external connector degraded');
+
+  const unmapped = await makeShop('external-unmapped');
+  const unmappedFixture = await makeReady(unmapped.id);
+  await attachExternal(unmapped.id, unmappedFixture.variantId, { mappingStatus: 'unmapped' });
+  await assertGuardBlocked(unmapped.id, 'external ref chưa mapped');
+
+  const wrongGeneration = await makeShop('external-generation');
+  const wrongGenerationFixture = await makeReady(wrongGeneration.id);
+  await attachExternal(wrongGeneration.id, wrongGenerationFixture.variantId, { generation: 7, refGeneration: 6 });
+  await assertGuardBlocked(wrongGeneration.id, 'external ref lệch generation');
+
+  const stale = await makeShop('external-stale');
+  const staleFixture = await makeReady(stale.id);
+  await attachExternal(stale.id, staleFixture.variantId, { generation: 3, stale: true });
+  const staleOpened = await withTenant(stale.id, (c) => c.query(
+    `SELECT status, went_live_at FROM activate_current_shop_after_readiness()`,
+  ));
+  assert.equal(staleOpened.rowCount, 1, 'freshness là chốt nhất thời của readiness/checkout, không phải DB go-live');
+  assert.equal(staleOpened.rows[0].status, 'active');
+
+  const local = await makeShop('local-no-connector');
+  await makeReady(local.id);
+  const localOpened = await withTenant(local.id, (c) => c.query(
+    `SELECT status, went_live_at FROM activate_current_shop_after_readiness()`,
+  ));
+  assert.equal(localOpened.rowCount, 1, 'shop local không bị siết nhầm bởi chốt connector');
+  assert.equal(localOpened.rows[0].status, 'active');
+
+  const alreadyActive = await makeShop('already-active');
+  await makeReady(alreadyActive.id);
+  const first = await withTenant(alreadyActive.id, (c) => c.query(
+    `SELECT status, went_live_at FROM activate_current_shop_after_readiness()`,
+  ));
+  const second = await withTenant(alreadyActive.id, (c) => c.query(
+    `SELECT status, went_live_at FROM activate_current_shop_after_readiness()`,
+  ));
+  assert.equal(first.rowCount, 1);
+  assert.equal(second.rowCount, 0, 'shop active sẵn không bị hàm hồi tố');
 });
 
 test('app_platform vẫn suspend/reactivate shop mà không làm mất mốc go-live', async () => {

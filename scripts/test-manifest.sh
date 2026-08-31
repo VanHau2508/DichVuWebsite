@@ -130,10 +130,10 @@ MANIFEST_UNIT_FILES=(
 MANIFEST_UNIT_COUNT=42
 MANIFEST_E2E_COUNT=107
 # Số FILE migration, KHÔNG phải số thứ tự cao nhất. Dãy có khoảng trống (0157 chẳng hạn)
-# nên hôm nay là 180 file trong khi file mới nhất mang số 0182 — suy số lượng từ số thứ tự
+# nên hôm nay là 181 file trong khi file mới nhất mang số 0183 — suy số lượng từ số thứ tự
 # là sai ngay từ hôm nay. scripts/fresh-migration-gate.sh so BẰNG với con số này, và so
 # thêm với số dòng thực trong schema_migrations của một DB TRẮNG.
-MANIFEST_MIGRATION_COUNT=180
+MANIFEST_MIGRATION_COUNT=181
 
 manifest_unit_files() {
   shopt -s nullglob

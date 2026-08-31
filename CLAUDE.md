@@ -25,7 +25,7 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 |---|---:|---|
 | dòng mã ứng dụng | ~48.600 | `apps/*/src/*.js` |
 | dòng test | ~36.500 | `apps/*/test/*.{js,mjs}` |
-| migration | 180 tệp, mới nhất `0182` | `packages/db/migrations/` |
+| migration | 181 tệp, mới nhất `0183` | `packages/db/migrations/` |
 | bộ unit | 42 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 107 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 144 test TAP | `packages/db/test/*.test.js` |
@@ -75,7 +75,7 @@ với GitHub CI. Nó tự dựng PostgreSQL trắng trong project Compose riêng
 chạy đúng runner production **không seed**, rồi so ba chiều: số file = `MANIFEST_MIGRATION_COUNT`
 = số dòng thật trong `schema_migrations`, kèm 0 DRIFT / 0 pending. Tự dọn bằng `trap` ở mọi đường
 thoát, kể cả Ctrl-C. **Không chạm DB dev.** Thêm migration thì sửa `MANIFEST_MIGRATION_COUNT`
-trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 180 file / số cao nhất 0182).
+trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 181 file / số cao nhất 0183).
 
 Hook `scripts/hooks/pre-push` chạy `--fast` và **chặn push khi đỏ**. Cài một lần cho mỗi bản
 clone: `git config core.hooksPath scripts/hooks`.
@@ -572,12 +572,13 @@ savepoint và câu chữ fail-closed. Các chốt đều bị đột biến th�
 
 Chi tiết hợp đồng `/stats`, registry việc cần làm và các giới hạn của lát cắt nằm ở `docs/81`.
 
-Nhánh `codex/onboarding-readiness-connector` đã thi công phần readiness theo nguồn tồn và
-retry thông báo onboarding; **đã push, chưa merge**. Shop `external_master` chỉ được coi là
-sẵn sàng khi connector active, có biến thể đã mapping đúng generation và dấu đồng bộ còn tươi;
-email `shop.onboarding_nudge` được retry qua cùng chuỗi outbox/PII TTL, không cần `order_id`.
-Harness `scripts/verify-onboarding-readiness.sh` đã canh ba chốt bằng E2E thật: gỡ connector,
-nới freshness và bỏ allowlist onboarding đều phải đỏ; hoàn nguyên phải xanh.
+Nhánh `codex/onboarding-readiness-connector` đã thi công phần readiness theo nguồn tồn,
+retry thông báo onboarding và lớp phòng thủ DB trong migration `0183`; **đã push, chưa merge**.
+Shop `external_master` chỉ được coi là sẵn sàng khi connector active, có biến thể đã mapping
+đúng generation và dấu đồng bộ còn tươi; email `shop.onboarding_nudge` được retry qua cùng
+chuỗi outbox/PII TTL, không cần `order_id`. Migration DB trắng hiện là 181 file, 0 DRIFT,
+0 pending. Harness `scripts/verify-onboarding-readiness.sh` đã canh ba chốt bằng E2E thật:
+gỡ connector, nới freshness và bỏ allowlist onboarding đều phải đỏ; hoàn nguyên phải xanh.
 
 Nguyên nhân tràn ngang của trang **Tồn an toàn** đã được vá trên nhánh connector: con trực tiếp
 của `.filters` có `min-width:0;max-width:100%`, để nhãn "Tỉ lệ giữ an toàn cho toàn shop (%)"

@@ -98,13 +98,15 @@ là lý do không nên chạy chồng nhiều lượt và cần lên kế hoạc
 
 Bản cập nhật trên nhánh `codex/onboarding-readiness-connector` đã kiểm chứng thêm readiness
 `21/21`, onboarding admin `55/55`, xử lý sự cố `46/46` và mutation `3/3` (gỡ connector,
-freshness, allowlist retry đều đỏ; hoàn nguyên xanh). Nhánh đã push, chưa merge.
+freshness, allowlist retry đều đỏ; hoàn nguyên xanh). Migration `0183` dựng lại lớp phòng thủ
+DB cho `external_master`: connector phải active và biến thể mẫu phải mapping đúng generation;
+độ tươi vẫn do readiness/checkout kiểm tại thời điểm chạy. Nhánh đã push, chưa merge.
 
 ---
 
 ## 5. Còn nợ
 
-- Bản cập nhật readiness connector + retry onboarding đang ở nhánh
+- Bản cập nhật readiness connector + retry onboarding + migration `0183` đang ở nhánh
   `codex/onboarding-readiness-connector`, đã push nhưng chưa merge; cần review độc lập rồi mới
   fast-forward vào `main`.
 - IP LAN của hostname dev đang cũ; chỉ ảnh hưởng link `nip.io`, không ảnh hưởng CI nội bộ.

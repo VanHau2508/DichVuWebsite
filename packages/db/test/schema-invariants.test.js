@@ -226,6 +226,29 @@ describe('vai trò database', () => {
       name_upd: false,
     });
 
+    const { rows: [integrationPriv] } = await owner.query(`
+      SELECT has_column_privilege('app_go_live','shop_integrations','id','SELECT') AS si_id,
+             has_column_privilege('app_go_live','shop_integrations','shop_id','SELECT') AS si_shop,
+             has_column_privilege('app_go_live','shop_integrations','status','SELECT') AS si_status,
+             has_column_privilege('app_go_live','shop_integrations','inventory_authority','SELECT') AS si_authority,
+             has_column_privilege('app_go_live','shop_integrations','generation','SELECT') AS si_generation,
+             has_column_privilege('app_go_live','integration_entity_refs','shop_id','SELECT') AS ref_shop,
+             has_column_privilege('app_go_live','integration_entity_refs','integration_id','SELECT') AS ref_integration,
+             has_column_privilege('app_go_live','integration_entity_refs','mapping_status','SELECT') AS ref_mapping,
+             has_column_privilege('app_go_live','integration_entity_refs','inventory_generation','SELECT') AS ref_generation
+    `);
+    assert.deepEqual(integrationPriv, {
+      si_id: true,
+      si_shop: true,
+      si_status: true,
+      si_authority: true,
+      si_generation: true,
+      ref_shop: true,
+      ref_integration: true,
+      ref_mapping: true,
+      ref_generation: true,
+    });
+
     const { rows: policies } = await owner.query(`
       SELECT tablename, cmd, qual, with_check
         FROM pg_policies
@@ -234,10 +257,12 @@ describe('vai trò database', () => {
     `);
     assert.deepEqual(policies.map((r) => `${r.tablename}:${r.cmd}`), [
       'domains:SELECT',
+      'integration_entity_refs:SELECT',
       'inventory_levels:SELECT',
       'pages:SELECT',
       'product_options:SELECT',
       'products:SELECT',
+      'shop_integrations:SELECT',
       'shops:SELECT',
       'shops:UPDATE',
       'variant_option_values:SELECT',
@@ -248,8 +273,8 @@ describe('vai trò database', () => {
     assert.ok(String(policies.find((r) => r.tablename === 'shops' && r.cmd === 'UPDATE')?.with_check)
       .includes("status = 'active'"));
 
-    for (const table of ['domains', 'inventory_levels', 'pages', 'product_options',
-      'products', 'variant_option_values', 'variants']) {
+    for (const table of ['domains', 'integration_entity_refs', 'inventory_levels', 'pages',
+      'product_options', 'products', 'shop_integrations', 'variant_option_values', 'variants']) {
       const { rows: [priv] } = await owner.query(`
         SELECT has_table_privilege('app_go_live',$1,'INSERT') AS ins,
                has_table_privilege('app_go_live',$1,'UPDATE') AS upd,
@@ -883,7 +908,7 @@ describe('Composite foreign key', () => {
   });
 });
 
-describe('Connector POS ngoài (0177–0182) — quyền hẹp, claim và fail-closed', () => {
+describe('Connector POS ngoài (0177–0183) — quyền hẹp, claim và fail-closed', () => {
   const TABLES = ['shop_integrations', 'integration_webhook_inbox', 'integration_entity_refs',
     'integration_sync_discrepancies', 'integration_order_send_intents'];
   const MIGRATION_0178 = readFileSync(new URL('../migrations/0178_kiotviet_connector_hardening.sql', import.meta.url), 'utf8');
@@ -988,6 +1013,7 @@ describe('Connector POS ngoài (0177–0182) — quyền hẹp, claim và fail-c
     assert.deepEqual(rows.map((r) => `${r.tablename}|${r.policyname}|${r.cmd}|${r.roles.join(',')}`), [
       'integration_entity_refs|checkout_integration_refs|SELECT|app_checkout',
       'integration_entity_refs|expiry_customer_ref_delete|DELETE|app_expiry',
+      'integration_entity_refs|go_live_integration_ref_read|SELECT|app_go_live',
       'integration_entity_refs|integration_guard_refs|ALL|app_integration_guard',
       'integration_entity_refs|integration_refs|ALL|app_integration',
       'integration_entity_refs|tenant_isolation|ALL|app_rw',
@@ -1001,6 +1027,7 @@ describe('Connector POS ngoài (0177–0182) — quyền hẹp, claim và fail-c
       'integration_webhook_inbox|tenant_isolation|SELECT|app_rw',
       'shop_integrations|checkout_active_integration|SELECT|app_checkout',
       'shop_integrations|checkout_transitioning_integration|SELECT|app_checkout',
+      'shop_integrations|go_live_integration_read|SELECT|app_go_live',
       'shop_integrations|integration_config|ALL|app_integration',
       'shop_integrations|integration_guard_config|ALL|app_integration_guard',
       'shop_integrations|tenant_isolation|ALL|app_rw',

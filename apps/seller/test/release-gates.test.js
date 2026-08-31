@@ -199,6 +199,27 @@ test('ci-local đối chiếu số test TAP DB với bảng số đo §0', () =>
   assert.ok(step.length > 0, 'mốc chết: không tìm thấy bước 3 của ci-local.sh');
   assert.match(step, /db_pass=\$\(grep[^\n]*va-db\.log[^\n]*\)/,
     'bước 3 phải lấy số pass TAP từ log DB');
+  const extraction = /db_declared=\$\(sed -nE '([^']+)' CLAUDE\.md \| head -1\)/.exec(step);
+  assert.ok(extraction, 'bước 3 phải đọc số bất biến DB đã khai trong §0');
+  const sedParts = /^s\/(.*)\/(.*)\/p$/.exec(extraction[1]);
+  assert.ok(sedParts, 'mốc chết: phép rút số TAP đổi khỏi dạng sed s///p');
+  const sedPattern = new RegExp(sedParts[1]);
+  const sedReplacement = sedParts[2];
+  const sedResults = read('CLAUDE.md').split(/\r?\n/).flatMap((line) => {
+    const match = sedPattern.exec(line);
+    if (!match) return [];
+    return [sedReplacement.replace(/\\(\d+)/g, (_, index) => match[Number(index)] ?? '')];
+  });
+  assert.equal(sedResults.length, 1,
+    'mốc chết: phép rút số TAP phải khớp đúng một hàng trong CLAUDE.md');
+  const declared = sedResults[0];
+  assert.match(declared, /^\d+$/, 'mốc chết: phép rút số TAP từ CLAUDE.md không trả đúng một số');
+  const dbRow = /^\|\s*bất biến DB\s*\|\s*(\d+)\s+bộ,\s*(\d+)\s+test TAP\s*\|/.exec(
+    read('CLAUDE.md').split(/\r?\n/).find((line) => line.includes('| bất biến DB |')) || '',
+  );
+  assert.ok(dbRow, 'mốc chết: hàng bất biến DB đổi hình dạng');
+  assert.equal(declared, dbRow[2],
+    'ci-local phải rút số test TAP (số thứ hai), không phải số bộ (số thứ nhất)');
   assert.match(step, /db_declared=\$\(sed[^\n]*CLAUDE\.md[^\n]*\)/,
     'bước 3 phải đọc số bất biến DB đã khai trong §0');
   assert.match(step, /\[\s*"\$db_pass"\s+!=\s+"\$db_declared"\s*\]/,

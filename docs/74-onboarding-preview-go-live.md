@@ -65,6 +65,18 @@ Một nửa file đã đổi sang `2/8`, nửa sau vẫn tìm `2/9`, `3/9`, `8/9
 cũ. Những khẳng định này được đổi sang hợp đồng mới, nhưng không làm mềm: vẫn kiểm đúng tiến độ,
 số mục blocking, nhãn shipping đầu tiên, `action_url`, CSP nonce, URL preview và thời hạn.
 
+### 3.5 Readiness theo nguồn tồn và retry email onboarding
+
+Shop `local` giữ nguyên đường readiness hiện có. Với `external_master`, server chỉ cho đạt khi
+connector đang `active`, có ít nhất một biến thể đã mapping, `inventory_generation` khớp
+generation của connector và `inventory_synced_at` còn trong 5 phút. Thiếu một điều kiện thì
+`inventory_source` và `checkout_dry_run` vẫn chặn go-live; giao diện chỉ dẫn tới phần kết nối,
+không tự quyết thay backend.
+
+Thông báo `shop.onboarding_nudge` được phép retry từ màn hình sự cố. Retry vẫn tạo outbox mới,
+giữ `retry_of_delivery_id`, kế thừa hạn PII gốc và chuyển delivery cũ từ `failed` sang
+`superseded`; các topic mật khẩu, lời mời và tồn kho vẫn bị chặn như trước.
+
 ---
 
 ## 4. Bằng chứng đóng lát cắt
@@ -88,7 +100,11 @@ là lý do không nên chạy chồng nhiều lượt và cần lên kế hoạc
 
 ## 5. Còn nợ
 
-- Chưa merge nhánh vào `main`; cần review commit rồi mới fast-forward/merge.
+- Bản cập nhật readiness connector + retry onboarding đang ở nhánh
+  `codex/onboarding-readiness-connector`, chưa merge hoặc push; cần review độc lập rồi mới
+  fast-forward vào `main`.
 - IP LAN của hostname dev đang cũ; chỉ ảnh hưởng link `nip.io`, không ảnh hưởng CI nội bộ.
-- Đây mới là workflow onboarding/go-live. Workflow frontend tiếp theo là dashboard “việc cần xử
-  lý”, vẫn theo nguyên tắc sửa dọc cả dữ liệu → BFF → SSR/no-JS → E2E, không chỉ đổi CSS.
+- Connector KiotViet mới đủ lõi cho pilot; trước khi bật `external_master` cho shop thật phải
+  spike bằng credential thật để xác minh webhook, rate limit và ngữ nghĩa HTTP 404.
+- Builder và CRM vẫn hoãn tới sau pilot thật 14 ngày; không mở rộng phạm vi lát cắt này trước
+  khi có số đo vận hành.

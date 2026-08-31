@@ -10,6 +10,7 @@ import { withTenant, audit } from './db.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const PREVIEW_TTL_MIN = 15;
+const CONNECTOR_FRESHNESS_MIN = 5;
 const PURCHASE_POLICY_SLUGS = ['chinh-sach-mua-hang', 'dieu-khoan-mua-hang', 'chinh-sach-doi-tra', 'dieu-khoan'];
 const PRIVACY_POLICY_SLUGS = ['chinh-sach-bao-mat', 'bao-mat', 'quyen-rieng-tu'];
 const VARIANT_NOT_ORPHAN_SQL = `NOT EXISTS (
@@ -50,6 +51,17 @@ async function computeReadiness(c, ctx) {
   )).rows[0];
   if (!shop) return null;
 
+  // external_master là một blocker riêng của go-live: checkout sẽ từ chối đơn khi
+  // connector chưa active hoặc biến thể trong giỏ chưa có bằng chứng tồn mới. Nếu
+  // readiness chỉ nhìn inventory_levels local, shop có thể được mở bán rồi mọi khách
+  // đều gặp 503 — checklist xanh vì đã nhìn nhầm nguồn dữ liệu.
+  const integration = (await c.query(
+    `SELECT id, provider, status, inventory_authority, generation
+       FROM shop_integrations
+      WHERE shop_id = current_shop_id() AND inventory_authority = 'external_master'
+      ORDER BY id LIMIT 1 FOR SHARE`,
+  )).rows[0] ?? null;
+
   // Đây là dry-run chỉ đọc: chọn đúng một biến thể mà checkout thật có thể bán, dùng cùng
   // công thức ATS và cùng chốt biến thể mồ côi. Không tạo cart/order/idempotency, không
   // reserve tồn và không ghi outbox.
@@ -64,6 +76,28 @@ async function computeReadiness(c, ctx) {
       ORDER BY p.created_at, v.position, v.id
       LIMIT 1`,
   )).rows[0] ?? null;
+
+  // Dùng cùng bằng chứng mapping + generation + độ tươi mà checkout chặn ở lúc tạo
+  // đơn. Chỉ cần một biến thể bán được đã đồng bộ là đủ cho dry-run; các biến thể khác
+  // vẫn được checkout kiểm lại theo đúng từng dòng trong giỏ.
+  const externalSample = integration ? (await c.query(
+    `SELECT v.id AS variant_id, v.price_vnd, coalesce(${AVAIL_SQL}, 0)::int AS available,
+            r.inventory_synced_at
+       FROM products p
+       JOIN variants v ON v.product_id = p.id
+       JOIN inventory_levels il ON il.variant_id = v.id
+       JOIN integration_entity_refs r
+         ON r.shop_id = current_shop_id() AND r.integration_id = $1
+        AND r.entity_type = 'variant' AND r.mapping_status = 'mapped'
+        AND r.local_id = v.id AND r.inventory_generation = $2
+        AND r.inventory_synced_at > now() - ($3 || ' minutes')::interval
+      WHERE p.status = 'active' AND p.deleted_at IS NULL
+        AND v.price_vnd >= 0 AND ${VARIANT_NOT_ORPHAN_SQL}
+        AND ${AVAIL_SQL} > 0
+      ORDER BY p.created_at, v.position, v.id
+      LIMIT 1`,
+    [integration.id, integration.generation, String(CONNECTOR_FRESHNESS_MIN)],
+  )).rows[0] ?? null : null;
 
   const payment = (await c.query(
     `SELECT qr_enabled, bank_bin, account_number FROM shop_payment_config
@@ -87,18 +121,36 @@ async function computeReadiness(c, ctx) {
 
   const shipping = shippingReady(shop);
   const contact = !!(String(shop.contact_email ?? '').trim() || String(shop.contact_phone ?? '').trim());
+  const connectorReady = !integration || (integration.status === 'active' && !!externalSample);
+  const connectorLabel = !integration
+    ? 'Tồn kho nội bộ sẵn sàng'
+    : integration.status !== 'active'
+      ? 'Kết nối tồn kho ngoài chưa sẵn sàng'
+      : externalSample
+        ? 'Tồn kho KiotViet đã đồng bộ'
+        : 'Chưa có sản phẩm KiotViet đã đồng bộ tồn';
+  const connectorDetail = integration ? {
+    provider: integration.provider,
+    status: integration.status,
+    generation: Number(integration.generation),
+    mapped_variant_id: externalSample?.variant_id ?? null,
+    freshness_at: externalSample?.inventory_synced_at ?? null,
+  } : { mode: 'local' };
   // COD luôn là phương thức nền tảng hỗ trợ; QR chỉ được công bố khi đủ cả ba trường.
   const methods = qrReady ? ['cod', 'qr'] : ['cod'];
   const shippingForDryRun = shop.ship_mode === 'distance'
     ? Number(shop.ship_fee_far_vnd ?? 0)
     : Number(shop.ship_fee_vnd ?? 0);
-  const dryTotal = sample ? Number(sample.price_vnd) + shippingForDryRun : null;
-  const dryRun = !!(sample && shipping && methods.length && Number.isSafeInteger(dryTotal) && dryTotal >= 0);
+  const checkoutSample = integration ? externalSample : sample;
+  const dryTotal = checkoutSample ? Number(checkoutSample.price_vnd) + shippingForDryRun : null;
+  const dryRun = !!(checkoutSample && connectorReady && shipping && methods.length
+    && Number.isSafeInteger(dryTotal) && dryTotal >= 0);
 
   const base = `/shops/${ctx.shopId}`;
   const checks = [
     check('catalog', !!sample, 'Cần ít nhất một sản phẩm đang bán và còn tồn khả dụng', `${base}/products/new`,
       sample ? { variant_id: sample.variant_id, available_qty: Number(sample.available) } : null),
+    check('inventory_source', connectorReady, connectorLabel, `${base}/integrations`, connectorDetail),
     check('payment', methods.length > 0, 'Cần ít nhất một phương thức nhận tiền', `${base}/payment`, { methods, qr_ready: qrReady }),
     check('shipping', shipping, 'Chưa cấu hình phí/phương thức vận chuyển', `${base}/settings#phi-ship`),
     check('contact', contact, 'Chưa có email hoặc số điện thoại liên hệ', `${base}/settings`),
@@ -109,7 +161,7 @@ async function computeReadiness(c, ctx) {
     // sửa được. Trỏ vòng về /overview là đưa người ta đúng chỗ họ đang đứng.
     // VẪN blocking — computeReadiness và activate_current_shop_after_readiness() không đổi.
     check('checkout_dry_run', dryRun, 'Kiểm tra thử checkout phía server chưa đạt', null,
-      dryRun ? { variant_id: sample.variant_id, total_vnd: dryTotal, wrote_data: false } : { wrote_data: false }),
+      dryRun ? { variant_id: checkoutSample.variant_id, total_vnd: dryTotal, wrote_data: false } : { wrote_data: false }),
     check('mfa', ctx.user.mfa_enabled === true, 'Chủ shop nên bật xác thực 2 lớp trước khi mở bán', '/account', null, false),
   ];
 

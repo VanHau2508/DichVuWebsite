@@ -440,9 +440,27 @@ async function main() {
   const deliveryList = await S.get('/notification-deliveries?status=failed&limit=100');
   const listedValid = deliveryList.json?.deliveries?.find((d) => d.id === validFailed.deliveryId);
   const listedBlocked = deliveryList.json?.deliveries?.find((d) => d.id === blockedDeliveries[0].deliveryId);
+  const nudgeFailed = await addFailedDelivery('shop.onboarding_nudge', {
+    to: retryOrder.customer_email,
+    shop_name: 'Shop cần hoàn tất thiết lập',
+    admin_url: 'https://admin.localtest/shops/demo/overview',
+  });
+  const nudgeRetry = await S.post(`/notifications/${nudgeFailed.deliveryId}/retry`, {});
+  const nudgeProof = (await owner.query(
+    `SELECT nd.status, nd.superseded_at,
+            ob.payload ->> 'retry_of_delivery_id' AS retry_of_delivery_id,
+            ob.payload ? 'to' AS has_recipient
+       FROM notification_deliveries nd
+       JOIN outbox ob ON ob.id = $2
+      WHERE nd.id = $1`,
+    [nudgeFailed.deliveryId, nudgeRetry.json?.outbox_id ?? null],
+  )).rows[0];
   listedValid?.retryable === true && listedValid?.retry_block_reason === null
     && listedBlocked?.retryable === false && listedBlocked?.retry_block_reason === 'topic_not_retryable'
-    ? ok('API trả retryable/reason phía server; UI không tự đoán từ status')
+    && nudgeRetry.status === 202 && nudgeProof?.status === 'superseded'
+    && nudgeProof.superseded_at && nudgeProof.retry_of_delivery_id === nudgeFailed.deliveryId
+    && nudgeProof.has_recipient === true
+    ? ok('API trả retryable/reason phía server; email onboarding lỗi cũng retry được an toàn')
     : bad('retryable state phía server sai', JSON.stringify({ listedValid, listedBlocked }));
 
   const arbitraryStatus = await owner.query(

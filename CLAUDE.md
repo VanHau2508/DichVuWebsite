@@ -430,7 +430,7 @@ lỗi contract của Codex (`c.ok !== true` trong khi readiness dùng `status`).
 Bảy workflow, làm **dọc từng cái**, không redesign cả hệ thống một lượt:
 
 ~~`onboarding/go-live`~~ → ~~`bảng điều khiển "việc cần làm"`~~ → ~~`chi tiết đơn`~~
-→ ~~`đa kiện/ca xử lý`~~ → `checkout mobile của khách`
+→ ~~`đa kiện/ca xử lý`~~ → ~~`checkout mobile của khách`~~
 → `catalog + nhập từ sàn` → `cài đặt`
 
 Thứ tự bảy workflow vẫn là bản đồ nợ UX, nhưng chủ dự án đã đổi ưu tiên sang connector POS.
@@ -512,6 +512,10 @@ thay trong một lát cắt khác.
 
 Lát cắt 4 coi như đóng ở phần A+B. C chưa khoá, và **không mặc nhiên là việc kế tiếp**.
 
+Lát cắt **checkout mobile đã ĐÓNG** trên `main` tại `0788eaa`: nút GPS được gác ở SSR khi
+tắt JavaScript, script chỉ mở lại khi trình duyệt có geolocation, và kiểm chứng giữ nguyên
+đường checkout no-JS.
+
 Đợt đo phân tầng gói đã khoá quyết định kinh doanh trong `docs/79`, nhưng chủ dự án đổi ưu tiên
 sang chiến lược **tích hợp POS trước, POS riêng sau**. Lát cắt vừa thi công xong trên nhánh là nền connector
 KiotViet ở `docs/80`: KiotViet làm chủ tồn vật lý/POS, nền tảng làm chủ website/checkout/đơn
@@ -567,6 +571,11 @@ vựng nhóm giữa hai service; vòng chốt thêm phép so tập tên hai phí
 savepoint và câu chữ fail-closed. Các chốt đều bị đột biến thật làm đỏ trước khi lát cắt đóng.
 
 Chi tiết hợp đồng `/stats`, registry việc cần làm và các giới hạn của lát cắt nằm ở `docs/81`.
+
+Nhánh `codex/onboarding-readiness-connector` đang thi công phần readiness theo nguồn tồn và
+retry thông báo onboarding; **chưa merge, chưa push**. Shop `external_master` chỉ được coi là
+sẵn sàng khi connector active, có biến thể đã mapping đúng generation và dấu đồng bộ còn tươi;
+email `shop.onboarding_nudge` được retry qua cùng chuỗi outbox/PII TTL, không cần `order_id`.
 
 Nguyên nhân tràn ngang của trang **Tồn an toàn** đã được vá trên nhánh connector: con trực tiếp
 của `.filters` có `min-width:0;max-width:100%`, để nhãn "Tỉ lệ giữ an toàn cho toàn shop (%)"

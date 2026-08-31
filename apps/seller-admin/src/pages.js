@@ -2264,7 +2264,7 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   let setupCard = '';
   if (setup) {
     const meta = {
-      catalog: ['📦', 'Sản phẩm bán được'], payment: ['💳', 'Phương thức nhận tiền'], shipping: ['🚚', 'Vận chuyển'],
+      catalog: ['📦', 'Sản phẩm bán được'], inventory_source: ['🔄', 'Nguồn tồn kho'], payment: ['💳', 'Phương thức nhận tiền'], shipping: ['🚚', 'Vận chuyển'],
       contact: ['☎', 'Thông tin liên hệ'], purchase_policy: ['📄', 'Chính sách mua hàng'], privacy_policy: ['🔒', 'Quyền riêng tư'],
       domain: ['🌐', 'Tên miền cửa hàng'], checkout_dry_run: ['✓', 'Kiểm tra checkout'], mfa: ['🛡', 'Bảo mật chủ shop'],
     };
@@ -6961,7 +6961,7 @@ export function renderNotificationDeliveries(ctx, shopId, data, filter = {}) {
     const retry = d.retryable
       ? `<form method="POST" action="${base}/${esc(d.id)}/retry" style="display:inline"><button class="btn sm" type="submit">Gửi lại</button></form>`
       : `<span class="muted">${esc({
-        topic_not_retryable: 'Không thuộc email đơn hàng',
+        topic_not_retryable: 'Chủ đề này không hỗ trợ gửi lại',
         order_not_found: 'Không còn khớp đơn hàng',
         recipient_scrubbed: 'Đã xoá dữ liệu người nhận',
         retry_window_expired: 'Đã hết hạn gửi lại',

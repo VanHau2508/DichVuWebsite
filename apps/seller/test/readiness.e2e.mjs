@@ -17,6 +17,7 @@ const CHECKOUT = new URL(process.env.CHECKOUT_URL ?? 'http://checkout:3060');
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 3 });
 const rw = new pg.Pool({ connectionString: process.env.DATABASE_URL_RW, max: 2 });
+const integrationDb = new pg.Pool({ connectionString: process.env.DATABASE_URL_INTEGRATION, max: 2 });
 
 let pass = 0, fail = 0;
 const G = '\x1b[32m', R = '\x1b[31m', X = '\x1b[0m';
@@ -259,13 +260,95 @@ async function main() {
     ? ok('tạo đơn ghi đúng một timeline event + order_id trong outbox cùng transaction')
     : bad('chứng từ order.created thiếu/sai', `${placed.status} event=${eventCount} outbox=${outboxOrder}`);
 
+  // Shop external_master phải chứng minh connector active và có ít nhất một biến thể
+  // mapped + fresh trước khi mở bán. Nếu readiness chỉ nhìn inventory local, go-live sẽ
+  // trả xanh nhưng checkout chặn toàn bộ khách bằng 503 khi connector đang degraded.
+  const C = await makeShop(staff, 'external');
+  const cp = await rq(SELLER, 'POST', `/shops/${C.shopId}/products`, {
+    cookie: C.cookie, origin: OS,
+    body: { title: `Sản phẩm external ${uniq()}`, slug: `external-${uniq()}`, price_vnd: 90000, status: 'active', variants: [{ sku: `EX-${uniq()}`, price_vnd: 90000 }] },
+  });
+  const cv = (await rq(SELLER, 'GET', `/shops/${C.shopId}/products/${cp.json.id}`, { cookie: C.cookie, origin: OS })).json.variants[0].id;
+  await rq(SELLER, 'POST', `/shops/${C.shopId}/variants/${cv}/inventory/adjust`, {
+    cookie: C.cookie, origin: OS, body: { delta: 5, reason: 'fixture external readiness' },
+  });
+  await rq(SELLER, 'PATCH', `/shops/${C.shopId}`, {
+    cookie: C.cookie, origin: OS,
+    body: { name: 'Shop external', contact_phone: '0908888888', ship_fee_vnd: 25000, ship_mode: 'region' },
+  });
+  await publishPolicy(C, 'chinh-sach-mua-hang', 'Chính sách mua hàng');
+  await publishPolicy(C, 'chinh-sach-bao-mat', 'Chính sách bảo mật');
+  const localReady = await rq(SELLER, 'GET', `/shops/${C.shopId}/readiness`, { cookie: C.cookie, origin: OS });
+  localReady.json?.ready === true
+    ? ok('shop external trước khi gắn connector đạt readiness local')
+    : bad('fixture external chưa đủ readiness nền', localReady.raw);
+  const integrationId = (await owner.query(
+    `INSERT INTO shop_integrations
+       (shop_id, provider, status, inventory_authority, credential_ciphertext,
+        webhook_public_id, external_branch_ref)
+     VALUES ($1, 'kiotviet', 'degraded', 'external_master', 'fixture-credential', gen_random_uuid(), 'branch-1')
+     RETURNING id`, [C.shopId],
+  )).rows[0].id;
+  const externalReady = await rq(SELLER, 'GET', `/shops/${C.shopId}/readiness`, { cookie: C.cookie, origin: OS });
+  const sourceCheck = externalReady.json?.checks?.find((c) => c.code === 'inventory_source');
+  const blockedGoLive = await rq(SELLER, 'POST', `/shops/${C.shopId}/go-live`, { cookie: C.cookie, origin: OS, body: {} });
+  externalReady.json?.ready === false && sourceCheck?.status === 'missing'
+    && /Kết nối tồn kho ngoài chưa sẵn sàng/.test(sourceCheck.label ?? '')
+    && blockedGoLive.status === 409 && blockedGoLive.json?.error === 'shop_not_ready'
+    ? ok(`external_master degraded → readiness chặn go-live (connector ${integrationId})`)
+    : bad('readiness không chặn connector ngoài chưa sẵn sàng', JSON.stringify({ sourceCheck, status: blockedGoLive.status, body: blockedGoLive.json }));
+
+  // Đối chứng dương: connector active + mapping đúng generation + stamp còn tươi thì
+  // readiness phải mở lại. Dùng vai app_integration để fixture đi qua đúng trigger
+  // bằng chứng tồn, không UPDATE thẳng bằng app_owner rồi tưởng worker đã xác nhận.
+  await owner.query(`UPDATE shop_integrations SET status = 'active' WHERE id = $1`, [integrationId]);
+  const ic = await integrationDb.connect();
+  try {
+    await ic.query('BEGIN');
+    await ic.query(`SELECT set_config('app.shop_id', $1, true), set_config('app.integration_id', $2, true), set_config('app.integration_generation', '0', true)`, [C.shopId, integrationId]);
+    await ic.query(
+      `INSERT INTO integration_entity_refs
+         (shop_id, integration_id, entity_type, external_id, local_id, mapping_status,
+          inventory_synced_at, inventory_generation)
+       VALUES ($1,$2,'variant',$3,$4,'mapped',now() - interval '10 minutes',0)`,
+      [C.shopId, integrationId, `fixture-${uniq()}`, cv],
+    );
+    await ic.query('COMMIT');
+  } catch (e) {
+    await ic.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally { ic.release(); }
+  const staleReady = await rq(SELLER, 'GET', `/shops/${C.shopId}/readiness`, { cookie: C.cookie, origin: OS });
+  const staleSource = staleReady.json?.checks?.find((c) => c.code === 'inventory_source');
+  staleReady.json?.ready === false && staleSource?.status === 'missing'
+    ? ok('external_master mapping quá 5 phút → readiness vẫn chặn checkout')
+    : bad('readiness tin bằng chứng tồn đã cũ', JSON.stringify({ staleSource, body: staleReady.json }));
+  const fresh = await integrationDb.connect();
+  try {
+    await fresh.query('BEGIN');
+    await fresh.query(`SELECT set_config('app.shop_id', $1, true), set_config('app.integration_id', $2, true), set_config('app.integration_generation', '0', true)`, [C.shopId, integrationId]);
+    await fresh.query(`UPDATE integration_entity_refs SET inventory_synced_at = now() WHERE shop_id = $1 AND integration_id = $2 AND local_id = $3`, [C.shopId, integrationId, cv]);
+    await fresh.query('COMMIT');
+  } catch (e) {
+    await fresh.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally { fresh.release(); }
+  const activeReady = await rq(SELLER, 'GET', `/shops/${C.shopId}/readiness`, { cookie: C.cookie, origin: OS });
+  const activeSource = activeReady.json?.checks?.find((c) => c.code === 'inventory_source');
+  const activeDry = activeReady.json?.checks?.find((c) => c.code === 'checkout_dry_run');
+  const activeGoLive = await rq(SELLER, 'POST', `/shops/${C.shopId}/go-live`, { cookie: C.cookie, origin: OS, body: {} });
+  activeReady.json?.ready === true && activeSource?.status === 'ready' && activeDry?.status === 'ready'
+    && activeGoLive.status === 200 && activeGoLive.json?.status === 'active'
+    ? ok('external_master active + mapping/fresh đúng generation → dry-run và go-live đạt')
+    : bad('connector đã sẵn sàng nhưng readiness vẫn chặn', JSON.stringify({ activeSource, activeDry, status: activeGoLive.status, body: activeGoLive.json }));
+
   console.log(`\n${pass} pass, ${fail} fail`);
-  await Promise.all([owner.end(), rw.end()]);
+  await Promise.all([owner.end(), rw.end(), integrationDb.end()]);
   process.exit(fail ? 1 : 0);
 }
 
 main().catch(async (err) => {
   console.error(err);
-  await Promise.all([owner.end().catch(() => {}), rw.end().catch(() => {})]);
+  await Promise.all([owner.end().catch(() => {}), rw.end().catch(() => {}), integrationDb.end().catch(() => {})]);
   process.exit(1);
 });

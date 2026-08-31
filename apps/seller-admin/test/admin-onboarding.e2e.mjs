@@ -112,19 +112,19 @@ async function main() {
   sect('1. Shop mới: checklist readiness 9 mục, go-live bị khoá, no-JS');
   let r = await adm('GET', OV, { cookie: A.cookie });
   // HỢP ĐỒNG MỚI, ba điểm đổi so với bản trước và cả ba đều cố ý:
-  //  · 2/8 chứ không 2/9 — checkout_dry_run tách khỏi danh sách VIỆC (nó là KẾT QUẢ, không
+  //  · 3/9 chứ không 3/10 — checkout_dry_run tách khỏi danh sách VIỆC (nó là KẾT QUẢ, không
   //    phải thứ người dùng bấm được). Nó VẪN blocking ở server, kiểm ở mục 10b.
   //  · KHÔNG còn `disabled`: nút đó không nhận focus nên bàn phím không tới được, và `title`
   //    chỉ hiện khi hover — mobile mù hẳn. Nút nay luôn bấm được, server vẫn là nơi quyết.
   //  · CÓ <script nonce>: nút mang data-busy nên trang mở CSP script cho chủ shop. Đây là
   //    tăng cường, không phải phụ thuộc — no-JS vẫn submit được (kiểm ở mục 10a).
-  r.status === 200 && /Hoàn tất thiết lập cửa hàng/.test(r.body) && /2\/8 đạt/.test(r.body)
-    && /Sản phẩm bán được/.test(r.body) && /Phương thức nhận tiền/.test(r.body)
+  r.status === 200 && /Hoàn tất thiết lập cửa hàng/.test(r.body) && /3\/9 đạt/.test(r.body)
+    && /Sản phẩm bán được/.test(r.body) && /Nguồn tồn kho/.test(r.body) && /Phương thức nhận tiền/.test(r.body)
     && /Chính sách mua hàng/.test(r.body) && /Quyền riêng tư/.test(r.body)
     && /Mở bán chính thức<\/button>/.test(r.body) && /Còn 5 mục bắt buộc/.test(r.body)
     && !/disabled title="Còn điều kiện bắt buộc chưa đạt"/.test(r.body)
     && /Kiểm tra thử checkout/.test(r.body)
-    ? ok('checklist 2/8; dry-run là dòng chẩn đoán; nút go-live focus được (không disabled)')
+    ? ok('checklist 3/9; dry-run là dòng chẩn đoán; nút go-live focus được (không disabled)')
     : bad('checklist sai', r.body.slice(0, 600));
   // Nút KHÔNG được mang thuộc tính disabled — bàn phím và screen reader phải tới được.
   !/<button[^>]*\bdisabled[^>]*>[^<]*Mở bán/.test(r.body)
@@ -266,8 +266,8 @@ async function main() {
   await adm('POST', `/shops/${A.shopId}/products`, { cookie: A.cookie, origin: OADM, form: { title: 'SP nháp', price_vnd: '100000', status: 'draft', stock: '10' } });
   await adm('POST', `/shops/${A.shopId}/products`, { cookie: A.cookie, origin: OADM, form: { title: 'SP hết hàng', price_vnd: '100000', status: 'active', stock: '0' } });
   r = await adm('GET', OV, { cookie: A.cookie });
-  const prog0 = r.body.match(/(\d+)\/8 đạt/)?.[1];
-  prog0 === '2' ? ok('2 SP (nháp / tồn 0) → vẫn 2/8, KHÔNG tick nhầm catalog') : bad('tick nhầm SP chưa bán được', `prog=${prog0}`);
+  const prog0 = r.body.match(/(\d+)\/9 đạt/)?.[1];
+  prog0 === '3' ? ok('2 SP (nháp / tồn 0) → vẫn 3/9, KHÔNG tick nhầm catalog') : bad('tick nhầm SP chưa bán được', `prog=${prog0}`);
 
   sect('3. SP đang bán + còn tồn → catalog đạt; vẫn chưa được mở bán');
   // KHÔNG gửi slug/sku: bỏ trống thì seller tự sinh (bỏ dấu tên SP). Test đi đúng đường
@@ -276,9 +276,9 @@ async function main() {
   r.status === 303 ? ok('tạo SP không cần gõ slug/SKU') : bad('tạo SP tối giản lỗi', String(r.status));
   await owner.query(`INSERT INTO shop_payment_config (shop_id, bank_bin, account_number, account_name, qr_enabled) VALUES ($1,'970436','0123456789','SHOP TEST',true) ON CONFLICT (shop_id) DO UPDATE SET qr_enabled=true, bank_bin=EXCLUDED.bank_bin, account_number=EXCLUDED.account_number`, [A.shopId]);
   r = await adm('GET', OV, { cookie: A.cookie });
-  const prog = r.body.match(/(\d+)\/8 đạt/)?.[1];
-  prog === '3' && /Còn 4 mục bắt buộc/.test(r.body)
-    ? ok('SP bán được → 3/8; bốn điều kiện vận hành còn thiếu vẫn chặn go-live')
+  const prog = r.body.match(/(\d+)\/9 đạt/)?.[1];
+  prog === '4' && /Còn 4 mục bắt buộc/.test(r.body)
+    ? ok('SP bán được → 4/9; bốn điều kiện vận hành còn thiếu vẫn chặn go-live')
     : bad('tín hiệu không phản ánh', `prog=${prog}`);
   // Tồn PHẢI vào kho thật, không phải chỉ hiện trên form.
   const onHand = (await owner.query(
@@ -308,11 +308,11 @@ async function main() {
   r = await adm('GET', OV, { cookie: A.cookie });
   const nonceHeader = /script-src 'nonce-([^']+)'/.exec(r.csp ?? '')?.[1];
   const nonceTag = /<script nonce="([^"]+)"/.exec(r.body)?.[1];
-  /7\/8 đạt/.test(r.body) && /Khuyến nghị, không chặn mở bán/.test(r.body)
+  /8\/9 đạt/.test(r.body) && /Khuyến nghị, không chặn mở bán/.test(r.body)
     && /data-confirm="Mở checkout công khai cho khách ngay bây giờ\?"/.test(r.body)
     && !/Mở bán chính thức" disabled/.test(r.body)
     && nonceHeader && nonceHeader === nonceTag
-    ? ok('7/8 mục đạt; MFA chỉ cảnh báo, nút go-live hoạt động và confirm có CSP nonce hợp lệ')
+    ? ok('8/9 mục đạt; MFA chỉ cảnh báo, nút go-live hoạt động và confirm có CSP nonce hợp lệ')
     : bad('UI/confirm chưa phản ánh readiness hoàn chỉnh', `csp=${nonceHeader ?? 'thiếu'} script=${nonceTag ?? 'thiếu'} ${r.body.slice(0, 500)}`);
 
   r = await adm('POST', `/shops/${A.shopId}/preview`, { cookie: A.cookie, origin: OADM });

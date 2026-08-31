@@ -4,7 +4,8 @@ import { withTenant, audit } from './db.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const STATUSES = new Set(['queued', 'sending', 'retrying', 'accepted', 'failed', 'skipped', 'superseded']);
-const RETRYABLE_EMAIL_TOPICS = new Set(['order.created', 'order.paid', 'order.status_changed']);
+const RETRYABLE_EMAIL_TOPICS = new Set(['order.created', 'order.paid', 'order.status_changed', 'shop.onboarding_nudge']);
+const ORDER_EMAIL_TOPICS = new Set(['order.created', 'order.paid', 'order.status_changed']);
 const RETRY_PII_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RETRY_PII_EXPIRY_KEY = 'retry_pii_expires_at_ms';
 
@@ -26,7 +27,7 @@ function retryEligibility(row, nowMs = Date.now()) {
   if (row.status !== 'failed') return { retryable: false, retry_block_reason: 'status_not_failed' };
   if (row.channel !== 'email') return { retryable: false, retry_block_reason: 'channel_not_supported' };
   if (!RETRYABLE_EMAIL_TOPICS.has(row.topic)) return { retryable: false, retry_block_reason: 'topic_not_retryable' };
-  if (!row.order_id) return { retryable: false, retry_block_reason: 'order_not_found' };
+  if (ORDER_EMAIL_TOPICS.has(row.topic) && !row.order_id) return { retryable: false, retry_block_reason: 'order_not_found' };
   if (!row.payload_has_to) return { retryable: false, retry_block_reason: 'recipient_scrubbed' };
   const inheritedExpiry = Number(row.retry_pii_expires_at_ms);
   const processedAt = row.outbox_processed_at instanceof Date
@@ -98,7 +99,8 @@ async function retryDelivery(res, ctx, _body, params) {
       code: 409, errorCode: 'notification_topic_not_retryable',
       msg: 'chỉ email giao dịch của đơn hàng mới được gửi lại từ màn hình này',
     };
-    if (!row.matched_order_id) return {
+    const orderTopic = ORDER_EMAIL_TOPICS.has(row.topic);
+    if (orderTopic && !row.matched_order_id) return {
       code: 409, errorCode: 'notification_order_not_found',
       msg: 'thông báo không còn khớp với đơn hàng của shop',
     };
@@ -109,7 +111,7 @@ async function retryDelivery(res, ctx, _body, params) {
     };
     const eligibility = retryEligibility({
       ...row,
-      order_id: row.matched_order_id,
+      order_id: orderTopic ? row.matched_order_id : null,
       payload_has_to: true,
       retry_pii_expires_at_ms: payload[RETRY_PII_EXPIRY_KEY],
     });
@@ -119,8 +121,10 @@ async function retryDelivery(res, ctx, _body, params) {
     };
     payload[RETRY_PII_EXPIRY_KEY] = eligibility.retry_pii_expires_at_ms;
     payload.retry_of_delivery_id = row.id;
-    payload.order_id = row.matched_order_id;
-    payload.order_number = Number(row.matched_order_number);
+    if (orderTopic) {
+      payload.order_id = row.matched_order_id;
+      payload.order_number = Number(row.matched_order_number);
+    }
     const next = (await c.query(
       `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), $1, $2) RETURNING id`,
       [row.topic, payload],

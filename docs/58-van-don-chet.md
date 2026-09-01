@@ -15,6 +15,10 @@ Không đường nào cần ai làm sai:
 | Đơn đổi trạng thái giữa lúc gọi hãng | `status='cancelled'`, `provider_status='orphan'`, CÓ mã vận đơn |
 | Shop ngắt / **đổi** hãng vận chuyển | `provider_status='orphan'` trên kiện đang bay |
 
+Mã trạng thái thô do hãng trả về không còn nằm trong `provider_status`: từ migration `0184`,
+worker ghi nguyên văn vào `shipments.carrier_status_raw`, còn `provider_status` chỉ giữ marker
+nội bộ dùng cho phục hồi và đối soát.
+
 ## Luật 1 — dòng đã huỷ KHÔNG được làm "đại diện" cho đơn
 
 Vận đơn huỷ nghĩa là **hãng không cầm hàng và không thu hộ đồng nào**. Mọi truy vấn chọn *một*

@@ -9,8 +9,9 @@
  */
 import { test, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { owner, closeAll, withTenant, sqlstateOf, SQLSTATE } from './helpers.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { owner, expiry, closeAll, withTenant, sqlstateOf, SQLSTATE } from './helpers.js';
 
 after(closeAll);
 
@@ -37,6 +38,100 @@ const TENANT_TABLES = `
 // toàn; thêm một policy có trộn AND với OR thì phải so bằng cây cú pháp chứ không bằng
 // chuỗi đã nén, nếu không chốt sẽ im lặng chấp nhận một policy rộng hơn ý định.
 const compactPolicyExpr = (value) => String(value ?? '').replace(/[()\s]/g, '').toLowerCase();
+
+// `provider_status` là một từ vựng nhỏ và có chủ ý đóng kín. Rút tập từ các đường
+// ghi/đọc thật thay vì chép lại danh sách lần hai trong test: thêm marker trong mã
+// phải buộc CHECK DB đổi trong cùng lát cắt. Image dbtest mount nguồn vào /work;
+// các đường dự phòng giữ bộ test chạy được trực tiếp từ checkout.
+function stripSourceComments(source, { sql = false } = {}) {
+  let out = '';
+  let state = 'code';
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (state === 'line') {
+      if (ch === '\n') { out += ch; state = 'code'; }
+      continue;
+    }
+    if (state === 'block') {
+      if (ch === '*' && next === '/') { i += 1; state = 'code'; }
+      else if (ch === '\n') out += ch;
+      continue;
+    }
+    if (state === 'single' || state === 'double' || state === 'template') {
+      out += ch;
+      if (ch === '\\') { if (next !== undefined) { out += next; i += 1; } }
+      else if ((state === 'single' && ch === "'")
+        || (state === 'double' && ch === '"')
+        || (state === 'template' && ch === '`')) state = 'code';
+      continue;
+    }
+    if ((ch === '/' && next === '/') || (sql && ch === '-' && next === '-')) {
+      i += 1; state = 'line'; continue;
+    }
+    if (ch === '/' && next === '*') { i += 1; state = 'block'; continue; }
+    if (ch === "'") { out += ch; state = 'single'; continue; }
+    if (ch === '"') { out += ch; state = 'double'; continue; }
+    if (ch === '`') { out += ch; state = 'template'; continue; }
+    out += ch;
+  }
+  return out;
+}
+
+function sourceText(relativePath) {
+  const candidates = [
+    resolve(process.cwd(), relativePath),
+    resolve(process.cwd(), '..', relativePath),
+    resolve(process.cwd(), '..', '..', relativePath),
+    resolve(process.cwd(), '..', '..', '..', relativePath),
+    join('/work', relativePath),
+    join('/work', relativePath.replace(/^packages[\\/]db[\\/]/, '')),
+  ];
+  const path = candidates.find((candidate) => existsSync(candidate));
+  assert.ok(path, `mốc chết: không tìm thấy nguồn ${relativePath}`);
+  return stripSourceComments(readFileSync(path, 'utf8'), { sql: relativePath.endsWith('.sql') });
+}
+
+const SHIPMENT_STATUS_SOURCES = [
+  sourceText('apps/seller/src/shipping.js'),
+  sourceText('apps/seller/src/orders.js'),
+  sourceText('apps/seller/src/dashboard.js'),
+  sourceText('apps/seller-admin/src/pages.js'),
+  sourceText('apps/worker/src/index.js'),
+  sourceText('packages/db/migrations/0046_shipping_hardening.sql'),
+];
+
+function internalShipmentStatuses() {
+  const found = new Set();
+  const addQuoted = (text) => {
+    for (const value of String(text ?? '').matchAll(/(['"])([^'"\\]*(?:\\.[^'"\\]*)*)\1/g)) {
+      found.add(value[2]);
+    }
+  };
+  for (const source of SHIPMENT_STATUS_SOURCES) {
+    // Scan the complete comment-free source so a multiline allowlist cannot evade the
+    // invariant. The parser intentionally extracts literals only from expressions tied
+    // to provider_status/providerStatus; unrelated strings do not enter the vocabulary.
+    for (const m of source.matchAll(/\bproviderStatus\s*:\s*([^,}\n]+)/g)) addQuoted(m[1]);
+    // Một số migration dùng `coalesce(provider_status, 'marker')`: literal nằm
+    // bên trong hàm chứ không đứng ngay sau dấu `=`. Rút riêng dạng này để
+    // không bỏ sót marker lịch sử như `dedup_0046`.
+    for (const m of source.matchAll(/\bprovider_status\s*=\s*coalesce\([^)]*?(['"])([^'"\\]*(?:\\.[^'"\\]*)*)\1/gi)) {
+      found.add(m[2]);
+    }
+    for (const m of source.matchAll(/\bprovider_status\s*=\s*(?:coalesce\([^)]*\)\s*)?(['"])([^'"\\]*(?:\\.[^'"\\]*)*)\1/g)) {
+      found.add(m[2]);
+    }
+    for (const m of source.matchAll(/\bprovider_status\s+(?:NOT\s+)?IN\s*\(([\s\S]*?)\)/gi)) addQuoted(m[1]);
+    // `NOT IN` và mảng trong giao diện admin đặt literal trước `provider_status`,
+    // nên phải rút cả danh sách nằm trong ngoặc vuông.
+    for (const m of source.matchAll(/\[([^\]]*)\]\s*\.includes\([^)]*provider_status\)/gi)) addQuoted(m[1]);
+    for (const m of source.matchAll(/\bprovider_status\s*(?:===?|!==?)\s*(['"])([^'"\\]*(?:\\.[^'"\\]*)*)\1/g)) {
+      found.add(m[2]);
+    }
+  }
+  return found;
+}
 
 describe('vai trò database', () => {
   for (const role of ['app_rw', 'app_tls']) {
@@ -905,6 +1000,170 @@ describe('Composite foreign key', () => {
       [],
       'các FK này cho phép tham chiếu chéo shop',
     );
+  });
+});
+
+describe('Namespace trạng thái vận đơn (0184)', () => {
+  const MIGRATION_0184 = readFileSync(new URL('../migrations/0184_shipment_status_namespace.sql', import.meta.url), 'utf8');
+
+  test('carrier_status_raw là cột riêng, CHECK khớp đúng tập marker thực tế và grant app_expiry hẹp', async () => {
+    assert.match(MIGRATION_0184, /carrier_status_raw/);
+    assert.match(MIGRATION_0184, /GRANT UPDATE \(carrier_status_raw\) ON shipments TO app_expiry/);
+    assert.match(MIGRATION_0184, /CREATE POLICY shipment_0184_owner_backfill ON shipments/,
+      'migration phải mở policy tạm để backfill xuyên FORCE RLS');
+    assert.match(MIGRATION_0184, /DROP POLICY shipment_0184_owner_backfill ON shipments/,
+      'policy backfill phải được xoá ngay trong migration');
+    const policyAt = MIGRATION_0184.indexOf('CREATE POLICY shipment_0184_owner_backfill ON shipments');
+    const guardAt = MIGRATION_0184.indexOf('DO $$');
+    const backfillAt = MIGRATION_0184.indexOf('UPDATE shipments');
+    const checkAt = MIGRATION_0184.indexOf('ADD CONSTRAINT shipments_provider_status_internal_check');
+    const dropAt = MIGRATION_0184.indexOf('DROP POLICY shipment_0184_owner_backfill ON shipments');
+    assert.ok(policyAt >= 0 && guardAt > policyAt && backfillAt > guardAt && checkAt > backfillAt && dropAt > checkAt,
+      'thứ tự backfill phải là mở policy tạm → kiểm tra/chuyển dữ liệu → CHECK → xoá policy');
+    const migrationCode = stripSourceComments(MIGRATION_0184, { sql: true });
+    assert.match(migrationCode,
+      /UPDATE\s+shipments\s+SET\s+carrier_status_raw\s*=\s*provider_status\s*,\s*provider_status\s*=\s*NULL\s+WHERE\s+provider\s+IS\s+NOT\s+NULL\s+AND\s+provider_status\s+IS\s+NOT\s+NULL\s+AND\s+provider_status\s+NOT\s+IN\s*\(/s,
+      'backfill phải chuyển nguyên mã raw và xoá nó khỏi provider_status');
+    assert.match(migrationCode,
+      /WHERE\s+provider\s+IS\s+NULL\s+AND\s+provider_status\s+IS\s+NOT\s+NULL\s+AND\s+provider_status\s+NOT\s+IN\s*\(/s,
+      'provider NULL chứa giá trị lạ phải làm migration fail-closed');
+
+    const { rows: columns } = await owner.query(`
+      SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'shipments'
+         AND column_name IN ('provider_status', 'carrier_status_raw')
+       ORDER BY column_name`);
+    assert.deepEqual(columns, [
+      { column_name: 'carrier_status_raw', data_type: 'text', is_nullable: 'YES' },
+      { column_name: 'provider_status', data_type: 'text', is_nullable: 'YES' },
+    ]);
+
+    const { rows: [constraint] } = await owner.query(`
+      SELECT conname, contype, pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+       WHERE conrelid = 'shipments'::regclass
+         AND conname = 'shipments_provider_status_internal_check'`);
+    assert.equal(constraint?.conname, 'shipments_provider_status_internal_check');
+    assert.equal(constraint?.contype, 'c');
+
+    const { rows: [compat] } = await owner.query(`
+      SELECT p.prosecdef, r.rolname AS owner, pg_get_functiondef(p.oid) AS definition
+        FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner
+       WHERE p.oid = 'normalize_shipment_provider_status_namespace()'::regprocedure`);
+    assert.equal(compat?.owner, 'app_owner', 'hàm tương thích phải thuộc owner DDL');
+    assert.equal(compat?.prosecdef, false, 'hàm tương thích không được tự nâng quyền');
+    assert.match(compat?.definition ?? '', /current_user\s*=\s*'app_expiry'/,
+      'đường tương thích phải hẹp đúng vai worker cũ');
+    const compatList = /NEW\.provider_status\s+NOT IN\s*\(([^)]*)\)/s.exec(compat?.definition ?? '');
+    assert.ok(compatList, 'mốc chết: trigger không còn danh sách marker nội bộ');
+    const compatStatuses = new Set([...compatList[1].matchAll(/'([a-z0-9_]+)'/g)].map((m) => m[1]));
+
+    const sourceStatuses = internalShipmentStatuses();
+    assert.ok(sourceStatuses.size >= 9, 'mốc chết: không rút được đủ marker provider_status từ đường ghi/đọc');
+    const dbStatuses = new Set([...String(constraint.definition).matchAll(/'([^']+)'/g)].map((m) => m[1]));
+    assert.deepEqual([...dbStatuses].sort(), [...sourceStatuses].sort(),
+      'CHECK provider_status phải so BẰNG với vocabulary trong mã; thêm marker mà quên migration phải đỏ');
+    assert.deepEqual([...compatStatuses].sort(), [...dbStatuses].sort(),
+      'chốt tương thích worker cũ phải dùng đúng vocabulary của CHECK');
+
+    const { rows: [priv] } = await owner.query(`
+      SELECT has_column_privilege('app_expiry','shipments','provider_status','SELECT') AS internal_select,
+             has_column_privilege('app_expiry','shipments','carrier_status_raw','SELECT') AS raw_select,
+             has_column_privilege('app_expiry','shipments','provider_status','UPDATE') AS internal_update,
+             has_column_privilege('app_expiry','shipments','carrier_status_raw','UPDATE') AS raw_update`);
+    assert.deepEqual(priv, {
+      internal_select: true,
+      raw_select: false,
+      internal_update: true,
+      raw_update: true,
+    }, 'app_expiry chỉ được ghi raw; không tự mở quyền đọc raw');
+
+    const { rows: ownerBackfillPolicies } = await owner.query(`
+      SELECT policyname
+        FROM pg_policies
+       WHERE schemaname = 'public' AND tablename = 'shipments'
+         AND policyname = 'shipment_0184_owner_backfill'`);
+    assert.deepEqual(ownerBackfillPolicies, [],
+      'policy xuyên tenant chỉ được tồn tại trong lúc backfill, không được để lại ở runtime');
+
+    const { rows: [unknown] } = await owner.query(`
+      SELECT count(*)::int AS n
+        FROM shipments
+       WHERE provider_status IS NOT NULL
+         AND provider_status NOT IN (SELECT unnest($1::text[]))`, [[...sourceStatuses]]);
+    assert.equal(unknown.n, 0, 'provider_status hiện tại không được chứa marker ngoài vocabulary');
+  });
+
+  test('CHECK chặn mã hãng ở provider_status nhưng cho ghi raw và giữ marker tiền', async () => {
+    const tag = `status-ns-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    let shopId;
+    let orderId;
+    let shipmentId;
+    try {
+      const { rows: [shop] } = await owner.query(
+        `INSERT INTO shops (slug, name, status) VALUES ($1, $2, 'active') RETURNING id`, [tag, tag]);
+      shopId = shop.id;
+      const { rows: [order] } = await owner.query(
+        `INSERT INTO orders (shop_id, order_number, total_vnd) VALUES ($1, 1, 1000) RETURNING id`, [shopId]);
+      orderId = order.id;
+      const { rows: [shipment] } = await owner.query(
+        `INSERT INTO shipments (shop_id, order_id, provider, status) VALUES ($1, $2, 'ghtk', 'created') RETURNING id`, [shopId, orderId]);
+      shipmentId = shipment.id;
+
+      const sourceStatuses = internalShipmentStatuses();
+      for (const marker of sourceStatuses) {
+        const state = await sqlstateOf(() => owner.query(
+          `UPDATE shipments SET provider_status = $2 WHERE id = $1`, [shipmentId, marker]));
+        assert.equal(state, null, `marker nội bộ ${marker} phải được CHECK cho phép`);
+      }
+
+      const rejected = await sqlstateOf(() => owner.query(
+        `UPDATE shipments SET provider_status = '5' WHERE id = $1`, [shipmentId]));
+      assert.equal(rejected, '23514', 'mã raw của hãng không được chui vào provider_status');
+
+      await owner.query(`UPDATE shipments SET provider_status = 'cod_mismatch' WHERE id = $1`, [shipmentId]);
+      const expiryLegacyWrite = await sqlstateOf(() => expiry.query(
+        `UPDATE shipments SET provider_status = '5' WHERE id = $1`, [shipmentId]));
+      assert.equal(expiryLegacyWrite, null,
+        'worker cũ ghi raw vào provider_status phải được trigger chuyển sang cột raw trong lúc rollout');
+
+      const { rows: [legacyRow] } = await owner.query(
+        `SELECT provider_status, carrier_status_raw FROM shipments WHERE id = $1`, [shipmentId]);
+      assert.deepEqual(legacyRow, { provider_status: 'cod_mismatch', carrier_status_raw: '5' },
+        'đường tương thích worker cũ phải giữ marker nội bộ đang có');
+
+      await expiry.query(`UPDATE shipments SET carrier_status_raw = '5' WHERE id = $1`, [shipmentId]);
+      const { rows: [row] } = await owner.query(
+        `SELECT provider_status, carrier_status_raw FROM shipments WHERE id = $1`, [shipmentId]);
+      assert.deepEqual(row, { provider_status: 'cod_mismatch', carrier_status_raw: '5' },
+        'cập nhật raw không được xoá cảnh báo cod_mismatch');
+
+      // Trong lúc rollout worker cũ vẫn có thể ghi qua provider_status. Các mã hãng
+      // dạng chữ trùng marker nội bộ phải vẫn đi vào namespace raw, dựa trên trạng thái
+      // vòng đời của đường poll chứ không dựa riêng vào allowlist.
+      await owner.query(
+        `UPDATE shipments SET status = 'in_transit', tracking_number = 'COLLIDE-A', provider_status = 'cod_mismatch' WHERE id = $1`,
+        [shipmentId]);
+      await expiry.query(`UPDATE shipments SET provider_status = 'ambiguous' WHERE id = $1`, [shipmentId]);
+      const { rows: [collisionInTransit] } = await owner.query(
+        `SELECT provider_status, carrier_status_raw FROM shipments WHERE id = $1`, [shipmentId]);
+      assert.deepEqual(collisionInTransit, { provider_status: 'cod_mismatch', carrier_status_raw: 'ambiguous' },
+        'mã hãng chữ trùng marker phải được tách khi kiện đang được poll');
+
+      await owner.query(
+        `UPDATE shipments SET status = 'cancelled', tracking_number = 'COLLIDE-B', provider_status = 'cod_mismatch' WHERE id = $1`,
+        [shipmentId]);
+      await expiry.query(`UPDATE shipments SET provider_status = 'created' WHERE id = $1`, [shipmentId]);
+      const { rows: [collisionCancelled] } = await owner.query(
+        `SELECT provider_status, carrier_status_raw FROM shipments WHERE id = $1`, [shipmentId]);
+      assert.deepEqual(collisionCancelled, { provider_status: 'cod_mismatch', carrier_status_raw: 'created' },
+        'mã hãng chữ trùng marker phải được tách khi hãng huỷ kiện có mã');
+    } finally {
+      if (shipmentId) await owner.query('DELETE FROM shipments WHERE id = $1', [shipmentId]);
+      if (orderId) await owner.query('DELETE FROM orders WHERE id = $1', [orderId]);
+      if (shopId) await owner.query('DELETE FROM shops WHERE id = $1', [shopId]);
+    }
   });
 });
 

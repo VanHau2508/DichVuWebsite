@@ -25,10 +25,10 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 |---|---:|---|
 | dòng mã ứng dụng | ~48.900 | `apps/*/src/*.js` |
 | dòng test | ~35.472 | `apps/*/test/*.{js,mjs}` |
-| migration | 181 tệp, mới nhất `0183` | `packages/db/migrations/` |
+| migration | 182 tệp, mới nhất `0184` | `packages/db/migrations/` |
 | bộ unit | 42 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 107 | `MANIFEST_E2E_COUNT` |
-| bất biến DB | 9 bộ, 145 test TAP | `packages/db/test/*.test.js` |
+| bất biến DB | 9 bộ, 147 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 82 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,73 — cao có chủ ý, xem §4.
@@ -75,7 +75,7 @@ với GitHub CI. Nó tự dựng PostgreSQL trắng trong project Compose riêng
 chạy đúng runner production **không seed**, rồi so ba chiều: số file = `MANIFEST_MIGRATION_COUNT`
 = số dòng thật trong `schema_migrations`, kèm 0 DRIFT / 0 pending. Tự dọn bằng `trap` ở mọi đường
 thoát, kể cả Ctrl-C. **Không chạm DB dev.** Thêm migration thì sửa `MANIFEST_MIGRATION_COUNT`
-trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 181 file / số cao nhất 0183).
+trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 182 file / số cao nhất 0184).
 
 Hook `scripts/hooks/pre-push` chạy `--fast` và **chặn push khi đỏ**. Cài một lần cho mỗi bản
 clone: `git config core.hooksPath scripts/hooks`.
@@ -508,7 +508,7 @@ thay trong một lát cắt khác.
 |---|---|---|
 | **A** | bằng chứng hoàn tiền + chốt ca, `app_resolution`, hàm SECURITY DEFINER hẹp (`docs/78`) | **đã merge** `b7088ab` |
 | **B** | bảng quản trị card-hoá ở server (`docs/77`) | **đã merge** `db9eeae` |
-| **C** | bản đồ phục hồi vận đơn | vẫn ở mức đã-đo, CHƯA khoá brief |
+| **C** | bản đồ phục hồi vận đơn | đã khoá phần nền namespace; ba quyết định bề mặt vẫn chờ chủ dự án |
 
 Lát cắt 4 coi như đóng ở phần A+B. C chưa khoá, và **không mặc nhiên là việc kế tiếp**.
 
@@ -535,6 +535,11 @@ Migration `0182` dùng nonce discrepancy một lần cho retry thủ công, khô
 và bắt lỗi provider sau xác nhận về `needs_attention` thay vì để BullMQ POST lại.
 Invoice chưa xác định được nguồn phải nằm ở `order_identity_pending`, chưa ghi doanh thu. Phạm vi hiện tại chỉ
 đủ cho pilot 1–3 shop; chưa có bằng chứng để tuyên bố tải 9.358 shop.
+
+Brief C về bản đồ phục hồi vận đơn đã được đo trên `main`. Phần nền không cần quyết định sản phẩm
+đã thi công trên nhánh `codex/shipment-status-namespace`: migration `0184` tách mã thô của hãng
+ra `shipments.carrier_status_raw`, giữ allowlist marker nội bộ trong `provider_status`, và
+worker ghi đúng namespace; phần orphan/cod-mismatch và thao tác đóng ca vẫn chờ chốt bề mặt.
 
 Song song: **trang chủ nền tảng đã dựng lại toàn bộ** (`apps/storefront/src/landing.js`)
 theo yêu cầu của chủ dự án. Hệ thiết kế mới (xanh cobalt, hero nền tối), bố cục mới, và
@@ -573,10 +578,11 @@ savepoint và câu chữ fail-closed. Các chốt đều bị đột biến th�
 Chi tiết hợp đồng `/stats`, registry việc cần làm và các giới hạn của lát cắt nằm ở `docs/81`.
 
 Nhánh `codex/onboarding-readiness-connector` đã thi công phần readiness theo nguồn tồn,
-retry thông báo onboarding và lớp phòng thủ DB trong migration `0183`; **đã push, chưa merge**.
+retry thông báo onboarding và lớp phòng thủ DB trong migration `0183`; đã fast-forward vào
+`main` tại `8d46f15`.
 Shop `external_master` chỉ được coi là sẵn sàng khi connector active, có biến thể đã mapping
 đúng generation và dấu đồng bộ còn tươi; email `shop.onboarding_nudge` được retry qua cùng
-chuỗi outbox/PII TTL, không cần `order_id`. Migration DB trắng hiện là 181 file, 0 DRIFT,
+chuỗi outbox/PII TTL, không cần `order_id`. Migration DB trắng hiện là 182 file, 0 DRIFT,
 0 pending. Harness `scripts/verify-onboarding-readiness.sh` đã canh ba chốt bằng E2E thật:
 gỡ connector, nới freshness và bỏ allowlist onboarding đều phải đỏ; hoàn nguyên phải xanh.
 

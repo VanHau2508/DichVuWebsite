@@ -63,7 +63,7 @@ e2e). Chỉ được nói "xanh" khi lệnh đầy đủ `exit 0`. Danh sách te
 đám mây và CI máy: `scripts/test-manifest.sh` — thêm/bớt bộ test thì phải sửa con số trong đó
 cùng commit, nếu không cổng đỏ.
 
-Hôm nay: **42 bộ unit · 107 bộ e2e · 9 bộ DB (144 test theo tổng kết TAP) · 3 smoke.**
+Hôm nay: **42 bộ unit · 107 bộ e2e · 9 bộ DB (147 test theo tổng kết TAP) · 3 smoke.**
 
 ---
 
@@ -108,8 +108,8 @@ quyết định bảo mật — đừng nới cho tiện.
   "tôi không viết GRANT" ≠ "vai đó không có quyền". Bảng mới không dành cho tenant thì phải
   `REVOKE ALL … FROM app_rw` **và** thêm policy chặn.
 - **Migration là BẤT BIẾN.** Runner băm nội dung; sửa file cũ → `DRIFT` → cổng đỏ. Sửa gì cũng
-  bằng file mới. Hiện có **181 tệp**, mới nhất `0183`.
-- **Cổng DB** (`packages/db/test/`, 9 tệp, 144 test theo tổng kết TAP) canh RLS, composite FK,
+  bằng file mới. Hiện có **182 tệp**, mới nhất `0184`.
+- **Cổng DB** (`packages/db/test/`, 9 tệp, 147 test theo tổng kết TAP) canh RLS, composite FK,
   least-privilege, cô lập tenant và các hàng rào nghiệp vụ mới cho go-live, thông báo, yêu cầu
   hậu mãi/RMA.
 
@@ -296,7 +296,7 @@ khôi phục backup.
 
 ## 11. Bản đồ tài liệu `docs/`
 
-75 tệp. Đọc theo chủ đề, không đọc theo số.
+82 tệp. Đọc theo chủ đề, không đọc theo số.
 
 - **Nền móng:** `01` kiến trúc · `02` mô hình dữ liệu & bảo mật · `03` hạ tầng · **`04` ADR
   (11 quyết định, đọc trước khi định làm khác)** · `06` cô lập tenant.
@@ -317,6 +317,9 @@ khôi phục backup.
   có sự cố**.
 - **Trải nghiệm & thiết kế:** `72` design system storefront · `73` cửa vào và thiết lập đầu tiên
   · `74` onboarding, preview và go-live.
+- **Các lát cắt vận hành gần đây:** `75` chi tiết đơn hàng an toàn · `76` phòng thủ idempotency
+  theo tenant · `77` bảng quản trị card-hoá ở server · `78` bằng chứng refund cho ca giao một
+  phần · `79` lát cắt phân tầng gói · `80` nền tích hợp KiotViet · `81` Trung tâm vận hành.
 
 ---
 

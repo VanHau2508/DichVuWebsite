@@ -345,6 +345,13 @@ async function main() {
   od = (await a.get(`/orders/${o1.id}`)).json;
   od.status === 'delivered' && od.shipments[0].status === 'delivered'
     ? ok('đơn → delivered + vận đơn delivered') : bad('delivered sai', `${od.status} ${od.shipments?.[0]?.status}`);
+  const deliveredCarrier = (await owner.query(
+    `SELECT carrier_status_raw, provider_status FROM shipments WHERE order_id=$1 AND provider='ghtk' ORDER BY created_at DESC LIMIT 1`,
+    [o1.id],
+  )).rows[0];
+  deliveredCarrier?.carrier_status_raw === '5' && deliveredCarrier?.provider_status === 'created'
+    ? ok("worker lưu mã GHTK delivered='5' riêng, giữ marker provider_status='created'")
+    : bad('worker trộn mã hãng vào provider_status hoặc bỏ mất carrier_status_raw', JSON.stringify(deliveredCarrier));
   // COD hãng giao xong = shipper ĐÃ THU tiền (0066) → tự 'paid' (trước đây unpaid vĩnh viễn).
   od.payment_status === 'paid'
     ? ok('COD giao xong → payment_status tự PAID (hãng đã thu hộ)') : bad('COD delivered vẫn unpaid', od.payment_status);
@@ -447,6 +454,13 @@ async function main() {
   od = (await a.get(`/orders/${o2.id}`)).json;
   od.status === 'returned' && od.shipments[0].status === 'returned'
     ? ok('đơn → returned + vận đơn returned') : bad('returned sai', `${od.status} ${od.shipments?.[0]?.status} ${JSON.stringify(wrr)}`);
+  const returnedCarrier = (await owner.query(
+    `SELECT carrier_status_raw, provider_status FROM shipments WHERE order_id=$1 AND provider='ghtk' ORDER BY created_at DESC LIMIT 1`,
+    [o2.id],
+  )).rows[0];
+  returnedCarrier?.carrier_status_raw === '20' && returnedCarrier?.provider_status === 'created'
+    ? ok("worker lưu mã GHTK returned='20' riêng, giữ marker provider_status='created'")
+    : bad('worker lưu mã returned sai namespace', JSON.stringify(returnedCarrier));
   const rat = await owner.query(`SELECT returned_at FROM orders WHERE id=$1`, [o2.id]);
   rat.rows[0]?.returned_at ? ok('returned_at đã chốt mốc') : bad('thiếu returned_at');
   const obr = await owner.query(
@@ -1072,9 +1086,12 @@ async function main() {
   const threeCases = Number((await owner.query(
     `SELECT count(*)::int n FROM order_resolution_cases WHERE order_id=$1`, [oThree.id],
   )).rows[0].n);
-  const cancelledState = (await owner.query(`SELECT status FROM shipments WHERE id=$1`, [cancelledThree.id])).rows[0]?.status;
-  threeCases === 0 && cancelledState === 'cancelled'
-    ? ok('kiện cuối cancelled còn qty chưa rõ → chưa mở case sai snapshot') : bad('cancelled làm detector mở ca quá sớm', `${threeCases}/${cancelledState}`);
+  const cancelledRow = (await owner.query(`SELECT status, provider_status, carrier_status_raw FROM shipments WHERE id=$1`, [cancelledThree.id])).rows[0];
+  threeCases === 0 && cancelledRow?.status === 'cancelled'
+    ? ok('kiện cuối cancelled còn qty chưa rõ → chưa mở case sai snapshot') : bad('cancelled làm detector mở ca quá sớm', `${threeCases}/${cancelledRow?.status}`);
+  cancelledRow?.carrier_status_raw === '-1' && cancelledRow?.provider_status == null
+    ? ok("worker lưu mã GHTK cancelled='-1' riêng, không biến thành provider_status")
+    : bad('worker lưu mã cancelled sai namespace', JSON.stringify(cancelledRow));
   stub.ghtkStatusByTracking.delete('THREE-C');
   stub.ghtkStatus = 4; // trả stub về trạng thái đang giao cho các mục sau
 

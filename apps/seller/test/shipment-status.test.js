@@ -79,6 +79,26 @@ test('worker huỷ vận đơn chỉ chuyển kiện đang in_transit và ghi ti
     'cancellation mới phải đi qua detector resolution hiện có');
 });
 
+test('worker ghi mã trạng thái thô của hãng vào namespace riêng', () => {
+  const src = readFileSync(join(ROOT, 'apps/worker/src/index.js'), 'utf8');
+  const start = src.indexOf('async function sweepTracking()');
+  const end = src.indexOf('// ── sweep: TÍN HIỆU SÀN TMĐT', start);
+  assert.ok(start >= 0 && end > start, 'mốc chết: không cắt được thân sweepTracking');
+  const sweep = src.slice(start, end);
+
+  for (const status of ['delivered', 'returned', 'cancelled']) {
+    assert.match(sweep,
+      new RegExp(`UPDATE\\s+shipments\\s+SET\\s+status\\s*=\\s*'${status}'\\s*,\\s*carrier_status_raw\\s*=\\s*\\$2\\s*,\\s*synced_at\\s*=\\s*now\\(\\)`),
+      `worker phải ghi mã hãng của kiện ${status} vào carrier_status_raw`);
+  }
+  assert.match(sweep,
+    /UPDATE\s+shipments\s+SET\s+carrier_status_raw\s*=\s*\$2\s*,\s*synced_at\s*=\s*now\(\)\s+WHERE\s+id\s*=\s*\$1/,
+    'worker phải ghi mã hãng trung gian vào carrier_status_raw');
+  assert.doesNotMatch(sweep,
+    /provider_status\s*=\s*(?:\$2|st\.raw)/,
+    'worker không được ghi mã hãng vào provider_status nội bộ');
+});
+
 test('seller order detail và admin dùng cùng planned_qty khi tính số còn phải giao', () => {
   const seller = readFileSync(join(ROOT, 'apps/seller/src/orders.js'), 'utf8');
   const admin = readFileSync(join(ROOT, 'apps/seller-admin/src/pages.js'), 'utf8');

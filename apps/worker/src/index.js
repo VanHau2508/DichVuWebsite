@@ -3368,6 +3368,7 @@ async function carrierState(provider, token, ghnShopId, tracking) {
       const j = await r.json().catch(() => null);
       if (r.status !== 200 || j?.code !== 200) return null;
       const st = String(j?.data?.status ?? '');
+      // `state` là từ vựng nội bộ; `raw` là mã hãng và được lưu ở namespace riêng.
       return { state: st === 'delivered' ? 'delivered' : st === 'cancel' ? 'cancelled' : /return/.test(st) ? 'returned' : 'shipping', raw: st };
     }
     const r = await fetch(`${GHTK_BASE}/services/shipment/v2/${encodeURIComponent(tracking)}`, { headers: { Token: token }, signal: ac.signal });
@@ -3544,7 +3545,7 @@ async function sweepTracking() {
       if (st.state === 'delivered') {
         // SPLIT (0080): đánh dấu KIỆN NÀY delivered TRƯỚC (loại khỏi kiểm "còn kiện chưa giao").
         const shipmentUpdated = await c.query(
-          `UPDATE shipments SET status = 'delivered', provider_status = $2, synced_at = now()
+          `UPDATE shipments SET status = 'delivered', carrier_status_raw = $2, synced_at = now()
             WHERE id = $1 AND status = 'in_transit' RETURNING id`, [s.id, st.raw]);
         if (shipmentUpdated.rowCount !== 1) {
           await c.query('COMMIT');
@@ -3581,7 +3582,7 @@ async function sweepTracking() {
         // Hàng HOÀN (bom hàng): đánh dấu kiện TRƯỚC. KHÔNG cộng lại on_hand (app_expiry cố tình
         // không có quyền — chủ shop tự Điều chỉnh khi nhận hàng thật). Reserve đã trả lúc ship.
         const shipmentUpdated = await c.query(
-          `UPDATE shipments SET status = 'returned', provider_status = $2, synced_at = now()
+          `UPDATE shipments SET status = 'returned', carrier_status_raw = $2, synced_at = now()
             WHERE id = $1 AND status = 'in_transit' RETURNING id`, [s.id, st.raw]);
         if (shipmentUpdated.rowCount !== 1) {
           await c.query('COMMIT');
@@ -3614,7 +3615,7 @@ async function sweepTracking() {
         log('warn', 'tracking_returned', { order_number: Number(s.order_number), provider: s.provider, order_changed: upd.rowCount === 1, raw: st.raw });
       } else if (st.state === 'cancelled') {
         const cancelled = await c.query(
-          `UPDATE shipments SET status = 'cancelled', provider_status = $2, synced_at = now()
+          `UPDATE shipments SET status = 'cancelled', carrier_status_raw = $2, synced_at = now()
             WHERE id = $1 AND status = 'in_transit' RETURNING id`, [s.id, st.raw],
         );
         if (cancelled.rowCount === 1) {
@@ -3627,6 +3628,7 @@ async function sweepTracking() {
             [s.shop_id, s.order_id, s.provider, {
               shipment_id: s.id,
               tracking_number: s.tracking_number,
+              // Giữ khóa payload lịch sử; đây là mã thô của hãng, không phải marker nội bộ.
               provider_status: st.raw,
               requires_reconciliation: true,
             }],
@@ -3635,7 +3637,7 @@ async function sweepTracking() {
         }
         log('warn', 'tracking_exception', { order_number: Number(s.order_number), provider: s.provider, state: st.state, raw: st.raw });
       } else {
-        await c.query(`UPDATE shipments SET provider_status = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
+        await c.query(`UPDATE shipments SET carrier_status_raw = $2, synced_at = now() WHERE id = $1`, [s.id, st.raw]);
       }
       await c.query('COMMIT');
     } catch (e) {

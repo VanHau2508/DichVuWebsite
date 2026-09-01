@@ -96,7 +96,7 @@ ALTER TABLE shipments
   CHECK (provider_status IS NULL OR provider_status IN (
     'ambiguous', 'finalize_failed', 'orphan', 'cod_mismatch',
     'claim_expired', 'reconciled', 'reconciled_cancel',
-    'created'
+    'created', 'dedup_0046'
   ));
 
 DROP POLICY shipment_0184_owner_backfill ON shipments;

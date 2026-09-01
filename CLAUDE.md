@@ -536,10 +536,44 @@ và bắt lỗi provider sau xác nhận về `needs_attention` thay vì để B
 Invoice chưa xác định được nguồn phải nằm ở `order_identity_pending`, chưa ghi doanh thu. Phạm vi hiện tại chỉ
 đủ cho pilot 1–3 shop; chưa có bằng chứng để tuyên bố tải 9.358 shop.
 
-Brief C về bản đồ phục hồi vận đơn đã được đo trên `main`. Phần nền không cần quyết định sản phẩm
-đã thi công trên nhánh `codex/shipment-status-namespace`: migration `0184` tách mã thô của hãng
-ra `shipments.carrier_status_raw`, giữ allowlist marker nội bộ trong `provider_status`, và
-worker ghi đúng namespace; phần orphan/cod-mismatch và thao tác đóng ca vẫn chờ chốt bề mặt.
+Brief C về bản đồ phục hồi vận đơn đã được đo trên `main`. **Phần nền đã ĐÓNG** tại `5461fb8`
+(hai commit `685955a` → `5461fb8`, fast-forward): migration `0184` tách mã thô của hãng ra
+`shipments.carrier_status_raw`, khoá `provider_status` bằng CHECK chín marker nội bộ, trigger
+tương thích hẹp đúng `current_user = 'app_expiry'` cho cửa sổ deploy, và worker ghi đúng
+namespace. Chốt từ vựng trong `schema-invariants` so **BẰNG** tập CHECK với tập rút từ mọi
+đường ghi/đọc — thêm marker trong mã mà quên migration là đỏ.
+
+**Lỗi của chính lát cắt này, chép lại vì nó đắt hơn bản vá.** Bản đầu (`685955a`) liệt
+`dedup_0046` ở ba danh sách (trigger, khối fail-closed, backfill) nhưng bỏ khỏi CHECK. Đó là
+marker thật do `0046_shipping_hardening.sql:10` ghi ra. Hậu quả: `ADD CONSTRAINT` xác thực dòng
+cũ, nên migration **không áp được** lên DB nào từng chạy `0046` khi có vận đơn trùng — đo được
+`check constraint … is violated by some row`, DB đứng nguyên ở 181.
+
+Điều đáng ghi không phải cái sót, mà là **vì sao cổng không thấy**: cổng migration từ DB
+TRẮNG xanh 182/182 ngay trên commit hỏng, và nó **phải** xanh — DB trắng thì `0046` không dòng
+để đóng dấu, nên giá trị đó không bao giờ tồn tại. Cổng ấy chứng minh schema dựng được từ số
+không; nó **không** chứng minh migration chạy được trên một DB đã sống. Hai bất biến DB thì bắt
+được và đã đỏ đúng chỗ (`147 → 145 pass, 2 fail`, cả hai nêu đích danh `dedup_0046`), nhưng lượt
+đầu chúng được chạy trên DB không có quá khứ nên con số `147/147` khi đó không chứng minh gì.
+→ **Luật rút ra: migration đụng dữ liệu cũ phải được áp thử trên DB CÓ LỊCH SỬ + dòng mà chính
+migration cũ sinh ra, không chỉ trên DB trắng.** Phép đo đã dùng: dựng DB tới `0183`, gieo một
+vận đơn `provider_status='dedup_0046'`, rồi mới thả `0184` vào.
+
+Còn nợ, đã ghi, chưa làm: trigger `normalize_shipment_provider_status_namespace` sống cho cửa sổ
+deploy nhưng **không có ngưỡng gỡ** trong chú thích — ba tháng nữa sẽ không ai dám xoá. Và một
+advisory mức **moderate** xuất hiện ngày 01/09 (`decode-uri-component` ← `query-string` ← `minio`)
+chạm `checkout`/`seller`/`worker`; ngưỡng `--audit-level=high` của `security-scan.sh` không chặn,
+bản vá lại đòi hạ `minio` xuống `7.0.26` — thay đổi phá vỡ, đừng vá vội.
+
+**Phần bề mặt của brief C vẫn nguyên, và nó có số tiền.** Đo trên `main`: năm bề mặt phục hồi
+(thẻ Tổng quan, `attention=shipment`, form chi tiết đơn, chốt chặn tạo vận đơn, truy vấn
+reconcile) đều lọc đúng `('ambiguous','finalize_failed')`, nên hai marker khác **không bề mặt nào
+nhặt** — `orphan` (11 vận đơn còn `in_transit`, đơn `shipped`/`unpaid`, tổng **5.830.000₫** COD,
+lại còn bị loại tường minh khỏi ô đếm ở `pages.js:3641`) và `cod_mismatch` (0 dòng hôm nay, tức
+chưa ai gặp — không phải đã an toàn). Ba câu chờ chủ dự án quyết, cả ba đều có hơn một đáp án
+đúng nên không được gõ trước: đổi/ngắt hãng khi còn vận đơn sống thì **chặn hay cho kèm dấu vết**
+· `orphan` là việc mức **chặn hay theo dõi** · **thao tác đóng một `orphan` là gì**, nhất là đóng
+sổ tiền COD bằng đường nào.
 
 Song song: **trang chủ nền tảng đã dựng lại toàn bộ** (`apps/storefront/src/landing.js`)
 theo yêu cầu của chủ dự án. Hệ thiết kế mới (xanh cobalt, hero nền tối), bố cục mới, và

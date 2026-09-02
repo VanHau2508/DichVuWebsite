@@ -1237,7 +1237,12 @@ async function main() {
   // st.state === 'delivered'), mà trang Vận chuyển vẫn hứa "hệ thống tự theo dõi tới khi giao xong".
   const stepUp = () => rq(AUTH, 'POST', '/auth/step-up', { body: { password: A.password }, cookie: A.cookie, origin: OA });
   const sweepTrack = () => fetch(`${WORKER}/internal/tracking-sweep`, { method: 'POST' }).then((x) => x.json());
-  const donCua = async (id) => (await owner.query(`SELECT status, payment_status FROM orders WHERE id=$1`, [id])).rows[0];
+  const donCua = async (id) => (await owner.query(`SELECT status, payment_status, paid_at FROM orders WHERE id=$1`, [id])).rows[0];
+  const tienCua = async (id) => (await owner.query(
+    `SELECT o.payment_status, o.paid_at,
+            (SELECT count(*)::int FROM payment_transactions pt WHERE pt.order_id=o.id) AS ledger_rows
+       FROM orders o WHERE o.id=$1`, [id],
+  )).rows[0];
   const kienCua = async (id) => (await owner.query(`SELECT status, provider, provider_status, tracking_number FROM shipments WHERE order_id=$1 ORDER BY created_at DESC LIMIT 1`, [id])).rows[0];
 
   await stepUp();
@@ -1331,18 +1336,20 @@ async function main() {
     ? ok('đơn giữ nguyên shipped/unpaid — shop phải chốt tay, đúng như cảnh báo đã nói')
     : bad('trạng thái đơn sau đổi hãng sai', JSON.stringify(d));
   const stockBeforeOrphanDeliver = Number((await owner.query(`SELECT on_hand FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].on_hand);
-  const paymentsBeforeOrphanDeliver = Number((await owner.query(`SELECT count(*)::int AS n FROM payment_transactions WHERE order_id=$1`, [oSwap.id])).rows[0].n);
+  const moneyBeforeOrphanDeliver = await tienCua(oSwap.id);
   r = await a.post(`/orders/${oSwap.id}/deliver`, {});
   const stockAfterOrphanDeliver = Number((await owner.query(`SELECT on_hand FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].on_hand);
-  const paymentsAfterOrphanDeliver = Number((await owner.query(`SELECT count(*)::int AS n FROM payment_transactions WHERE order_id=$1`, [oSwap.id])).rows[0].n);
+  const moneyAfterOrphanDeliver = await tienCua(oSwap.id);
   const deliveredOrphan = await kienCua(oSwap.id);
   d = await donCua(oSwap.id);
   r.status === 200 && stockAfterOrphanDeliver === stockBeforeOrphanDeliver
-    && paymentsAfterOrphanDeliver === paymentsBeforeOrphanDeliver
-    && d.status === 'delivered' && d.payment_status === 'unpaid'
+    && moneyAfterOrphanDeliver.ledger_rows === moneyBeforeOrphanDeliver.ledger_rows
+    && moneyBeforeOrphanDeliver.payment_status === 'unpaid' && moneyAfterOrphanDeliver.payment_status === 'unpaid'
+    && moneyBeforeOrphanDeliver.paid_at === null && moneyAfterOrphanDeliver.paid_at === null
+    && d.status === 'delivered'
     && deliveredOrphan?.status === 'delivered' && deliveredOrphan?.provider_status === 'reconciled'
     ? ok('đóng orphan in_transit: không consume lại, không tự thu COD, kiện rời hàng đợi')
-    : bad('đóng orphan in_transit làm sai tồn/tiền/trạng thái', JSON.stringify({ r, stockBeforeOrphanDeliver, stockAfterOrphanDeliver, paymentsBeforeOrphanDeliver, paymentsAfterOrphanDeliver, d, deliveredOrphan }));
+    : bad('đóng orphan in_transit làm sai tồn/payment_status/paid_at/ledger/trạng thái', JSON.stringify({ r, stockBeforeOrphanDeliver, stockAfterOrphanDeliver, moneyBeforeOrphanDeliver, moneyAfterOrphanDeliver, d, deliveredOrphan }));
 
   // Ngắt kết nối dùng cùng interstitial, nhưng đếm tập GHN hiện tại và chỉ ghi sau xác nhận.
   const oDisconnect = await placeCod(A, vid, null);
@@ -1367,18 +1374,27 @@ async function main() {
     ? ok('xác nhận ngắt hãng → xoá credential và tạo orphan qua đường sản phẩm thật')
     : bad('xác nhận ngắt hãng hỏng', `${ui.status} ${ui.body.slice(0, 900)}`);
   const stockBeforeCarrierCancel = Number((await owner.query(`SELECT on_hand FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].on_hand);
-  const paymentBeforeCarrierCancel = Number((await owner.query(`SELECT count(*)::int AS n FROM payment_transactions WHERE order_id=$1`, [oDisconnect.id])).rows[0].n);
+  const moneyBeforeCarrierCancel = await tienCua(oDisconnect.id);
   const disconnectShipment = await kienCua(oDisconnect.id);
-  r = await a.post(`/orders/${oDisconnect.id}/carrier-reconcile`, { action: 'carrier_cancelled', shipment_id: (await owner.query(`SELECT id FROM shipments WHERE order_id=$1 ORDER BY created_at DESC LIMIT 1`, [oDisconnect.id])).rows[0].id });
+  const disconnectShipmentId = (await owner.query(`SELECT id FROM shipments WHERE order_id=$1 ORDER BY created_at DESC LIMIT 1`, [oDisconnect.id])).rows[0].id;
+  r = await a.post(`/orders/${oDisconnect.id}/carrier-reconcile`, { action: 'shipped', shipment_id: disconnectShipmentId });
+  const shipmentAfterRejectedAction = await kienCua(oDisconnect.id);
+  r.status === 409 && shipmentAfterRejectedAction?.status === disconnectShipment?.status
+    && shipmentAfterRejectedAction?.provider_status === disconnectShipment?.provider_status
+    ? ok('orphan in_transit từ chối action claim và giữ nguyên trạng thái kiện')
+    : bad('orphan in_transit không trả 409 hoặc đã âm thầm đổi trạng thái kiện', JSON.stringify({ r, disconnectShipment, shipmentAfterRejectedAction }));
+  r = await a.post(`/orders/${oDisconnect.id}/carrier-reconcile`, { action: 'carrier_cancelled', shipment_id: disconnectShipmentId });
   const stockAfterCarrierCancel = Number((await owner.query(`SELECT on_hand FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].on_hand);
-  const paymentAfterCarrierCancel = Number((await owner.query(`SELECT count(*)::int AS n FROM payment_transactions WHERE order_id=$1`, [oDisconnect.id])).rows[0].n);
+  const moneyAfterCarrierCancel = await tienCua(oDisconnect.id);
   const cancelledOrphan = await kienCua(oDisconnect.id);
   r.status === 200 && disconnectShipment?.status === 'in_transit'
     && stockAfterCarrierCancel === stockBeforeCarrierCancel
-    && paymentAfterCarrierCancel === paymentBeforeCarrierCancel
+    && moneyAfterCarrierCancel.ledger_rows === moneyBeforeCarrierCancel.ledger_rows
+    && moneyBeforeCarrierCancel.payment_status === 'unpaid' && moneyAfterCarrierCancel.payment_status === 'unpaid'
+    && moneyBeforeCarrierCancel.paid_at === null && moneyAfterCarrierCancel.paid_at === null
     && cancelledOrphan?.status === 'cancelled' && cancelledOrphan?.provider_status === 'reconciled_cancel'
     ? ok('hãng huỷ orphan in_transit → chỉ ghi kết cục, không đổi tồn/tiền')
-    : bad('đóng hãng-huỷ orphan làm sai tồn/tiền', JSON.stringify({ r, disconnectShipment, cancelledOrphan, stockBeforeCarrierCancel, stockAfterCarrierCancel, paymentBeforeCarrierCancel, paymentAfterCarrierCancel }));
+    : bad('đóng hãng-huỷ orphan làm sai tồn/payment_status/paid_at/ledger', JSON.stringify({ r, disconnectShipment, cancelledOrphan, stockBeforeCarrierCancel, stockAfterCarrierCancel, moneyBeforeCarrierCancel, moneyAfterCarrierCancel }));
 
   // ── 9. CLAIM CHẾT không được khoá vĩnh viễn quyền sửa đơn ───────────────────
   sect('9. Claim chết (timeout) không khoá vĩnh viễn quyền SỬA ĐƠN');

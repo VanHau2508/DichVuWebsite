@@ -97,8 +97,15 @@ test('orphan có đường đóng riêng cho claim và kiện đã trừ tồn',
   assert.doesNotMatch(pages,
     /moCoiDangGiao[\s\S]{0,2500}<input name="tracking_number"/,
     'orphan in_transit không được hiện ô nhập mã tay');
-  assert.doesNotMatch(pages,
-    /\['claim_expired', 'reconciled_cancel', 'orphan'\]/,
+});
+
+test('ô Việc cần xử lý không loại orphan cùng marker đã đóng', () => {
+  const start = pages.indexOf('const carrierShipmentIssues');
+  const end = pages.indexOf('if (openCases)', start);
+  assert.ok(start >= 0 && end > start, 'mốc chết: không tìm thấy phép đếm vận đơn ở chi tiết đơn');
+  const issueCount = pages.slice(start, end);
+  assert.match(issueCount, /\['claim_expired', 'reconciled_cancel'\]\.includes\(s\.provider_status\)/);
+  assert.doesNotMatch(issueCount, /\['claim_expired', 'reconciled_cancel', 'orphan'\]/,
     'orphan không được quay lại danh sách loại trừ của ô Việc cần xử lý');
 });
 

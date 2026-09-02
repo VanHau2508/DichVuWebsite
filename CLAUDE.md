@@ -580,8 +580,8 @@ cục Đã giao / Hoàn về / Hãng đã huỷ, **không có ô nhập mã tay*
 
 Năm bề mặt cũ đã cùng nhặt orphan: Tổng quan, `attention=shipment`, badge từng dòng, chi tiết
 đơn và chốt tạo vận đơn. Fixture E2E dựng orphan bằng PUT/DELETE shipping thật, không UPDATE
-tay. Đã đo trên DB trắng: toàn manifest unit **329/329**, shipping **117/117**; đột biến gọi
-`consumeAndShip` lần hai, tự đặt `paid`, bỏ blocker/tập Tổng quan/bề mặt chi tiết, hạ quyền
+tay. Đã đo trên DB trắng: toàn manifest unit **330/330**, shipping **118/118**; đột biến gọi
+`consumeAndShip` lần hai, ghi thẳng `payment_status='paid'` + `paid_at` ở cả hai đường đóng orphan, bỏ blocker/tập Tổng quan/bề mặt chi tiết, hạ quyền
 `payments/manual` hoặc bỏ step-up đều đỏ đúng chỗ. Probe Chromium 360px cho cả interstitial
 và chi tiết orphan `in_transit` đều 0 tràn; chi tiết xác nhận 0 ô nhập tracking.
 

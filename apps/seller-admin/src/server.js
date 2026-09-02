@@ -990,14 +990,22 @@ async function codRemittanceStepUp(req, res, me, cookie, shopId) {
   return doCodRemittance(req, res, { ...me, stepped_up_at: new Date().toISOString() }, cookie, shopId, body);
 }
 
-// Phục hồi vận đơn finalize_failed (đã tạo trên hãng nhưng chốt hỏng).
+// Phục hồi claim chưa chốt hoặc đóng dấu orphan in_transit sau khi đã xử lý trên portal.
 async function carrierReconcile(req, res, me, cookie, shopId, oid) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = await readForm(req);
   // tracking_number CHUYỂN TIẾP xuống seller: ca 'ambiguous' không có mã trong DB, shop
   // đọc trên trang hãng rồi gõ vào. Nuốt trường này ở đây thì nút "Đã tạo trên hãng" luôn
   // báo lỗi thiếu mã, và ca đó chỉ còn lối huỷ — tức bỏ rơi một vận đơn có thật.
-  const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/carrier-reconcile`, { cookie, body: { action: f.action === 'cancel' ? 'cancel' : 'shipped', tracking_number: String(f.tracking_number ?? '').trim() } });
+  const action = f.action === 'cancel' ? 'cancel' : f.action === 'carrier_cancelled' ? 'carrier_cancelled' : 'shipped';
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/${oid}/carrier-reconcile`, {
+    cookie,
+    body: {
+      action,
+      shipment_id: String(f.shipment_id ?? '').trim(),
+      tracking_number: String(f.tracking_number ?? '').trim(),
+    },
+  });
   if (r.status === 200) return redirect(res, `/shops/${shopId}/orders/${oid}`);
   return orderDetail(res, me, cookie, shopId, oid, r.json?.error ?? 'Không phục hồi được vận đơn.');
 }
@@ -1023,8 +1031,10 @@ async function notifyUnlink(res, me, cookie, shopId) {
 
 // ── Vận chuyển: trang kết nối hãng (shop.write + step-up ở seller) ────────────
 function shippingForm(f) {
+  const confirmed = String(f.confirm_live_shipments ?? '').trim();
   return {
     __op: f.__op === 'disconnect' ? 'disconnect' : 'connect',
+    confirm_live_shipments: /^\d+$/.test(confirmed) ? confirmed : '',
     provider: f.provider === 'ghn' ? 'ghn' : 'ghtk',
     token: String(f.token ?? ''),
     ghn_shop_id: String(f.ghn_shop_id ?? '').replace(/\D/g, '').slice(0, 20),
@@ -1055,16 +1065,27 @@ async function doShippingOp(res, me, cookie, shopId, form) {
   // đây thì lời cảnh báo chết ở tầng BFF: shop thấy "Đã kết nối GHN." và tin rằng mọi thứ
   // vẫn tự chạy, trong khi hàng chục kiện GHTK vừa thành mồ côi.
   const keo = (r, base) => shippingPage(res, me, cookie, shopId, r.json?.warning ? `${base} ⚠ ${r.json.warning}` : base, null);
+  const xacNhan = async (r) => {
+    if (r.status !== 409 || r.json?.error_code !== 'shipping_live_shipments_confirmation_required') return false;
+    const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'shipping');
+    sendHtml(res, 200, V.renderShippingLiveConfirm(ctx, shopId, form, r.json.live_shipments));
+    return true;
+  };
   if (form.__op === 'disconnect') {
-    const r = await sellerApi('DELETE', `/shops/${shopId}/shipping`, { cookie });
+    const confirmQuery = form.confirm_live_shipments
+      ? `?confirm_live_shipments=${encodeURIComponent(form.confirm_live_shipments)}` : '';
+    const r = await sellerApi('DELETE', `/shops/${shopId}/shipping${confirmQuery}`, { cookie });
+    if (await xacNhan(r)) return undefined;
     return r.status === 200 ? keo(r, 'Đã ngắt kết nối hãng vận chuyển.')
       : shippingPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không ngắt được kết nối.');
   }
   const body = {
     provider: form.provider, token: form.token, ghn_shop_id: form.ghn_shop_id,
+    confirm_live_shipments: form.confirm_live_shipments,
     pickup: { name: form.pick_name, phone: form.pick_phone, address: form.pick_address, province: form.pick_province, district: form.pick_district, ward: form.pick_ward },
   };
   const r = await sellerApi('PUT', `/shops/${shopId}/shipping`, { cookie, body });
+  if (await xacNhan(r)) return undefined;
   return r.status === 200 ? keo(r, `Đã kết nối ${form.provider.toUpperCase()}.`)
     : shippingPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không kết nối được.');
 }

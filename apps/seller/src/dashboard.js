@@ -131,15 +131,15 @@ async function stats(res, ctx) {
         JOIN inventory_levels il ON il.variant_id = v.id
        WHERE ${AVAIL_SQL} <= coalesce((SELECT low_stock_threshold FROM shops WHERE id = current_shop_id()), 5)
        ORDER BY available ASC LIMIT 10`)).rows, []);
-    // Hai trạng thái này đều chặn tạo vận đơn mới để tránh hãng thu COD hai lần. Đưa tối đa
-    // 10 ca mới nhất lên Tổng quan; thao tác phục hồi thật vẫn nằm trong chi tiết từng đơn.
+    // Claim chưa chốt và vận đơn mồ côi đều chặn tạo mới để tránh hãng thu COD hai lần.
+    // Orphan in_transit khác claim: tồn đã trừ, chỉ còn chốt kết cục thật sau khi xem portal.
     const shipmentAttention = await optional('shipment_attention', async () => (await c.query(`
       SELECT s.id AS shipment_id, s.order_id, o.order_number, s.provider,
-             s.provider_status, s.tracking_number, s.created_at
+             s.status AS shipment_status, s.provider_status, s.tracking_number, s.created_at
         FROM shipments s
         JOIN orders o ON o.shop_id = s.shop_id AND o.id = s.order_id
-       WHERE s.status = 'created'
-         AND s.provider_status IN ('ambiguous','finalize_failed')
+       WHERE ((s.status = 'created' AND s.provider_status IN ('ambiguous','finalize_failed','orphan'))
+          OR (s.status = 'in_transit' AND s.provider_status = 'orphan'))
          AND NOT o.is_migrated
        ORDER BY s.created_at DESC, s.id DESC
        LIMIT 10`)).rows, []);
@@ -166,10 +166,10 @@ async function stats(res, ctx) {
         (SELECT count(*)::int FROM notification_deliveries WHERE status = 'failed') AS notification_failures,
         (SELECT count(*)::int FROM order_requests WHERE status = 'requested') AS order_requests_pending,
         (SELECT count(*)::int
-           FROM shipments s
+          FROM shipments s
            JOIN orders o ON o.shop_id = s.shop_id AND o.id = s.order_id
-          WHERE s.status = 'created'
-            AND s.provider_status IN ('ambiguous','finalize_failed')
+          WHERE ((s.status = 'created' AND s.provider_status IN ('ambiguous','finalize_failed','orphan'))
+             OR (s.status = 'in_transit' AND s.provider_status = 'orphan'))
             AND NOT o.is_migrated
         ) AS shipment_attention`)).rows[0], null);
     const sync = await optional('sync', async () => {
@@ -248,6 +248,7 @@ async function stats(res, ctx) {
       order_id: s.order_id,
       order_number: s.order_number,
       provider: s.provider,
+      shipment_status: s.shipment_status,
       provider_status: s.provider_status,
       tracking_number: s.tracking_number,
       created_at: s.created_at,

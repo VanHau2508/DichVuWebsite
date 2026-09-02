@@ -500,7 +500,7 @@ một lát cắt riêng, không phải phần đuôi của lát cắt này.
 report MẬT, thì đó là một **quyết định sản phẩm mới**: phải đo lại toàn bộ dashboard, không tự
 thay trong một lát cắt khác.
 
-### 9.3b Lát cắt 4 và Trung tâm vận hành đã đóng; việc kế tiếp chưa chọn
+### 9.3b Lát cắt 4 và Trung tâm vận hành đã đóng; brief C đang chờ review
 
 Đợt đo 2 của `đa kiện/ca xử lý` ra ba nhánh việc, cố ý tách để không đụng `pages.js` cùng lúc:
 
@@ -508,9 +508,10 @@ thay trong một lát cắt khác.
 |---|---|---|
 | **A** | bằng chứng hoàn tiền + chốt ca, `app_resolution`, hàm SECURITY DEFINER hẹp (`docs/78`) | **đã merge** `b7088ab` |
 | **B** | bảng quản trị card-hoá ở server (`docs/77`) | **đã merge** `db9eeae` |
-| **C** | bản đồ phục hồi vận đơn | đã khoá phần nền namespace; ba quyết định bề mặt vẫn chờ chủ dự án |
+| **C** | bản đồ phục hồi vận đơn | phần nền đã merge; phần bề mặt đã thi công trên `codex/orphan-shipment-recovery`, chờ review |
 
-Lát cắt 4 coi như đóng ở phần A+B. C chưa khoá, và **không mặc nhiên là việc kế tiếp**.
+Lát cắt 4 coi như đóng ở phần A+B. Chủ dự án đã chọn làm tiếp C sau khi khoá ba quyết định
+bề mặt; nhánh thi công chưa vào `main`.
 
 Lát cắt **checkout mobile đã ĐÓNG** trên `main` tại `0788eaa`: nút GPS được gác ở SSR khi
 tắt JavaScript, script chỉ mở lại khi trình duyệt có geolocation, và kiểm chứng giữ nguyên
@@ -565,15 +566,32 @@ advisory mức **moderate** xuất hiện ngày 01/09 (`decode-uri-component` �
 chạm `checkout`/`seller`/`worker`; ngưỡng `--audit-level=high` của `security-scan.sh` không chặn,
 bản vá lại đòi hạ `minio` xuống `7.0.26` — thay đổi phá vỡ, đừng vá vội.
 
-**Phần bề mặt của brief C vẫn nguyên, và nó có số tiền.** Đo trên `main`: năm bề mặt phục hồi
-(thẻ Tổng quan, `attention=shipment`, form chi tiết đơn, chốt chặn tạo vận đơn, truy vấn
-reconcile) đều lọc đúng `('ambiguous','finalize_failed')`, nên hai marker khác **không bề mặt nào
-nhặt** — `orphan` (11 vận đơn còn `in_transit`, đơn `shipped`/`unpaid`, tổng **5.830.000₫** COD,
-lại còn bị loại tường minh khỏi ô đếm ở `pages.js:3641`) và `cod_mismatch` (0 dòng hôm nay, tức
-chưa ai gặp — không phải đã an toàn). Ba câu chờ chủ dự án quyết, cả ba đều có hơn một đáp án
-đúng nên không được gõ trước: đổi/ngắt hãng khi còn vận đơn sống thì **chặn hay cho kèm dấu vết**
-· `orphan` là việc mức **chặn hay theo dõi** · **thao tác đóng một `orphan` là gì**, nhất là đóng
-sổ tiền COD bằng đường nào.
+**Phần bề mặt brief C đã thi công, đang chờ review chéo.** Chủ dự án chốt `orphan` là việc mức
+**chặn** và chốt đổi/ngắt hãng bằng **interstitial SSR/no-JS**: lượt đầu chỉ hiện đúng số vận
+đơn sẽ mất theo dõi, lượt hai gửi lại chính con số đó; seller khoá cấu hình và chỉ ghi khi số
+vẫn bằng tập hiện tại. Không dùng ô xác nhận mù, không phụ thuộc JavaScript.
+
+Hai hình dạng orphan đi hai đường khác nhau để không trừ tồn hai lần. `created` vẫn là claim
+chưa chốt: chặn tạo vận đơn thứ hai, cho nhập mã **đọc từ portal hãng** nếu hãng đã tạo, rồi
+đi qua `consumeAndShip` đúng một lần. `in_transit` đã trừ tồn: chi tiết đơn chỉ cho chốt kết
+cục Đã giao / Hoàn về / Hãng đã huỷ, **không có ô nhập mã tay** và không gọi
+`consumeAndShip`. Mọi đường đóng giữ nguyên tiền; COD chỉ được ghi qua `payments/manual` có
+`payment.write` + step-up như trước.
+
+Năm bề mặt cũ đã cùng nhặt orphan: Tổng quan, `attention=shipment`, badge từng dòng, chi tiết
+đơn và chốt tạo vận đơn. Fixture E2E dựng orphan bằng PUT/DELETE shipping thật, không UPDATE
+tay. Đã đo trên DB trắng: toàn manifest unit **329/329**, shipping **117/117**; đột biến gọi
+`consumeAndShip` lần hai, tự đặt `paid`, bỏ blocker/tập Tổng quan/bề mặt chi tiết, hạ quyền
+`payments/manual` hoặc bỏ step-up đều đỏ đúng chỗ. Probe Chromium 360px cho cả interstitial
+và chi tiết orphan `in_transit` đều 0 tràn; chi tiết xác nhận 0 ô nhập tracking.
+
+Cổng đầy đủ trên nhánh: **107/107 E2E**, không log sót; bất biến DB **147/147**; migration
+DB trắng **182**, 0 DRIFT, 0 pending; smoke **8 · 27 · 32**. `security-scan` vẫn báo đúng ba
+instance của advisory moderate `decode-uri-component` đã ghi ngay phía trên; audit JSON chạy
+riêng cho checkout/seller/worker đều exit 0 với **0 high · 0 critical**.
+
+`cod_mismatch` vẫn là nợ bề mặt riêng: lượt đo trước có 0 dòng, nghĩa là chưa gặp chứ không
+phải đã an toàn. Brief này không mở rộng sang nó vì đường xử lý COD lệch cần quyết định riêng.
 
 Song song: **trang chủ nền tảng đã dựng lại toàn bộ** (`apps/storefront/src/landing.js`)
 theo yêu cầu của chủ dự án. Hệ thiết kế mới (xanh cobalt, hero nền tối), bố cục mới, và

@@ -119,8 +119,11 @@ const ORDER_ATTENTION_SQL = Object.freeze({
   ))`,
   shipment: `EXISTS (
     SELECT 1 FROM shipments s
-     WHERE s.shop_id = o.shop_id AND s.order_id = o.id AND s.status = 'created'
-       AND s.provider_status IN ('ambiguous', 'finalize_failed')
+     WHERE s.shop_id = o.shop_id AND s.order_id = o.id
+       AND (
+         (s.status = 'created' AND s.provider_status IN ('ambiguous', 'finalize_failed', 'orphan'))
+         OR (s.status = 'in_transit' AND s.provider_status = 'orphan')
+       )
   )`,
   resolution: `EXISTS (
     SELECT 1 FROM order_resolution_cases rc
@@ -288,6 +291,15 @@ async function listOrders(res, ctx, _b, _p, query) {
               ${ORDER_ATTENTION_SQL.payment} AS attention_payment,
               ${ORDER_ATTENTION_SQL.notification} AS attention_notification,
               ${ORDER_ATTENTION_SQL.request} AS attention_request,
+              (SELECT CASE WHEN s.provider_status = 'orphan' THEN 'orphan' ELSE 'reconcile' END
+                 FROM shipments s
+                WHERE s.shop_id = o.shop_id AND s.order_id = o.id
+                  AND (
+                    (s.status = 'created' AND s.provider_status IN ('ambiguous', 'finalize_failed', 'orphan'))
+                    OR (s.status = 'in_transit' AND s.provider_status = 'orphan')
+                  )
+                ORDER BY (s.provider_status = 'orphan') DESC, s.created_at
+                LIMIT 1) AS shipment_attention_kind,
               (SELECT count(DISTINCT o2.customer_phone)::int FROM orders o2
                  WHERE o2.shop_id = current_shop_id() AND o2.client_ip_hash = o.client_ip_hash
                    AND o2.client_ip_hash IS NOT NULL AND o2.status = 'pending') AS same_ip_phones
@@ -610,6 +622,15 @@ function makeTransition(from, to, tsCol, action, guard = null, eventType = actio
       }
       if (guard) { const g = await guard(o); if (g) return { code: 4092, msg: g }; }
       await c.query(`UPDATE orders SET status = $1${tsCol ? `, ${tsCol} = now()` : ''} WHERE id = $2`, [to, orderId]);
+      if (to === 'delivered') {
+        // Orphan in_transit đã trừ tồn từ lúc tạo vận đơn. Đường Đã giao xong chỉ đóng dấu
+        // kết cục, tuyệt đối không đi qua consumeAndShip lần nữa.
+        await c.query(
+          `UPDATE shipments SET status = 'delivered', provider_status = 'reconciled', synced_at = now()
+            WHERE order_id = $1 AND status = 'in_transit' AND provider_status = 'orphan'`,
+          [orderId],
+        );
+      }
       o.status = to;
       await audit(c, action, { actorId: ctx.user.id, ip: ctx.ip, metadata: { orderId, to } });
       await orderEvent(c, orderId, eventType, ctx, { to });
@@ -850,6 +871,13 @@ async function markReturnedBomb(res, ctx, body, params) {
       }
     }
     await c.query(`UPDATE orders SET status = 'returned', returned_at = now() WHERE id = $1`, [orderId]);
+    // Cùng nguyên tắc với deliver: kiện orphan in_transit đã consume tồn. Hoàn-về chỉ đổi
+    // kết cục shipment; phần nhập kho hợp lệ đã được xử đúng một lần ở vòng trên.
+    await c.query(
+      `UPDATE shipments SET status = 'returned', provider_status = 'reconciled', synced_at = now()
+        WHERE order_id = $1 AND status = 'in_transit' AND provider_status = 'orphan'`,
+      [orderId],
+    );
     if (o.coupon_code && o.payment_status !== 'paid') {
       await c.query(`UPDATE coupons SET used_count = GREATEST(used_count - 1, 0) WHERE shop_id = current_shop_id() AND upper(code) = upper($1)`, [o.coupon_code]);
     }

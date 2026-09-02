@@ -29,6 +29,19 @@ const KEY_OK = /^[0-9a-f]{64}$/i.test(ENC_KEY); // thiếu/sai khoá → tính n
 const PROVIDERS = { ghn: 'GHN (Giao Hàng Nhanh)', ghtk: 'GHTK (Giao Hàng Tiết Kiệm)' };
 
 const trimStr = (x, max) => String(x ?? '').trim().slice(0, max);
+const confirmedLiveShipmentCount = (body) => {
+  const raw = body?.confirm_live_shipments;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const count = Number(raw);
+  return Number.isInteger(count) && count >= 0 ? count : null;
+};
+
+const confirmationRequired = (liveShipments) => ({
+  code: 409,
+  error_code: 'shipping_live_shipments_confirmation_required',
+  error: `${liveShipments} vận đơn đang chạy sẽ mất theo dõi tự động. Xác nhận lại để tiếp tục.`,
+  live_shipments: liveShipments,
+});
 
 // ── Cấu hình kết nối ──────────────────────────────────────────────────────────
 async function getShipping(res, ctx) {
@@ -69,13 +82,21 @@ async function connectShipping(res, ctx, body) {
     // tương ứng — nên vận đơn cũ chết ÂM THẦM: worker im lặng bỏ qua (0044 join theo
     // provider), đơn COD nằm 'shipped'/'unpaid' mãi, mà trang Vận chuyển vẫn hứa
     // "hệ thống tự theo dõi trạng thái tới khi giao xong".
-    const cu = (await c.query(`SELECT provider FROM shop_shipping_config WHERE shop_id = current_shop_id()`, [])).rows[0];
+    // Khoá cấu hình đối nghịch với FOR SHARE ở createCarrierShipment: sau khi đếm để hỏi
+    // lại, không có claim mới nào chen vào giữa lượt xác nhận và lệnh đánh dấu orphan.
+    const cu = (await c.query(`SELECT provider FROM shop_shipping_config WHERE shop_id = current_shop_id() FOR UPDATE`, [])).rows[0];
     const doiHang = cu?.provider && cu.provider !== provider;
     let mocCoi = 0;
     if (doiHang) {
+      const live = Number((await c.query(
+        `SELECT count(*)::int AS n FROM shipments
+          WHERE status IN ('created','in_transit') AND provider = $1
+            AND provider_status IS DISTINCT FROM 'orphan'`, [cu.provider])).rows[0].n);
+      if (live > 0 && confirmedLiveShipmentCount(body) !== live) return confirmationRequired(live);
       mocCoi = (await c.query(
         `UPDATE shipments SET provider_status = 'orphan'
-          WHERE status IN ('created','in_transit') AND provider = $1 RETURNING id`, [cu.provider])).rowCount;
+          WHERE status IN ('created','in_transit') AND provider = $1
+            AND provider_status IS DISTINCT FROM 'orphan' RETURNING id`, [cu.provider])).rowCount;
     }
     await c.query(
       `INSERT INTO shop_shipping_config (shop_id, provider, token_enc, token_prefix, ghn_shop_id, pickup, enabled, updated_at)
@@ -85,6 +106,9 @@ async function connectShipping(res, ctx, body) {
     );
     await audit(c, 'shipping.connected', { actorId: ctx.user.id, ip: ctx.ip, metadata: { provider, ...(doiHang ? { tu_hang: cu.provider, van_don_mo_coi: mocCoi } : {}) } });
     return { doiHang, mocCoi, hangCu: cu?.provider ?? null };
+  });
+  if (out.code === 409) return send(res, 409, {
+    error_code: out.error_code, error: out.error, live_shipments: out.live_shipments,
   });
   return send(res, 200, {
     ok: true, provider, token_prefix: prefix, live_shipments: out.mocCoi,
@@ -114,19 +138,31 @@ async function testShipping(res, ctx) {
   }
 }
 
-async function disconnectShipping(res, ctx) {
-  // Ngắt luôn thành công (xoá credential không được chặn), nhưng vận đơn ĐANG CHẠY sẽ
-  // mất theo dõi tự động → đánh dấu orphan + trả cảnh báo để shop tự đánh dấu giao tay.
-  const live = await withTenant(ctx.shopId, async (c) => {
+async function disconnectShipping(res, ctx, body) {
+  // Ngắt không bị khoá vĩnh viễn: nếu còn vận đơn sống thì hỏi lại bằng đúng số hiện tại,
+  // sau xác nhận mới xoá credential và chuyển chúng thành orphan để shop chốt thủ công.
+  const out = await withTenant(ctx.shopId, async (c) => {
+    // Đồng bộ với FOR SHARE ở đường tạo vận đơn để con số trên interstitial là tập chính
+    // xác nhận sẽ tác động, không phải ảnh chụp có thể nở thêm trước lệnh UPDATE.
+    await c.query(`SELECT provider FROM shop_shipping_config WHERE shop_id = current_shop_id() FOR UPDATE`);
+    const live = Number((await c.query(
+      `SELECT count(*)::int AS n FROM shipments
+        WHERE status IN ('created','in_transit') AND provider IS NOT NULL
+          AND provider_status IS DISTINCT FROM 'orphan'`)).rows[0].n);
+    if (live > 0 && confirmedLiveShipmentCount(body) !== live) return confirmationRequired(live);
     const n = (await c.query(`UPDATE shipments SET provider_status = 'orphan'
-       WHERE status IN ('created','in_transit') AND provider IS NOT NULL RETURNING id`)).rowCount;
+       WHERE status IN ('created','in_transit') AND provider IS NOT NULL
+         AND provider_status IS DISTINCT FROM 'orphan' RETURNING id`)).rowCount;
     await c.query(`DELETE FROM shop_shipping_config WHERE shop_id = current_shop_id()`);
     await audit(c, 'shipping.disconnected', { actorId: ctx.user.id, ip: ctx.ip, metadata: { live_shipments: n } });
-    return n;
+    return { code: 200, live: n };
+  });
+  if (out.code === 409) return send(res, 409, {
+    error_code: out.error_code, error: out.error, live_shipments: out.live_shipments,
   });
   return send(res, 200, {
-    ok: true, live_shipments: live,
-    ...(live ? { warning: `${live} vận đơn đang chạy sẽ không còn được theo dõi tự động — hãy tự đánh dấu "Đã giao xong" khi hàng tới.` } : {}),
+    ok: true, live_shipments: out.live,
+    ...(out.live ? { warning: `${out.live} vận đơn đang chạy sẽ không còn được theo dõi tự động — hãy tự đánh dấu "Đã giao xong" khi hàng tới.` } : {}),
   });
 }
 
@@ -159,15 +195,18 @@ async function createCarrierShipment(res, ctx, body, params) {
       action: 'Mở ca giao hàng trên chi tiết đơn, nhận hàng hoàn và chốt cách xử lý trước.',
       case_id: activeCase.id,
     };
-    const cfg = (await c.query(`SELECT provider, token_enc, ghn_shop_id, pickup, enabled FROM shop_shipping_config WHERE shop_id = current_shop_id()`)).rows[0];
+    const cfg = (await c.query(`SELECT provider, token_enc, ghn_shop_id, pickup, enabled FROM shop_shipping_config WHERE shop_id = current_shop_id() FOR SHARE`)).rows[0];
     if (!cfg?.enabled) return { code: 400, error: 'shop chưa kết nối hãng vận chuyển' };
     // SPLIT (0080): tạo vận đơn hãng cho đơn 'confirmed' HOẶC 'shipped'+còn hàng (gửi tiếp
     // phần chưa gửi bằng hãng). Carrier v1 gửi TRỌN phần CÒN LẠI (không tách tuỳ ý qua hãng).
     if (!['confirmed', 'shipped'].includes(o.status)) return { code: 409, error: `không thể tạo vận đơn từ trạng thái ${o.status} (cần xác nhận đơn trước)` };
-    // Claim 'created' đang KẸT (finalize_failed) → hướng dẫn đối soát vận đơn (không tạo mới đè).
-    const stuck = (await c.query(`SELECT tracking_number, provider_status FROM shipments WHERE order_id = $1 AND status = 'created' AND provider_status IN ('finalize_failed','ambiguous') LIMIT 1`, [orderId])).rows[0];
+    // Claim 'created' đang KẸT hoặc đã mất credential → hướng dẫn đối soát vận đơn, không
+    // tạo mới đè. Orphan created vẫn có thể là một vận đơn thật đang cài thu hộ COD.
+    const stuck = (await c.query(`SELECT tracking_number, provider_status FROM shipments WHERE order_id = $1 AND status = 'created' AND provider_status IN ('finalize_failed','ambiguous','orphan') LIMIT 1`, [orderId])).rows[0];
     if (stuck) {
-      return { code: 409, error: stuck.provider_status === 'ambiguous'
+      return { code: 409, error: stuck.provider_status === 'orphan'
+        ? 'lần tạo trước đã mất kết nối với hãng — kiểm tra trên portal hãng rồi phục hồi claim này; tạo mới ngay có thể sinh vận đơn thứ hai và thu hộ COD hai lần'
+        : stuck.provider_status === 'ambiguous'
         ? 'lần tạo trước KHÔNG RÕ hãng đã nhận lệnh chưa — kiểm tra trên trang hãng rồi xác nhận ở phần "Đối soát vận đơn" của đơn này; tạo mới ngay có thể sinh vận đơn thứ hai (thu hộ COD hai lần)'
         : `vận đơn ${stuck.tracking_number} ĐÃ tạo trên hãng nhưng chưa chốt được — kiểm tra portal hãng / đối soát vận đơn trước khi thử lại` };
     }
@@ -272,21 +311,42 @@ async function createCarrierShipment(res, ctx, body, params) {
   });
 }
 
-// PHỤC HỒI vận đơn 'finalize_failed' (hãng ĐÃ tạo nhưng tx chốt hỏng → đơn kẹt 'confirmed',
-// tồn chưa trừ). Shop chọn: 'shipped' (xác nhận vận đơn thật trên portal → trừ tồn + giao) hoặc
-// 'cancel' (đã huỷ vận đơn trên portal hãng → bỏ dòng, đặt lại được).
+// PHỤC HỒI claim created (finalize_failed/ambiguous/orphan) hoặc đóng dấu orphan in_transit.
+// Chỉ nhánh created được phép consume tồn; in_transit đã consume từ trước nên chỉ ghi kết cục.
 async function reconcileShipment(res, ctx, body, params) {
   const orderId = params[1];
-  const action = body.action === 'cancel' ? 'cancel' : 'shipped';
+  const action = body.action === 'cancel' ? 'cancel'
+    : body.action === 'carrier_cancelled' ? 'carrier_cancelled' : 'shipped';
+  const shipmentId = String(body.shipment_id ?? '').trim();
   // Mã vận đơn shop đọc được TRÊN TRANG HÃNG. Chỉ dùng cho claim 'ambiguous' — ở đó ta chưa
   // bao giờ nhận được phản hồi của hãng nên trong DB không có mã. Không có đường nhập tay này
   // thì ca "hãng ĐÃ tạo mà ta không biết" chỉ còn lối huỷ, tức bỏ rơi một vận đơn thật.
   const maNhapTay = String(body.tracking_number ?? '').trim().slice(0, 64);
   const out = await withTenant(ctx.shopId, async (c) => {
     const sh = (await c.query(
-      `SELECT id, tracking_number, provider, provider_status FROM shipments
-        WHERE order_id = $1 AND provider_status IN ('finalize_failed','ambiguous') AND status = 'created' FOR UPDATE`, [orderId])).rows[0];
+      `SELECT id, status, tracking_number, provider, provider_status FROM shipments
+        WHERE order_id = $1
+          AND provider_status IN ('finalize_failed','ambiguous','orphan')
+          AND status IN ('created','in_transit')
+          AND ($2 = '' OR id::text = $2)
+        ORDER BY (provider_status = 'orphan') DESC, created_at
+        LIMIT 1 FOR UPDATE`, [orderId, shipmentId])).rows[0];
     if (!sh) return { code: 404 };
+    if (sh.status === 'in_transit') {
+      if (sh.provider_status !== 'orphan') return { code: 404 };
+      if (action !== 'carrier_cancelled') {
+        return { code: 409, error: 'vận đơn đã trừ tồn và đang giao — dùng thao tác Đã giao xong hoặc Hoàn về của đơn; không được chốt lại qua đường claim' };
+      }
+      await c.query(
+        `UPDATE shipments SET status = 'cancelled', provider_status = 'reconciled_cancel', synced_at = now() WHERE id = $1`,
+        [sh.id],
+      );
+      await audit(c, 'shipping.reconcile_cancel', {
+        actorId: ctx.user.id, ip: ctx.ip,
+        metadata: { orderId, shipmentId: sh.id, tracking: sh.tracking_number, orphan_in_transit: true },
+      });
+      return { code: 200, action };
+    }
     const maThat = sh.tracking_number ?? maNhapTay;
     if (action === 'shipped' && !maThat) {
       return { code: 4090, error: 'cần nhập mã vận đơn đọc trên trang hãng để xác nhận (lần tạo trước không nhận được phản hồi nên hệ thống chưa có mã)' };
@@ -318,6 +378,6 @@ export const SHIPPING_ROUTES = [
   { m: 'GET', re: new RegExp(`^/shops/${UUID}/shipping/test$`), perm: 'orders.read', fn: (res, ctx) => testShipping(res, ctx) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/carrier-reconcile$`), perm: 'orders.write', fn: (res, ctx, b, p) => reconcileShipment(res, ctx, b, p) },
   { m: 'PUT', re: new RegExp(`^/shops/${UUID}/shipping$`), perm: 'shop.write', stepUp: true, fn: (res, ctx, b) => connectShipping(res, ctx, b) },
-  { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/shipping$`), perm: 'shop.write', stepUp: true, fn: (res, ctx) => disconnectShipping(res, ctx) },
+  { m: 'DELETE', re: new RegExp(`^/shops/${UUID}/shipping$`), perm: 'shop.write', stepUp: true, fn: (res, ctx, _b, _p, q) => disconnectShipping(res, ctx, { confirm_live_shipments: q.get('confirm_live_shipments') }) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/orders/${UUID}/carrier-shipment$`), perm: 'orders.write', fn: (res, ctx, b, p) => createCarrierShipment(res, ctx, b, p) },
 ];

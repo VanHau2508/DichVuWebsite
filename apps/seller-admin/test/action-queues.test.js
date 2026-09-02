@@ -7,6 +7,7 @@ const pages = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'pages
 const operationsCenter = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'operations-center.js'), 'utf8');
 const server = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'server.js'), 'utf8');
 const dashboard = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'seller', 'src', 'dashboard.js'), 'utf8');
+const shipping = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'seller', 'src', 'shipping.js'), 'utf8');
 const { withOptionalDashboardGroup } = await import('../../seller/src/dashboard-contract.js');
 const { shipmentAttentionPresentation } = await import('../src/operations-center.js');
 
@@ -65,16 +66,56 @@ test('dashboard không nuốt lỗi tải readiness', () => {
 
 test('dashboard đưa vận đơn chưa chốt vào hàng đợi có hành động thật', () => {
   assert.match(dashboard, /s\.status = 'created'/);
-  assert.match(dashboard, /s\.provider_status IN \('ambiguous','finalize_failed'\)/);
+  assert.match(dashboard, /s\.status = 'created'.*s\.provider_status IN \('ambiguous','finalize_failed','orphan'\)/s);
+  assert.match(dashboard, /s\.status = 'in_transit'.*s\.provider_status = 'orphan'/s);
   assert.match(dashboard, /AND NOT o\.is_migrated/);
   assert.match(dashboard, /AS shipment_attention/);
   assert.match(dashboard, /shipment_attention: out\.shipmentAttention\.map/);
+  assert.match(dashboard, /shipment_status: s\.shipment_status/,
+    'trạng thái created\/in_transit phải đi qua response để Tổng quan nói đúng loại orphan');
   assert.match(dashboard, /shipment_attention: out\.todo \? n\(out\.todo\.shipment_attention\) : null/);
   assert.match(pages, /label: \(\) => 'Vận đơn cần xử lý'.*overview#shipment-attention/s);
   assert.match(pages, /id="shipment-attention"/);
   assert.match(pages, /orders\/\$\{esc\(item\.order_id\)\}\?timeline=shipment/);
   assert.match(pages, /Chưa rõ hãng đã tạo hay chưa/);
   assert.match(pages, /Hãng đã tạo nhưng hệ thống chưa chốt đơn/);
+  assert.match(pages, /Nền tảng không còn theo dõi được vận đơn đang giao/);
+  assert.match(pages, /Kết nối hãng đã đổi trước khi chốt vận đơn/);
+});
+
+test('orphan có đường đóng riêng cho claim và kiện đã trừ tồn', () => {
+  assert.match(shipping, /provider_status IN \('finalize_failed','ambiguous','orphan'\)/,
+    'claim orphan created phải chặn tạo vận đơn thứ hai');
+  assert.match(shipping, /sh\.status === 'in_transit'[\s\S]*action !== 'carrier_cancelled'/,
+    'orphan in_transit chỉ được ghi kết cục, không đi vào nhánh claim');
+  const inTransit = shipping.slice(shipping.indexOf("if (sh.status === 'in_transit')"), shipping.indexOf('const maThat', shipping.indexOf("if (sh.status === 'in_transit')")));
+  assert.ok(inTransit, 'không tìm thấy nhánh orphan in_transit — mốc chết');
+  assert.doesNotMatch(inTransit, /consumeAndShip/,
+    'orphan in_transit đã trừ tồn, không được consume lần hai');
+  assert.match(pages, /Không có ô nhập mã vận đơn ở ca này/);
+  assert.match(pages, /name="action" value="carrier_cancelled"/);
+  assert.doesNotMatch(pages,
+    /moCoiDangGiao[\s\S]{0,2500}<input name="tracking_number"/,
+    'orphan in_transit không được hiện ô nhập mã tay');
+  assert.doesNotMatch(pages,
+    /\['claim_expired', 'reconciled_cancel', 'orphan'\]/,
+    'orphan không được quay lại danh sách loại trừ của ô Việc cần xử lý');
+});
+
+test('đổi hoặc ngắt hãng có interstitial SSR đếm đúng tập sẽ mất theo dõi', () => {
+  assert.match(shipping, /shipping_live_shipments_confirmation_required/);
+  assert.match(shipping, /confirmedLiveShipmentCount\(body\) !== live/,
+    'seller phải so số đã xác nhận với số hiện tại, không nhận một boolean mù');
+  assert.match(shipping, /q\.get\('confirm_live_shipments'\)/,
+    'DELETE không đọc body; số xác nhận ngắt hãng phải đi qua query nội bộ');
+  assert.match(shipping, /FOR UPDATE/);
+  assert.match(shipping, /FOR SHARE/);
+  assert.match(server, /renderShippingLiveConfirm\(ctx, shopId, form, r\.json\.live_shipments\)/);
+  assert.match(server, /\?confirm_live_shipments=\$\{encodeURIComponent\(form\.confirm_live_shipments\)\}/);
+  assert.match(pages, /export function renderShippingLiveConfirm/);
+  assert.match(pages, /method="POST" action="\$\{base\}"/);
+  assert.match(pages, /confirm_live_shipments: String\(count\)/);
+  assert.match(pages, /Hệ thống không tự đánh dấu đã thu COD/);
 });
 
 test('stats mở rộng theo hợp đồng trung tâm vận hành và không biến lỗi tùy chọn thành số 0', () => {

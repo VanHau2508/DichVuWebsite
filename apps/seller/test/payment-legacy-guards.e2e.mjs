@@ -1,5 +1,5 @@
 /**
- * E2E tập trung cho ba đường ghi tiền COD tương thích ngược.
+ * E2E tập trung cho đường ghi tiền thủ công v2 và ba URL COD tương thích ngược.
  *
  * Chạy trong dbtest:
  *   docker compose -f infra/compose.dev.yml exec -T dbtest \
@@ -222,7 +222,7 @@ async function main() {
 
   const orders = {};
   for (const label of [
-    'manager-mark', 'manager-bulk', 'manager-unmark',
+    'manager-manual', 'manager-mark', 'manager-bulk', 'manager-unmark',
     'owner-mark', 'owner-bulk', 'owner-unmark', 'owner-exact',
   ]) {
     orders[label] = await createOrder(shop.shopId, variantId, shop.cookie, label);
@@ -243,7 +243,16 @@ async function main() {
   });
   if (managerStepUp.status !== 200) throw new Error(`order_manager xác thực lại thất bại: ${managerStepUp.status} ${managerStepUp.raw}`);
 
-  section('Order manager không được dùng endpoint tiền legacy, kể cả sau khi xác thực lại');
+  section('Order manager không được dùng đường ghi tiền tay, kể cả sau khi xác thực lại');
+  await assertNoMoneyChange(
+    'order_manager POST payments/manual → 403',
+    shop.shopId,
+    orders['manager-manual'].id,
+    () => request(SELLER, 'POST', `/shops/${shop.shopId}/orders/${orders['manager-manual'].id}/payments/manual`, {
+      body: { amount_vnd: 1000, note: 'order_manager không được ghi sổ tiền' }, cookie: manager.cookie, origin: OS,
+    }),
+    (response) => response.status === 403,
+  );
   await assertNoMoneyChange(
     'order_manager POST mark-paid → 403',
     shop.shopId,

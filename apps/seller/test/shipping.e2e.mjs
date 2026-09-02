@@ -19,9 +19,11 @@ import { base32Decode } from '../../../packages/auth/src/base32.js';
 const AUTH = process.env.AUTH_URL ?? 'http://auth:3020';
 const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
 const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
+const ADMIN = process.env.ADMIN_URL ?? 'http://seller-admin:3001';
 const WORKER = process.env.WORKER_URL ?? 'http://worker:3080';
 const CO = new URL(process.env.CHECKOUT_URL ?? 'http://checkout:3060');
 const OA = 'https://auth.localtest', OO = 'https://ops.localtest', OS = 'https://seller.localtest';
+const OADM = process.env.ADMIN_ORIGIN ?? 'https://admin.localtest';
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL_OWNER, max: 4 });
 // Token lời mời KHÔNG còn trong API response (email hoá, 0073) — lấy từ outbox qua owner SQL (ADR-006: cùng tx với INSERT invitations nên đọc được ngay).
 const inviteTokenOf = async (email) => { const { rows } = await owner.query(`SELECT payload->>'accept_url' AS u FROM outbox WHERE topic = 'user.invited' AND payload->>'to' = $1 ORDER BY id DESC LIMIT 1`, [email]); return rows[0]?.u ? new URL(rows[0].u).searchParams.get('token') : null; };
@@ -44,6 +46,16 @@ async function rq(base, method, path, { body, cookie, origin } = {}) {
   const r = await fetch(base + path, { method, headers: h, body: body !== undefined ? JSON.stringify(body) : undefined });
   const t = await r.text(); let j = null; try { j = t ? JSON.parse(t) : null; } catch {}
   return { status: r.status, json: j, sc: r.headers.getSetCookie(), raw: t };
+}
+async function adm(method, path, { cookie, form } = {}) {
+  const headers = { origin: OADM };
+  if (cookie) headers.cookie = `__Host-session=${cookie}`;
+  if (form !== undefined) headers['content-type'] = 'application/x-www-form-urlencoded';
+  const response = await fetch(ADMIN + path, {
+    method, headers, redirect: 'manual',
+    body: form !== undefined ? new URLSearchParams(form).toString() : undefined,
+  });
+  return { status: response.status, location: response.headers.get('location'), body: await response.text() };
 }
 const login = async (email, password) => ck((await rq(AUTH, 'POST', '/auth/login', { body: { email, password }, origin: OA })).sc);
 const uidOf = async (email) => (await owner.query('SELECT id FROM users WHERE email=$1', [email])).rows[0]?.id ?? null;
@@ -191,7 +203,7 @@ async function main() {
   const staff = await makeStaff();
   const A = await makeShopOwner(staff, `shipa-${uniq()}`);
   const Bs = await makeShopOwner(staff, `shipb-${uniq()}`);
-  const vid = await setupProduct(A, 250000, 40);
+  const vid = await setupProduct(A, 250000, 60);
   const vid2 = await setupProduct(A, 150000, 20);
   ok('dựng 2 shop + 2 sản phẩm + stub GHN/GHTK (9101/9102)');
 
@@ -199,7 +211,10 @@ async function main() {
     get: (p) => rq(SELLER, 'GET', `/shops/${shop.shopId}${p}`, { cookie: shop.cookie }),
     put: (p, body) => rq(SELLER, 'PUT', `/shops/${shop.shopId}${p}`, { body, cookie: shop.cookie, origin: OS }),
     post: (p, body) => rq(SELLER, 'POST', `/shops/${shop.shopId}${p}`, { body, cookie: shop.cookie, origin: OS }),
-    del: (p) => rq(SELLER, 'DELETE', `/shops/${shop.shopId}${p}`, { cookie: shop.cookie, origin: OS }),
+    del: (p, query) => {
+      const qs = query ? `?${new URLSearchParams(query)}` : '';
+      return rq(SELLER, 'DELETE', `/shops/${shop.shopId}${p}${qs}`, { cookie: shop.cookie, origin: OS });
+    },
   });
   const a = S(A);
   const b = S(Bs);
@@ -1227,6 +1242,12 @@ async function main() {
 
   await stepUp();
   r = await a.put('/shipping', { provider: 'ghtk', token: 'ghtk-token-cua-shop-a-123', pickup: PICKUP });
+  if (r.status === 409 && r.json?.error_code === 'shipping_live_shipments_confirmation_required') {
+    r = await a.put('/shipping', {
+      provider: 'ghtk', token: 'ghtk-token-cua-shop-a-123', pickup: PICKUP,
+      confirm_live_shipments: r.json.live_shipments,
+    });
+  }
   r.status === 200 ? ok('quay lại kết nối GHTK') : bad('không nối lại GHTK', r.raw);
 
   // ĐỐI CHỨNG: cùng kịch bản nhưng KHÔNG đổi hãng → đường tự động phải chạy trọn.
@@ -1245,12 +1266,55 @@ async function main() {
   await a.post(`/orders/${oSwap.id}/confirm`, {});
   await a.post(`/orders/${oSwap.id}/carrier-shipment`, TO);
   await stepUp();
-  r = await a.put('/shipping', { provider: 'ghn', token: 'ghn-token-abc', ghn_shop_id: '190001', pickup: PICKUP });
-  r.status === 200 && Number(r.json?.live_shipments) >= 1 && /không còn được theo dõi tự động/i.test(r.json?.warning ?? '')
-    ? ok(`đổi hãng → API báo ${r.json.live_shipments} vận đơn mất theo dõi + cảnh báo chốt tay`)
-    : bad('đổi hãng IM LẶNG (không đếm, không cảnh báo)', `${r.status} ${JSON.stringify(r.json)}`);
+  const liveGhtk = Number((await owner.query(
+    `SELECT count(*)::int AS n FROM shipments
+      WHERE shop_id=$1 AND provider='ghtk' AND status IN ('created','in_transit')
+        AND provider_status IS DISTINCT FROM 'orphan'`, [A.shopId],
+  )).rows[0].n);
+  const swapForm = {
+    __op: 'connect', provider: 'ghn', token: 'ghn-token-abc', ghn_shop_id: '190001',
+    pick_name: PICKUP.name, pick_phone: PICKUP.phone, pick_address: PICKUP.address,
+    pick_province: PICKUP.province, pick_district: PICKUP.district, pick_ward: '',
+  };
+  let ui = await adm('POST', `/shops/${A.shopId}/shipping`, { cookie: A.cookie, form: swapForm });
+  const cfgBeforeConfirm = (await owner.query(`SELECT provider FROM shop_shipping_config WHERE shop_id=$1`, [A.shopId])).rows[0];
+  ui.status === 200 && ui.body.includes(`${liveGhtk} vận đơn đang chạy`)
+    && ui.body.includes(`name="confirm_live_shipments" value="${liveGhtk}"`)
+    && /Tôi hiểu/.test(ui.body) && cfgBeforeConfirm?.provider === 'ghtk'
+    && (await kienCua(oSwap.id))?.provider_status !== 'orphan'
+    ? ok(`đổi hãng lượt đầu → interstitial SSR đếm đúng ${liveGhtk}, chưa đổi gì`)
+    : bad('interstitial đổi hãng sai hoặc đã ghi trước khi xác nhận', `${ui.status} ${ui.body.slice(0, 900)}`);
+  ui = await adm('POST', `/shops/${A.shopId}/shipping`, {
+    cookie: A.cookie, form: { ...swapForm, confirm_live_shipments: String(liveGhtk) },
+  });
+  const cfgAfterConfirm = (await owner.query(`SELECT provider FROM shop_shipping_config WHERE shop_id=$1`, [A.shopId])).rows[0];
+  ui.status === 200 && cfgAfterConfirm?.provider === 'ghn' && /không còn được theo dõi tự động/i.test(ui.body)
+    ? ok(`xác nhận đổi hãng → đúng ${liveGhtk} vận đơn mất theo dõi + cảnh báo chốt tay`)
+    : bad('xác nhận đổi hãng không chạy', `${ui.status} ${ui.body.slice(0, 900)}`);
   (await kienCua(oSwap.id))?.provider_status === 'orphan'
     ? ok("kiện của hãng cũ được đánh dấu 'orphan' (mirror ngắt-kết-nối)") : bad('kiện cũ không được đánh dấu', JSON.stringify(await kienCua(oSwap.id)));
+
+  const statsOrphan = await a.get('/stats');
+  const statsRow = statsOrphan.json?.shipment_attention?.find((x) => x.order_id === oSwap.id);
+  statsRow?.provider_status === 'orphan' && statsRow?.shipment_status === 'in_transit'
+    ? ok('Tổng quan đếm và liệt kê orphan in_transit đúng hình dạng')
+    : bad('Tổng quan bỏ sót orphan in_transit', JSON.stringify(statsOrphan.json?.shipment_attention));
+  const orderAttention = await a.get('/orders?attention=shipment&limit=100');
+  const attentionRow = orderAttention.json?.orders?.find((x) => x.id === oSwap.id);
+  attentionRow?.attention?.includes('shipment') && attentionRow?.shipment_attention_kind === 'orphan'
+    ? ok('attention=shipment mở rộng trục cũ và phân biệt orphan ở dòng')
+    : bad('danh sách đơn bỏ sót/copy nhầm orphan', JSON.stringify(attentionRow));
+  const listHtml = await adm('GET', `/shops/${A.shopId}/orders?attention=shipment`, { cookie: A.cookie });
+  listHtml.status === 200 && listHtml.body.includes(`/orders/${oSwap.id}`) && /Mất theo dõi vận đơn/.test(listHtml.body)
+    ? ok('SSR danh sách render badge Mất theo dõi vận đơn')
+    : bad('SSR danh sách không phân biệt orphan', listHtml.body.slice(0, 1200));
+  const detailHtml = await adm('GET', `/shops/${A.shopId}/orders/${oSwap.id}?timeline=shipment`, { cookie: A.cookie });
+  detailHtml.status === 200 && /Vận đơn đang giao đã mất theo dõi/.test(detailHtml.body)
+    && /<div class="l">Việc cần xử lý<\/div><div class="v">2<\/div>/.test(detailHtml.body)
+    && /Hãng đã huỷ vận đơn/.test(detailHtml.body)
+    && !/Mã vận đơn đọc trên trang hãng/.test(detailHtml.body)
+    ? ok('chi tiết đơn có đường đóng orphan in_transit và không nhập mã tay')
+    : bad('bề mặt orphan in_transit sai', detailHtml.body.slice(0, 1800));
 
   // Đếm theo ĐÚNG MÃ VẬN ĐƠN này, không đếm tổng số lượt. Vòng quét chạy CHÉO SHOP và DB dev
   // tích luỹ vận đơn GHTK của những lần chạy trước (cùng trỏ vào stub này), nên bộ đếm toàn
@@ -1266,6 +1330,55 @@ async function main() {
   d.status === 'shipped' && d.payment_status === 'unpaid'
     ? ok('đơn giữ nguyên shipped/unpaid — shop phải chốt tay, đúng như cảnh báo đã nói')
     : bad('trạng thái đơn sau đổi hãng sai', JSON.stringify(d));
+  const stockBeforeOrphanDeliver = Number((await owner.query(`SELECT on_hand FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].on_hand);
+  const paymentsBeforeOrphanDeliver = Number((await owner.query(`SELECT count(*)::int AS n FROM payment_transactions WHERE order_id=$1`, [oSwap.id])).rows[0].n);
+  r = await a.post(`/orders/${oSwap.id}/deliver`, {});
+  const stockAfterOrphanDeliver = Number((await owner.query(`SELECT on_hand FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].on_hand);
+  const paymentsAfterOrphanDeliver = Number((await owner.query(`SELECT count(*)::int AS n FROM payment_transactions WHERE order_id=$1`, [oSwap.id])).rows[0].n);
+  const deliveredOrphan = await kienCua(oSwap.id);
+  d = await donCua(oSwap.id);
+  r.status === 200 && stockAfterOrphanDeliver === stockBeforeOrphanDeliver
+    && paymentsAfterOrphanDeliver === paymentsBeforeOrphanDeliver
+    && d.status === 'delivered' && d.payment_status === 'unpaid'
+    && deliveredOrphan?.status === 'delivered' && deliveredOrphan?.provider_status === 'reconciled'
+    ? ok('đóng orphan in_transit: không consume lại, không tự thu COD, kiện rời hàng đợi')
+    : bad('đóng orphan in_transit làm sai tồn/tiền/trạng thái', JSON.stringify({ r, stockBeforeOrphanDeliver, stockAfterOrphanDeliver, paymentsBeforeOrphanDeliver, paymentsAfterOrphanDeliver, d, deliveredOrphan }));
+
+  // Ngắt kết nối dùng cùng interstitial, nhưng đếm tập GHN hiện tại và chỉ ghi sau xác nhận.
+  const oDisconnect = await placeCod(A, vid, null);
+  await a.post(`/orders/${oDisconnect.id}/confirm`, {});
+  await a.post(`/orders/${oDisconnect.id}/carrier-shipment`, TO);
+  await stepUp();
+  const liveGhn = Number((await owner.query(
+    `SELECT count(*)::int AS n FROM shipments
+      WHERE shop_id=$1 AND provider='ghn' AND status IN ('created','in_transit')
+        AND provider_status IS DISTINCT FROM 'orphan'`, [A.shopId],
+  )).rows[0].n);
+  ui = await adm('POST', `/shops/${A.shopId}/shipping`, { cookie: A.cookie, form: { __op: 'disconnect' } });
+  ui.status === 200 && ui.body.includes(`${liveGhn} vận đơn đang chạy`)
+    && (await kienCua(oDisconnect.id))?.provider_status !== 'orphan'
+    ? ok(`ngắt hãng lượt đầu → interstitial đếm đúng ${liveGhn}, chưa xoá credential`)
+    : bad('interstitial ngắt hãng sai', `${ui.status} ${ui.body.slice(0, 900)}`);
+  ui = await adm('POST', `/shops/${A.shopId}/shipping`, {
+    cookie: A.cookie, form: { __op: 'disconnect', confirm_live_shipments: String(liveGhn) },
+  });
+  const cfgGone = Number((await owner.query(`SELECT count(*)::int AS n FROM shop_shipping_config WHERE shop_id=$1`, [A.shopId])).rows[0].n) === 0;
+  ui.status === 200 && cfgGone && (await kienCua(oDisconnect.id))?.provider_status === 'orphan'
+    ? ok('xác nhận ngắt hãng → xoá credential và tạo orphan qua đường sản phẩm thật')
+    : bad('xác nhận ngắt hãng hỏng', `${ui.status} ${ui.body.slice(0, 900)}`);
+  const stockBeforeCarrierCancel = Number((await owner.query(`SELECT on_hand FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].on_hand);
+  const paymentBeforeCarrierCancel = Number((await owner.query(`SELECT count(*)::int AS n FROM payment_transactions WHERE order_id=$1`, [oDisconnect.id])).rows[0].n);
+  const disconnectShipment = await kienCua(oDisconnect.id);
+  r = await a.post(`/orders/${oDisconnect.id}/carrier-reconcile`, { action: 'carrier_cancelled', shipment_id: (await owner.query(`SELECT id FROM shipments WHERE order_id=$1 ORDER BY created_at DESC LIMIT 1`, [oDisconnect.id])).rows[0].id });
+  const stockAfterCarrierCancel = Number((await owner.query(`SELECT on_hand FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].on_hand);
+  const paymentAfterCarrierCancel = Number((await owner.query(`SELECT count(*)::int AS n FROM payment_transactions WHERE order_id=$1`, [oDisconnect.id])).rows[0].n);
+  const cancelledOrphan = await kienCua(oDisconnect.id);
+  r.status === 200 && disconnectShipment?.status === 'in_transit'
+    && stockAfterCarrierCancel === stockBeforeCarrierCancel
+    && paymentAfterCarrierCancel === paymentBeforeCarrierCancel
+    && cancelledOrphan?.status === 'cancelled' && cancelledOrphan?.provider_status === 'reconciled_cancel'
+    ? ok('hãng huỷ orphan in_transit → chỉ ghi kết cục, không đổi tồn/tiền')
+    : bad('đóng hãng-huỷ orphan làm sai tồn/tiền', JSON.stringify({ r, disconnectShipment, cancelledOrphan, stockBeforeCarrierCancel, stockAfterCarrierCancel, paymentBeforeCarrierCancel, paymentAfterCarrierCancel }));
 
   // ── 9. CLAIM CHẾT không được khoá vĩnh viễn quyền sửa đơn ───────────────────
   sect('9. Claim chết (timeout) không khoá vĩnh viễn quyền SỬA ĐƠN');
@@ -1352,6 +1465,7 @@ async function main() {
   const dOk = (await owner.query(`SELECT status FROM orders WHERE id=$1`, [oMo.id])).rows[0];
   r.status === 200 && dOk.status === 'shipped' && (await kienCua(oMo.id))?.tracking_number === 'S1.A2.9999999'
     ? ok('nhập mã đọc trên trang hãng → chốt giao, mã vào đúng dòng vận đơn') : bad('đường ra "đã tạo" hỏng', `${r.status} ${r.raw?.slice(0, 120)}`);
+  await a.post(`/orders/${oMo.id}/deliver`, {}); // đóng fixture để không làm nhiễu phép đếm orphan created dưới đây
   // ĐƯỜNG RA 2: hãng KHÔNG hề tạo → mở khoá, đặt lại được.
   const oMo2 = await placeCod(A, vid, null);
   await a.post(`/orders/${oMo2.id}/confirm`, {});
@@ -1364,6 +1478,58 @@ async function main() {
     ? ok('kiểm hãng thấy CHƯA tạo → mở khoá được') : bad('không mở khoá được', `${r.status} ${JSON.stringify(k2)}`);
   r = await a.post(`/orders/${oMo2.id}/carrier-shipment`, TO);
   r.status === 200 ? ok('sau khi mở khoá → tạo lại vận đơn bình thường (không ngõ cụt)') : bad('vẫn kẹt sau khi đối soát', `${r.status} ${r.raw?.slice(0, 120)}`);
+  await a.post(`/orders/${oMo2.id}/deliver`, {});
+
+  // ── 11. ORPHAN CREATED: vẫn đi đường claim, consume đúng một lần ───────────
+  sect('11. Orphan created: chặn tạo trùng, phục hồi claim đúng một lần');
+  const oOrphanCreated = await placeCod(A, vid, null);
+  await a.post(`/orders/${oOrphanCreated.id}/confirm`, {});
+  stub.createDelayMs = 12000;
+  r = await a.post(`/orders/${oOrphanCreated.id}/carrier-shipment`, TO);
+  stub.createDelayMs = 0;
+  let orphanCreated = await kienCua(oOrphanCreated.id);
+  r.status === 502 && orphanCreated?.status === 'created' && orphanCreated?.provider_status === 'ambiguous'
+    ? ok('dựng claim created bằng đường gọi hãng timeout thật')
+    : bad('không dựng được claim created', JSON.stringify({ r, orphanCreated }));
+  await stepUp();
+  r = await a.del('/shipping');
+  const createdLive = Number(r.json?.live_shipments ?? -1);
+  r.status === 409 && r.json?.error_code === 'shipping_live_shipments_confirmation_required'
+    && r.json?.code === undefined && createdLive >= 1
+    ? ok(`ngắt hãng với claim created → đòi xác nhận ${createdLive} vận đơn`)
+    : bad('ngắt hãng không hỏi lại cho claim created', `${r.status} ${r.raw}`);
+  r = await a.del('/shipping', { confirm_live_shipments: createdLive });
+  orphanCreated = await kienCua(oOrphanCreated.id);
+  r.status === 200 && orphanCreated?.status === 'created' && orphanCreated?.provider_status === 'orphan'
+    ? ok('xác nhận ngắt hãng tạo orphan created qua đường sản phẩm thật')
+    : bad('claim không thành orphan created', JSON.stringify({ r, orphanCreated }));
+  const orphanCreatedDetail = await adm('GET', `/shops/${A.shopId}/orders/${oOrphanCreated.id}?timeline=shipment`, { cookie: A.cookie });
+  orphanCreatedDetail.status === 200 && /Kết nối với hãng đã bị thay hoặc ngắt khi claim còn chưa chốt/.test(orphanCreatedDetail.body)
+    && /Mã vận đơn đọc trên trang hãng/.test(orphanCreatedDetail.body)
+    ? ok('SSR orphan created dùng đường claim và chỉ ca này mới cho nhập mã từ portal')
+    : bad('bề mặt orphan created sai', orphanCreatedDetail.body.slice(0, 1700));
+  await stepUp();
+  await a.put('/shipping', { provider: 'ghtk', token: 'ghtk-token-cua-shop-a-123', pickup: PICKUP });
+  r = await a.post(`/orders/${oOrphanCreated.id}/carrier-shipment`, TO);
+  r.status === 409 && /mất kết nối|hai lần/i.test(r.json?.error ?? '')
+    ? ok('orphan created chặn tạo vận đơn thứ hai')
+    : bad('orphan created không chặn tạo trùng', `${r.status} ${r.raw}`);
+  const stockBeforeCreatedRecovery = Number((await owner.query(`SELECT on_hand FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].on_hand);
+  const paymentsBeforeCreatedRecovery = Number((await owner.query(`SELECT count(*)::int AS n FROM payment_transactions WHERE order_id=$1`, [oOrphanCreated.id])).rows[0].n);
+  const orphanCreatedId = (await owner.query(`SELECT id FROM shipments WHERE order_id=$1 AND provider_status='orphan' AND status='created'`, [oOrphanCreated.id])).rows[0]?.id;
+  r = await a.post(`/orders/${oOrphanCreated.id}/carrier-reconcile`, {
+    action: 'shipped', shipment_id: orphanCreatedId, tracking_number: 'S1.ORPHAN.CREATED',
+  });
+  const stockAfterCreatedRecovery = Number((await owner.query(`SELECT on_hand FROM inventory_levels WHERE variant_id=$1`, [vid])).rows[0].on_hand);
+  const paymentsAfterCreatedRecovery = Number((await owner.query(`SELECT count(*)::int AS n FROM payment_transactions WHERE order_id=$1`, [oOrphanCreated.id])).rows[0].n);
+  const createdRecoveredOrder = await donCua(oOrphanCreated.id);
+  const createdRecoveredShipment = await kienCua(oOrphanCreated.id);
+  r.status === 200 && stockAfterCreatedRecovery === stockBeforeCreatedRecovery - 2
+    && paymentsAfterCreatedRecovery === paymentsBeforeCreatedRecovery
+    && createdRecoveredOrder?.status === 'shipped' && createdRecoveredOrder?.payment_status === 'unpaid'
+    && createdRecoveredShipment?.status === 'in_transit' && createdRecoveredShipment?.provider_status === 'reconciled'
+    ? ok('orphan created phục hồi đúng claim: tồn trừ đúng một lần, không tự thu COD')
+    : bad('phục hồi orphan created sai tồn/tiền/trạng thái', JSON.stringify({ r, stockBeforeCreatedRecovery, stockAfterCreatedRecovery, paymentsBeforeCreatedRecovery, paymentsAfterCreatedRecovery, createdRecoveredOrder, createdRecoveredShipment }));
 
   servers.ghn.close(); servers.ghtk.close();
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);

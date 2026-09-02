@@ -260,8 +260,9 @@ async function main() {
   const shipped = conf.status === 200
     ? await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${ordRows[0].id}/ship`, { body: { tracking_number: 'GHN123456' }, cookie: A.cookie, origin: OS })
     : { status: 0 };
-  // outbox → worker poll → queue → deliverMessenger. Cho vài giây.
-  for (let i = 0; i < 12 && !sent.length; i++) await sleep(1000);
+  // confirm và ship phát hai tin độc lập. Chờ "có tin bất kỳ" sẽ dừng ngay ở tin xác nhận
+  // rồi kết luận thiếu tracking trước khi tin giao hàng tới — một race của chính phép đo.
+  for (let i = 0; i < 12 && !JSON.stringify(sent).includes('GHN123456'); i++) await sleep(1000);
   out = drain();
   conf.status === 200 ? ok('shop xác nhận đơn') : bad('không xác nhận được đơn', conf.raw);
   out.flat.includes(`#${ordRows[0].order_number}`) && /(xác nhận|giao)/.test(out.flat)

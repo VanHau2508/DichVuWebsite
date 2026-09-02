@@ -2500,9 +2500,13 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
   const shipmentCount = shipmentState.count;
   const shipmentUnavailable = shipmentState.unavailable;
   const shipmentAttentionRows = shipmentAttention.map((item) => {
-    const statusText = item.provider_status === 'ambiguous'
-      ? 'Chưa rõ hãng đã tạo hay chưa'
-      : 'Hãng đã tạo nhưng hệ thống chưa chốt đơn';
+    const statusText = item.provider_status === 'orphan'
+      ? item.shipment_status === 'in_transit'
+        ? 'Nền tảng không còn theo dõi được vận đơn đang giao'
+        : 'Kết nối hãng đã đổi trước khi chốt vận đơn'
+      : item.provider_status === 'ambiguous'
+        ? 'Chưa rõ hãng đã tạo hay chưa'
+        : 'Hãng đã tạo nhưng hệ thống chưa chốt đơn';
     const href = `${base}/orders/${esc(item.order_id)}?timeline=shipment`;
     return [
       { html: `<a href="${href}"><strong>#${esc(item.order_number)}</strong></a><div class="muted" style="font-size:.82rem">Phát sinh ${dt(item.created_at)}</div>` },
@@ -3006,7 +3010,7 @@ export function renderOrders(ctx, shopId, data, filter) {
       { cls: o.sync_error ? 'stack' : '', html: syncMeta },
       { html: externalMeta || '<span class="muted">—</span>' },
       { html: Array.isArray(o.attention) && o.attention.length
-        ? o.attention.map((kind) => `<span class="badge cancelled">${esc(ORDER_ATTENTION_LABEL[kind] ?? kind)}</span>`).join(' ')
+        ? o.attention.map((kind) => `<span class="badge cancelled">${esc(kind === 'shipment' && o.shipment_attention_kind === 'orphan' ? 'Mất theo dõi vận đơn' : ORDER_ATTENTION_LABEL[kind] ?? kind)}</span>`).join(' ')
         : '<span class="muted">—</span>' },
       { cls: 'muted', html: dt(o.created_at) },
       { style: 'text-align:right', html: `<strong>${money(o.total_vnd)}</strong>` },
@@ -3637,11 +3641,12 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
   const openCases = activeCases.length;
   const failedDeliveries = deliveries.filter((d) => d.status === 'failed').length;
   const pendingRequests = requests.filter((r) => r.status === 'requested').length;
-  const cancelledCarrierShipments = (o.shipments ?? []).filter((s) =>
-    s.status === 'cancelled' && s.provider && !['claim_expired', 'reconciled_cancel', 'orphan'].includes(s.provider_status)
-  ).length;
+  const carrierShipmentIssues = (o.shipments ?? []).filter((s) => s.provider && (
+    (s.status === 'cancelled' && !['claim_expired', 'reconciled_cancel'].includes(s.provider_status))
+    || (s.provider_status === 'orphan' && ['created', 'in_transit'].includes(s.status))
+  )).length;
   if (openCases) attentionParts.push(`${openCases} ca giao hàng`);
-  if (cancelledCarrierShipments) attentionParts.push(`${cancelledCarrierShipments} vận đơn hãng huỷ cần đối soát`);
+  if (carrierShipmentIssues) attentionParts.push(`${carrierShipmentIssues} vận đơn mất theo dõi / hãng huỷ cần đối soát`);
   if (failedDeliveries) attentionParts.push(`${failedDeliveries} thông báo lỗi`);
   if (pendingRequests) attentionParts.push(`${pendingRequests} yêu cầu khách`);
   const fulfillmentLabel = o.fulfillment_status === 'fulfilled' ? 'Đã gửi đủ'
@@ -3708,26 +3713,48 @@ export function renderOrderDetail(ctx, shopId, o, err, shipping, edited, returne
     ${notificationCard}
     ${(() => {
       if (externalReadOnly) return '';
-      // Hai ca cùng cần người xử, KHÁC nhau ở chỗ ta biết gì:
+      // Ba ca cùng cần người xử, KHÁC nhau ở chỗ ta biết gì và tồn đã trừ hay chưa:
       //   finalize_failed — hãng ĐÃ tạo, có mã, chỉ hỏng bước chốt → chỉ cần xác nhận.
       //   ambiguous       — request TIMEOUT, ta KHÔNG BIẾT hãng đã tạo chưa và KHÔNG CÓ mã.
       //                     Muốn xác nhận thì shop phải đọc mã trên trang hãng rồi gõ vào,
       //                     nếu không thì đường duy nhất là huỷ — tức bỏ rơi vận đơn thật.
-      const kt = (o.shipments ?? []).find((s) => s.provider_status === 'finalize_failed' || s.provider_status === 'ambiguous');
+      //   orphan          — credential cũ đã mất. created đi đường claim; in_transit đã trừ
+      //                     tồn nên chỉ chốt kết cục, không bao giờ nhập mã hay consume lại.
+      const kt = (o.shipments ?? []).find((s) =>
+        ['finalize_failed', 'ambiguous', 'orphan'].includes(s.provider_status)
+          && ['created', 'in_transit'].includes(s.status));
       if (!kt) return '';
       const moHo = kt.provider_status === 'ambiguous';
+      const moCoi = kt.provider_status === 'orphan';
+      const moCoiDangGiao = moCoi && kt.status === 'in_transit';
       const act = `/shops/${esc(shopId)}/orders/${esc(o.id)}/carrier-reconcile`;
+      if (moCoiDangGiao) {
+        const canDeliver = o.status === 'shipped' && o.fulfillment_status === 'fulfilled';
+        return `<div class="card" style="border-color:#fca5a5;background:#fef2f2">
+        <h2 style="margin-top:0;color:#b91c1c">⚠ Vận đơn đang giao đã mất theo dõi</h2>
+        <p class="muted">Kết nối với <strong>${esc(String(kt.provider ?? 'hãng').toUpperCase())}</strong> đã bị thay hoặc ngắt, nên nền tảng không thể hỏi trạng thái của mã <strong>${esc(kt.tracking_number ?? '—')}</strong> nữa. Tồn kho của kiện này <strong>đã trừ</strong>; hãy xử lý tình trạng thật trên portal hãng trước rồi mới chốt ở đây. Các thao tác dưới đây không tự ghi đã thu COD.</p>
+        <div class="actions">
+          ${canDeliver ? `<form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/deliver"><button class="btn sm" type="submit">Đã giao xong</button></form>` : '<span class="muted">Chỉ chốt giao toàn đơn sau khi mọi phần đã gửi đủ.</span>'}
+          <form method="POST" action="/shops/${esc(shopId)}/orders/${esc(o.id)}/mark-returned"><input type="hidden" name="restock" value="on"><button class="btn warn sm" type="submit">Hàng đã hoàn về shop</button></form>
+          <form method="POST" action="${act}"><input type="hidden" name="action" value="carrier_cancelled"><input type="hidden" name="shipment_id" value="${esc(kt.id)}"><button class="btn alt sm" type="submit">Hãng đã huỷ vận đơn</button></form>
+        </div>
+        <p class="muted" style="font-size:.82rem;margin-bottom:0">Không có ô nhập mã vận đơn ở ca này: kiện đã có mã của hãng cũ, gõ một mã mới sẽ tạo thêm một sự thật không được hãng xác nhận.</p>
+      </div>`;
+      }
       return `<div class="card" style="border-color:#fca5a5;background:#fef2f2">
       <h2 style="margin-top:0;color:#b91c1c">⚠ Vận đơn cần phục hồi</h2>
-      <p class="muted">${moHo
+      <p class="muted">${moCoi
+        ? `Kết nối với hãng đã bị thay hoặc ngắt khi claim còn chưa chốt, nên nền tảng không thể tự xác nhận vận đơn có thật hay không. Hãy kiểm tra portal hãng: <strong>nếu có</strong> vận đơn cho đơn này → xác nhận để trừ tồn đúng một lần; <strong>nếu không có hoặc đã huỷ</strong> → mở khoá để tạo lại.`
+        : moHo
         ? 'Lần tạo vận đơn trước <strong>không nhận được phản hồi</strong> từ hãng (mạng chậm/đứt), nên hệ thống KHÔNG BIẾT hãng đã tạo hay chưa và chưa có mã vận đơn. Chỗ giữ được giữ nguyên để không tạo trùng — nếu tạo mới ngay, đơn có thể bị <strong>thu hộ COD hai lần</strong>.<br>Hãy mở trang hãng kiểm tra: <strong>nếu có</strong> vận đơn cho đơn này → nhập mã rồi bấm "Đã tạo trên hãng"; <strong>nếu không có</strong> → bấm "Chưa tạo — mở khoá" để đặt lại.'
         : `Hãng ĐÃ tạo vận đơn nhưng hệ thống chốt đơn không thành công (đơn còn "đã xác nhận", chưa trừ kho). Kiểm tra trên trang hãng: nếu vận đơn <strong>${esc(kt.tracking_number ?? '')}</strong> có thật → bấm "Đã tạo trên hãng"; nếu bạn đã huỷ nó trên portal hãng → bấm "Huỷ vận đơn".`}</p>
       <div class="actions">
         <form method="POST" action="${act}">
           <input type="hidden" name="action" value="shipped">
-          ${moHo ? '<input name="tracking_number" placeholder="Mã vận đơn đọc trên trang hãng" required style="max-width:260px">' : ''}
+          <input type="hidden" name="shipment_id" value="${esc(kt.id)}">
+          ${moHo || (moCoi && !kt.tracking_number) ? '<input name="tracking_number" placeholder="Mã vận đơn đọc trên trang hãng" required style="max-width:260px">' : ''}
           <button class="btn sm" type="submit">Đã tạo trên hãng → giao</button></form>
-        <form method="POST" action="${act}"><input type="hidden" name="action" value="cancel"><button class="btn warn sm" type="submit">${moHo ? 'Chưa tạo — mở khoá' : 'Huỷ vận đơn'}</button></form>
+        <form method="POST" action="${act}"><input type="hidden" name="action" value="cancel"><input type="hidden" name="shipment_id" value="${esc(kt.id)}"><button class="btn warn sm" type="submit">${moHo || moCoi ? 'Chưa tạo / đã huỷ — mở khoá' : 'Huỷ vận đơn'}</button></form>
       </div>
     </div>`;
     })()}
@@ -5892,6 +5919,29 @@ export function renderShipping(ctx, shopId, cfg, err, ok) {
       <p class="muted">Đăng ký shop miễn phí tại trang của hãng (GHTK: khachhang.ghtk.vn · GHN: sso.ghn.vn),
         hoàn tất hồ sơ rồi lấy API token trong phần cài đặt/tích hợp. Tiền thu hộ COD hãng chuyển
         <strong>thẳng về tài khoản shop</strong> theo kỳ đối soát của hãng — nền tảng không giữ tiền.</p></div>`);
+}
+
+// Interstitial xác nhận mất theo dõi: server seller trả đúng số kiện đang sống, BFF giữ
+// nguyên form và yêu cầu một POST thứ hai. Không JS, không dựa vào confirm() của trình duyệt.
+export function renderShippingLiveConfirm(ctx, shopId, fields, liveShipments) {
+  const base = `/shops/${esc(shopId)}/shipping`;
+  const count = Math.max(0, Number(liveShipments) || 0);
+  const vals = { ...(fields ?? {}), confirm_live_shipments: String(count) };
+  const keep = Object.entries(vals)
+    .filter(([k, v]) => v != null && k !== 'password')
+    .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(String(v))}">`).join('');
+  const disconnect = fields?.__op === 'disconnect';
+  const verb = disconnect ? 'ngắt kết nối' : `đổi sang ${esc(String(fields?.provider ?? 'hãng mới').toUpperCase())}`;
+  return layout('Xác nhận thay đổi hãng vận chuyển', ctx, `<div class="center"><div class="card" style="border-color:var(--bad)">
+    <h1>${disconnect ? 'Ngắt kết nối hãng?' : 'Đổi kết nối hãng?'}</h1>
+    <div class="err"><strong>${esc(count)} vận đơn đang chạy</strong> sẽ mất theo dõi tự động nếu bạn ${verb}.</div>
+    <p class="muted">Token hãng cũ sẽ không còn dùng được để hỏi trạng thái. Các vận đơn này sẽ xuất hiện trong <strong>Vận đơn cần xử lý</strong>; bạn phải kiểm tra portal hãng và tự chốt kết cục thật. Hệ thống không tự đánh dấu đã thu COD.</p>
+    <form method="POST" action="${base}">
+      ${keep}
+      <button class="btn warn" type="submit" style="width:100%">Tôi hiểu · tiếp tục với ${esc(count)} vận đơn</button>
+    </form>
+    <a class="muted" href="${base}" style="display:inline-block;margin-top:10px">← Giữ kết nối hiện tại</a>
+  </div></div>`);
 }
 
 // Interstitial step-up cho kết nối/ngắt hãng VC — mang theo TOÀN BỘ form dưới dạng hidden.

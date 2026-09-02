@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 
 const root = path.resolve(import.meta.dirname, '..', '..', '..');
 const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
@@ -55,6 +56,42 @@ test('dependency scan đọc JSON theo số và fail-closed khi audit không ch�
   assert.match(source, /metadata\?\.vulnerabilities/);
   assert.doesNotMatch(source, /found 0 vulnerabilities|found \[0-9\]/,
     'không được quay lại parse văn xuôi phụ thuộc phiên bản npm');
+});
+
+test('scan tự khai khi container audit chạy với tham số sửa đổi', () => {
+  // SECURITY_SCAN_DOCKER_ARGS là seam để mount CA cho môi trường có proxy chặn TLS. Không có
+  // nó thì cả 16 gói ra FLAG "KHÔNG CHẠY ĐƯỢC" — đỏ vì hạ tầng chứ không vì phụ thuộc. Nhưng
+  // một lượt XANH chạy với tham số sửa đổi mà im lặng thì không phân biệt được với lượt xanh
+  // bình thường, và người đọc log sau này không có cách nào biết. Cùng lớp lỗi với probe 360px
+  // không tự chối khi khung nhìn sai.
+  //
+  // Ca thử chèn một `docker` giả LÊN ĐẦU PATH để lệnh chết ngay: lời khai in RA TRƯỚC khi gọi
+  // docker, nên nó vẫn phải hiện, và scan vẫn phải fail-closed. Nhờ vậy ca này chạy trong vài
+  // mili giây, không cần mạng lẫn Docker thật.
+  //
+  // KHÔNG được xoá trắng PATH để đạt cùng hiệu quả: `security-scan.sh` tự `cd` bằng
+  // `$(dirname "$0")`, mà `dirname` là lệnh NGOÀI — mất PATH thì nó `cd /` rồi báo "không tìm
+  // thấy package.json", tức ca thử đỏ vì một lý do hoàn toàn khác thứ đang định đo. Đã dính
+  // đúng bẫy đó khi viết ca này.
+  const bash = ['/bin/bash', '/usr/bin/bash'].find((candidate) => fs.existsSync(candidate));
+  assert.ok(bash, 'mốc chết: không tìm thấy bash tuyệt đối để chạy thật scan');
+  const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'va-docker-stub-'));
+  fs.writeFileSync(path.join(stubDir, 'docker'), '#!/bin/sh\nexit 127\n', { mode: 0o755 });
+  const run = (extraEnv) => spawnSync(bash, ['scripts/security-scan.sh', '--audit-package', 'apps/seller'], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${stubDir}:${process.env.PATH}`, ...extraEnv },
+  });
+
+  const announced = run({ SECURITY_SCAN_DOCKER_ARGS: '-e PROBE_MARKER=1' });
+  assert.match(announced.stdout, /SECURITY_SCAN_DOCKER_ARGS đang bật/,
+    'scan phải tự khai khi tham số container bị sửa');
+  assert.match(announced.stdout, /-e PROBE_MARKER=1/,
+    'lời khai phải nêu ĐÚNG tham số đang dùng, không chỉ nói "có sửa"');
+  assert.equal(announced.status, 1, 'docker không chạy được vẫn phải fail-closed');
+
+  const silent = run({ SECURITY_SCAN_DOCKER_ARGS: '' });
+  assert.doesNotMatch(silent.stdout, /SECURITY_SCAN_DOCKER_ARGS đang bật/,
+    'lượt bình thường không được thêm dòng nhiễu');
+  assert.equal(silent.status, 1, 'docker không chạy được vẫn phải fail-closed');
 });
 
 test('role connector và khoá mã hoá được đấu đủ vào đường deploy production', () => {

@@ -580,7 +580,7 @@ cục Đã giao / Hoàn về / Hãng đã huỷ, **không có ô nhập mã tay*
 
 Năm bề mặt cũ đã cùng nhặt orphan: Tổng quan, `attention=shipment`, badge từng dòng, chi tiết
 đơn và chốt tạo vận đơn. Fixture E2E dựng orphan bằng PUT/DELETE shipping thật, không UPDATE
-tay. Đã đo trên DB trắng: toàn manifest unit **330/330**, shipping **118/118**; đột biến gọi
+tay. Đã đo trên DB trắng: toàn manifest unit **331/331**, shipping **118/118**; đột biến gọi
 `consumeAndShip` lần hai, ghi thẳng `payment_status='paid'` + `paid_at` ở cả hai đường đóng orphan, bỏ blocker/tập Tổng quan/bề mặt chi tiết, hạ quyền
 `payments/manual` hoặc bỏ step-up đều đỏ đúng chỗ. Probe Chromium 360px cho cả interstitial
 và chi tiết orphan `in_transit` đều 0 tràn; chi tiết xác nhận 0 ô nhập tracking.
@@ -589,6 +589,28 @@ Cổng đầy đủ trên nhánh: **107/107 E2E**, không log sót; bất biến
 DB trắng **182**, 0 DRIFT, 0 pending; smoke **8 · 27 · 32**. `security-scan` đọc audit JSON
 và báo OK kèm đúng ba instance advisory moderate `decode-uri-component` đã ghi ngay phía trên; audit JSON chạy
 riêng cho checkout/seller/worker đều exit 0 với **0 high · 0 critical**.
+
+Parser cũ của `security-scan.sh` bắt văn xuôi npm (`found [0-9]+ (low|moderate) `) — mẫu viết
+theo npm 6, mà npm 10/11 in `3 moderate severity vulnerabilities`. Nghĩa là mục 1 **không thể
+xanh** cho bất kỳ gói nào có advisory moderate, và mỗi lát cắt lại kèm một câu "đỏ nhưng giải
+thích được". Nay nó đọc `--json` rồi so **SỐ** `metadata.vulnerabilities.high/critical`; văn
+xuôi npm đổi bao nhiêu lần cũng không đụng tới. Fail-closed giữ nguyên và đã đo lại: JSON hỏng,
+output rỗng, npm trả `{"error":{"code":"ENETUNREACH"}}`, hay JSON hợp lệ nhưng `rc≠0` đều FLAG.
+
+Seam `SECURITY_SCAN_DOCKER_ARGS` tồn tại để mount CA cho môi trường có proxy chặn TLS — không
+có nó thì cả 16 gói ra FLAG "KHÔNG CHẠY ĐƯỢC", đỏ vì hạ tầng chứ không vì phụ thuộc. Nhưng một
+lượt XANH chạy với tham số sửa đổi mà im lặng thì không phân biệt được với lượt xanh bình
+thường, nên scan **tự khai một lần** ngay đầu mục 1. Cùng nguyên tắc với probe 360px phải tự
+chối khi khung nhìn sai: phép đo im lặng về cấu hình của chính nó là phép đo không kiểm chứng
+lại được.
+
+Một finding review đã **tự tan khi đo**, chép lại vì cái sai nằm ở phía người đo: chốt nguồn
+cho ô "Việc cần xử lý" ở chi tiết đơn bị nghi là chốt CHÍNH TẢ, chỉ ghim nguyên văn danh sách
+loại trừ nên đảo thứ tự sẽ lọt. Đo thì đảo thứ tự **đỏ** (khẳng định thuận ghim cả cụm), còn
+đột biến thật sự nguy hiểm — gỡ HẲN mệnh đề nhặt orphan khỏi phép đếm — đơn vị **xanh 19/0**
+nhưng `shipping.e2e.mjs` **đỏ đúng chỗ** (`bề mặt orphan in_transit sai`). Chuỗi vẫn có chốt,
+chỉ là chốt nằm ở bề mặt render chứ không ở mức nguồn. Bài học không phải về orphan mà về
+review: **đừng báo một lỗ hổng chốt khi chưa chạy đột biến đi qua đúng nó.**
 
 `cod_mismatch` vẫn là nợ bề mặt riêng: lượt đo trước có 0 dòng, nghĩa là chưa gặp chứ không
 phải đã an toàn. Brief này không mở rộng sang nó vì đường xử lý COD lệch cần quyết định riêng.

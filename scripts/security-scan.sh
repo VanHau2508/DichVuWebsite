@@ -61,6 +61,20 @@ classify_dependency_audit() {
   fi
 }
 
+# SECURITY_SCAN_DOCKER_ARGS chèn thêm tham số cho container audit. Nó tồn tại vì một lý do đo
+# được: ở môi trường có proxy chặn TLS, container KHÔNG tin CA của proxy nên `npm install` chết
+# bằng SELF_SIGNED_CERT_IN_CHAIN, và cả 16 gói ra FLAG "KHÔNG CHẠY ĐƯỢC" — đỏ vì hạ tầng, không
+# vì phụ thuộc. Đã đốt gần một lượt cổng để tìm ra điều đó. Cách chữa là mount CA vào chính
+# container ấy:
+#   SECURITY_SCAN_DOCKER_ARGS="-v /root/.ccr/ca-bundle.crt:/ca.crt:ro -e NODE_EXTRA_CA_CERTS=/ca.crt"
+#
+# NHƯNG một lượt XANH chạy với tham số sửa đổi không được trông giống hệt một lượt xanh bình
+# thường. Đó đúng là lớp lỗi mà sổ tay đã ghi ở chỗ khác: probe 360px phải TỰ CHỐI khi khung
+# nhìn sai thay vì trả một con số sai, và phải in `scrollY` để tự tố giác khi nó không cuộn.
+# Phép đo im lặng về cấu hình của chính nó là phép đo không kiểm chứng lại được. Nên khi biến
+# này được đặt, scan tự khai một lần cho cả lượt, ngay trước gói đầu tiên.
+docker_args_announced=0
+
 scan_dependency_package() {
   local dir="$1" out audit_rc
   if [ ! -f "$dir/package.json" ]; then
@@ -68,7 +82,14 @@ scan_dependency_package() {
     return
   fi
   local docker_args=()
-  if [ -n "${SECURITY_SCAN_DOCKER_ARGS:-}" ]; then read -r -a docker_args <<<"$SECURITY_SCAN_DOCKER_ARGS"; fi
+  if [ -n "${SECURITY_SCAN_DOCKER_ARGS:-}" ]; then
+    read -r -a docker_args <<<"$SECURITY_SCAN_DOCKER_ARGS"
+    if [ "$docker_args_announced" -eq 0 ]; then
+      docker_args_announced=1
+      printf '  %sSECURITY_SCAN_DOCKER_ARGS đang bật — container audit chạy với tham số thêm: %s%s\n' \
+        "$DIM" "$SECURITY_SCAN_DOCKER_ARGS" "$RST"
+    fi
+  fi
   out="$(docker run --rm "${docker_args[@]}" -v "$PWD/$dir:/s:ro" -w /tmp node:22-alpine sh -c \
     "cp /s/package.json . && npm install --package-lock-only --silent >/dev/null 2>&1 && npm audit --omit=dev --audit-level=high --json" 2>&1)"
   audit_rc=$?

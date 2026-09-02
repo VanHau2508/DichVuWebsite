@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -15,12 +15,46 @@ test('go/no-go chỉ được kết luận sau full CI và không xoá toàn b�
   assert.doesNotMatch(source, /redis-cli\s+flushall/i);
 });
 
-test('dependency scan đỏ khi Docker hoặc npm audit không chạy được', () => {
+test('dependency scan đọc JSON theo số và fail-closed khi audit không chạy được', () => {
   const source = read('scripts/security-scan.sh');
-  assert.match(source, /audit_rc=\$\?/);
-  assert.match(source, /dependency scan KHÔNG CHẠY ĐƯỢC/);
-  assert.match(source, /npm audit trả kết quả không nhận diện được/);
-  assert.doesNotMatch(source, /\|\| \[ -z "\$out" \]/);
+  const bash = process.platform === 'win32'
+    ? ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files\\Git\\usr\\bin\\bash.exe']
+      .find((candidate) => fs.existsSync(candidate))
+    : 'bash';
+  assert.ok(bash, 'mốc chết: không tìm thấy bash để chạy thật bộ phân loại audit JSON');
+  const fixture = ({ low = 0, moderate = 0, high = 0, critical = 0 } = {}) => JSON.stringify({
+    auditReportVersion: 2,
+    vulnerabilities: high || critical ? { unsafe: { severity: critical ? 'critical' : 'high' } } : {},
+    metadata: { vulnerabilities: { info: 0, low, moderate, high, critical, total: low + moderate + high + critical } },
+  });
+  const classify = (input, auditRc = 0) => spawnSync(
+    bash,
+    ['scripts/security-scan.sh', '--classify-audit-json', 'fixture', String(auditRc)],
+    { cwd: root, input, encoding: 'utf8' },
+  );
+
+  const moderate = classify(fixture({ moderate: 3 }));
+  assert.equal(moderate.status, 0, moderate.stderr || moderate.stdout);
+  assert.match(moderate.stdout, /OK.*0 high, 0 critical · 3 moderate/,
+    'advisory moderate phải hiện ra nhưng không bị nâng sai thành high');
+
+  const high = classify(fixture({ high: 1 }), 1);
+  assert.equal(high.status, 1, 'high phải làm scanner đỏ');
+  assert.match(high.stdout, /FLAG.*1 high, 0 critical/);
+  assert.match(high.stdout, /unsafe:high/, 'scanner phải nêu tên advisory high');
+
+  const commandFailure = classify(fixture({ moderate: 3 }), 17);
+  assert.equal(commandFailure.status, 1, 'npm audit lỗi dù JSON hợp lệ vẫn phải đỏ');
+  assert.match(commandFailure.stdout, /FLAG.*KHÔNG CHẠY ĐƯỢC/);
+
+  const invalidJson = classify('{"metadata":{}} rác', 0);
+  assert.equal(invalidJson.status, 1, 'JSON hỏng không được coi là sạch');
+  assert.match(invalidJson.stdout, /FLAG.*KHÔNG CHẠY ĐƯỢC/);
+
+  assert.match(source, /npm audit --omit=dev --audit-level=high --json/);
+  assert.match(source, /metadata\?\.vulnerabilities/);
+  assert.doesNotMatch(source, /found 0 vulnerabilities|found \[0-9\]/,
+    'không được quay lại parse văn xuôi phụ thuộc phiên bản npm');
 });
 
 test('role connector và khoá mã hoá được đấu đủ vào đường deploy production', () => {

@@ -586,8 +586,8 @@ tay. Đã đo trên DB trắng: toàn manifest unit **330/330**, shipping **118/
 và chi tiết orphan `in_transit` đều 0 tràn; chi tiết xác nhận 0 ô nhập tracking.
 
 Cổng đầy đủ trên nhánh: **107/107 E2E**, không log sót; bất biến DB **147/147**; migration
-DB trắng **182**, 0 DRIFT, 0 pending; smoke **8 · 27 · 32**. `security-scan` vẫn báo đúng ba
-instance của advisory moderate `decode-uri-component` đã ghi ngay phía trên; audit JSON chạy
+DB trắng **182**, 0 DRIFT, 0 pending; smoke **8 · 27 · 32**. `security-scan` đọc audit JSON
+và báo OK kèm đúng ba instance advisory moderate `decode-uri-component` đã ghi ngay phía trên; audit JSON chạy
 riêng cho checkout/seller/worker đều exit 0 với **0 high · 0 critical**.
 
 `cod_mismatch` vẫn là nợ bề mặt riêng: lượt đo trước có 0 dòng, nghĩa là chưa gặp chứ không

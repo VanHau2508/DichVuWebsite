@@ -17,6 +17,78 @@ warn() { printf '  %sWARN%s %s\n' "$YEL" "$RST" "$1"; }
 flag() { issues=$((issues+1)); printf '  %sFLAG%s %s\n' "$RED" "$RST" "$1"; }
 sect() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
+# npm đã đổi văn phong output nhiều lần; chỉ metadata JSON mới là hợp đồng máy đọc được.
+# Mode classify dùng đúng hàm production để unit test được cả high và fail-closed mà không
+# cần mạng. Mode audit-package là probe hẹp cho một package thật khi review dependency scan.
+audit_json_summary() {
+  node -e '
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  try {
+    const report = JSON.parse(input);
+    const counts = report?.metadata?.vulnerabilities;
+    const keys = ["low", "moderate", "high", "critical"];
+    if (!counts || keys.some((key) => !Number.isInteger(counts[key]) || counts[key] < 0)) throw new Error("bad counts");
+    const severe = Object.entries(report.vulnerabilities ?? {})
+      .filter(([, item]) => item?.severity === "high" || item?.severity === "critical")
+      .map(([name, item]) => `${name}:${item.severity}`);
+    process.stdout.write([counts.low, counts.moderate, counts.high, counts.critical, severe.join(",") || "-"].join("\t"));
+  } catch {
+    process.exitCode = 2;
+  }
+});'
+}
+
+classify_dependency_audit() {
+  local dir="$1" audit_rc="$2" out="$3" summary parse_rc low moderate high critical severe
+  summary="$(printf '%s' "$out" | audit_json_summary 2>/dev/null)"
+  parse_rc=$?
+  if [ "$parse_rc" -ne 0 ] || [ -z "$summary" ]; then
+    flag "$dir — dependency scan KHÔNG CHẠY ĐƯỢC; không được coi output rỗng/lỗi Docker/JSON hỏng là sạch"
+    printf '%s\n' "$out" | head -4 | sed 's/^/       /'
+    return
+  fi
+  IFS=$'\t' read -r low moderate high critical severe <<<"$summary"
+  if [ "$high" -gt 0 ] || [ "$critical" -gt 0 ]; then
+    flag "$dir — CÓ lỗ hổng high/critical: $high high, $critical critical"
+    printf '%s\n' "$severe" | tr ',' '\n' | sed 's/^/       /'
+  elif [ "$audit_rc" -ne 0 ]; then
+    flag "$dir — dependency scan KHÔNG CHẠY ĐƯỢC; JSON hợp lệ nhưng npm audit trả mã $audit_rc"
+  else
+    ok "$dir — 0 high, 0 critical · $moderate moderate · $low low"
+  fi
+}
+
+scan_dependency_package() {
+  local dir="$1" out audit_rc
+  if [ ! -f "$dir/package.json" ]; then
+    flag "$dir — dependency scan KHÔNG CHẠY ĐƯỢC; không tìm thấy package.json"
+    return
+  fi
+  local docker_args=()
+  if [ -n "${SECURITY_SCAN_DOCKER_ARGS:-}" ]; then read -r -a docker_args <<<"$SECURITY_SCAN_DOCKER_ARGS"; fi
+  out="$(docker run --rm "${docker_args[@]}" -v "$PWD/$dir:/s:ro" -w /tmp node:22-alpine sh -c \
+    "cp /s/package.json . && npm install --package-lock-only --silent >/dev/null 2>&1 && npm audit --omit=dev --audit-level=high --json" 2>&1)"
+  audit_rc=$?
+  classify_dependency_audit "$dir" "$audit_rc" "$out"
+}
+
+case "${1:-}" in
+  --classify-audit-json)
+    classify_dependency_audit "${2:-fixture}" "${3:-0}" "$(cat)"
+    [ "$issues" -eq 0 ] || exit 1
+    exit 0
+    ;;
+  --audit-package)
+    [ -n "${2:-}" ] || { printf 'thiếu thư mục package\n' >&2; exit 2; }
+    scan_dependency_package "$2"
+    [ "$issues" -eq 0 ] || exit 1
+    exit 0
+    ;;
+esac
+
 # ── 0. Chốt layout: "không quét được ≠ sạch" ─────────────────────────────────
 # Mọi scan dưới glob cứng apps/*/src packages/*/src infra/ với `2>/dev/null || true`
 # rồi test rỗng. Nếu cây src bị ĐỔI TÊN / DI CHUYỂN, glob khớp 0 file → grep im lặng
@@ -32,22 +104,7 @@ fi
 # ── 1. Dependency scan (npm audit, mức high+) ────────────────────────────────
 sect "1. Dependency scan (npm audit --audit-level=high)"
 for pkg in apps/*/package.json packages/*/package.json; do
-  dir="$(dirname "$pkg")"
-  # Sinh lockfile tạm rồi audit trong container throwaway (không đụng source).
-  out="$(docker run --rm -v "$PWD/$dir:/s:ro" -w /tmp node:22-alpine sh -c \
-    "cp /s/package.json . && npm install --package-lock-only --silent >/dev/null 2>&1 && npm audit --omit=dev --audit-level=high 2>&1" 2>&1)"
-  audit_rc=$?
-  if [ "$audit_rc" -ne 0 ] && ! grep -qiE 'high|critical' <<<"$out"; then
-    flag "$dir — dependency scan KHÔNG CHẠY ĐƯỢC; không được coi output rỗng/lỗi Docker là sạch"
-    printf '%s\n' "$out" | head -4 | sed 's/^/       /'
-  elif grep -qiE 'found 0 vulnerabilities|found [0-9]+ (low|moderate) ' <<<"$out"; then
-    ok "$dir — không lỗ hổng high/critical"
-  elif grep -qiE 'high|critical' <<<"$out"; then
-    flag "$dir — CÓ lỗ hổng high/critical:"; echo "$out" | grep -iE 'high|critical|severity' | head -4 | sed 's/^/       /'
-  else
-    flag "$dir — npm audit trả kết quả không nhận diện được; cần kiểm tra thay vì cho qua"
-    printf '%s\n' "$out" | head -4 | sed 's/^/       /'
-  fi
+  scan_dependency_package "$(dirname "$pkg")"
 done
 
 # ── 2. Secret scan (hardcode) ────────────────────────────────────────────────

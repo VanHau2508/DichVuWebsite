@@ -750,6 +750,49 @@ chặn thì chặn luôn việc catalog hợp lệ, nên để nguyên và ghi r
 **Lát cắt này do Claude vừa đo, vừa viết, vừa tuyên bố xanh** — chủ dự án chọn bỏ vòng chéo
 §9.1 luật 2 cho lượt này. Ai đọc lại nên biết lời "xanh" ở đây yếu hơn các lát cắt khác.
 
+**Đợt đo 2 của lát cắt 6 — luồng nhập CSV.** Hai lỗi, đã vá và merge tại `50d50c3`. Cả hai
+**chỉ lộ ra với tệp lớn hơn một lô** (admin chia lô 200 sản phẩm), nên mọi tệp thử nhỏ đều xanh
+— đó mới là điều đáng nhớ, không phải bản vá.
+
+- **Số dòng báo lỗi chỉ vào DÒNG VÔ TỘI.** Seller tính `line = i + 2` theo mảng NÓ nhận được,
+  tức chỉ số trong LÔ. Đo được: tệp 260 SP, lỗi ở SP thứ 250, giao diện báo "dòng 51". Dòng 51
+  **có thật và hoàn toàn đúng**, nên người bán sửa một sản phẩm lành lặn rồi nhập lại vẫn hỏng —
+  trong khi bảng lỗi này tồn tại đúng để họ "sửa file, không sửa cơ sở dữ liệu". Nay admin gửi
+  kèm `line_of` dựng bằng **bản đồ theo đối tượng**, không cộng độ lệch: `splitProductBatches`
+  gom theo handle nên các dòng của một lô KHÔNG liền nhau trong tệp. Seller chỉ tin `line_of`
+  khi adapter trả về đúng mảng đã nhận — adapter TikTok có thể sinh/gộp dòng, và một bản đồ
+  lệch còn tệ hơn không có bản đồ.
+- **Xem trước không kiểm TRẦN GÓI.** Trần đọc sau `return` của dry-run nên đường xem trước không
+  bao giờ chạm tới: tệp 212 SP hứa "Sẽ tạo 212", nhập thật tạo 100 (gói `platform` trần 100 —
+  §7). Vá xong lộ **tầng thứ hai**: xem trước KHÔNG ghi gì nên mỗi lô đọc `catalogCount` đều
+  thấy cửa hàng như lúc đầu — lô 1 báo đúng, lô 2 tưởng còn chỗ và hứa thêm 12. Trần nay được
+  **nối qua lô**, đúng cách `image_limit` đã làm sẵn ngay cạnh đó, và chỉ đọc MỘT lần cho cả hai
+  đường: đọc hai lần thì hai con số lệch được, mà lệch ở đây nghĩa là xem trước hứa một đằng ghi
+  một nẻo.
+
+**Hồi quy tự gây ra rồi tự bắt, chép lại vì nó đắt hơn bản vá.** Bản vá trần đầu tiên nêu **đích
+danh từng dòng** vượt trần cho "hữu ích": tệp 260 SP với trần 100 sinh **100 hàng giống hệt
+nhau** và ĐẨY lỗi thật (giá sai, dòng 251) ra khỏi phần hiển thị. Bảng lỗi tồn tại để chỉ chỗ
+CẦN SỬA, mà trần gói thì không sửa trong tệp được — nó là một câu về cả lượt nhập. Nay là một
+dòng tổng, và chốt khẳng định **cả hai chiều**: lỗi thật phải thấy được, trần chỉ một dòng.
+→ **Luật rút ra: một thông báo lỗi hữu ích cho từng dòng có thể làm hỏng cả bảng lỗi. Đếm xem
+nó sinh bao nhiêu hàng trước khi cho nó nêu đích danh.**
+
+Kèm: dòng lỗi không thuộc dòng nào từng để ô số dòng RỖNG (`esc(null)`), đọc thành "chưa biết
+dòng nào" — sai nghĩa. Nay ghi "cả tệp".
+
+Đo: bộ mới `admin-nhap-csv.e2e.mjs` **9/9**; đột biến **5/5 đỏ** — seller lờ `line_of` 6/3 ·
+admin không gửi `line_of` 6/3 · xem trước bỏ kiểm trần 2/7 · **không nối trần qua lô 5/4** · ô
+số dòng rỗng trở lại 5/4; hoàn nguyên 9/0. Đột biến thứ tư quan trọng riêng: nó chứng minh phần
+"nối qua lô" là chốt ĐỘC LẬP, không bị chốt trần che. Cổng đầy đủ `exit 0` ngay lượt đầu: unit
+**331** · migration DB trắng **182** · bảo mật sạch · bất biến DB **147** · E2E **109/109**,
+0 log sót · smoke đủ.
+
+**Còn nợ của lát cắt 6, chưa đo:** XLSX (`readXlsx`/`isXlsxMagic`), BOM và dấu tiếng Việt,
+`update_only`/`upsert`, ảnh qua hàng rào SSRF, lỗi giữa chừng khi một lô hỏng còn lô trước đã
+ghi, và giao diện 360px của trang nhập. Đường nhập ĐƠN (`orders/import`) chưa đo lần nào — nó
+dùng chung bảng lỗi nhưng KHÔNG chia lô, nên hai lỗi trên không áp cho nó.
+
 **Nhánh `claude/full-system-folder-access-tc6cfk` đã CHẾT, đừng merge.** 13 commit dựng trang
 chủ, rẽ khỏi `main` tại `d86176f` và đứng sau `main` **53 commit**. Đo được: 10/13 commit đã có
 trên `main` dưới dạng patch tương đương (`git cherry`); ba commit còn lại không thiếu mà CŨ HƠN

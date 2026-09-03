@@ -788,10 +788,61 @@ số dòng rỗng trở lại 5/4; hoàn nguyên 9/0. Đột biến thứ tư qu
 **331** · migration DB trắng **182** · bảo mật sạch · bất biến DB **147** · E2E **109/109**,
 0 log sót · smoke đủ.
 
+**Đợt đo 3 của lát cắt 6 — LÔ HỎNG GIỮA CHỪNG.** Đã vá và merge tại `68056ac`. Đây là vai
+**shop lúc có sự cố** (§5, vai ra nhiều lỗi nhất) đi vào đúng luồng mà hai lỗi ở đợt 2 vừa sống
+trong đó.
+
+Đo được (tệp 400 SP, hỏng ở lô 2): **200 sản phẩm ĐÃ vào cửa hàng thật**, còn người bán chỉ thấy
+một câu — *"Không nhập được — kiểm tra quyền hoặc định dạng tệp"*. Câu đó **sai ba lần cùng lúc**:
+đã nhập rồi, quyền không sao, tệp không sao. Và `results` của các lô đã xong bị `return` thẳng
+**ném đi**, dù số liệu nằm sẵn trong tay.
+
+Hai đường hỏng chứ không một, và cả hai đều im lặng về phần đã ghi: seller trả non-200 → **400**
+kèm câu sai; `fetch` **NÉM** (container chết, timeout) → `call()` trong `api.js` không bắt nên
+ngoại lệ thoát ra thành trang **"Lỗi" 500 trần trụi**.
+
+Chủ dự án chốt hướng, và chốt sắc hơn đề xuất ban đầu: **không chỉ nêu con số, phải nêu SẢN PHẨM
+NÀO chưa vào** để người bán biết mà thêm tiếp. Admin tự chia lô nên nó nắm trọn các lô chưa gửi —
+thứ nó đang vứt đi chính là thứ người bán cần. Trang nay trả lời đủ ba câu §9.2 đòi:
+- **chuyện gì xảy ra** — đã xong mấy phần tệp, phần đó **ĐÃ nằm trong cửa hàng**, lý do dừng;
+- **làm gì tiếp** — danh sách đích danh sản phẩm chưa vào **kèm số dòng trong tệp**;
+- **thử lại được không** — gửi lại chính tệp đó, phần đã vào bị bỏ qua chứ không nhân đôi.
+
+Câu cuối là sự thật đã đo CẢ VÒNG, không phải trấn an: sự cố → 200 vào → gỡ sự cố → gửi lại →
+đủ 400, cảnh báo biến mất. Xem trước đứt thì nói rõ **chưa ghi gì vào cửa hàng**, không doạ nhầm.
+
+**Dựng sự cố bằng HÀNH VI SẢN PHẨM, không tiêm lỗi** — cách này đáng chép lại: `axis_names` được
+admin gửi kèm MỌI lô, còn seller chặn thân yêu cầu ở 2MB. Cho lô 1 toàn sản phẩm nhẹ (đi lọt) và
+lô 2 vài sản phẩm mô tả rất dài cộng `axis_names` ~1MB → đúng lô 2 bị từ chối SAU KHI lô 1 đã
+ghi. Nhờ vậy cả ba mảnh của chốt đều đo bằng hành vi, không mảnh nào chỉ ghim chính tả.
+
+Trước khi tìm ra cách đó, **phép đo tự bác lại người đo bốn lần**: trần gói 100 làm lô 2 xong
+ngay (phải đổi gói `growth`) · canh giờ vô dụng vì 400 SP ghi trong **1,4 giây** · đếm bằng
+`psql` cũng trượt vì mỗi lượt hỏi mất ~0,4s · và trong chính bộ test, id trục 9 chữ số không
+khớp `\d{10,}` nên sự cố không xảy ra, cộng một khẳng định khớp nhầm câu của thẻ xem trước bình
+thường — hai lỗi này làm 7 ca đỏ giả.
+
+**MA TRẬN ĐỘT BIẾN BẮT ĐƯỢC LỖ TRONG CHÍNH BỘ TEST.** Đột biến "vứt kết quả các lô đã xong" cho
+**12/0 XANH**: tôi đếm sản phẩm bằng SQL nên khẳng định vẫn đúng ngay cả khi trang không hiện gì
+— mà cả điểm của bản vá là GIỮ kết quả để trang hiện ra. Thêm chốt đọc con số **trên trang** thì
+đột biến đó thành 12/1 đỏ.
+→ **Luật rút ra (lần thứ hai trong cùng lát cắt): khẳng định phải đặt ở BỀ MẶT NGƯỜI DÙNG NHÌN
+THẤY. Đếm bằng SQL là đo cơ chế, không đo thứ người bán đọc được.**
+
+Đo: bộ mới `admin-nhap-dut.e2e.mjs` **13/13**; đột biến **5/5 đỏ** — câu sai cũ 3/9 · vứt kết quả
+lô đã xong 12/1 · không nêu đích danh 11/1 · gỡ khối cảnh báo 4/8 · bỏ câu không-nhân-đôi 11/1;
+hoàn nguyên 13/0. Cổng đầy đủ `exit 0` ngay lượt đầu: unit **331** · migration DB trắng **182** ·
+bảo mật sạch · bất biến DB **147** · E2E **110/110**, 0 log sót · smoke đủ.
+
 **Còn nợ của lát cắt 6, chưa đo:** XLSX (`readXlsx`/`isXlsxMagic`), BOM và dấu tiếng Việt,
-`update_only`/`upsert`, ảnh qua hàng rào SSRF, lỗi giữa chừng khi một lô hỏng còn lô trước đã
-ghi, và giao diện 360px của trang nhập. Đường nhập ĐƠN (`orders/import`) chưa đo lần nào — nó
-dùng chung bảng lỗi nhưng KHÔNG chia lô, nên hai lỗi trên không áp cho nó.
+`update_only`/`upsert`, ảnh qua hàng rào SSRF, và giao diện 360px của trang nhập. Đường nhập ĐƠN
+(`orders/import`) chưa đo lần nào — nó dùng chung bảng lỗi nhưng KHÔNG chia lô, nên ba lỗi của
+đợt 2–3 không áp cho nó; **và nó vẫn giữ nguyên câu sai "kiểm tra quyền hoặc định dạng tệp"** ở
+`server.js`, chưa sửa vì chưa đo.
+
+Một nhánh chưa tự động hoá được: đường `fetch` **NÉM**. Nó đi qua `catch` riêng và chỉ khác ở CÂU
+LÝ DO; đã đo TAY bằng cách dừng container giữa lượt nhập. Ai sửa khu đó phải chạy lại tay — đã
+ghi ngay đầu tệp test.
 
 **Nhánh `claude/full-system-folder-access-tc6cfk` đã CHẾT, đừng merge.** 13 commit dựng trang
 chủ, rẽ khỏi `main` tại `d86176f` và đứng sau `main` **53 commit**. Đo được: 10/13 commit đã có

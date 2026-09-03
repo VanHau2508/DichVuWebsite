@@ -686,6 +686,70 @@ thật, thẻ hôm nay là **cửa hàng MẪU** và mục tự nói rõ điều
 `landing-nganh-hang.test.js` bắt cả hai đầu: mất dòng đó là đỏ, đặt tên nghe như một shop
 có thật cũng đỏ. Đo: 0/9 bề rộng tràn ở cả nhánh JS và không-JS, 23/23 đột biến đỏ.
 
+### Lát cắt 6 `catalog + nhập từ sàn` — đợt đo 1 và QUYẾT ĐỊNH giá vốn
+
+Đợt đo 1 phủ **quyền + cửa vào** của catalog. Bản đồ: `CATALOG_ROUTES` 18 route
+(`catalog.read`/`catalog.write`) · `IMPORT_ROUTES` 2 route · ~25 route BFF ở `server.js` ·
+`CATALOG_ROLES={owner,admin,catalog_manager}` trong `roles.js` · `catalog_manager` chỉ có
+`{catalog.read, catalog.write}` theo `rbac.js`.
+
+**Quyết định mới của chủ dự án (03/09): GIÁ VỐN LÀ BÍ MẬT KINH DOANH, `catalog_manager` không
+được thấy.** Đã thi công và merge tại `f76c421`.
+
+Vì sao nó là quyết định chứ không phải lỗi hiển nhiên: ranh giới của kho vốn nhất quán — mọi
+con số lộ biên lãi hoặc nguồn hàng đều nằm sau `inventory.manage` (sổ cái kho cấp shop, tồn an
+toàn, phiếu nhập/NCC) hoặc `reports.read` (P&L). Giá vốn là **ngoại lệ duy nhất** nằm bên phía
+catalog. Đo được bằng vai thật: `catalog_manager` ĐỌC được (`getProduct` trả `cost_vnd`), GHI
+được (PATCH variant → 200), thấy ô nhập trên trang — trong khi cùng vai đó mở `/reports/pnl`
+thì **404**. Một dữ liệu, hai mức bảo vệ.
+
+Gác bằng `reports.read` chứ không phải `inventory.manage`: hôm nay cả hai đều ra `{owner,admin}`
+nên hành vi giống hệt, nhưng chú thích của `reports.read` trong `rbac.js` đã kể tên "giá vốn".
+Neo vào cái có tên đúng thì lần sau ai nới một trong hai vai sẽ không vô tình mở nhầm thứ kia.
+
+**Năm chỗ phải bịt, không phải một.** Liệt kê đủ trước khi gõ, đúng bài học §9.2:
+- ĐỌC · `catalog.js:getProduct` — **không JOIN** `variant_costs` khi thiếu quyền, và khoá
+  `cost_vnd` **VẮNG MẶT** chứ không phải `null`: `null` nghĩa là "chưa nhập", đây là "không được
+  xem" (§3 NULL ≠ 0).
+- ĐỌC · ô nhập giá vốn trong bảng biến thể.
+- ĐỌC · **`marginHint` in "biên ~X%"** — ẩn mỗi ô nhập là vô nghĩa: giá bán nằm cột bên, biên ⇒
+  vốn bằng một phép chia. Đây là chỗ dễ sót nhất.
+- GHI · `updateVariant` trả **403 tường minh**, không lặng lẽ bỏ qua: một request nói "đặt vốn
+  90k" mà nhận 200 sau khi bị vứt là kiểu hỏng tệ nhất.
+- GHI · bộ nhập CSV gỡ cột `cost_vnd` **trước** `buildProduct`, nên một ô viết sai không làm
+  hỏng cả dòng của người vốn không được đặt nó. Tệp mẫu phát cho vai đó cũng bỏ hẳn cột — để
+  nguyên là mời người ta gõ một cột sẽ bị vứt, và họ chỉ biết sau khi gõ xong cả tệp.
+
+Bỏ qua cột chứ **không chặn cả tệp** (mẫu do chính hệ thống phát ra vẫn có cột đó), nhưng
+**không im lặng**: seller đếm số dòng đã gỡ, giao diện nói thẳng ở cả xem trước lẫn nhập thật.
+
+**Lỗi của chính lát cắt này.** Làm xong cơ chế (seller gỡ + đếm) và điểm phát ra (trang hiện câu
+báo) nhưng **quên khúc giữa**: `mergeImportResults` dựng object theo danh sách khoá trắng nên
+`cost_bo_qua` rơi im lặng — seller trả 2, trang hiện 0, không lỗi nào. Đúng ba mảnh của một chốt
+(§4): cơ chế → **DÂY NỐI** → điểm phát ra. Nó lộ ra CHỈ VÌ khẳng định đặt trên bề mặt người dùng
+nhìn thấy, không đặt trên response của seller.
+
+Hai lần phép đo bác lại người đo, chép lại vì cả hai suýt thành finding bịa: gửi form nhập bằng
+urlencoded trong khi handler dùng `readMultipartAll` ⇒ 400 là lỗi phân tích tệp, không phải lỗi
+quyền; và chú thích `rbac.js` "catalog_manager: chỉ sản phẩm/tồn kho" bị nghi sai, nhưng
+`inventory/adjust` gác bằng `catalog.write` nên chú thích **đúng**.
+
+Đo: bộ mới `admin-gia-von.e2e.mjs` **20/20**; ma trận **7/7 đột biến đỏ** (gỡ JOIN · bỏ 403 ·
+hiện lại ô nhập · hiện lại RIÊNG biên lãi · mẫu CSV luôn kèm cột · nhập không gỡ cột · dây nối
+rơi `cost_bo_qua`). Cổng đầy đủ: unit **331** · migration DB trắng **182**, 0 DRIFT · bảo mật
+sạch · bất biến DB **147** · E2E **108/108**, 0 log sót · smoke đủ.
+
+Chốt §0 bắt đúng một lỗi thật trong lượt này: sửa `MANIFEST_E2E_COUNT` mà quên bảng số đo
+(`107 !== 108`). Đã amend vào cùng commit, vì §0 đòi cùng commit.
+
+**Còn nợ của lát cắt 6, chưa đo:** luồng nhập CSV/XLSX thật (xem trước → nhập → báo lỗi từng
+dòng), ghép với connector KiotViet, giao diện 360px, đường không-JS. Một hệ quả đã biết và cố ý
+không chặn: `catalog_manager` xoá/tái cấu trúc biến thể vẫn xoá dòng `variant_costs` kèm theo —
+chặn thì chặn luôn việc catalog hợp lệ, nên để nguyên và ghi ra đây.
+
+**Lát cắt này do Claude vừa đo, vừa viết, vừa tuyên bố xanh** — chủ dự án chọn bỏ vòng chéo
+§9.1 luật 2 cho lượt này. Ai đọc lại nên biết lời "xanh" ở đây yếu hơn các lát cắt khác.
+
 **Nhánh `claude/full-system-folder-access-tc6cfk` đã CHẾT, đừng merge.** 13 commit dựng trang
 chủ, rẽ khỏi `main` tại `d86176f` và đứng sau `main` **53 commit**. Đo được: 10/13 commit đã có
 trên `main` dưới dạng patch tương đương (`git cherry`); ba commit còn lại không thiếu mà CŨ HƠN

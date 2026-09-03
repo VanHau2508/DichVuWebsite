@@ -2108,20 +2108,68 @@ async function productImport(req, res, me, cookie, shopId) {
   // tệp 212 SP với trần 100 → xem trước hứa 112, nhập thật tạo 100. Nhập thật không dính vì lô
   // trước đã ghi xong trước khi lô sau đếm. Nối y hệt cách đã nối ngân sách ảnh ngay dưới đây.
   let capUsed = 0;
-  for (const batch of batches) {
+  // MỘT LÔ HỎNG KHÔNG ĐƯỢC XOÁ SẠCH THỨ CÁC LÔ TRƯỚC ĐÃ GHI.
+  //
+  // Đo được: tệp 400 sản phẩm (2 lô), tiêm lỗi ở lô 2 → 200 sản phẩm ĐÃ vào cửa hàng thật, còn
+  // người bán chỉ thấy "Không nhập được — kiểm tra quyền hoặc định dạng tệp". Câu đó sai ba lần
+  // cùng lúc: đã nhập (200 SP), quyền không sao, tệp không sao. Và `results` của các lô thành
+  // công bị `return` thẳng ném đi, dù số liệu đã nằm sẵn trong tay.
+  //
+  // Hai đường hỏng, không phải một: seller trả non-200, HOẶC `fetch` NÉM (container chết,
+  // timeout) — `call()` trong api.js không bắt, nên ngoại lệ thoát ra thành trang "Lỗi" 500
+  // trần trụi. Bắt cả hai ở đây, chỗ duy nhất biết lô nào đã xong và lô nào chưa gửi.
+  //
+  // Nêu ĐÍCH DANH sản phẩm chưa vào, không chỉ nêu con số: admin tự chia lô nên nó nắm trọn
+  // các lô chưa gửi. Người bán cần biết THIẾU GÌ mới nhập tiếp được; một con số chỉ nói rằng
+  // có thiếu.
+  const tenSanPham = (r) => {
+    const e = Object.entries(r ?? {});
+    const lay = (k) => e.find(([n]) => String(n).trim().toLowerCase() === k)?.[1];
+    return String(lay('title') || lay('handle') || lay('product_id') || '').trim();
+  };
+  const chuaNhapTu = (i) => {
+    const con = [];
+    const thay = new Set();
+    for (const b of batches.slice(i)) for (const r of b) {
+      const ten = tenSanPham(r);
+      const khoa = ten || `dòng ${dongCuaDong.get(r)}`;
+      if (thay.has(khoa)) continue;
+      thay.add(khoa);
+      con.push({ ten, dong: dongCuaDong.get(r) ?? null });
+    }
+    return con;
+  };
+  const dutTai = (i, lyDo) => {
+    const conLai = chuaNhapTu(i);
+    return productImportPage(res, me, cookie, shopId, {
+      ...mergeImportResults(results), total: rows.length,
+      dut: { lo_xong: results.length, lo_tong: batches.length, ly_do: lyDo,
+        con_lai: conLai.length, danh_sach: conLai.slice(0, 50), dry_run: dryRun },
+    }, null);
+  };
+
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
     // 70 giây giữ khoảng đệm cho ngân sách ảnh 45 giây; hiện ảnh được xếp hàng nền nhưng
     // giữ trần này để không tái sinh lỗi client timeout trong lúc seller đã ghi thành công.
-    const r = await sellerApi('POST', `/shops/${shopId}/products/import`, {
-      cookie,
-      body: { rows: batch, line_of: batch.map((r) => dongCuaDong.get(r) ?? null),
-        dry_run: dryRun, axis_names: axisNames, split_off: splitOff,
-        ...(remainingImageBudget === undefined ? {} : { image_limit: remainingImageBudget }),
-        ...(dryRun ? { cap_used: capUsed } : {}),
-        ...importOptions,
-      },
-      timeoutMs: dryRun ? 30000 : 70000,
-    });
-    if (r.status !== 200) return productImportPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không nhập được — kiểm tra quyền hoặc định dạng tệp.');
+    let r;
+    try {
+      r = await sellerApi('POST', `/shops/${shopId}/products/import`, {
+        cookie,
+        body: { rows: batch, line_of: batch.map((x) => dongCuaDong.get(x) ?? null),
+          dry_run: dryRun, axis_names: axisNames, split_off: splitOff,
+          ...(remainingImageBudget === undefined ? {} : { image_limit: remainingImageBudget }),
+          ...(dryRun ? { cap_used: capUsed } : {}),
+          ...importOptions,
+        },
+        timeoutMs: dryRun ? 30000 : 70000,
+      });
+    } catch (e) {
+      return dutTai(i, e?.name === 'TimeoutError'
+        ? 'máy chủ xử lý quá lâu nên lượt nhập bị cắt giữa chừng'
+        : 'mất kết nối tới máy chủ giữa chừng');
+    }
+    if (r.status !== 200) return dutTai(i, r.json?.error ?? 'máy chủ từ chối phần còn lại của tệp');
     results.push(r.json ?? {});
     remainingImageBudget = Math.max(0, Number(r.json?.images?.remaining ?? 0));
     if (dryRun) capUsed = Math.max(capUsed, Number(r.json?.cap_used ?? capUsed));

@@ -4520,6 +4520,34 @@ export function renderProductImport(ctx, shopId, result, err) {
   // KHÔNG im lặng khi bỏ một cột TIỀN. Seller gỡ `cost_vnd` khỏi tệp của vai không có quyền
   // và trả về SỐ DÒNG đã gỡ; giao diện không nói ra thì người bán gõ giá vốn cho 300 dòng rồi
   // tưởng đã lưu. §3: trống nghĩa là "chưa biết" — đây là "không được đặt", phải nói khác đi.
+  // LƯỢT NHẬP ĐỨT GIỮA CHỪNG. Trước đây admin `return` thẳng một câu "Không nhập được — kiểm
+  // tra quyền hoặc định dạng tệp" và vứt kết quả các lô đã xong. Đo được: 200 sản phẩm đã vào
+  // cửa hàng thật mà trang không hề nhắc tới chúng.
+  //
+  // Ba câu §9.2 đòi ở mọi thông báo lỗi, theo đúng thứ tự người bán cần:
+  //   chuyện gì xảy ra  → đã vào bao nhiêu, dừng ở đâu, vì sao
+  //   làm gì tiếp       → danh sách ĐÍCH DANH sản phẩm chưa vào (không chỉ con số)
+  //   thử lại được không→ gửi lại CHÍNH tệp đó, phần đã vào bị bỏ qua chứ không nhân đôi
+  //
+  // Câu cuối là sự thật đo được, không phải trấn an: chế độ "chỉ tạo mới" bỏ qua trùng, đã đo
+  // gửi lại cùng tệp cho ra đúng cùng số sản phẩm.
+  const dut = result?.dut;
+  const hopDut = !dut ? '' : (() => {
+    const ds = (dut.danh_sach ?? []).map((x) => `<li>${x.ten ? esc(x.ten) : '<span class="muted">(không có tên)</span>'}${x.dong ? ` <span class="muted">— dòng ${esc(x.dong)}</span>` : ''}</li>`).join('');
+    const con = Number(dut.con_lai ?? 0);
+    const them = con > (dut.danh_sach ?? []).length ? `<p class="muted" style="margin:6px 0 0">…và ${esc(con - (dut.danh_sach ?? []).length)} sản phẩm nữa.</p>` : '';
+    return `<div class="card" style="border-color:var(--warn);background:#fffbeb">
+      <h2 style="margin-top:0;color:#92400e">Lượt nhập dừng giữa chừng</h2>
+      <p style="margin:0 0 10px">${dut.dry_run
+        ? `Mới xem trước được <strong>${esc(dut.lo_xong)}/${esc(dut.lo_tong)}</strong> phần của tệp thì dừng — <strong>chưa ghi gì vào cửa hàng</strong>.`
+        : `Đã nhập xong <strong>${esc(dut.lo_xong)}/${esc(dut.lo_tong)}</strong> phần của tệp. Những sản phẩm ở phần đã xong <strong>đã nằm trong cửa hàng</strong>; phần còn lại thì chưa.`}
+        Lý do dừng: ${esc(dut.ly_do)}.</p>
+      <p style="margin:0 0 6px"><strong>${esc(con)} sản phẩm chưa được thêm:</strong></p>
+      <ul style="margin:0 0 10px 18px">${ds}</ul>${them}
+      <p style="margin:0"><strong>Làm gì tiếp:</strong> chọn lại <strong>chính tệp này</strong> rồi nhập lần nữa. Những sản phẩm đã vào sẽ được bỏ qua, <strong>không bị nhân đôi</strong>.</p>
+    </div>`;
+  })();
+
   const hopCostBoQua = Number(result?.cost_bo_qua ?? 0) > 0
     ? `<p style="color:var(--warn)"><strong>Cột giá vốn đã bị bỏ qua</strong> ở ${esc(Number(result.cost_bo_qua))} dòng — vai của bạn không được đặt giá vốn. Mọi cột khác vẫn nhập bình thường; nhờ chủ cửa hàng hoặc quản trị viên nhập giá vốn giúp.</p>`
     : '';
@@ -4650,6 +4678,7 @@ export function renderProductImport(ctx, shopId, result, err) {
     <h1>Nhập sản phẩm từ CSV hoặc XLSX</h1>
     <p class="muted" style="margin-top:-8px">Chuyển danh mục từ TikTok Shop, Shopify hoặc Haravan. Tệp XLSX TikTok và CSV Shopify/Haravan được nhận diện tự động.</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${hopDut}
     ${resultCard}
     ${colCard}
 

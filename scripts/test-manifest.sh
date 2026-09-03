@@ -128,7 +128,7 @@ MANIFEST_UNIT_FILES=(
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
 MANIFEST_UNIT_COUNT=42
-MANIFEST_E2E_COUNT=109
+MANIFEST_E2E_COUNT=110
 # Số FILE migration, KHÔNG phải số thứ tự cao nhất. Dãy có khoảng trống (0157 chẳng hạn)
 # nên hôm nay là 182 file trong khi file mới nhất mang số 0184 — suy số lượng từ số thứ tự
 # là sai ngay từ hôm nay. scripts/fresh-migration-gate.sh so BẰNG với con số này, và so

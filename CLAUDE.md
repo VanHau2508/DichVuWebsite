@@ -500,7 +500,7 @@ một lát cắt riêng, không phải phần đuôi của lát cắt này.
 report MẬT, thì đó là một **quyết định sản phẩm mới**: phải đo lại toàn bộ dashboard, không tự
 thay trong một lát cắt khác.
 
-### 9.3b Lát cắt 4 và Trung tâm vận hành đã đóng; brief C đang chờ review
+### 9.3b Lát cắt 4, Trung tâm vận hành và brief C đều đã ĐÓNG
 
 Đợt đo 2 của `đa kiện/ca xử lý` ra ba nhánh việc, cố ý tách để không đụng `pages.js` cùng lúc:
 
@@ -508,10 +508,10 @@ thay trong một lát cắt khác.
 |---|---|---|
 | **A** | bằng chứng hoàn tiền + chốt ca, `app_resolution`, hàm SECURITY DEFINER hẹp (`docs/78`) | **đã merge** `b7088ab` |
 | **B** | bảng quản trị card-hoá ở server (`docs/77`) | **đã merge** `db9eeae` |
-| **C** | bản đồ phục hồi vận đơn | phần nền đã merge; phần bề mặt đã thi công trên `codex/orphan-shipment-recovery`, chờ review |
+| **C** | bản đồ phục hồi vận đơn | **đã merge** — nền `5461fb8`, bề mặt `88ee67d` |
 
-Lát cắt 4 coi như đóng ở phần A+B. Chủ dự án đã chọn làm tiếp C sau khi khoá ba quyết định
-bề mặt; nhánh thi công chưa vào `main`.
+Lát cắt 4 đóng trọn. Nhánh `codex/orphan-shipment-recovery` fast-forward vào `main` tại
+`88ee67d` — bốn commit `8d02b6c` → `3a83d7d` → `4449e3f` → `88ee67d`, không merge commit.
 
 Lát cắt **checkout mobile đã ĐÓNG** trên `main` tại `0788eaa`: nút GPS được gác ở SSR khi
 tắt JavaScript, script chỉ mở lại khi trình duyệt có geolocation, và kiểm chứng giữ nguyên
@@ -566,7 +566,7 @@ advisory mức **moderate** xuất hiện ngày 01/09 (`decode-uri-component` �
 chạm `checkout`/`seller`/`worker`; ngưỡng `--audit-level=high` của `security-scan.sh` không chặn,
 bản vá lại đòi hạ `minio` xuống `7.0.26` — thay đổi phá vỡ, đừng vá vội.
 
-**Phần bề mặt brief C đã thi công, đang chờ review chéo.** Chủ dự án chốt `orphan` là việc mức
+**Phần bề mặt brief C đã ĐÓNG.** Chủ dự án chốt `orphan` là việc mức
 **chặn** và chốt đổi/ngắt hãng bằng **interstitial SSR/no-JS**: lượt đầu chỉ hiện đúng số vận
 đơn sẽ mất theo dõi, lượt hai gửi lại chính con số đó; seller khoá cấu hình và chỉ ghi khi số
 vẫn bằng tập hiện tại. Không dùng ô xác nhận mù, không phụ thuộc JavaScript.
@@ -589,6 +589,19 @@ Cổng đầy đủ trên nhánh: **107/107 E2E**, không log sót; bất biến
 DB trắng **182**, 0 DRIFT, 0 pending; smoke **8 · 27 · 32**. `security-scan` đọc audit JSON
 và báo OK kèm đúng ba instance advisory moderate `decode-uri-component` đã ghi ngay phía trên; audit JSON chạy
 riêng cho checkout/seller/worker đều exit 0 với **0 high · 0 critical**.
+
+**Lỗ đo đắt nhất của lát cắt này, chép lại vì nó đi lọt xa hơn mọi lỗ trước.** Bản `8d02b6c`
+đóng orphan đúng ở mọi đường, nhưng hai khẳng định tiền chỉ đếm `count(*) FROM
+payment_transactions`. Đột biến ghi thẳng `payment_status='paid'` + `paid_at=now()` vào nhánh
+đóng orphan — tức hệ thống thu tiền một đơn COD chưa ai trả đồng nào — cho **117 pass, 0 fail**,
+và đi lọt **cả bảy bước cổng đầy đủ**. Nguyên nhân: §3 định nghĩa **doanh thu = `paid_at IS NOT
+NULL`**, không đọc sổ giao dịch; một đường ghi `paid_at` mà không sinh dòng ledger thì báo cáo
+cộng đủ tiền trong khi `count(*)` trước = sau. Tên biến `paymentsAfter…` khiến người đọc tưởng
+đã canh tiền, còn thứ nó canh là SỔ. Nay cả hai khẳng định đọc `payment_status` **và** `paid_at`
+trên `orders` (phải có cả hai: hoàn tiền lật `payment_status` nhưng GIỮ `paid_at`), và đột biến
+ở cả hai nhánh đóng orphan đều **117/1**.
+→ **Luật rút ra: khẳng định về tiền phải đọc ĐÚNG cột mà định nghĩa doanh thu dùng.** Đếm bảng
+lân cận là phép đo đi qua một chốt khác — xanh, và xanh vô nghĩa.
 
 Parser cũ của `security-scan.sh` bắt văn xuôi npm (`found [0-9]+ (low|moderate) `) — mẫu viết
 theo npm 6, mà npm 10/11 in `3 moderate severity vulnerabilities`. Nghĩa là mục 1 **không thể
@@ -672,6 +685,21 @@ sau này thay được bằng cửa hàng thật: mỗi thẻ có khe ảnh `nh-
 thật, thẻ hôm nay là **cửa hàng MẪU** và mục tự nói rõ điều đó ngay dưới băng — chốt
 `landing-nganh-hang.test.js` bắt cả hai đầu: mất dòng đó là đỏ, đặt tên nghe như một shop
 có thật cũng đỏ. Đo: 0/9 bề rộng tràn ở cả nhánh JS và không-JS, 23/23 đột biến đỏ.
+
+**Nhánh `claude/full-system-folder-access-tc6cfk` đã CHẾT, đừng merge.** 13 commit dựng trang
+chủ, rẽ khỏi `main` tại `d86176f` và đứng sau `main` **53 commit**. Đo được: 10/13 commit đã có
+trên `main` dưới dạng patch tương đương (`git cherry`); ba commit còn lại không thiếu mà CŨ HƠN
+— `landing.js` trên `main` 2075 dòng so với 2031 ở nhánh, không tệp nào tồn tại riêng ở nhánh,
+và **mọi dòng riêng của nhánh đều là phiên bản trước khi vá**: `rvGuard` ở đó GỠ cờ `lpjs` thay
+vì hiện phần tử đang kẹt (đúng bản vá 4/37 → 37/37 ghi phía trên), băng Ngành hàng dùng
+`setInterval` + nhảy về đầu thay vì bản bóng liền mạch. Merge nó sẽ **XOÁ 11.213 dòng**:
+migration `0180`–`0184`, connector KiotViet, bất biến schema/tenant, hai harness verify, và hoàn
+nguyên bản vá `security-scan`. Đã lưu nguyên trạng ở nhánh `archive/landing-2026-08` (cùng SHA
+`46193e5`); **nhánh gốc chưa xoá được** — token của phiên chỉ ký được tạo/cập nhật `refs/heads/*`,
+GitHub trả 403 cho cả xoá ref lẫn `refs/tags/*`. Chủ dự án xoá bằng tay khi tiện.
+
+Còn 31 nhánh trên remote, phần lớn đã merge từ lâu. Chưa ai dọn, và mỗi nhánh cũ là một lần
+`git merge` nhầm tay đang chờ xảy ra — chuyện vừa suýt xảy ra với nhánh ngay phía trên.
 
 ### 9.4 Bắt đầu một phiên mới thế nào
 

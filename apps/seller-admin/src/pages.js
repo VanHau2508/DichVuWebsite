@@ -640,6 +640,12 @@ export function landingPath(shopId, role) {
 const MEMBER_READ_ROLES = new Set(['owner', 'admin']); // xem nhân sự; SỬA chỉ owner (seller cưỡng chế)
 const EXPORT_ROLES = new Set(['owner']); // xuất dữ liệu: CHỈ chủ shop (seller cưỡng chế perm 'export')
 const REPORT_ROLES = new Set(['owner', 'admin']); // báo cáo lãi: owner/admin (seller cưỡng chế 'reports.read' — ẩn nav chỉ là mỹ quan)
+
+// MỘT nguồn cho câu hỏi "vai này có thấy giá vốn không". Cả trang chi tiết sản phẩm, trang
+// nhập, lẫn tệp mẫu CSV đều hỏi qua đây — §9.3: đừng chép Set mới, hai bản sẽ trôi và trôi về
+// phía nguy hiểm. Seller cưỡng chế bằng `reports.read` (catalog.js:canSeeCost); hàm này là
+// lớp giao diện, không phải lớp chặn.
+export const thayGiaVon = (role) => REPORT_ROLES.has(role);
 const DOMAIN_ROLES = new Set(['owner']); // tên miền: CHỈ chủ shop (seller cưỡng chế 'domain.write')
 const SHIPPING_ROLES = new Set(['owner', 'admin']); // vận chuyển: owner/admin (seller cưỡng chế 'shop.write' + step-up)
 const AUDIT_ROLES = new Set(['owner', 'admin']); // nhật ký hoạt động: owner/admin (seller cưỡng chế 'audit.read')
@@ -4484,16 +4490,39 @@ export function renderBlogEditor(ctx, shopId, post, err, media = []) {
 // Ba dòng đầu cùng handle ⇒ MỘT sản phẩm ba biến thể; dòng cuối handle khác ⇒ sản phẩm riêng.
 // Mẫu phải TỰ NÓ dạy được cách gộp, vì đó là thứ khó hiểu nhất của định dạng này — một mẫu
 // một-dòng-một-sản-phẩm sẽ dạy sai ngay từ đầu.
-export const IMPORT_SAMPLE_CSV = [
-  'handle,title,description,status,category,option1_name,option1_value,option2_name,option2_value,sku,price_vnd,compare_at_price_vnd,cost_vnd,stock,weight_gram,image_url',
-  'ao-thun-basic,Áo thun cotton basic,Cotton 100% co giãn,active,Thời trang > Áo,Màu,Đen,Size,M,ATB-DEN-M,199000,259000,120000,12,220,',
-  'ao-thun-basic,,,,,Màu,Đen,Size,L,ATB-DEN-L,199000,259000,120000,8,240,',
-  'ao-thun-basic,,,,,Màu,Trắng,Size,M,ATB-TRA-M,209000,259000,125000,5,220,',
-  'den-ngu-go,Đèn ngủ để bàn gỗ sồi,,draft,Nhà cửa > Đèn,,,,,DEN-GO-01,390000,,210000,3,900,',
-].join('\n');
+const IMPORT_SAMPLE_ROWS = [
+  ['handle', 'title', 'description', 'status', 'category', 'option1_name', 'option1_value', 'option2_name', 'option2_value', 'sku', 'price_vnd', 'compare_at_price_vnd', 'cost_vnd', 'stock', 'weight_gram', 'image_url'],
+  ['ao-thun-basic', 'Áo thun cotton basic', 'Cotton 100% co giãn', 'active', 'Thời trang > Áo', 'Màu', 'Đen', 'Size', 'M', 'ATB-DEN-M', '199000', '259000', '120000', '12', '220', ''],
+  ['ao-thun-basic', '', '', '', '', 'Màu', 'Đen', 'Size', 'L', 'ATB-DEN-L', '199000', '259000', '120000', '8', '240', ''],
+  ['ao-thun-basic', '', '', '', '', 'Màu', 'Trắng', 'Size', 'M', 'ATB-TRA-M', '209000', '259000', '125000', '5', '220', ''],
+  ['den-ngu-go', 'Đèn ngủ để bàn gỗ sồi', '', 'draft', 'Nhà cửa > Đèn', '', '', '', '', 'DEN-GO-01', '390000', '', '210000', '3', '900', ''],
+];
+
+// Mẫu phát cho vai KHÔNG được xem giá vốn phải BỎ HẲN cột đó. Để nguyên là mời người ta điền
+// một cột mà hệ thống sẽ vứt — và họ chỉ biết sau khi đã gõ xong cả tệp.
+//
+// Cắt theo CHỈ SỐ CỘT trên mảng, không cắt bằng regex trên chuỗi CSV: một ô dữ liệu chứa dấu
+// phẩy (mô tả sản phẩm chẳng hạn) sẽ làm mọi phép đếm cột bằng split(',') lệch đi, và lệch
+// im lặng — tệp vẫn tải về được, chỉ sai cột.
+export function importSampleCsv(thayCost = true) {
+  const bo = IMPORT_SAMPLE_ROWS[0].indexOf('cost_vnd');
+  const rows = thayCost ? IMPORT_SAMPLE_ROWS : IMPORT_SAMPLE_ROWS.map((r) => r.filter((_, i) => i !== bo));
+  return rows.map((r) => r.map((o) => (/[",\n]/.test(o) ? `"${o.replace(/"/g, '""')}"` : o)).join(',')).join('\n');
+}
+
+export const IMPORT_SAMPLE_CSV = importSampleCsv(true);
 
 export function renderProductImport(ctx, shopId, result, err) {
   const base = `/shops/${esc(shopId)}/products`;
+  // Giá vốn là bí mật kinh doanh (03/09): vai không xem được thì bảng cột cũng không được
+  // nhắc tới `cost_vnd`, và tệp mẫu tải về cũng không có cột đó — xem importSampleCsv.
+  const thayCost = thayGiaVon(ctx.role);
+  // KHÔNG im lặng khi bỏ một cột TIỀN. Seller gỡ `cost_vnd` khỏi tệp của vai không có quyền
+  // và trả về SỐ DÒNG đã gỡ; giao diện không nói ra thì người bán gõ giá vốn cho 300 dòng rồi
+  // tưởng đã lưu. §3: trống nghĩa là "chưa biết" — đây là "không được đặt", phải nói khác đi.
+  const hopCostBoQua = Number(result?.cost_bo_qua ?? 0) > 0
+    ? `<p style="color:var(--warn)"><strong>Cột giá vốn đã bị bỏ qua</strong> ở ${esc(Number(result.cost_bo_qua))} dòng — vai của bạn không được đặt giá vốn. Mọi cột khác vẫn nhập bình thường; nhờ chủ cửa hàng hoặc quản trị viên nhập giá vốn giúp.</p>`
+    : '';
   const n = (x) => esc(Number(x ?? 0));
 
   // Bảng lỗi theo DÒNG trong file gốc — người bán sửa file, không sửa cơ sở dữ liệu.
@@ -4574,6 +4603,7 @@ export function renderProductImport(ctx, shopId, result, err) {
     const warningBox = (result.warnings ?? []).length ? `<p style="color:var(--warn)"><strong>Cảnh báo:</strong> ${(result.warnings ?? []).map((w) => esc(w.message)).join(' ')}</p>` : '';
     resultCard = `<div class="card" style="border-color:var(--indigo)">
       <h2 style="margin-top:0">Xem trước — <span style="color:var(--indigo)">chưa ghi gì vào cửa hàng</span></h2>
+      ${hopCostBoQua}
       <div class="metrics" style="margin-bottom:12px">
         <div class="metric"><div class="l">Dòng trong tệp</div><div class="v">${n(result.rows)}</div></div>
         <div class="metric"><div class="l">Sẽ tạo</div><div class="v">${n(result.created)} sản phẩm</div></div>
@@ -4596,6 +4626,7 @@ export function renderProductImport(ctx, shopId, result, err) {
     const warningBox = (result.warnings ?? []).length ? `<p style="color:var(--warn)"><strong>Cảnh báo:</strong> ${(result.warnings ?? []).map((w) => esc(w.message)).join(' ')}</p>` : '';
     resultCard = `<div class="card" style="border-color:${result.failed ? 'var(--warn)' : 'var(--good)'}">
       <h2 style="margin-top:0">Đã nhập xong</h2>
+      ${hopCostBoQua}
       <div class="metrics" style="margin-bottom:12px">
         <div class="metric"><div class="l">Sản phẩm đã tạo</div><div class="v" style="color:var(--good)">${n(result.created)}</div></div>
         ${result.updated ? `<div class="metric"><div class="l">Sản phẩm cập nhật</div><div class="v" style="color:var(--good)">${n(result.updated)}</div></div>` : ''}
@@ -4651,7 +4682,7 @@ export function renderProductImport(ctx, shopId, result, err) {
           [{ html: `<code>category</code>` }, { html: `không`, cls: 'muted' }, { html: `Danh mục, tối đa 2 cấp: <code>Thời trang &gt; Áo</code>.` }],
           [{ html: `<code>image_url</code>` }, { html: `không`, cls: 'muted' }, { html: `Địa chỉ ảnh (http/https). Hệ thống tự tải về và lưu.` }],
           [{ html: `<code>compare_at_price_vnd</code>` }, { html: `không`, cls: 'muted' }, { html: `Giá gạch ngang — phải lớn hơn giá bán.` }],
-          [{ html: `<code>cost_vnd</code>` }, { html: `không`, cls: 'muted' }, { html: `Giá vốn, dùng cho báo cáo lãi.` }],
+          ...(thayCost ? [[{ html: `<code>cost_vnd</code>` }, { html: `không`, cls: 'muted' }, { html: `Giá vốn, dùng cho báo cáo lãi.` }]] : []),
           [{ html: `<code>stock</code>` }, { html: `không`, cls: 'muted' }, { html: `Tồn kho ban đầu (mặc định 0).` }],
           [{ html: `<code>weight_gram</code>` }, { html: `không`, cls: 'muted' }, { html: `Cân nặng tính bằng <strong>gram</strong> — dùng để tính phí ship.` }],
           [{ html: `<code>status</code>` }, { html: `không`, cls: 'muted' }, { html: `<code>active</code> để bán ngay, mặc định <code>draft</code>.` }],
@@ -4898,6 +4929,13 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
   // Link sang SỔ CÁI KHO đã lọc sẵn biến thể này — nếu không có, bộ lọc variant_id của sổ cái
   // là tính năng chết (không đường nào bấm tới). Chỉ hiện với vai xem được khu Kho.
   const canSeeLedger = INVENTORY_ROLES.has(ctx.role);
+  // GIÁ VỐN LÀ BÍ MẬT KINH DOANH (quyết định 03/09). Dùng lại ĐÚNG Set mà nav dùng cho khu
+  // báo cáo — §9.3: đừng chép Set mới, hai bản sẽ trôi và trôi về phía nguy hiểm.
+  //
+  // Phải ẩn CẢ Ô NHẬP LẪN BIÊN LÃI. Ẩn mỗi ô nhập là vô nghĩa: giá bán nằm ngay cột bên,
+  // nên "biên ~40%" cho lại giá vốn bằng một phép chia. Seller cũng đã bỏ khoá `cost_vnd`
+  // khỏi response cho vai này, nên đây là lớp thứ hai chứ không phải lớp duy nhất.
+  const thayCost = thayGiaVon(ctx.role);
   const stock = (vid) => {
     const l = levels[vid];
     const hist = canSeeLedger
@@ -4909,7 +4947,7 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
   // Biên lãi gợi ý server-render cạnh ô giá vốn (0081): đủ giá + vốn → "biên ~X%";
   // vốn ≥ giá bán → cảnh báo MỀM đỏ (bán lỗ chủ đích hợp lệ — seller không chặn).
   const marginHint = (v) => {
-    if (v.cost_vnd == null) return '';
+    if (!thayCost || v.cost_vnd == null) return '';
     const price = Number(v.price_vnd), cost = Number(v.cost_vnd);
     if (cost >= price) return '<div style="color:#b91c1c;font-size:.78rem">⚠ vốn ≥ giá bán</div>';
     return price > 0 ? `<div class="muted" style="font-size:.78rem">biên ~${Math.round(((price - cost) / price) * 100)}%</div>` : '';
@@ -4925,7 +4963,7 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
     <td>${esc(v.sku)}${v.title ? ` <span class="muted">${esc(v.title)}</span>` : ''}</td>
     <td class="num right"><input form="pall" name="price_${esc(v.id)}" type="number" min="0" step="1000" value="${esc(v.price_vnd)}" style="width:104px" aria-label="Giá biến thể ${esc(v.sku)} (VND)"></td>
     <td class="num right"><input form="pall" name="compare_${esc(v.id)}" type="number" min="0" step="1000" value="${esc(v.compare_at_vnd ?? '')}" placeholder="không KM" style="width:104px" aria-label="Giá gạch ${esc(v.sku)} (VND)"></td>
-    <td class="num right"><input form="pall" name="cost_${esc(v.id)}" type="number" min="0" step="1000" value="${esc(v.cost_vnd ?? '')}" placeholder="chưa nhập" style="width:104px" aria-label="Giá vốn ${esc(v.sku)} (VND)">${marginHint(v)}</td>
+    ${thayCost ? `<td class="num right"><input form="pall" name="cost_${esc(v.id)}" type="number" min="0" step="1000" value="${esc(v.cost_vnd ?? '')}" placeholder="chưa nhập" style="width:104px" aria-label="Giá vốn ${esc(v.sku)} (VND)">${marginHint(v)}</td>` : ''}
     <td><input form="pall" name="weight_${esc(v.id)}" type="number" min="1" max="50000" value="${esc(v.weight_gram ?? '')}" placeholder="mặc định" style="width:86px" aria-label="Khối lượng ${esc(v.sku)} (gram)"></td>
     <td>${stock(v.id)}</td>
     <td><input form="pall" name="delta_${esc(v.id)}" type="number" step="1" placeholder="+/−" style="width:96px" aria-label="Điều chỉnh tồn ${esc(v.sku)}"></td>
@@ -4971,9 +5009,11 @@ export function renderProductDetail(ctx, shopId, p, levels, err, form, media, ca
     </div>
     <div class="card"><div class="toolbar"><h2 style="margin:0">Biến thể & tồn kho</h2></div>
       <p class="muted" style="font-size:.85rem;margin-top:0">Sửa <strong>giá, giá gạch, giá vốn, khối lượng</strong> cho nhiều biến thể cùng lúc — tất cả lưu chung một nút <strong>“Lưu tất cả”</strong>. Điền cột <strong>Điều chỉnh tồn</strong> (+/−) cho những dòng cần rồi bấm <strong>“Cập nhật tồn”</strong> — mỗi nút lưu một lần cho mọi dòng đã sửa. Cột <strong>Xoá</strong> vẫn tác dụng ngay từng dòng.</p>
-      <div class="tblscroll"><table class="vartbl"><thead><tr><th>SKU / Phân loại</th><th class="right">Giá</th><th class="right">Giá gạch (đ)</th><th class="right">Giá vốn (đ)</th><th>Nặng (g)</th><th>Có thể bán</th><th>Điều chỉnh tồn</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="tblscroll"><table class="vartbl"><thead><tr><th>SKU / Phân loại</th><th class="right">Giá</th><th class="right">Giá gạch (đ)</th>${thayCost ? '<th class="right">Giá vốn (đ)</th>' : ''}<th>Nặng (g)</th><th>Có thể bán</th><th>Điều chỉnh tồn</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
       ${nVar ? `<div class="savebar"><span class="muted" style="font-size:.82rem">${nVar} biến thể</span><input form="pall" name="stock_reason" maxlength="200" placeholder="lý do điều chỉnh tồn (tuỳ chọn)" style="width:230px"><button class="btn" form="pall" type="submit">Lưu tất cả</button></div>` : ''}
-      <p class="muted" style="font-size:.82rem">Giá vốn KHÔNG hiện với khách; nhân viên sản phẩm nhập được, chỉ owner/admin xem báo cáo lãi. Đơn đã đặt giữ giá vốn tại thời điểm đặt.</p>
+      ${thayCost
+        ? `<p class="muted" style="font-size:.82rem">Giá vốn KHÔNG hiện với khách và chỉ chủ cửa hàng / quản trị viên xem được — nhân viên sản phẩm không thấy cột này. Đơn đã đặt giữ giá vốn tại thời điểm đặt.</p>`
+        : `<p class="muted" style="font-size:.82rem">Cột <strong>Giá vốn</strong> chỉ chủ cửa hàng và quản trị viên xem được, nên không hiện ở đây. Mọi thứ khác trong bảng bạn sửa bình thường.</p>`}
       <h2>Thêm biến thể lẻ</h2>
       <p class="muted" style="font-size:.85rem">Dùng khi KHÔNG dùng phân loại đa trục ở trên (thêm tay từng biến thể).</p>
       <form method="POST" action="${base}/variants" class="inline">

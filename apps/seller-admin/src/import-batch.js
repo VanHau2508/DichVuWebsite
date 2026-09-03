@@ -47,7 +47,7 @@ export function splitProductBatches(rows, { maxProducts = 200, maxBytes = 1_500_
 export function mergeImportResults(results) {
   const out = { dry_run: results.every((r) => r.dry_run === true), rows: 0, groups: 0, created: 0,
     updated: 0, unchanged: 0, variants: 0, variants_updated: 0, variants_created: 0,
-    failed: 0, skipped_existing: 0, errors: [], diffs: [], missing_variants: [], warnings: [], preview: [], axisHints: [],
+    failed: 0, skipped_existing: 0, cost_bo_qua: 0, errors: [], diffs: [], missing_variants: [], warnings: [], preview: [], axisHints: [],
     images: { queued: 0, invalid: 0, skipped: 0, limit: Number(results[0]?.images?.limit ?? 0), remaining: 0 },
     columns: { recognised: [], ignored: [] },
     import_mode: results[0]?.import_mode ?? 'create_only',
@@ -58,7 +58,11 @@ export function mergeImportResults(results) {
   const recognised = new Set();
   const ignored = new Set();
   for (const r of results) {
-    for (const key of ['rows', 'groups', 'created', 'updated', 'unchanged', 'variants', 'variants_updated', 'variants_created', 'failed', 'skipped_existing']) out[key] += Number(r[key] ?? 0);
+    // `cost_bo_qua` phải nằm trong danh sách CỘNG này, không chỉ trong khai báo trên. Hàm gộp
+    // dựng một object MỚI theo danh sách khoá trắng, nên một khoá không được kể tên ở đây sẽ
+    // rơi im lặng giữa seller và trang — đo được: seller trả 2, trang hiện 0, không lỗi nào.
+    // Đúng ba mảnh của một chốt (§4): cơ chế → DÂY NỐI → điểm phát ra; khúc giữa là chỗ đứt.
+    for (const key of ['rows', 'groups', 'created', 'updated', 'unchanged', 'variants', 'variants_updated', 'variants_created', 'failed', 'skipped_existing', 'cost_bo_qua']) out[key] += Number(r[key] ?? 0);
     for (const key of ['queued', 'invalid', 'skipped']) out.images[key] += Number(r.images?.[key] ?? 0);
     out.errors.push(...(r.errors ?? []));
     out.diffs.push(...(r.diffs ?? []));

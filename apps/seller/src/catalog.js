@@ -17,6 +17,21 @@ import crypto from 'node:crypto';
 import { send, parseOffset } from './http.js';
 import { withTenant, audit } from './db.js';
 import { AVAIL_SQL } from '../safety-stock.js';
+import { can } from './rbac.js';
+
+// GIÁ VỐN LÀ BÍ MẬT KINH DOANH — quyết định của chủ dự án, 03/09.
+//
+// Ranh giới của kho này vốn nhất quán: mọi con số lộ biên lãi hoặc nguồn hàng đều nằm sau
+// `inventory.manage` (sổ cái kho cấp shop, tồn an toàn, phiếu nhập/NCC) hoặc `reports.read`
+// (P&L, giá vốn). Giá vốn từng là NGOẠI LỆ DUY NHẤT nằm bên phía catalog: đo được
+// `catalog_manager` vừa ĐỌC (getProduct trả cost_vnd) vừa GHI (PATCH variant) được nó, trong
+// khi cùng vai đó mở /reports/pnl thì 404.
+//
+// Chọn `reports.read` chứ không phải `inventory.manage`: hôm nay cả hai đều ra {owner, admin}
+// nên hành vi giống hệt, nhưng chính chú thích của `reports.read` trong rbac.js đã kể tên
+// "báo cáo lợi nhuận + giá vốn". Neo vào cái có tên đúng thì lần sau ai đó nới một trong hai
+// vai sẽ không vô tình mở nhầm thứ kia.
+export const canSeeCost = (role) => can(role, 'reports.read');
 
 // Base URL ảnh public (giống storefront) — dựng URL thumbnail cho danh sách SP trong admin.
 const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
@@ -356,9 +371,17 @@ async function getProduct(res, ctx, _body, params) {
       [productId],
     );
     if (p.rows.length === 0) return null;
+    // Vai không được xem giá vốn thì KHÔNG JOIN — giá trị không bao giờ vào tiến trình, nên
+    // không có đường nào lọt ra qua log, lỗi hay một `...v` vô ý về sau.
+    //
+    // VẮNG KHOÁ, không phải `null`. Trả `cost_vnd: null` là nói dối theo đúng lớp lỗi §3
+    // "NULL ≠ 0": trống nghĩa là "chưa nhập", mà đây là "không được xem". Giao diện phân biệt
+    // được hai thứ đó bằng chính sự vắng mặt của khoá.
+    const thayCost = canSeeCost(ctx.role);
     const variants = await c.query(
-      `SELECT v.id, v.title, v.sku, v.price_vnd, v.position, v.weight_gram, v.compare_at_vnd, vc.cost_vnd
-         FROM variants v LEFT JOIN variant_costs vc ON vc.shop_id = v.shop_id AND vc.variant_id = v.id
+      `SELECT v.id, v.title, v.sku, v.price_vnd, v.position, v.weight_gram, v.compare_at_vnd
+              ${thayCost ? ', vc.cost_vnd' : ''}
+         FROM variants v ${thayCost ? 'LEFT JOIN variant_costs vc ON vc.shop_id = v.shop_id AND vc.variant_id = v.id' : ''}
         WHERE v.product_id = $1 ORDER BY v.position`,
       [productId],
     );
@@ -592,6 +615,12 @@ async function updateVariant(res, ctx, body, params) {
   // Giá VỐN (0081): sống ở bảng RIÊNG variant_costs (không phải cột variants) — xử lý
   // ngoài mảng sets. null = xoá dòng. Request CHỈ có cost_vnd vẫn hợp lệ.
   const hasCost = body.cost_vnd !== undefined;
+  // Không xem được thì không đặt được. Từ chối TƯỜNG MINH bằng 403 chứ không lặng lẽ bỏ qua:
+  // giá vốn là con số tiền, và một request nói "đặt vốn = 90k" mà server trả 200 sau khi vứt
+  // nó đi là kiểu hỏng tệ nhất — người gọi tin là đã ghi. Cùng lý do §3 cấm nuốt lặng cột tiền.
+  if (hasCost && !canSeeCost(ctx.role)) {
+    return send(res, 403, { error: 'vai của bạn không được xem hay đặt giá vốn — nhờ chủ cửa hàng hoặc quản trị viên nhập giúp' });
+  }
   if (hasCost && !validCost(body.cost_vnd)) return send(res, 400, { error: 'giá vốn không hợp lệ (số nguyên ≥ 0, để trống = xoá)' });
   if (hasCost) want.cost_vnd = body.cost_vnd;
   if (!sets.length && !hasCost) return send(res, 400, { error: 'không có trường nào để cập nhật' });

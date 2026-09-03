@@ -21,8 +21,7 @@ import { withTenant, audit } from './db.js';
 import { purgeReplacedProductMedia } from './media.js';
 import {
   isInt, validPrice, validTitle, validSku, validSlug, validWeight, validCompareAt, validCost,
-  slugify, planMaxProducts, catalogCount, conflictMessage, syncProductPrice,
-} from './catalog.js';
+  slugify, planMaxProducts, catalogCount, conflictMessage, syncProductPrice, canSeeCost } from './catalog.js';
 
 const IMPORT_MAX_PRODUCTS = 1000;
 const MAX_VARIANTS_PER_PRODUCT = 100;   // cùng trần với ma trận biến thể (0041-0043)
@@ -795,6 +794,23 @@ export async function importProducts(res, ctx, body) {
   // Có cột handle hay không quyết định chế độ gộp — xét trên TOÀN FILE, không theo từng dòng.
   const hasHandleColumn = raw.some((r) => Object.keys(r ?? {}).some((k) => COLS.handle.includes(normKey(k))));
   const rows = raw.map(mapRow);
+
+  // GIÁ VỐN LÀ BÍ MẬT KINH DOANH (quyết định 03/09) — vai không xem được thì cũng không đặt
+  // được, kể cả qua bộ nhập. Gỡ cột NGAY TẠI ĐÂY, trước khi buildProduct đọc tới, để một ô
+  // giá vốn viết sai KHÔNG làm hỏng cả dòng của người không có quyền đặt nó.
+  //
+  // Bỏ qua chứ KHÔNG chặn cả tệp: tệp mẫu do chính hệ thống phát ra vẫn có cột `cost_vnd`
+  // (pages.js), nên chặn cứng là bắt lỗi người dùng vì lỗi của mình. Nhưng KHÔNG im lặng —
+  // số dòng bị gỡ được trả về để giao diện nói thẳng ra. §3 cấm nuốt lặng một cột tiền.
+  const boQuaCost = !canSeeCost(ctx.role);
+  let dongBoCost = 0;
+  if (boQuaCost) {
+    for (const r of rows) {
+      if (r.cost_vnd !== undefined && str(r.cost_vnd) !== '') dongBoCost++;
+      delete r.cost_vnd;
+    }
+  }
+
   const groups = groupRows(rows, hasHandleColumn);
   if (groups.length > IMPORT_MAX_PRODUCTS) {
     return send(res, 413, { error: `tối đa ${IMPORT_MAX_PRODUCTS} sản phẩm mỗi lần nhập` });
@@ -882,6 +898,7 @@ export async function importProducts(res, ctx, body) {
       diffs: diffs.slice(0, 500), missing_variants: missingVariants.slice(0, 200), warnings: warnings.slice(0, 100),
       failed: errs.length, errors: errs.slice(0, 100), preview, columns,
       source: adapted.source, axisHints: adapted.axisHints,
+      cost_bo_qua: boQuaCost ? dongBoCost : 0,
     });
   }
 
@@ -997,6 +1014,7 @@ export async function importProducts(res, ctx, body) {
       limit: imageLimit, remaining: Math.max(0, imageLimit - imageState.queued) },
     columns,
     source: adapted.source, axisHints: adapted.axisHints,
+    cost_bo_qua: boQuaCost ? dongBoCost : 0,
   });
 }
 

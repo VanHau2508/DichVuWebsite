@@ -2089,15 +2089,34 @@ async function productImport(req, res, me, cookie, shopId) {
   let batches;
   try { batches = splitProductBatches(rows); }
   catch (e) { return productImportPage(res, me, cookie, shopId, null, e.message); }
+  // SỐ DÒNG TRONG TỆP GỐC, gửi kèm từng lô. Seller tự tính `line = i + 2` theo mảng NÓ nhận
+  // được, mà admin chia lô 200 sản phẩm — nên lỗi ở sản phẩm thứ 250 báo "dòng 51". Đo được:
+  // tệp 260 SP, lỗi ở SP 250, giao diện chỉ vào dòng 51.
+  //
+  // Hại hơn "chỉ sai chỗ": dòng 51 CÓ THẬT và hoàn toàn đúng, nên người bán sửa một sản phẩm
+  // lành lặn rồi nhập lại và vẫn hỏng. Chính bảng lỗi này tồn tại để họ "sửa file, không sửa
+  // cơ sở dữ liệu".
+  //
+  // Dùng BẢN ĐỒ THEO ĐỐI TƯỢNG chứ không cộng độ lệch: splitProductBatches gom theo handle nên
+  // các dòng của một lô KHÔNG liền nhau trong tệp (handle xen kẽ thì nhóm A gom dòng 1 và 3).
+  // Một con số offset duy nhất sẽ sai ngay ở tệp xen kẽ đầu tiên.
+  const dongCuaDong = new Map(rows.map((r, i) => [r, i + 2]));   // dòng 1 là tiêu đề
   const results = [];
   let remainingImageBudget;
+  // Trần gói phải được NỐI QUA CÁC LÔ ở chế độ xem trước: xem trước không ghi gì nên mỗi lô
+  // đọc số sản phẩm hiện có đều thấy y như lúc đầu, và lô sau tưởng cửa hàng còn chỗ. Đo được:
+  // tệp 212 SP với trần 100 → xem trước hứa 112, nhập thật tạo 100. Nhập thật không dính vì lô
+  // trước đã ghi xong trước khi lô sau đếm. Nối y hệt cách đã nối ngân sách ảnh ngay dưới đây.
+  let capUsed = 0;
   for (const batch of batches) {
     // 70 giây giữ khoảng đệm cho ngân sách ảnh 45 giây; hiện ảnh được xếp hàng nền nhưng
     // giữ trần này để không tái sinh lỗi client timeout trong lúc seller đã ghi thành công.
     const r = await sellerApi('POST', `/shops/${shopId}/products/import`, {
       cookie,
-      body: { rows: batch, dry_run: dryRun, axis_names: axisNames, split_off: splitOff,
+      body: { rows: batch, line_of: batch.map((r) => dongCuaDong.get(r) ?? null),
+        dry_run: dryRun, axis_names: axisNames, split_off: splitOff,
         ...(remainingImageBudget === undefined ? {} : { image_limit: remainingImageBudget }),
+        ...(dryRun ? { cap_used: capUsed } : {}),
         ...importOptions,
       },
       timeoutMs: dryRun ? 30000 : 70000,
@@ -2105,6 +2124,7 @@ async function productImport(req, res, me, cookie, shopId) {
     if (r.status !== 200) return productImportPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không nhập được — kiểm tra quyền hoặc định dạng tệp.');
     results.push(r.json ?? {});
     remainingImageBudget = Math.max(0, Number(r.json?.images?.remaining ?? 0));
+    if (dryRun) capUsed = Math.max(capUsed, Number(r.json?.cap_used ?? capUsed));
   }
   return productImportPage(res, me, cookie, shopId, { ...mergeImportResults(results), total: rows.length }, null);
 }

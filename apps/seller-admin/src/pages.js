@@ -4527,7 +4527,9 @@ export function renderProductImport(ctx, shopId, result, err) {
 
   // Bảng lỗi theo DÒNG trong file gốc — người bán sửa file, không sửa cơ sở dữ liệu.
   const errRows = (result?.errors ?? []).map((e) => [
-    { cls: 'num', html: esc(e.line) },
+    // `line: null` = lỗi của CẢ LƯỢT NHẬP, không thuộc dòng nào (trần gói chẳng hạn). `esc(null)`
+    // cho ô RỖNG, mà rỗng ở cột số dòng đọc thành "chưa biết dòng nào" — sai nghĩa. Nói thẳng.
+    { cls: 'num', html: e.line == null ? '<span class="muted">cả tệp</span>' : esc(e.line) },
     { html: esc(e.title || '(trống)') },
     { cls: 'muted', html: esc(e.error) },
   ]);

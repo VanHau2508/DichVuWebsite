@@ -128,12 +128,16 @@ const intOf = parseAmount;   // tên cũ giữ nguyên cho các chỗ gọi hi�
  * CỐ Ý không gộp theo `title`: hai sản phẩm khác nhau trùng tên là chuyện thường ở danh mục
  * thật; gộp nhầm thì người bán mất hàng mà không hề thấy báo lỗi.
  */
-function groupRows(rows, hasHandleColumn) {
+function groupRows(rows, hasHandleColumn, dongGoc = null) {
   const groups = [];
   const byKey = new Map();
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    const line = i + 2;                                   // dòng 1 là tiêu đề trong file
+    // `i + 2` chỉ ĐÚNG khi mảng này chính là cả tệp. Admin chia lô 200 sản phẩm, nên với tệp
+    // lớn thì i là chỉ số TRONG LÔ và số dòng báo ra chỉ vào một dòng khác hẳn — đo được: tệp
+    // 260 SP, lỗi ở SP 250, báo "dòng 51". `dongGoc` là số dòng thật trong tệp do admin gửi
+    // kèm; vắng nó thì rơi về cách cũ (gọi trực tiếp API, không qua admin).
+    const line = dongGoc?.[i] ?? i + 2;                    // dòng 1 là tiêu đề trong file
     const h = hasHandleColumn ? slugify(str(r.handle)) : '';
     if (!h) { groups.push({ key: null, rows: [{ line, r }] }); continue; }
     let g = byKey.get(h);
@@ -811,7 +815,11 @@ export async function importProducts(res, ctx, body) {
     }
   }
 
-  const groups = groupRows(rows, hasHandleColumn);
+  // CHỈ tin `line_of` khi adapter trả về ĐÚNG mảng đã nhận: adapter TikTok có thể sinh/gộp
+  // dòng, lúc đó chỉ số không còn khớp tệp gốc và một bản đồ lệch còn tệ hơn không có bản đồ.
+  const dongGoc = adapted.rows === originalRows && Array.isArray(body.line_of)
+    && body.line_of.length === rows.length ? body.line_of : null;
+  const groups = groupRows(rows, hasHandleColumn, dongGoc);
   if (groups.length > IMPORT_MAX_PRODUCTS) {
     return send(res, 413, { error: `tối đa ${IMPORT_MAX_PRODUCTS} sản phẩm mỗi lần nhập` });
   }
@@ -824,6 +832,20 @@ export async function importProducts(res, ctx, body) {
   if (adapted.source === 'tiktok' && flags.mode !== 'create_only' && flags.updatePrice && !flags.priceConfirmed) {
     return send(res, 400, { error: 'Cập nhật giá TikTok cần bật xác nhận giá riêng trước khi thực hiện' });
   }
+
+  // TRẦN GÓI đọc TRƯỚC khối xem trước. Trước đây nó nằm sau `return` của dry-run, nên bản xem
+  // trước KHÔNG BAO GIỜ chạm tới — đo được: tệp 212 sản phẩm, xem trước hứa "Sẽ tạo 212", nhập
+  // thật tạo 100 và bỏ 112 vì gói `platform` trần 100 SP. Bản xem trước tồn tại để trả lời
+  // "bấm nút này thì chuyện gì xảy ra"; trả lời sai 112 sản phẩm là hỏng đúng công dụng của nó.
+  // Và trần gói là lý do thất bại PHỔ BIẾN NHẤT của một lượt nhập hàng loạt: §7 ghi `platform`
+  // và `care` cùng trần 100.
+  const capChung = await withTenant(ctx.shopId, async (c) => ({ max: await planMaxProducts(c), count: await catalogCount(c) }));
+  // Số sản phẩm các LÔ TRƯỚC trong cùng lượt nhập này sẽ tạo. Xem trước KHÔNG ghi gì, nên mỗi
+  // lô đọc `catalogCount` đều thấy cửa hàng y như lúc đầu: lô 1 (200 SP) tự thấy vượt trần và
+  // báo đúng, lô 2 (12 SP) lại tưởng cửa hàng còn trống và hứa tạo cả 12. Đo được: hứa 112,
+  // nhập thật 100. Nhập THẬT không dính vì lô 1 đã ghi xong trước khi lô 2 đếm.
+  // Admin nối con số này qua từng lô, y hệt cách nó đã nối `image_limit`.
+  const daTaoTruoc = Number.isInteger(body.cap_used) && body.cap_used >= 0 ? body.cap_used : 0;
 
   // XEM TRƯỚC: kiểm + gộp rồi trả kết quả, KHÔNG ghi một dòng nào và KHÔNG tải ảnh.
   // Vì sao đáng có: file 500 dòng nhập sai một lần là 500 sản phẩm rác phải xoá tay. Mọi
@@ -885,7 +907,28 @@ export async function importProducts(res, ctx, body) {
       }
     }
     const existingCount = adapted.source === 'tiktok' && flags.mode !== 'create_only' ? updated + unchanged : skippedExisting;
-    const wouldCreate = groups.length - errs.length - existingCount;
+    let wouldCreate = groups.length - errs.length - existingCount;
+
+    // Áp trần gói ĐÚNG như đường ghi thật (xem chỗ `cap.count + created >= cap.max` bên dưới):
+    // nhập thật duyệt nhóm THEO THỨ TỰ và ngừng tạo khi chạm trần, nên những sản phẩm bị bỏ là
+    // các nhóm CUỐI. Với tệp CSV thường, mọi nhóm hợp lệ đều là tạo mới, nên nêu đích danh đúng
+    // các dòng cuối là chính xác.
+    //
+    // Nguồn TikTok thì KHÔNG nêu đích danh: ở đó một phần nhóm hợp lệ là cập nhật chứ không phải
+    // tạo, mà xem trước chỉ biết SỐ LƯỢNG đã tồn tại, không biết nhóm nào. Nêu bừa dòng sẽ chỉ
+    // vào một sản phẩm chỉ được cập nhật — đúng lớp lỗi vừa vá ở P1 (chỉ vào dòng vô tội). Nên
+    // báo một dòng tổng, không bịa vị trí.
+    if (capChung.max != null && capChung.count + daTaoTruoc + wouldCreate > capChung.max) {
+      const thua = capChung.count + daTaoTruoc + wouldCreate - capChung.max;
+      // MỘT dòng tổng, không phải một dòng mỗi sản phẩm. Bản đầu nêu đích danh từng dòng cho
+      // "hữu ích" và đo được hậu quả ngược: tệp 260 SP với trần 100 sinh 100 hàng "vượt giới
+      // hạn gói" GIỐNG HỆT nhau, đẩy lỗi thật ("giá không hợp lệ" ở dòng 251) ra khỏi phần
+      // hiển thị. Bảng lỗi tồn tại để chỉ ra chỗ CẦN SỬA; trần gói thì không sửa trong tệp
+      // được, nó là một câu duy nhất về cả lượt nhập.
+      errs.push({ line: null, title: '',
+        error: `vượt giới hạn gói: gói hiện tại cho tối đa ${capChung.max} sản phẩm, cửa hàng đã có ${capChung.count + daTaoTruoc} — ${thua} sản phẩm cuối tệp sẽ bị bỏ` });
+      wouldCreate -= thua;
+    }
     return send(res, 200, {
       dry_run: true, import_mode: flags.mode, update_content: flags.updateContent,
       update_price: flags.updatePrice, update_stock: flags.updateStock, price_confirmed: flags.priceConfirmed,
@@ -899,10 +942,14 @@ export async function importProducts(res, ctx, body) {
       failed: errs.length, errors: errs.slice(0, 100), preview, columns,
       source: adapted.source, axisHints: adapted.axisHints,
       cost_bo_qua: boQuaCost ? dongBoCost : 0,
+      cap_used: daTaoTruoc + Math.max(0, wouldCreate),
     });
   }
 
-  const cap = await withTenant(ctx.shopId, async (c) => ({ max: await planMaxProducts(c), count: await catalogCount(c) }));
+  // MỘT lần đọc trần cho cả hai đường. Đọc hai lần thì hai con số có thể lệch nhau (shop tạo
+  // thêm sản phẩm ở tab khác giữa chừng), và lệch ở đây nghĩa là xem trước hứa một đằng ghi
+  // một nẻo — đúng thứ vừa vá.
+  const cap = capChung;
   // TikTok không có seller_sku nên adapter phải sinh mã. Chỉ né trùng trong chính tệp là
   // chưa đủ: shop có thể đã dùng mã đó từ trước, và UNIQUE(shop_id, sku) sẽ làm cả sản phẩm
   // rollback. Chụp tập SKU hiện có một lần rồi giữ chỗ cho từng biến thể trong lô.

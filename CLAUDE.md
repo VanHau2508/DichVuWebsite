@@ -27,7 +27,7 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 | dòng test | ~35.472 | `apps/*/test/*.{js,mjs}` |
 | migration | 182 tệp, mới nhất `0184` | `packages/db/migrations/` |
 | bộ unit | 42 | `MANIFEST_UNIT_COUNT` |
-| bộ e2e | 108 | `MANIFEST_E2E_COUNT` |
+| bộ e2e | 109 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 147 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 82 tệp | `docs/` |
 

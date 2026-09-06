@@ -842,7 +842,7 @@ Một nhánh chưa tự động hoá được: đường `fetch` **NÉM**. Nó �
 LÝ DO; đã đo TAY bằng cách dừng container giữa lượt nhập. Ai sửa khu đó phải chạy lại tay — đã
 ghi ngay đầu tệp test.
 
-**Đợt đo 4 của lát cắt 6 — ĐƯỜNG NHẬP ĐƠN CŨ.** Đã vá và merge tại `b0ec434`.
+**Đợt đo 4 của lát cắt 6 — ĐƯỜNG NHẬP ĐƠN CŨ.** Đã vá và merge tại `09764f0`.
 
 Đo được: tệp 5 đơn **không có cột `order_code`**, nhập hai lần → **10 đơn**. `migrated_ref` (từ
 cột đó) là thứ DUY NHẤT chặn trùng — UNIQUE `orders_migrated_ref_uq`. Người bán vừa di cư từ sàn

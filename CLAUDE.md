@@ -25,10 +25,10 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 |---|---:|---|
 | dòng mã ứng dụng | ~48.900 | `apps/*/src/*.js` |
 | dòng test | ~35.472 | `apps/*/test/*.{js,mjs}` |
-| migration | 182 tệp, mới nhất `0184` | `packages/db/migrations/` |
+| migration | 183 tệp, mới nhất `0185` | `packages/db/migrations/` |
 | bộ unit | 42 | `MANIFEST_UNIT_COUNT` |
-| bộ e2e | 111 | `MANIFEST_E2E_COUNT` |
-| bất biến DB | 9 bộ, 147 test TAP | `packages/db/test/*.test.js` |
+| bộ e2e | 112 | `MANIFEST_E2E_COUNT` |
+| bất biến DB | 9 bộ, 148 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 82 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,73 — cao có chủ ý, xem §4.
@@ -75,7 +75,7 @@ với GitHub CI. Nó tự dựng PostgreSQL trắng trong project Compose riêng
 chạy đúng runner production **không seed**, rồi so ba chiều: số file = `MANIFEST_MIGRATION_COUNT`
 = số dòng thật trong `schema_migrations`, kèm 0 DRIFT / 0 pending. Tự dọn bằng `trap` ở mọi đường
 thoát, kể cả Ctrl-C. **Không chạm DB dev.** Thêm migration thì sửa `MANIFEST_MIGRATION_COUNT`
-trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 182 file / số cao nhất 0184).
+trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 183 file / số cao nhất 0185).
 
 Hook `scripts/hooks/pre-push` chạy `--fast` và **chặn push khi đỏ**. Cài một lần cho mỗi bản
 clone: `git config core.hooksPath scripts/hooks`.
@@ -880,8 +880,125 @@ tệp hợp lệ không bị doạ nhầm. Đột biến **6/6 đỏ** — bỏ 
 không chuyển tiếp xác nhận 15/2 · admin coi 409 là lỗi thường 14/3 · trang không dựng khối 11/6 ·
 nhận chuỗi rác làm xác nhận 16/1; hoàn nguyên 17/0.
 
+**Đợt đo 5 của lát cắt 6 — ẢNH QUA HÀNG RÀO SSRF.** Bốn phát hiện, cả bốn đã vá.
+
+Câu hỏi đầu tiên — *có đường nào bơm URL ra ngoài mà đi vòng hàng rào không* — trả lời bằng
+cách LIỆT KÊ ĐỦ mọi lời gọi ra ngoài chứ không soi chỗ nghi ngờ: 7 chỗ ở `worker/index.js`,
+`seller/server.js:85`, `seller/carriers.js` (GHN/GHTK), `checkout/geocode.js`,
+`integrations/kiotviet.js`. **Mọi base URL đều từ biến môi trường**; không có đường nào để
+shop tự đặt. `packages/banner-art` không chạm mạng — "cùng khuôn" trong chú thích nói về cách
+mount, không phải bản sao hàng rào. `looksFetchable` ở `import.js` là bộ lọc rẻ lúc xếp hàng
+và mọi thứ nó từ chối thì hàng rào cũng từ chối: trùng lặp nhưng fail-closed cùng chiều.
+
+**P1 · TRẦN DUNG LƯỢNG KHÔNG CÓ CHỐT NÀO — fixture viết ra rồi không ai gọi.**
+`import.e2e.mjs` dựng sẵn hai route `/big` (khai đúng Content-Length 9MB) và `/liar` (khai man
+rồi đẩy tiếp), KÈM chú thích giải thích chúng chứng minh gì. **Không dòng nào từng gửi request
+tới chúng.** Đo: gỡ CẢ HAI chốt `too_big` → unit `net-guard` **14/0**, `import.e2e` **42/0**,
+xanh trọn vẹn.
+→ **Luật rút ra: một fixture không ai gọi là chốt KHÔNG TỒN TẠI, chỉ trông như có.** Đọc test
+thấy tên route và chú thích thì tin là đã canh — grep xem có ai *gửi request* tới nó thì không.
+
+**P2 · `too_big` xếp nhầm nhóm, thử lại 4 lần cho một tệp không bao giờ nhỏ đi.** Nó là mã lỗi
+DUY NHẤT của hàng rào rơi ngoài danh sách vĩnh viễn của worker. Đo được: `/liar` làm worker
+tải TRỌN 8MB mỗi lượt trước khi trần cắt — 4 lượt = 32MB, rải qua 1+5+25 phút, kết cục vẫn
+`failed`. Nay nằm cùng nhóm với `not_image` ngay cạnh nó.
+
+**P3 · Bot và storefront trả HAI kết quả khác nhau cho cùng một sản phẩm.** `/ingest/catalog`
+chạy dưới `app_rw`, mà policy vai đó chỉ lọc `shop_id`; storefront/checkout được
+`store_media`/`checkout_media` lọc `status='ready'` ở mức DÒNG. Đọc từ `pg_policies` chứ không
+suy bằng grep migration. Đo: sản phẩm có ảnh vị-trí-0 `failed` + vị-trí-1 `ready` cho storefront
+một tấm ảnh, còn bot nhận `image=NULL` — `LIMIT 1` nhặt trúng dòng hỏng. Chú thích đầu
+`ingest-catalog.js` đã tự khai "CHỈ trả thứ storefront vốn đã công khai"; nay câu đó được viết
+thành SQL (`MEDIA_HIEN_SQL`).
+
+*Giả thuyết của người đo bị bác một lần ở đây*: bảy truy vấn của storefront cũng thiếu
+`status='ready'` nên tôi tưởng nó cũng thủng. Đo ra là không — policy DB gánh, và
+`0011_storefront.sql:58` nói rõ đó là cố ý.
+
+**P4 · Ảnh hỏng không có bề mặt tổng — chủ dự án chọn khuôn `notification_failures` đầy đủ.**
+Đo trước khi vá: `/stats` không có khoá nào nhắc media · `todo_items` không có mã nào · Tổng
+quan và danh sách sản phẩm đều im · bề mặt DUY NHẤT là ô "lỗi xử lý" trong trang sửa TỪNG sản
+phẩm. Shop di cư 300 SP × 3 ảnh phải mở 300 trang mới biết, sau khi trang nhập vừa hứa "Ảnh sẽ
+tải 900".
+
+Migration `0185` thêm `media.last_error` với **CHECK từ vựng đóng** — mã lỗi là hợp đồng đi qua
+worker → seller → trang, y như `provider_status` ở `0184`. `schema-invariants` so **BẰNG** ba
+tập: CHECK ↔ mã hàng rào rút từ `fetch-image.js` ↔ `MEDIA_ERROR_CODES` của worker, cộng một
+phép so BẰNG nữa với bảng câu chữ `LOI_CHU` để không mã nào thiếu câu cho người bán.
+`app_expiry` có GRANT THEO CỘT (0106) nên cột mới KHÔNG tự vào — quên hai dòng GRANT thì worker
+ghi lý do bị 42501 và sweep nuốt lỗi, dòng đứng im ở `pending`.
+
+Trang trả lời đủ ba câu §9.2: **chuyện gì xảy ra** (sản phẩm nào, lý do bằng tiếng người) ·
+**làm gì tiếp** (URL nguồn nguyên văn để đối chiếu tệp) · **thử lại được không** (nút cho lỗi ở
+ĐẦU KIA; lỗi URL thì nói thẳng "sửa URL trong tệp rồi nhập lại" thay vì mời bấm một nút vô
+ích). Chốt "tải lại được không" nằm ở SELLER — gọi thẳng API vẫn 409 kèm mã lý do, ẩn nút chỉ
+là giao diện. **KHÔNG in mã HTTP của đích** ra trang: `fetch-image.js` ghi rõ con số đó là kênh
+blind SSRF, người bán mất một chút chi tiết còn hàng rào giữ nguyên bất biến.
+
+**BA LẦN MA TRẬN ĐỘT BIẾN BẮT LỖI TRONG CHÍNH BỘ TEST, cả ba cùng một lớp: khẳng định đo thứ
+KHÁC với thứ tên nó nói.**
+- Hai chốt `too_big` XẾP CHỒNG nhau, nên gỡ riêng chốt Content-Length thì chốt-khi-đang-chảy
+  vẫn đỡ hộ và ảnh vẫn `failed`. Khẳng định "có chặn không" **không hề** canh chốt header. Nay
+  máy chủ giả ĐẾM số MB đẩy được: 1MB khi chốt còn, 9MB khi gỡ.
+- Cùng chuyện với `/liar`: gỡ chốt khi-đang-chảy thì hàng rào nuốt trọn 9MB rồi bước sniff
+  magic byte mới từ chối — đỏ ở mã lỗi, không đỏ ở chỗ đáng đỏ. Nay `/liar` có 40MB để đẩy và
+  chốt đo "hàng rào NGỪNG KÉO": 13MB khi còn chốt, 40MB khi gỡ. Ngưỡng 24 đặt GIỮA HAI CON SỐ
+  ĐO ĐƯỢC, không đặt theo lý thuyết — `res.write` trả `true` là đã nhét vào đệm socket nên đầu
+  kia còn đẩy thêm một quãng sau khi hàng rào đã `destroy`.
+- Khẳng định mang chữ "VĨNH VIỄN" lại đo `fetch_attempts === 1` — mà ngay sau lượt đầu thì
+  đường vĩnh viễn và đường thử-lại ĐỀU có `attempts = 1`, khác nhau ở `next_attempt_at`. Đột
+  biến P2 vì thế đi qua khẳng định khác. Nay đo đúng `next_attempt_at IS NULL`.
+
+Và ba khẳng định của chính bộ e2e mới sai vì lý do ngớ ngẩn hơn nhưng đáng chép: tên sản phẩm
+fixture chứa chuỗi `404` nên chốt "không lộ mã HTTP" đỏ giả · `catalog_manager` KHÔNG mở được
+Tổng quan (thiếu `orders.read`) nên chốt "vai này thấy link" phải chuyển sang đo ở CHÍNH trang
+đích · `/ingest/catalog` trả khoá `image` chứ không phải `image_url`.
+
+**MA TRẬN CÒN BẮT ĐƯỢC MỘT ĐIỂM MÙ CÓ SẴN TRONG CHỐT CŨ.** Đột biến đổi `see: CATALOG_ROLES`
+→ `ORDER_ROLES` trên ô mới cho `dashboard-viec.test.js` **11/0 XANH**, dù e2e đỏ đúng chỗ
+(order_manager được mời bấm vào trang sẽ 403). Nguyên nhân: chốt "điều kiện gác NGAY CẠNH" là
+kiểm KHOẢNG CÁCH với cửa sổ 6 dòng, mà ô "Sắp hết hàng" ngay phía trên **cũng** khai
+`CATALOG_ROLES` — nó ĐỠ HỘ ô vừa bị đổi. Đúng cái đánh đổi mà chú thích của chính chốt đó đã
+cảnh báo bằng chữ, và cũng đúng thứ nó nói là chỉ ma trận đột biến mới bù được.
+
+Vá: ô của `TODO_REGISTRY` nằm gọn MỘT DÒNG (`see:` và `href:` cùng dòng), nên với chúng đây là
+kiểm PHẠM VI KHỐI được chứ không phải kiểm khoảng cách — nay khớp `see:` trên ĐÚNG dòng đó,
+chỉ rơi về cửa sổ 6 dòng cho các lối đi không phải ô registry. Đo lại: đột biến ô mới **10/1**,
+và đột biến một ô CÓ SẴN (`low_stock`) cũng **10/1** — tức chốt cũ trước nay không canh được cả
+những ô đã tồn tại, không riêng ô vừa thêm.
+
+Đo: bộ mới `admin-anh-hong.e2e.mjs` **25/25**, `import.e2e.mjs` **42 → 49**. Ma trận **11/11
+đột biến đỏ** — gỡ chốt Content-Length 48/1 · gỡ chốt khi-đang-chảy 47/2 · bỏ `too_big` khỏi
+nhóm vĩnh viễn 47/2 · worker luôn ghi `other` 47/2 và 20/5 · bỏ lọc `status` ở ingest-catalog ·
+cắt dây nối `media_failures` ở `/stats` · xoá ô khỏi `TODO_REGISTRY` · đổi `see:` sang
+`ORDER_ROLES` (e2e 24/1 và, sau khi siết chốt tĩnh, unit 10/1) · đổi `see:` của ô `low_stock`
+có sẵn 10/1 · seller coi mọi ảnh đều tải lại được · worker khai thêm mã lỗi mà quên migration.
+
+Cổng đầy đủ, một lượt duy nhất, `0 đỏ`: unit **331** · migration DB trắng **183**, 0 DRIFT,
+0 pending · bảo mật **sạch** (chạy với seam `SECURITY_SCAN_DOCKER_ARGS` mount CA của proxy, và
+scan tự khai tham số đó ngay đầu mục 1) · bất biến DB **148** · E2E **112/112**, 0 log sót ·
+smoke edge/readiness/TLS đủ. Advisory moderate `decode-uri-component` vẫn ở đó, nay đo được
+**bốn** instance ở `checkout`/`seller`/`worker`; 0 high · 0 critical.
+
+**LỖI ĐO CỦA CHÍNH LƯỢT GÁC, chép lại vì nó làm hỏng bằng chứng chứ không hỏng sản phẩm.**
+Lượt cổng đầu tiên tưởng chết ở bước 0 (service `toolbox` đã exited) nên tôi khởi động lại —
+**mà không giết tiến trình cũ**. Hai `ci-local.sh` cùng chạy trên MỘT stack và cùng ghi vào
+`/tmp/gate.log` bằng `>`: file bị cắt nhưng tiến trình cũ giữ nguyên offset nên hai luồng ghi
+xen vào nhau. Hậu quả đọc được trong log là một mớ mâu thuẫn tự thân — một dòng tiêu đề bị
+đè nát (`▶ 2. Quét bảo mật tĩnh (dependency/secr  FAIL security-scan…`), 6 bộ e2e của
+seller-admin chết vì `57P01 terminating connection due to administrator command`, và cuối
+cùng vẫn in `XANH: 119 mục, 0 đỏ`. Dòng tổng kết ấy KHÔNG sai: mỗi tiến trình đếm `fails` của
+riêng nó, nên lượt về đích cuối thật sự có 0 đỏ — chỉ là nó kể chuyện của một lượt còn 7 dòng
+FAIL kia là của lượt khác. Chạy lại 6 bộ đó riêng thì đủ xanh (19·14·14·46·12·10).
+→ **Luật rút ra: một lượt gác phải là tiến trình DUY NHẤT trên stack, và phải kiểm bằng `ps`
+trước khi tin bất cứ dòng nào trong log của nó.** Hai lượt song song không chỉ chậm hơn — chúng
+tranh nhau đúng một PostgreSQL và sinh ra lỗi hạ tầng trông y hệt lỗi sản phẩm.
+
 **Còn nợ của lát cắt 6:** XLSX (`readXlsx`/`isXlsxMagic`), BOM và dấu tiếng Việt,
-`update_only`/`upsert`, ảnh qua hàng rào SSRF, và giao diện 360px của trang nhập.
+`update_only`/`upsert`, và giao diện 360px của trang nhập. Hai thứ cố ý chưa làm ở đợt này:
+trang ảnh hỏng **chưa được đo ở 360px**, và **chưa có nút "tải lại tất cả"** — bấm từng dòng
+thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng một nút hàng loạt là 200 kết nối ra ngoài trong
+một lượt và cần quyết định riêng về nhịp.
 
 **Nhánh `claude/full-system-folder-access-tc6cfk` đã CHẾT, đừng merge.** 13 commit dựng trang
 chủ, rẽ khỏi `main` tại `d86176f` và đứng sau `main` **53 commit**. Đo được: 10/13 commit đã có

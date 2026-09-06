@@ -34,6 +34,7 @@ const TODO_DEFS = [
   { code: 'notification_failures', field: 'notification_failures', severity: 'theo_dõi', source: 'system' },
   { code: 'reviews_pending', field: 'reviews_pending', severity: 'theo_dõi', source: 'system' },
   { code: 'low_stock', field: 'low_stock', severity: 'theo_dõi', source: 'system' },
+  { code: 'media_failures', field: 'media_failures', severity: 'theo_dõi', source: 'system' },
 ];
 
 async function stats(res, ctx) {
@@ -164,6 +165,13 @@ async function stats(res, ctx) {
         (SELECT coalesce(sum(${OWED_SQL}), 0)::bigint FROM orders o WHERE ${OWED_SQL} > 0) AS owed_vnd,
         (SELECT count(*)::int FROM order_resolution_cases WHERE status IN ('open','waiting_return')) AS resolution_cases_open,
         (SELECT count(*)::int FROM notification_deliveries WHERE status = 'failed') AS notification_failures,
+        -- ẢNH KHÔNG TẢI ĐƯỢC (0185). Đếm CẢ ảnh tự tải lên hỏng lúc xử lý (source_url NULL),
+        -- không chỉ ảnh nhập theo URL: người bán nhìn thấy một ô trống trên cửa hàng thì
+        -- nguyên nhân nào cũng là việc cần làm. Lọc deleted_at ở CẢ HAI bảng, nếu không thì
+        -- ảnh của sản phẩm đã xoá vẫn đội số lên và ô dẫn tới một danh sách rỗng.
+        (SELECT count(*)::int FROM media m JOIN products p ON p.id = m.product_id
+          WHERE m.status = 'failed' AND m.deleted_at IS NULL AND p.deleted_at IS NULL
+        ) AS media_failures,
         (SELECT count(*)::int FROM order_requests WHERE status = 'requested') AS order_requests_pending,
         (SELECT count(*)::int
           FROM shipments s
@@ -212,6 +220,7 @@ async function stats(res, ctx) {
     owed_vnd: out.todo ? n(out.todo.owed_vnd) : null,
     resolution_cases: out.todo ? n(out.todo.resolution_cases_open) : null,
     notification_failures: out.todo ? n(out.todo.notification_failures) : null,
+    media_failures: out.todo ? n(out.todo.media_failures) : null,
     order_requests: out.todo ? n(out.todo.order_requests_pending) : null,
     shipment_attention: out.todo ? n(out.todo.shipment_attention) : null,
   };

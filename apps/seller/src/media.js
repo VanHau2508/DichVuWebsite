@@ -19,7 +19,7 @@
 import crypto from 'node:crypto';
 import { Client as MinioClient } from 'minio';
 import sharp from 'sharp';
-import { send } from './http.js';
+import { send, parseOffset } from './http.js';
 import { withTenant, audit } from './db.js';
 import { DISPLAY_KEY_RE, pickCollectable, referencedFrom } from './media-gc.js';
 
@@ -252,6 +252,127 @@ async function listShopMedia(res, ctx) {
         AND p.deleted_at IS NULL
       ORDER BY m.created_at DESC LIMIT 200`)).rows);
   return send(res, 200, { media: rows.map((r) => ({ ...r, url: mediaPublicUrl(r.public_key) })) });
+}
+
+// ══ ẢNH KHÔNG TẢI ĐƯỢC — danh sách + gửi lại (0185) ════════════════════════════
+//
+// VÌ SAO CÓ MÀN HÌNH NÀY. Bộ nhập từ sàn chỉ XẾP HÀNG ảnh (0106), worker tải nền. Trang nhập
+// nói "Ảnh sẽ tải 900" rồi người bán rời trang; ảnh nào hỏng thì đo được ngày 06/09 là KHÔNG
+// có bề mặt tổng nào — `/stats` không có khoá media, `todo_items` không có mã, Tổng quan và
+// danh sách sản phẩm đều im. Bề mặt duy nhất là ô "lỗi xử lý" trong trang sửa TỪNG sản phẩm.
+//
+// Khuôn lấy nguyên của `notification-deliveries.js`: cùng là "việc nền thất bại", nên cùng
+// hình dạng — danh sách lọc theo trạng thái, mỗi dòng tự khai `retryable` + `retry_block_reason`,
+// và một route gửi lại trả 409 KÈM LÝ DO thay vì im lặng bỏ qua.
+
+// Lỗi mà NGƯỜI BÁN sửa được bằng cách sửa URL trong tệp rồi nhập lại — bấm "Thử lại" trên
+// CÙNG URL đó chỉ tốn thêm một kết nối ra ngoài mà chắc chắn hỏng y hệt. Đây đúng là nhóm mà
+// worker cũng coi là vĩnh viễn ở mức hàng rào: URL sai thì không có gì ở đầu kia đổi được.
+const LOI_PHAI_SUA_URL = new Set(['blocked', 'scheme', 'port', 'userinfo', 'url_invalid', 'dns']);
+
+// Câu chữ cho người bán. Mỗi câu phải trả lời được *làm gì tiếp* — "lỗi 12" thì không.
+// KHÔNG nêu mã HTTP của đích: `fetch-image.js` ghi rõ con số đó là kênh blind SSRF và không
+// bao giờ được trả về cho người gửi URL. Người bán mất một chút chi tiết, đổi lại hàng rào
+// giữ nguyên bất biến của nó.
+const LOI_CHU = {
+  blocked: 'URL trỏ vào địa chỉ mạng nội bộ — hệ thống không tải ảnh từ đó',
+  dns: 'không tra được tên miền trong URL',
+  port: 'URL dùng cổng lạ (chỉ nhận 80 và 443)',
+  scheme: 'URL không phải http/https',
+  url_invalid: 'URL sai định dạng',
+  userinfo: 'URL có phần tên đăng nhập/mật khẩu',
+  net: 'không kết nối được tới máy chủ ảnh',
+  status: 'máy chủ ảnh không trả về ảnh (từ chối, hoặc ảnh không còn)',
+  timeout: 'máy chủ ảnh không phản hồi kịp',
+  too_big: 'ảnh vượt quá dung lượng cho phép',
+  not_image: 'tệp tải về không phải ảnh',
+  other: 'lỗi khi xử lý ảnh',
+};
+
+// NULL nghĩa là "chưa biết" (dòng hỏng từ trước 0185), KHÔNG phải "không có lỗi" — §3 NULL ≠ 0.
+// Chưa biết thì CHO gửi lại: chặn dựa trên một thứ ta không đo được là đoán mò.
+function thuLaiDuoc(row) {
+  if (row.status !== 'failed') return { retryable: false, retry_block_reason: 'status_not_failed' };
+  if (row.deleted_at !== null) return { retryable: false, retry_block_reason: 'media_deleted' };
+  if (!row.source_url) return { retryable: false, retry_block_reason: 'no_source_url' };
+  if (LOI_PHAI_SUA_URL.has(row.last_error)) return { retryable: false, retry_block_reason: 'url_must_be_fixed' };
+  return { retryable: true, retry_block_reason: null };
+}
+
+const FAIL_ROW_SQL = `
+  SELECT m.id, m.product_id, m.position, m.source_url, m.last_error, m.status,
+         m.deleted_at, m.fetch_attempts, m.created_at,
+         p.title AS product_title, p.slug AS product_slug
+    FROM media m JOIN products p ON p.id = m.product_id
+   WHERE m.status = 'failed' AND m.deleted_at IS NULL AND p.deleted_at IS NULL`;
+
+const chuanHoaLoi = (r) => ({
+  id: r.id,
+  product_id: r.product_id,
+  product_title: r.product_title,
+  product_slug: r.product_slug,
+  position: Number(r.position),
+  // URL nguồn do CHÍNH người bán đưa vào qua tệp nhập — trả lại cho họ là trả lại thứ họ đã
+  // gõ, không phải rò dữ liệu nội bộ. Không có nó thì "sửa tệp rồi nhập lại" là lời khuyên suông.
+  source_url: r.source_url,
+  last_error: r.last_error,
+  last_error_text: r.last_error ? (LOI_CHU[r.last_error] ?? LOI_CHU.other) : null,
+  fetch_attempts: Number(r.fetch_attempts),
+  created_at: r.created_at,
+  ...thuLaiDuoc(r),
+});
+
+async function listMediaFailures(res, ctx, _body, _params, query) {
+  const limit = Math.min(200, Math.max(1, Number(query?.get('limit')) || 50));
+  const offset = parseOffset(query);
+  const data = await withTenant(ctx.shopId, async (c) => {
+    const rows = (await c.query(
+      `${FAIL_ROW_SQL} ORDER BY m.created_at DESC, m.id DESC LIMIT $1 OFFSET $2`, [limit, offset],
+    )).rows.map(chuanHoaLoi);
+    // Đếm RIÊNG, không dùng rows.length: trang có phân trang nên độ dài trang KHÁC tổng số,
+    // và ô "việc cần làm" trên Tổng quan phải khớp con số ở đây.
+    const total = Number((await c.query(
+      `SELECT count(*)::int AS n FROM media m JOIN products p ON p.id = m.product_id
+        WHERE m.status = 'failed' AND m.deleted_at IS NULL AND p.deleted_at IS NULL`)).rows[0].n);
+    return { rows, total };
+  });
+  return send(res, 200, { total: data.total, limit, offset, failures: data.rows });
+}
+
+async function retryMediaFetch(res, ctx, _body, params) {
+  const mediaId = params[1];
+  const out = await withTenant(ctx.shopId, async (c) => {
+    const row = (await c.query(
+      `SELECT m.id, m.status, m.deleted_at, m.source_url, m.last_error
+         FROM media m WHERE m.id = $1 FOR UPDATE`, [mediaId])).rows[0];
+    if (!row) return { code: 404 };
+    const el = thuLaiDuoc(row);
+    if (!el.retryable) return { code: 409, reason: el.retry_block_reason };
+    // Trả dòng về ĐÚNG hình dạng mà sweep của worker nhặt: pending + source_url + không mốc
+    // chờ. `fetch_attempts = 0` là cố ý — người bán vừa nói "tôi đã sửa đầu kia rồi", nên
+    // cho đủ số lượt như một ảnh mới; giữ nguyên bộ đếm cũ thì lượt đầu đã sát trần và lùi
+    // giờ 25 phút, tức nút bấm xong không thấy gì xảy ra.
+    await c.query(
+      `UPDATE media SET status = 'pending', fetch_attempts = 0, next_attempt_at = NULL,
+              last_error = NULL
+        WHERE id = $1 AND status = 'failed'`, [row.id]);
+    await audit(c, 'media.refetch_requested', {
+      actorId: ctx.user.id, ip: ctx.ip,
+      metadata: { media_id: row.id, previous_error: row.last_error },
+    });
+    return { code: 202 };
+  });
+  if (out.code === 404) return send(res, 404, { error: 'không tìm thấy ảnh' });
+  if (out.code === 409) {
+    const msg = {
+      status_not_failed: 'ảnh này không ở trạng thái hỏng',
+      media_deleted: 'ảnh đã bị xoá khỏi sản phẩm',
+      no_source_url: 'ảnh này được tải lên trực tiếp, không có URL nguồn để tải lại — hãy tải lại tệp ảnh ở trang sản phẩm',
+      url_must_be_fixed: 'URL nguồn không dùng được, tải lại bao nhiêu lần cũng hỏng — sửa URL trong tệp rồi nhập lại',
+    }[out.reason] ?? 'không gửi lại được';
+    return send(res, 409, { error_code: out.reason, error: msg, message: msg });
+  }
+  return send(res, 202, { ok: true, status: 'pending' });
 }
 
 /**
@@ -503,6 +624,12 @@ export const MEDIA_ROUTES = [
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/media/${UUID}/variant$`), perm: 'catalog.write', fn: (res, ctx, b, p) => assignVariant(res, ctx, b, p) },
   { m: 'POST', re: new RegExp(`^/shops/${UUID}/logo$`), perm: 'shop.write', raw: true, fn: (res, ctx, b) => uploadLogo(res, ctx, b) },
   { m: 'GET',  re: new RegExp(`^/shops/${UUID}/media$`), perm: 'content.read', fn: (res, ctx) => listShopMedia(res, ctx) },
+  // Ảnh không tải được: ĐỌC theo catalog.read, GỬI LẠI theo catalog.write — cùng bộ vai
+  // ({owner, admin, catalog_manager}) đã sở hữu danh mục, vì đây là chất lượng danh mục chứ
+  // không phải cấu hình cửa hàng. Đặt TRƯỚC route /media/:uuid không cần thiết ('failures'
+  // không khớp mẫu hex) nhưng giữ hai dòng cạnh nhau cho dễ đọc.
+  { m: 'GET',  re: new RegExp(`^/shops/${UUID}/media-failures$`), perm: 'catalog.read', fn: (res, ctx, b, p, q) => listMediaFailures(res, ctx, b, p, q) },
+  { m: 'POST', re: new RegExp(`^/shops/${UUID}/media/${UUID}/refetch$`), perm: 'catalog.write', fn: (res, ctx, b, p) => retryMediaFetch(res, ctx, b, p) },
   // Dọn ảnh trưng bày không dùng. shop.write (owner/admin) vì đây là thao tác XOÁ.
   // Không đụng route /media/:uuid ở trên: "unused" không khớp mẫu hex nên thứ tự
   // đăng ký ở đây không quyết định gì.

@@ -549,6 +549,29 @@ async function notificationDeliveryRetry(req, res, me, cookie, shopId, deliveryI
   return redirect(res, `/shops/${shopId}/notification-deliveries?status=failed&error=${encodeURIComponent(r.json?.message ?? r.json?.error ?? 'Không thể gửi lại thông báo.')}`);
 }
 
+async function mediaFailuresPage(res, me, cookie, shopId, q) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const limit = queuePageSize(q); const offset = queueOffset(q);
+  const r = await sellerApi('GET', `/shops/${shopId}/media-failures?limit=${limit}&offset=${offset}`, { cookie });
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'media-failures');
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được danh sách ảnh hỏng.'));
+  return sendHtml(res, 200, V.renderMediaFailures(ctx, shopId, r.json ?? {}, {
+    limit, offset,
+    notice: q.get('done') === 'refetch' ? 'Đã đưa ảnh vào hàng đợi tải lại. Ảnh sẽ hiện sau ít phút.' : null,
+    err: q.get('error'),
+  }));
+}
+
+// Chốt "có tải lại được không" nằm ở SELLER (thuLaiDuoc), không ở đây: admin chỉ chuyển tiếp
+// và dựng lại câu lý do. Frontend không phải nguồn quyết định (§9.2) — nếu admin tự đoán thì
+// nút sẽ hiện đúng trong khi seller từ chối, hoặc tệ hơn, ngược lại.
+async function mediaFailureRefetch(req, res, me, cookie, shopId, mediaId) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/media/${mediaId}/refetch`, { cookie, body: {} });
+  if (r.status === 202) return redirect(res, `/shops/${shopId}/media-failures?done=refetch`);
+  return redirect(res, `/shops/${shopId}/media-failures?error=${encodeURIComponent(r.json?.message ?? r.json?.error ?? 'Không tải lại được ảnh.')}`);
+}
+
 async function resolutionCasesPage(res, me, cookie, shopId, q) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = queueQuery(q, { status: 'active' });
@@ -4470,6 +4493,8 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/preview$`).exec(p)) && req.method === 'POST') return previewShop(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/notification-deliveries$`).exec(p)) && req.method === 'GET') return notificationDeliveriesPage(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/notification-deliveries/${UUID}/retry$`).exec(p)) && req.method === 'POST') return notificationDeliveryRetry(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/media-failures$`).exec(p)) && req.method === 'GET') return mediaFailuresPage(res, me, cookie, m[1], url.searchParams);
+    if ((m = new RegExp(`^/shops/${UUID}/media-failures/${UUID}/refetch$`).exec(p)) && req.method === 'POST') return mediaFailureRefetch(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/resolution-cases$`).exec(p)) && req.method === 'GET') return resolutionCasesPage(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/order-requests$`).exec(p)) && req.method === 'GET') return orderRequestsPage(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/order-requests/${UUID}/(approve|reject)$`).exec(p)) && req.method === 'POST') return orderRequestDecision(req, res, me, cookie, m[1], m[2], m[3]);

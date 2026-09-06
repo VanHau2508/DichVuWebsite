@@ -739,6 +739,9 @@ services:
       # nguồn để so BẰNG từ vựng CHECK đang chạy với mọi đường ghi/đọc.
       - ../apps/worker/src:/work/apps/worker/src:ro
       - ../apps/seller-admin/src:/work/apps/seller-admin/src:ro
+      # Từ vựng media.last_error (0185) rút từ CHÍNH hàng rào SSRF, không chép lại lần hai
+      # trong test: thêm mã lỗi trong fetch-image.js mà quên migration phải ĐỎ.
+      - ../packages/net-guard/src:/work/packages/net-guard/src:ro
       - ../apps/messenger/test:/work/apps/messenger/test:ro
     depends_on:
       migrate:

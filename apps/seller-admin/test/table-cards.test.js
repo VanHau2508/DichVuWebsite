@@ -44,9 +44,9 @@ test('mọi bảng card-hoá đều đi qua tblCards, không còn bảng viết 
     'chỗ viết <table data-cards> duy nhất phải nằm trong tblCards');
 
   // So BẰNG, không phải >=. Thêm bảng mới mà quên sửa số này thì ĐỎ — đúng cách các
-  // MANIFEST_* khác của kho hoạt động. Hôm nay: 52 lời gọi + 1 định nghĩa.
+  // MANIFEST_* khác của kho hoạt động. Hôm nay: 53 lời gọi + 1 định nghĩa.
   const calls = (code.match(/\btblCards\(/g) ?? []).length;
-  assert.equal(calls, 53, `kỳ vọng 52 lời gọi tblCards + 1 định nghĩa, thấy ${calls} lần xuất hiện`);
+  assert.equal(calls, 54, `kỳ vọng 53 lời gọi tblCards + 1 định nghĩa, thấy ${calls} lần xuất hiện`);
 });
 
 test('CSS card-hoá móc vào thuộc tính data-cards, không móc vào lớp do JS thêm', () => {

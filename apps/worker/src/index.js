@@ -3776,6 +3776,15 @@ const MEDIAFETCH_CONC = Number(process.env.MEDIAFETCH_CONC ?? 6);
 const MEDIAFETCH_MAX_ATTEMPTS = Number(process.env.MEDIAFETCH_MAX_ATTEMPTS ?? 4);
 const MEDIAFETCH_TIMEOUT_MS = Number(process.env.MEDIAFETCH_TIMEOUT_MS ?? 8000);
 const MEDIAFETCH_MAX_BYTES = Number(process.env.MEDIAFETCH_MAX_BYTES ?? 8 * 1024 * 1024);
+// TỪ VỰNG ĐÓNG của `media.last_error` — phải khớp BẰNG với CHECK `media_last_error_ck` (0185).
+// Mười một mã đầu do hàng rào `fetch-image.js` và bước sniff magic byte sinh ra; 'other' là
+// lối thoát cho lỗi ngoài hàng rào (sharp giải mã hỏng, MinIO không ghi được). Có lối thoát
+// thì worker mới không phải nuốt lỗi để lách CHECK — mà nuốt lỗi ở đây nghĩa là dòng media
+// đứng im ở 'pending' vĩnh viễn. `schema-invariants` so BẰNG hai tập này.
+const MEDIA_ERROR_CODES = new Set([
+  'blocked', 'dns', 'port', 'scheme', 'url_invalid', 'userinfo',
+  'net', 'status', 'timeout', 'too_big', 'not_image',
+]);
 
 async function fetchOneMedia(mc, row, BPRIV, BPUB) {
   const sharp = (await import('sharp')).default;
@@ -3790,7 +3799,7 @@ async function fetchOneMedia(mc, row, BPRIV, BPUB) {
     (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) ||
     (buf.slice(0, 4).toString('latin1') === 'RIFF' && buf.slice(8, 12).toString('latin1') === 'WEBP') ||
     (buf.slice(0, 4).toString('latin1') === 'GIF8'));
-  if (!sig) throw Object.assign(new Error('not_image'), { permanent: true });
+  if (!sig) throw Object.assign(new Error('not_image'), { permanent: true, code: 'not_image' });
 
   // original_key do bộ nhập đặt sẵn lúc xếp hàng — DÙNG LẠI, không tự dựng: hai nơi tự dựng
   // tên object là hai nơi có thể lệch nhau, và khi lệch thì bản gốc thành rác không truy được.
@@ -3840,7 +3849,7 @@ async function sweepMediaFetch() {
           await expiryDb.query(
             `UPDATE media SET status = 'ready', original_key = $2, public_key = $3,
                     content_type = 'image/webp', width = $4, height = $5, size_bytes = $6,
-                    next_attempt_at = NULL
+                    next_attempt_at = NULL, last_error = NULL
               WHERE id = $1`,
             [row.id, out.originalKey, out.publicKey, out.width, out.height, out.size]);
           done++;
@@ -3850,17 +3859,33 @@ async function sweepMediaFetch() {
           // 'failed' NGAY, đừng thử lại 4 lần — URL đó sẽ không tự tốt lên, và mỗi lần thử
           // là một kết nối ra ngoài mà ta phải chịu trách nhiệm.
           // VĨNH VIỄN: hàng rào chặn (blocked/scheme/port/userinfo/url_invalid/dns), không phải
-          // ảnh, hoặc đích trả 3xx/4xx — chuyển hướng ta không bao giờ đi theo, và 404 sẽ không
-          // tự có lại. 5xx / timeout / lỗi mạng thì lùi giờ thử lại: đích quá tải cần thời gian,
-          // không phải bị đập liên tục.
+          // ảnh, ảnh VƯỢT TRẦN dung lượng, hoặc đích trả 3xx/4xx — chuyển hướng ta không bao
+          // giờ đi theo, và 404 sẽ không tự có lại. 5xx / timeout / lỗi mạng thì lùi giờ thử
+          // lại: đích quá tải cần thời gian, không phải bị đập liên tục.
+          //
+          // `too_big` nằm trong danh sách này từ 06/09. Trước đó nó rơi ra ngoài và đi đường
+          // thử-lại, đo được: tệp khai man Content-Length rồi đẩy 9MB làm worker tải TRỌN 8MB
+          // mỗi lượt trước khi trần cắt — 4 lượt = 32MB, rải qua 1+5+25 phút, kết cục vẫn
+          // 'failed'. Tệp ở đầu kia không tự nhỏ đi, nên đây là lỗi vĩnh viễn y như 'not_image'
+          // ngay cạnh nó; người bán muốn dùng ảnh đó thì phải đổi ảnh, không phải chờ.
           const httpPerm = Number.isFinite(e.httpStatus) && e.httpStatus >= 300 && e.httpStatus < 500;
           const perm = e.permanent === true || httpPerm
-            || ['blocked', 'scheme', 'port', 'userinfo', 'url_invalid', 'dns'].includes(e.code);
+            || ['blocked', 'scheme', 'port', 'userinfo', 'url_invalid', 'dns', 'too_big'].includes(e.code);
+          // Mã lỗi phải nằm trong TỪ VỰNG ĐÓNG của `media_last_error_ck` (0185). Mã lạ →
+          // 'other' chứ KHÔNG ghi thẳng: CHECK sẽ từ chối cả câu UPDATE, và vì `.catch(() => {})`
+          // ngay dưới nuốt lỗi nên dòng sẽ đứng nguyên ở 'pending' mà không ai thấy gì.
+          const reason = MEDIA_ERROR_CODES.has(e.code) ? e.code : 'other';
           if (perm || Number(row.fetch_attempts) >= MEDIAFETCH_MAX_ATTEMPTS) {
-            await expiryDb.query(`UPDATE media SET status = 'failed', next_attempt_at = NULL WHERE id = $1`, [row.id])
+            await expiryDb.query(
+              `UPDATE media SET status = 'failed', next_attempt_at = NULL, last_error = $2 WHERE id = $1`,
+              [row.id, reason]).catch(() => {});
+          } else {
+            // Còn thử lại: vẫn ghi lý do lượt vừa rồi. Người bán mở trang giữa hai lượt phải
+            // thấy đúng thứ đang xảy ra, không phải một ô trống.
+            await expiryDb.query(`UPDATE media SET last_error = $2 WHERE id = $1`, [row.id, reason])
               .catch(() => {});
           }
-          log('warn', 'mediafetch_row_failed', { id: row.id, reason: e.code ?? e.message, http: e.httpStatus ?? null, attempt: row.fetch_attempts, permanent: perm });
+          log('warn', 'mediafetch_row_failed', { id: row.id, reason, http: e.httpStatus ?? null, attempt: row.fetch_attempts, permanent: perm });
         }
       }
     };

@@ -484,23 +484,51 @@ async function main() {
   // kiểm được đường-thành-công trong stack toàn IP nội bộ. Mọi lớp khác vẫn nguyên.
   const png = makePng(40, 30);
   let hits = 0;
+  let bigKhoiDaDay = 0;   // số MB máy chủ giả kịp đẩy cho /big — xem chú thích ở route đó
+  let liarKhoiDaDay = 0;  // ... và cho /liar
   const srv = http.createServer((req, res) => {
     hits++;
     if (req.url.startsWith('/ok')) { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(png); }
     if (req.url.startsWith('/redirect')) { res.writeHead(302, { location: 'http://169.254.169.254/latest/meta-data/' }); return res.end(); }
     if (req.url.startsWith('/notimage')) { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(Buffer.from('<?php echo 1; ?>')); }
     // Ảnh QUÁ CỠ: khai đúng độ dài, vượt trần 8MB → phải bị chặn ở bước đọc Content-Length.
+    //
+    // ĐẨY THEO KHỐI VÀ ĐẾM, thay vì `res.end(buffer)` một phát. Lý do là chuyện đo lường:
+    // hai chốt too_big xếp chồng nhau, nên gỡ riêng chốt Content-Length thì chốt-khi-đang-chảy
+    // vẫn bắt được và ảnh vẫn 'failed' — tức khẳng định "có chặn không" KHÔNG hề canh chốt
+    // header. Thứ chốt header thật sự làm là KHÔNG TẢI 9MB về, và cách duy nhất đo nó là đếm
+    // xem máy chủ đã kịp đẩy bao nhiêu.
     if (req.url.startsWith('/big')) {
-      const big = Buffer.alloc(9 * 1024 * 1024, 0x41);
-      res.writeHead(200, { 'content-type': 'image/png', 'content-length': String(big.length) });
-      return res.end(big);
+      const chunk = Buffer.alloc(1024 * 1024, 0x41);
+      res.writeHead(200, { 'content-type': 'image/png', 'content-length': String(9 * 1024 * 1024) });
+      res.on('error', () => {});
+      let i = 0;
+      const day = () => {
+        if (i >= 9 || res.writableEnded || res.destroyed) { if (!res.writableEnded) res.end(); return; }
+        i++; bigKhoiDaDay++;
+        if (res.write(chunk)) setImmediate(day); else res.once('drain', day);
+      };
+      return day();
     }
-    // KHAI MAN độ dài: nói 10 byte rồi đẩy 9MB. Nếu chỉ tin Content-Length thì thủng —
-    // đây là ca chứng minh trần được cưỡng chế CẢ TRONG LÚC DỮ LIỆU ĐANG CHẢY.
+    // KHAI MAN độ dài: không khai Content-Length rồi đẩy 40MB. Nếu chỉ tin Content-Length thì
+    // thủng — đây là ca chứng minh trần được cưỡng chế CẢ TRONG LÚC DỮ LIỆU ĐANG CHẢY.
+    //
+    // 40MB chứ không phải 9MB, và ĐẾM số khối đẩy được. Đo ngày 06/09: bản 9MB làm đột biến
+    // "gỡ chốt khi-đang-chảy" đỏ ở SAI CHỖ — hàng rào nuốt trọn 9MB rồi bước sniff magic byte
+    // mới từ chối, nên ảnh vẫn 'failed' và chỉ có MÃ LỖI đổi (too_big → not_image). Tức khẳng
+    // định "có chặn không" đang được một chốt KHÁC đỡ hộ. Hậu quả thật của chốt này là hàng
+    // rào NGỪNG KÉO, và cách duy nhất đo nó là xem đầu kia đẩy được bao nhiêu trước khi đứt.
     if (req.url.startsWith('/liar')) {
-      res.writeHead(200, { 'content-type': 'image/png', 'transfer-encoding': 'chunked' });
-      for (let i = 0; i < 9; i++) res.write(Buffer.alloc(1024 * 1024, 0x42));
-      return res.end();
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.on('error', () => {});
+      const chunk = Buffer.alloc(1024 * 1024, 0x42);
+      let i = 0;
+      const day = () => {
+        if (i >= 40 || res.writableEnded || res.destroyed) { if (!res.writableEnded) res.end(); return; }
+        i++; liarKhoiDaDay++;
+        if (res.write(chunk)) setImmediate(day); else res.once('drain', day);
+      };
+      return day();
     }
     res.writeHead(404); res.end();
   });
@@ -578,6 +606,73 @@ async function main() {
   fakeMed?.status === 'failed'
     ? ok('tệp giả dạng ảnh (content-type nói dối) → sniff magic byte ở worker từ chối')
     : bad('ảnh giả lọt qua worker', JSON.stringify(fakeMed));
+
+  // ── Trần DUNG LƯỢNG: hai chốt, hai đường vào ─────────────────────────────
+  // Hai route /big và /liar đã nằm trong máy chủ giả từ lượt đầu, KÈM chú thích giải thích
+  // chúng chứng minh gì — nhưng không dòng nào từng gửi request tới chúng. Đo ngày 06/09:
+  // gỡ CẢ HAI chốt `too_big` trong fetch-image.js cho unit 14/0 và bộ này 42/0, xanh trọn vẹn.
+  // Fixture viết ra rồi không ai gọi là một chốt KHÔNG TỒN TẠI, chỉ trông như có.
+  //
+  //   /big  — khai đúng Content-Length 9MB  → cắt ở bước đọc HEADER, chưa tải byte nào.
+  //   /liar — khai 'chunked' rồi đẩy 9MB    → chỉ Content-Length thì thủng; phải cưỡng chế
+  //           trần CẢ TRONG LÚC DỮ LIỆU ĐANG CHẢY.
+  //
+  // Và đo luôn PHÂN LOẠI, không chỉ "có chặn không": `too_big` phải là lỗi VĨNH VIỄN. Trước
+  // 06/09 nó rơi ra ngoài danh sách vĩnh viễn nên đi đường thử-lại — đo được ở /liar là tải
+  // trọn 8MB mỗi lượt × 4 lượt = 32MB, rải qua 1+5+25 phút, kết cục vẫn 'failed'.
+  const hBig = `qua-co-${uniq()}`;
+  r = await imp([
+    { handle: `${hBig}-1`, title: 'Ảnh quá cỡ (khai đúng)', sku: `${hBig}-1`, price_vnd: '1000', image_url: 'http://dbtest/big.png' },
+    { handle: `${hBig}-2`, title: 'Ảnh quá cỡ (khai man)', sku: `${hBig}-2`, price_vnd: '1000', image_url: 'http://dbtest/liar.png' },
+  ]);
+  r.json?.images?.queued === 2
+    ? ok('ảnh quá cỡ xếp hàng bình thường — trần dung lượng chỉ đo được KHI TẢI, không đoán từ URL')
+    : bad('ảnh quá cỡ không vào hàng đợi', JSON.stringify(r.json?.images));
+  const bigIds = (await owner.query(
+    `SELECT m.id FROM media m JOIN products p ON p.id = m.product_id WHERE p.slug LIKE $1`, [`${hBig}%`])).rows.map((x) => x.id);
+  let bigStates = [];
+  for (let i = 0; i < 60; i++) {
+    bigStates = (await owner.query(
+      `SELECT status, fetch_attempts, last_error, next_attempt_at FROM media WHERE id = ANY($1::uuid[])`, [bigIds])).rows;
+    if (bigStates.length === 2 && bigStates.every((x) => x.status !== 'pending')) break;
+    await sleep(1000);
+  }
+  bigStates.length === 2 && bigStates.every((x) => x.status === 'failed')
+    ? ok('CẢ HAI đường vượt trần bị chặn: Content-Length khai đúng VÀ khai man khi đang chảy')
+    : bad('ảnh 9MB lọt qua trần 8MB', JSON.stringify(bigStates));
+  bigStates.every((x) => x.last_error === 'too_big')
+    ? ok('lý do ghi đúng mã too_big — người bán đọc được "ảnh vượt quá dung lượng cho phép"')
+    : bad('lý do ảnh quá cỡ sai', JSON.stringify(bigStates.map((x) => x.last_error)));
+  // Tệp ở đầu kia không tự nhỏ đi ⇒ vĩnh viễn, đúng nhóm với not_image ngay cạnh.
+  //
+  // "VĨNH VIỄN" đo bằng `next_attempt_at IS NULL`, KHÔNG bằng `fetch_attempts === 1`. Đo ngày
+  // 06/09: bản đầu chỉ đếm lượt thử, mà ngay sau lượt đầu thì đường vĩnh viễn và đường thử-lại
+  // ĐỀU có attempts = 1 — khác nhau ở chỗ đường thử-lại còn hẹn giờ. Đột biến bỏ 'too_big'
+  // khỏi danh sách vĩnh viễn vì thế đi qua khẳng định KHÁC, còn khẳng định mang chữ "vĩnh
+  // viễn" thì vẫn xanh. Chốt phải đo đúng thứ tên nó nói.
+  bigStates.every((x) => Number(x.fetch_attempts) === 1 && x.next_attempt_at === null)
+    ? ok('vượt trần là lỗi VĨNH VIỄN: 1 lượt, KHÔNG hẹn giờ tải lại 8MB thêm ba lần nữa')
+    : bad('ảnh quá cỡ vẫn quay vòng thử lại', JSON.stringify(bigStates.map((x) => [x.fetch_attempts, x.next_attempt_at]))); 
+  // Chốt HEADER, đo riêng: Content-Length đã nói 9MB thì phải cắt TRƯỚC khi kéo về. Không có
+  // khẳng định này thì gỡ chốt header vẫn xanh (chốt-khi-đang-chảy đỡ hộ) — đúng kiểu "xanh
+  // vì lý do sai" mà §4 cảnh báo.
+  bigKhoiDaDay <= 2
+    ? ok(`Content-Length 9MB bị cắt TRƯỚC khi tải (máy chủ chỉ kịp đẩy ${bigKhoiDaDay}MB)`)
+    : bad(`kéo về ${bigKhoiDaDay}MB rồi mới cắt — chốt Content-Length không còn tác dụng`);
+  // Chốt KHI-ĐANG-CHẢY, đo riêng: không khai độ dài thì trần phải cắt giữa dòng. Đầu kia có
+  // 40MB để đẩy; hàng rào phải ngắt giữa chừng chứ không nuốt hết rồi mới chê. Ngưỡng 24 chứ
+  // không phải 8: `res.write` trả true là đã nhét vào đệm socket, nên đầu kia còn đẩy thêm một
+  // quãng sau khi hàng rào đã destroy. Đo được 13MB khi chốt còn, 40MB khi gỡ chốt — ngưỡng
+  // đặt giữa hai con số ĐO ĐƯỢC, không đặt theo lý thuyết.
+  liarKhoiDaDay <= 24
+    ? ok(`khai man độ dài: hàng rào NGỪNG KÉO ở ~${liarKhoiDaDay}MB, không nuốt trọn 40MB`)
+    : bad(`nuốt ${liarKhoiDaDay}MB rồi mới từ chối — trần không được cưỡng chế lúc đang chảy`);
+  // Và các vector SSRF ở trên phải ghi đúng lý do của CHÍNH chúng, không phải một mã chung.
+  const ssrfReasons = (await owner.query(
+    `SELECT last_error FROM media WHERE id = ANY($1::uuid[]) ORDER BY last_error`, [ssrfIds])).rows.map((x) => x.last_error);
+  JSON.stringify(ssrfReasons) === JSON.stringify(['blocked', 'blocked', 'status'])
+    ? ok('mỗi vector SSRF ghi đúng lý do riêng (2 blocked + 1 status cho chuyển hướng)')
+    : bad('lý do vector SSRF sai', JSON.stringify(ssrfReasons));
 
   await new Promise((res) => srv.close(res));
 

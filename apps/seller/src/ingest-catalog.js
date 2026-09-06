@@ -20,6 +20,19 @@ const MEDIA_PUBLIC_BASE = process.env.MEDIA_PUBLIC_BASE ?? '/media-public';
 const imgUrl = (k) => (k ? `${MEDIA_PUBLIC_BASE}/${k}` : null);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+// ẢNH HIỆN ĐƯỢC — bản chép có chủ ý của điều kiện mà POLICY `store_media`/`checkout_media`
+// (0011/0024) đã cưỡng chế cho storefront và checkout ở mức DÒNG.
+//
+// VÌ SAO PHẢI VIẾT LẠI Ở ĐÂY. Route này chạy dưới `app_rw`, mà policy `tenant_isolation` của
+// vai đó chỉ lọc `shop_id` — không lọc `status`. Nghĩa là điều kiện storefront được TẶNG
+// KHÔNG thì bot phải tự viết. Đo được ngày 06/09: sản phẩm có ảnh vị-trí-0 'failed' và
+// vị-trí-1 'ready' cho storefront một tấm ảnh, còn `/ingest/catalog` trả `image=NULL` —
+// `LIMIT 1` nhặt trúng dòng hỏng. Khách xem web thấy ảnh, khách chat với bot thấy ô trống,
+// và đó đúng là hình dạng mà bộ nhập từ sàn sinh ra nhiều nhất (CDN sàn cũ chặn hotlink).
+// Chú thích đầu tệp đã tự khai "CHỈ trả thứ storefront vốn đã công khai" — đây là câu đó
+// viết thành SQL.
+const MEDIA_HIEN_SQL = `m.status = 'ready' AND m.deleted_at IS NULL`;
+
 // Biến thể mồ côi (thiếu giá trị cho một trục) KHÔNG bán được. Bản sao Y HỆT
 // catalog.js:28 / orders.js:28 / purchasing.js:29 — mỗi module tự chứa theo lệ của repo
 // (không import chéo), nhưng phải là CÙNG một biểu thức: lệch nhau nghĩa là bot chào bán
@@ -59,7 +72,7 @@ async function listCatalog(res, shopId, query) {
     const products = (await c.query(
       `SELECT p.id, p.slug, p.title, p.price_vnd,
               pe.price_vnd AS sale_price_vnd,
-              (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
+              (SELECT m.public_key FROM media m WHERE m.product_id = p.id AND ${MEDIA_HIEN_SQL} ORDER BY m.position, m.created_at LIMIT 1) AS image_key,
               (SELECT count(*)::int FROM variants v WHERE v.product_id = p.id AND ${NOT_ORPHAN}) AS variant_count,
               (SELECT v.id FROM variants v WHERE v.product_id = p.id AND ${NOT_ORPHAN} ORDER BY v.position LIMIT 1) AS first_variant_id,
               (SELECT coalesce(sum(il.on_hand - il.reserved), 0)
@@ -94,7 +107,7 @@ async function getCatalogProduct(res, shopId, productId) {
   const out = await withTenant(shopId, async (c) => {
     const p = (await c.query(
       `SELECT p.id, p.slug, p.title, p.description,
-              (SELECT m.public_key FROM media m WHERE m.product_id = p.id ORDER BY m.position, m.created_at LIMIT 1) AS image_key
+              (SELECT m.public_key FROM media m WHERE m.product_id = p.id AND ${MEDIA_HIEN_SQL} ORDER BY m.position, m.created_at LIMIT 1) AS image_key
          FROM products p
         WHERE p.id = $1 AND p.status = 'active' AND p.deleted_at IS NULL`, [productId],
     )).rows[0];

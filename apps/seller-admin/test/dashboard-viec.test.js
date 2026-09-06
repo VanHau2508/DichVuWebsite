@@ -240,6 +240,10 @@ const CHINH_SACH_DICH = {
   '/order-requests': 'ORDER_ROLES',
   '/resolution-cases': 'ORDER_ROLES',
   '/notification-deliveries': 'ORDER_ROLES',
+  // Ảnh không tải được: seller gác GET /media-failures bằng catalog.read, đúng bộ vai mà
+  // CATALOG_ROLES giữ. Vai order_manager vẫn THẤY con số trên Tổng quan (số liệu vận hành
+  // chung — §9.3) nhưng không nhận link, vì trang đích sẽ 403 với họ.
+  '/media-failures': 'CATALOG_ROLES',
   '/customers': 'ORDER_ROLES',
   '/overview': 'trang',
   '/reviews': 'CONTENT_ROLES',
@@ -301,9 +305,19 @@ test('manifest lối đi: mỗi đích có điều kiện gác NGAY CẠNH nó t
     // mới — kết quả ghi trong docs. Sửa cửa sổ này thì chạy lại ma trận đó.
     const dat = dong.some((d, k) => {
       if (!new RegExp(`\\$\\{base\\}${dich.replace(/[/:]/g, '\\$&')}(?![a-z-])`).test(d)) return false;
+      // Ô của TODO_REGISTRY nằm GỌN MỘT DÒNG: `see:` và `href:` cùng dòng. Với chúng thì đây
+      // là kiểm PHẠM VI KHỐI được, không phải kiểm khoảng cách — nên siết vào đúng dòng đó.
+      //
+      // VÌ SAO PHẢI SIẾT, đo được 06/09: đột biến đổi `see: CATALOG_ROLES` → `ORDER_ROLES` trên
+      // ô "Ảnh không tải được" cho **11/0 XANH**. Cửa sổ 6 dòng nhìn ngược lên và trúng ô
+      // "Sắp hết hàng" ngay phía trên — ô đó cũng khai CATALOG_ROLES, nên nó ĐỠ HỘ ô vừa bị
+      // đổi. Đúng cái đánh đổi mà chú thích ngay trên đã cảnh báo, và nó lộ ra vì e2e đỏ
+      // (order_manager được mời bấm) trong khi chốt tĩnh này im.
+      const seOnLine = /\bsee: ([A-Z_]+)/.exec(d);
+      if (seOnLine) return seOnLine[1] === canCo;
       return dong.slice(Math.max(0, k - 6), k + 1).some((x) => x.includes(canCo));
     });
-    if (!dat) viPham.push(`${dich} → không thấy "${canCo}" trong 2 dòng quanh nó`);
+    if (!dat) viPham.push(`${dich} → không thấy "${canCo}" gác nó (ô registry thì phải ĐÚNG DÒNG)`);
   }
   assert.deepEqual(viPham, [], 'lối đi mất điều kiện gác → vai thiếu quyền lại được mời bấm vào trang sẽ từ chối');
 });

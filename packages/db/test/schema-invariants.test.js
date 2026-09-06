@@ -1003,6 +1003,65 @@ describe('Composite foreign key', () => {
   });
 });
 
+// Từ vựng `media.last_error` (0185) — cùng kỷ luật với provider_status ở 0184: mã lỗi đi qua
+// biên giới worker → seller → trang, nên nó là HỢP ĐỒNG, không phải chuỗi tự do. Rút tập từ
+// CHÍNH hàng rào SSRF thay vì chép lại lần hai ở đây, để thêm một mã lỗi trong fetch-image.js
+// mà quên migration là ĐỎ.
+function guardImageErrorCodes() {
+  const source = sourceText('packages/net-guard/src/fetch-image.js');
+  const found = new Set();
+  for (const m of source.matchAll(/new ImgError\(\s*'([a-z0-9_]+)'/g)) found.add(m[1]);
+  for (const m of source.matchAll(/\bfail\(\s*'([a-z0-9_]+)'/g)) found.add(m[1]);
+  return found;
+}
+
+describe('Từ vựng lý do ảnh hỏng (0185)', () => {
+  test('CHECK media.last_error so BẰNG với mã lỗi hàng rào + worker, và app_expiry ghi được', async () => {
+    const { rows: [constraint] } = await owner.query(`
+      SELECT conname, contype, pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+       WHERE conrelid = 'media'::regclass AND conname = 'media_last_error_ck'`);
+    assert.equal(constraint?.conname, 'media_last_error_ck', 'mất CHECK ⇒ worker ghi được mã tuỳ ý');
+    assert.equal(constraint?.contype, 'c');
+    const dbCodes = new Set([...String(constraint.definition).matchAll(/'([a-z0-9_]+)'/g)].map((m) => m[1]));
+
+    // Hàng rào sinh ra mã nào thì CHECK phải nhận đúng mã đó. `not_image` do worker sinh sau
+    // khi tải xong (sniff magic byte), `other` là lối thoát cho lỗi ngoài hàng rào — thiếu
+    // lối thoát thì worker phải NUỐT lỗi để lách CHECK, và nuốt ở đó nghĩa là dòng media đứng
+    // im ở 'pending' vĩnh viễn.
+    const guard = guardImageErrorCodes();
+    assert.ok(guard.size >= 10, `mốc chết: chỉ rút được ${guard.size} mã từ fetch-image.js`);
+    const expected = new Set([...guard, 'not_image', 'other']);
+    assert.deepEqual([...dbCodes].sort(), [...expected].sort(),
+      'CHECK last_error phải so BẰNG với mã hàng rào sinh ra; thêm mã trong mã nguồn mà quên migration phải đỏ');
+
+    // Worker giữ bản sao tập này để ánh xạ mã lạ về 'other' TRƯỚC khi ghi. Hai bản mà trôi
+    // nhau thì worker ghi một mã mà CHECK từ chối, và câu UPDATE bị nuốt ⇒ hỏng lặng lẽ.
+    const workerSource = sourceText('apps/worker/src/index.js');
+    const workerList = /const MEDIA_ERROR_CODES = new Set\(\[([\s\S]*?)\]\)/.exec(workerSource);
+    assert.ok(workerList, 'mốc chết: worker không còn khai MEDIA_ERROR_CODES');
+    const workerCodes = new Set([...workerList[1].matchAll(/'([a-z0-9_]+)'/g)].map((m) => m[1]));
+    assert.deepEqual([...workerCodes].sort(), [...guard, 'not_image'].sort(),
+      'tập mã của worker phải khớp hàng rào + not_image; "other" KHÔNG nằm trong đó vì nó là đích ánh xạ, không phải mã nhận vào');
+
+    // Và mọi mã phải có CÂU CHỮ cho người bán. Một mã không có câu rơi về "lỗi khi xử lý ảnh",
+    // tức người bán mất đúng thứ màn hình này tồn tại để nói: làm gì tiếp.
+    const sellerSource = sourceText('apps/seller/src/media.js');
+    const chuList = /const LOI_CHU = \{([\s\S]*?)\n\};/.exec(sellerSource);
+    assert.ok(chuList, 'mốc chết: seller không còn bảng câu chữ LOI_CHU');
+    const chuCodes = new Set([...chuList[1].matchAll(/^\s{2}([a-z0-9_]+):/gm)].map((m) => m[1]));
+    assert.deepEqual([...chuCodes].sort(), [...dbCodes].sort(),
+      'mỗi mã trong CHECK phải có một câu cho người bán, và không có câu thừa cho mã không tồn tại');
+
+    // GRANT theo CỘT của app_expiry (0106) không tự nới cho cột mới — quên nó thì worker ghi
+    // 'failed' được nhưng ghi lý do thì 42501, và sweep nuốt lỗi nên hỏng lặng lẽ.
+    const { rows: [priv] } = await owner.query(`
+      SELECT has_column_privilege('app_expiry','media','last_error','SELECT') AS r,
+             has_column_privilege('app_expiry','media','last_error','UPDATE') AS w`);
+    assert.deepEqual(priv, { r: true, w: true }, 'worker không ghi được lý do ⇒ cột luôn NULL');
+  });
+});
+
 describe('Namespace trạng thái vận đơn (0184)', () => {
   const MIGRATION_0184 = readFileSync(new URL('../migrations/0184_shipment_status_namespace.sql', import.meta.url), 'utf8');
 

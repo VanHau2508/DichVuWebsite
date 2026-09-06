@@ -2430,6 +2430,9 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
     // hiện ra. Đúng lớp lỗi mà `payment=unpaid` và `stock=low` đã phải vá một lần rồi.
     { code: 'reviews_pending', field: 'reviews_pending', tier: 3, see: CONTENT_ROLES, label: () => 'Đánh giá chờ duyệt', href: (base) => `${base}/reviews?status=pending`, tone: 'var(--pri)', bg: 'var(--wash)', bd: 'var(--pri)', icon: '⭐' },
     { code: 'low_stock', field: 'low_stock', tier: 3, see: CATALOG_ROLES, label: () => 'Sắp hết hàng', href: (base) => `${base}/products?stock=low`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '⚠' },
+    // Ảnh nhập theo URL được worker tải NỀN, nên lỗi rơi ra sau khi người bán đã rời trang
+    // nhập. Trước 0185 con số này không có bề mặt nào ngoài trang sửa từng sản phẩm.
+    { code: 'media_failures', field: 'media_failures', tier: 3, see: CATALOG_ROLES, label: () => 'Ảnh không tải được', href: (base) => `${base}/media-failures`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '🖼' },
   ];
   const severityTier = { 'khẩn': 1, 'chờ': 2, 'theo_dõi': 3 };
   // Số liệu vận hành là thông tin chung của Tổng quan. Vai không có quyền trang đích
@@ -7133,6 +7136,53 @@ export function renderNotificationDeliveries(ctx, shopId, data, filter = {}) {
         head: [{ html: 'Đơn' }, { html: 'Kênh' }, { html: 'Trạng thái' }, { html: 'Lần thử gần nhất' }, { html: 'Lỗi / mã provider' }, { html: '', label: '' }],
         rows,
       })}</div>` : '<div class="empty-state">Không có thông báo trong trạng thái này.</div>'}
+      ${queuePager(base, filter, data.total ?? 0)}</div>`);
+}
+
+// ẢNH KHÔNG TẢI ĐƯỢC (0185). Cùng khuôn với renderNotificationDeliveries: đây cũng là "việc
+// nền thất bại", nên cũng là danh sách + lý do + nút gửi lại, và cũng phải trả lời ba câu của
+// §9.2. Khác một chỗ có chủ ý: cột LÝ DO ở đây không phải để đọc cho biết mà để QUYẾT ĐỊNH —
+// URL hỏng thì sửa tệp, máy chủ ảnh trục trặc thì bấm thử lại. Nên lý do và nút nằm cạnh nhau.
+export function renderMediaFailures(ctx, shopId, data, filter = {}) {
+  const base = `/shops/${esc(shopId)}/media-failures`;
+  const rows = (data.failures ?? []).map((f) => {
+    const thuLai = f.retryable
+      ? `<form method="POST" action="${base}/${esc(f.id)}/refetch" style="display:inline"><button class="btn sm" type="submit">Tải lại</button></form>`
+      : `<span class="muted">${esc({
+        status_not_failed: 'Không còn ở trạng thái hỏng',
+        media_deleted: 'Ảnh đã bị xoá',
+        no_source_url: 'Không có URL nguồn — tải lại tệp ở trang sản phẩm',
+        url_must_be_fixed: 'Sửa URL trong tệp rồi nhập lại',
+      }[f.retry_block_reason] ?? '—')}</span>`;
+    // URL nguồn hiện NGUYÊN VĂN và cho chọn được: người bán phải đối chiếu nó với ô trong tệp
+    // của họ. Cắt ngắn bằng CSS chứ không cắt chuỗi — cắt chuỗi thì hai URL chỉ khác phần đuôi
+    // sẽ hiện y hệt nhau, mà đuôi mới là chỗ khác nhau của ảnh trong cùng một sản phẩm.
+    const nguon = f.source_url
+      ? `<code style="display:block;max-width:34ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(f.source_url)}">${esc(f.source_url)}</code>`
+      : '<span class="muted">ảnh tải lên trực tiếp</span>';
+    return [
+      { html: `<a href="/shops/${esc(shopId)}/products/${esc(f.product_id)}"><strong>${esc(f.product_title ?? '—')}</strong></a><div class="muted" style="font-size:.82rem">ảnh thứ ${esc(Number(f.position) + 1)}</div>` },
+      { html: nguon },
+      // NULL = "chưa biết", không phải "không sao" (§3). Nói thẳng như vậy thay vì để ô trống,
+      // vì ô trống đọc thành "không có vấn đề gì" đúng ở màn hình liệt kê toàn thứ có vấn đề.
+      { html: f.last_error_text
+        ? `<span style="color:var(--bad)">${esc(f.last_error_text)}</span>`
+        : '<span class="muted">chưa ghi được lý do</span>' },
+      { cls: 'muted', html: `${esc(f.fetch_attempts ?? 0)} lần thử` },
+      { style: 'text-align:right', html: thuLai },
+    ];
+  });
+  const extra = `&limit=${encodeURIComponent(filter.limit || 50)}`;
+  return layout('Ảnh không tải được', ctx, `
+    <div class="toolbar"><div><a class="muted" href="/shops/${esc(shopId)}/overview">← Tổng quan</a><h1 style="margin:4px 0 0">Ảnh không tải được</h1></div></div>
+    ${filter.err ? `<div class="err">${esc(filter.err)}</div>` : ''}
+    ${filter.notice ? `<div class="notice success">${esc(filter.notice)}</div>` : ''}
+    <div class="card">
+      <p class="muted" style="margin-top:0">Ảnh nhập theo URL được tải nền sau khi nhập xong, nên lỗi chỉ lộ ra ở đây chứ không ở màn hình nhập. <strong>Sản phẩm vẫn nằm trong cửa hàng</strong> — chỉ thiếu ảnh.</p>
+      ${rows.length ? `<div class="tblscroll">${tblCards({
+        head: [{ html: 'Sản phẩm' }, { html: 'URL nguồn' }, { html: 'Lý do' }, { html: 'Số lần thử' }, { html: '', label: '' }],
+        rows,
+      })}</div>` : '<div class="empty-state">Không có ảnh nào hỏng. Mọi ảnh đã nhập đều đã về cửa hàng.</div>'}
       ${queuePager(base, filter, data.total ?? 0)}</div>`);
 }
 

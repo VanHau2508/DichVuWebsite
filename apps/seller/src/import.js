@@ -1204,15 +1204,39 @@ export async function importOrders(res, ctx, body) {
   // hạn lưu trước khi ghi); ở nhập-thật vẫn phải có, vì người bán bấm thẳng "Nhập thật" được.
   const pii = await demDonSeAnDanh(ctx.shopId, ready);
 
+  // ĐƠN KHÔNG CÓ KHOÁ CHỐNG TRÙNG. `migrated_ref` (từ cột `order_code`) là thứ duy nhất chặn
+  // nhập trùng — UNIQUE `orders_migrated_ref_uq`. Dòng nào không có nó thì nhập lại tệp sẽ tạo
+  // đơn mới, và người bán vừa di cư từ sàn khác mở danh sách đơn ra thấy lịch sử NHÂN ĐÔI.
+  // Đo được: tệp 5 đơn không cột `order_code`, nhập hai lần → 10 đơn.
+  //
+  // Không phải lỗi đường tiền: `reports.js`/`dashboard.js` lọc `NOT o.is_migrated` ở mọi truy
+  // vấn tiền nên doanh thu không phồng (đo được `/stats` = 0 sau hai lượt). Nhưng danh sách đơn
+  // là thứ họ dùng để đối chiếu với sàn cũ, và nó sai.
+  //
+  // Đếm theo DÒNG THẬT (`ref === null`), không theo việc tệp có cột hay không: một tệp CÓ cột
+  // `order_code` nhưng bỏ trống vài ô thì đúng những ô đó mới là chỗ hở, và chỉ nhìn tiêu đề
+  // cột sẽ bỏ sót chúng.
+  const khongKhoa = ready.filter((o) => o.ref === null).length;
+
   if (body.dry_run === true) {
     return send(res, 200, {
       dry_run: true, rows: raw.length, created: ready.length, failed: errors.length,
-      errors: errors.slice(0, 100), columns, ...(pii ? { pii } : {}),
+      errors: errors.slice(0, 100), columns, khong_khoa: khongKhoa, ...(pii ? { pii } : {}),
       preview: ready.slice(0, 20).map((o) => ({
         ref: o.ref, date: o.when.toISOString().slice(0, 10), name: o.name, phone: o.phone,
         total_vnd: o.total, status: o.status,
       })),
       customers: new Set(ready.map((o) => o.phone)).size,
+    });
+  }
+
+  // Chốt XÁC NHẬN theo đúng khuôn đã chốt cho vận đơn mồ côi: lượt đầu chỉ HIỆN con số, lượt
+  // hai phải gửi lại CHÍNH con số đó. Không dùng ô tích mù — người bán phải nhìn thấy "5 đơn"
+  // rồi mới xác nhận 5 đơn. Đổi tệp giữa chừng thì con số lệch và chốt bắt lại từ đầu.
+  if (khongKhoa > 0 && body.confirm_no_dedup !== khongKhoa) {
+    return send(res, 409, {
+      error: `${khongKhoa} đơn trong tệp không có mã đơn gốc (cột order_code) — không có gì để nhận diện, nên nhập lại tệp này lần nữa sẽ tạo thêm ${khongKhoa} đơn trùng`,
+      khong_khoa: khongKhoa,
     });
   }
 

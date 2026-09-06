@@ -4755,6 +4755,29 @@ function piiImportWarn(pii, shopId, truocKhiNhap) {
 export function renderOrderImport(ctx, shopId, result, err) {
   const base = `/shops/${esc(shopId)}/orders`;
   const n = (x) => esc(Number(x ?? 0));
+  // ĐƠN KHÔNG CÓ MÃ GỐC. `migrated_ref` (cột `order_code`) là thứ DUY NHẤT chặn nhập trùng.
+  // Thiếu nó thì nhập lại tệp tạo đơn mới — đo được: tệp 5 đơn, nhập hai lần → 10 đơn, và
+  // người bán vừa di cư mở danh sách đơn ra thấy lịch sử nhân đôi.
+  //
+  // Cảnh báo cũ CÓ tồn tại nhưng nằm ở bảng mô tả cột, hiện y hệt nhau dù tệp có cột hay không
+  // — một chú thích luôn đúng với mọi tệp thì đọc thành nền, không thành cảnh báo. Khối dưới
+  // đây chỉ hiện khi CHÍNH TỆP VỪA TẢI có dòng thiếu khoá, và nêu đúng số dòng đó.
+  //
+  // Khuôn xác nhận lấy đúng của vận đơn mồ côi: lượt đầu HIỆN con số, lượt hai gửi lại CHÍNH
+  // con số đó qua ô ẩn. Không ô tích mù. Đổi tệp giữa chừng thì số lệch và chốt bắt lại từ đầu.
+  const thieuKhoa = Number(result?.xac_nhan?.khong_khoa ?? result?.khong_khoa ?? 0);
+  const oXacNhan = thieuKhoa > 0 ? `<input type="hidden" name="confirm_no_dedup" value="${esc(thieuKhoa)}">` : '';
+  const chuaGhi = !!result?.xac_nhan;
+  const hopThieuKhoa = thieuKhoa <= 0 ? '' : `<div class="card" style="border-color:var(--warn);background:#fffbeb">
+      <h2 style="margin-top:0;color:#92400e">${chuaGhi ? 'Chưa ghi gì — cần xác nhận' : 'Tệp này thiếu mã đơn gốc'}</h2>
+      <p style="margin:0 0 10px"><strong>${esc(thieuKhoa)} đơn</strong> trong tệp không có <code>order_code</code>.
+        Hệ thống không có gì để nhận diện chúng, nên <strong>nhập lại tệp này lần nữa sẽ tạo thêm ${esc(thieuKhoa)} đơn trùng</strong>
+        — lịch sử đơn của cửa hàng sẽ nhân đôi.</p>
+      <p style="margin:0 0 10px"><strong>Nên làm:</strong> thêm cột <code>order_code</code> vào tệp (mã đơn bên sàn cũ) rồi tải lại — nhập bao nhiêu lần cũng chỉ vào một lần.</p>
+      <p style="margin:0">${chuaGhi
+        ? `Vẫn muốn nhập không mã: chọn lại tệp ở dưới rồi bấm <strong>Nhập thật</strong> một lần nữa — lượt này đã ghi nhớ con số <strong>${esc(thieuKhoa)}</strong> nên nó sẽ đi thẳng.`
+        : `Nếu vẫn muốn nhập không mã thì cứ bấm <strong>Nhập thật</strong>; con số <strong>${esc(thieuKhoa)}</strong> đã được ghi nhớ cho lượt tới.`}</p>
+    </div>`;
   const errRows = (result?.errors ?? []).map((e) => [
     { cls: 'num', html: esc(e.line) },
     { html: esc(e.title || '(không mã)') },
@@ -4814,6 +4837,7 @@ export function renderOrderImport(ctx, shopId, result, err) {
     <h1>Nhập đơn hàng cũ từ sàn khác</h1>
     <p class="muted" style="margin-top:-8px">Mang lịch sử mua của khách sang đây, để bạn biết ai đã mua gì trước khi chuyển nền tảng.</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
+    ${hopThieuKhoa}
 
     <div class="card" style="border-color:var(--indigo);background:var(--indigobg)">
       <h2 style="margin-top:0">Đọc kỹ trước khi nhập</h2>
@@ -4831,6 +4855,7 @@ export function renderOrderImport(ctx, shopId, result, err) {
     <div class="card">
       <h2 style="margin-top:0">Tải tệp lên</h2>
       <form method="POST" action="${base}/import" enctype="multipart/form-data" class="actions" style="align-items:center;flex-wrap:wrap;gap:10px">
+        ${oXacNhan}
         <input type="file" name="file" accept=".csv,text/csv" required>
         <button class="btn" type="submit" name="mode" value="preview">Xem trước</button>
         <button class="btn alt" type="submit" name="mode" value="commit"

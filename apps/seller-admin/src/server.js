@@ -2193,7 +2193,21 @@ async function orderImport(req, res, me, cookie, shopId) {
   const rows = parseCsv(file.bytes.toString('utf8'));
   if (rows.length === 0) return orderImportPage(res, me, cookie, shopId, null, 'Tệp không có dòng dữ liệu.');
   if (rows.length > 2000) return orderImportPage(res, me, cookie, shopId, null, 'Tối đa 2000 dòng mỗi lần nhập.');
-  const r = await sellerApi('POST', `/shops/${shopId}/orders/import`, { cookie, body: { rows, dry_run: dryRun }, timeoutMs: 60000 });
+  // Xác nhận cho đơn KHÔNG có mã gốc: người bán gửi lại chính con số seller vừa hiện ra. Chỉ
+  // nhận số nguyên ≥ 0 — chuỗi rác thành `null` để seller tự chặn, không để nó lọt thành 0 rồi
+  // khớp nhầm với một tệp đúng 0 đơn thiếu khoá.
+  const xn = String(parsed?.fields?.confirm_no_dedup ?? '').trim();
+  const confirmNoDedup = /^\d+$/.test(xn) ? Number(xn) : null;
+  const r = await sellerApi('POST', `/shops/${shopId}/orders/import`, {
+    cookie,
+    body: { rows, dry_run: dryRun, ...(confirmNoDedup === null ? {} : { confirm_no_dedup: confirmNoDedup }) },
+    timeoutMs: 60000,
+  });
+  // 409 kèm `khong_khoa` KHÔNG phải lỗi của người bán — nó là lượt đầu của interstitial. Trả về
+  // trang mang theo con số để lượt hai gửi lại đúng nó, thay vì ném ra một câu lỗi đỏ.
+  if (r.status === 409 && Number.isInteger(r.json?.khong_khoa)) {
+    return orderImportPage(res, me, cookie, shopId, { total: rows.length, xac_nhan: { khong_khoa: r.json.khong_khoa } }, null);
+  }
   if (r.status !== 200) return orderImportPage(res, me, cookie, shopId, null, r.json?.error ?? 'Không nhập được — kiểm tra quyền hoặc định dạng tệp.');
   return orderImportPage(res, me, cookie, shopId, { ...r.json, total: rows.length }, null);
 }

@@ -27,7 +27,7 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 | dòng test | ~35.472 | `apps/*/test/*.{js,mjs}` |
 | migration | 182 tệp, mới nhất `0184` | `packages/db/migrations/` |
 | bộ unit | 42 | `MANIFEST_UNIT_COUNT` |
-| bộ e2e | 110 | `MANIFEST_E2E_COUNT` |
+| bộ e2e | 111 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 147 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 82 tệp | `docs/` |
 
@@ -836,13 +836,52 @@ bảo mật sạch · bất biến DB **147** · E2E **110/110**, 0 log sót · 
 
 **Còn nợ của lát cắt 6, chưa đo:** XLSX (`readXlsx`/`isXlsxMagic`), BOM và dấu tiếng Việt,
 `update_only`/`upsert`, ảnh qua hàng rào SSRF, và giao diện 360px của trang nhập. Đường nhập ĐƠN
-(`orders/import`) chưa đo lần nào — nó dùng chung bảng lỗi nhưng KHÔNG chia lô, nên ba lỗi của
-đợt 2–3 không áp cho nó; **và nó vẫn giữ nguyên câu sai "kiểm tra quyền hoặc định dạng tệp"** ở
-`server.js`, chưa sửa vì chưa đo.
+(`orders/import`) — xem đợt đo 4 ngay dưới.
 
 Một nhánh chưa tự động hoá được: đường `fetch` **NÉM**. Nó đi qua `catch` riêng và chỉ khác ở CÂU
 LÝ DO; đã đo TAY bằng cách dừng container giữa lượt nhập. Ai sửa khu đó phải chạy lại tay — đã
 ghi ngay đầu tệp test.
+
+**Đợt đo 4 của lát cắt 6 — ĐƯỜNG NHẬP ĐƠN CŨ.** Đã vá và merge tại `b0ec434`.
+
+Đo được: tệp 5 đơn **không có cột `order_code`**, nhập hai lần → **10 đơn**. `migrated_ref` (từ
+cột đó) là thứ DUY NHẤT chặn trùng — UNIQUE `orders_migrated_ref_uq`. Người bán vừa di cư từ sàn
+khác mở danh sách đơn ra thấy lịch sử nhân đôi, và đó chính là thứ họ dùng để đối chiếu với sàn cũ.
+
+**PHÉP ĐO BÁC LẠI NGƯỜI ĐO, và đây là phần đáng nhớ nhất của đợt này.** Phản xạ đầu là "phồng
+doanh thu", và một truy vấn SQL tự viết cho `sum = 2.000.000₫` đúng như vậy. Nhưng hỏi CHÍNH SẢN
+PHẨM thì `/stats` vẫn `{today:0, d7:0, prev7:0, all:0}`: `reports.js` và `dashboard.js` lọc
+`NOT o.is_migrated` ở MỌI truy vấn tiền, nên đơn nhập từ sàn cũ không chạm doanh thu, không chạm
+P&L, không chạm hồ sơ khách. **Không phải lỗi đường tiền** — là lỗi chất lượng lịch sử đơn.
+→ **Luật rút ra: đo hậu quả bằng ĐÚNG bề mặt sản phẩm, đừng tự viết SQL thay nó.** SQL tự viết
+thiếu một mệnh đề `WHERE` mà mã thật luôn có sẽ đẩy người đo lên sai một bậc nghiêm trọng.
+
+Cảnh báo cũ CÓ tồn tại (`pages.js`, bảng mô tả cột) nhưng hiện **y hệt nhau dù tệp có cột hay
+không** — một chú thích luôn đúng với mọi tệp thì đọc thành nền, không thành cảnh báo.
+
+Chủ dự án chốt: **cảnh báo về chính tệp vừa tải, CỘNG bắt xác nhận ở bước nhập thật**. Khuôn lấy
+đúng của vận đơn mồ côi: lượt đầu chỉ HIỆN con số, lượt hai gửi lại CHÍNH con số đó; không ô tích
+mù; đổi tệp giữa chừng thì số lệch và chốt bắt lại từ đầu. Chốt 409 nằm ở SELLER, admin chỉ
+chuyển tiếp và dựng interstitial — frontend không phải nguồn quyết định (§9.2).
+
+Đếm theo **DÒNG THẬT** (`ref === null`), không theo tiêu đề cột: tệp CÓ cột `order_code` nhưng bỏ
+trống vài ô thì đúng những ô đó mới là chỗ hở, và nhìn tiêu đề sẽ bỏ sót chúng. Đột biến đổi sang
+đếm-theo-cột chỉ làm đỏ **1** ca — đúng ca dựng riêng cho nó.
+
+**Hai chỗ sổ tay ghi sai, đã sửa trong lượt này.** Mục "còn nợ" trước đây viết đường nhập đơn
+"vẫn giữ nguyên câu sai *kiểm tra quyền hoặc định dạng tệp*". Đo bằng vai `catalog_manager`:
+thông báo thật là **"không đủ quyền"** — câu sai chỉ là DỰ PHÒNG khi seller không trả JSON lỗi.
+Và số dòng báo lỗi ở đây **đúng** (đơn thứ 22 → dòng 23) vì đường này không chia lô; đã đo chứ
+không suy từ đợt 2.
+
+Đo: bộ mới `admin-nhap-don-trung.e2e.mjs` **17/17**, gồm bốn ca biên — bấm thẳng "Nhập thật"
+không xem trước thì chặn và chưa ghi gì · con số lệch thì chặn · chuỗi rác không lọt thành 0 ·
+tệp hợp lệ không bị doạ nhầm. Đột biến **6/6 đỏ** — bỏ chốt 11/6 · đếm theo cột 16/1 · admin
+không chuyển tiếp xác nhận 15/2 · admin coi 409 là lỗi thường 14/3 · trang không dựng khối 11/6 ·
+nhận chuỗi rác làm xác nhận 16/1; hoàn nguyên 17/0.
+
+**Còn nợ của lát cắt 6:** XLSX (`readXlsx`/`isXlsxMagic`), BOM và dấu tiếng Việt,
+`update_only`/`upsert`, ảnh qua hàng rào SSRF, và giao diện 360px của trang nhập.
 
 **Nhánh `claude/full-system-folder-access-tc6cfk` đã CHẾT, đừng merge.** 13 commit dựng trang
 chủ, rẽ khỏi `main` tại `d86176f` và đứng sau `main` **53 commit**. Đo được: 10/13 commit đã có

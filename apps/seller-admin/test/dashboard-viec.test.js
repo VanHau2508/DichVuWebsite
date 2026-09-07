@@ -244,6 +244,9 @@ const CHINH_SACH_DICH = {
   // CATALOG_ROLES giữ. Vai order_manager vẫn THẤY con số trên Tổng quan (số liệu vận hành
   // chung — §9.3) nhưng không nhận link, vì trang đích sẽ 403 với họ.
   '/media-failures': 'CATALOG_ROLES',
+  // Đơn chờ tạo (0186): seller gác GET /held-orders bằng orders.read — cùng bộ vai
+  // ORDER_ROLES giữ. Đây là đơn hàng chưa thành đơn, không phải catalog.
+  '/held-orders': 'ORDER_ROLES',
   '/customers': 'ORDER_ROLES',
   '/overview': 'trang',
   '/reviews': 'CONTENT_ROLES',

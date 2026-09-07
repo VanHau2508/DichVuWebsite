@@ -387,6 +387,22 @@ export function emailSavedMessages(orderNumber, email, ok, reason) {
   [qr('🛍 Mua thêm', 'BROWSE'), QR_MYORDERS])];
 }
 
+/**
+ * Cửa hàng ĐANG TẠM NGƯNG (0186): yêu cầu đã được ghi nhận nhưng CHƯA thành đơn.
+ *
+ * Tách khỏi `orderFailedMessages` vì hai chuyện khác hẳn nhau đối với khách. "Chưa tạo được
+ * đơn" bảo họ chọn lại và thử tiếp — mà thử lại thì vẫn ra đúng kết quả này, tức mời khách
+ * vào một vòng lặp. Ở đây thứ đúng để nói là: shop đã nhận, shop sẽ gọi lại, và KHÔNG hứa
+ * mã đơn (chưa có mã nào) cũng không hứa giữ hàng (không giữ chỗ nào).
+ *
+ * KHÔNG nêu lý do shop bị tạm ngưng: chuyện tiền giữa shop và nền tảng không phải việc của
+ * khách, và nói ra là làm hỏng uy tín của chính shop trên kênh của họ.
+ */
+export function orderHeldMessages() {
+  return [text('Shop đã nhận yêu cầu đặt hàng của bạn ạ. Hiện shop đang tạm ngưng nhận đơn tự động nên chưa lên đơn ngay được — shop sẽ liên hệ lại để xác nhận với bạn sớm nhất.',
+    [QR_MYORDERS, QR_HUMAN])];
+}
+
 /** Đơn KHÔNG tạo được — nói RÕ lý do (hết hàng…) chứ không "có lỗi xảy ra". */
 export function orderFailedMessages(reason) {
   return [text(`Rất tiếc, shop chưa tạo được đơn: ${reason}`, [qr('🛍 Chọn lại', 'BROWSE'), QR_HUMAN])];

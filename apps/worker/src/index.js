@@ -3052,6 +3052,41 @@ async function sweepMessengerSessions(batch = 500) {
   } finally { c?.release(); }
 }
 
+// ── sweep: dọn ĐƠN CHỜ TẠO nguội (PII, 0186) ─────────────────────────────────
+// `held_ingest_orders.payload` giữ tên/SĐT/địa chỉ khách — bắt buộc, vì thiếu chúng thì
+// người bán không tạo lại được đơn. Đổi lại nó phải có vòng đời như mọi PII khác.
+//
+// TTL tính từ lúc NHẬN, không từ lúc giải quyết: một dòng nằm chờ 180 ngày nghĩa là cửa
+// hàng đã không quay lại, và giữ SĐT của một người không còn ai định gọi là giữ dữ liệu
+// hết mục đích (tinh thần 0064). Dòng ĐÃ giải quyết cũng đi theo cùng mốc — đơn thật đã
+// mang đủ thông tin và có vòng đời ẩn danh riêng của nó, bản chờ chỉ còn là bản sao.
+//
+// app_expiry chỉ có DELETE trên bảng này (0186): vai dọn dẹp không đọc thứ nó xoá.
+const HELD_ORDER_TTL_DAYS = Number(process.env.HELD_ORDER_TTL_DAYS ?? 180);
+async function sweepHeldIngestOrders(batch = 500) {
+  if (!expiryDb) return 0;
+  let c;
+  try {
+    c = await expiryDb.connect();
+    const r = await c.query(
+      // Lô theo `id`, KHÔNG theo `ctid` như quét phiên Messenger ngay trên. Lý do đã đo:
+      // `ctid` là cột hệ thống và đòi SELECT CẤP BẢNG — grant theo cột không phủ nó. Mà cấp
+      // bảng ở đây nghĩa là app_expiry đọc được `payload`, tức vai dọn dẹp nhìn thấy PII.
+      // Đổi sang `id` (cột thường, đã cấp) thì giữ được cả hai: quét chạy, PII vẫn khuất.
+      `DELETE FROM held_ingest_orders
+        WHERE id IN (SELECT id FROM held_ingest_orders
+                      WHERE received_at < now() - ($1 || ' days')::interval
+                      ORDER BY received_at LIMIT $2)`,
+      [String(HELD_ORDER_TTL_DAYS), batch],
+    );
+    if (r.rowCount) log('info', 'held_ingest_orders_gc', { deleted: r.rowCount, ttl_days: HELD_ORDER_TTL_DAYS });
+    return r.rowCount;
+  } catch (err) {
+    log('error', 'held_ingest_orders_gc_failed', { message: err.message });
+    return 0;
+  } finally { c?.release(); }
+}
+
 // ── sweep: xác minh custom domain qua DNS TXT (A5) ────────────────────────────
 // Khách thêm TXT `_nentang-verify.<host>` = verification_token. Tra DNS NGOÀI transaction
 // (chậm/ngoại vi — không giữ khoá); khớp thì UPDATE verified_at CÓ GUARD (idempotent, an
@@ -4815,6 +4850,7 @@ const piiTimer = expiryDb ? setInterval(sweepPiiRetention, PII_SWEEP_MS) : null;
 // Dọn phiên Messenger đi cùng nhịp với quét PII — cùng loại việc (xoá dữ liệu cá nhân
 // hết mục đích), không cần thêm một nhịp riêng cho vài trăm dòng mỗi ngày.
 const messengerGcTimer = expiryDb ? setInterval(sweepMessengerSessions, PII_SWEEP_MS) : null;
+const heldOrderGcTimer = expiryDb ? setInterval(sweepHeldIngestOrders, PII_SWEEP_MS) : null;
 const staleTimer = (expiryDb && TELEGRAM_ON) ? setInterval(sweepStaleOrders, STALE_SWEEP_MS) : null;
 const loyaltyEarnTimer = loyaltyDb ? setInterval(sweepLoyaltyEarn, LOYALTY_SWEEP_MS) : null;
 const loyaltyClawTimer = loyaltyDb ? setInterval(sweepLoyaltyClawback, LOYALTY_SWEEP_MS) : null;
@@ -4910,6 +4946,13 @@ const server = http.createServer((req, res) => runReq(req, res, async () => {
   if (url.pathname === '/internal/messenger-gc' && req.method === 'POST') {
     const nb = parseInt(url.searchParams.get('batch') ?? '', 10);
     const n = await sweepMessengerSessions(Number.isInteger(nb) ? Math.min(Math.max(nb, 1), 500) : undefined);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({ deleted: n }));
+  }
+  // Dọn đơn chờ tạo nguội ngay (nội bộ — cho cron + e2e xác định).
+  if (url.pathname === '/internal/held-order-gc' && req.method === 'POST') {
+    const nb = parseInt(url.searchParams.get('batch') ?? '', 10);
+    const n = await sweepHeldIngestOrders(Number.isInteger(nb) ? Math.min(Math.max(nb, 1), 500) : undefined);
     res.writeHead(200, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ deleted: n }));
   }
@@ -5063,6 +5106,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
     if (revImgTimer) clearInterval(revImgTimer);
     if (piiTimer) clearInterval(piiTimer);
     if (messengerGcTimer) clearInterval(messengerGcTimer);
+    if (heldOrderGcTimer) clearInterval(heldOrderGcTimer);
     if (billingApplyTimer) clearInterval(billingApplyTimer);
     if (billingEnforceTimer) clearInterval(billingEnforceTimer);
     if (staleTimer) clearInterval(staleTimer);

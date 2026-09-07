@@ -370,6 +370,41 @@ async function main() {
     ? ok(`worker xoá phiên nguội (${gcJson.deleted} dòng)`) : bad('phiên 200 ngày tuổi VẪN còn', JSON.stringify(gcJson));
   liveLeft === 1 ? ok('phiên đang dùng KHÔNG bị cuốn theo') : bad('quét xoá nhầm phiên đang hoạt động!');
 
+  sect('9c. Shop TẠM NGƯNG — bot vẫn chốt được hội thoại, nhưng KHÔNG lên đơn (0186)');
+  // Vai "shop lúc có sự cố" (§5) đi đúng luồng này: nền tảng khoá shop vì nợ phí, storefront
+  // tối, nhưng khách vẫn đang nhắn tin. Trước 0186 bot tạo đơn thật và trừ tồn như không có
+  // chuyện gì. Khẳng định đặt ở TIN NHẮN KHÁCH ĐỌC ĐƯỢC, không ở mã trạng thái HTTP.
+  drain();
+  const PSID2 = 'psid-sus-' + uniq();
+  const ev2Text = (t) => [{ sender: { id: PSID2 }, message: { text: t } }];
+  const ev2Pb = (pl) => [{ sender: { id: PSID2 }, postback: { payload: pl } }];
+  const ev2Quick = (pl) => [{ sender: { id: PSID2 }, message: { text: 'x', quick_reply: { payload: pl } } }];
+  await owner.query(`UPDATE shops SET status = 'suspended' WHERE id = $1`, [A.shopId]);
+  const resBefore = (await owner.query('SELECT reserved FROM inventory_levels WHERE variant_id=$1', [p1.variantId])).rows[0];
+  const ordBefore = (await owner.query('SELECT count(*)::int n FROM orders WHERE shop_id=$1', [A.shopId])).rows[0].n;
+  await webhook(pageId, ev2Text('shop oi'));
+  await sleep(600); drain();
+  await webhook(pageId, ev2Pb(`PICK:${p1.productId}`));
+  await sleep(600); drain();
+  await webhook(pageId, ev2Text('0912345679'));
+  await sleep(500); drain();
+  await webhook(pageId, ev2Text('12 Lê Lợi, Phường Bến Nghé, TP Hồ Chí Minh'));
+  await sleep(600); drain();
+  await webhook(pageId, ev2Quick('PLACE'));
+  await sleep(900);
+  out = drain();
+  /liên hệ lại/.test(out.flat) && /tạm ngưng/.test(out.flat)
+    ? ok('bot nói "đã nhận, shop sẽ liên hệ lại" (không hứa mã đơn)') : bad('bot nói sai với khách', out.flat.slice(0, 400));
+  !/thành công/.test(out.flat) ? ok('KHÔNG nói "Đặt hàng thành công"') : bad('bot báo thành công cho một đơn chưa tồn tại!', out.flat.slice(0, 300));
+  !/chưa tạo được đơn/.test(out.flat) ? ok('KHÔNG nói "chưa tạo được đơn" (mời khách thử lại vô ích)') : bad('bot đẩy khách vào vòng lặp thử lại', out.flat.slice(0, 300));
+  const ordAfter = (await owner.query('SELECT count(*)::int n FROM orders WHERE shop_id=$1', [A.shopId])).rows[0].n;
+  ordAfter === ordBefore ? ok('không đơn nào được tạo') : bad(`đẻ thêm ${ordAfter - ordBefore} đơn khi shop tạm ngưng!`);
+  const resAfter = (await owner.query('SELECT reserved FROM inventory_levels WHERE variant_id=$1', [p1.variantId])).rows[0];
+  Number(resAfter.reserved) === Number(resBefore.reserved) ? ok('KHÔNG giữ chỗ tồn') : bad(`giữ chỗ tồn ${resBefore.reserved}→${resAfter.reserved}`);
+  const heldN = (await owner.query('SELECT count(*)::int n FROM held_ingest_orders WHERE shop_id=$1 AND resolved_at IS NULL', [A.shopId])).rows[0].n;
+  heldN === 1 ? ok('đúng 1 dòng chờ để người bán xử lý sau') : bad(`có ${heldN} dòng chờ`);
+  await owner.query(`UPDATE shops SET status = 'active' WHERE id = $1`, [A.shopId]);
+
   sect('10. Trang lạ + ngắt kết nối');
   drain();
   r = await webhook('999999999999999', evText('hello'));

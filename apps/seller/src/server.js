@@ -50,6 +50,7 @@ import { AUDIT_ROUTES } from './audit-log.js';
 import { PURCHASING_ROUTES } from './purchasing.js';
 import { LOYALTY_CONFIG_ROUTES } from './loyalty-config.js';
 import { API_KEY_ROUTES, handleIngest } from './api-keys.js';
+import { HELD_ORDER_ROUTES } from './held-orders.js';
 import { MESSENGER_ROUTES } from './messenger-config.js';
 import { BILLING_ROUTES } from './billing.js';
 import { INTEGRATION_ROUTES, handleKiotVietWebhook } from './integrations.js';
@@ -675,6 +676,7 @@ const ROUTES = [
   ...PURCHASING_ROUTES,
   ...LOYALTY_CONFIG_ROUTES,
   ...API_KEY_ROUTES,
+  ...HELD_ORDER_ROUTES,
   ...MESSENGER_ROUTES,
   ...BILLING_ROUTES,
   ...INTEGRATION_ROUTES,

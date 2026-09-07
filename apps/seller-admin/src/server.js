@@ -607,6 +607,28 @@ async function mediaFailureRefetch(req, res, me, cookie, shopId, mediaId) {
   return redirect(res, `/shops/${shopId}/media-failures?error=${encodeURIComponent(r.json?.message ?? r.json?.error ?? 'Không tải lại được ảnh.')}`);
 }
 
+// ĐƠN CHỜ TẠO (0186). Cùng khuôn media-failures: admin chỉ chuyển tiếp, mọi chốt nằm ở seller.
+// Chốt quan trọng nhất — "cửa hàng phải đang hoạt động lại mới tạo được đơn" — cố ý KHÔNG lặp
+// ở đây. Nếu admin cũng tự kiểm thì có hai bản của cùng một luật, và ngày chúng lệch nhau là
+// ngày nút hiện ra nhưng bấm không được (hoặc tệ hơn: ẩn đi trong khi seller vẫn cho).
+async function heldOrdersPage(res, me, cookie, shopId, q) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const showResolved = q.get('resolved') === '1';
+  const r = await sellerApi('GET', `/shops/${shopId}/held-orders${showResolved ? '?resolved=1' : ''}`, { cookie });
+  const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'orders');
+  if (r.status !== 200) return sendHtml(res, r.status, V.renderError(ctx, r.json?.error ?? 'Không tải được danh sách đơn chờ.'));
+  return sendHtmlJs(res, 200, (nonce) => V.renderHeldOrders({ ...ctx, nonce }, shopId, { ...(r.json ?? {}), showResolved }, {
+    notice: q.get('done') === 'accept' ? 'Đã tạo đơn thật từ đơn chờ.' : q.get('done') === 'drop' ? 'Đã bỏ đơn chờ.' : null,
+    err: q.get('error'),
+  }));
+}
+async function heldOrderAct(res, me, cookie, shopId, heldId, op) {
+  if (!isMember(me, shopId)) return denyShop(res, me);
+  const r = await sellerApi('POST', `/shops/${shopId}/held-orders/${heldId}/${op}`, { cookie, body: {} });
+  if (r.status === 200 || r.status === 201) return redirect(res, `/shops/${shopId}/held-orders?done=${op === 'accept' ? 'accept' : 'drop'}`);
+  return redirect(res, `/shops/${shopId}/held-orders?error=${encodeURIComponent(r.json?.error ?? 'Không xử lý được đơn chờ.')}`);
+}
+
 async function resolutionCasesPage(res, me, cookie, shopId, q) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const f = queueQuery(q, { status: 'active' });
@@ -4537,6 +4559,9 @@ async function handle(req, res, url, p) {
     if ((m = new RegExp(`^/shops/${UUID}/preview$`).exec(p)) && req.method === 'POST') return previewShop(req, res, me, cookie, m[1]);
     if ((m = new RegExp(`^/shops/${UUID}/notification-deliveries$`).exec(p)) && req.method === 'GET') return notificationDeliveriesPage(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/notification-deliveries/${UUID}/retry$`).exec(p)) && req.method === 'POST') return notificationDeliveryRetry(req, res, me, cookie, m[1], m[2]);
+    if ((m = new RegExp(`^/shops/${UUID}/held-orders$`).exec(p)) && req.method === 'GET') return heldOrdersPage(res, me, cookie, m[1], url.searchParams);
+    if ((m = new RegExp(`^/shops/${UUID}/held-orders/${UUID}/accept$`).exec(p)) && req.method === 'POST') return heldOrderAct(res, me, cookie, m[1], m[2], 'accept');
+    if ((m = new RegExp(`^/shops/${UUID}/held-orders/${UUID}/drop$`).exec(p)) && req.method === 'POST') return heldOrderAct(res, me, cookie, m[1], m[2], 'drop');
     if ((m = new RegExp(`^/shops/${UUID}/media-failures$`).exec(p)) && req.method === 'GET') return mediaFailuresPage(res, me, cookie, m[1], url.searchParams);
     if ((m = new RegExp(`^/shops/${UUID}/media-failures/${UUID}/refetch$`).exec(p)) && req.method === 'POST') return mediaFailureRefetch(req, res, me, cookie, m[1], m[2]);
     if ((m = new RegExp(`^/shops/${UUID}/resolution-cases$`).exec(p)) && req.method === 'GET') return resolutionCasesPage(res, me, cookie, m[1], url.searchParams);

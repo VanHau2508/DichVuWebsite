@@ -1466,22 +1466,35 @@ export async function shopShipFee(c, subtotal, lines = []) {
 }
 
 export async function createManualOrder(res, ctx, body) {
+  const out = await createOrderCore(ctx, body);
+  return send(res, out.code, out.body);
+}
+
+/**
+ * LÕI tạo đơn tay/bot, trả `{code, body}` thay vì tự ghi ra `res`.
+ *
+ * Tách ra vì có người gọi thứ hai KHÔNG cầm `res` của khách: đường chốt "đơn chờ tạo"
+ * (0186) — đơn phần mềm ngoài đẩy vào lúc shop bị tạm ngưng, người bán chốt lại sau. Tách
+ * theo kiểu này chứ không chép hàm: cả hai lối vào đi qua ĐÚNG một validate, một khoá tồn,
+ * một snapshot giá, một outbox. §3 — đường tiền không được có bản thứ hai.
+ */
+export async function createOrderCore(ctx, body) {
   // ── validate đầu vào (giá/total client gửi bị BỎ QUA — như checkout) ──
   const rawLines = Array.isArray(body?.lines) ? body.lines : [];
   const lines0 = rawLines.filter((l) => l && UUID_RE.test(String(l.variant_id ?? '')) && Number.isInteger(Number(l.qty)) && Number(l.qty) >= 1 && Number(l.qty) <= 1000)
     .map((l) => ({ variant_id: String(l.variant_id), qty: Number(l.qty) }));
-  if (lines0.length === 0 || lines0.length > 50) return send(res, 400, { error: 'đơn cần 1-50 dòng hàng hợp lệ' });
+  if (lines0.length === 0 || lines0.length > 50) return { code: 400, body: { error: 'đơn cần 1-50 dòng hàng hợp lệ' } };
   const name = String(body?.customer?.name ?? '').trim();
   const phoneRaw = String(body?.customer?.phone ?? '').trim();
   const phone = canonPhone(phoneRaw);
-  if (!name || name.length > 120) return send(res, 400, { error: 'thiếu tên khách (≤120 ký tự)' });
-  if (!phone) return send(res, 400, { error: 'SĐT không hợp lệ (tối thiểu 8 số)' });
+  if (!name || name.length > 120) return { code: 400, body: { error: 'thiếu tên khách (≤120 ký tự)' } };
+  if (!phone) return { code: 400, body: { error: 'SĐT không hợp lệ (tối thiểu 8 số)' } };
   const email = String(body?.customer?.email ?? '').trim().toLowerCase() || null;
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return send(res, 400, { error: 'email không hợp lệ' });
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { code: 400, body: { error: 'email không hợp lệ' } };
   const addressLine = String(body?.customer?.address_line ?? '').trim().slice(0, 300) || null;
   const province = String(body?.customer?.province ?? '').trim().slice(0, 60) || null;
   // Validate tỉnh (nếu ghi) — form tạo vận đơn GHN/GHTK prefill từ đây, tỉnh sai = hãng từ chối.
-  if (province && !isProvince(province)) return send(res, 400, { error: 'tỉnh/thành không hợp lệ (chọn theo danh sách 34 tỉnh thành)' });
+  if (province && !isProvince(province)) return { code: 400, body: { error: 'tỉnh/thành không hợp lệ (chọn theo danh sách 34 tỉnh thành)' } };
   const paymentMethod = body?.payment_method === 'qr' ? 'qr' : 'cod';
   const note = String(body?.note ?? '').trim().slice(0, 500) || null;
   // NGUỒN ĐƠN (0119). Mặc định 'manual' — người gõ form là nhân viên. Bot Messenger ở
@@ -1490,22 +1503,22 @@ export async function createManualOrder(res, ctx, body) {
   // 'facebook' là hỏng báo cáo âm thầm. Giá trị lạ → 400 chứ không lặng lẽ về mặc định,
   // vì lặng lẽ nghĩa là bot gửi sai tên kênh suốt nhiều tuần mà không ai biết.
   const source = body?.source == null || body.source === '' ? 'manual' : String(body.source);
-  if (!ORDER_SOURCES.has(source)) return send(res, 400, { error: `nguồn đơn không hợp lệ (${[...ORDER_SOURCES].join('/')})` });
+  if (!ORDER_SOURCES.has(source)) return { code: 400, body: { error: `nguồn đơn không hợp lệ (${[...ORDER_SOURCES].join('/')})` } };
   const sourceRef = String(body?.source_ref ?? '').trim().slice(0, 200) || null;
   // Phí ship: nhân viên ghi đè (>=0), không ghi → tính theo cấu hình shop (phẳng + ngưỡng).
   const shipOverride = body?.ship_fee_vnd != null && body.ship_fee_vnd !== ''
     ? Number(body.ship_fee_vnd) : null;
   if (shipOverride != null && !(Number.isInteger(shipOverride) && shipOverride >= 0 && shipOverride <= 10_000_000)) {
-    return send(res, 400, { error: 'phí ship ghi đè không hợp lệ' });
+    return { code: 400, body: { error: 'phí ship ghi đè không hợp lệ' } };
   }
   // Idempotency: chống double-submit form (key do BFF sinh, nhét hidden input).
   const idemKey = String(body?.idempotency_key ?? '');
-  if (idemKey.length < 8 || idemKey.length > 200) return send(res, 400, { error: 'thiếu idempotency_key' });
+  if (idemKey.length < 8 || idemKey.length > 200) return { code: 400, body: { error: 'thiếu idempotency_key' } };
 
   // Lỗi nghiệp vụ PHẢI throw (không return {code}) → withTenant ROLLBACK: nhả reserve
   // dở dang + nhả idempotency claim (retry sạch). Dispatcher seller đọc err.statusCode.
   const fail = (statusCode, msg) => { throw Object.assign(new Error(msg), { statusCode }); };
-  const out = await withTenant(ctx.shopId, async (c) => {
+  return withTenant(ctx.shopId, async (c) => {
     const connector = (await c.query(
       `SELECT id, status, inventory_authority FROM shop_integrations
         WHERE inventory_authority = 'external_master'
@@ -1618,15 +1631,22 @@ export async function createManualOrder(res, ctx, body) {
       `INSERT INTO outbox (shop_id, topic, payload) VALUES (current_shop_id(), 'order.created', $1)`,
       [{ ...(email ? { to: email } : {}), order_id: order.id, order_number: Number(num), total_vnd: total, customer_name: name, payment_method: paymentMethod, source, ...(link ? { link } : {}) }],
     );
+    // AI làm, chứ không phải đơn ĐẾN TỪ ĐÂU. Hai câu hỏi khác nhau và trước 0186 chúng bị
+    // gộp làm một vì mọi đơn có `apiKeyId` đều do máy tạo. Đường chốt "đơn chờ tạo" phá giả
+    // định đó: nó truyền `apiKeyId` để lấy đúng luật giá của bot (và để `orders.api_key_id`
+    // còn truy được tích hợp nào đẩy về), nhưng người bấm nút là NGƯỜI THẬT. Suy actor từ
+    // `apiKeyId` sẽ ghi `actor_type='system'` kèm `actor_id` của một con người — một dòng
+    // nhật ký tự mâu thuẫn, đúng thứ nhật ký tồn tại để không có.
+    // Đường /ingest thuần không đổi: ở đó `ctx.user` rỗng nên vẫn là 'system'/'api'.
     await audit(c, 'order.created_manual', {
-      actorType: ctx.apiKeyId ? 'system' : 'user',
+      actorType: ctx.user?.id ? 'user' : 'system',
       actorId: ctx.user?.id ?? null,
       ip: ctx.ip,
       metadata: { order_number: Number(num), total_vnd: total, lines: lines.length, source, ...(ctx.apiKeyId ? { api_key_id: ctx.apiKeyId } : {}) },
     });
     await orderEvent(c, order.id, 'order.created', ctx, {
       order_number: Number(num), total_vnd: total, payment_method: paymentMethod, source,
-    }, ctx.apiKeyId ? 'api' : 'seller_admin');
+    }, ctx.user?.id ? 'seller_admin' : 'api');
 
     const response = { id: order.id, order_number: Number(num), subtotal_vnd: subtotal, shipping_vnd: shipping, total_vnd: total, status: 'pending', payment_method: paymentMethod, ...(paymentRef ? { payment_ref: paymentRef } : {}) };
     await c.query(
@@ -1636,7 +1656,6 @@ export async function createManualOrder(res, ctx, body) {
     );
     return { code: 201, body: response };
   });
-  return send(res, out.code, out.body);
 }
 
 // ── SỬA ĐƠN (v1) ─────────────────────────────────────────────────────────────

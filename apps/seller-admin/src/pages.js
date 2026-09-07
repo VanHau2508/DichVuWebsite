@@ -2437,6 +2437,9 @@ export function renderOverview(ctx, shopId, s, setup = null, notice = null, shop
     { code: 'order_requests', field: 'order_requests', tier: 1, see: ORDER_ROLES, label: () => 'Yêu cầu khách chờ xử lý', href: (base) => `${base}/order-requests?status=requested`, tone: 'var(--warn)', bg: 'var(--warnbg)', bd: 'var(--warn)', icon: '↩' },
     { code: 'resolution_cases', field: 'resolution_cases', tier: 1, see: ORDER_ROLES, label: () => 'Ca giao hàng cần xử lý', href: (base) => `${base}/resolution-cases?status=active`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '↔' },
     { code: 'shipment_attention', field: 'shipment_attention', tier: 1, see: ORDER_ROLES, label: () => 'Vận đơn cần xử lý', href: (base) => `${base}/overview#shipment-attention`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '🚚' },
+    // Đơn phần mềm ngoài đẩy vào trong lúc cửa hàng bị TẠM NGƯNG (0186): CHƯA phải đơn, chưa
+    // giữ chỗ hàng. Xếp tier 1 vì đầu kia là một người thật đang chờ shop gọi lại.
+    { code: 'held_orders', field: 'held_orders', tier: 1, see: ORDER_ROLES, label: () => 'Đơn chờ tạo', href: (base) => `${base}/held-orders`, tone: 'var(--bad)', bg: 'var(--badbg)', bd: 'var(--bad)', icon: '⏸' },
     // `migrated=0` khớp với dashboard.js (`WHERE NOT is_migrated`) — cùng lý do đã ghi ở
     // statusCards. Ô tiền (unpaid/partial) KHÔNG cần: PAYMENT_ACTIONABLE_SQL trong owed.js
     // đã mang sẵn `NOT o.is_migrated`, nên đếm và danh sách vốn đã cùng một tập.
@@ -7259,6 +7262,58 @@ export function renderMediaFailures(ctx, shopId, data, filter = {}) {
         rows,
       })}</div>` : '<div class="empty-state">Không có ảnh nào hỏng. Mọi ảnh đã nhập đều đã về cửa hàng.</div>'}
       ${queuePager(base, filter, data.total ?? 0)}</div>`);
+}
+
+// ĐƠN CHỜ TẠO (0186). Đây KHÔNG phải danh sách đơn — nó là danh sách LỜI HỨA CHƯA NHẬN.
+// Trang phải nói rõ điều đó ở câu đầu, vì mọi thứ khác trên bảng điều khiển đều là đơn thật:
+// người bán đọc lướt sẽ tưởng hàng đã được giữ chỗ và đi đóng gói.
+//
+// Ba câu §9.2:
+//   · chuyện gì xảy ra — phần mềm ngoài đẩy đơn vào lúc cửa hàng bị tạm ngưng, CHƯA trừ hàng;
+//   · làm gì tiếp      — "Tạo đơn thật" (kiểm hàng và giá TẠI LÚC BẤM) hoặc "Bỏ";
+//   · thử lại được không — mở lại cửa hàng rồi bấm; bấm lúc còn tạm ngưng thì seller trả 409
+//                          kèm lý do, nên nút vẫn hiện chứ không biến mất (ẩn nút thì người
+//                          bán không biết mình phải làm gì để nó chạy được).
+export function renderHeldOrders(ctx, shopId, data, filter = {}) {
+  const base = `/shops/${esc(shopId)}/held-orders`;
+  const dt = (v) => (v ? new Date(v).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : '—');
+  const rows = (data.held ?? []).map((h) => {
+    const xong = h.resolved_at != null;
+    const thaoTac = xong
+      ? (h.resolution === 'accepted'
+        ? `<a href="/shops/${esc(shopId)}/orders/${esc(h.order_id)}">Đã tạo đơn #${esc(h.order_number ?? '')}</a>`
+        : '<span class="muted">Đã bỏ</span>')
+      : `<form method="POST" action="${base}/${esc(h.id)}/accept" style="display:inline"><button class="btn sm" type="submit">Tạo đơn thật</button></form>
+         <form method="POST" action="${base}/${esc(h.id)}/drop" style="display:inline" data-confirm="Bỏ đơn chờ của ${esc(h.customer_name ?? 'khách')}? Đơn sẽ không được tạo, và bản ghi vẫn nằm lại đây để đối chiếu.">
+           <button class="btn alt sm" type="submit">Bỏ</button></form>`;
+    return {
+      attrs: xong ? ' style="opacity:.55"' : '',
+      cells: [
+        { html: `<strong>${esc(h.customer_name ?? '—')}</strong><div class="muted" style="font-size:.82rem">${esc(h.customer_phone ?? '')}</div>` },
+        { cls: 'muted', html: dt(h.received_at) },
+        { cls: 'muted', html: `${esc(h.source ?? '—')}${h.api_key_name ? ` · ${esc(h.api_key_name)}` : ''}` },
+        { style: 'text-align:right', html: `${esc(h.line_count)} dòng · ${esc(h.qty_total)} món` },
+        { style: 'text-align:right', html: thaoTac },
+      ],
+    };
+  });
+  return layout('Đơn chờ tạo', { ...ctx, active: 'orders' }, `
+    <div class="toolbar"><div><a class="muted" href="/shops/${esc(shopId)}/overview">← Tổng quan</a><h1 style="margin:4px 0 0">Đơn chờ tạo</h1></div></div>
+    ${filter.err ? `<div class="err">${esc(filter.err)}</div>` : ''}
+    ${filter.notice ? `<div class="notice success">${esc(filter.notice)}</div>` : ''}
+    <div class="card">
+      <p style="margin-top:0">Phần mềm ngoài (bot Facebook, Pancake, n8n…) đã đẩy những đơn này về trong lúc cửa hàng <strong>tạm ngưng</strong>. Chúng <strong>chưa phải là đơn</strong>: chưa có số đơn, <strong>chưa giữ chỗ hàng</strong> và chưa vào doanh thu.</p>
+      <p class="muted" style="margin-bottom:0">Bấm <strong>Tạo đơn thật</strong> để dựng đơn — hàng và giá được kiểm <em>tại lúc bấm</em>, không phải lúc khách đặt. Cửa hàng phải đang hoạt động trở lại thì mới tạo được.</p>
+    </div>
+    <div class="card">
+      ${rows.length ? `<div class="tblscroll">${tblCards({
+        head: [{ html: 'Khách' }, { html: 'Nhận lúc' }, { html: 'Nguồn' }, { html: 'Hàng', style: 'text-align:right' }, { html: '', label: '' }],
+        rows,
+      })}</div>` : '<div class="empty-state">Không có đơn nào đang chờ.</div>'}
+      <p class="muted" style="margin:12px 0 0;font-size:.85rem">${data.showResolved
+        ? `<a href="${base}">Chỉ xem đơn đang chờ</a>`
+        : `<a href="${base}?resolved=1">Xem cả đơn đã xử lý</a>`}</p>
+    </div>`);
 }
 
 export function renderResolutionCases(ctx, shopId, data, filter = {}) {

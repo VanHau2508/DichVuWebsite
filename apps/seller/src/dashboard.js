@@ -35,6 +35,10 @@ const TODO_DEFS = [
   { code: 'reviews_pending', field: 'reviews_pending', severity: 'theo_dõi', source: 'system' },
   { code: 'low_stock', field: 'low_stock', severity: 'theo_dõi', source: 'system' },
   { code: 'media_failures', field: 'media_failures', severity: 'theo_dõi', source: 'system' },
+  // ĐƠN CHỜ TẠO (0186): đơn phần mềm ngoài đẩy vào lúc shop bị tạm ngưng. 'khẩn' chứ không
+  // 'theo_dõi' — đầu kia là một người thật đang đợi shop gọi lại, và mỗi ngày trôi qua là
+  // một ngày họ đi mua chỗ khác. Nguồn 'system': không ai trong shop gây ra nó.
+  { code: 'held_orders', field: 'held_orders', severity: 'khẩn', source: 'system' },
 ];
 
 async function stats(res, ctx) {
@@ -173,6 +177,7 @@ async function stats(res, ctx) {
           WHERE m.status = 'failed' AND m.deleted_at IS NULL AND p.deleted_at IS NULL
         ) AS media_failures,
         (SELECT count(*)::int FROM order_requests WHERE status = 'requested') AS order_requests_pending,
+        (SELECT count(*)::int FROM held_ingest_orders WHERE resolved_at IS NULL) AS held_orders,
         (SELECT count(*)::int
           FROM shipments s
            JOIN orders o ON o.shop_id = s.shop_id AND o.id = s.order_id
@@ -222,6 +227,7 @@ async function stats(res, ctx) {
     notification_failures: out.todo ? n(out.todo.notification_failures) : null,
     media_failures: out.todo ? n(out.todo.media_failures) : null,
     order_requests: out.todo ? n(out.todo.order_requests_pending) : null,
+    held_orders: out.todo ? n(out.todo.held_orders) : null,
     shipment_attention: out.todo ? n(out.todo.shipment_attention) : null,
   };
   const CORE_TODO_FIELDS = new Set(['to_confirm', 'to_ship', 'unpaid', 'partial_payments']);

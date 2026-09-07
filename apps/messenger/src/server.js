@@ -21,7 +21,7 @@ import crypto from 'node:crypto';
 import pg from 'pg';
 import { health, makeLog, runReq } from './obs.js';
 import { open as unseal } from './secretbox.js';
-import { step, summaryMessages, subtotalOf, orderPlacedMessages, orderFailedMessages, cancelResultMessages, emailSavedMessages } from './flow.js';
+import { step, summaryMessages, subtotalOf, orderPlacedMessages, orderHeldMessages, orderFailedMessages, cancelResultMessages, emailSavedMessages } from './flow.js';
 
 const PORT = Number(process.env.PORT ?? 3072);
 const APP_SECRET = process.env.MESSENGER_APP_SECRET ?? '';
@@ -257,6 +257,15 @@ async function handleEvent(cfg, psid, ev) {
       out = {
         state: { cart: [], step: 'start', customer: out.effect.customer, placeSeq: seq + 1 },
         messages: orderPlacedMessages(r.json, url),
+        effect: { type: 'remember', customer: out.effect.customer },
+      };
+    } else if (r.status === 202) {
+      // Đã ghi nhận vào hàng chờ của shop (0186). Giỏ được DỌN và `placeSeq` tăng như lần đặt
+      // thành công: giữ nguyên bước 'confirm' là mời khách bấm lại, mà bấm lại chỉ ra đúng
+      // dòng chờ cũ — họ sẽ tưởng mình đang bị lỗi. Yêu cầu đã tới shop rồi, hội thoại xong.
+      out = {
+        state: { cart: [], step: 'start', customer: out.effect.customer, placeSeq: seq + 1 },
+        messages: orderHeldMessages(),
         effect: { type: 'remember', customer: out.effect.customer },
       };
     } else {

@@ -25,10 +25,10 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 |---|---:|---|
 | dòng mã ứng dụng | ~48.900 | `apps/*/src/*.js` |
 | dòng test | ~35.472 | `apps/*/test/*.{js,mjs}` |
-| migration | 183 tệp, mới nhất `0185` | `packages/db/migrations/` |
+| migration | 184 tệp, mới nhất `0186` | `packages/db/migrations/` |
 | bộ unit | 42 | `MANIFEST_UNIT_COUNT` |
-| bộ e2e | 112 | `MANIFEST_E2E_COUNT` |
-| bất biến DB | 9 bộ, 148 test TAP | `packages/db/test/*.test.js` |
+| bộ e2e | 113 | `MANIFEST_E2E_COUNT` |
+| bất biến DB | 9 bộ, 149 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 82 tệp | `docs/` |
 
 Tỉ lệ test/mã ≈ 0,73 — cao có chủ ý, xem §4.
@@ -75,7 +75,7 @@ với GitHub CI. Nó tự dựng PostgreSQL trắng trong project Compose riêng
 chạy đúng runner production **không seed**, rồi so ba chiều: số file = `MANIFEST_MIGRATION_COUNT`
 = số dòng thật trong `schema_migrations`, kèm 0 DRIFT / 0 pending. Tự dọn bằng `trap` ở mọi đường
 thoát, kể cả Ctrl-C. **Không chạm DB dev.** Thêm migration thì sửa `MANIFEST_MIGRATION_COUNT`
-trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 183 file / số cao nhất 0185).
+trong cùng commit — đếm theo **FILE**, không theo số thứ tự (hôm nay 184 file / số cao nhất 0186).
 
 Hook `scripts/hooks/pre-push` chạy `--fast` và **chặn push khi đỏ**. Cài một lần cho mỗi bản
 clone: `git config core.hooksPath scripts/hooks`.
@@ -1387,10 +1387,82 @@ là **"không đủ quyền"** — mã trạng thái nói "hệ thống hỏng, 
 không mở được". Một trang tự mâu thuẫn, và mọi phép đếm 5xx coi một lần phân quyền bình thường là
 một lần hạ tầng hỏng.
 
-**Câu hỏi đang chờ chủ dự án quyết:** khoá kết nối của shop `suspended` (nợ phí) có được đẩy đơn
-tiếp không? Ba phương án đều code được và khác nhau ở hậu quả kinh doanh — chặn hẳn (đòn bẩy thu
-phí kín, nhưng shop mất đơn đang chat dở) · nhận nhưng đánh dấu / không giữ chỗ tồn · giữ nguyên
-như hôm nay. Nhánh `terminated` thì không có lựa chọn thứ hai.
+### Lát cắt 7 — đợt đo 4: ĐƠN CHỜ TẠO (`0186`). Bản vá cho chính lỗi đợt 3 đo được.
+
+**QUYẾT ĐỊNH của chủ dự án (07/09), phương án (b):** shop `suspended` **vẫn nhận** đơn từ khoá
+kết nối nhưng **KHÔNG giữ chỗ tồn** và phải hiện ra thành việc cần xử lý; shop `terminated` bị
+từ chối hẳn.
+
+**Phần dễ làm sai nhất của chính quyết định đó, và là lý do có một BẢNG RIÊNG chứ không phải một
+cờ trên `orders`:** cả hệ thống dựa trên bất biến *"một dòng `orders` đang sống thì ĐANG GIỮ CHỖ
+đúng số hàng của nó"*. `consumeAndShip` (`orders.js:670`) trừ `reserved -= qty`, đường huỷ và
+đường sửa đơn cũng vậy — tất cả đều `GREATEST(0, …)`. Một đơn KHÔNG giữ chỗ mà nằm trong `orders`
+sẽ, lúc được gửi hay bị huỷ, **NHẢ CHỖ CỦA ĐƠN KHÁC**: `reserved` 3 → 2 trong khi ba đơn kia vẫn
+đang chờ hàng. Kẹp `GREATEST(0, …)` không cứu được vì con số vẫn dương — nó chặn số âm, không
+chặn trừ nhầm người. Hỏng im lặng, và chỉ lộ ra khi khách thứ ba tới lấy hàng.
+
+Nên đơn nhận lúc tạm ngưng nằm ở `held_ingest_orders` tới khi cửa hàng chạy lại, rồi đi qua ĐÚNG
+`createOrderCore` như mọi đơn khác — **giá và tồn tính tại thời điểm tạo thật**, không phải thời
+điểm nhận. Hứa lại giá của hai tuần trước là hứa một con số không còn thật. `createManualOrder`
+được tách làm hai (`createManualOrder` ghi ra `res`, `createOrderCore` trả `{code, body}`) chứ
+KHÔNG chép hàm: §3 — đường tiền không được có bản thứ hai.
+
+Chốt "chỉ chốt được khi cửa hàng ĐANG HOẠT ĐỘNG" không phải trang trí — chốt lúc còn tạm ngưng
+chính là giữ chỗ tồn cho một shop đang bị khoá, đúng thứ quyết định (b) nói là không.
+
+Bot Messenger có nhánh riêng cho 202: nói *"shop đã nhận, sẽ liên hệ lại"*, KHÔNG nói "thành
+công" (không có mã đơn để hứa) và KHÔNG nói "chưa tạo được đơn" (mời khách thử lại vô ích — thử
+lại chỉ ra đúng dòng chờ cũ). Giỏ được dọn và `placeSeq` tăng như lần đặt thành công, vì yêu cầu
+đã tới shop rồi. Lý do shop bị tạm ngưng KHÔNG nói ra: chuyện tiền giữa shop và nền tảng không
+phải việc của khách, và nói ra là làm hỏng uy tín của chính shop trên kênh của họ.
+
+**BA LỖI CỦA CHÍNH LƯỢT THI CÔNG, cả ba cùng một họ: quét PII chạy nhưng không xoá gì, và im
+lặng về điều đó.** Chép lại vì đó là lớp lỗi 0185 vừa ghi cho chiều GHI, còn đây là chiều ĐỌC.
+- Bản đầu chỉ `GRANT DELETE` cho `app_expiry`. Câu quét `DELETE … WHERE ctid IN (SELECT … WHERE
+  received_at < …)` cần SELECT trên `received_at` — Postgres đòi quyền đọc **mọi cột xuất hiện
+  trong WHERE, kể cả WHERE của chính lệnh DELETE**. Sweep bắt exception, ghi log, trả
+  `deleted: 0`; nhìn từ ngoài là "chạy bình thường" còn PII nằm lại mãi.
+- Thêm `GRANT SELECT (id, received_at)` vẫn `permission denied`: **`ctid` là cột HỆ THỐNG và đòi
+  SELECT CẤP BẢNG** — grant theo cột không phủ nó. Mà cấp bảng nghĩa là vai dọn dẹp đọc được
+  `payload`, tức nhìn thấy đúng thứ nó tồn tại để xoá. Đổi lô sang `id` (cột thường) giữ được cả
+  hai.
+- Vẫn `deleted: 0`: policy `FOR DELETE` không cho SELECT, nên câu con trả 0 dòng dưới FORCE RLS —
+  **không lỗi nào cả**. Nay là `FOR ALL … USING (true) WITH CHECK (false)`, đúng khuôn `expiry_gc`
+  của `messenger_sessions` (0123).
+→ Bất biến mới trong `schema-invariants` khoá cả ba: `app_rw` KHÔNG có DELETE (mất bằng chứng
+đơn khách đã đặt) · `app_expiry` đọc được `received_at` nhưng **KHÔNG** đọc được `payload` ·
+từ vựng `resolution` so BẰNG với tập mà `held-orders.js` thật sự ghi.
+
+**Chốt cũ bắt đúng HAI lỗi thật của lượt này**, cả hai là thứ tôi tự quên chứ không phải sản
+phẩm sai: thêm ô `held_orders` vào `TODO_REGISTRY` mà quên khai `/held-orders` trong
+`CHINH_SACH_DICH` → `dashboard-viec.test.js` **10/1** (đúng thứ MANIFEST LỐI ĐI sinh ra để
+chặn); và thêm một lời gọi `tblCards` cho trang mới mà quên bảng đếm → `table-cards.test.js`
+**5/1** ở bước 1 của cổng. Cả hai đều là chốt "so BẰNG, không phải ≥" — chúng đỏ theo CẢ HAI
+chiều, và đó là lý do chúng bắt được.
+
+**Một lỗi nữa tìm được khi tự đọc lại diff, không phải khi chạy test: nhật ký gán nhầm ACTOR.**
+`createOrderCore` suy `actor_type` từ `ctx.apiKeyId` — đúng suốt từ 0120 vì mọi đơn có khoá đều
+do máy tạo. Đường chốt đơn chờ phá giả định đó: nó **phải** truyền `apiKeyId` (để lấy đúng luật
+giá flash-sale của bot, và để `orders.api_key_id` còn truy được tích hợp nào đẩy về) trong khi
+người bấm nút là NGƯỜI THẬT. Kết quả là một dòng `order.created_manual` ghi
+`actor_type='system'` kèm `actor_id` của một con người — tự mâu thuẫn, đúng thứ nhật ký tồn tại
+để không có. Hai câu hỏi khác nhau (*ai làm* và *đơn đến từ đâu*) bị gộp vào một cờ. Nay actor và
+kênh suy từ `ctx.user`; đường `/ingest` thuần không đổi vì ở đó `ctx.user` vốn rỗng.
+
+Đo: bộ mới `held-orders.e2e.mjs` **41/41**, `bot.e2e.mjs` 56 → **62**, bất biến DB **148 → 149**.
+Ma trận **15/15 đột biến đỏ** — gỡ chốt shop-đã-đóng 34/4 · gỡ nhánh tạm ngưng 9/17 · gỡ chốt
+shop-phải-hoạt-động khi chốt 19/8 · bỏ `ON CONFLICT` 37/1 · cắt dây nối `/stats` 37/1 · bỏ chốt
+chốt-lần-hai 36/2 · bỏ chốt bỏ-lần-hai 37/1 · trang thôi nói "chưa giữ chỗ hàng" 37/1 · shop đã
+đóng chỉ chặn đơn chứ không chặn catalog 37/1 · đánh dấu đã chốt mà không tạo đơn 22/5 · bot bỏ
+nhánh 202 60/2 · đổi `see:` của ô mới sang `CATALOG_ROLES` 10/1 · thu hồi GRANT theo cột của
+`app_expiry` 61/1 · policy `app_expiry` quay về `FOR DELETE` 39/1 · suy actor nhật ký từ
+`apiKeyId` như bản cũ 40/1.
+
+**Còn nợ của đợt này, đã biết và cố ý chưa làm:** không có nút "chốt tất cả" (mỗi lần chốt là một
+lượt kiểm tồn + giá riêng, gộp lại thì một dòng hết hàng làm hỏng cả lô mà người bán không biết
+dòng nào) · đơn chờ không có bề mặt cho khách tự tra (họ chưa có mã đơn để tra) · mở lại cửa hàng
+KHÔNG gửi thông báo nào cho người bán rằng có đơn đang chờ — họ phải tự mở Tổng quan mới thấy ô,
+mà đúng lúc vừa trả xong phí thì đó không phải màn hình đầu tiên họ mở.
 
 **Còn nợ của lát cắt 7, chưa đo:** `/domains`, `/billing` mới chỉ được đối chiếu ở mức bảng quyền,
 chưa đi bằng vai thật · chưa đo vai "shop lúc có sự cố" cho các nhóm còn lại.

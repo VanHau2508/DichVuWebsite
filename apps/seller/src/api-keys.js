@@ -21,6 +21,7 @@ import { noteShop } from './obs.js';
 import { withTenant, audit, resolveApiKey } from './db.js';
 import { createManualOrder } from './orders.js';
 import { routeIngestCatalog, routeIngestWrite } from './ingest-catalog.js';
+import { holdIngestOrder } from './held-orders.js';
 
 const UUID = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -143,8 +144,26 @@ export async function handleIngest(req, res, { pathname, query, ip, readJson }) 
   // thì câu "bao nhiêu % shop đã chạm kênh đơn từ Facebook/Zalo" trả lời SAI cho cả cụm.
   noteShop(key.shop_id);
 
+  // ── CỬA HÀNG ĐÃ ĐÓNG / ĐANG TẠM NGƯNG (0186) ──────────────────────────────
+  //
+  // Chú thích của `terminateShop` bên platform liệt kê các chốt phải dừng phục vụ —
+  // storefront (0011), checkout (0012), tls-authorize — rồi kết luận "serving DỪNG TỰ NHIÊN
+  // qua các chốt sẵn có". Danh sách đó viết TRƯỚC khoá kết nối (0120) nên cửa này không nằm
+  // trong đó. Đo được 07/09: `terminated` → storefront 404 mà /ingest/orders vẫn 201.
+  //
+  // Đã đóng thì đóng CẢ CỬA, kể cả đường đọc catalog: hợp đồng hết nghĩa là bot không còn
+  // được chào hàng thay cửa hàng nữa. 403 chứ không 401 — 401 nghĩa là "khoá sai" và tích
+  // hợp sẽ đi thay khoá, đúng việc không giúp được gì.
+  if (key.shop_closed) {
+    return send(res, 403, { error: 'cửa hàng này đã đóng — khoá kết nối không còn nhận đơn' });
+  }
+
   if (req.method === 'POST' && pathname === '/ingest/orders') {
     const body = await readJson(req);
+    // TẠM NGƯNG: nhận, nhưng KHÔNG tạo đơn và KHÔNG giữ chỗ tồn — xem held-orders.js.
+    // Đường đọc catalog vẫn mở: bot còn phải trả lời khách để có cái mà ghi nhận, cắt giữa
+    // chừng thì hội thoại vỡ ở chỗ khách không hiểu nổi.
+    if (key.shop_status === 'suspended') return holdIngestOrder(res, key, body, ip);
     // Không có người thật đứng sau → ctx.user rỗng; audit ghi actor_type 'system' + id khoá.
     const ctx = { user: null, role: null, shopId: key.shop_id, ip, apiKeyId: key.id };
     return createManualOrder(res, ctx, body);

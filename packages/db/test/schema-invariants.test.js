@@ -1062,6 +1062,50 @@ describe('Từ vựng lý do ảnh hỏng (0185)', () => {
   });
 });
 
+// ĐƠN CHỜ TẠO (0186). Ba bất biến, và cả ba đều là điều kiện của quyết định "nhận nhưng
+// KHÔNG giữ chỗ tồn" chứ không phải chuyện gọn gàng schema:
+//
+//  ① `app_rw` KHÔNG có DELETE. Bảng này là bằng chứng "khách đã đặt lúc mấy giờ"; một đường
+//     nào đó của người bán xoá được nó là mất bằng chứng, và mất im lặng.
+//  ② `app_expiry` CHỈ có DELETE. Vai dọn PII không đọc thứ nó xoá (cùng học thuyết 0106).
+//  ③ Từ vựng `resolution` so BẰNG với tập mà mã nguồn thật sự ghi — nó đi qua biên giới
+//     seller → trang admin ('accepted' quyết định trang hiện link đơn hay chữ "Đã bỏ").
+describe('Đơn chờ tạo — quyền và từ vựng (0186)', () => {
+  test('app_rw không xoá được, app_expiry chỉ xoá, resolution so BẰNG với mã nguồn', async () => {
+    const { rows: [priv] } = await owner.query(`
+      SELECT has_table_privilege('app_rw','held_ingest_orders','SELECT')     AS rw_r,
+             has_table_privilege('app_rw','held_ingest_orders','INSERT')     AS rw_i,
+             has_table_privilege('app_rw','held_ingest_orders','UPDATE')     AS rw_u,
+             has_table_privilege('app_rw','held_ingest_orders','DELETE')     AS rw_d,
+             has_table_privilege('app_expiry','held_ingest_orders','DELETE')            AS ex_d,
+             has_column_privilege('app_expiry','held_ingest_orders','received_at','SELECT') AS ex_moc,
+             has_column_privilege('app_expiry','held_ingest_orders','payload','SELECT')     AS ex_pii`);
+    // `received_at` PHẢI đọc được: Postgres đòi quyền đọc mọi cột trong WHERE, kể cả WHERE
+    // của lệnh DELETE — thiếu nó thì sweep ném, bị catch nuốt, trả `deleted: 0` và PII nằm
+    // lại mãi mà không có gì đỏ (đã xảy ra thật trong lượt thi công 0186).
+    // `payload` PHẢI KHÔNG: vai dọn dẹp không nhìn thứ nó xoá.
+    assert.deepEqual(priv, { rw_r: true, rw_i: true, rw_u: true, rw_d: false, ex_d: true, ex_moc: true, ex_pii: false },
+      'app_rw xoá được ⇒ mất bằng chứng đơn khách đã đặt; app_expiry đọc payload ⇒ vai dọn dẹp nhìn thấy PII; app_expiry không đọc được received_at ⇒ quét im lặng không xoá gì');
+
+    const { rows: [rls] } = await owner.query(`
+      SELECT relrowsecurity AS on, relforcerowsecurity AS forced
+        FROM pg_class WHERE oid = 'held_ingest_orders'::regclass`);
+    assert.deepEqual(rls, { on: true, forced: true }, 'thiếu FORCE RLS ⇒ chủ bảng đọc chéo shop');
+
+    const { rows: [ck] } = await owner.query(`
+      SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+       WHERE conrelid = 'held_ingest_orders'::regclass AND contype = 'c'
+         AND pg_get_constraintdef(oid) LIKE '%resolution%' AND pg_get_constraintdef(oid) LIKE '%ANY%'`);
+    assert.ok(ck, 'mốc chết: mất CHECK từ vựng resolution');
+    const dbSet = new Set([...String(ck.definition).matchAll(/'([a-z_]+)'::text/g)].map((m) => m[1]));
+    // Rút từ CHÍNH mã ghi: `resolution = 'x'` trong held-orders.js. Đổi tên một phía phải ĐỎ.
+    const src = sourceText('apps/seller/src/held-orders.js');
+    const codeSet = new Set([...src.matchAll(/resolution = '([a-z_]+)'/g)].map((m) => m[1]));
+    assert.deepEqual([...codeSet].sort(), [...dbSet].sort(),
+      'từ vựng resolution phải so BẰNG giữa CHECK và đường ghi của seller');
+  });
+});
+
 describe('Namespace trạng thái vận đơn (0184)', () => {
   const MIGRATION_0184 = readFileSync(new URL('../migrations/0184_shipment_status_namespace.sql', import.meta.url), 'utf8');
 

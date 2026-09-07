@@ -42,7 +42,13 @@ export async function withTenant(shopId, fn) {
  * last_used_at đóng dấu ngay tại đây, kể cả khi đơn sau đó lỗi: câu hỏi cần trả lời là
  * "khoá này còn ai gọi không" (để dám thu hồi), không phải "gọi có thành công không".
  *
- * @returns {Promise<{id:string, shop_id:string, scope:string}|null>} null = sai/đã thu hồi.
+ * TRẠNG THÁI SHOP đi kèm (0186), và phải đọc Ở ĐÂY chứ không ở nơi gọi: đây là chỗ DUY NHẤT
+ * đã biết shop là ai mà chưa mở transaction thứ hai. Trước 0186 cửa Bearer không hỏi câu này
+ * bao giờ — đo được là shop `terminated` (storefront 404) vẫn nhận đơn và vẫn giữ chỗ tồn.
+ * Đọc SAU khi đặt app.shop_id: policy tenant của `shops` lọc theo `current_shop_id()`.
+ *
+ * @returns {Promise<{id:string, shop_id:string, scope:string, shop_status:string, shop_closed:boolean}|null>}
+ *          null = sai/đã thu hồi.
  */
 export async function resolveApiKey(tokenHash) {
   const client = await db.connect();
@@ -54,6 +60,12 @@ export async function resolveApiKey(tokenHash) {
     )).rows[0];
     if (key) {
       await client.query(`SELECT set_config('app.shop_id', $1, true)`, [key.shop_id]);
+      const shop = (await client.query(
+        `SELECT status, deleted_at FROM shops WHERE id = current_shop_id()`)).rows[0];
+      key.shop_status = shop?.status ?? 'terminated';
+      // `deleted_at` là dấu của chấm dứt hợp đồng; thiếu dòng shop (không thể xảy ra dưới FK,
+      // nhưng vẫn phải có câu trả lời) coi như đã đóng — fail-closed.
+      key.shop_closed = !shop || shop.status === 'terminated' || shop.deleted_at != null;
       await client.query(`UPDATE shop_api_keys SET last_used_at = now() WHERE id = $1`, [key.id]);
     }
     await client.query('COMMIT');

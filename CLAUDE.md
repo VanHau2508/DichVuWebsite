@@ -1221,6 +1221,62 @@ bộ liên tiếp bằng tay.
 giữa chừng · nhập đơn cũ · ảnh qua hàng rào SSRF · 360px trang ảnh hỏng · 360px trang nhập ·
 XLSX · BOM và dấu tiếng Việt · `update_only`/`upsert`.
 
+### Lát cắt 7 `cài đặt` — đợt đo 1
+
+**Phần lớn đợt này là XÁC NHẬN, không phải vá — và hai giả thuyết của người đo đều bị bác.**
+Chép lại vì đó mới là kết quả chính: vùng cài đặt được canh chặt hơn tôi đoán.
+
+Bản đồ đo được: **29 route GHI** trong vùng cài đặt, **14 có step-up**. Đường tiền đúng như §3
+đòi — `PUT /payment-config`, bật/tắt SePay đều `payment.write` (= chỉ `owner`) **và** step-up;
+`PAYMENT_ROLES = {owner}`; `GET /payment-config` cố ý không trả số tài khoản (chỉ `has_bank`).
+Mọi mục `sideNav` đối chiếu với quyền THẬT của route đích: **không vai nào được mời bấm vào
+trang sẽ 403**. `Kết nối POS` gác bằng `true` nhưng đúng — `GET /integrations` khai `perm: null`
+có chủ ý, còn mọi thao tác ghi ở đó đều `shop.write` + step-up.
+
+*Điểm mù của chính phép đo, ghi ra để người sau khỏi tin quá:* 8 trang admin không có route GET
+cùng tên ở seller (`/settings`, `/payment`, `/cod`, `/export`, `/reports`, `/purchasing`,
+`/overview`, `/notify`) nên phép so lặng lẽ bỏ qua chúng. "(không có route GET cùng tên)" KHÔNG
+đọc thành "không sao".
+
+**Giả thuyết 1 bị bác.** Trang gác `privacy` và `require-mfa` bằng `role === 'owner'`, trong khi
+bảng route khai `shop.write` (= owner + admin) — tôi tưởng giao diện nghiêm hơn API. Đo bằng vai
+thật: `admin` PATCH cả hai đều **403**, đúng câu trang nói. Chốt owner nằm trong handler (ba chỗ:
+`server.js:209`, `:418`, `:568`), không nằm ở bảng route.
+
+**Giả thuyết 2 bị bác.** Tôi cho rằng ba chốt owner-only ấy không có test theo vai và định báo
+đó là lỗ hổng. Đột biến chứng minh ngược: gỡ chốt `require-mfa` → `seller/e2e.mjs` **31/2** đỏ
+đúng khẳng định *"non-owner đổi được require_mfa"*; gỡ cả hai chốt `privacy` →
+`settings-sections.e2e.mjs` **19/2** đỏ. Cả hai đã có chốt.
+→ **Luật cũ, trả giá ở chỗ mới (§4): đừng báo một lỗ hổng chốt khi chưa chạy đột biến đi qua
+đúng nó.** Hai lần trong một đợt.
+
+**Lỗi thật tìm được nằm ở chỗ khác: một LỜI HỨA KHÔNG CÓ THẬT.** Mọi câu lỗi cài đặt của seller
+kết bằng *"Kiểm tra lại trường được đánh dấu rồi lưu lại"*, và seller ĐÃ gửi kèm `field_errors`
+(`{tên_trường: câu lỗi}`) trong mọi phản hồi 400. Admin **vứt khoá đó** ở khúc giữa, nên không ô
+nào được đánh dấu: ô sai không có `aria-invalid`, không lớp lỗi, không `autofocus`.
+
+Đo được mức độ: trang cài đặt cao **5349px ở 360px**; khối lỗi nằm ở byte 62.760 còn ô sai ở byte
+70.939. Người bán được bảo đi tìm một dấu hiệu **không tồn tại**, trên một trang phải cuộn rất
+xa. Lần thứ tư trong hai lát cắt gặp cùng lớp lỗi — một câu sai (ở đây là một lời hứa suông) đắt
+hơn không có câu nào.
+
+Đúng ba mảnh của một chốt, và mảnh đứt lại là khúc GIỮA — y hệt `cost_bo_qua` (đợt 1 lát cắt 6)
+và `che_do_bi_ep` (đợt 10). Vá: admin chuyển tiếp `field_errors` → trang gắn `aria-invalid` +
+viền đỏ + **`autofocus`** cho đúng ô đó. `autofocus` là phần quan trọng nhất và cố ý dùng thuộc
+tính GỐC: trình duyệt tự cuộn tới ô sai khi tải trang, **không cần JavaScript** — nên bản vá
+phục vụ luôn đường không-JS. Ba lối vào cho cùng một thông tin: mắt (viền), trình đọc màn hình
+(`aria-invalid`), và con trỏ (`autofocus`).
+
+Chốt có chiều ngược lại: lưu ĐÚNG thì **không ô nào** bị đánh dấu — thiếu vế này thì một bản
+"đánh dấu tất" cũng đi lọt và người bán thấy cả trang đỏ sau mỗi lần lưu thành công. Đo:
+`admin-settings-sections.e2e` 19 → 23. Ma trận **3/3 đột biến đỏ** — cắt dây nối 20/3 · bỏ
+`autofocus` 20/3 · luôn đánh dấu 22/1. Probe 360px: 0 tràn ở 320/360/390 × JS bật/tắt.
+
+**Còn nợ của lát cắt 7, chưa đo:** `/notify`, `/members`, `/domains`, `/api-keys`, `/billing` mới
+chỉ được đối chiếu ở mức bảng quyền, chưa đi bằng vai thật · chưa đo vai "shop lúc có sự cố" cho
+các nhóm còn lại · `POST /api-keys/:id/revoke` không có step-up trong khi tạo khoá thì có (bất
+đối xứng, chưa rõ cố ý hay không).
+
 **Còn nợ đã ghi, chưa làm, không thuộc lát cắt nào:** nút **"tải lại tất cả"** cho ảnh hỏng — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
 một nút hàng loạt là 200 kết nối ra ngoài trong một lượt và cần quyết định riêng về nhịp.
 

@@ -383,6 +383,37 @@ async function main() {
     ? ok('CSRF bị chặn không làm đổi nhóm cài đặt nào')
     : bad('CSRF bị chặn nhưng DB vẫn đổi', `${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
 
+  // ── LỜI HỨA "TRƯỜNG ĐƯỢC ĐÁNH DẤU" PHẢI CÓ THẬT ───────────────────────────
+  //
+  // Mọi câu lỗi cài đặt của seller kết bằng "Kiểm tra lại trường được đánh dấu rồi lưu lại", và
+  // seller ĐÃ gửi kèm `field_errors` ({tên_trường: câu lỗi}). Trước 07/09 admin vứt khoá đó ở
+  // khúc giữa, nên KHÔNG ô nào được đánh dấu. Đo được trên trang cao 5349px ở 360px: khối lỗi ở
+  // byte 62.760, ô sai ở byte 70.939 — người bán được bảo đi tìm một dấu hiệu không tồn tại,
+  // trên một trang phải cuộn rất xa. Đúng ba mảnh của một chốt, và mảnh đứt là khúc GIỮA.
+  //
+  // `autofocus` mới là phần quan trọng nhất: trình duyệt tự cuộn tới ô sai khi tải trang, KHÔNG
+  // cần JavaScript — nên chốt này cũng canh luôn đường không-JS.
+  const daDanhDau = (body, truong) => {
+    const the = new RegExp(`<(?:input|select)[^>]*name="${truong}"[^>]*>`).exec(body)?.[0] ?? '';
+    return /aria-invalid="true"/.test(the) && /autofocus/.test(the);
+  };
+  for (const [nhom, form, truong] of [
+    ['shipping', { ship_base_vnd: 'khong-phai-so', ship_mode: 'region' }, 'ship_base_vnd'],
+    ['operations', { low_stock_threshold: 'abc' }, 'low_stock_threshold'],
+    ['profile', { name: '', contact_email: 'a@b.vn' }, 'name'],
+  ]) {
+    const r = await postSection(shop.shopId, shop.cookie, nhom, form);
+    r.status === 400 && daDanhDau(r.body, truong)
+      ? ok(`nhóm ${nhom}: ô "${truong}" mang aria-invalid + autofocus — lời hứa "trường được đánh dấu" có thật`)
+      : bad(`nhóm ${nhom}: ô "${truong}" KHÔNG được đánh dấu`, `HTTP ${r.status}`);
+  }
+  // CHIỀU NGƯỢC LẠI: lưu ĐÚNG thì không ô nào bị đánh dấu — nếu không, một bản "đánh dấu tất"
+  // cũng đi lọt và người bán thấy cả trang đỏ sau mỗi lần lưu thành công.
+  const rOk = await postSection(shop.shopId, shop.cookie, 'shipping', { ship_base_vnd: '20000', ship_mode: 'region' });
+  rOk.status < 400 && !/aria-invalid="true"/.test(rOk.body)
+    ? ok('lưu thành công: KHÔNG ô nào bị đánh dấu')
+    : bad('lưu thành công vẫn đánh dấu ô', `HTTP ${rOk.status}`);
+
   console.log(`\n${B}${pass} pass, ${fail} fail${X}`);
   await owner.end();
   process.exit(fail === 0 ? 0 : 1);

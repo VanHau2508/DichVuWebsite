@@ -1451,6 +1451,19 @@ export function renderShopSettings(ctx, shopId, shop, notice, err, unused, draft
   if (!CONTENT_ROLES.has(ctx.role)) {
     return layout('Cài đặt', ctx, `<h1>Cài đặt cửa hàng</h1><div class="card"><p class="muted">Chỉ <strong>chủ cửa hàng</strong> hoặc <strong>quản trị</strong> mới sửa hồ sơ.</p></div>`);
   }
+  // ĐÁNH DẤU Ô SAI. Câu lỗi của seller hứa "Kiểm tra lại trường được đánh dấu rồi lưu lại",
+  // và trước 07/09 lời hứa đó KHÔNG có thật: `field_errors` bị admin vứt ở khúc giữa, nên không
+  // ô nào mang dấu hiệu gì. Đo được trên trang cao 5349px ở 360px — khối lỗi ở byte 62.760, ô
+  // sai ở byte 70.939 — tức người bán được bảo đi tìm một thứ không tồn tại, trên một trang phải
+  // cuộn rất xa.
+  //
+  // `autofocus` là phần quan trọng nhất và cố ý dùng thuộc tính GỐC: trình duyệt tự cuộn tới ô
+  // đó khi tải trang, KHÔNG cần JavaScript — đúng ràng buộc "JS chỉ là tăng cường" (§9.2).
+  // `aria-invalid` cho trình đọc màn hình, viền đỏ cho mắt: ba lối vào cho cùng một thông tin.
+  const loiTruong = draftSection?.field_errors ?? {};
+  const oLoi = (ten) => (loiTruong[ten]
+    ? ` aria-invalid="true" autofocus style="border-color:var(--bad);box-shadow:0 0 0 2px var(--badbg)"`
+    : '');
   const source = shop ?? {};
   const s = draftSection?.section && draftSection?.values
     ? { ...source, ...draftSection.values }
@@ -1473,11 +1486,11 @@ export function renderShopSettings(ctx, shopId, shop, notice, err, unused, draft
       <p class="muted" style="margin-top:0">Thông tin này hiển thị ở chân trang để khách biết cách liên hệ và tin tưởng cửa hàng.</p>
       <form method="POST" action="${base}/settings/profile">
         <label>Tên cửa hàng</label>
-        <input name="name" value="${esc(s.name ?? '')}" required maxlength="200" placeholder="Nhà Xinh Décor">
+        <input name="name"${oLoi('name')} value="${esc(s.name ?? '')}" required maxlength="200" placeholder="Nhà Xinh Décor">
         <label>Email liên hệ</label>
-        <input name="contact_email" type="email" value="${esc(s.contact_email ?? '')}" maxlength="200" placeholder="lienhe@cuahang.vn">
+        <input name="contact_email"${oLoi('contact_email')} type="email" value="${esc(s.contact_email ?? '')}" maxlength="200" placeholder="lienhe@cuahang.vn">
         <label>Số điện thoại</label>
-        <input name="contact_phone" value="${esc(s.contact_phone ?? '')}" maxlength="40" placeholder="0912 345 678">
+        <input name="contact_phone"${oLoi('contact_phone')} value="${esc(s.contact_phone ?? '')}" maxlength="40" placeholder="0912 345 678">
         <label>Địa chỉ kinh doanh</label>
         <textarea name="business_address" maxlength="500" rows="2" placeholder="Số 12, Trần Duy Hưng, Cầu Giấy, Hà Nội">${esc(s.business_address ?? '')}</textarea>
         <div class="actions"><button class="btn" type="submit">Lưu thông tin</button></div>
@@ -1502,8 +1515,8 @@ export function renderShopSettings(ctx, shopId, shop, notice, err, unused, draft
           Muốn hãng tới lấy hàng và tự theo dõi vận đơn? Nối tài khoản ở <a href="${base}/shipping">Hãng vận chuyển</a>.</p>
         <div class="actions" style="align-items:end;flex-wrap:wrap">
           <div><label>Phí ship nội miền (VND)</label><input name="ship_fee_vnd" value="${esc(s.ship_fee_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="30000" style="width:170px"></div>
-          <div><label>Phí ship liên miền (VND)</label><input name="ship_fee_far_vnd" value="${esc(s.ship_fee_far_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="để trống = như nội miền" style="width:200px"></div>
-          <div><label>Giao hàng từ tỉnh/thành</label><select name="ship_from_province" style="width:200px" aria-label="Tỉnh/thành gửi hàng">
+          <div><label>Phí ship liên miền (VND)</label><input name="ship_fee_far_vnd"${oLoi('ship_fee_far_vnd')} value="${esc(s.ship_fee_far_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="để trống = như nội miền" style="width:200px"></div>
+          <div><label>Giao hàng từ tỉnh/thành</label><select name="ship_from_province"${oLoi('ship_from_province')} style="width:200px" aria-label="Tỉnh/thành gửi hàng">
             <option value="">— Chưa chọn —</option>
             ${PROVINCES.map((p) => `<option value="${esc(p)}"${s.ship_from_province === p ? ' selected' : ''}>${esc(p)}</option>`).join('')}
           </select></div>
@@ -1522,15 +1535,15 @@ export function renderShopSettings(ctx, shopId, shop, notice, err, unused, draft
           <label style="display:flex;align-items:center;gap:6px;font-weight:600"><input type="radio" name="ship_mode" value="distance"${shipMode === 'distance' ? ' checked' : ''} style="width:auto"> Bật ship theo km</label>
         </div>
         <div class="actions" style="align-items:end;flex-wrap:wrap;margin-top:10px">
-          <div><label>Vĩ độ cửa hàng (latitude)</label><input name="ship_origin_lat" value="${esc(s.ship_origin_lat ?? '')}" inputmode="decimal" maxlength="12" placeholder="vd 21.028511" style="width:180px"></div>
-          <div><label>Kinh độ cửa hàng (longitude)</label><input name="ship_origin_lng" value="${esc(s.ship_origin_lng ?? '')}" inputmode="decimal" maxlength="12" placeholder="vd 105.804817" style="width:180px"></div>
+          <div><label>Vĩ độ cửa hàng (latitude)</label><input name="ship_origin_lat"${oLoi('ship_origin_lat')} value="${esc(s.ship_origin_lat ?? '')}" inputmode="decimal" maxlength="12" placeholder="vd 21.028511" style="width:180px"></div>
+          <div><label>Kinh độ cửa hàng (longitude)</label><input name="ship_origin_lng"${oLoi('ship_origin_lng')} value="${esc(s.ship_origin_lng ?? '')}" inputmode="decimal" maxlength="12" placeholder="vd 105.804817" style="width:180px"></div>
         </div>
         <p class="muted" style="font-size:.8rem;margin:6px 0 0">Lấy toạ độ: mở <strong>Google Maps</strong> → bấm giữ (điện thoại) hoặc chuột phải (máy tính) đúng vị trí cửa hàng → hiện dãy số như <em>21.028511, 105.804817</em> → số đầu là <strong>Vĩ độ</strong>, số sau là <strong>Kinh độ</strong>.</p>
         <div class="actions" style="align-items:end;flex-wrap:wrap;margin-top:10px">
-          <div><label>Phí cơ bản (VND)</label><input name="ship_base_vnd" value="${esc(s.ship_base_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="vd 15000" style="width:160px"></div>
+          <div><label>Phí cơ bản (VND)</label><input name="ship_base_vnd"${oLoi('ship_base_vnd')} value="${esc(s.ship_base_vnd ?? '')}" inputmode="numeric" maxlength="8" placeholder="vd 15000" style="width:160px"></div>
           <div><label>Phí mỗi km (VND)</label><input name="ship_per_km_vnd" value="${esc(s.ship_per_km_vnd ?? '')}" inputmode="numeric" maxlength="7" placeholder="vd 4000" style="width:150px"></div>
           <div><label>Bán kính giao tối đa (km)</label><input name="ship_max_km" value="${esc(s.ship_max_km ?? '')}" inputmode="numeric" maxlength="3" placeholder="vd 20 (1–500)" style="width:180px"></div>
-          <div><label>Hệ số đường bộ</label><input name="ship_road_factor" value="${esc(s.ship_road_factor ?? '')}" inputmode="decimal" maxlength="4" placeholder="1.3 (mặc định)" style="width:150px"></div>
+          <div><label>Hệ số đường bộ</label><input name="ship_road_factor"${oLoi('ship_road_factor')} value="${esc(s.ship_road_factor ?? '')}" inputmode="decimal" maxlength="4" placeholder="1.3 (mặc định)" style="width:150px"></div>
         </div>
         <p class="muted" style="font-size:.8rem;margin:8px 0 4px"><strong>Ngoài bán kính giao tối đa</strong> (vd khách ở tỉnh khác, cách hàng nghìn km):</p>
         <div class="actions" style="align-items:center;flex-wrap:wrap;gap:18px">
@@ -1546,11 +1559,11 @@ export function renderShopSettings(ctx, shopId, shop, notice, err, unused, draft
       <form method="POST" action="${base}/settings/operations">
         <p class="muted" style="margin:0 0 10px;font-size:.85rem">Đặt ngưỡng để nhân viên nhận cảnh báo tồn thấp và hạn chế đơn spam. Để trống = dùng mặc định nền tảng.</p>
         <div class="actions" style="align-items:end;flex-wrap:wrap">
-          <div><label>Cảnh báo sắp hết hàng khi tồn ≤</label><input name="low_stock_threshold" value="${esc(s.low_stock_threshold ?? '')}" inputmode="numeric" maxlength="5" placeholder="mặc định 5" style="width:220px"></div>
+          <div><label>Cảnh báo sắp hết hàng khi tồn ≤</label><input name="low_stock_threshold"${oLoi('low_stock_threshold')} value="${esc(s.low_stock_threshold ?? '')}" inputmode="numeric" maxlength="5" placeholder="mặc định 5" style="width:220px"></div>
         </div>
         <p class="muted" style="margin:0 0 10px;font-size:.85rem">Trần số đơn <strong>chưa xử lý</strong> cùng lúc từ một nguồn mạng / một SĐT. Để trống = dùng mặc định nền tảng. Đặt thấp hơn nếu bị spam; đặt cao hơn nếu nhiều khách thật dùng chung mạng.</p>
         <div class="actions" style="align-items:end;flex-wrap:wrap">
-          <div><label>Tối đa đơn chờ / nguồn mạng</label><input name="max_pending_per_ip" value="${esc(s.max_pending_per_ip ?? '')}" inputmode="numeric" maxlength="3" placeholder="mặc định 30 (1–200)" style="width:200px"></div>
+          <div><label>Tối đa đơn chờ / nguồn mạng</label><input name="max_pending_per_ip"${oLoi('max_pending_per_ip')} value="${esc(s.max_pending_per_ip ?? '')}" inputmode="numeric" maxlength="3" placeholder="mặc định 30 (1–200)" style="width:200px"></div>
           <div><label>Tối đa đơn chờ / SĐT</label><input name="max_pending_per_phone" value="${esc(s.max_pending_per_phone ?? '')}" inputmode="numeric" maxlength="2" placeholder="mặc định 8 (1–50)" style="width:200px"></div>
         </div>
         <p class="muted" style="font-size:.8rem;margin:6px 0 0">Trang thanh toán còn tự chặn bot (bẫy ẩn + câu hỏi xác minh khi một nguồn đặt quá nhiều đơn) — không cần cấu hình.</p>
@@ -1564,7 +1577,7 @@ export function renderShopSettings(ctx, shopId, shop, notice, err, unused, draft
           (xoá tên, SĐT, email, địa chỉ — doanh thu và trạng thái đơn giữ nguyên) các đơn ĐÃ XONG cũ hơn
           số tháng dưới đây. Để trống = giữ vĩnh viễn. Chỉ chủ cửa hàng đổi được.</p>
         <div><label>Ẩn danh đơn cũ hơn (tháng)</label>
-          <input name="pii_retention_months" value="${esc(s.pii_retention_months ?? '')}" inputmode="numeric" maxlength="3" placeholder="trống = giữ vĩnh viễn (6–120)" style="width:240px"></div>
+          <input name="pii_retention_months"${oLoi('pii_retention_months')} value="${esc(s.pii_retention_months ?? '')}" inputmode="numeric" maxlength="3" placeholder="trống = giữ vĩnh viễn (6–120)" style="width:240px"></div>
         <div class="actions"><button class="btn" type="submit">Lưu quyền riêng tư</button></div>
       </form>
     </div>` : `<div class="card" id="quyen-rieng-tu"><h2 style="margin-top:0">Dữ liệu cá nhân của khách</h2><p class="muted" style="margin-bottom:0">Chỉ chủ cửa hàng được thay đổi thời hạn lưu dữ liệu khách.</p></div>`}

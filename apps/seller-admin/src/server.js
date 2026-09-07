@@ -4259,7 +4259,12 @@ async function settingsSectionSave(req, res, me, cookie, shopId, section) {
     null,
     settingsApiError(r),
     null,
-    { section, values: body },
+    // `field_errors` là thứ seller ĐÃ gửi kèm mọi lỗi cài đặt ({tên_trường: câu lỗi}) và admin
+    // trước 07/09 vứt đi. Hậu quả đo được: câu lỗi hứa "Kiểm tra lại trường được đánh dấu rồi
+    // lưu lại" mà KHÔNG ô nào được đánh dấu — trên trang cao 5349px ở 360px, người bán được bảo
+    // đi tìm một dấu hiệu không tồn tại. Đúng ba mảnh của một chốt: cơ chế (seller nêu tên
+    // trường) → DÂY NỐI (chỗ này) → điểm phát ra (ô input mang aria-invalid + autofocus).
+    { section, values: body, field_errors: r.json?.field_errors ?? {} },
   );
 }
 

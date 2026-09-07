@@ -7155,10 +7155,24 @@ export function renderMediaFailures(ctx, shopId, data, filter = {}) {
         url_must_be_fixed: 'Sửa URL trong tệp rồi nhập lại',
       }[f.retry_block_reason] ?? '—')}</span>`;
     // URL nguồn hiện NGUYÊN VĂN và cho chọn được: người bán phải đối chiếu nó với ô trong tệp
-    // của họ. Cắt ngắn bằng CSS chứ không cắt chuỗi — cắt chuỗi thì hai URL chỉ khác phần đuôi
-    // sẽ hiện y hệt nhau, mà đuôi mới là chỗ khác nhau của ảnh trong cùng một sản phẩm.
+    // của họ. XUỐNG DÒNG, không cắt.
+    //
+    // Bản đầu cắt bằng CSS (`max-width:34ch` + ellipsis + `nowrap`) với lý lẽ "cắt bằng CSS thì
+    // vẫn còn nguyên chuỗi". Đúng ở lớp HTML và SAI ở thứ người ta nhìn: đo bằng Chromium
+    // 360px thì ô này rộng ~140px và URL hiện ra đúng `http://127.0.0.…`, ở 320px còn ngắn hơn.
+    // Hai ảnh của cùng một sản phẩm chỉ khác phần đuôi sẽ hiện y hệt nhau — tức mất sạch thứ
+    // duy nhất trang này có để trả lời *làm gì tiếp*. `title=` không cứu được: trên điện thoại
+    // không có chuột để rê.
+    //
+    // Đây đúng lớp lỗi §4 "ĐO KHÔNG PHẢI LÀ NHÌN": mọi khẳng định e2e đều đọc HTML nên đều xanh,
+    // chỉ ảnh chụp mới thấy. `overflow-wrap:anywhere` cho URL bẻ dòng ở bất kỳ đâu, nên ô co
+    // được xuống dưới min-content và không kéo tràn cột (§4, `min-width:auto`).
+    //
+    // `text-align:left` vì bố cục card-hoá canh PHẢI mọi giá trị: một URL bẻ ba dòng canh phải
+    // cho lề trái răng cưa, mà đây đúng là chuỗi người ta phải dò từng ký tự. Trên bàn giấy cột
+    // vốn đã canh trái nên dòng này không đổi gì.
     const nguon = f.source_url
-      ? `<code style="display:block;max-width:34ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(f.source_url)}">${esc(f.source_url)}</code>`
+      ? `<code style="display:block;max-width:52ch;overflow-wrap:anywhere;text-align:left">${esc(f.source_url)}</code>`
       : '<span class="muted">ảnh tải lên trực tiếp</span>';
     return [
       { html: `<a href="/shops/${esc(shopId)}/products/${esc(f.product_id)}"><strong>${esc(f.product_title ?? '—')}</strong></a><div class="muted" style="font-size:.82rem">ảnh thứ ${esc(Number(f.position) + 1)}</div>` },

@@ -86,3 +86,34 @@ test('khối lọc co được trong viewport 360px', () => {
   assert.match(code, /\.filters>div\{flex:0 0 auto;min-width:0;max-width:100%\}/,
     'con trực tiếp của .filters phải co được và không rộng hơn viewport mobile');
 });
+
+// ── Ô GIÁ TRỊ KHÔNG ĐƯỢC CẮT CỤT Ở BỀ RỘNG HẸP ────────────────────────────────
+//
+// Card-hoá làm bảng đọc được ở 360px, nhưng nó KHÔNG cứu được một ô tự cắt nội dung của
+// chính nó. Đo ngày 07/09 trên trang "Ảnh không tải được": ô URL nguồn khai
+// `max-width:34ch` + `text-overflow:ellipsis` + `white-space:nowrap`, và trong bố cục card
+// ô giá trị chỉ rộng ~140px nên URL hiện ra đúng `http://127.0.0.…` (ở 320px còn ngắn hơn).
+//
+// Chỗ đau không phải thẩm mỹ: URL nguồn là thứ DUY NHẤT trang đó có để trả lời *làm gì tiếp*
+// — người bán phải đối chiếu nó với ô trong tệp CSV của họ. Hai ảnh của cùng một sản phẩm chỉ
+// khác phần đuôi sẽ hiện y hệt nhau. Và `title=` không cứu được: điện thoại không có chuột.
+//
+// LỚP LỖI: mọi khẳng định e2e đọc HTML nên đều XANH — chuỗi URL vẫn nằm đủ trong markup, chỉ
+// có mắt người là không thấy. Đúng §4 "ĐO KHÔNG PHẢI LÀ NHÌN".
+//
+// GIỚI HẠN, nói thẳng: đây là chốt MỨC MÃ NGUỒN, tức nó canh CHÍNH TẢ của khai báo CSS chứ
+// không đo pixel. Phép đo thật là `scripts/probe-360.mjs` + mở ảnh ra xem; chốt này chỉ giữ
+// cho bản vá khỏi bị hoàn nguyên trong im lặng.
+test('ô URL nguồn xuống dòng chứ không cắt cụt (bố cục card ~140px)', () => {
+  const i = code.indexOf('export function renderMediaFailures(');
+  assert.ok(i > 0, 'không tìm thấy renderMediaFailures — mốc chết, sửa lại bộ test');
+  const than = code.slice(i, code.indexOf('\n}', i));
+  const dong = than.split('\n').find((d) => d.includes('esc(f.source_url)') && d.includes('<code'));
+  assert.ok(dong, 'không còn ô <code> in URL nguồn — mốc chết');
+  assert.doesNotMatch(dong, /text-overflow\s*:\s*ellipsis/,
+    'URL nguồn bị cắt bằng ellipsis → ở 360px người bán chỉ đọc được ~14 ký tự đầu');
+  assert.doesNotMatch(dong, /white-space\s*:\s*nowrap/,
+    'URL nguồn bị ép một dòng → hoặc cắt cụt, hoặc kéo tràn ngang cả trang');
+  assert.match(dong, /overflow-wrap\s*:\s*anywhere/,
+    'URL dài không bẻ dòng được ⇒ ô giữ min-content rất lớn và kéo tràn cột (§4 min-width:auto)');
+});

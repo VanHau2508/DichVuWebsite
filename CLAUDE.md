@@ -994,11 +994,47 @@ FAIL kia là của lượt khác. Chạy lại 6 bộ đó riêng thì đủ xan
 trước khi tin bất cứ dòng nào trong log của nó.** Hai lượt song song không chỉ chậm hơn — chúng
 tranh nhau đúng một PostgreSQL và sinh ra lỗi hạ tầng trông y hệt lỗi sản phẩm.
 
+**Đợt đo 6 — 360px của trang "Ảnh không tải được".** Probe cho **0 tràn ở 8 phép đo**
+(320/360/390/1280 × JS bật/tắt), `body{overflow-x}` vẫn là `visible` nên không có chuyện giấu
+tràn bằng cắt cụt. Card-hoá của `tblCards` gánh trọn phần bảng, và đường không-JS ra ĐÚNG cùng
+bố cục vì nhãn nằm sẵn trong HTML.
+
+**Rồi mở ảnh ra xem thì thấy một lỗi mà cả 8 phép đo đều bỏ qua.** Ô URL nguồn khai
+`max-width:34ch` + `text-overflow:ellipsis` + `white-space:nowrap`; trong bố cục card ô giá trị
+chỉ rộng ~140px nên URL hiện ra đúng `http://127.0.0.…`, ở 320px còn ngắn hơn. Đó là thứ DUY
+NHẤT trang này có để trả lời *làm gì tiếp* — người bán phải đối chiếu nó với ô trong tệp CSV —
+và hai ảnh của cùng một sản phẩm chỉ khác phần đuôi sẽ hiện y hệt nhau. `title=` không cứu
+được: điện thoại không có chuột để rê.
+
+Cay hơn cả: chú thích của chính đoạn mã đó viết *"cắt ngắn bằng CSS chứ không cắt chuỗi — cắt
+chuỗi thì hai URL chỉ khác phần đuôi sẽ hiện y hệt nhau"*. Lý lẽ đúng ở lớp HTML và sai ở thứ
+người ta nhìn. Mọi khẳng định e2e đọc HTML nên đều xanh (chuỗi vẫn nằm đủ trong markup).
+→ **Luật cũ, lần này trả giá ở chỗ mới: ĐO KHÔNG PHẢI LÀ NHÌN.** 0 tràn không có nghĩa là đọc
+được. Vá bằng `overflow-wrap:anywhere` (URL bẻ dòng ở bất kỳ đâu nên ô co được dưới min-content,
+không kéo tràn cột) kèm `text-align:left` — bố cục card canh phải mọi giá trị, mà URL là chuỗi
+phải dò từng ký tự.
+
+**Probe nay nằm trong kho: `scripts/probe-360.mjs`.** Ba lượt đo 360px trước đều dựng probe tạm
+rồi bỏ, nên mỗi lượt lại giẫm lại cùng những bẫy — một lượt đã chạy TRỌN ở 500px trước khi bị
+phát hiện. Nó mã hoá cả năm bẫy đã đo (headless_shell chứ không `chrome --headless` · tự chối
+khi `innerWidth` sai · so `scrollWidth` với `clientWidth` · tha `auto|scroll` nhưng **không** tha
+`hidden` · `PROBE_TIEM=1` chèn khối 3000px để đột biến chính probe). `PROBE_EXPECT` tách "bề
+rộng mong đợi" khỏi "bề rộng đặt" — không tách thì phép thử chốt tự-chối không chứng minh gì,
+đúng lỗi tôi vừa mắc ở lượt đầu (truyền 390 cho cả hai rồi tưởng đã thử).
+
+Fixture đi kèm: `apps/seller-admin/test/probe-fixture-360.mjs` (không khớp glob `*.e2e.mjs` nên
+không đụng manifest). Nó gieo một tên sản phẩm rất dài và một URL rất dài — chính URL dài đó
+làm lộ ra lỗi trên.
+
+Chốt thường trực trong `table-cards.test.js`: ô URL nguồn không được có `ellipsis`/`nowrap` và
+phải có `overflow-wrap`. Nói thẳng giới hạn của nó ngay trong chú thích: đây là chốt CHÍNH TẢ ở
+mức mã nguồn, phép đo thật vẫn là probe + mở ảnh ra xem. Đột biến: hoàn nguyên về bản cũ 4/1,
+chỉ bỏ `overflow-wrap` cũng 4/1; hoàn nguyên 5/0.
+
 **Còn nợ của lát cắt 6:** XLSX (`readXlsx`/`isXlsxMagic`), BOM và dấu tiếng Việt,
-`update_only`/`upsert`, và giao diện 360px của trang nhập. Hai thứ cố ý chưa làm ở đợt này:
-trang ảnh hỏng **chưa được đo ở 360px**, và **chưa có nút "tải lại tất cả"** — bấm từng dòng
-thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng một nút hàng loạt là 200 kết nối ra ngoài trong
-một lượt và cần quyết định riêng về nhịp.
+`update_only`/`upsert`, và giao diện 360px của trang NHẬP (trang ảnh hỏng đã đo xong). Vẫn
+**chưa có nút "tải lại tất cả"** — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
+một nút hàng loạt là 200 kết nối ra ngoài trong một lượt và cần quyết định riêng về nhịp.
 
 **Nhánh `claude/full-system-folder-access-tc6cfk` đã CHẾT, đừng merge.** 13 commit dựng trang
 chủ, rẽ khỏi `main` tại `d86176f` và đứng sau `main` **53 commit**. Đo được: 10/13 commit đã có

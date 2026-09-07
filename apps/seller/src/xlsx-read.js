@@ -227,13 +227,30 @@ function recordsFromRows(rows) {
   const productCol = [...headers].find(([, name]) => normalHeader(name) === 'product_id')?.[0] ?? null;
   const out = [];
   let productDataStarted = productCol === null;
+  // ĐẾM ĐỂ NÓI THẬT KHI KHÔNG RA DÒNG NÀO.
+  //
+  // Đo ngày 07/09: tệp 200 dòng có product_id ở dạng số mũ (1.7310376453411E+18 — hình dạng
+  // Excel sinh ra khi lưu lại một số dài quá 15 chữ số) cho ra MẢNG RỖNG, y hệt một tệp chỉ có
+  // dòng tiêu đề. Trang nhập vì thế hiện cùng một câu cho cả hai: "Tệp không có dòng dữ liệu
+  // (cần hàng tiêu đề + ít nhất 1 dòng)" — SAI với tệp 200 dòng, và nó chỉ người bán đi sửa
+  // đúng thứ duy nhất không hỏng. Cùng lớp lỗi với câu "kiểm tra quyền hoặc định dạng tệp" ở
+  // đợt đo 3: một câu sai đắt hơn không có câu nào.
+  //
+  // KHÔNG tự sửa giá trị bị làm tròn. Một id đã mất 4 chữ số cuối là id KHÁC — nhận nó nghĩa là
+  // ghi `external_id` trỏ nhầm sản phẩm bên sàn. Việc đúng là nói cho người bán biết chính xác
+  // cái gì đọc được, rồi để họ lấy lại tệp gốc.
+  let soDongDuLieu = 0;
+  let mauIdDauTien = null;
   for (let i = headerAt + 1; i < rows.length; i++) {
     const row = rows[i];
     const values = [...row.cells.values()].map(normalHeader);
     const first = normalHeader(row.cells.get(0));
     if (first === 'v4' || values.some((v) => META_VALUES.has(v))) continue;
+    if ([...row.cells.values()].some((v) => String(v ?? '').trim() !== '')) soDongDuLieu++;
     if (!productDataStarted) {
-      if (!/^\d{10,}$/.test(String(row.cells.get(productCol) ?? '').trim())) continue;
+      const thoId = String(row.cells.get(productCol) ?? '').trim();
+      if (mauIdDauTien === null && thoId !== '') mauIdDauTien = thoId;
+      if (!/^\d{10,}$/.test(thoId)) continue;
       productDataStarted = true;
     }
     const record = {};
@@ -244,6 +261,29 @@ function recordsFromRows(rows) {
       if (String(value).trim() !== '') hasValue = true;
     }
     if (hasValue) out.push(record);
+  }
+  // Có dòng dữ liệu mà không giữ được dòng nào ⇒ nêu ĐÍCH DANH vì sao, kèm giá trị đọc được.
+  // Trả mảng rỗng ở đây là ném mất thông tin ngay tại chỗ duy nhất còn biết sự thật.
+  if (out.length === 0 && soDongDuLieu > 0) {
+    if (productCol !== null) {
+      const mau = mauIdDauTien === null
+        ? 'cột product_id để trống ở mọi dòng'
+        : `giá trị đầu tiên đọc được là "${mauIdDauTien}"`;
+      // Chỉ nhắc chuyện Excel làm tròn KHI giá trị thật sự có dạng số mũ. Gợi ý một nguyên nhân
+      // không khớp cũng là chỉ người bán đi sai chỗ — đúng thứ câu cũ đã làm.
+      const nghiLamTron = mauIdDauTien !== null && /^[+-]?\d(?:[.,]\d+)?[eE][+-]?\d+$/.test(mauIdDauTien);
+      throw fail(
+        `Đọc được dòng tiêu đề và ${soDongDuLieu} dòng dữ liệu, nhưng không dòng nào có product_id hợp lệ `
+        + `(cần ít nhất 10 chữ số) — ${mau}.`
+        + (nghiLamTron
+          ? ' Dạng số mũ này là dấu hiệu tệp đã được mở và lưu lại bằng bảng tính, làm mất các chữ số cuối'
+            + ' của mã sản phẩm. Hãy tải lại tệp gốc từ sàn, hoặc đặt định dạng cột product_id là Văn bản'
+            + ' trước khi lưu.'
+          : ' Hãy kiểm tra lại cột product_id trong tệp, hoặc tải lại tệp gốc từ sàn.'),
+        'XLSX_NO_PRODUCT_ID',
+      );
+    }
+    throw fail(`Đọc được dòng tiêu đề và ${soDongDuLieu} dòng dữ liệu nhưng mọi ô đều trống.`, 'XLSX_EMPTY_ROWS');
   }
   return out;
 }
@@ -257,7 +297,12 @@ export function readXlsx(buf, overrideLimits = {}) {
     const entry = entries.get(name);
     if (!entry) {
       if (name === 'xl/sharedStrings.xml') { xml[name] = ''; continue; }
-      throw fail(`XLSX thiếu ${name}`);
+      // Người bán không biết `xl/worksheets/sheet1.xml` là gì. Nói bằng thứ họ thấy được, và
+      // nói luôn giới hạn có thật của bộ đọc: nó chỉ đọc SHEET ĐẦU TIÊN.
+      throw fail(name === 'xl/worksheets/sheet1.xml'
+        ? 'Không đọc được trang tính đầu tiên của tệp XLSX. Bộ nhập chỉ đọc trang tính đầu; '
+          + 'hãy tải lại tệp gốc từ sàn, hoặc lưu dữ liệu thành CSV rồi nhập lại.'
+        : `Tệp XLSX thiếu phần bắt buộc (${name}) — hãy tải lại tệp gốc từ sàn.`);
     }
     xml[name] = inflateEntry(buf, entry);
   }

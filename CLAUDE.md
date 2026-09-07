@@ -1086,9 +1086,53 @@ Nhánh nhập-thật thêm một câu dẫn trước bảng ("N dòng bị bỏ 
 nhập lại; phần đã vào sẽ không bị nhân đôi"): đưa một bảng lên đầu mà không có câu dẫn thì người
 đọc gặp bảng trước khi biết vì sao có nó.
 
-**Còn nợ của lát cắt 6:** XLSX (`readXlsx`/`isXlsxMagic`), BOM và dấu tiếng Việt,
-`update_only`/`upsert`. Giao diện 360px đã đo xong cho cả trang ảnh hỏng lẫn trang nhập. Vẫn
-**chưa có nút "tải lại tất cả"** — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
+**Đợt đo 8 — XLSX (`readXlsx`/`isXlsxMagic`).** Lớp phân tích đã có sẵn hai bộ test (zip bomb,
+zip-slip, DOCTYPE/ENTITY, trần entry/dòng/cột) nên đợt này đi tìm chỗ CHƯA ai đi: tám hình dạng
+tệp thật, đo thẳng trên hàm.
+
+| hình dạng tệp | kết quả đo |
+|---|---|
+| đối chứng, `product_id` 19 chữ số | đọc đúng |
+| `product_id` dạng số mũ `1.7310376453411E+18` | **mảng rỗng, không lỗi** |
+| `product_id` ngắn (9 chữ số) | **mảng rỗng, không lỗi** |
+| phần sheet không tên `sheet1.xml` | lỗi chìa đường dẫn nội bộ ra người bán |
+| dữ liệu ở sheet 2, sheet 1 là hướng dẫn | "Không tìm thấy dòng tiêu đề trong 20 dòng đầu" |
+| hai cột trùng tên | cột sau đè cột trước, im lặng |
+| không có cột `product_id` (kiểu Shopify) | đọc đúng |
+| ngày là số serial Excel | trả thô `45678` |
+
+**Lỗi đáng vá là hai dòng đầu, và nó lộ ra ở BỀ MẶT NGƯỜI BÁN chứ không ở parser.** Đo qua đúng
+đường tải tệp của admin: tệp **200 dòng** và tệp **chỉ có dòng tiêu đề** nhận **cùng một câu** —
+*"Tệp không có dòng dữ liệu (cần hàng tiêu đề + ít nhất 1 dòng)"*. Câu đó sai với tệp 200 dòng và
+chỉ người bán đi sửa đúng thứ duy nhất không hỏng: họ sẽ thêm dòng, xuất lại, rồi gặp lại y hệt.
+Cùng lớp lỗi với *"kiểm tra quyền hoặc định dạng tệp"* ở đợt đo 3.
+
+Nguyên nhân nằm ở chỗ **ném mất thông tin ngay tại nơi duy nhất còn biết sự thật**: bộ đọc đã
+thấy tiêu đề, đã đếm N dòng, đã bỏ hết vì `product_id` không khớp `\d{10,}` — rồi `return []`.
+Nay nó ném `XLSX_NO_PRODUCT_ID` kèm SỐ dòng đọc được và GIÁ TRỊ đầu tiên đọc được, để người bán
+đối chiếu thẳng với ô trong tệp.
+
+**KHÔNG tự sửa giá trị bị làm tròn** — đây là phần dễ làm sai nhất của bản vá. Một id mất bốn
+chữ số cuối là một id KHÁC; nhận nó nghĩa là ghi `external_id` trỏ nhầm sản phẩm bên sàn. Việc
+đúng là nói chính xác cái gì đọc được rồi để người bán lấy lại tệp gốc.
+
+Và gợi ý nguyên nhân phải CÓ ĐIỀU KIỆN: chỉ nhắc chuyện bảng tính làm tròn khi giá trị thật sự
+có dạng số mũ. Gợi ý một nguyên nhân không khớp cũng là chỉ người bán đi sai chỗ — đúng thứ câu
+cũ đã làm, chỉ khác mức độ.
+
+Chốt hai đầu, cả hai chiều: bộ đọc phải ném khi có dòng dữ liệu, và phải **vẫn trả mảng rỗng**
+khi tệp chỉ có tiêu đề (nếu không thì một bản "luôn ném" cũng đi lọt). Đo: `xlsx-read.test` 3 → 7,
+`admin-products.e2e` 74 → 79. Ma trận **6/6 đột biến đỏ** — quay lại trả mảng rỗng 5/2 · luôn ném
+6/1 · bỏ giá trị mẫu khỏi câu 5/2 · gợi ý bảng tính cho mọi giá trị 6/1 · chìa lại đường dẫn nội
+bộ 6/1 · **admin nuốt câu của parser 76/3** (khúc giữa — cùng lớp `mergeImportResults` ở đợt 1).
+
+**Còn nợ RIÊNG của XLSX, đã đo và cố ý chưa làm:** dữ liệu ở sheet 2 vẫn báo "không tìm thấy dòng
+tiêu đề" thay vì nói rõ bộ đọc chỉ đọc trang tính đầu · hai cột trùng tên vẫn đè nhau im lặng ·
+ngày dạng serial trả thô (chưa ảnh hưởng vì đường nhập ĐƠN không nhận XLSX). Ba mục này cần mở
+rộng bộ đọc chứ không chỉ sửa câu chữ, nên tách khỏi đợt này.
+
+**Còn nợ của lát cắt 6:** BOM và dấu tiếng Việt, `update_only`/`upsert`. Giao diện 360px đã đo
+xong cho cả trang ảnh hỏng lẫn trang nhập. Vẫn **chưa có nút "tải lại tất cả"** — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
 một nút hàng loạt là 200 kết nối ra ngoài trong một lượt và cần quyết định riêng về nhịp.
 
 **Nhánh `claude/full-system-folder-access-tc6cfk` đã CHẾT, đừng merge.** 13 commit dựng trang

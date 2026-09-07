@@ -561,6 +561,48 @@ async function main() {
     ? ok('Nhập lại XLSX qua BFF không nhân đôi sản phẩm')
     : bad('Nhập lại XLSX qua BFF bị nhân đôi', `${afterXlsxCommit}→${afterXlsxRepeat}`);
 
+  // ── XLSX ĐỌC ĐƯỢC NHƯNG KHÔNG RA DÒNG NÀO ────────────────────────────────
+  // Đo ngày 07/09: tệp 200 dòng có product_id ở dạng số mũ (hình dạng bảng tính sinh ra khi
+  // lưu lại một số dài quá 15 chữ số) cho MẢNG RỖNG, và trang hiện đúng câu dành cho tệp chỉ
+  // có dòng tiêu đề: "Tệp không có dòng dữ liệu (cần hàng tiêu đề + ít nhất 1 dòng)". Câu đó
+  // SAI với tệp 200 dòng và chỉ người bán đi sửa đúng thứ duy nhất không hỏng — cùng lớp lỗi
+  // với "kiểm tra quyền hoặc định dạng tệp" ở đợt đo 3.
+  //
+  // Khẳng định đặt trên BỀ MẶT NGƯỜI BÁN NHÌN THẤY, không trên mã lỗi của parser: mã lỗi đúng
+  // mà trang nuốt mất thì người bán vẫn đọc câu sai (đúng bài học "dây nối" ở lát cắt này).
+  const xlsxTron = await buildXlsx([
+    ['product_id', 'product_name', 'seller_sku', 'sale_price'],
+    ...Array.from({ length: 200 }, (_, i) => [
+      { value: '1.7310376453411E+18', type: 'n' }, `SP ${i}`, `SKU-TRON-${i}`, { value: 199000, type: 'n' },
+    ]),
+  ]);
+  ir = await multipart(P('/import'), {
+    cookie: A.cookie, mode: 'preview', bytes: xlsxTron, filename: 'tiktok.xlsx',
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  /200 dòng dữ liệu/.test(ir.body) && /không dòng nào có product_id hợp lệ/.test(ir.body)
+    ? ok('XLSX mất mã sản phẩm: trang nói ĐÚNG đã đọc được 200 dòng, không phải "tệp không có dòng dữ liệu"')
+    : bad('trang vẫn báo sai về tệp có dữ liệu', ir.body.match(/<div class="err">([\s\S]*?)<\/div>/)?.[1]?.slice(0, 160));
+  !/Tệp không có dòng dữ liệu/.test(ir.body)
+    ? ok('câu sai cũ KHÔNG còn xuất hiện cho tệp có dữ liệu')
+    : bad('vẫn hiện câu "Tệp không có dòng dữ liệu" cho tệp 200 dòng');
+  /1\.7310376453411E\+18/.test(ir.body)
+    ? ok('nêu ĐÍCH DANH giá trị đọc được — người bán đối chiếu được với ô trong tệp')
+    : bad('không nêu giá trị đọc được');
+  /lưu lại bằng bảng tính/.test(ir.body)
+    ? ok('dạng số mũ ⇒ nói luôn nguyên nhân nhiều khả năng nhất và cách lấy lại tệp đúng')
+    : bad('không gợi ý nguyên nhân cho dạng số mũ');
+  // CHIỀU NGƯỢC LẠI, để chốt không thành "luôn đổi câu": tệp CHỈ có dòng tiêu đề thì câu cũ
+  // vẫn đúng và phải giữ nguyên.
+  const xlsxRong = await buildXlsx([['product_id', 'product_name']]);
+  ir = await multipart(P('/import'), {
+    cookie: A.cookie, mode: 'preview', bytes: xlsxRong, filename: 'tiktok.xlsx',
+    contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  /Tệp không có dòng dữ liệu/.test(ir.body) && !/dòng dữ liệu, nhưng không dòng nào/.test(ir.body)
+    ? ok('tệp CHỈ có tiêu đề vẫn giữ câu cũ — chốt không phải là "luôn đổi câu"')
+    : bad('tệp rỗng thật bị đổi sang câu của tệp có dữ liệu');
+
   // ── docs/45: trang NHẬP ĐƠN CŨ ───────────────────────────────────────────
   sect('11. Nhập đơn cũ (docs/45)');
   r = await adm('GET', `/shops/${A.shopId}/orders/import`, { cookie: A.cookie });

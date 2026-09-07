@@ -46,6 +46,41 @@ const parseVnd = (s) => { const t = String(s ?? '').replace(/[^\d-]/g, ''); retu
 const parseStock = (s) => { const t = String(s ?? '').replace(/[^\d]/g, ''); return t === '' ? 0 : Number(t); };
 // Parser CSV tối giản (RFC-4180): ô có ngoặc kép, phẩy/xuống-dòng trong ô, "" thoát,
 // CRLF/LF, bỏ BOM. Trả mảng object theo hàng tiêu đề (tên cột chuẩn hoá thường).
+// GIẢI MÃ TỆP TẢI LÊN → chuỗi. Tách khỏi parseCsv vì đây là chuyện BẢNG MÃ, không phải cú pháp.
+//
+// Ba thứ đo được ngày 07/09 trên đúng đường tải tệp của admin, cả ba đều bắt đầu từ một dòng
+// `file.bytes.toString('utf8')` duy nhất:
+//
+//  - BOM UTF-8: parseCsv đã cắt sẵn, KHÔNG hỏng. Giữ nguyên.
+//  - UTF-16LE (Excel "Unicode text", và vài bản xuất "CSV UTF-16"): mỗi ký tự ASCII kèm một byte
+//    00 nên tiêu đề đọc thành `h a n d l e` — trang hiện đúng mớ rác đó trong danh sách "Bỏ qua"
+//    và tạo 0 sản phẩm, không câu nào nói vì sao. Có BOM UTF-16 thì KHÔNG phải đoán: giải mã.
+//  - Tệp KHÔNG phải UTF-8 hợp lệ (Excel trên Windows tiếng Việt xuất "CSV" bằng bảng mã ANSI):
+//    đây là ca TỆ NHẤT vì nó nhập THÀNH CÔNG. `toString('utf8')` thay mọi byte hỏng bằng U+FFFD,
+//    nên tên sản phẩm vào thẳng cửa hàng thật dưới dạng "�o thun c� sau" — đo được, ghi vào DB,
+//    không cảnh báo nào. Người bán chỉ phát hiện khi mở cửa hàng của chính mình ra xem.
+//
+// TỪ CHỐI chứ không đoán bảng mã. CP1258, CP1252 và Shift-JIS đều là chuỗi byte hợp lệ như nhau;
+// đoán sai nghĩa là ghi CHỮ KHÁC vào cửa hàng đang bán, mà lần này còn im lặng hơn vì không có
+// dấu � nào để nhận ra. Câu từ chối nói đúng việc cần làm và người bán làm được trong 5 giây.
+function decodeUpload(bytes) {
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return bytes.subarray(2).toString('utf16le');
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    const swapped = Buffer.from(bytes.subarray(2));
+    swapped.swap16();
+    return swapped.toString('utf16le');
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    const e = new Error('Tệp không phải mã UTF-8 nên chữ tiếng Việt sẽ bị hỏng. '
+      + 'Trong Excel chọn "Lưu dưới dạng" → "CSV UTF-8 (dấu phẩy phân cách)", hoặc trong Google Trang tính '
+      + 'chọn "Tải xuống" → "Giá trị phân tách bằng dấu phẩy"; rồi tải lại tệp.');
+    e.code = 'CSV_ENCODING';
+    throw e;
+  }
+}
+
 function parseCsv(text) {
   let s = String(text ?? '');
   if (s.charCodeAt(0) === 0xfeff) s = s.slice(1);
@@ -2082,7 +2117,7 @@ async function productImport(req, res, me, cookie, shopId) {
   try {
     if (isXlsxMagic(file.bytes)) rows = readXlsx(file.bytes);
     else if (filename.endsWith('.xlsx')) throw new Error('Tệp có đuôi .xlsx nhưng nội dung không phải XLSX hợp lệ.');
-    else rows = parseCsv(file.bytes.toString('utf8'));
+    else rows = parseCsv(decodeUpload(file.bytes));
   } catch (e) {
     return productImportPage(res, me, cookie, shopId, null, e?.message ?? 'Không đọc được tệp CSV/XLSX.');
   }
@@ -2213,7 +2248,11 @@ async function orderImport(req, res, me, cookie, shopId) {
   const file = (parsed?.files ?? [])[0];
   const dryRun = String(parsed?.fields?.mode ?? '') !== 'commit';
   if (!file?.bytes?.length) return orderImportPage(res, me, cookie, shopId, null, 'Chưa chọn tệp CSV hợp lệ.');
-  const rows = parseCsv(file.bytes.toString('utf8'));
+  let rows;
+  // Đường nhập ĐƠN cũng phải bắt lỗi bảng mã: tên và địa chỉ khách là PII đi thẳng vào hồ sơ
+  // khách hàng, hỏng ở đây thì hỏng đúng thứ người bán dùng để đối chiếu với sàn cũ.
+  try { rows = parseCsv(decodeUpload(file.bytes)); }
+  catch (e) { return orderImportPage(res, me, cookie, shopId, null, e?.message ?? 'Không đọc được tệp CSV.'); }
   if (rows.length === 0) return orderImportPage(res, me, cookie, shopId, null, 'Tệp không có dòng dữ liệu.');
   if (rows.length > 2000) return orderImportPage(res, me, cookie, shopId, null, 'Tối đa 2000 dòng mỗi lần nhập.');
   // Xác nhận cho đơn KHÔNG có mã gốc: người bán gửi lại chính con số seller vừa hiện ra. Chỉ

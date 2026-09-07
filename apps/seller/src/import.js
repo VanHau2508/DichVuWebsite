@@ -58,7 +58,20 @@ function looksFetchable(u) {
 // ── Bí danh cột ────────────────────────────────────────────────────────────
 // Chuẩn hoá tên cột trước khi so: bỏ dấu cách/gạch/ngoặc, hạ hoa thường. Nhờ vậy
 // "Variant SKU", "variant_sku", "VariantSKU" là một.
-const normKey = (k) => String(k ?? '').trim().toLowerCase().replace(/[\s_\-().]+/g, '');
+//
+// VÀ BỎ DẤU TIẾNG VIỆT. Bảng bí danh dưới đây có sẵn `tensanpham`, `giaban`, `tonkho`, `mota`,
+// `danhmuc`, `masku`, `giavon`, `giagach` — tức nó được viết RA để phục vụ người bán Việt. Nhưng
+// trước 07/09 `normKey` không bỏ dấu, nên chúng chỉ khớp khi người ta gõ tiêu đề KHÔNG DẤU, thứ
+// gần như không ai làm. Đo được: tệp có tiêu đề "Tên sản phẩm, Mã SKU, Giá bán, Tồn kho" cho
+// "Sẽ tạo 0" và cả bốn cột rơi vào danh sách "Bỏ qua"; cùng tệp đó viết không dấu thì nhận đủ
+// bốn cột. Nói cách khác nửa bảng bí danh này chưa từng dùng được cho ai.
+//
+// Bỏ dấu bằng NFD rồi cắt dấu tổ hợp; `đ` không phải chữ có dấu tổ hợp nên phải xử riêng.
+// Đã kiểm: sau khi bỏ dấu, KHÔNG bí danh nào trong COLS đụng nhau. (OCOLS có sẵn một chỗ đụng
+// từ trước — `name` thuộc cả `order_code` lẫn `customer_name`, do Shopify đặt tên cột đơn là
+// "Name"; chuyện đó không phải do bỏ dấu và không đụng tới ở đây.)
+const boDauTV = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replaceAll('đ', 'd');
+const normKey = (k) => boDauTV(String(k ?? '').trim().toLowerCase()).replace(/[\s_\-().]+/g, '');
 
 // Bí danh cho định dạng Shopify (Haravan/Sapo là dòng dõi Shopify nên trùng phần lớn).
 // CƠ CHẾ LÀ DỮ LIỆU: có file xuất thật của sàn khác thì thêm một chuỗi vào mảng, không sửa

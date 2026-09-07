@@ -108,6 +108,19 @@ async function mkProduct(shop, title, price, stock, status = 'active') {
 }
 const BND='----v'+uniq();
 async function up(shopId,cookie,csv,fields){let b='';for(const[k,v]of Object.entries(fields))b+=`--${BND}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`;b+=`--${BND}\r\nContent-Disposition: form-data; name="file"; filename="x.csv"\r\nContent-Type: text/csv\r\n\r\n${csv}\r\n--${BND}--\r\n`;const r=await fetch(ADMIN+`/shops/${shopId}/products/import`,{method:'POST',redirect:'manual',headers:{'content-type':`multipart/form-data; boundary=${BND}`,origin:OADM,cookie:`__Host-session=${cookie}`},body:b});return{status:r.status,body:await r.text()};}
+// Bản gửi BYTE THÔ: các ca bảng mã không diễn đạt được bằng chuỗi JS (UTF-16, tệp ANSI).
+async function upBytes(shopId,cookie,bytes,fields){
+  const parts=[];
+  for(const[k,v]of Object.entries(fields)) parts.push(Buffer.from(`--${BND}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+  parts.push(Buffer.from(`--${BND}\r\nContent-Disposition: form-data; name="file"; filename="x.csv"\r\nContent-Type: text/csv\r\n\r\n`));
+  parts.push(bytes); parts.push(Buffer.from(`\r\n--${BND}--\r\n`));
+  const r=await fetch(ADMIN+`/shops/${shopId}/products/import`,{method:'POST',redirect:'manual',headers:{'content-type':`multipart/form-data; boundary=${BND}`,origin:OADM,cookie:`__Host-session=${cookie}`},body:Buffer.concat(parts)});
+  return{status:r.status,body:await r.text()};
+}
+const boQuaCot=(b)=>{const m=/<strong style="color:var\(--warn\)">Bỏ qua:<\/strong>([\s\S]*?)<\/p>/.exec(b);return m?m[1].replace(/<[^>]*>/g,'').trim():'';};
+const oSeTao=(b)=>{const m=/<div class="l">Sẽ tạo<\/div><div class="v">(\d+)/.exec(b);return m?Number(m[1]):null;};
+const cauLoi=(b)=>{const m=/<div class="err">([\s\S]*?)<\/div>/.exec(b);return m?m[1].replace(/<[^>]*>/g,'').trim():'';};
+
 async function main(){
   const staff=await makeStaff();
   sect('P1 · số dòng sau khi chia lô');
@@ -153,6 +166,55 @@ async function main(){
   vSach > 0 && vKhongLoi > vSach
     ? ok('tệp sạch: số liệu vẫn đứng trước — chốt không phải là "luôn đảo thứ tự"')
     : bad('tệp sạch cũng bị đảo thứ tự', `sốliệu@${vSach} khônglỗi@${vKhongLoi}`);
+  // ── BẢNG MÃ VÀ DẤU TIẾNG VIỆT ──────────────────────────────────────────────
+  sect('P1c · bảng mã tệp và tiêu đề tiếng Việt');
+  const Ab=await makeShopOwner(staff,`bom-${uniq()}`);
+  // 1. Tiêu đề CÓ DẤU. Bảng bí danh của seller vốn đã chứa `tensanpham`/`giaban`/`tonkho` —
+  //    tức nó viết ra để phục vụ người bán Việt — nhưng trước 07/09 normKey không bỏ dấu nên
+  //    chỉ khớp khi gõ KHÔNG dấu. Đo được: "Sẽ tạo 0" và cả bốn cột rơi vào "Bỏ qua".
+  const rDau=await up(Ab.shopId,Ab.cookie,'handle,Tên sản phẩm,Mã SKU,Giá bán,Tồn kho\nao-1,Áo len,SKU-D1,399000,5\n',{mode:'preview',import_mode:'create_only'});
+  oSeTao(rDau.body)===1 && !/tên sản phẩm/i.test(boQuaCot(rDau.body))
+    ? ok('tiêu đề tiếng Việt CÓ DẤU được nhận (nửa bảng bí danh trước nay chưa dùng được cho ai)')
+    : bad('tiêu đề có dấu vẫn bị bỏ', `sẽ tạo=${oSeTao(rDau.body)} bỏ qua=${boQuaCot(rDau.body)}`);
+  // 2. Chiều ngược lại: bản KHÔNG dấu vẫn phải chạy như cũ.
+  const rKhongDau=await up(Ab.shopId,Ab.cookie,'handle,Ten san pham,Ma SKU,Gia ban\nao-2,Ao gio,SKU-D2,499000\n',{mode:'preview',import_mode:'create_only'});
+  oSeTao(rKhongDau.body)===1
+    ? ok('tiêu đề KHÔNG dấu vẫn chạy như cũ — bỏ dấu không phá bí danh có sẵn')
+    : bad('bản không dấu hỏng theo', `sẽ tạo=${oSeTao(rKhongDau.body)}`);
+  // 3. BOM UTF-8: vốn đã đúng, giữ chốt để không ai gỡ mất dòng cắt BOM.
+  const rBom=await upBytes(Ab.shopId,Ab.cookie,Buffer.concat([Buffer.from([0xEF,0xBB,0xBF]),Buffer.from('handle,title,sku,price_vnd\nao-3,Áo khoác dạ,SKU-D3,299000\n','utf8')]),{mode:'preview',import_mode:'create_only'});
+  oSeTao(rBom.body)===1 && !/handle/.test(boQuaCot(rBom.body))
+    ? ok('BOM UTF-8 bị cắt đúng, cột đầu không thành "\uFEFFhandle"')
+    : bad('BOM UTF-8 làm hỏng cột đầu', boQuaCot(rBom.body));
+  // 4. UTF-16LE (Excel "Unicode text"). Trước đây mỗi ký tự kèm một byte 00 nên tiêu đề đọc
+  //    thành `h a n d l e`, tạo 0 sản phẩm và không câu nào nói vì sao. Có BOM thì không phải đoán.
+  const rU16=await upBytes(Ab.shopId,Ab.cookie,Buffer.concat([Buffer.from([0xFF,0xFE]),Buffer.from('handle,title,sku,price_vnd\nao-4,Áo sơ mi,SKU-D4,599000\n','utf16le')]),{mode:'preview',import_mode:'create_only'});
+  oSeTao(rU16.body)===1
+    ? ok('UTF-16LE có BOM được giải mã, không còn tiêu đề rác "h a n d l e"')
+    : bad('UTF-16 vẫn ra rác', `sẽ tạo=${oSeTao(rU16.body)} bỏ qua=${boQuaCot(rU16.body).slice(0,60)}`);
+  // 5. CA TỆ NHẤT: tệp bảng mã ANSI (Excel trên Windows tiếng Việt). Trước đây nó nhập THÀNH
+  //    CÔNG và ghi thẳng "\uFFFDo thun c\uFFFD sau" vào cửa hàng thật — người bán chỉ phát hiện khi
+  //    mở cửa hàng của chính mình. Nay phải TỪ CHỐI, và câu từ chối phải nói việc cần làm.
+  const ansi=Buffer.concat([
+    Buffer.from('handle,title,sku,price_vnd\nansi-1,'),
+    Buffer.from([0xC1,0x6F,0x20,0x74,0x68,0x75,0x6E]),
+    Buffer.from(',SKU-D5,699000\n'),
+  ]);
+  const rAnsi=await upBytes(Ab.shopId,Ab.cookie,ansi,{mode:'commit',import_mode:'create_only'});
+  const daGhi=(await owner.query(`SELECT count(*)::int c FROM products WHERE shop_id=$1 AND slug='ansi-1'`,[Ab.shopId])).rows[0].c;
+  rAnsi.status===400 && daGhi===0
+    ? ok('tệp không phải UTF-8 bị TỪ CHỐI và KHÔNG ghi gì vào cửa hàng')
+    : bad('tệp hỏng bảng mã vẫn ghi vào cửa hàng', `${rAnsi.status} đã ghi=${daGhi}`);
+  /UTF-8/.test(cauLoi(rAnsi.body)) && /Lưu dưới dạng|Tải xuống/.test(cauLoi(rAnsi.body))
+    ? ok('câu từ chối nói ĐÚNG việc cần làm (lưu lại dạng CSV UTF-8), không chỉ báo "tệp hỏng"')
+    : bad('câu từ chối không nói việc cần làm', cauLoi(rAnsi.body).slice(0,90));
+  // 6. Chiều ngược lại: tệp UTF-8 CÓ DẤU hợp lệ phải đi qua trót lọt và giữ nguyên dấu tới DB.
+  const rViet=await upBytes(Ab.shopId,Ab.cookie,Buffer.from('handle,title,sku,price_vnd\nviet-1,Áo thun cổ tròn — size XL,SKU-D6,199000\n','utf8'),{mode:'commit',import_mode:'create_only'});
+  const ten=(await owner.query(`SELECT title FROM products WHERE shop_id=$1 AND slug='viet-1'`,[Ab.shopId])).rows[0]?.title ?? null;
+  rViet.status===200 && ten==='Áo thun cổ tròn — size XL'
+    ? ok('tệp UTF-8 có dấu vẫn nhập được và giữ NGUYÊN VĂN dấu tới DB — chốt không phải "chặn mọi thứ lạ"')
+    : bad('tệp UTF-8 có dấu bị chặn hoặc mất dấu', JSON.stringify(ten));
+
   sect('P2 · xem trước kiểm trần gói');
   const Bc=await makeShopOwner(staff,`c-${uniq()}`);
   let c2='handle,title,status,sku,price_vnd\n';

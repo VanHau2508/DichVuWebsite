@@ -1131,8 +1131,52 @@ tiêu đề" thay vì nói rõ bộ đọc chỉ đọc trang tính đầu · ha
 ngày dạng serial trả thô (chưa ảnh hưởng vì đường nhập ĐƠN không nhận XLSX). Ba mục này cần mở
 rộng bộ đọc chứ không chỉ sửa câu chữ, nên tách khỏi đợt này.
 
-**Còn nợ của lát cắt 6:** BOM và dấu tiếng Việt, `update_only`/`upsert`. Giao diện 360px đã đo
-xong cho cả trang ảnh hỏng lẫn trang nhập. Vẫn **chưa có nút "tải lại tất cả"** — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
+**Đợt đo 9 — BOM và dấu tiếng Việt.** Sáu hình dạng tệp, đo qua đúng đường tải tệp của admin.
+Hai thứ vốn đã ĐÚNG (ghi lại để không ai "sửa" nhầm): **BOM UTF-8 được cắt sạch**, và **giá trị
+có dấu đi trọn vẹn tới DB** — `"Áo thun cổ tròn — size XL"` ra đúng nguyên văn, kể cả gạch dài.
+
+Ba lỗi, xếp theo mức độ:
+
+**F3, nặng nhất, vì nó nhập THÀNH CÔNG.** Excel trên Windows tiếng Việt xuất "CSV" bằng bảng mã
+ANSI, không phải UTF-8. `file.bytes.toString('utf8')` thay mọi byte hỏng bằng U+FFFD, nên tên
+sản phẩm vào thẳng cửa hàng thật dưới dạng `"�o thun c� sau"` — đo được, đã ghi vào DB, HTTP 200,
+không cảnh báo nào. Người bán chỉ phát hiện khi mở cửa hàng của chính mình ra xem. Hai lỗi kia
+ít nhất còn hỏng ra mặt (0 sản phẩm); lỗi này hỏng lặng lẽ và để lại dữ liệu bẩn.
+
+**TỪ CHỐI chứ không đoán bảng mã.** CP1258, CP1252 và Shift-JIS đều là chuỗi byte hợp lệ như
+nhau; đoán sai nghĩa là ghi CHỮ KHÁC vào cửa hàng đang bán — mà lần đó còn im lặng hơn, vì không
+còn dấu `�` nào để nhận ra. Câu từ chối nói đúng việc cần làm ("Lưu dưới dạng → CSV UTF-8"), thứ
+người bán làm được trong 5 giây. Đây là chỗ có hơn một cách làm; tôi chọn từ chối và ghi ra đây
+để chủ dự án bác nếu muốn đoán bảng mã.
+
+**F1 · tiêu đề tiếng Việt CÓ DẤU không được nhận.** Bảng bí danh của seller vốn đã chứa
+`tensanpham`, `giaban`, `tonkho`, `mota`, `danhmuc`, `masku`, `giavon`, `giagach` — tức nó được
+viết RA để phục vụ người bán Việt. Nhưng `normKey` chỉ bỏ dấu cách/gạch/ngoặc, **không bỏ dấu
+tiếng Việt**, nên chúng chỉ khớp khi người ta gõ tiêu đề KHÔNG DẤU, thứ gần như không ai làm. Đo:
+tệp `Tên sản phẩm, Mã SKU, Giá bán, Tồn kho` cho "Sẽ tạo 0" và cả bốn cột rơi vào "Bỏ qua"; cùng
+tệp đó viết không dấu thì nhận đủ. Nói cách khác **nửa bảng bí danh này chưa từng dùng được cho
+ai**. Nay `normKey` bỏ dấu bằng NFD + cắt dấu tổ hợp, và `đ` xử riêng vì nó không phải chữ có dấu
+tổ hợp. Đã kiểm: sau khi bỏ dấu không bí danh nào trong `COLS` đụng nhau. (`OCOLS` có sẵn MỘT chỗ
+đụng từ trước — `name` thuộc cả `order_code` lẫn `customer_name`, do Shopify đặt tên cột đơn là
+"Name"; không phải do bỏ dấu, không đụng tới ở đợt này.)
+
+**F2 · UTF-16LE ra rác.** Excel "Unicode text" và vài bản xuất "CSV UTF-16" cho mỗi ký tự ASCII
+kèm một byte `00`, nên tiêu đề đọc thành `h a n d l e` — trang hiện đúng mớ rác đó trong danh
+sách "Bỏ qua", tạo 0 sản phẩm, không câu nào nói vì sao. Có BOM UTF-16 thì KHÔNG phải đoán: giải
+mã thẳng (cả LE và BE).
+
+Cả ba đi qua một hàm `decodeUpload` duy nhất, dùng cho CẢ đường nhập sản phẩm lẫn đường nhập đơn
+— tên và địa chỉ khách là PII đi vào hồ sơ khách hàng, hỏng ở đó thì hỏng đúng thứ người bán dùng
+để đối chiếu với sàn cũ.
+
+Chốt đặt trên bề mặt người bán và **luôn có chiều ngược lại**, để không chốt nào thành "chặn mọi
+thứ lạ": tiêu đề không dấu vẫn phải chạy · BOM UTF-8 vẫn phải được cắt · tệp UTF-8 có dấu hợp lệ
+vẫn phải nhập được và giữ nguyên dấu tới DB. Đo: `admin-nhap-csv.e2e` 11 → 18. Ma trận **4/4 đột
+biến đỏ** — normKey thôi bỏ dấu 17/1 · bỏ nhánh UTF-16 17/1 · quay lại `toString('utf8')` 15/3 ·
+câu từ chối thành câu chung chung 17/1.
+
+**Còn nợ của lát cắt 6:** `update_only`/`upsert`. Giao diện 360px đã đo xong cho cả trang ảnh
+hỏng lẫn trang nhập. Vẫn **chưa có nút "tải lại tất cả"** — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
 một nút hàng loạt là 200 kết nối ra ngoài trong một lượt và cần quyết định riêng về nhịp.
 
 **Nhánh `claude/full-system-folder-access-tc6cfk` đã CHẾT, đừng merge.** 13 commit dựng trang

@@ -1065,12 +1065,26 @@ Chốt thường trực trong `table-cards.test.js`: quy tắc `input[type=file]
 **và** có `max-width:100%`. Đột biến bỏ `max-width` → 5/1; hoàn nguyên 6/0. Đột biến chính
 driver (tiêm khối 3000px) bắt được ở cả kịch bản GET lẫn kịch bản sau POST.
 
-**Một câu để chủ dự án quyết, không tự sửa:** ở 360px bốn ô số liệu của trang xem trước (Dòng
-trong tệp · Sẽ tạo · Biến thể · Ảnh sẽ tải) xếp dọc, mỗi ô một thẻ cao ~200px — người bán phải
-cuộn ~800px qua phần tóm tắt mới tới BẢNG LỖI, tức thứ họ thực sự cần. Không vỡ, không tràn,
-nhưng thứ tự ưu tiên trên màn hình hẹp thì đáng bàn. Có ít nhất ba cách đều code được (thu gọn
-ô số liệu thành một hàng · đẩy bảng lỗi lên trước · chỉ đổi ở bề rộng hẹp), khác nhau ở hậu quả
-sử dụng — nên hỏi chứ không gõ.
+**QUYẾT ĐỊNH của chủ dự án (07/09): CÓ LỖI THÌ BẢNG LỖI LÊN TRƯỚC.** Câu hỏi là ở 360px bốn ô
+số liệu của trang xem trước (Dòng trong tệp · Sẽ tạo · Biến thể · Ảnh sẽ tải) xếp dọc, mỗi ô một
+thẻ cao ~200px — người bán phải cuộn ~800px qua phần tóm tắt mới tới BẢNG LỖI, tức thứ họ thực
+sự cần. Trên bàn giấy bốn ô nằm một hàng nên không ai thấy vấn đề; đây là loại lỗi chỉ lộ ra khi
+đo ở bề rộng thật. Ba phương án đều code được (thu gọn ô số liệu · đẩy bảng lỗi lên trước · chỉ
+đổi ở bề rộng hẹp), khác nhau ở hậu quả sử dụng — chủ dự án chọn phương án hai.
+
+Đã thi công cho **cả bốn nhánh**: xem trước và nhập thật, của cả trang sản phẩm lẫn trang đơn.
+
+Hai điều làm rõ, vì chúng là phần dễ làm sai của chính quyết định này:
+- **Đổi trong DOM, KHÔNG dùng CSS `order`.** `order` chỉ xoay phần NHÌN THẤY và để lại một trang
+  mà người dùng bàn phím đi ngược và trình đọc màn hình đọc ngược — hỏng đúng ràng buộc cố định
+  của mọi lát cắt frontend (§9.2). Nhờ đổi trong DOM mà chốt đo được bằng VỊ TRÍ TRONG HTML.
+- **Chỉ đảo khi CÓ lỗi.** Tệp sạch thì số liệu chính là câu trả lời, giữ nguyên vị trí đầu. Chốt
+  khẳng định **cả hai chiều**, nếu không thì "luôn đảo" cũng đi lọt: đột biến hoàn nguyên thứ tự
+  10/1, đột biến luôn-đảo cũng 10/1, hoàn nguyên 11/0.
+
+Nhánh nhập-thật thêm một câu dẫn trước bảng ("N dòng bị bỏ — sửa các dòng dưới trong tệp rồi
+nhập lại; phần đã vào sẽ không bị nhân đôi"): đưa một bảng lên đầu mà không có câu dẫn thì người
+đọc gặp bảng trước khi biết vì sao có nó.
 
 **Còn nợ của lát cắt 6:** XLSX (`readXlsx`/`isXlsxMagic`), BOM và dấu tiếng Việt,
 `update_only`/`upsert`. Giao diện 360px đã đo xong cho cả trang ảnh hỏng lẫn trang nhập. Vẫn

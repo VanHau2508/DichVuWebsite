@@ -4641,18 +4641,33 @@ export function renderProductImport(ctx, shopId, result, err) {
       rows: diffRows,
     })}</div>` : '';
     const warningBox = (result.warnings ?? []).length ? `<p style="color:var(--warn)"><strong>Cảnh báo:</strong> ${(result.warnings ?? []).map((w) => esc(w.message)).join(' ')}</p>` : '';
-    resultCard = `<div class="card" style="border-color:var(--indigo)">
-      <h2 style="margin-top:0">Xem trước — <span style="color:var(--indigo)">chưa ghi gì vào cửa hàng</span></h2>
-      ${hopCostBoQua}
-      <div class="metrics" style="margin-bottom:12px">
+    // THỨ TỰ ĐỔI THEO KẾT QUẢ: có lỗi thì BẢNG LỖI lên trước, ô số liệu xuống sau.
+    //
+    // Đo ngày 07/09 bằng Chromium ở 360px: bốn ô số liệu xếp dọc, mỗi ô một thẻ cao ~200px,
+    // nên người bán phải cuộn ~800px qua phần tóm tắt mới tới bảng lỗi — mà bảng lỗi mới là
+    // thứ họ cần khi tệp hỏng. Trên bàn giấy bốn ô nằm một hàng nên không ai thấy vấn đề;
+    // đây đúng là loại lỗi chỉ lộ ra khi đo ở bề rộng thật.
+    //
+    // Đổi trong DOM, KHÔNG dùng CSS `order`: thứ tự đọc màn hình và thứ tự Tab phải đi cùng
+    // thứ tự nhìn thấy. `order` chỉ xoay phần nhìn và để lại một trang mà người dùng bàn phím
+    // đi ngược — hỏng đúng ràng buộc cố định của mọi lát cắt frontend (§9.2).
+    //
+    // Không có lỗi thì giữ nguyên thứ tự cũ: lúc đó số liệu CHÍNH LÀ câu trả lời.
+    const soLieu = `<div class="metrics" style="margin-bottom:12px">
         <div class="metric"><div class="l">Dòng trong tệp</div><div class="v">${n(result.rows)}</div></div>
         <div class="metric"><div class="l">Sẽ tạo</div><div class="v">${n(result.created)} sản phẩm</div></div>
         ${result.skipped_existing ? `<div class="metric"><div class="l">Đã có, sẽ bỏ qua</div><div class="v">${n(result.skipped_existing)}</div></div>` : ''}
         <div class="metric"><div class="l">Biến thể</div><div class="v">${n(result.variants)}</div></div>
         <div class="metric"><div class="l">Ảnh sẽ tải</div><div class="v">${n(result.images?.queued)}${result.images?.invalid ? ` <span style="font-size:13px;color:var(--warn)">+${n(result.images.invalid)} sai địa chỉ</span>` : ''}${result.images?.skipped ? ` <span style="font-size:13px;color:var(--warn)">+${n(result.images.skipped)} vượt trần</span>` : ''}</div></div>
         ${result.updated ? `<div class="metric"><div class="l">Sẽ cập nhật</div><div class="v">${n(result.updated)}</div></div>` : ''}
-      </div>
-      ${result.failed ? `<p><strong style="color:var(--warn)">${n(result.failed)} dòng cần xem lại</strong> — sửa các dòng dưới rồi tải lại.</p>${errTable}` : '<p class="muted">Không có lỗi nào.</p>'}
+      </div>`;
+    const khoiLoi = result.failed
+      ? `<p><strong style="color:var(--warn)">${n(result.failed)} dòng cần xem lại</strong> — sửa các dòng dưới rồi tải lại.</p>${errTable}`
+      : '<p class="muted">Không có lỗi nào.</p>';
+    resultCard = `<div class="card" style="border-color:var(--indigo)">
+      <h2 style="margin-top:0">Xem trước — <span style="color:var(--indigo)">chưa ghi gì vào cửa hàng</span></h2>
+      ${hopCostBoQua}
+      ${result.failed ? `${khoiLoi}${soLieu}` : `${soLieu}${khoiLoi}`}
       ${warningBox}${diffTable}
       ${rows ? `<h2 style="margin:16px 0 6px;font-size:15px">Sản phẩm sẽ tạo${result.created > (result.preview ?? []).length ? ` (${(result.preview ?? []).length} đầu tiên)` : ''}</h2>
       <div class="tblscroll">${tblCards({
@@ -4664,10 +4679,7 @@ export function renderProductImport(ctx, shopId, result, err) {
   } else if (result) {
     const img = result.images ?? { queued: 0, invalid: 0, skipped: 0 };
     const warningBox = (result.warnings ?? []).length ? `<p style="color:var(--warn)"><strong>Cảnh báo:</strong> ${(result.warnings ?? []).map((w) => esc(w.message)).join(' ')}</p>` : '';
-    resultCard = `<div class="card" style="border-color:${result.failed ? 'var(--warn)' : 'var(--good)'}">
-      <h2 style="margin-top:0">Đã nhập xong</h2>
-      ${hopCostBoQua}
-      <div class="metrics" style="margin-bottom:12px">
+    const soLieu = `<div class="metrics" style="margin-bottom:12px">
         <div class="metric"><div class="l">Sản phẩm đã tạo</div><div class="v" style="color:var(--good)">${n(result.created)}</div></div>
         ${result.updated ? `<div class="metric"><div class="l">Sản phẩm cập nhật</div><div class="v" style="color:var(--good)">${n(result.updated)}</div></div>` : ''}
         ${result.unchanged ? `<div class="metric"><div class="l">Không thay đổi</div><div class="v">${n(result.unchanged)}</div></div>` : ''}
@@ -4677,8 +4689,14 @@ export function renderProductImport(ctx, shopId, result, err) {
         ${result.failed ? `<div class="metric"><div class="l">Bị bỏ</div><div class="v" style="color:var(--warn)">${n(result.failed)}</div></div>` : ''}
       </div>
       ${img.queued ? `<p class="muted" style="margin-top:-4px">Ảnh được tải <strong>ở chế độ nền</strong> và hiện dần trong vài phút — không cần chờ ở trang này.</p>` : ''}
-      ${(img.invalid || img.skipped) ? `<p class="muted" style="margin-top:-4px"><strong style="color:var(--warn)">${n(img.invalid)}</strong> địa chỉ ảnh sai định dạng (phải bắt đầu bằng <code>http://</code> hoặc <code>https://</code>) nên không tải được${img.skipped ? `, <strong>${n(img.skipped)}</strong> bỏ qua do vượt trần mỗi lần nhập` : ''}. Sản phẩm vẫn đã tạo — bạn tự tải ảnh lên sau ở trang sản phẩm.</p>` : ''}
-      ${warningBox}${errTable}
+      ${(img.invalid || img.skipped) ? `<p class="muted" style="margin-top:-4px"><strong style="color:var(--warn)">${n(img.invalid)}</strong> địa chỉ ảnh sai định dạng (phải bắt đầu bằng <code>http://</code> hoặc <code>https://</code>) nên không tải được${img.skipped ? `, <strong>${n(img.skipped)}</strong> bỏ qua do vượt trần mỗi lần nhập` : ''}. Sản phẩm vẫn đã tạo — bạn tự tải ảnh lên sau ở trang sản phẩm.</p>` : ''}`;
+    resultCard = `<div class="card" style="border-color:${result.failed ? 'var(--warn)' : 'var(--good)'}">
+      <h2 style="margin-top:0">Đã nhập xong</h2>
+      ${hopCostBoQua}
+      ${result.failed
+        ? `<p><strong style="color:var(--warn)">${n(result.failed)} dòng bị bỏ</strong> — sửa các dòng dưới trong tệp rồi nhập lại; phần đã vào sẽ không bị nhân đôi.</p>${errTable}${soLieu}`
+        : soLieu}
+      ${warningBox}
       ${result.created ? `<p style="margin-bottom:0"><a class="btn" href="${base}">Xem danh sách sản phẩm →</a></p>` : ''}
     </div>`;
   }
@@ -4814,14 +4832,19 @@ export function renderOrderImport(ctx, shopId, result, err) {
       { cls: 'num right', html: money(o.total_vnd) },
       { cls: 'muted', html: esc(o.status) },
     ]);
-    card = `<div class="card" style="border-color:var(--indigo)">
-      <h2 style="margin-top:0">Xem trước — <span style="color:var(--indigo)">chưa ghi gì vào cửa hàng</span></h2>
-      <div class="metrics" style="margin-bottom:12px">
+    // Cùng luật với trang nhập sản phẩm: có lỗi thì BẢNG LỖI lên trước ô số liệu. Lý do và
+    // số đo ghi ở renderProductImport; đổi trong DOM chứ không bằng CSS `order`.
+    const soLieuXem = `<div class="metrics" style="margin-bottom:12px">
         <div class="metric"><div class="l">Dòng trong tệp</div><div class="v">${n(result.rows)}</div></div>
         <div class="metric"><div class="l">Đơn sẽ nhập</div><div class="v">${n(result.created)}</div></div>
         <div class="metric"><div class="l">Khách hàng</div><div class="v">${n(result.customers)}</div></div>
-      </div>
-      ${result.failed ? `<p><strong style="color:var(--warn)">${n(result.failed)} dòng sẽ bị bỏ</strong> — sửa rồi tải lại.</p>${errTable}` : '<p class="muted">Không có lỗi nào.</p>'}
+      </div>`;
+    const khoiLoiXem = result.failed
+      ? `<p><strong style="color:var(--warn)">${n(result.failed)} dòng sẽ bị bỏ</strong> — sửa rồi tải lại.</p>${errTable}`
+      : '<p class="muted">Không có lỗi nào.</p>';
+    card = `<div class="card" style="border-color:var(--indigo)">
+      <h2 style="margin-top:0">Xem trước — <span style="color:var(--indigo)">chưa ghi gì vào cửa hàng</span></h2>
+      ${result.failed ? `${khoiLoiXem}${soLieuXem}` : `${soLieuXem}${khoiLoiXem}`}
       ${rows.length ? `<div class="tblscroll">${tblCards({
         head: [{ html: 'Mã gốc' }, { html: 'Ngày' }, { html: 'Khách' }, { html: 'Tổng tiền', cls: 'right' }, { html: 'Trạng thái' }],
         rows,
@@ -4829,15 +4852,17 @@ export function renderOrderImport(ctx, shopId, result, err) {
       <p style="margin:16px 0 0">Ưng ý thì chọn lại tệp ở dưới và bấm <strong>Nhập thật</strong>.</p>
     </div>${piiImportWarn(result.pii, shopId, true)}`;
   } else if (result) {
-    card = `<div class="card" style="border-color:var(--good)">
-      <h2 style="margin-top:0">Đã nhập xong</h2>
-      <div class="metrics" style="margin-bottom:12px">
+    const soLieuXong = `<div class="metrics" style="margin-bottom:12px">
         <div class="metric"><div class="l">Đơn cũ đã nhập</div><div class="v" style="color:var(--good)">${n(result.created)}</div></div>
         ${result.duplicate ? `<div class="metric"><div class="l">Bỏ qua vì đã có</div><div class="v">${n(result.duplicate)}</div></div>` : ''}
         ${result.failed ? `<div class="metric"><div class="l">Dòng hỏng</div><div class="v" style="color:var(--warn)">${n(result.failed)}</div></div>` : ''}
-      </div>
+      </div>`;
+    card = `<div class="card" style="border-color:var(--good)">
+      <h2 style="margin-top:0">Đã nhập xong</h2>
+      ${result.failed
+        ? `<p><strong style="color:var(--warn)">${n(result.failed)} dòng hỏng</strong> — sửa các dòng dưới trong tệp rồi nhập lại; đơn đã vào sẽ không bị nhân đôi.</p>${errTable}${soLieuXong}`
+        : soLieuXong}
       ${result.duplicate ? '<p class="muted" style="margin-top:-4px">Các đơn bỏ qua đã có sẵn (khớp mã gốc) — nhập lại cùng tệp KHÔNG nhân đôi số liệu khách.</p>' : ''}
-      ${errTable}
       <p style="margin-bottom:0"><a class="btn" href="/shops/${esc(shopId)}/customers">Xem hồ sơ khách hàng →</a></p>
     </div>${piiImportWarn(result.pii, shopId, false)}`;
   }

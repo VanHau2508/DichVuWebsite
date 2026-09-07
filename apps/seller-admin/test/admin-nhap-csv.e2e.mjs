@@ -127,11 +127,32 @@ async function main(){
   /cả tệp/.test(r1.body) ? ok('dòng lỗi không thuộc dòng nào ghi "cả tệp", không để ô rỗng') : bad('ô số dòng rỗng');
   dong.includes(251)?ok(`báo ĐÚNG dòng 251 (SP thứ 250 + tiêu đề)`):bad(`vẫn sai: ${JSON.stringify(dong.slice(0,4))}`);
   !dong.includes(51)?ok('KHÔNG còn chỉ vào dòng 51 (dòng vô tội)'):bad('vẫn chỉ vào dòng 51');
+  // ── THỨ TỰ TRÊN MÀN HÌNH HẸP ───────────────────────────────────────────────
+  // Đo ngày 07/09 bằng Chromium 360px: bốn ô số liệu xếp DỌC, mỗi ô một thẻ cao ~200px, nên
+  // người bán phải cuộn ~800px qua phần tóm tắt mới tới BẢNG LỖI — thứ duy nhất họ cần khi tệp
+  // hỏng. Trên bàn giấy bốn ô nằm một hàng nên không ai thấy vấn đề.
+  //
+  // Chủ dự án chốt: có lỗi thì bảng lỗi lên TRƯỚC. Đổi trong DOM chứ không bằng CSS `order`,
+  // nên khẳng định này đo được bằng VỊ TRÍ TRONG HTML — mà đó cũng đúng là thứ quyết định thứ
+  // tự đọc màn hình và thứ tự Tab, không chỉ thứ tự nhìn thấy.
+  const viTriLoi = r1.body.indexOf('dòng cần xem lại');
+  const viTriSoLieu = r1.body.indexOf('class="metrics"');
+  viTriLoi > 0 && viTriSoLieu > 0 && viTriLoi < viTriSoLieu
+    ? ok('có lỗi: bảng lỗi đứng TRƯỚC ô số liệu trong DOM (360px không phải cuộn ~800px mới thấy)')
+    : bad('ô số liệu vẫn chắn trước bảng lỗi', `lỗi@${viTriLoi} sốliệu@${viTriSoLieu}`);
   sect('P1b · tệp NHỎ (một lô) vẫn đúng như cũ');
   const A2=await makeShopOwner(staff,`s-${uniq()}`);
   const r1b=await up(A2.shopId,A2.cookie,'handle,title,status,sku,price_vnd\nok-1,OK,draft,SKU-A,100000\nbad-1,Bad,draft,SKU-B,rac\n',{mode:'preview',import_mode:'create_only'});
   const d2=[...r1b.body.matchAll(/<td[^>]*>(\d+)<\/td>/g)].map(m=>Number(m[1]));
   d2.includes(3)?ok('tệp nhỏ: báo đúng dòng 3'):bad(`tệp nhỏ sai: ${JSON.stringify(d2.slice(0,4))}`);
+  // Chiều NGƯỢC LẠI, để chốt không thành "luôn đảo": tệp sạch thì số liệu giữ nguyên vị trí
+  // đầu — lúc đó chính nó là câu trả lời, không có bảng lỗi nào để ưu tiên.
+  const A2b=await makeShopOwner(staff,`sach-${uniq()}`);
+  const rSach=await up(A2b.shopId,A2b.cookie,'handle,title,status,sku,price_vnd\nok-1,OK,draft,SKU-Z1,100000\nok-2,OK 2,draft,SKU-Z2,120000\n',{mode:'preview',import_mode:'create_only'});
+  const vSach=rSach.body.indexOf('class="metrics"'), vKhongLoi=rSach.body.indexOf('Không có lỗi nào');
+  vSach > 0 && vKhongLoi > vSach
+    ? ok('tệp sạch: số liệu vẫn đứng trước — chốt không phải là "luôn đảo thứ tự"')
+    : bad('tệp sạch cũng bị đảo thứ tự', `sốliệu@${vSach} khônglỗi@${vKhongLoi}`);
   sect('P2 · xem trước kiểm trần gói');
   const Bc=await makeShopOwner(staff,`c-${uniq()}`);
   let c2='handle,title,status,sku,price_vnd\n';

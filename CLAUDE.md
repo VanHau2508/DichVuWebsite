@@ -1031,8 +1031,49 @@ phải có `overflow-wrap`. Nói thẳng giới hạn của nó ngay trong chú 
 mức mã nguồn, phép đo thật vẫn là probe + mở ảnh ra xem. Đột biến: hoàn nguyên về bản cũ 4/1,
 chỉ bỏ `overflow-wrap` cũng 4/1; hoàn nguyên 5/0.
 
+**Đợt đo 7 — 360px của TRANG NHẬP.** Một lỗi, có ở **16/16** phép đo.
+
+Bài học đầu tiên là về cách đo, không về bản vá: **trang nhập có nhiều TRẠNG THÁI, và trạng
+thái rỗng là trạng thái ít vỡ nhất.** Phần dễ vỡ chỉ tồn tại SAU một POST — bảng lỗi từng dòng,
+dòng trần gói, khối "lượt nhập dừng giữa chừng", interstitial xác nhận thiếu mã đơn. Nên probe
+phải LÁI FORM THẬT (tải tệp + bấm đúng nút), và đó là lý do có
+`scripts/probe-nhap-360.mjs`: 8 kịch bản × JS bật/tắt, dùng lại `doTranNgang` import từ
+`probe-360.mjs` để kiến thức về bẫy chỉ có ĐÚNG MỘT bản.
+
+Lỗi đo được: `input[type=file]` khai `width:auto` — cố ý, để khung nét đứt ôm sát nút — nhưng
+`auto` ở control gốc là bề rộng NỘI TẠI của nó (nút + chữ "No file chosen"), và bề rộng đó
+KHÔNG co. Mọi trạng thái của **cả hai** trang nhập, JS bật lẫn tắt, đều tràn **373/360**; ô nằm
+ngoài mọi khối cuộn nên nó kéo CẢ TRANG cuộn ngang 13px. Cùng lớp lỗi `min-width:auto` ở §4,
+chỉ khác là với control gốc thì phải chặn bằng `max-width`.
+
+Vá ở **quy tắc dùng chung**, không ở trang: kho có 12 ô chọn tệp (logo, banner, ảnh danh mục,
+ảnh sản phẩm, nhập CSV/XLSX…) và tất cả đọc đúng dòng CSS đó. Sau vá: 16/16 phép đo 0 tràn.
+
+Ba chuyện đáng chép lại, cả ba là lỗi của người đo chứ không của sản phẩm:
+- **Backtick trong chú thích nằm trong template literal** cắt đứt chuỗi — §4 đã ghi, vẫn dính,
+  lần thứ hai trong hai ngày. `STYLE` là một template literal; chú thích CSS có backtick là
+  `SyntaxError` báo ở dòng rất xa.
+- **Guard "chạy thẳng hay được import" phải hỏi `argv[1]`, không hỏi "có đối số không".** Khi
+  driver import `probe-360.mjs`, `process.argv` là argv CỦA DRIVER, nên guard theo đối số thấy
+  đủ tham số rồi chạy khối CLI với đối số của người khác — đo được là `Invalid URL` ném trên
+  chính chuỗi shopId.
+- **Một "lỗi driver" hoá ra là chốt sản phẩm đang chạy đúng.** Nút "Nhập thật" mang
+  `data-confirm`; Playwright mặc định TỰ HUỶ dialog nên form không gửi và driver hết giờ. Suýt
+  bị đọc thành lỗi bố cục của riêng nhánh JS bật.
+
+Chốt thường trực trong `table-cards.test.js`: quy tắc `input[type=file]` phải giữ `width:auto`
+**và** có `max-width:100%`. Đột biến bỏ `max-width` → 5/1; hoàn nguyên 6/0. Đột biến chính
+driver (tiêm khối 3000px) bắt được ở cả kịch bản GET lẫn kịch bản sau POST.
+
+**Một câu để chủ dự án quyết, không tự sửa:** ở 360px bốn ô số liệu của trang xem trước (Dòng
+trong tệp · Sẽ tạo · Biến thể · Ảnh sẽ tải) xếp dọc, mỗi ô một thẻ cao ~200px — người bán phải
+cuộn ~800px qua phần tóm tắt mới tới BẢNG LỖI, tức thứ họ thực sự cần. Không vỡ, không tràn,
+nhưng thứ tự ưu tiên trên màn hình hẹp thì đáng bàn. Có ít nhất ba cách đều code được (thu gọn
+ô số liệu thành một hàng · đẩy bảng lỗi lên trước · chỉ đổi ở bề rộng hẹp), khác nhau ở hậu quả
+sử dụng — nên hỏi chứ không gõ.
+
 **Còn nợ của lát cắt 6:** XLSX (`readXlsx`/`isXlsxMagic`), BOM và dấu tiếng Việt,
-`update_only`/`upsert`, và giao diện 360px của trang NHẬP (trang ảnh hỏng đã đo xong). Vẫn
+`update_only`/`upsert`. Giao diện 360px đã đo xong cho cả trang ảnh hỏng lẫn trang nhập. Vẫn
 **chưa có nút "tải lại tất cả"** — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
 một nút hàng loạt là 200 kết nối ra ngoài trong một lượt và cần quyết định riêng về nhịp.
 

@@ -117,3 +117,24 @@ test('ô URL nguồn xuống dòng chứ không cắt cụt (bố cục card ~14
   assert.match(dong, /overflow-wrap\s*:\s*anywhere/,
     'URL dài không bẻ dòng được ⇒ ô giữ min-content rất lớn và kéo tràn cột (§4 min-width:auto)');
 });
+
+// ── Ô CHỌN TỆP PHẢI CO ĐƯỢC ────────────────────────────────────────────────────
+//
+// `input[type=file]` khai `width:auto` là CỐ Ý — khung nét đứt ôm sát nút thay vì kéo dài cả
+// hàng. Nhưng `auto` ở control gốc nghĩa là bề rộng NỘI TẠI của nó (nút + chữ "No file
+// chosen"), và bề rộng đó KHÔNG co theo khung cha.
+//
+// Đo ngày 07/09 bằng Chromium: MỌI trạng thái của CẢ HAI trang nhập — form rỗng, xem trước,
+// bảng lỗi từng dòng, dòng trần gói, interstitial xác nhận thiếu mã đơn — ở CẢ JS bật lẫn tắt
+// đều tràn **373/360**, và vì ô nằm ngoài mọi khối cuộn nên nó kéo CẢ TRANG cuộn ngang 13px.
+// 16/16 phép đo đỏ, tức đây không phải lỗi của một trang mà của quy tắc dùng chung.
+//
+// Kho có 12 ô chọn tệp (logo, banner, ảnh danh mục, ảnh sản phẩm, nhập CSV/XLSX…) và tất cả
+// đọc đúng dòng CSS này — nên chốt đặt ở quy tắc, không đặt ở trang.
+test('ô chọn tệp có max-width để co được dưới bề rộng khung cha', () => {
+  const dong = code.split('\n').find((d) => d.includes('input[type=file]{'));
+  assert.ok(dong, 'không còn quy tắc input[type=file] — mốc chết, sửa lại bộ test');
+  assert.match(dong, /width:\s*auto/, 'mất width:auto thì khung nét đứt kéo dài cả hàng (đổi chủ ý thiết kế, không phải sửa lỗi)');
+  assert.match(dong, /max-width:\s*100%/,
+    'ô chọn tệp không bị chặn bề rộng ⇒ bề rộng nội tại của control kéo cả trang tràn ngang ở 360px');
+});

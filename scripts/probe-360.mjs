@@ -49,78 +49,88 @@ const pw = await import(PW_MODULE);
 const chromium = pw.chromium ?? pw.default?.chromium;
 if (!chromium) { console.error(`không nạp được playwright từ ${PW_MODULE}`); process.exit(2); }
 
-const [, , URL_, COOKIE, wArg, mode, shot] = process.argv;
-if (!URL_ || !COOKIE) {
+// ĐO TRÀN NGANG — dùng chung cho CLI dưới đây VÀ cho các driver phải nộp form trước khi đo
+// (trang nhập chỉ lộ bảng lỗi / khối cảnh báo SAU một POST). Export ra thay vì chép lại: hai bản
+// của cùng một phép đo là hai bản sẽ trôi, và bản trôi ở đây nghĩa là một điểm mù im lặng.
+export async function doTranNgang(page, wMong) {
+  return page.evaluate((wM) => {
+    const iw = window.innerWidth;
+    if (iw !== wM) return { tuChoi: `innerWidth=${iw} khác ${wM} — phép đo TỪ CHỐI trả số` };
+    const de = document.documentElement;
+    const cw = de.clientWidth;
+    const chaCuonDuoc = (el) => {
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        const ox = getComputedStyle(p).overflowX;
+        if (ox === 'auto' || ox === 'scroll') return true;
+      }
+      return false;
+    };
+    const bicat = (el) => {
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        const ox = getComputedStyle(p).overflowX;
+        if ((ox === 'hidden' || ox === 'clip') && p.getBoundingClientRect().width > 2) return p;
+      }
+      return null;
+    };
+    const ten = (el) => el.tagName.toLowerCase()
+      + (el.id ? `#${el.id}` : '')
+      + (typeof el.className === 'string' && el.className.trim()
+        ? `.${el.className.trim().split(/\s+/).slice(0, 3).join('.')}` : '');
+    const tran = [];
+    for (const el of document.querySelectorAll('body *')) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      if (r.right <= cw + 0.5 && r.left >= -0.5) continue;
+      if (chaCuonDuoc(el)) continue;
+      const cat = bicat(el);
+      tran.push({ el: ten(el), left: Math.round(r.left), right: Math.round(r.right), catBoi: cat ? ten(cat) : null });
+    }
+    return { iw, cw, scrollWidth: de.scrollWidth, cuonNgang: de.scrollWidth - cw,
+      soTran: tran.length, tran: tran.slice(0, 25), bodyOverflowX: getComputedStyle(document.body).overflowX };
+  }, wMong);
+}
+
+/** Chèn khối 3000px ngoài mọi khối cuộn — đột biến CHÍNH probe. */
+export const tiemKhoiRong = (page) => page.evaluate(() => {
+  const d = document.createElement('div');
+  d.id = 'dot-bien-probe';
+  d.style.cssText = 'width:3000px;height:8px;background:red';
+  document.body.appendChild(d);
+});
+
+export const CHROME_SHELL = process.env.PROBE_CHROME
+  ?? '/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell';
+
+/** Tham số launch: caddy phục vụ tên miền .localtest, và proxy của máy phải bị bỏ qua. */
+export const argsCho = (hostname) => [`--host-resolver-rules=MAP ${hostname} 127.0.0.1`, '--no-proxy-server'];
+
+// CHẠY THẲNG hay ĐƯỢC IMPORT? Phải hỏi `argv[1]`, không hỏi "có đối số không": khi driver
+// import tệp này, `process.argv` là argv CỦA DRIVER — nên kiểm theo đối số sẽ thấy đủ tham số
+// rồi chạy luôn khối CLI với đối số của người khác. Đo được: driver truyền shopId ở vị trí 2
+// và CLI ném `Invalid URL` trên chính chuỗi UUID đó.
+const LA_CLI = /(^|\/)probe-360\.mjs$/.test(process.argv[1] ?? '');
+const [, , URL_, COOKIE, wArg, mode, shot] = LA_CLI ? process.argv : [];
+if (LA_CLI && (!URL_ || !COOKIE)) {
   console.error('dùng: node scripts/probe-360.mjs <url> <cookie> [bề_rộng] [js|nojs] [ảnh.png]');
   process.exit(2);
 }
-const W = Number(wArg ?? 360);
-const W_MONG = Number(process.env.PROBE_EXPECT ?? W);
-const JS = mode !== 'nojs';
-const SHELL = process.env.PROBE_CHROME
-  ?? '/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell';
-
-const u = new URL(URL_);
-const browser = await chromium.launch({
-  executablePath: SHELL,
-  // Dev dùng tên miền .localtest do caddy phục vụ; cookie phiên mang tiền tố `__Host-` nên
-  // BẮT BUỘC đi qua https (Chromium từ chối nó trên http). Probe không đăng nhập được thì nó
-  // đo trang đăng nhập rồi báo "0 tràn" — xanh giả hoàn hảo.
-  args: [`--host-resolver-rules=MAP ${u.hostname} 127.0.0.1`, '--no-proxy-server'],
-});
-const ctx = await browser.newContext({
-  viewport: { width: W, height: 820 }, javaScriptEnabled: JS, ignoreHTTPSErrors: true,
-});
-await ctx.addCookies([{ name: '__Host-session', value: COOKIE, url: `https://${u.hostname}/` }]);
-const page = await ctx.newPage();
-await page.goto(URL_, { waitUntil: 'networkidle' });
-
-if (process.env.PROBE_TIEM === '1') {
-  await page.evaluate(() => {
-    const d = document.createElement('div');
-    d.id = 'dot-bien-probe';
-    d.style.cssText = 'width:3000px;height:8px;background:red';
-    document.body.appendChild(d);
+// ── CLI ────────────────────────────────────────────────────────────────────────
+if (LA_CLI) {
+  const W = Number(wArg ?? 360);
+  const W_MONG = Number(process.env.PROBE_EXPECT ?? W);
+  const JS = mode !== 'nojs';
+  const u = new URL(URL_);
+  const browser = await chromium.launch({ executablePath: CHROME_SHELL, args: argsCho(u.hostname) });
+  const ctx = await browser.newContext({
+    viewport: { width: W, height: 820 }, javaScriptEnabled: JS, ignoreHTTPSErrors: true,
   });
+  await ctx.addCookies([{ name: '__Host-session', value: COOKIE, url: `https://${u.hostname}/` }]);
+  const page = await ctx.newPage();
+  await page.goto(URL_, { waitUntil: 'networkidle' });
+  if (process.env.PROBE_TIEM === '1') await tiemKhoiRong(page);
+  const kq = await doTranNgang(page, W_MONG);
+  if (shot) await page.screenshot({ path: shot, fullPage: true });
+  console.log(JSON.stringify(kq, null, 1));
+  await browser.close();
+  process.exit(kq.tuChoi || kq.soTran > 0 ? 1 : 0);
 }
-
-const kq = await page.evaluate((wMong) => {
-  const iw = window.innerWidth;
-  if (iw !== wMong) return { tuChoi: `innerWidth=${iw} khác ${wMong} — phép đo TỪ CHỐI trả số` };
-  const de = document.documentElement;
-  const cw = de.clientWidth;
-  const chaCuonDuoc = (el) => {
-    for (let p = el.parentElement; p; p = p.parentElement) {
-      const ox = getComputedStyle(p).overflowX;
-      if (ox === 'auto' || ox === 'scroll') return true;
-    }
-    return false;
-  };
-  const bicat = (el) => {
-    for (let p = el.parentElement; p; p = p.parentElement) {
-      const ox = getComputedStyle(p).overflowX;
-      if ((ox === 'hidden' || ox === 'clip') && p.getBoundingClientRect().width > 2) return p;
-    }
-    return null;
-  };
-  const ten = (el) => el.tagName.toLowerCase()
-    + (el.id ? `#${el.id}` : '')
-    + (typeof el.className === 'string' && el.className.trim()
-      ? `.${el.className.trim().split(/\s+/).slice(0, 3).join('.')}` : '');
-  const tran = [];
-  for (const el of document.querySelectorAll('body *')) {
-    const r = el.getBoundingClientRect();
-    if (r.width === 0 && r.height === 0) continue;
-    if (r.right <= cw + 0.5 && r.left >= -0.5) continue;
-    if (chaCuonDuoc(el)) continue;
-    const cat = bicat(el);
-    tran.push({ el: ten(el), left: Math.round(r.left), right: Math.round(r.right), catBoi: cat ? ten(cat) : null });
-  }
-  return { iw, cw, scrollWidth: de.scrollWidth, cuonNgang: de.scrollWidth - cw,
-    soTran: tran.length, tran: tran.slice(0, 25), bodyOverflowX: getComputedStyle(document.body).overflowX };
-}, W_MONG);
-
-if (shot) await page.screenshot({ path: shot, fullPage: true });
-console.log(JSON.stringify(kq, null, 1));
-await browser.close();
-process.exit(kq.tuChoi || kq.soTran > 0 ? 1 : 0);

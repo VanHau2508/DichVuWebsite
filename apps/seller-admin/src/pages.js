@@ -355,7 +355,14 @@ textarea{min-height:80px;resize:vertical}
 .inline{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}.inline input{width:auto}
 .num{font-variant-numeric:tabular-nums}.right{text-align:right}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
 .stock{font-weight:600}.stock.low{color:var(--warn)}.stock.zero{color:var(--bad)}
-input[type=file]{width:auto;padding:9px 12px;background:var(--surf);border:1.5px dashed color-mix(in srgb,var(--pri) 30%,var(--bd));border-radius:var(--r);color:var(--soft)}
+/* width:auto cho ô chọn tệp là CỐ Ý (khung nét đứt ôm sát nút, không kéo dài cả hàng), nhưng
+   auto ở đây nghĩa là bề rộng NỘI TẠI của control gốc — nút + chữ "No file chosen" — và nó
+   KHÔNG co. Đo ngày 07/09: MỌI trạng thái của CẢ HAI trang nhập (sản phẩm và đơn), JS bật lẫn
+   tắt, đều tràn 373/360; ô chạy quá mép thẻ và kéo CẢ TRANG cuộn ngang 13px. Cùng lớp lỗi
+   min-width:auto đã ghi ở §4, chỉ khác là ở control gốc thì phải chặn bằng max-width.
+   Vá ở lớp CHUNG chứ không vá một trang: kho có 12 ô chọn tệp (logo, banner, ảnh danh mục,
+   ảnh sản phẩm, nhập CSV...) và chúng dùng chung đúng một quy tắc này. */
+input[type=file]{width:auto;max-width:100%;padding:9px 12px;background:var(--surf);border:1.5px dashed color-mix(in srgb,var(--pri) 30%,var(--bd));border-radius:var(--r);color:var(--soft)}
 .media-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px;align-items:flex-start}
 .tblscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 /* ── docs/44 §8: BẢNG → DANH SÁCH THẺ trên mobile ────────────────────────────

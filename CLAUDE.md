@@ -1272,10 +1272,55 @@ Chốt có chiều ngược lại: lưu ĐÚNG thì **không ô nào** bị đá
 `admin-settings-sections.e2e` 19 → 23. Ma trận **3/3 đột biến đỏ** — cắt dây nối 20/3 · bỏ
 `autofocus` 20/3 · luôn đánh dấu 22/1. Probe 360px: 0 tràn ở 320/360/390 × JS bật/tắt.
 
-**Còn nợ của lát cắt 7, chưa đo:** `/notify`, `/members`, `/domains`, `/api-keys`, `/billing` mới
-chỉ được đối chiếu ở mức bảng quyền, chưa đi bằng vai thật · chưa đo vai "shop lúc có sự cố" cho
-các nhóm còn lại · `POST /api-keys/:id/revoke` không có step-up trong khi tạo khoá thì có (bất
-đối xứng, chưa rõ cố ý hay không).
+### Lát cắt 7 — đợt đo 2: `/members`. KHÔNG có bản vá, và đó là kết luận.
+
+**Bốn giả thuyết, bốn lần bị bác.** Vùng quản trị thành viên được canh đủ; đợt này chỉ bổ sung
+BẰNG CHỨNG cho điều đó, để người sau khỏi đo lại. Mọi dòng dưới đây là số đo bằng vai thật, không
+phải đọc mã.
+
+| đo gì | kết quả |
+|---|---|
+| `admin` (có `members.read`, không `members.write`) | xem 200 · mời/đổi-vai/xoá đều **403** |
+| `order_manager` | xem **403**, mọi thao tác ghi **403** |
+| owner CHƯA step-up mời thành viên | **403 `step_up_required`** |
+| owner duy nhất tự hạ vai mình | **409** "không thể bỏ owner cuối cùng" |
+| owner duy nhất tự xoá mình | **409** "không thể xoá owner cuối cùng" |
+| token của lời mời ĐÃ THU HỒI | **400**, và **0** thành viên được tạo |
+| dùng lại token đã nhận | **400** |
+| trang `/members` với vai `admin` | không form mời, không nút đổi vai — §9.3 giữ đúng |
+| `order_manager` mở `/members` | **403**, và trang CÓ nêu màn hình họ mở được |
+
+Đường chấp nhận lời mời viết cẩn thận sẵn: điều kiện `revoked_at IS NULL` lặp lại ở **cả** SELECT
+lẫn UPDATE, kèm chú thích nói rõ vì sao — khe giữa hai câu đúng là khoảnh khắc người bán bấm Huỷ
+vì vừa nhận ra mời nhầm. Email lấy từ DÒNG lời mời chứ không từ request, nên không đổi hướng
+được sang email khác.
+
+**Hai đột biến chứng minh chốt có thật**, sau khi tôi định báo là "không có test":
+gỡ chốt owner-cuối-cùng ở CẢ `changeRole` lẫn `removeMember` → `seller/e2e.mjs` **31/2** đỏ ·
+bỏ `revoked_at IS NULL` ở cả SELECT lẫn UPDATE của accept → `admin-account.e2e.mjs` **37/3** đỏ.
+Cộng hai lần ở đợt 1 (`require-mfa`, `privacy`), đó là **bốn lần trong một lát cắt** tôi suýt báo
+một lỗ hổng chốt mà chốt vẫn còn đó.
+→ **Luật §4 đọc thêm một lần nữa cho thấm: chưa chạy đột biến đi qua đúng chốt thì chưa được nói
+nó không tồn tại.** Grep không thấy tên chốt trong test KHÔNG phải bằng chứng.
+
+**Câu treo từ đợt 1 nay đã đóng: `POST /members/invitations/:id/revoke` KHÔNG đòi step-up, và đó
+là CỐ Ý ĐÚNG.** Đo: owner chưa step-up thu hồi được (200) và token chết ngay (400). Step-up có để
+gác thao tác **cấp thêm** quyền; thu hồi là thao tác **rút bớt**, và chú thích của chính đường
+accept gọi đó là khoảnh khắc gấp. Bắt step-up ở nút cứu hoả trong khi nút nguy hiểm cũng chỉ tốn
+đúng một step-up là làm chậm đúng cái cần nhanh. Không sửa.
+
+**Hai lỗi của chính người đo trong đợt này**, chép lại vì cả hai đều tạo ra số đo sai:
+- Chạy `apps/auth/test/e2e.mjs` trong `dbtest` → không có dòng tổng kết, và tôi suýt đọc thành
+  "đột biến làm đỏ". §1 đã ghi: đó là **ngoại lệ DUY NHẤT**, phải chạy trong container `auth`.
+  Chạy đúng chỗ: **74/0**.
+- Probe rút "câu trang nói" bằng regex `<p class="muted">` và trúng **chú thích trong CSS nội
+  tuyến** — trang 403 hoàn toàn bình thường, chỉ phép trích là sai. Cùng họ với luật "cắt đúng
+  khối rồi mới khớp" (§4).
+
+**Còn nợ của lát cắt 7, chưa đo:** `/notify`, `/domains`, `/api-keys`, `/billing` mới chỉ được đối
+chiếu ở mức bảng quyền, chưa đi bằng vai thật · chưa đo vai "shop lúc có sự cố" cho các nhóm còn
+lại · `POST /api-keys/:id/revoke` không có step-up trong khi tạo khoá thì có — cùng hình dạng với
+`invitations/revoke` vừa kết luận là đúng, nhưng CHƯA đo nên chưa kết luận.
 
 **Còn nợ đã ghi, chưa làm, không thuộc lát cắt nào:** nút **"tải lại tất cả"** cho ảnh hỏng — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
 một nút hàng loạt là 200 kết nối ra ngoài trong một lượt và cần quyết định riêng về nhịp.

@@ -1288,7 +1288,7 @@ phải đọc mã.
 | token của lời mời ĐÃ THU HỒI | **400**, và **0** thành viên được tạo |
 | dùng lại token đã nhận | **400** |
 | trang `/members` với vai `admin` | không form mời, không nút đổi vai — §9.3 giữ đúng |
-| `order_manager` mở `/members` | **403**, và trang CÓ nêu màn hình họ mở được |
+| `order_manager` mở `/members` | **403**, giữ nguyên thanh điều hướng (đợt 3 sửa lại câu này) |
 
 Đường chấp nhận lời mời viết cẩn thận sẵn: điều kiện `revoked_at IS NULL` lặp lại ở **cả** SELECT
 lẫn UPDATE, kèm chú thích nói rõ vì sao — khe giữa hai câu đúng là khoảnh khắc người bán bấm Huỷ
@@ -1317,10 +1317,83 @@ accept gọi đó là khoảnh khắc gấp. Bắt step-up ở nút cứu hoả 
   tuyến** — trang 403 hoàn toàn bình thường, chỉ phép trích là sai. Cùng họ với luật "cắt đúng
   khối rồi mới khớp" (§4).
 
-**Còn nợ của lát cắt 7, chưa đo:** `/notify`, `/domains`, `/api-keys`, `/billing` mới chỉ được đối
-chiếu ở mức bảng quyền, chưa đi bằng vai thật · chưa đo vai "shop lúc có sự cố" cho các nhóm còn
-lại · `POST /api-keys/:id/revoke` không có step-up trong khi tạo khoá thì có — cùng hình dạng với
-`invitations/revoke` vừa kết luận là đúng, nhưng CHƯA đo nên chưa kết luận.
+### Lát cắt 7 — đợt đo 3: `/api-keys` (khoá kết nối). Vùng quản lý khoá SẠCH; cửa `/ingest/*` thì không.
+
+**Phần quản lý khoá không có gì để vá.** Đo bằng vai thật, cộng vào bộ `api-keys.e2e.mjs` đã có
+sẵn (28 khẳng định, nhưng CHỈ đăng nhập bằng `owner` — đúng điểm mù §4 nói tới):
+
+| đo gì | kết quả |
+|---|---|
+| `admin` (có `shop.write`) | xem 200 · tạo 201 · thu hồi hoạt động |
+| `order_manager` / `catalog_manager` | cả ba route **403 "không đủ quyền"** |
+| owner CHƯA step-up **tạo** khoá | **403 `step_up_required`** |
+| owner CHƯA step-up **thu hồi** khoá | **200** — và token chết ngay (`ingest` 401) |
+| trần `MAX_KEYS_PER_SHOP` | khoá thứ 11 → **400**, DB đúng 10 khoá sống |
+| khoá `system_owned` (bot Messenger) | **không** hiện trong danh sách · owner thu hồi → **404** |
+| khoá shop B đọc sản phẩm shop A qua `/ingest/catalog` | **404** |
+
+Bất đối xứng step-up ở `revoke` là **cố ý đúng**, cùng học thuyết với `invitations/revoke` (đợt 2)
+— và ở đây chú thích ngay trên route đã nói thẳng: *"khi nghi khoá bị lộ, ma sát thêm một bước là
+thêm phút để kẻ cầm khoá tạo đơn"*. Câu treo từ đợt 1 đóng lại, không sửa gì.
+
+**Lỗi tìm được nằm ở CỬA KIA của cùng lát cắt: `/ingest/*` không biết shop đã bị đóng.**
+Đo bằng cách đẩy đơn qua khoá ở ba trạng thái shop, cùng lúc gõ cửa storefront:
+
+| `shops.status` | storefront | `POST /ingest/orders` | tồn |
+|---|---|---|---|
+| `active` | 200 | 201 | giữ chỗ +1 |
+| `suspended` (nợ phí) | **503** | **201** | giữ chỗ +1 |
+| `terminated` (đã chấm dứt) | **404** | **201** | giữ chỗ +1 |
+
+Điều làm nó thành LỖI chứ không phải câu hỏi mở, ít nhất ở nhánh `terminated`: chú thích của
+chính `terminateShop` (`platform/src/server.js:594`) **liệt kê ra** các chốt phải dừng phục vụ —
+*"storefront: policy `store_shop` (0011) … checkout: policy `checkout_shop` (0012) … tls-authorize"*
+— và kết luận *"Serving DỪNG TỰ NHIÊN qua các chốt sẵn có"*. Danh sách đó viết **trước** khi có
+khoá kết nối (`0120`), nên cửa Bearer không nằm trong đó và không ai để ý. Đúng bài học §9.2: vá
+từng trường hợp thì trường hợp thứ tư vẫn nằm đó — ở đây là cửa thứ tư mà bản liệt kê bỏ sót.
+
+Hậu quả đo được: shop đã chấm dứt hợp đồng (`deleted_at` đã đóng, storefront 404) **vẫn nhận đơn
+và vẫn giữ chỗ tồn**. Khách vừa chat với bot nhận xác nhận đơn cho một cửa hàng không còn tồn tại.
+Và vì `apps/messenger` đẩy đơn qua **đúng cửa này** (`server.js:240`, Bearer khoá `system_owned`),
+bot Facebook của shop đã đóng vẫn chào hàng, vẫn chốt đơn.
+
+Nhánh `suspended` thì là **quyết định kinh doanh**, không phải lỗi hiển nhiên — xem câu hỏi treo
+phía dưới. Cả hai nhánh chung một chỗ vá (`resolveApiKey` / `handleIngest`), nên cũng chung một
+quyết định.
+
+**BỐN LẦN PHÉP ĐO BÁC LẠI NGƯỜI ĐO trong đợt này** — nhiều hơn mọi đợt trước, và cả bốn đều là
+lỗi của phép đo chứ không của sản phẩm:
+- Gọi `/ops/shops/:id/status` (route KHÔNG tồn tại; route thật là `/suspend`, và đòi step-up của
+  nhân viên nền tảng). Shop đứng nguyên ở `onboarding` mà probe vẫn in ra một bảng trông rất
+  thuyết phục. **Dấu hiệu duy nhất là dòng in kèm `shops.status`** — nếu không in trạng thái thật
+  ra cạnh kết quả thì lượt đo đó đã thành một finding bịa.
+- Rút thanh điều hướng bằng `<nav class="side"` trong khi markup là `<nav class="side-nav">` →
+  **0 mục**, và tôi suýt báo "33/48 trang 403 là ngõ cụt". Sửa selector rồi vẫn 0 mục vì lỗi thứ
+  hai: `<a …>([^<]*)<` không băng qua `<svg>` nằm ngay trong thẻ `a`. Dump HTML thô ra mới thấy
+  nav **có đủ**. Cùng họ với lỗi regex trúng chú thích CSS ở đợt 2 — hai đợt liên tiếp.
+- Vì thế **sửa lại một câu sổ tay đợt 2 tự ghi sai**: "trang `/members` 403 CÓ nêu màn hình họ mở
+  được" là không chính xác. Đo đúng: trang 403 giữ **nguyên thanh điều hướng** với các mục vai đó
+  mở được (nên không ai bị kẹt), nhưng **chỉ `/overview`** có nút nêu ĐÍCH DANH màn hình thay thế
+  (`landingPath`, vá từ lát cắt 2). 47 trang còn lại dùng `renderError` không tham số `action`.
+  Đó là khoảng cách so với §9.3 luật 3, nhưng là chuyện CÂU CHỮ, không phải ngõ cụt.
+- Hỏi seller bằng đường `/telegram/config` bịa ra (thật là `/telegram`) → 404, suýt đọc thành
+  "vai này không có route". Đúng lỗi §4 "tự viết SQL thay sản phẩm", đổi sang đường HTTP.
+
+**Một lỗi phụ có thật, đo được, ghi lại chưa vá: `/notify` và `/shipping` trả HTTP 502 cho một
+vai chỉ đơn giản là không đủ quyền.** `notifyPage` và `shippingPage` gộp MỌI non-200 về `502`
+(`server.js:1076`, `:1108`), trong khi `apiKeysPage` ngay cạnh đã viết đúng
+(`r.status === 403 ? 403 : 502`). Đo bằng `catalog_manager`: trang trả **502** mà chữ trong trang
+là **"không đủ quyền"** — mã trạng thái nói "hệ thống hỏng, thử lại đi", câu chữ nói "vai của bạn
+không mở được". Một trang tự mâu thuẫn, và mọi phép đếm 5xx coi một lần phân quyền bình thường là
+một lần hạ tầng hỏng.
+
+**Câu hỏi đang chờ chủ dự án quyết:** khoá kết nối của shop `suspended` (nợ phí) có được đẩy đơn
+tiếp không? Ba phương án đều code được và khác nhau ở hậu quả kinh doanh — chặn hẳn (đòn bẩy thu
+phí kín, nhưng shop mất đơn đang chat dở) · nhận nhưng đánh dấu / không giữ chỗ tồn · giữ nguyên
+như hôm nay. Nhánh `terminated` thì không có lựa chọn thứ hai.
+
+**Còn nợ của lát cắt 7, chưa đo:** `/domains`, `/billing` mới chỉ được đối chiếu ở mức bảng quyền,
+chưa đi bằng vai thật · chưa đo vai "shop lúc có sự cố" cho các nhóm còn lại.
 
 **Còn nợ đã ghi, chưa làm, không thuộc lát cắt nào:** nút **"tải lại tất cả"** cho ảnh hỏng — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
 một nút hàng loạt là 200 kết nối ra ngoài trong một lượt và cần quyết định riêng về nhịp.

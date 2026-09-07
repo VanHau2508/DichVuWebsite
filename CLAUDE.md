@@ -431,7 +431,7 @@ Bảy workflow, làm **dọc từng cái**, không redesign cả hệ thống m�
 
 ~~`onboarding/go-live`~~ → ~~`bảng điều khiển "việc cần làm"`~~ → ~~`chi tiết đơn`~~
 → ~~`đa kiện/ca xử lý`~~ → ~~`checkout mobile của khách`~~
-→ `catalog + nhập từ sàn` → `cài đặt`
+→ ~~`catalog + nhập từ sàn`~~ → `cài đặt`
 
 Thứ tự bảy workflow vẫn là bản đồ nợ UX, nhưng chủ dự án đã đổi ưu tiên sang connector POS.
 Thứ tự đó chỉ là bản đồ nợ UX; lát cắt KiotViet và Trung tâm vận hành đã đóng, còn việc kế tiếp
@@ -1175,8 +1175,53 @@ vẫn phải nhập được và giữ nguyên dấu tới DB. Đo: `admin-nhap-
 biến đỏ** — normKey thôi bỏ dấu 17/1 · bỏ nhánh UTF-16 17/1 · quay lại `toString('utf8')` 15/3 ·
 câu từ chối thành câu chung chung 17/1.
 
-**Còn nợ của lát cắt 6:** `update_only`/`upsert`. Giao diện 360px đã đo xong cho cả trang ảnh
-hỏng lẫn trang nhập. Vẫn **chưa có nút "tải lại tất cả"** — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
+**Đợt đo 10 — `update_only` / `upsert`. Lát cắt 6 ĐÓNG.**
+
+Đường TikTok **đúng trọn**, ghi lại vì phần lớn đợt này là xác nhận chứ không phải vá:
+`update_price` mà chưa bật xác nhận giá → seller trả 400, giá **không đổi**, và người bán THẤY
+lý do (khối "Lượt nhập dừng giữa chừng" của đợt 3 mang câu đó lên trang) · xem trước dựng bảng
+khác biệt mà **không ghi gì** · nhập thật đổi đúng 450.000 → 999.000 và tồn 10 → 3 ·
+`update_only` cho sản phẩm chưa từng nhập báo "không tìm thấy sản phẩm TikTok đã nhập để cập
+nhật". Đường tiền ở đây có chốt và chốt giữ.
+
+**Lỗi duy nhất nằm ở tệp KHÔNG phải TikTok.** Ghép để cập nhật chỉ làm được qua
+`product_source_refs`; tệp thường không có khoá nào để ghép, và ghép theo TÊN là thứ kho này cố
+ý từ chối (chính dòng chữ trên trang đã nói: *"Chỉ ghép theo mã nguồn TikTok, không ghép theo
+tên"*). Nhưng trang vẫn hiện đủ ba ô chế độ cho MỌI tệp, và seller ép `flags` về `create_only`
+**trong im lặng**.
+
+Đo được: tệp CSV chọn `update_only`, đổi tên và giá một sản phẩm đã có → lượt nhập chạy ở
+`create_only`, dòng đó hỏng với **"slug đã tồn tại trong shop"**, DB giữ nguyên, và ô chế độ trên
+trang lặng lẽ nhảy về "Chỉ tạo mới". Câu ấy nói về một va chạm khi TẠO, cho một yêu cầu vốn không
+phải là tạo — người bán đọc xong sẽ đi đổi slug, đúng thứ không liên quan. Đây là lần thứ **ba**
+trong lát cắt 6 gặp cùng một lớp: câu sai đắt hơn không có câu nào ("kiểm tra quyền hoặc định
+dạng tệp" ở đợt 3, "Tệp không có dòng dữ liệu" ở đợt 8).
+
+Vá bằng đủ **ba mảnh**, và lần này ma trận chứng minh từng mảnh có chốt riêng: seller trả
+`che_do_bi_ep` → `mergeImportResults` chuyển tiếp (khoá TRẮNG, đúng chỗ `cost_bo_qua` đã đứt ở
+đợt 1) → trang dựng khối cảnh báo ĐẶT TRƯỚC ô số liệu. Khối nói ba thứ: đã chạy ở chế độ nào,
+rằng "slug đã tồn tại" là HỆ QUẢ chứ không phải lỗi trong tệp, và điều kiện thật để cập nhật
+hàng loạt (tệp TikTok, ghép theo `product_id`).
+
+**KHÔNG mở ghép theo handle/slug.** Đó là tính năng chứ không phải bản vá, và nó cần một quyết
+định về khoá ghép — mà ghép theo tên đúng là thứ giao diện đang tuyên bố từ chối. Nếu chủ dự án
+muốn cập nhật hàng loạt cho tệp không phải TikTok thì đó là lát cắt riêng.
+
+Chốt luôn có chiều ngược lại: lượt nhập bình thường KHÔNG được hiện cảnh báo. Đo:
+`admin-nhap-csv.e2e` 18 → 23. Ma trận **4/4 đột biến đỏ** — seller thôi trả cờ 20/3 · cắt dây
+nối 20/3 · trang không dựng khối 20/3 · luôn coi là bị ép 22/1.
+
+**Một lần phép đo tự bác lại người đo, chép lại vì nó suýt thành 14 finding bịa:** lượt chạy
+`admin-nhap-csv` ngay sau ma trận cho **9 pass, 14 fail** với những câu như "xem trước hứa ?".
+Không lỗi nào có thật — bộ test chết ở `makeStaff` vì `rl:*` chưa xả, và mọi khẳng định sau đó
+đọc trang rỗng. Xả rate-limit rồi chạy lại: 23/0. §4 đã ghi luật này; nó vẫn cắn khi chạy nhiều
+bộ liên tiếp bằng tay.
+
+**Lát cắt 6 `catalog + nhập từ sàn` ĐÓNG.** Mười đợt đo: quyền + giá vốn · luồng CSV · lô hỏng
+giữa chừng · nhập đơn cũ · ảnh qua hàng rào SSRF · 360px trang ảnh hỏng · 360px trang nhập ·
+XLSX · BOM và dấu tiếng Việt · `update_only`/`upsert`.
+
+**Còn nợ đã ghi, chưa làm, không thuộc lát cắt nào:** nút **"tải lại tất cả"** cho ảnh hỏng — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
 một nút hàng loạt là 200 kết nối ra ngoài trong một lượt và cần quyết định riêng về nhịp.
 
 **Nhánh `claude/full-system-folder-access-tc6cfk` đã CHẾT, đừng merge.** 13 commit dựng trang

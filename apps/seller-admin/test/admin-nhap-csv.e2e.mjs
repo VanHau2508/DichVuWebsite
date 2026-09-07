@@ -215,6 +215,39 @@ async function main(){
     ? ok('tệp UTF-8 có dấu vẫn nhập được và giữ NGUYÊN VĂN dấu tới DB — chốt không phải "chặn mọi thứ lạ"')
     : bad('tệp UTF-8 có dấu bị chặn hoặc mất dấu', JSON.stringify(ten));
 
+  // ── CHẾ ĐỘ BỊ ÉP VỀ "CHỈ TẠO MỚI" ─────────────────────────────────────────
+  sect('P1d · chọn "Chỉ cập nhật" trên tệp không phải TikTok');
+  // Ghép để cập nhật chỉ làm được qua mã nguồn TikTok; tệp thường không có khoá nào để ghép, và
+  // ghép theo TÊN là thứ kho này cố ý từ chối. Nhưng trang vẫn hiện đủ ba ô chế độ cho mọi tệp.
+  //
+  // Đo ngày 07/09: tệp CSV chọn update_only, đổi tên + giá một sản phẩm đã có → lượt nhập chạy ở
+  // create_only, dòng đó hỏng với "slug đã tồn tại trong shop", DB giữ nguyên, ô chế độ lặng lẽ
+  // nhảy về "Chỉ tạo mới". Câu ấy nói về va chạm khi TẠO cho một yêu cầu vốn không phải là tạo —
+  // người bán đọc xong sẽ đi đổi slug, đúng thứ không liên quan.
+  const Ac=await makeShopOwner(staff,`ched-${uniq()}`);
+  await up(Ac.shopId,Ac.cookie,'handle,title,sku,price_vnd\nao-1,Áo thun,SKU-C1,199000\n',{mode:'commit',import_mode:'create_only'});
+  const rEp=await up(Ac.shopId,Ac.cookie,'handle,title,sku,price_vnd\nao-1,Áo thun ĐỔI TÊN,SKU-C1,299000\n',{mode:'commit',import_mode:'update_only',update_price:'1',price_confirmed:'1'});
+  /không phải chế độ bạn chọn/.test(rEp.body)
+    ? ok('nói thẳng lượt nhập đã chạy ở "Chỉ tạo mới", không phải chế độ người bán chọn')
+    : bad('yêu cầu cập nhật bị bỏ IM LẶNG');
+  /không phải lỗi trong tệp của bạn/.test(rEp.body)
+    ? ok('nói luôn "slug đã tồn tại" là HỆ QUẢ của chế độ tạo mới — chặn người bán đi sửa nhầm slug')
+    : bad('không nối câu lỗi slug với nguyên nhân thật');
+  /product_id/.test(rEp.body) && /TikTok/.test(rEp.body)
+    ? ok('nêu điều kiện thật để cập nhật hàng loạt: tệp TikTok, ghép theo product_id')
+    : bad('không nói làm gì tiếp');
+  // Và DB phải giữ nguyên — câu chữ đúng mà dữ liệu bị sửa thì còn tệ hơn.
+  const sauEp=(await owner.query(`SELECT title FROM products WHERE shop_id=$1 AND slug='ao-1'`,[Ac.shopId])).rows[0]?.title;
+  sauEp==='Áo thun'
+    ? ok('và KHÔNG sản phẩm nào bị sửa — chế độ bị ép thì không được lặng lẽ ghi đè')
+    : bad('sản phẩm bị sửa dù chế độ đã bị ép', JSON.stringify(sauEp));
+  // CHIỀU NGƯỢC LẠI: tệp thường + create_only (không chọn gì thêm) KHÔNG được hiện khối này.
+  const Ad=await makeShopOwner(staff,`ched2-${uniq()}`);
+  const rThuong=await up(Ad.shopId,Ad.cookie,'handle,title,sku,price_vnd\nao-9,Áo khoác,SKU-C9,199000\n',{mode:'commit',import_mode:'create_only'});
+  !/không phải chế độ bạn chọn/.test(rThuong.body)
+    ? ok('lượt nhập bình thường KHÔNG bị doạ nhầm — chốt không phải "luôn hiện cảnh báo"')
+    : bad('hiện cảnh báo chế độ cho lượt nhập không yêu cầu gì');
+
   sect('P2 · xem trước kiểm trần gói');
   const Bc=await makeShopOwner(staff,`c-${uniq()}`);
   let c2='handle,title,status,sku,price_vnd\n';

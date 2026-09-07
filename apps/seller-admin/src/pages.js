@@ -4558,6 +4558,21 @@ export function renderProductImport(ctx, shopId, result, err) {
     </div>`;
   })();
 
+  // Chế độ bị ép về "Chỉ tạo mới" vì tệp không phải TikTok. Đặt NGAY ĐẦU thẻ kết quả, trước cả
+  // ô số liệu: nếu không nói ra, người bán đọc câu "slug đã tồn tại trong shop" rồi đi sửa slug
+  // — đúng thứ không liên quan tới việc họ vừa yêu cầu.
+  const hopCheDo = !result?.che_do_bi_ep ? '' : (() => {
+    const cd = result.che_do_bi_ep;
+    const ten = { update_only: 'Chỉ cập nhật', upsert: 'Upsert' }[cd.yeu_cau] ?? null;
+    const daChon = [ten, cd.cap_nhat_gia ? 'Cập nhật giá bán' : null, cd.cap_nhat_ton ? 'Cập nhật tồn kho' : null]
+      .filter(Boolean).map((x) => `<strong>${esc(x)}</strong>`).join(', ');
+    return `<div class="card" style="border-color:var(--warn);background:#fffbeb">
+      <h2 style="margin-top:0;font-size:15px">Đã nhập ở chế độ “Chỉ tạo mới”, không phải chế độ bạn chọn</h2>
+      <p style="margin:0 0 6px">Bạn chọn ${daChon}, nhưng ghép để cập nhật chỉ làm được với tệp <strong>TikTok</strong> — hệ thống ghép theo <code>product_id</code> của sàn, không ghép theo tên hay theo slug. Tệp này không có cột đó nên lượt nhập đã chạy ở chế độ <strong>Chỉ tạo mới</strong>.</p>
+      <p class="muted" style="margin:0">Vì vậy những sản phẩm đã có sẽ báo lỗi <em>“slug đã tồn tại trong shop”</em> — đó là hệ quả của chế độ tạo mới, không phải lỗi trong tệp của bạn. Muốn sửa giá hoặc tồn hàng loạt cho danh mục hiện có, hãy dùng tệp xuất từ TikTok.</p>
+    </div>`;
+  })();
+
   const hopCostBoQua = Number(result?.cost_bo_qua ?? 0) > 0
     ? `<p style="color:var(--warn)"><strong>Cột giá vốn đã bị bỏ qua</strong> ở ${esc(Number(result.cost_bo_qua))} dòng — vai của bạn không được đặt giá vốn. Mọi cột khác vẫn nhập bình thường; nhờ chủ cửa hàng hoặc quản trị viên nhập giá vốn giúp.</p>`
     : '';
@@ -4707,6 +4722,7 @@ export function renderProductImport(ctx, shopId, result, err) {
     <p class="muted" style="margin-top:-8px">Chuyển danh mục từ TikTok Shop, Shopify hoặc Haravan. Tệp XLSX TikTok và CSV Shopify/Haravan được nhận diện tự động.</p>
     ${err ? `<div class="err">${esc(err)}</div>` : ''}
     ${hopDut}
+    ${hopCheDo}
     ${resultCard}
     ${colCard}
 

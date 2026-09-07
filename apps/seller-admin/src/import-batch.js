@@ -51,6 +51,10 @@ export function mergeImportResults(results) {
     images: { queued: 0, invalid: 0, skipped: 0, limit: Number(results[0]?.images?.limit ?? 0), remaining: 0 },
     columns: { recognised: [], ignored: [] },
     import_mode: results[0]?.import_mode ?? 'create_only',
+    // Dựng từ danh sách khoá TRẮNG, nên khoá nào không kể tên ở đây sẽ rơi im lặng giữa seller
+    // và trang — đúng lỗi `cost_bo_qua` ở đợt đo 1. Lấy của lô ĐẦU vì cờ này là thuộc tính của
+    // cả LƯỢT nhập (nguồn tệp), không phải của từng lô.
+    che_do_bi_ep: results[0]?.che_do_bi_ep ?? null,
     update_content: results[0]?.update_content !== false,
     update_price: results[0]?.update_price === true,
     update_stock: results[0]?.update_stock === true,

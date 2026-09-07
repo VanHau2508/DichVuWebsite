@@ -841,6 +841,29 @@ export async function importProducts(res, ctx, body) {
   const flags = adapted.source === 'tiktok' ? importFlags(body) : {
     mode: 'create_only', updateContent: true, updatePrice: false, updateStock: false, priceConfirmed: false,
   };
+  // CHẾ ĐỘ BỊ ÉP VỀ create_only — và phải NÓI RA.
+  //
+  // Ghép để cập nhật chỉ làm được qua mã nguồn TikTok (`product_source_refs`); tệp không có
+  // `product_id` thì không có khoá nào để ghép, và ghép theo TÊN là thứ kho này cố ý từ chối.
+  // Nhưng trang nhập vẫn hiện đủ ba ô chế độ cho mọi tệp, nên người bán chọn "Chỉ cập nhật"
+  // trên một tệp CSV thường thì yêu cầu bị bỏ IM LẶNG.
+  //
+  // Đo ngày 07/09: tệp CSV chọn `update_only`, đổi tên và giá của một sản phẩm đã có → lượt nhập
+  // chạy ở create_only, dòng đó hỏng với **"slug đã tồn tại trong shop"**, tên và giá trong DB
+  // giữ nguyên, và ô chế độ trên trang lặng lẽ nhảy về "Chỉ tạo mới". Câu lỗi ấy nói về một va
+  // chạm khi TẠO, cho một yêu cầu vốn không phải là tạo — người bán đọc xong sẽ đi đổi slug,
+  // đúng thứ không liên quan. Cùng lớp lỗi với "kiểm tra quyền hoặc định dạng tệp" (đợt 3) và
+  // "Tệp không có dòng dữ liệu" (đợt 8): một câu sai đắt hơn không có câu nào.
+  const yeuCau = importFlags(body);
+  const cheDoBiEp = adapted.source !== 'tiktok'
+    && (yeuCau.mode !== 'create_only' || yeuCau.updatePrice || yeuCau.updateStock)
+    ? {
+      yeu_cau: yeuCau.mode,
+      cap_nhat_gia: yeuCau.updatePrice,
+      cap_nhat_ton: yeuCau.updateStock,
+      nguon: adapted.source ?? 'csv',
+    }
+    : null;
   const imageLimit = imageLimitForRequest(body);
   if (adapted.source === 'tiktok' && flags.mode !== 'create_only' && flags.updatePrice && !flags.priceConfirmed) {
     return send(res, 400, { error: 'Cập nhật giá TikTok cần bật xác nhận giá riêng trước khi thực hiện' });
@@ -945,6 +968,7 @@ export async function importProducts(res, ctx, body) {
     return send(res, 200, {
       dry_run: true, import_mode: flags.mode, update_content: flags.updateContent,
       update_price: flags.updatePrice, update_stock: flags.updateStock, price_confirmed: flags.priceConfirmed,
+    che_do_bi_ep: cheDoBiEp,
       rows: originalRows.length, groups: groups.length,
       created: Math.max(0, wouldCreate), updated, unchanged,
       skipped_existing: flags.mode === 'create_only' ? skippedExisting : 0,
@@ -1062,6 +1086,7 @@ export async function importProducts(res, ctx, body) {
   return send(res, 200, {
     import_mode: flags.mode, update_content: flags.updateContent,
     update_price: flags.updatePrice, update_stock: flags.updateStock, price_confirmed: flags.priceConfirmed,
+    che_do_bi_ep: cheDoBiEp,
     created,
     updated, unchanged, variants_updated: variantsUpdated, variants_created: variantsCreated,
     skipped_existing: errors.filter((e) => e.skipped).length,

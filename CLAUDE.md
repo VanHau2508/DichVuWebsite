@@ -1464,6 +1464,50 @@ dòng nào) · đơn chờ không có bề mặt cho khách tự tra (họ chưa
 KHÔNG gửi thông báo nào cho người bán rằng có đơn đang chờ — họ phải tự mở Tổng quan mới thấy ô,
 mà đúng lúc vừa trả xong phí thì đó không phải màn hình đầu tiên họ mở.
 
+> ### ⚠️ BÀN GIAO — đợt đo 4 CHƯA QUA CỔNG. Đọc trước khi merge.
+>
+> **Trạng thái:** nhánh `claude/don-cho-tao-0186`, commit `e9873da` (19 tệp, +931/−26), đã push.
+> **`main` cố ý ĐỨNG NGUYÊN ở `c337abd`** — §9.4 cấm fast-forward khi cổng chưa exit 0, và nó
+> chưa exit 0 lần nào. Đừng merge cho tới khi chạy xong cổng.
+>
+> **Vì sao chưa xong:** container dev bị dựng lại giữa lượt gác, và container mới **không kéo
+> được image Docker Hub** — `production.cloudfront.docker.com` trả **403** từ egress policy
+> (`/root/.ccr/README.md` nói rõ: báo host bị chặn, đừng đi vòng). Không image ⇒ không stack ⇒
+> không chạy được `ci-local.sh`.
+>
+> **Đã đo được, tin được** (lượt gác dang dở + chạy tay, trên đúng commit này):
+>
+> | bước | kết quả |
+> |---|---|
+> | unit + `manifest_check` | **337/337**, rc=0 — chạy thẳng ở máy, KHÔNG cần Docker |
+> | migration từ DB TRẮNG | **184**, 0 DRIFT, 0 pending |
+> | quét bảo mật tĩnh | sạch (chạy với seam `SECURITY_SCAN_DOCKER_ARGS` mount CA) |
+> | bất biến DB | **149** |
+> | E2E | **79/113 bộ, 0 FAIL** — gồm `held-orders` 41/0 và `bot` 62/0 |
+> | smoke | **CHƯA CHẠY** |
+>
+> **34 bộ e2e cuối chưa chạy lần nào.** Đó là khoảng trống thật, không phải hình thức.
+>
+> **Việc còn lại, đúng thứ tự:**
+> 1. Dựng stack (`up -d --build` + `run --rm migrate`). Môi trường có proxy chặn TLS thì `npm ci`
+>    trong Dockerfile chết với `SELF_SIGNED_CERT_IN_CHAIN` — npm che nó thành *"Exit handler never
+>    called"*, dễ đọc nhầm thành lỗi npm/OOM. Cách đã dùng: chép `ca-bundle.crt` vào build context
+>    rồi `ENV NODE_EXTRA_CA_CERTS=… NPM_CONFIG_CAFILE=…` ngay trước dòng `npm ci`. **Patch đó là
+>    TẠM, gỡ trước khi commit** — nó đã được gỡ sạch khỏi `e9873da`.
+> 2. `bash scripts/ci-local.sh` — MỘT tiến trình duy nhất, kiểm bằng `ps` trước khi tin log
+>    (§9.3b đã có bài học hai lượt gác song song). Lượt phụ thấy trong `ps` có thể là subshell
+>    CON của chính cổng — phân biệt bằng PPID.
+> 3. Xanh ⇒ fast-forward `main`, không merge commit.
+>
+> **Hai chỗ đáng soi khi review, vì chúng là phần rủi ro nhất của lát cắt:**
+> - `createManualOrder` tách thành `createOrderCore` — đụng ĐƯỜNG TIỀN. Là phép tách thuần (8 câu
+>   `return send(res, 400, …)` thành `return {code, body}`), nhưng đáng đọc lại từng câu.
+> - Bảng `held_ingest_orders` giữ **PII** trong `payload`. Quyền của `app_expiry` đã bị đo ba lần
+>   mới đúng (xem phần trên); bất biến mới khoá cả ba chiều — đừng nới nó cho tiện.
+>
+> Alternativ nếu máy vẫn không kéo được image: CI đám mây chạy được trên nhánh bằng
+> `workflow_dispatch` (scope `e2e`) — `push` chỉ kích hoạt cho `main`, nên đẩy nhánh KHÔNG tự chạy CI.
+
 **Còn nợ của lát cắt 7, chưa đo:** `/domains`, `/billing` mới chỉ được đối chiếu ở mức bảng quyền,
 chưa đi bằng vai thật · chưa đo vai "shop lúc có sự cố" cho các nhóm còn lại.
 

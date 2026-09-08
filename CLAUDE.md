@@ -1597,9 +1597,10 @@ bind-mount · để nguyên và ghi sổ). Bộ mới `apps/seller/test/hostname
 với `shared-sql.test.js` — bộ vốn đã sinh ra cho đúng lớp lỗi "một luật viết ở hai nơi rồi trôi".
 
 **Khẳng định là XỬ SỰ GIỐNG, không phải GIỐNG TỪNG KÝ TỰ.** So byte là chốt CHÍNH TẢ và nó
-**sai ngay hôm nay** — 26 dòng lệch kia hợp lệ. Corpus 3.042 hostname (ca viết tay đi qua từng
-chốt + quét sinh máy tất định bằng LCG trên bảng chữ cái thù địch) chạy qua cả hai bản, so
-**BẰNG** từng kết quả; `isReserved` so trên tích của corpus với 5 giá trị `platformDomain`.
+**sai ngay hôm nay** — 26 dòng lệch kia hợp lệ. Corpus gồm ca viết tay đi qua từng chốt + quét
+sinh máy tất định trên bảng chữ cái thù địch, chạy qua cả hai bản, so **BẰNG** từng kết quả;
+`isReserved` so trên tích của corpus với 5 giá trị `platformDomain`. (Bản đầu ghi "3.042" là
+sai — `CA_TAY` có 43 ca nên lúc đó là 3.043. Số hiện tại xem phần Codex ngay dưới.)
 
 **Chốt tự-chối, và ma trận chứng minh nó sống.** Không có nó thì một đột biến làm CẢ HAI bản
 luôn trả `null` vẫn "bằng nhau" và bộ này xanh trong khi không còn chứng minh gì — cùng nguyên
@@ -1699,6 +1700,46 @@ Cổng đầy đủ lượt review (kết thúc 09/09) **exit 0: 120 mục xanh,
 migration DB trắng **184** (0 DRIFT/pending), security-scan sạch, bất biến DB **149/149**,
 E2E giữ đúng **113/113**, smoke edge/readiness/TLS đều PASS. PID/PPID xác nhận một lượt cổng;
 không ghép log với lượt held-ingest trước. Chưa merge, `origin/main` giữ `f6824fa`.
+
+### Claude review vòng chéo Codex — HAI FINDING, chưa merge
+
+Đã đo lại độc lập **cả năm** con số Codex báo, khớp cả năm: hai đột biến mới (trần `>=253`,
+đầu vào sai kiểu) đúng là **3/0 trên corpus cũ → 2/1 trên corpus mới**; cả-hai-luôn-null **2/1**;
+cùng đột biến với ngưỡng hạ về 0 **3/0** (⇒ chốt tự-chối KHÔNG xếp chồng, đúng như họ kết luận);
+xoá bốn guard dư **3/0**. Ma trận cũ 6 đột biến chạy lại trên corpus mới vẫn đỏ đúng chỗ. Phần
+sổ tay Codex viết không overclaim — tự khai thẳng giới hạn về caller truyền chuỗi thô.
+
+**F1 · corpus kiểm từng chốt RIÊNG LẺ, không kiểm THỨ TỰ giữa chúng.**
+Đột biến: dời `if (h.length === 0 || h.length > 253) return null;` lên **TRƯỚC** bước
+`if (h.endsWith('.')) h = h.slice(0, -1);`, chỉ ở bản seller → **3/0 XANH**.
+Đã kiểm nó đổi hành vi thật, không inert: `['a'.repeat(63),'a'.repeat(63),'a'.repeat(63),'b'.repeat(61)].join('.')`
+dài **253** (nhận); thêm một dấu chấm cuối thành **254** — bản gốc cắt chấm rồi nhận, bản đột
+biến trả `null`, tls vẫn nhận. Bao khoảng trắng hai đầu cho **257**, cùng lớp lỗi với `trim`.
+`CA_BIEN` có 252/253/254 nhưng **không ca nào vừa DÀI vừa mang dấu chấm cuối hoặc khoảng trắng**,
+nên mọi hoán vị của `trim → cắt chấm → trần` đều vô hình.
+→ Vá: thêm mỗi ca biên độ dài ở **ba hình dạng** — trần trụi, có dấu chấm cuối, có khoảng trắng
+bao quanh. Giữ **chiều ngược lại**: ca 253 không dấu chấm vẫn phải được NHẬN, nếu không thì một
+bản "từ chối mọi thứ dài" cũng đi lọt.
+
+**F2 · bộ sinh bão hoà ở 937, và `caSinh(n)` là một nút vặn CHẾT — lỗi của Claude.**
+`s * 1103515245` với `s ~ 2³¹` cho ~6,9·10¹⁷, **vượt 2⁵³**, nên mất chính xác TRƯỚC khi
+`& 0x7fffffff` — nó không còn là LCG. Đo được: trạng thái lặp lại ở lượt **968**, chỉ **937**
+chuỗi khác nhau trong 3000, và `caSinh(20000)` vẫn ra đúng **937**.
+Hệ quả không phải chốt sai mà là **con số kể chuyện không đúng**: "3.068 hostname" phóng đại độ
+phủ khoảng ba lần, và người sau nâng tham số để phủ rộng hơn sẽ không thêm được ca nào.
+→ Vá một dòng: `s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff`. Đo sau vá: 3000 →
+**2.845** chuỗi khác nhau, 20000 → **18.434**.
+→ **Và thêm chốt tự-chối cho CHÍNH BỘ SINH** — khẳng định số chuỗi KHÁC NHAU ≈ n (chẳng hạn
+`≥ 0,9n`). Không có nó thì đúng kiểu bão hoà im lặng này quay lại được mà không ai thấy; cùng
+học thuyết với chốt tự-chối đã có và với probe 360px phải tự chối khi khung nhìn sai (§4).
+
+**Sau khi vá phải chạy LẠI TOÀN BỘ ma trận** — đổi corpus là đổi tập ca thật sự chạy, nên mọi
+đột biến cũ (của Claude lẫn của Codex) phải còn đỏ, và chốt tự-chối phải còn bind khi hạ ngưỡng.
+Cập nhật con số corpus trong sổ tay cho khớp thực đo, đừng tính tay.
+
+Chỉ thêm ca vào mảng, **không thêm bộ test** ⇒ manifest giữ **43 unit / 113 e2e**, §0 không đổi.
+Vẫn phải **gác đầy đủ lại** vì unit nằm ở bước 1 của cổng — kết quả cổng của `315117e` không
+dùng lại cho commit mới được. Vẫn không đụng một dòng mã sản phẩm nào.
 
 **Còn nợ của lát cắt 7, chưa đo:** `/domains` mới có bản đồ chỉ-đọc, **chưa đi bằng vai thật** ·
 `/billing` mới chỉ được đối chiếu ở mức bảng quyền, chưa đi bằng vai thật · chưa đo vai "shop lúc

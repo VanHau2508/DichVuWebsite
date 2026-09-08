@@ -1638,6 +1638,50 @@ sổ cố định trên Redis. Hai thứ khác nhau, trùng tên tệp thôi.
 `manifest_check` OK. Chỉ thêm unit thuần nên theo §5 phạm vi là "chỉ test" — **cổng đầy đủ chưa
 chạy trên máy này** (không có Docker); đó là khoảng trống thật, không phải hình thức.
 
+### Bàn giao cho Codex — nhánh `claude/hostname-hai-ban`, CHƯA QUA CỔNG
+
+Nhánh nối từ `f6824fa`, một commit `86a1f45` (3 tệp: bộ unit mới, `test-manifest.sh`, sổ tay).
+**`main` cố ý ĐỨNG NGUYÊN** — §9.4 cấm fast-forward khi cổng chưa exit 0, và ở máy Claude nó
+chưa chạy được lần nào (`production.cloudfront.docker.com` trả **403** từ egress policy; theo
+`/root/.ccr/README.md` thì báo host bị chặn chứ không đi vòng).
+
+**Đã đo được, tin được** (chạy thẳng ở máy, KHÔNG cần Docker): `hostname-hai-ban.test.js`
+**3/3** · toàn bộ unit **340/340** · `manifest_check` OK · manifest unit **42 → 43**, e2e giữ
+**113** (không thêm bộ e2e nào).
+
+**Việc 1 — gác đầy đủ.** `bash scripts/ci-local.sh`, MỘT tiến trình duy nhất, kiểm bằng `ps`
+trước khi tin bất cứ dòng nào trong log (§9.3b: hai lượt song song tranh nhau một PostgreSQL và
+đẻ ra lỗi hạ tầng trông y hệt lỗi sản phẩm). Lượt phụ thấy trong `ps` có thể là subshell CON của
+chính cổng — phân biệt bằng PPID. Thay đổi chỉ là một bộ unit thuần nên không có lý do gì để e2e
+đổi số, và **đó chính là điều cần chứng minh**: E2E phải giữ đúng **113/113**.
+
+**Việc 2 — review, và câu hỏi sắc nhất nằm ở học thuyết chứ không ở mã.** Theo thứ tự ưu tiên:
+
+1. **Corpus có đủ rộng không?** Chốt khẳng định hai bản XỬ SỰ giống trên 3.042 hostname. Phép
+   thử đúng cho nó không phải đọc corpus mà là **tìm một đột biến đổi HÀNH VI của MỘT bản mà
+   corpus KHÔNG bắt được**. Tìm được là chốt có lỗ, và lỗ đó phải vá bằng ca mới chứ không bằng
+   quay về so byte. Bốn chốt-chết nói ở mục 4 là nơi dễ có lỗ nhất.
+2. **Chốt tự-chối có thật sự bind không?** Ba ngưỡng `>= 10`, `>= 10`, `>= 3` là số tôi chọn,
+   không phải số đo. Nới chúng thành `>= 0` rồi chạy lại đột biến "cả hai luôn null" — nếu vẫn
+   đỏ thì khẳng định tự-chối đang được chốt KHÁC đỡ hộ, tức nó xếp chồng và chưa chứng minh gì.
+3. **`isReserved` chỉ được so trên hostname ĐÃ chuẩn hoá** (ca nào `normalizeHostname` trả null
+   thì `continue`). Đó là đúng hợp đồng của mã thật ở cả hai bản — nhưng nếu một bản sau này gọi
+   `isReserved` trên chuỗi thô thì chốt này mù. Đáng xem có nên khẳng định luôn thứ tự gọi đó ở
+   `tls-authorize/src/server.js:134,139` không.
+4. **Kiểm lại độc lập một khẳng định về SẢN PHẨM tôi rút ra từ đột biến:** bốn dòng gác đầu
+   `normalizeHostname` (`:`, `*`, `_`, và IP-literal `/^\d+(\.\d+)+$/`) **chết về hành vi** —
+   ba cái đầu bị `HOSTNAME_RE` nuốt, cái thứ tư bị chốt TLD-toàn-chữ-số ngay dưới nuốt. Tôi kết
+   luận không sửa (vẫn fail-closed, vẫn là early-out rẻ). Nếu Codex đo ra khác thì đó là finding
+   thật, không phải chuyện câu chữ.
+5. **Manifest và §0 phải khớp nhau trong CÙNG commit** — `MANIFEST_UNIT_COUNT=43` và bảng §0
+   "bộ unit 43". Chốt này so BẰNG nên nó tự bắt, nhưng đã có tiền lệ quên (lát cắt 6 đợt 1).
+
+**Không cần đụng tới:** `apps/seller/src/hostname.js` và `apps/tls-authorize/src/hostname.js`
+giữ NGUYÊN — lượt này không sửa một dòng mã sản phẩm nào.
+
+**Lượt này Claude vừa đo, vừa viết, vừa tuyên bố xanh** — yếu hơn các lát cắt có vòng chéo
+(§9.1 luật 2). Xanh ⇒ fast-forward `main`, không merge commit.
+
 **Còn nợ của lát cắt 7, chưa đo:** `/domains` mới có bản đồ chỉ-đọc, **chưa đi bằng vai thật** ·
 `/billing` mới chỉ được đối chiếu ở mức bảng quyền, chưa đi bằng vai thật · chưa đo vai "shop lúc
 có sự cố" cho các nhóm còn lại.

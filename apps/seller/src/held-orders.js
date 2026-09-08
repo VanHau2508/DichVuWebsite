@@ -104,39 +104,32 @@ async function listHeldOrders(res, ctx, query) {
  *    thay vì khoá là để dành một cách hỏng cho lần sau ai đó đổi khoá.
  */
 async function acceptHeldOrder(res, ctx, heldId) {
-  const held = await withTenant(ctx.shopId, async (c) => {
+  const out = await withTenant(ctx.shopId, async (c) => {
     const live = (await c.query(
-      `SELECT status, deleted_at FROM shops WHERE id = current_shop_id()`)).rows[0];
+      `SELECT status, deleted_at FROM shops WHERE id = current_shop_id() FOR SHARE`)).rows[0];
     if (!live || live.status !== 'active' || live.deleted_at) {
-      return { err: [409, 'cửa hàng chưa hoạt động lại — đơn chờ chỉ tạo được khi cửa hàng đang bán, vì tạo đơn là giữ chỗ hàng'] };
+      return { code: 409, body: { error: 'cửa hàng chưa hoạt động lại — đơn chờ chỉ tạo được khi cửa hàng đang bán, vì tạo đơn là giữ chỗ hàng' } };
     }
     const row = (await c.query(
       `SELECT id, payload, api_key_id, resolved_at FROM held_ingest_orders
         WHERE id = $1 AND shop_id = current_shop_id() FOR UPDATE`, [heldId])).rows[0];
-    if (!row) return { err: [404, 'không tìm thấy đơn chờ'] };
-    if (row.resolved_at) return { err: [409, 'đơn chờ này đã được xử lý'] };
-    return { row };
-  });
-  if (held.err) return send(res, held.err[0], { error: held.err[1] });
-
-  // Tạo đơn NGOÀI transaction đọc ở trên: `createOrderCore` tự mở `withTenant` của nó, lồng
-  // vào đây là lồng transaction (cùng lý do `resolveApiKey` không bọc luôn việc tạo đơn).
-  // Đổi lại phải chịu được lần chạy đứt giữa chừng: đơn đã tạo mà chưa kịp đánh dấu dòng
-  // chờ thì lần bấm sau đi lại đúng `idempotency_key` cũ → trả lại ĐÚNG đơn cũ, rồi mới
-  // đánh dấu. Không đẻ đơn thứ hai.
-  const out = await createOrderCore({ ...ctx, apiKeyId: held.row.api_key_id }, held.row.payload);
-  if (out.code !== 201) return send(res, out.code, out.body);
-
-  await withTenant(ctx.shopId, async (c) => {
+    if (!row) return { code: 404, body: { error: 'không tìm thấy đơn chờ' } };
+    if (row.resolved_at) return { code: 409, body: { error: 'đơn chờ này đã được xử lý' } };
+    // Đo trên f663bf9: nhả khoá trước createOrderCore cho phép accept=201, drop=200,
+    // dòng chờ=dropped dù đơn thật đã giữ tồn. Dùng cùng client để cả chuỗi cùng commit
+    // hoặc rollback; khoá shop cũng giữ tới cuối để tạm ngưng không chen giữa lượt chốt.
+    const created = await createOrderCore({ ...ctx, apiKeyId: row.api_key_id }, row.payload, c);
+    if (created.code !== 201) return created;
     await c.query(
       `UPDATE held_ingest_orders SET resolved_at = now(), resolution = 'accepted', order_id = $2
-        WHERE id = $1 AND shop_id = current_shop_id() AND resolved_at IS NULL`, [heldId, out.body.id]);
+        WHERE id = $1 AND shop_id = current_shop_id() AND resolved_at IS NULL`, [heldId, created.body.id]);
     await audit(c, 'ingest_order.accepted', {
       actorId: ctx.user?.id ?? null, ip: ctx.ip,
-      metadata: { held_id: heldId, order_id: out.body.id, order_number: out.body.order_number },
+      metadata: { held_id: heldId, order_id: created.body.id, order_number: created.body.order_number },
     });
+    return created;
   });
-  return send(res, 201, out.body);
+  return send(res, out.code, out.body);
 }
 
 // BỎ một đơn chờ: khách đã mua chỗ khác, hoặc hàng đã hết. KHÔNG xoá dòng — người bán cần

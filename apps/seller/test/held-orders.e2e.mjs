@@ -224,6 +224,51 @@ async function main() {
   (await rq(SELLER, 'POST', `/shops/${S.shopId}/held-orders/${h2}/accept`, { cookie: S.cookie, origin: OS })).status === 409
     ? ok('chốt một dòng ĐÃ BỎ → 409') : bad('chốt được dòng đã bỏ!');
 
+  sect('8b. Tạo và bỏ đồng thời: dòng chờ phải cùng giao dịch với đơn thật');
+  await setStatus('suspended');
+  const raceHeld = (await push()).json.held_id;
+  await setStatus('active');
+  const raceOrders = await nOrders(), raceReserved = await reserved();
+  const blocker = await owner.connect();
+  let accepting, dropping;
+  try {
+    await blocker.query('BEGIN');
+    await blocker.query('SELECT variant_id FROM inventory_levels WHERE variant_id=$1 FOR UPDATE', [vid]);
+    accepting = rq(SELLER, 'POST', `/shops/${S.shopId}/held-orders/${raceHeld}/accept`, { cookie: S.cookie, origin: OS });
+    // Giữ tồn để dừng đúng GIỮA đường tạo đơn, không dựa vào sleep để đoán request đã tới.
+    let waiting = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      waiting = (await owner.query(`SELECT 1 FROM pg_stat_activity
+        WHERE usename='app_rw' AND wait_event_type='Lock'
+          AND query LIKE 'SELECT on_hand, reserved FROM inventory_levels%'`)).rowCount > 0;
+      if (waiting) break;
+      await sleep(50);
+    }
+    if (!waiting) throw new Error('mốc chết: accept chưa chờ khoá tồn');
+    dropping = rq(SELLER, 'POST', `/shops/${S.shopId}/held-orders/${raceHeld}/drop`, { cookie: S.cookie, origin: OS });
+    let dropDone = false;
+    dropping.then(() => { dropDone = true; });
+    let dropWaiting = false;
+    for (let attempt = 0; attempt < 100 && !dropDone; attempt++) {
+      dropWaiting = (await owner.query(`SELECT 1 FROM pg_stat_activity
+        WHERE usename='app_rw' AND wait_event_type='Lock'
+          AND query LIKE 'UPDATE held_ingest_orders SET resolved_at%'`)).rowCount > 0;
+      if (dropWaiting) break;
+      await sleep(50);
+    }
+    if (!dropDone && !dropWaiting) throw new Error('mốc chết: drop chưa tới chốt tranh chấp');
+  } finally {
+    await blocker.query('ROLLBACK');
+    blocker.release();
+  }
+  const [acceptedRace, droppedRace] = await Promise.all([accepting, dropping]);
+  const raceRow = (await owner.query('SELECT resolution, order_id FROM held_ingest_orders WHERE id=$1', [raceHeld])).rows[0];
+  acceptedRace.status === 201 && droppedRace.status === 404 && raceRow.resolution === 'accepted'
+      && raceRow.order_id === acceptedRace.json?.id
+      && (await nOrders()) === raceOrders + 1 && (await reserved()) === raceReserved + 1
+    ? ok('accept giữ khoá tới khi tạo xong: drop bị từ chối, dòng chờ và tồn khớp đơn')
+    : bad('tạo/bỏ đồng thời làm dòng chờ lệch đơn hoặc tồn', JSON.stringify({ accept: acceptedRace.status, drop: droppedRace.status, row: raceRow }));
+
   sect('9. Shop ĐÃ CHẤM DỨT — đóng CẢ cửa');
   await setStatus('terminated');
   const ordT = await nOrders(); const heldT = await nHeld();

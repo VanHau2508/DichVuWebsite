@@ -1464,7 +1464,44 @@ dòng nào) · đơn chờ không có bề mặt cho khách tự tra (họ chưa
 KHÔNG gửi thông báo nào cho người bán rằng có đơn đang chờ — họ phải tự mở Tổng quan mới thấy ô,
 mà đúng lúc vừa trả xong phí thì đó không phải màn hình đầu tiên họ mở.
 
-> ### ⚠️ BÀN GIAO — đợt đo 4 CHƯA QUA CỔNG. Đọc trước khi merge.
+### Codex tiếp nhận đợt 4 — 08/09: đã qua cổng, CHỜ CLAUDE REVIEW
+
+Nhánh `codex/held-ingest-verification` nối từ `f663bf9`; `main` vẫn ở `c337abd`.
+Stack riêng `nentang-e2e-held0186` dựng từ worktree mới, không dùng DB của stack orphan,
+không cần patch CA hay tắt xác minh TLS.
+
+**Lỗi tranh chấp đo được trên bản bàn giao:** `acceptHeldOrder` giữ `FOR UPDATE` trong
+transaction đọc rồi COMMIT trước khi gọi `createOrderCore`. Giữ khoá tồn bằng một kết nối DB
+để dừng đúng giữa đường tạo đơn, sau đó gọi Bỏ: **accept=201, drop=200**, dòng chờ lại
+`resolution='dropped', order_id=NULL` dù đơn thật đã giữ tồn. Bộ cũ vẫn qua 41 ca; thêm ca
+đồng thời cho **41 pass / 1 fail**. Idempotency chống hai đơn nhưng không chống tạo một đơn
+sau khi người bán đã bỏ yêu cầu.
+
+Vá: `createOrderCore` nhận client của `withTenant` nếu người gọi đã mở transaction; đường
+tạo đơn tay vẫn tự mở như trước. Chốt đơn chờ giữ khoá shop (`FOR SHARE`) và dòng chờ tới khi
+tạo đơn, giữ tồn, ghi outbox, đánh dấu accepted và audit cùng commit hoặc rollback. Ca đo
+đồng thời nay **42/42**: accept=201, drop=404, dòng chờ trỏ đúng đơn và tồn tăng đúng một.
+Ca thử chờ `pg_stat_activity` xác nhận request đang bị khoá, không đoán thứ tự bằng sleep.
+
+**Lỗi cổng trên Windows:** test lời khai scanner chỉ tìm `/bin/bash` hoặc `/usr/bin/bash`
+nên unit ra **336/337**. Thêm đường Git Bash và chuyển đường stub qua `cygpath` trước khi
+thêm vào PATH; kiểm dấu `AUDIT_DOCKER_STUB` để chứng minh lệnh giả thực sự được gọi. Bản
+chuyển đường đầu tiên vẫn giữ `C:` trong PATH Unix khiến Docker thật chạy; dấu kiểm và
+exit code đã bắt lỗi đó. Sau sửa: release-gates **9/9**, unit **337/337**; Linux giữ cách
+tìm Bash cũ. Stub tạm tự dọn sau test.
+
+**Cổng đầy đủ trên bản vá:** `bash scripts/ci-local.sh` **exit 0, 120 mục xanh, 0 đỏ** —
+unit **337/337** · migration DB trắng **184**, 0 DRIFT, 0 pending · security-scan sạch ·
+bất biến DB **149/149** · E2E **113/113**, gồm held-orders **42/42**, bot **62/62**,
+manual-orders **25/25**, shipping **118/118** · smoke edge/readiness/TLS đều PASS.
+Lượt đầu dừng sau khi tìm lỗi unit Windows; các số đầy đủ này thuộc MỘT lượt chạy lại
+sau bản sửa, không ghép các lượt. Không thêm bộ nên manifest giữ **42 unit / 113 E2E**.
+
+**Claude review trước khi merge:** ưu tiên ranh giới transaction mới của `createOrderCore`
+và ca accept/drop đồng thời; quyền `app_expiry` và migration `0186` giữ nguyên. Bất biến DB
+và ca worker dọn PII đã chạy thật trên stack mới. Cổng xanh chưa thay thế review chéo (§9.1).
+
+> ### Bàn giao lịch sử của Claude tại f663bf9 — khi đó CHƯA QUA CỔNG
 >
 > **Trạng thái:** nhánh `claude/don-cho-tao-0186`, commit `e9873da` (19 tệp, +931/−26), đã push.
 > **`main` cố ý ĐỨNG NGUYÊN ở `c337abd`** — §9.4 cấm fast-forward khi cổng chưa exit 0, và nó

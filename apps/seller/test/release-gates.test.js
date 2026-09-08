@@ -58,7 +58,7 @@ test('dependency scan đọc JSON theo số và fail-closed khi audit không ch�
     'không được quay lại parse văn xuôi phụ thuộc phiên bản npm');
 });
 
-test('scan tự khai khi container audit chạy với tham số sửa đổi', () => {
+test('scan tự khai khi container audit chạy với tham số sửa đổi', (t) => {
   // SECURITY_SCAN_DOCKER_ARGS là seam để mount CA cho môi trường có proxy chặn TLS. Không có
   // nó thì cả 16 gói ra FLAG "KHÔNG CHẠY ĐƯỢC" — đỏ vì hạ tầng chứ không vì phụ thuộc. Nhưng
   // một lượt XANH chạy với tham số sửa đổi mà im lặng thì không phân biệt được với lượt xanh
@@ -73,12 +73,20 @@ test('scan tự khai khi container audit chạy với tham số sửa đổi', (
   // `$(dirname "$0")`, mà `dirname` là lệnh NGOÀI — mất PATH thì nó `cd /` rồi báo "không tìm
   // thấy package.json", tức ca thử đỏ vì một lý do hoàn toàn khác thứ đang định đo. Đã dính
   // đúng bẫy đó khi viết ca này.
-  const bash = ['/bin/bash', '/usr/bin/bash'].find((candidate) => fs.existsSync(candidate));
+  const bash = (process.platform === 'win32'
+    ? ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files\\Git\\usr\\bin\\bash.exe']
+    : ['/bin/bash', '/usr/bin/bash']).find((candidate) => fs.existsSync(candidate));
   assert.ok(bash, 'mốc chết: không tìm thấy bash tuyệt đối để chạy thật scan');
   const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'va-docker-stub-'));
-  fs.writeFileSync(path.join(stubDir, 'docker'), '#!/bin/sh\nexit 127\n', { mode: 0o755 });
-  const run = (extraEnv) => spawnSync(bash, ['scripts/security-scan.sh', '--audit-package', 'apps/seller'], {
-    cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${stubDir}:${process.env.PATH}`, ...extraEnv },
+  t.after(() => fs.rmSync(stubDir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(stubDir, 'docker'), '#!/bin/sh\necho AUDIT_DOCKER_STUB >&2\nexit 127\n', { mode: 0o755 });
+  // Git Bash tự chuyển PATH Windows khi khởi động. Thêm stub SAU bước chuyển đó và
+  // truyền đường dẫn bằng argv, tránh ghép dấu ':' vào ổ C: làm mất chính stub.
+  const stubPath = process.platform === 'win32'
+    ? execFileSync(bash, ['-c', 'cygpath -u "$1"', 'audit-path', stubDir], { encoding: 'utf8' }).trim()
+    : stubDir;
+  const run = (extraEnv) => spawnSync(bash, ['-c', 'export PATH="$1:$PATH"; exec bash scripts/security-scan.sh --audit-package apps/seller', 'audit-probe', stubPath], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, ...extraEnv },
   });
 
   const announced = run({ SECURITY_SCAN_DOCKER_ARGS: '-e PROBE_MARKER=1' });
@@ -87,11 +95,13 @@ test('scan tự khai khi container audit chạy với tham số sửa đổi', (
   assert.match(announced.stdout, /-e PROBE_MARKER=1/,
     'lời khai phải nêu ĐÚNG tham số đang dùng, không chỉ nói "có sửa"');
   assert.equal(announced.status, 1, 'docker không chạy được vẫn phải fail-closed');
+  assert.match(announced.stdout, /AUDIT_DOCKER_STUB/, 'mốc chết: phải đi qua docker giả');
 
   const silent = run({ SECURITY_SCAN_DOCKER_ARGS: '' });
   assert.doesNotMatch(silent.stdout, /SECURITY_SCAN_DOCKER_ARGS đang bật/,
     'lượt bình thường không được thêm dòng nhiễu');
   assert.equal(silent.status, 1, 'docker không chạy được vẫn phải fail-closed');
+  assert.match(silent.stdout, /AUDIT_DOCKER_STUB/, 'mốc chết: phải đi qua docker giả');
 });
 
 test('role connector và khoá mã hoá được đấu đủ vào đường deploy production', () => {

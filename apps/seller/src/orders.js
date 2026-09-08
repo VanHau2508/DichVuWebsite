@@ -1478,7 +1478,7 @@ export async function createManualOrder(res, ctx, body) {
  * theo kiểu này chứ không chép hàm: cả hai lối vào đi qua ĐÚNG một validate, một khoá tồn,
  * một snapshot giá, một outbox. §3 — đường tiền không được có bản thứ hai.
  */
-export async function createOrderCore(ctx, body) {
+export async function createOrderCore(ctx, body, tenantClient = null) {
   // ── validate đầu vào (giá/total client gửi bị BỎ QUA — như checkout) ──
   const rawLines = Array.isArray(body?.lines) ? body.lines : [];
   const lines0 = rawLines.filter((l) => l && UUID_RE.test(String(l.variant_id ?? '')) && Number.isInteger(Number(l.qty)) && Number(l.qty) >= 1 && Number(l.qty) <= 1000)
@@ -1518,7 +1518,9 @@ export async function createOrderCore(ctx, body) {
   // Lỗi nghiệp vụ PHẢI throw (không return {code}) → withTenant ROLLBACK: nhả reserve
   // dở dang + nhả idempotency claim (retry sạch). Dispatcher seller đọc err.statusCode.
   const fail = (statusCode, msg) => { throw Object.assign(new Error(msg), { statusCode }); };
-  return withTenant(ctx.shopId, async (c) => {
+  // Đường chốt đơn chờ truyền client của withTenant đang giữ khoá dòng chờ. Mọi ghi
+  // tiền/tồn/outbox phải commit cùng kết quả chốt; mở transaction khác sẽ nhả khoá sớm.
+  const create = async (c) => {
     const connector = (await c.query(
       `SELECT id, status, inventory_authority FROM shop_integrations
         WHERE inventory_authority = 'external_master'
@@ -1655,7 +1657,8 @@ export async function createOrderCore(ctx, body) {
         WHERE key = $1 AND shop_id = current_shop_id()`, [idemKey, response],
     );
     return { code: 201, body: response };
-  });
+  };
+  return tenantClient ? create(tenantClient) : withTenant(ctx.shopId, create);
 }
 
 // ── SỬA ĐƠN (v1) ─────────────────────────────────────────────────────────────

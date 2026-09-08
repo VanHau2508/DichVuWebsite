@@ -66,6 +66,13 @@ MANIFEST_UNIT_FILES=(
   # nên không gộp được). E2E không bắt nổi: mỗi bản chạy trong một container khác nhau,
   # không có màn nào nhìn thấy cả hai cùng lúc.
   apps/seller/test/shared-sql.test.js
+  # HAI BẢN `hostname.js` (seller gác đường THÊM tên miền, tls-authorize gác đường CẤP
+  # CHỨNG CHỈ) phải XỬ SỰ giống nhau. Cùng lớp với shared-sql ngay trên: tls-authorize build
+  # từ context riêng nên image không có packages/, và nó cố ý không có bind-mount nào. Mỗi
+  # bản có chốt RIÊNG nên vá bug ở MỘT bản thì cả hai bộ vẫn xanh — đo được: gỡ isReserved ở
+  # bản seller cho unit 337/337. Khẳng định là XỬ SỰ giống, không phải giống từng ký tự: hai
+  # bản đã lệch 26 dòng một cách hợp lệ (isApex chỉ có ở seller).
+  apps/seller/test/hostname-hai-ban.test.js
   # Thứ tự KHOÁ TỒN. Deadlock phụ thuộc điểm xen kẽ giữa hai giao dịch nên e2e sẽ CHẬP CHỜN;
   # thứ kiểm ổn định là bất biến sinh ra nó (ORDER BY variant_id ở truy vấn nạp dòng hàng).
   apps/seller/test/lock-order.test.js
@@ -127,7 +134,7 @@ MANIFEST_UNIT_FILES=(
 )
 
 # Số ĐÚNG hôm nay, không phải "sàn". Xem manifest_check bên dưới.
-MANIFEST_UNIT_COUNT=42
+MANIFEST_UNIT_COUNT=43
 MANIFEST_E2E_COUNT=113
 # Số FILE migration, KHÔNG phải số thứ tự cao nhất. Dãy có khoảng trống (0157 chẳng hạn)
 # nên hôm nay là 182 file trong khi file mới nhất mang số 0184 — suy số lượng từ số thứ tự

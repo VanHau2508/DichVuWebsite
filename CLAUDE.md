@@ -26,7 +26,7 @@ tenant bằng **RLS**. Tất cả chạy bằng Docker Compose.
 | dòng mã ứng dụng | ~48.900 | `apps/*/src/*.js` |
 | dòng test | ~35.472 | `apps/*/test/*.{js,mjs}` |
 | migration | 184 tệp, mới nhất `0186` | `packages/db/migrations/` |
-| bộ unit | 42 | `MANIFEST_UNIT_COUNT` |
+| bộ unit | 43 | `MANIFEST_UNIT_COUNT` |
 | bộ e2e | 113 | `MANIFEST_E2E_COUNT` |
 | bất biến DB | 9 bộ, 149 test TAP | `packages/db/test/*.test.js` |
 | tài liệu | 82 tệp | `docs/` |
@@ -1560,8 +1560,87 @@ cổng duy nhất; tiến trình Bash phụ là con, không phải lượt chạ
 > Alternativ nếu máy vẫn không kéo được image: CI đám mây chạy được trên nhánh bằng
 > `workflow_dispatch` (scope `e2e`) — `push` chỉ kích hoạt cho `main`, nên đẩy nhánh KHÔNG tự chạy CI.
 
-**Còn nợ của lát cắt 7, chưa đo:** `/domains`, `/billing` mới chỉ được đối chiếu ở mức bảng quyền,
-chưa đi bằng vai thật · chưa đo vai "shop lúc có sự cố" cho các nhóm còn lại.
+### Lát cắt 7 — đợt đo 5: `/domains`. KHÔNG có bản vá cho vùng này; chốt mới nằm ở chỗ khác.
+
+**Điểm mù phải nói trước, vì nó quyết định đọc phần dưới thế nào:** không dựng được stack
+(`production.cloudfront.docker.com` trả **403** từ egress policy, đúng host đã ghi ở khối bàn
+giao phía trên), nên lượt này chỉ đi được **bước 1 của §9.2 — bản đồ chỉ-đọc**. Mọi thứ đi qua
+HTTP/DB là **chưa đo**. Riêng `hostname.js` là mã THUẦN nên đột biến chạy được, và đó là chỗ
+duy nhất lượt này có số thật.
+
+Bản đồ: `DOMAIN_ROUTES` 6 route — `GET /domains` và `GET /domains/:id` `perm: null`; ba đường
+ghi (`POST`, `…/primary`, `DELETE`) đều `domain.write` + **step-up**; `POST …/check` `perm: null`
+không step-up nhưng **có** `overCheckLimit(shopId)` → 429. Nav gác `DOMAIN_ROLES={owner}`;
+`domainsPage` gác lại `roleFor !== 'owner'`. Worker `sweepDomainVerify` chạy dưới vai
+`app_domainverify` riêng (0027), cố ý không JOIN `shops`. SQL của tls-authorize đã lọc sẵn
+`s.status <> 'terminated' AND s.deleted_at IS NULL` — **cửa cấp cert không dính lỗ "shop đã
+đóng" của đợt đo 3**.
+
+**Ba giả thuyết của người đo, cả ba bị bác** (chép lại vì đó là kết quả chính của vùng này):
+- Non-owner mở `/domains` sẽ thấy danh sách RỖNG, tức trang nói dối về trạng thái → bác:
+  `renderDomains` có nhánh riêng, nói đúng *"Chỉ chủ cửa hàng mới quản lý tên miền"*.
+- `domainsPage` sớm-return **vứt** tham số `err`, nên non-owner POST xong không thấy lý do →
+  bác: trang non-owner vẫn nói đúng lý do, `err` bị vứt là vô hại.
+- `checkDomain` không có rate limit → bác: có, theo shop.
+
+**Thứ tìm được là RỦI RO CẤU TRÚC, không phải lỗ hổng đã chứng minh.**
+`apps/seller/src/hostname.js` và `apps/tls-authorize/src/hostname.js` là **hai bản chép**, và
+tls-authorize **không có bind-mount nào** (build context `../apps/tls-authorize` ⇒ image không
+có `packages/`). Chúng **đã trôi 26 dòng**: `MULTI_LABEL_SUFFIX` + `isApex` chỉ có ở bản seller.
+Trôi hôm nay **lành** — `isApex` tự khai "KHÔNG BAO GIỜ dùng cho quyết định bảo mật" và tls
+không import nó; dòng 1–51 giống nhau từng byte. Nhưng **mỗi bản chỉ có chốt RIÊNG**: tls có
+`apps/tls-authorize/test/hostname.test.js` (15/15), seller có `domains.e2e.mjs:183-185`. Vá bug
+ở một bản thì cả hai bộ vẫn xanh. Đo: gỡ `isReserved` ở bản **seller** → unit **337/337 XANH**.
+
+Chủ dự án chọn phương án **(a)** trong ba phương án (unit so hai bản · đưa về `packages/` +
+bind-mount · để nguyên và ghi sổ). Bộ mới `apps/seller/test/hostname-hai-ban.test.js`, cùng nhà
+với `shared-sql.test.js` — bộ vốn đã sinh ra cho đúng lớp lỗi "một luật viết ở hai nơi rồi trôi".
+
+**Khẳng định là XỬ SỰ GIỐNG, không phải GIỐNG TỪNG KÝ TỰ.** So byte là chốt CHÍNH TẢ và nó
+**sai ngay hôm nay** — 26 dòng lệch kia hợp lệ. Corpus 3.042 hostname (ca viết tay đi qua từng
+chốt + quét sinh máy tất định bằng LCG trên bảng chữ cái thù địch) chạy qua cả hai bản, so
+**BẰNG** từng kết quả; `isReserved` so trên tích của corpus với 5 giá trị `platformDomain`.
+
+**Chốt tự-chối, và ma trận chứng minh nó sống.** Không có nó thì một đột biến làm CẢ HAI bản
+luôn trả `null` vẫn "bằng nhau" và bộ này xanh trong khi không còn chứng minh gì — cùng nguyên
+tắc với probe 360px phải tự chối khi khung nhìn sai (§4). Đột biến số 8 đúng là ca đó: **2/1 đỏ**
+ở chính khẳng định tự-chối.
+
+Ma trận **7/8 đột biến đỏ** — HOSTNAME_RE nhận một nhãn 1/2 · tls gỡ chốt TLD toàn chữ số 2/1 ·
+tls bỏ trần 253 ký tự 2/1 · seller thôi hạ chữ thường 2/1 · seller `isReserved` luôn false 1/2 ·
+tls `isReserved` dùng `includes` 2/1 · cả hai luôn null 2/1; hoàn nguyên 3/0.
+
+**Ca thứ tám xanh, và nó xanh ĐÚNG — đây mới là phần đáng nhớ của đợt này.** Lượt ma trận đầu
+tiên có **ba** đột biến ra xanh và tôi suýt đọc thành "chốt thủng". Đo lại chính phép đo thì ra:
+`HOSTNAME_RE` (`^LABEL(\.LABEL)+$`) đã từ chối `*`, `_`, `:` trước khi ba dòng gác mang đúng tên
+đó được dùng tới, còn chốt IP-literal `/^\d+(\.\d+)+$/` bị chốt TLD-toàn-chữ-số ngay dưới nó
+nuốt trọn (`1.2.3.4` tận cùng là `.4`). **Bốn dòng gác đầu `normalizeHostname` CHẾT VỀ HÀNH VI** —
+xoá cả bốn thì không phép đo nào trong kho đổi một con số. Chúng vẫn đúng và vẫn fail-closed nên
+không sửa, nhưng ba khẳng định trong `apps/tls-authorize/test/hostname.test.js` mang tên
+*"từ chối wildcard"*, *"từ chối gạch dưới"*, *"có port"* thật ra **đi qua một chốt khác** — đúng
+lớp "xanh vì lý do sai" ở §4, tìm ra bằng cách hỏi tại sao đột biến KHÔNG đỏ thay vì tin nó.
+
+**Chưa đo, ghi ra để người sau khỏi tin quá:** `perm: null` trên `listDomains` nghĩa là **mọi vai
+thành viên** (`order_manager`, `catalog_manager`) gọi thẳng seller API đọc được danh sách tên
+miền **kèm `verification_token`** — giả thuyết, **không phải finding**, vì §4 cấm báo khi chưa đi
+qua đúng nó bằng vai thật. Cũng chưa đo: `POST /domains` bằng vai non-owner có bị mời step-up cho
+một thao tác không bao giờ thành công hay không.
+
+Một lỗi của phép đo, chép lại: `node --test apps/tls-authorize/test/` (dạng THƯ MỤC) cho
+**0 pass / 1 fail** và tôi suýt đọc thành "đột biến làm đỏ"; baseline đúng là **15/15** với glob
+`*.test.js`. Cùng họ với bẫy "chạy `auth/e2e.mjs` sai container" ở đợt đo 2.
+
+**Không phải finding, ghi để khỏi ai đo lại:** `apps/tls-authorize/src/ratelimit.js` **không** là
+bản chép của `packages/auth/src/ratelimit.js` ở bảng §3 — token bucket cho tra cứu DB, so với cửa
+sổ cố định trên Redis. Hai thứ khác nhau, trùng tên tệp thôi.
+
+Đo: `hostname-hai-ban.test.js` **3/3**, manifest unit **42 → 43 bộ**, toàn bộ unit **340/340**,
+`manifest_check` OK. Chỉ thêm unit thuần nên theo §5 phạm vi là "chỉ test" — **cổng đầy đủ chưa
+chạy trên máy này** (không có Docker); đó là khoảng trống thật, không phải hình thức.
+
+**Còn nợ của lát cắt 7, chưa đo:** `/domains` mới có bản đồ chỉ-đọc, **chưa đi bằng vai thật** ·
+`/billing` mới chỉ được đối chiếu ở mức bảng quyền, chưa đi bằng vai thật · chưa đo vai "shop lúc
+có sự cố" cho các nhóm còn lại.
 
 **Còn nợ đã ghi, chưa làm, không thuộc lát cắt nào:** nút **"tải lại tất cả"** cho ảnh hỏng — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
 một nút hàng loạt là 200 kết nối ra ngoài trong một lượt và cần quyết định riêng về nhịp.

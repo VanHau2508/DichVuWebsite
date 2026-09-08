@@ -134,6 +134,10 @@ async function acceptHeldOrder(res, ctx, heldId) {
 
 // BỎ một đơn chờ: khách đã mua chỗ khác, hoặc hàng đã hết. KHÔNG xoá dòng — người bán cần
 // đọc lại được đơn nào đã bỏ khi khách gọi hỏi ("shop có nhận đơn của em không?").
+// Cố ý giữ 404 cho drop: tài nguyên của thao tác này là dòng CHƯA xử lý, và UPDATE
+// có điều kiện tìm/đóng nó trong một câu. Dòng đã xử lý không còn thuộc tập đó. Accept
+// đọc dòng để giải thích vì sao không tạo được đơn nên trả 409; drop không phân biệt
+// dòng không tồn tại với dòng đã đóng. Ca 8b canh đúng hợp đồng 404 này khi tranh chấp.
 async function dropHeldOrder(res, ctx, heldId) {
   const out = await withTenant(ctx.shopId, async (c) => {
     const r = await c.query(

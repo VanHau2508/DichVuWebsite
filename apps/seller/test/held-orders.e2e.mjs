@@ -48,7 +48,7 @@ async function rq(base, method, path, { body, cookie, origin, bearer } = {}) {
   if (bearer) h.authorization = `Bearer ${bearer}`;
   const r = await fetch(base + path, { method, headers: h, body: body !== undefined ? JSON.stringify(body) : undefined, redirect: 'manual' });
   const t = await r.text(); let j = null; try { j = t ? JSON.parse(t) : null; } catch {}
-  return { status: r.status, json: j, sc: r.headers.getSetCookie(), raw: t };
+  return { status: r.status, json: j, sc: r.headers.getSetCookie(), raw: t, location: r.headers.get('location') };
 }
 const login = async (e, p) => ck((await rq(AUTH, 'POST', '/auth/login', { body: { email: e, password: p }, origin: OA })).sc);
 const uidOf = async (e) => (await owner.query('SELECT id FROM users WHERE email=$1', [e])).rows[0]?.id ?? null;
@@ -230,7 +230,9 @@ async function main() {
   await setStatus('active');
   const raceOrders = await nOrders(), raceReserved = await reserved();
   const blocker = await owner.connect();
+  const suspender = await owner.connect();
   let accepting, dropping;
+  let suspending, suspendBlocked = false;
   try {
     await blocker.query('BEGIN');
     await blocker.query('SELECT variant_id FROM inventory_levels WHERE variant_id=$1 FOR UPDATE', [vid]);
@@ -245,6 +247,21 @@ async function main() {
       await sleep(50);
     }
     if (!waiting) throw new Error('mốc chết: accept chưa chờ khoá tồn');
+    // Dùng đúng UPDATE trạng thái mà khoá SHARE phải chặn, theo dõi PID riêng để
+    // không nhận nhầm một truy vấn khác. Rollback sau phép đo để giữ fixture active.
+    await suspender.query('BEGIN');
+    const suspendPid = (await suspender.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+    let suspendDone = false;
+    suspending = suspender.query("UPDATE shops SET status='suspended' WHERE id=$1", [S.shopId]);
+    suspending.then(() => { suspendDone = true; });
+    for (let attempt = 0; attempt < 100 && !suspendDone; attempt++) {
+      suspendBlocked = (await owner.query("SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock'", [suspendPid])).rowCount > 0;
+      if (suspendBlocked) break;
+      await sleep(50);
+    }
+    // Nếu thiếu SHARE, trả fixture về active ngay để phép đo drop không mắc khoá FK
+    // của chính updater; khẳng định suspendBlocked bên dưới vẫn phải đỏ.
+    if (suspendDone) await suspender.query('ROLLBACK');
     dropping = rq(SELLER, 'POST', `/shops/${S.shopId}/held-orders/${raceHeld}/drop`, { cookie: S.cookie, origin: OS });
     let dropDone = false;
     dropping.then(() => { dropDone = true; });
@@ -260,7 +277,12 @@ async function main() {
   } finally {
     await blocker.query('ROLLBACK');
     blocker.release();
+    if (suspending) await suspending;
+    await suspender.query('ROLLBACK');
+    suspender.release();
   }
+  suspendBlocked ? ok('FOR SHARE giữ tạm-ngưng chờ tới cuối giao dịch chốt')
+    : bad('tạm-ngưng chen được vào giữa giao dịch chốt đơn');
   const [acceptedRace, droppedRace] = await Promise.all([accepting, dropping]);
   const raceRow = (await owner.query('SELECT resolution, order_id FROM held_ingest_orders WHERE id=$1', [raceHeld])).rows[0];
   acceptedRace.status === 201 && droppedRace.status === 404 && raceRow.resolution === 'accepted'
@@ -268,6 +290,61 @@ async function main() {
       && (await nOrders()) === raceOrders + 1 && (await reserved()) === raceReserved + 1
     ? ok('accept giữ khoá tới khi tạo xong: drop bị từ chối, dòng chờ và tồn khớp đơn')
     : bad('tạo/bỏ đồng thời làm dòng chờ lệch đơn hoặc tồn', JSON.stringify({ accept: acceptedRace.status, drop: droppedRace.status, row: raceRow }));
+
+  sect('8c. Hết hàng lúc chốt: rollback và lý do đi tới trang admin');
+  // Hai dòng: dòng đầu giữ chỗ được, dòng sau bị đơn thật tiêu hết tồn. Thứ tự UUID
+  // trùng thứ tự khoá của sản phẩm nên lỗi xảy ra SAU một lần reserve thành công.
+  const stockProduct = await rq(SELLER, 'POST', `/shops/${S.shopId}/products`, {
+    cookie: S.cookie, origin: OS,
+    body: { title: 'Hàng kiểm rollback', slug: `rollback-${uniq()}`, price_vnd: 120000, status: 'active',
+      variants: [{ sku: `A-${uniq()}`, price_vnd: 120000 }, { sku: `B-${uniq()}`, price_vnd: 120000 }] },
+  });
+  if (stockProduct.status !== 201) throw new Error(`mốc chết: tạo sản phẩm rollback ${stockProduct.status} ${stockProduct.raw}`);
+  const stockDetail = await rq(SELLER, 'GET', `/shops/${S.shopId}/products/${stockProduct.json.id}`, { cookie: S.cookie });
+  const stockIds = stockDetail.json.variants.map((v) => v.id).sort((a, b) => a.localeCompare(b));
+  if (stockIds.length !== 2) throw new Error('mốc chết: cần hai biến thể rollback');
+  for (const id of stockIds) {
+    const adjusted = await rq(SELLER, 'POST', `/shops/${S.shopId}/variants/${id}/inventory/adjust`, {
+      cookie: S.cookie, origin: OS, body: { delta: 2, reason: 'nhập hàng kiểm chốt' },
+    });
+    if (adjusted.status !== 200) throw new Error(`mốc chết: nhập tồn ${adjusted.status}`);
+  }
+  await setStatus('suspended');
+  const failKey = `fail-held-${uniq()}`;
+  const failedHold = await rq(SELLER, 'POST', '/ingest/orders', { bearer: token,
+    body: { lines: stockIds.map((id) => ({ variant_id: id, qty: 1 })), customer: CUST, idempotency_key: failKey },
+  });
+  if (failedHold.status !== 202) throw new Error(`mốc chết: gieo đơn chờ ${failedHold.status}`);
+  await setStatus('active');
+  const exhausted = await rq(SELLER, 'POST', '/ingest/orders', { bearer: token,
+    body: { lines: [{ variant_id: stockIds[1], qty: 2 }], customer: CUST, idempotency_key: `consume-${uniq()}` },
+  });
+  if (exhausted.status !== 201) throw new Error(`mốc chết: tiêu tồn qua đơn thật ${exhausted.status} ${exhausted.raw}`);
+  const stockState = async () => (await owner.query('SELECT variant_id, on_hand, reserved FROM inventory_levels WHERE variant_id=ANY($1::uuid[]) ORDER BY variant_id', [stockIds])).rows;
+  const beforeStock = await stockState(), beforeOrders = await nOrders();
+  const failId = failedHold.json.held_id;
+  const acceptPath = `/shops/${S.shopId}/held-orders/${failId}/accept`;
+  const rejected = await rq(SELLER, 'POST', acceptPath, { cookie: S.cookie, origin: OS });
+  rejected.status === 422 && /hết hàng/.test(rejected.json?.error ?? '')
+    ? ok('accept hết hàng → 422 kèm lý do nghiệp vụ') : bad('accept hết hàng bị nuốt lỗi', rejected.raw);
+  const adminReject = await rq(ADMIN, 'POST', acceptPath, { cookie: S.cookie, origin: 'https://admin.localtest', body: {} });
+  const redirectUrl = adminReject.location ? new URL(adminReject.location, ADMIN) : null;
+  if (![302, 303].includes(adminReject.status) || redirectUrl?.pathname !== `/shops/${S.shopId}/held-orders`) {
+    bad('admin không redirect về đơn chờ khi chốt hụt', `${adminReject.status} ${adminReject.location}`);
+  } else {
+    const errorPage = await rq(ADMIN, 'GET', redirectUrl.pathname + redirectUrl.search, { cookie: S.cookie });
+    const visibleError = /<div class="err">([^<]*)<\/div>/.exec(errorPage.raw)?.[1] ?? '';
+    errorPage.status === 200 && /hết hàng/.test(redirectUrl.searchParams.get('error') ?? '') && /hết hàng/.test(visibleError)
+      ? ok('lý do hết hàng đi qua redirect và hiện trên trang admin')
+      : bad('đứt dây lỗi hết hàng tới trang admin', `${adminReject.location} HTTP ${errorPage.status}`);
+  }
+  JSON.stringify(await stockState()) === JSON.stringify(beforeStock) && await nOrders() === beforeOrders
+    ? ok('chốt hụt rollback reserve dòng đầu, không tạo đơn') : bad('chốt hụt đổi tồn hoặc tạo đơn');
+  const failedRow = (await owner.query('SELECT resolved_at, resolution, order_id FROM held_ingest_orders WHERE id=$1', [failId])).rows[0];
+  failedRow.resolved_at === null && failedRow.resolution === null && failedRow.order_id === null
+    ? ok('chốt hụt giữ nguyên dòng chờ chưa xử lý') : bad('chốt hụt đánh dấu đã xử lý', JSON.stringify(failedRow));
+  const claimLeft = (await owner.query('SELECT 1 FROM idempotency_keys WHERE shop_id=$1 AND key=$2', [S.shopId, failKey])).rowCount;
+  claimLeft === 0 ? ok('chốt hụt rollback cả idempotency claim để còn thử lại') : bad('chốt hụt để lại claim');
 
   sect('9. Shop ĐÃ CHẤM DỨT — đóng CẢ cửa');
   await setStatus('terminated');

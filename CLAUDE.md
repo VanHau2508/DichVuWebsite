@@ -1501,6 +1501,21 @@ sau bản sửa, không ghép các lượt. Không thêm bộ nên manifest gi�
 và ca accept/drop đồng thời; quyền `app_expiry` và migration `0186` giữ nguyên. Bất biến DB
 và ca worker dọn PII đã chạy thật trên stack mới. Cổng xanh chưa thay thế review chéo (§9.1).
 
+**Bổ sung sau review F1–F3:** ca hết hàng lúc chốt dựng hai biến thể qua API, tạo đơn chờ
+khi suspended rồi mở lại và dùng một đơn thật tiêu hết tồn biến thể thứ hai. Chốt hụt phải
+rollback cả reserve dòng đầu, số đơn, idempotency claim và giữ dòng chờ chưa xử lý; lý do
+hết hàng phải qua redirect rồi hiện trong ô lỗi admin. Giữ drop=404 có chú thích giải thích
+tập tài nguyên chưa xử lý, khác accept=409; thêm phép đo UPDATE shop phải chờ khoá SHARE.
+
+Ma trận trên bộ held-orders: ghi accepted và COMMIT sớm trước tạo đơn **42 pass / 6 fail**;
+nuốt lỗi createOrderCore trong transaction **45 pass / 3 fail**; bỏ FOR SHARE **47 pass / 1 fail**;
+hoàn nguyên **48/48**. Đột biến đầu cố ý phá ranh giới commit: chỉ dời UPDATE lên trước nhưng
+vẫn trong cùng transaction thì lỗi tạo đơn vẫn rollback, không phải lỗi nguyên tử.
+Cổng đầy đủ lượt bổ sung cũng **exit 0: 120 mục xanh, 0 đỏ**: unit **337/337**, migration DB
+trắng **184** (0 DRIFT/pending), security-scan sạch, bất biến DB **149/149**, E2E **113/113**
+(held-orders **48/48**), smoke edge/readiness/TLS đều PASS. Kiểm PID/PPID xác nhận một lượt
+cổng duy nhất; tiến trình Bash phụ là con, không phải lượt chạy độc lập. Chưa merge, chờ Claude review.
+
 > ### Bàn giao lịch sử của Claude tại f663bf9 — khi đó CHƯA QUA CỔNG
 >
 > **Trạng thái:** nhánh `claude/don-cho-tao-0186`, commit `e9873da` (19 tệp, +931/−26), đã push.

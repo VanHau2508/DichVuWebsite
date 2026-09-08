@@ -27,7 +27,7 @@ import assert from 'node:assert/strict';
 import * as bSeller from '../src/hostname.js';
 import * as bTls from '../../tls-authorize/src/hostname.js';
 
-// Ca viết tay: mỗi ca đi qua ĐÚNG một chốt trong `normalizeHostname`, cộng các hình dạng
+// Ca viết tay phủ các hình dạng của `normalizeHostname`, cộng các hình dạng
 // thật đã gặp (FQDN có dấu chấm cuối, punycode, đuôi nhiều nhãn kiểu com.vn).
 const CA_TAY = [
   'shopa.test', 'shop-a.co.uk', 'a.b', 'cuahang.com.vn', 'xn--th-e0a.vn',
@@ -58,7 +58,15 @@ function caSinh(n) {
   return out;
 }
 
-const CORPUS = [...CA_TAY, ...caSinh(3000)];
+// Đo review: >=253 thay cho >253 và nhận đầu vào không phải chuỗi đều lọt corpus cũ.
+// Các nhãn ở ca tổng độ dài vẫn hợp lệ để lỗi không bị chốt độ dài nhãn che hộ.
+const CA_BIEN = [
+  ...[60, 61, 62].map((n) => [...Array(3).fill('a'.repeat(63)), 'b'.repeat(n)].join('.')),
+  ...[1, 2, 62, 63, 64].flatMap((n) => ['a'.repeat(n) + '.vn', 'shop.' + 'b'.repeat(n)]),
+  'shop.test..', '\tSHOP.TEST\n',
+];
+const SAI_KIEU = [undefined, null, false, true, 0, 123, {}, [], ['shop.test'], { hostname: 'shop.test' }];
+const CORPUS = [...CA_TAY, ...CA_BIEN, ...SAI_KIEU, ...caSinh(3000)];
 const PLATFORM = ['nentang.vn', 'NENTANG.VN', 'test', '', 'a.b.c'];
 
 // ── Phép đo phải TỰ CHỐI khi nó không đo gì ─────────────────────────────────────
@@ -72,9 +80,11 @@ test('phép đo tự chối: corpus phải đi qua cả hai nhánh của cả ha
   assert.ok(nhan >= 10, `corpus chỉ có ${nhan} hostname được NHẬN — không đi qua nhánh hợp lệ`);
   assert.ok(CORPUS.length - nhan >= 10, `corpus chỉ có ${CORPUS.length - nhan} hostname bị TỪ CHỐI`);
 
-  const giu = CA_TAY.filter((h) => bSeller.isReserved(h.toLowerCase().trim(), 'nentang.vn')).length;
+  // Đếm trên đúng đầu vào mà phép so bên dưới dùng, không đo chuỗi thô ở một chốt khác.
+  const hopLe = CORPUS.map((h) => bSeller.normalizeHostname(h)).filter((h) => h !== null);
+  const giu = hopLe.filter((h) => bSeller.isReserved(h, 'nentang.vn')).length;
   assert.ok(giu >= 3, `chỉ ${giu} ca chạm nhánh isReserved=true`);
-  assert.ok(CA_TAY.length - giu >= 3, 'không đủ ca chạm nhánh isReserved=false');
+  assert.ok(hopLe.length - giu >= 3, 'không đủ ca chạm nhánh isReserved=false');
 });
 
 test('normalizeHostname: hai bản trả CÙNG kết quả trên toàn corpus', () => {

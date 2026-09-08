@@ -1682,6 +1682,24 @@ giữ NGUYÊN — lượt này không sửa một dòng mã sản phẩm nào.
 **Lượt này Claude vừa đo, vừa viết, vừa tuyên bố xanh** — yếu hơn các lát cắt có vòng chéo
 (§9.1 luật 2). Xanh ⇒ fast-forward `main`, không merge commit.
 
+**Codex review chéo hostname:** tìm được hai đột biến đổi hành vi MỘT bản mà corpus cũ
+vẫn 3/3: đổi trần `>253` thành `>=253`, và nhận đầu vào không phải chuỗi. Bổ sung ca 252/253/254
+ký tự với từng nhãn hợp lệ, biên nhãn 1/2/62/63/64, dấu chấm cuối kép, khoảng trắng và 10 đầu
+vào sai kiểu. Corpus nay **3.068**; hai đột biến đều **2 pass / 1 fail**, hoàn nguyên **3/3**.
+Đột biến chạy module nguồn trong bộ nhớ bằng data URL, giữ hai module độc lập và chạy chính
+test thật; không ghi mã sản phẩm hay cần restart service. Đã gỡ harness tạm sau phép đo.
+
+Chốt tự-chối được đo độc lập: cả hai luôn null **2/1**; cùng đột biến nhưng hạ cả ngưỡng về 0
+thì **3/0**, không có chốt khác đỡ hộ. Sửa phép đếm reserved để dùng hostname đã chuẩn hoá
+giống chính phép so, thay vì chuỗi thô trim/lowercase. Xoá bốn guard `:`, `*`, `_`, IP-literal
+ở một bản vẫn **3/0**; đọc logic xác nhận chúng bị regex nhãn và TLD toàn số phủ, không sửa
+mã sản phẩm. Hai nơi gọi hiện dùng kết quả normalize trước isReserved; thứ tự gọi ở HTTP
+chưa có chốt mới trong bộ thuần này, không tuyên bố corpus canh được việc caller đổi sang chuỗi thô.
+Cổng đầy đủ lượt review (kết thúc 09/09) **exit 0: 120 mục xanh, 0 đỏ** — unit **340/340**,
+migration DB trắng **184** (0 DRIFT/pending), security-scan sạch, bất biến DB **149/149**,
+E2E giữ đúng **113/113**, smoke edge/readiness/TLS đều PASS. PID/PPID xác nhận một lượt cổng;
+không ghép log với lượt held-ingest trước. Chưa merge, `origin/main` giữ `f6824fa`.
+
 **Còn nợ của lát cắt 7, chưa đo:** `/domains` mới có bản đồ chỉ-đọc, **chưa đi bằng vai thật** ·
 `/billing` mới chỉ được đối chiếu ở mức bảng quyền, chưa đi bằng vai thật · chưa đo vai "shop lúc
 có sự cố" cho các nhóm còn lại.

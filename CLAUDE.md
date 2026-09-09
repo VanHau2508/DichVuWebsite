@@ -1741,6 +1741,27 @@ Chỉ thêm ca vào mảng, **không thêm bộ test** ⇒ manifest giữ **43 u
 Vẫn phải **gác đầy đủ lại** vì unit nằm ở bước 1 của cổng — kết quả cổng của `315117e` không
 dùng lại cho commit mới được. Vẫn không đụng một dòng mã sản phẩm nào.
 
+**Codex xử lý F1–F2 (09/09):** mỗi biên tổng độ dài và độ dài nhãn có ba hình dạng:
+trần trụi, dấu chấm cuối, khoảng trắng bao quanh; thêm ca kết hợp khoảng trắng + dấu chấm
+ở biên tổng độ dài. Đột biến dời trần trước cắt chấm: corpus trước **3/0**, nay **2/1**;
+dời trần trước trim và từ chối mọi hostname dài hơn 200 cũng **2/1** — giữ chiều nhận 253 hợp lệ.
+
+Bộ sinh dùng `Math.imul`; chốt tự-chối đòi ít nhất 90% chuỗi khác nhau ở CẢ 3000 và 20000.
+Đếm thực từ khai báo test: **3.097 đầu vào**, trong đó **2.930 chuỗi khác nhau** (còn có 10
+đầu vào sai kiểu), không gọi số lượt sinh là số hostname khác nhau. Bộ sinh riêng cho
+**2.845/3.000** và **18.434/20.000** chuỗi khác nhau.
+
+Chạy lại toàn ma trận bằng module nguồn trong bộ nhớ và chính test thật: **13 đột biến đỏ**
+(nhận nhãn đơn; bỏ TLD số; bỏ trần; bỏ lowercase; reserved=false; reserved dùng includes;
+trần >=253; nhận sai kiểu; trần trước cắt chấm; trần trước trim; từ chối dài hợp lệ;
+cả hai luôn null; trả bộ sinh lỗi). Tất cả **2/1**, riêng reserved=false **1/2**.
+**Bốn đối chứng 3/0:** mã sạch, xoá bốn guard dư, cả hai null + hạ ngưỡng nhánh về 0,
+bộ sinh lỗi + hạ riêng ngưỡng đa dạng về 0. Hai chốt tự-chối đều bind độc lập.
+Harness tạm đã gỡ; không sửa mã sản phẩm, manifest vẫn **43/113**. Cổng đầy đủ lượt F1–F2
+**exit 0: 120 mục xanh, 0 đỏ** — unit **340/340**, migration trắng **184** (0 DRIFT/pending),
+bảo mật sạch, bất biến DB **149/149**, E2E **113/113**, smoke **8/27/32**, không log E2E sót.
+Đã kiểm PID/PPID: một lượt cổng duy nhất; không dùng lại kết quả 315117e. Chưa merge.
+
 **Còn nợ của lát cắt 7, chưa đo:** `/domains` mới có bản đồ chỉ-đọc, **chưa đi bằng vai thật** ·
 `/billing` mới chỉ được đối chiếu ở mức bảng quyền, chưa đi bằng vai thật · chưa đo vai "shop lúc
 có sự cố" cho các nhóm còn lại.

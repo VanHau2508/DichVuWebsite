@@ -47,7 +47,7 @@ const CA_TAY = [
 function caSinh(n) {
   const ALPHA = 'ab09-_.:*!/ ÁđA';
   let s = 0x2545f491;
-  const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  const rnd = () => ((s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff) / 0x7fffffff);
   const out = [];
   for (let i = 0; i < n; i++) {
     const len = 1 + Math.floor(rnd() * 24);
@@ -63,8 +63,10 @@ function caSinh(n) {
 const CA_BIEN = [
   ...[60, 61, 62].map((n) => [...Array(3).fill('a'.repeat(63)), 'b'.repeat(n)].join('.')),
   ...[1, 2, 62, 63, 64].flatMap((n) => ['a'.repeat(n) + '.vn', 'shop.' + 'b'.repeat(n)]),
-  'shop.test..', '\tSHOP.TEST\n',
-];
+].flatMap((h) => [h, h + '.', '  ' + h + '  ']);
+// Kết hợp cả trim và cắt chấm tại cùng biên, không chỉ kiểm từng bước riêng lẻ.
+CA_BIEN.push(...[60, 61, 62].map((n) => '  ' + [...Array(3).fill('a'.repeat(63)), 'b'.repeat(n)].join('.') + '.  '),
+  'shop.test..', '\tSHOP.TEST\n');
 const SAI_KIEU = [undefined, null, false, true, 0, 123, {}, [], ['shop.test'], { hostname: 'shop.test' }];
 const CORPUS = [...CA_TAY, ...CA_BIEN, ...SAI_KIEU, ...caSinh(3000)];
 const PLATFORM = ['nentang.vn', 'NENTANG.VN', 'test', '', 'a.b.c'];
@@ -74,6 +76,12 @@ const PLATFORM = ['nentang.vn', 'NENTANG.VN', 'test', '', 'a.b.c'];
 // này xanh trong khi nó không còn chứng minh điều gì. Cùng nguyên tắc với probe 360px phải
 // tự chối khi khung nhìn sai (§4).
 test('phép đo tự chối: corpus phải đi qua cả hai nhánh của cả hai hàm', () => {
+  // Phép nhân Number cũ mất chính xác trước mask: tăng n từ 3000 lên 20000 vẫn
+  // chỉ được 937 chuỗi. Canh cả kích thước đang dùng lẫn khả năng tăng corpus.
+  for (const n of [3000, 20000]) {
+    const khacNhau = new Set(caSinh(n)).size;
+    assert.ok(khacNhau >= 0.9 * n, `bộ sinh bão hoà: ${khacNhau}/${n} chuỗi khác nhau`);
+  }
   assert.notEqual(bSeller.normalizeHostname, bTls.normalizeHostname, 'hai bản phải là hai module khác nhau');
 
   const nhan = CORPUS.filter((h) => bSeller.normalizeHostname(h) !== null).length;

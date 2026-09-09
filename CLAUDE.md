@@ -1879,6 +1879,91 @@ hoàn nguyên xanh **66/0**. Manifest vẫn **43 unit / 113 E2E**. Cổng đầy
 sạch, bất biến DB **149/149**, E2E **113/113** (billing **66/66**), smoke **8/27/32**,
 không log E2E sót. PID/PPID xác nhận một lượt cổng. Chưa merge, main giữ 476f8d7.
 
+### Lát cắt 7 — đợt đo 7: vai SHOP LÚC CÓ SỰ CỐ trong vùng cài đặt
+
+**Điểm mù, nói trước:** vẫn không dựng được stack (Docker daemon không chạy), nên bản đồ chỉ-đọc
+cộng phép đo trên mã THUẦN. Mọi thứ đi qua HTTP/DB là **chưa đo**.
+
+`docs/65` đặt tiêu chí cho vai này, và tôi bám đúng nó: **có đường ra không, và đường ra có ĐÚNG
+SỔ không.** Bốn chỗ đã vá trong `docs/65` đều nằm ở đơn hàng; phần chưa đi là chính vùng cài đặt.
+
+**F1 · Đúng ca sự cố thì badge hiện MÃ MÁY.** `unmatched_transfers.reason` có **bốn** giá trị
+(CHECK ở `0036`), payment ghi đủ cả bốn (`server.js:235, 383, 404, 414`), nhưng bảng câu chữ
+`RECONCILE_REASON` (`pages.js:5720`) chỉ dịch **ba**. Đo bằng cách render thẻ đối soát với đủ bốn
+dòng:
+
+| lý do | badge hiện ra |
+|---|---|
+| `no_ref` | "Thiếu mã đối soát" |
+| `order_not_found` | "Không thấy đơn" |
+| `account_mismatch` | "Sai tài khoản nhận" |
+| `order_not_live` | **`order_not_live`** |
+
+Cùng chỗ sót hiện **HAI LẦN trên một thẻ**: câu dẫn viết *"thiếu mã đối soát, không thấy đơn,
+hoặc sai tài khoản"* — kể ba trong bốn. Người bán gặp ca thứ tư vừa thấy một chuỗi snake_case
+tiếng Anh, vừa đọc một đoạn văn không nói về tình huống của họ.
+
+Và ca thứ tư CHÍNH LÀ ca sự cố: `order_not_live` = **tiền vào một đơn đã chết** (huỷ / hết hạn /
+đã hoàn). Tức khách nhắn "tôi chuyển rồi" trong khi đơn không còn sống — đúng lúc người bán cần
+hiểu nhất thì màn hình đưa cho họ mã nội bộ.
+
+**Vì sao nó trôi được, và vì sao kho đáng lẽ đã chặn:** `0036` mở rộng CHECK cho `order_not_live`
+**và ghi rõ lý do ngay trong migration**, nhưng bảng câu chữ ở trang không được mở rộng theo. Kho
+đã gặp đúng lớp này hai lần và đã có khuôn đúng — `provider_status` (`0184`) và `media.last_error`
+(`0185`) đều là **CHECK từ vựng đóng + chốt so BẰNG với bảng câu chữ**. Ở đây CHECK có, chốt so
+BẰNG thì KHÔNG. Đó là toàn bộ nguyên nhân.
+
+Chốt hiện có canh đúng **mảnh đầu**: `payment/test/e2e.mjs:353-362` khẳng định reason được GHI ra
+(và đơn huỷ không sống lại). Không khẳng định nào đọc thứ **trang hiện ra**. Đúng ba mảnh §4 —
+cơ chế có chốt, ĐIỂM PHÁT RA không.
+
+**Ba giả thuyết của người đo, cả ba bị bác** — chép lại vì đó là kết quả chính của vùng này:
+- Tiền rơi vào đơn đã huỷ thì không có đường hoàn lại → **bác**. Chốt hoàn tiền chỉ khoá
+  `returned` **khi đã có phiếu hoàn** (`orders.js:1291`), không khoá `cancelled`. Đó đúng là bản
+  vá §1 của chính `docs/65`, và nó tổng quát hơn ca đã sinh ra nó.
+- Chủ shop duy nhất mất MFA là kẹt vĩnh viễn khỏi 14 route nhạy cảm → **bác**. Có bảng
+  `mfa_recovery_codes`, và step-up dùng **MẬT KHẨU** chứ không phải TOTP, nên mất thiết bị không
+  khoá được vùng cài đặt.
+- Bấm "Đã xử lý" ở hàng đợi đối soát làm hỏng sổ → **bác**. Nó chỉ đóng dấu đã xem
+  (`resolveReconcile` chỉ set `resolved_at`), không đụng tiền; đường ghi sổ thật vẫn là phiếu hoàn
+  trên đơn.
+
+**Một chỗ sổ tay TỰ GHI HẸP hơn thực tế, sửa ở đây.** Đợt đo 3 ghi lỗi "gộp mọi non-200 về 502" ở
+**hai** trang (`/notify`, `/shipping`). Đếm lại trên `main`: cùng hình dạng ở **bốn** chỗ —
+`server.js:1098` (notify), `:1130` (shipping), `:1223` (danh sách cộng tác viên), `:1306`
+(`GET /billing`). Hai chỗ đầu đã đo được là gặp 403 thật; **hai chỗ sau CHƯA đo khả năng chạm
+tới** (cả hai route seller đều `perm: null` nên 403 khó xảy ra) — ghi đúng mức đó, không nống lên.
+Lỗi gốc vẫn chưa vá.
+
+### Giao F1 cho Codex
+
+Ba mảnh, và mảnh thứ ba mới là thứ giữ cho nó không tái diễn:
+
+1. **Câu chữ:** thêm khoá `order_not_live` vào `RECONCILE_REASON`. Câu phải nói đúng việc cần làm,
+   không chỉ dịch tên mã — đây là tiền đã vào tài khoản cho một đơn không còn sống, việc tiếp theo
+   là **hoàn cho khách** (đường hoàn trên đơn vẫn mở, đã đo). Đừng viết "đơn không hợp lệ".
+2. **Câu dẫn của thẻ** đang kể ba nguyên nhân, phải kể đủ bốn — vá xong badge mà bỏ câu dẫn thì
+   vẫn còn một đoạn văn nói sai với đúng ca đó.
+3. **Chốt so BẰNG ba tập**, đúng khuôn `0185` đã làm cho `media.last_error`: tập trong CHECK
+   `unmatched_transfers_reason_check` ↔ tập reason mà `apps/payment/src/server.js` thật sự ghi ↔
+   khoá của `RECONCILE_REASON`. Thêm reason mới trong mã mà quên câu chữ **phải ĐỎ**, và ngược
+   lại. Chốt này chạy được ở mức unit (đọc migration + hai tệp nguồn dạng VĂN BẢN), không cần
+   stack — cùng cách `shared-sql.test.js` đang làm.
+
+**Ma trận tối thiểu:** bỏ khoá `order_not_live` khỏi bảng câu chữ → ĐỎ · thêm một reason thứ năm
+vào CHECK mà không thêm câu → ĐỎ · thêm câu cho một reason KHÔNG có trong CHECK → ĐỎ (chiều ngược
+lại; thiếu vế này thì "thêm bừa câu" cũng đi lọt) · hoàn nguyên → XANH.
+
+**Đặt khẳng định ở BỀ MẶT NGƯỜI BÁN**, không chỉ ở mức nguồn — §4 đã trả giá hai lần cho chuyện
+này. Nếu thêm ca e2e thì cho tiền vào một đơn đã huỷ (payment e2e đã dựng sẵn kịch bản đó ở
+`:353`) rồi đọc **thẻ đối soát trên trang admin**, khẳng định badge KHÔNG chứa chuỗi
+`order_not_live`.
+
+Thêm bộ test mới thì sửa `test-manifest.sh` + bảng §0 **cùng commit**; thêm ca vào bộ có sẵn thì
+manifest giữ **43 / 113**. Phạm vi đụng `pages.js` (seller-admin) và có thể cả `payment` ⇒ theo §5
+là **cổng đầy đủ**. Không đụng logic đường tiền: `persistUnmatched` và chốt `DEAD_STATUSES` giữ
+NGUYÊN — đợt này đo ra chúng đúng.
+
 **Còn nợ của lát cắt 7, chưa đo:** `/domains` chưa đi bằng vai thật · chưa đo vai "shop lúc
 có sự cố" cho các nhóm còn lại · trên `/billing` còn hai
 đường chưa đi: hoá đơn quá 72h mà shop vẫn chuyển tiền (status còn `pending` nên vẫn được nhận —

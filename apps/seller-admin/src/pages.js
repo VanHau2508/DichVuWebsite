@@ -7070,6 +7070,7 @@ export function renderIntegrations(ctx, shopId, data = {}, notice, err, probe = 
 // Người đọc là chủ shop, không phải kế toán. Thứ họ cần biết trong 2 giây: "còn mấy ngày"
 // và "trả tiền ở đâu". Mọi thứ khác xếp sau.
 export function renderBilling(ctx, shopId, d, err, ok) {
+  const canCfg = ctx.role === 'owner' || ctx.role === 'admin';
   const base = `/shops/${esc(shopId)}/billing`;
   const dt = (v) => (v ? new Date(v).toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : '—');
   const left = d?.days_left;
@@ -7110,7 +7111,7 @@ export function renderBilling(ctx, shopId, d, err, ok) {
       </div>
       <p class="muted" style="margin:12px 0 0;font-size:.88rem">Chuyển xong <strong>không cần báo ai</strong> — hệ thống tự nhận trong vài phút rồi cộng hạn. Tải lại trang để xem.</p>
     </div>` : ''}
-    <div class="card"><h2 style="margin-top:0">${p ? 'Đổi số tháng / đổi gói' : 'Gia hạn'}</h2>
+    ${canCfg ? `<div class="card"><h2 style="margin-top:0">${p ? 'Đổi số tháng / đổi gói' : 'Gia hạn'}</h2>
       ${p ? '<p class="muted" style="margin-top:0">Tạo mã mới sẽ <strong>huỷ mã cũ</strong> — chỉ chuyển khoản theo mã mới nhất.</p>' : ''}
       <form method="POST" action="${base}/charge" class="actions" style="align-items:end;flex-wrap:wrap">
         <div><label>Số tháng</label><select name="months">${[1, 3, 6, 12].map((m) => `<option value="${m}"${m === 3 ? ' selected' : ''}>${m} tháng</option>`).join('')}</select></div>
@@ -7118,7 +7119,7 @@ export function renderBilling(ctx, shopId, d, err, ok) {
           (d?.plans ?? []).filter((x) => x.code !== d?.plan_code).map((x) => `<option value="${esc(x.code)}">${esc(x.name)} — ${esc(money(x.price_vnd_month))}/tháng</option>`).join('')}</select></div>
         <div><button class="btn" type="submit">Tạo mã thanh toán</button></div>
       </form>
-    </div>`}
+    </div>` : ''}`}
     <div class="card"><h2 style="margin-top:0">Lịch sử đóng phí</h2>
       ${(d?.invoices ?? []).length ? tblCards({
         head: [{ html: 'Ngày' }, { html: 'Gói' }, { html: 'Số tháng' }, { html: 'Số tiền', style: 'text-align:right' }, { html: 'Ghi chú' }],

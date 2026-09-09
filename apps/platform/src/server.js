@@ -344,7 +344,8 @@ async function setBillingConfig(req, res, body, session, ip) {
   await db.query(
     `INSERT INTO audit_logs (shop_id, actor_type, actor_id, action, ip, metadata)
      VALUES (NULL, 'platform_staff', $1, 'platform.billing_config_set', $2, $3)`,
-    [session.userId, ip, { enabled, token_changed: !!token }],
+    // Giữ lỗi ghi nhật ký được truyền ra ngoài; helper audit() hiện nuốt lỗi.
+    [session.user.id, ip, { enabled, token_changed: !!token }],
   );
   return send(res, 200, { ok: true });
 }

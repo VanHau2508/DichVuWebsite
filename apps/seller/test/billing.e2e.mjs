@@ -64,6 +64,20 @@ async function makeShopOwner(staffCookie, slug) {
   await rq(AUTH, 'POST', '/auth/invitations/accept', { body: { token: await inviteTokenOf(email), password }, origin: OA });
   return { shopId, email, password, cookie: await login(email, password) };
 }
+async function addMember(shop, role) {
+  const email = `bill-${role}-${uniq()}@shop.vn`, password = 'member passphrase strong';
+  const su = await rq(AUTH, 'POST', '/auth/step-up', { body: { password: shop.password }, cookie: shop.cookie, origin: OA });
+  shop.cookie = ck(su.sc) ?? shop.cookie;
+  const invited = await rq(SELLER, 'POST', `/shops/${shop.shopId}/members/invite`, {
+    body: { email, role }, cookie: shop.cookie, origin: OS,
+  });
+  if (![200, 201].includes(invited.status)) throw new Error(`mốc chết: mời ${role}: ${invited.raw}`);
+  const accepted = await rq(AUTH, 'POST', '/auth/invitations/accept', {
+    body: { token: await inviteTokenOf(email), password }, origin: OA,
+  });
+  if (accepted.status !== 200) throw new Error(`mốc chết: nhận lời mời ${role}: ${accepted.raw}`);
+  return { role, cookie: await login(email, password) };
+}
 
 // SePay gửi gì: payload tối thiểu mà parseEvent của payment chấp nhận.
 // eventId: đặt TÊN cho giao dịch để tra lại đúng dòng trong hàng đợi đối soát, và để dựng
@@ -86,11 +100,19 @@ async function main() {
   // DB chỉ giữ hash token để webhook khớp tiền về.
   const PLAT_TOKEN = `plat-sepay-${uniq()}`;
   const ACC = process.env.PLATFORM_BANK_ACCOUNT ?? '0123456789';
-  await owner.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`).catch(() => {});
-  await owner.query(
-    `UPDATE platform_billing_config SET sepay_token_hash = encode(digest($1,'sha256'),'hex'), enabled = true`,
-    [PLAT_TOKEN],
-  );
+  await rq(AUTH, 'POST', '/auth/step-up', { body: { password: 'staff strong passphrase' }, cookie: staff, origin: OA });
+  const staffMe = await rq(AUTH, 'GET', '/auth/me', { cookie: staff });
+  const config = await rq(PLATFORM, 'PUT', '/ops/billing-config', {
+    cookie: staff, origin: OO, body: { sepay_token: PLAT_TOKEN, enabled: true },
+  });
+  config.status === 200 ? ok('đổi token nền tảng qua route thật → 200') : bad('đổi token lỗi', config.raw);
+  const logRow = (await owner.query(`SELECT actor_id, metadata FROM audit_logs
+    WHERE action='platform.billing_config_set' ORDER BY id DESC LIMIT 1`)).rows[0];
+  logRow?.actor_id === staffMe.json?.id && !!logRow?.actor_id
+    && logRow.metadata?.token_changed === true
+    ? ok('nhật ký đổi token ghi đúng nhân viên thao tác') : bad('nhật ký đổi token thiếu/sai actor', JSON.stringify(logRow));
+  const nullProbe = await owner.query('SELECT $1::uuid IS NULL AS is_null', [undefined]);
+  nullProbe.rows[0].is_null ? ok('pg chuyển undefined thành NULL, không ném lỗi') : bad('pg không chuyển undefined thành NULL');
 
   const a = {
     get: (p) => rq(SELLER, 'GET', `/shops/${A.shopId}${p}`, { cookie: A.cookie }),
@@ -340,6 +362,30 @@ async function main() {
     ? ok('số tiền + số tháng trên màn hình khớp DB') : bad(`màn hình lệch DB: ${JSON.stringify(dbCh)}`);
 
   sect('9b. Console: người vận hành THẤY và ĐÓNG được khoản tiền lạc');
+  const roles = [{ role: 'owner', cookie: A.cookie }];
+  for (const role of ['admin', 'order_manager', 'catalog_manager']) roles.push(await addMember(A, role));
+  const billingData = (await a.get('/billing')).json;
+  if (!billingData?.invoices?.length || !billingData.current_period_end) throw new Error('mốc chết: cần lịch sử đóng phí thật và hạn');
+  for (const member of roles) {
+    const page = await rq(ADMIN, 'GET', `/shops/${A.shopId}/billing`, { cookie: member.cookie });
+    const forms = page.raw.match(/<form\b[^>]*action="[^"]*\/billing\/charge"[^>]*>/g) ?? [];
+    const canCfg = member.role === 'owner' || member.role === 'admin';
+    page.status === 200 && forms.length === (canCfg ? 1 : 0)
+      ? ok(`${member.role}: form gia hạn ${canCfg ? 'vẫn hiện' : 'ẩn'}`) : bad(`${member.role}: form gia hạn sai quyền`, `HTTP ${page.status}, forms=${forms.length}`);
+    const history = /<h2[^>]*>Lịch sử đóng phí<\/h2>([\s\S]*?)<\/table>/.exec(page.raw)?.[1] ?? '';
+    const expiry = new Date(billingData.current_period_end).toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+    page.raw.includes(`hạn đến <strong>${expiry}</strong>`) && history.includes(new Intl.NumberFormat('vi-VN').format(Number(billingData.invoices[0].amount_vnd)))
+      ? ok(`${member.role}: vẫn thấy hạn và khoản đóng phí thật`) : bad(`${member.role}: mất số liệu billing`);
+    if (!canCfg) {
+      const denied = await fetch(`${ADMIN}/shops/${A.shopId}/billing/charge`, {
+        method: 'POST', headers: { cookie: `__Host-session=${member.cookie}`, origin: OADM, 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'months=1', redirect: 'manual',
+      });
+      denied.status === 403 ? ok(`${member.role}: POST trực tiếp giữ 403`) : bad(`${member.role}: POST sai mã`, String(denied.status));
+      await denied.text();
+    }
+  }
+
   // Cảnh báo Telegram chỉ nói CÓ BAO NHIÊU. Không có màn hình thì không ai biết là gì, của
   // shop nào, và không đóng lại được → cảnh báo kêu mãi rồi bị bỏ qua (tệ hơn không có).
   const admStaff = async (method, path, form) => {

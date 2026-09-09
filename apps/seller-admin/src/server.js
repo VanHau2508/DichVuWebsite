@@ -1299,14 +1299,14 @@ async function affiliatePayoutStepUp(req, res, me, cookie, shopId, affId) {
 }
 
 // ── Gói dịch vụ: chủ shop xem hạn + tự trả tiền (0124-0128) ─────────────────
-async function billingPage(res, me, cookie, shopId, ok, err) {
+async function billingPage(res, me, cookie, shopId, ok, err, errorStatus = 400) {
   if (!isMember(me, shopId)) return denyShop(res, me);
   const ctx = shopCtx(me, shopId, await shopNameOf(shopId, cookie), 'billing');
   const r = await sellerApi('GET', `/shops/${shopId}/billing`, { cookie });
   if (r.status !== 200) return sendHtml(res, 502, V.renderError(ctx, r.json?.error ?? 'Không tải được thông tin gói dịch vụ.'));
   // QR là SVG NỘI TUYẾN do seller dựng — cần sendHtmlJs để có nonce cho khối JS chung,
   // nhưng bản thân SVG không cần script nào.
-  return sendHtmlJs(res, err ? 400 : 200, (nonce) => V.renderBilling({ ...ctx, nonce }, shopId, r.json, err, ok));
+  return sendHtmlJs(res, err ? errorStatus : 200, (nonce) => V.renderBilling({ ...ctx, nonce }, shopId, r.json, err, ok));
 }
 async function billingCharge(req, res, me, cookie, shopId) {
   if (!isMember(me, shopId)) return denyShop(res, me);
@@ -1316,7 +1316,8 @@ async function billingCharge(req, res, me, cookie, shopId) {
   });
   return billingPage(res, me, cookie, shopId,
     r.status === 201 ? 'Đã tạo mã thanh toán — chuyển khoản theo đúng nội dung bên dưới.' : null,
-    r.status === 201 ? null : (r.json?.error ?? 'Không tạo được mã thanh toán.'));
+    r.status === 201 ? null : (r.json?.error ?? 'Không tạo được mã thanh toán.'),
+    r.status === 403 ? 403 : 400);
 }
 
 // ── Kết nối Trang Facebook (0122) ───────────────────────────────────────────

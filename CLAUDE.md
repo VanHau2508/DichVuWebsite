@@ -1860,8 +1860,27 @@ ra chúng đúng. Không thêm bộ test mới thì manifest giữ **43 / 113**;
 `test-manifest.sh` + bảng §0 **cùng commit**. Gác đầy đủ phải chạy lại: F1 đụng `pages.js`
 (seller-admin), F2 đụng `platform` — hai service, nên theo §5 là **cổng đầy đủ**.
 
-**Còn nợ của lát cắt 7, chưa đo:** `/domains` và `/billing` mới có bản đồ chỉ-đọc, **chưa đi
-bằng vai thật** · chưa đo vai "shop lúc có sự cố" cho các nhóm còn lại · trên `/billing` còn hai
+**Codex xử lý billing F1–F2:** form tạo/đổi mã chỉ hiện cho owner/admin bằng canCfg;
+thẻ hạn, QR đã có và lịch sử không bị gác theo quyền cấu hình. BFF giữ nguyên 403 khi seller
+từ chối charge. E2E mời admin/order_manager/catalog_manager qua API, nhận lời mời rồi đăng
+nhập thật; cả bốn vai được kiểm form và hạn + khoản đóng phí thật do luồng sản phẩm sinh ra.
+
+Đổi token nay ghi `session.user.id`. Đo route cũ trả **200** và actor **NULL**, không phải
+500; probe pg với tham số undefined vào uuid cũng trả NULL. Giữ INSERT trực tiếp có chú
+thích vì helper audit() nuốt lỗi ghi sổ, chuyển sang nó sẽ đổi hành vi ngoài bản vá actor.
+Ba INSERT trực tiếp khác (tạo shop, gia hạn, chấm dứt) đều dùng staff.user.id và nằm trong
+transaction của nghiệp vụ; không sửa. Không đụng payment hay sweepBillingApply.
+
+Bộ billing từ 53 lên **66 ca**: baseline có chốt mới **61/5**, sửa xong **66/0**.
+Đột biến riêng: actor cũ **65/1**; form hiện mọi vai **64/2**; form ẩn mọi vai **64/2**;
+xóa số liệu của nhân viên trong khi giữ form đúng **64/2**. Restart service sau mỗi đột biến,
+hoàn nguyên xanh **66/0**. Manifest vẫn **43 unit / 113 E2E**. Cổng đầy đủ mới **exit 0:
+120 mục xanh, 0 đỏ** — unit **340/340**, migration trắng **184** (0 DRIFT/pending), bảo mật
+sạch, bất biến DB **149/149**, E2E **113/113** (billing **66/66**), smoke **8/27/32**,
+không log E2E sót. PID/PPID xác nhận một lượt cổng. Chưa merge, main giữ 476f8d7.
+
+**Còn nợ của lát cắt 7, chưa đo:** `/domains` chưa đi bằng vai thật · chưa đo vai "shop lúc
+có sự cố" cho các nhóm còn lại · trên `/billing` còn hai
 đường chưa đi: hoá đơn quá 72h mà shop vẫn chuyển tiền (status còn `pending` nên vẫn được nhận —
 có vẻ đúng, chưa đo), và nhân viên nền tảng đánh dấu tiền lạc đã xử **không** tự cộng hạn, tức
 phải nhớ gia hạn tay ở màn khác; nhật ký không nối hai thao tác đó với nhau.

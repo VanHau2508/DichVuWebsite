@@ -1762,9 +1762,109 @@ Harness tạm đã gỡ; không sửa mã sản phẩm, manifest vẫn **43/113*
 bảo mật sạch, bất biến DB **149/149**, E2E **113/113**, smoke **8/27/32**, không log E2E sót.
 Đã kiểm PID/PPID: một lượt cổng duy nhất; không dùng lại kết quả 315117e. Chưa merge.
 
-**Còn nợ của lát cắt 7, chưa đo:** `/domains` mới có bản đồ chỉ-đọc, **chưa đi bằng vai thật** ·
-`/billing` mới chỉ được đối chiếu ở mức bảng quyền, chưa đi bằng vai thật · chưa đo vai "shop lúc
-có sự cố" cho các nhóm còn lại.
+### Lát cắt 7 — đợt đo 6: `/billing`. ĐƯỜNG TIỀN SẠCH; hai lỗi nằm ở bề mặt và ở nhật ký.
+
+**Điểm mù, nói trước:** vẫn không dựng được stack (lượt này Docker daemon còn không chạy, trước
+đó là 403 khi pull), nên đây là bản đồ chỉ-đọc cộng các phép đo chạy được trên mã THUẦN. Mọi
+thứ đi qua HTTP/DB là **chưa đo**.
+
+**Phần lớn đợt này là XÁC NHẬN, và đó là kết quả chính.** Webhook thuê bao
+(`payment/src/server.js:288-360`) có đủ bốn luật §3, mỗi luật kèm chú thích kể vì sao nó ở đó:
+khớp **TÀI KHOẢN NHẬN** đọc từ đúng env dùng để vẽ QR (`PLATFORM_BANK_ACCOUNT`, 0128 cố ý gom
+một nguồn) và **fail-closed** khi thiếu env · trả thiếu KHÔNG cộng hạn, vào hàng đợi đối soát ·
+trả trùng trả `already`, không đánh dấu lại · `provider_event_id` `ON CONFLICT DO NOTHING`.
+`pay_ref` có **UNIQUE** (`0124:47`) nên va chạm mã là bất khả, không phải chỗ hở.
+
+Số học cộng hạn ở `sweepBillingApply` đúng: `GREATEST(COALESCE(current_period_end, now()), now())`
+— trả sớm không mất ngày đã mua, trả muộn không tặng ngày đã lỡ. Mở khoá + xoá cờ gộp MỘT câu
+lệnh, chú thích kể lại đúng lỗi e2e từng bắt (hạn được cộng mà shop vẫn khoá). Tách
+payment/worker có chủ ý: vai xử webhook công khai không được cầm quyền sửa `subscriptions`/`shops`.
+
+**Bốn giả thuyết của người đo, cả bốn bị bác:**
+- `perm: null` trên `GET /billing` là rò → bác. Cố ý, chú thích ngay tại route: *"nhân viên thấy
+  'còn 3 ngày' mới nhắc được chủ"*. Số tài khoản lộ trong `pending` là tài khoản NHẬN TIỀN công
+  khai của nền tảng, in trên mọi mã QR — không phải bí mật.
+- `POST /billing/charge` không step-up là lỗ đường tiền → bác. Cố ý: đây là đường **trả tiền CHO
+  nền tảng**, thêm ma sát vào đúng chỗ mình muốn người ta đi qua là tự bắn vào chân.
+- Cờ `suspended_at` bị đóng khi shop chưa thật sự khoá ⇒ trang billing nói dối → bác. **Cả hai**
+  nơi ghi cờ (`sweepBillingEnforce`, `sweepSubscriptions`) đều gác `locked.rowCount`, và chú
+  thích kể lại đúng lỗi này đã bị bắt và vá (`a8-khoa-shop-repro ca 2`).
+- `resolveUnmatched` thiếu step-up → bác. Nó chỉ đánh dấu khoản tiền lạc đã xử, **không cộng hạn
+  cho ai**; đúng học thuyết step-up của kho (gác thao tác CẤP THÊM, không gác thao tác ghi sổ).
+
+**F1 · Trang Gói dịch vụ mời MỌI vai bấm một nút chắc chắn 403.**
+`renderBilling` **không nhận vai ở bất kỳ đâu** — form "Tạo mã thanh toán" (kèm ô chọn số tháng
+và ô đổi gói) dựng vô điều kiện. Đo bằng cách gọi thẳng hàm render với bốn vai: HTML của `owner`
+và `order_manager` **giống nhau TỪNG BYTE**, tương tự `catalog_manager`. Mà `POST …/charge` gác
+bằng `shop.write`, và `rbac.js` cho `order_manager = {orders.read, orders.write}`,
+`catalog_manager = {catalog.read, catalog.write}` — không vai nào có.
+
+Nav mở trang cho mọi vai là **cố ý và đúng** (§9.3: không ẩn SỐ LIỆU mà API đã trả — thẻ hạn,
+giá gói, lịch sử đóng phí đều nên thấy). Nhưng cái form là **LỐI ĐI** tới một thao tác vai đó
+không mở được, đúng thứ §9.3 luật 1 cấm — và luật đó đã KHOÁ, không còn là câu hỏi mở. Bấm vào
+thì `billingCharge` → seller 403 → trang dựng lại kèm câu lỗi ở HTTP **400** (cùng họ với lỗi
+502 của `/notify`/`/shipping` ở đợt đo 3, nhẹ hơn nhưng cùng lớp: mã trạng thái nói một đằng,
+câu chữ nói một nẻo).
+
+Không chốt nào bắt: **unit 340/340 XANH với lỗi đang tồn tại**, và `billing.e2e.mjs` chỉ đăng
+nhập bằng `owner` — đúng điểm mù §4 đã ghi thành luật. Khuôn vá có sẵn ngay trong tệp:
+`canCfg = ctx.role === 'owner' || ctx.role === 'admin'` (`pages.js:2626`), đúng tập của
+`shop.write`.
+
+**F2 · Nhật ký đổi token SePay của nền tảng ghi KHÔNG CÓ NGƯỜI LÀM.**
+`setBillingConfig` (`platform/src/server.js:347`) ghi `session.userId` vào `audit_logs.actor_id`,
+nhưng `requireStaff` trả `{ user, staffRole }` — **không có khoá `userId`**. Đã đo: dispatcher
+truyền đúng object đó (`route.fn(req, res, body, staff, clientIp(req), params)`), và `.userId`
+xuất hiện **ĐÚNG MỘT LẦN trong cả service**; mọi chỗ khác dùng `session.user.id` hoặc helper
+`audit()`. Nó trôi được chính vì chỗ này **bỏ helper để `INSERT` tay** — cùng lớp "một luật hai
+bản" của §3, chỉ khác là bản thứ hai viết thẳng SQL.
+
+Cột `actor_id` là `uuid` **nullable** (`0002:120`) nên hậu quả gần như chắc chắn là một dòng
+nhật ký **actor NULL** chứ không phải 500. Nhưng **chưa xác minh được**: kho không có
+`node_modules` ở host nên không chạy `pg` để chứng minh `undefined → NULL` thay vì ném.
+→ **Lỗi thì chắc, hậu quả cụ thể thì chưa đo.** Ghi đúng như vậy.
+
+Đáng lo vì route này có `stepUp: true` — nó được gác chính vì nó quan trọng: đổi token SePay là
+đổi bí mật xác thực mọi thông báo tiền về của chính nền tảng. Nhật ký là thứ DUY NHẤT trả lời
+"ai đã đổi", và đúng chỗ đó đang bỏ trống.
+
+### Giao F1–F2 cho Codex
+
+**F1.** `renderBilling` nhận vai và **chỉ** gác cái form, giữ nguyên thẻ trạng thái + lịch sử
+đóng phí cho mọi vai (§9.3: ẩn LỐI ĐI, không ẩn SỐ LIỆU). Dùng `canCfg` như `pages.js:2626`,
+đừng chép Set mới — §9.3 đã nói rõ hai bản sẽ trôi.
+- Chốt phải khẳng định **CẢ HAI CHIỀU**: `order_manager`/`catalog_manager` KHÔNG thấy form, và
+  `owner`/`admin` VẪN thấy. Thiếu vế sau thì một bản "ẩn với tất cả" cũng đi lọt và chủ shop
+  không gia hạn được — hỏng nặng hơn lỗi đang có.
+- Thêm vế thứ ba: bốn vai đều vẫn thấy **thẻ hạn và lịch sử đóng phí**. Đó là thứ §9.3 cấm ẩn.
+- Chốt mức unit chạy được: `renderBilling` là hàm thuần. Lưu ý `pages.js` import `../presets.js`
+  (bind-mount) nên host không import thẳng được — các bộ hiện có (`table-cards`,
+  `dashboard-viec`) đọc tệp dạng VĂN BẢN, hoặc dựng shim tạm rồi gỡ. Nếu làm chốt e2e thì
+  **phải `addMember` vai thật rồi đăng nhập lại** (§4), vì `billing.e2e.mjs` hiện chỉ có `owner`.
+- Cân nhắc luôn mã trạng thái: hiện thất bại quyền ra **400**. Sửa được thì sửa, không thì ghi
+  lại — đừng im lặng.
+
+**F2.** Đổi `session.userId` → `session.user.id` ở `platform/src/server.js:347`, và **cân nhắc
+chuyển hẳn sang helper `audit()`** như hàm `resolveUnmatched` ngay cạnh — bỏ helper chính là lý
+do chỗ này trôi.
+- Chốt: sau khi đổi token qua đúng route, dòng `audit_logs` cho `platform.billing_config_set`
+  phải có `actor_id` = nhân viên vừa thao tác. Đột biến quay lại `session.userId` phải ĐỎ.
+- **Đo giúp phần tôi không đo được:** `undefined` vào `pg` ra NULL hay ném? Nếu nó NÉM thì đây
+  không phải lỗi nhật ký mà là **đổi cấu hình thanh toán 500 hoàn toàn** — mức nghiêm trọng
+  khác hẳn, và phải ghi lại cho đúng.
+- Trong lúc đó soát nốt: còn chỗ nào khác trong `apps/platform` `INSERT INTO audit_logs` thẳng
+  thay vì qua helper không.
+
+Không đụng đường tiền: `payment/src/server.js` và `sweepBillingApply` giữ NGUYÊN — đợt này đo
+ra chúng đúng. Không thêm bộ test mới thì manifest giữ **43 / 113**; thêm thì sửa
+`test-manifest.sh` + bảng §0 **cùng commit**. Gác đầy đủ phải chạy lại: F1 đụng `pages.js`
+(seller-admin), F2 đụng `platform` — hai service, nên theo §5 là **cổng đầy đủ**.
+
+**Còn nợ của lát cắt 7, chưa đo:** `/domains` và `/billing` mới có bản đồ chỉ-đọc, **chưa đi
+bằng vai thật** · chưa đo vai "shop lúc có sự cố" cho các nhóm còn lại · trên `/billing` còn hai
+đường chưa đi: hoá đơn quá 72h mà shop vẫn chuyển tiền (status còn `pending` nên vẫn được nhận —
+có vẻ đúng, chưa đo), và nhân viên nền tảng đánh dấu tiền lạc đã xử **không** tự cộng hạn, tức
+phải nhớ gia hạn tay ở màn khác; nhật ký không nối hai thao tác đó với nhau.
 
 **Còn nợ đã ghi, chưa làm, không thuộc lát cắt nào:** nút **"tải lại tất cả"** cho ảnh hỏng — bấm từng dòng thì shop 200 ảnh hỏng sẽ bấm 200 lần, nhưng
 một nút hàng loạt là 200 kết nối ra ngoài trong một lượt và cần quyết định riêng về nhịp.

@@ -480,12 +480,37 @@ async function main() {
   const pl = (await owner.query(
     `SELECT payload->>'to' AS t FROM outbox WHERE shop_id = $1 AND topic = 'shop.onboarding_nudge'`, [shopCu])).rows[0];
   pl?.t === 'a@vidu.vn' ? ok('email gửi đúng contact_email của shop') : bad('sai người nhận', String(pl?.t));
-  for (const id of [shopCu, shopMoi, shopCoHang, shopKhongMail]) {
-    await owner.query(`DELETE FROM products WHERE shop_id=$1`, [id]);
-    await owner.query(`DELETE FROM notification_deliveries WHERE shop_id=$1`, [id]);
-    await owner.query(`DELETE FROM outbox WHERE shop_id=$1`, [id]);
-    await owner.query(`DELETE FROM shops WHERE id=$1`, [id]);
+  // Không xoá fixture khi poller/consumer còn ghi delivery. Chờ trạng thái thật,
+  // không sleep đoán thời gian; quá hạn phải báo lỗi thay vì nuốt lỗi cleanup.
+  const nudgeDeadline = Date.now() + 15000;
+  while (true) {
+    const pending = (await owner.query(
+      `SELECT count(*)::int n FROM outbox o WHERE o.shop_id=$1 AND
+         (o.processed_at IS NULL OR NOT EXISTS (
+           SELECT 1 FROM notification_deliveries d WHERE d.outbox_id=o.id AND d.channel='email'
+             AND d.status IN ('accepted','failed','skipped','superseded'))
+          OR EXISTS (SELECT 1 FROM notification_deliveries d WHERE d.outbox_id=o.id
+             AND d.status NOT IN ('accepted','failed','skipped','superseded')))`, [shopCu])).rows[0].n;
+    if (pending === 0) break;
+    if (Date.now() >= nudgeDeadline) throw new Error('mốc chết: delivery nhắc shop chưa kết thúc, không xoá fixture đang chạy');
+    await sleep(100);
   }
+  const cleanup = await owner.connect();
+  try {
+    await cleanup.query('BEGIN');
+    for (const id of [shopCu, shopMoi, shopCoHang, shopKhongMail]) {
+      // Khoá cha trước khi xoá con: INSERT delivery lấy KEY SHARE để kiểm FK.
+      await cleanup.query(`SELECT id FROM outbox WHERE shop_id=$1 FOR UPDATE`, [id]);
+      await cleanup.query(`DELETE FROM products WHERE shop_id=$1`, [id]);
+      await cleanup.query(`DELETE FROM notification_deliveries WHERE shop_id=$1`, [id]);
+      await cleanup.query(`DELETE FROM outbox WHERE shop_id=$1`, [id]);
+      await cleanup.query(`DELETE FROM shops WHERE id=$1`, [id]);
+    }
+    await cleanup.query('COMMIT');
+  } catch (e) {
+    await cleanup.query('ROLLBACK');
+    throw e;
+  } finally { cleanup.release(); }
 
   await sleep(400); // chờ worker POST webhook
   alerts.some((a) => /chưa khớp/i.test(a.text ?? ''))

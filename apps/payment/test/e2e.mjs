@@ -18,6 +18,7 @@ import { base32Decode } from '../../../packages/auth/src/base32.js';
 const AUTH = process.env.AUTH_URL ?? 'http://auth:3020';
 const PLATFORM = process.env.PLATFORM_URL ?? 'http://platform:3030';
 const SELLER = process.env.SELLER_URL ?? 'http://seller:3040';
+const ADMIN = process.env.ADMIN_URL ?? 'http://seller-admin:3001';
 const PAYMENT = process.env.PAYMENT_URL ?? 'http://payment:3070';
 const WORKER = process.env.WORKER_URL ?? 'http://worker:3080';
 const CO = new URL(process.env.CHECKOUT_URL ?? 'http://checkout:3060');
@@ -352,7 +353,8 @@ async function main() {
 
   // #1: tiền vào đơn ĐÃ HUỶ/hết hạn → KHÔNG sống lại (chống oversell) → hàng đợi order_not_live.
   const oDead = await placeQrOrder(A, vid);
-  await owner.query(`UPDATE orders SET status='cancelled' WHERE payment_ref=$1`, [oDead.ref]); // mô phỏng sweep hết hạn
+  const cancelled = await rq(SELLER, 'POST', `/shops/${A.shopId}/orders/${oDead.orderId}/cancel`, { cookie: A.cookie, origin: OS, body: {} });
+  if (cancelled.status !== 200) throw new Error(`mốc chết: huỷ đơn qua API ${cancelled.status} ${cancelled.raw}`);
   const deadId = `evt-dead-${uniq()}`;
   r = await webhookPerShop(tokenA, { id: deadId, transferType: 'in', transferAmount: oDead.total, content: `ck ${oDead.ref}`, transactionDate: '2026-07-12 10:00:00' });
   r.status === 200 && r.json.reason === 'order_not_live' && r.json.paid === false ? ok('tiền vào đơn đã huỷ → order_not_live, KHÔNG sống lại (chống oversell)') : bad('đơn huỷ bị sống lại — LỖ HỔNG', r.raw);
@@ -360,6 +362,19 @@ async function main() {
   r.json?.status === 'cancelled' && r.json?.payment_status !== 'paid' ? ok('đơn vẫn HUỶ, không bị confirm/paid') : bad('đơn huỷ bị confirm/paid', r.raw);
   q = await owner.query(`SELECT reason FROM unmatched_transfers WHERE shop_id=$1 AND provider_event_id=$2`, [A.shopId, deadId]);
   q.rows[0]?.reason === 'order_not_live' ? ok('giao dịch vào đơn huỷ GHI vào hàng đợi (order_not_live)') : bad('order_not_live không ghi hàng đợi');
+  const paymentPage = await rq(ADMIN, 'GET', `/shops/${A.shopId}/payment`, { cookie: A.cookie });
+  const card = /<h2[^>]*>Giao dịch chưa khớp[\s\S]*?<\/table>/.exec(paymentPage.raw)?.[0];
+  if (paymentPage.status !== 200 || !card) throw new Error('mốc chết: không đọc được thẻ đối soát admin');
+  const deadRow = [...card.matchAll(/<tr>[\s\S]*?<\/tr>/g)].map((m) => m[0]).find((row) => row.includes(oDead.ref));
+  if (!deadRow) throw new Error('mốc chết: thẻ thiếu giao dịch của đơn vừa huỷ');
+  const reasonBadge = /<span class="badge cancelled">([^<]+)<\/span>/.exec(deadRow)?.[1] ?? '';
+  reasonBadge && !reasonBadge.includes('order_not_live') && /hoàn.*khách/i.test(reasonBadge)
+    ? ok('badge tiền vào đơn huỷ hướng dẫn hoàn cho khách, không lộ mã nội bộ')
+    : bad('badge đối soát không nói việc cần làm', reasonBadge);
+  const intro = /<p class="muted">([^<]+)<\/p>/.exec(card)?.[1] ?? '';
+  /đơn đã huỷ|đơn không còn hoạt động/.test(intro) && /hoàn.*khách/i.test(intro)
+    ? ok('câu dẫn đối soát kể cả tiền vào đơn đã huỷ và việc hoàn tiền')
+    : bad('câu dẫn đối soát bỏ sót đơn đã huỷ', intro);
 
   // #2: đơn ĐÃ XÁC NHẬN (chủ shop bấm "Xác nhận đơn" trước khi tiền về) VẪN nhận được tiền.
   // Đây là ca thật nhất của QR: shop duyệt đơn mới mỗi sáng, khách chuyển khoản buổi trưa.

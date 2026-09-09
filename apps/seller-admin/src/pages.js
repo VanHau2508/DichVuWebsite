@@ -5717,7 +5717,7 @@ export function renderDomainStepUp(ctx, shopId, action, params, err) {
 // Cấu hình tài khoản ngân hàng NHẬN TIỀN qua VietQR. Tiền vào THẲNG tài khoản shop;
 // nền tảng chỉ đối soát. Vài BIN napas phổ biến để chủ shop tra nhanh.
 const BANK_HINT = 'VD BIN napas: Vietcombank 970436 · Techcombank 970407 · MB 970422 · ACB 970416 · VietinBank 970415 · BIDV 970418 · VPBank 970432 · Agribank 970405 · Sacombank 970403 · TPBank 970423';
-const RECONCILE_REASON = { no_ref: 'Thiếu mã đối soát', order_not_found: 'Không thấy đơn', account_mismatch: 'Sai tài khoản nhận' };
+const RECONCILE_REASON = { no_ref: 'Thiếu mã đối soát', order_not_found: 'Không thấy đơn', account_mismatch: 'Sai tài khoản nhận', order_not_live: 'Tiền vào đơn đã huỷ/hết hạn/đã hoàn — cần hoàn cho khách' };
 export function renderPayment(ctx, shopId, cfg, notice, err, sepay = null, reconcile = null, tokenInfo = null) {
   const base = `/shops/${esc(shopId)}`;
   if (ctx.role !== 'owner') {
@@ -5788,7 +5788,7 @@ function renderReconcileCard(base, reconcile) {
     : '<p class="muted" style="margin:0">Chưa có giao dịch nào cần đối soát tay.</p>';
   return `<div class="card">
     <h2 style="margin-top:0">Giao dịch chưa khớp${pending.length ? ` <span class="badge cancelled">${pending.length}</span>` : ''}</h2>
-    <p class="muted">Tiền vào nhưng hệ thống không tự khớp được đơn (thiếu mã đối soát, không thấy đơn, hoặc sai tài khoản). Kiểm tra và đối chiếu tay; bấm "Đã xử lý" khi xong.</p>
+    <p class="muted">Tiền vào nhưng hệ thống không tự khớp được đơn (thiếu mã đối soát, không thấy đơn, sai tài khoản, hoặc đơn không còn hoạt động). Tiền vào đơn đã huỷ/hết hạn/đã hoàn cần hoàn cho khách. Kiểm tra và đối chiếu tay; bấm "Đã xử lý" khi xong.</p>
     ${body}
   </div>`;
 }

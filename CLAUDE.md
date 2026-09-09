@@ -1964,6 +1964,32 @@ manifest giữ **43 / 113**. Phạm vi đụng `pages.js` (seller-admin) và có
 là **cổng đầy đủ**. Không đụng logic đường tiền: `persistUnmatched` và chốt `DEAD_STATUSES` giữ
 NGUYÊN — đợt này đo ra chúng đúng.
 
+**Codex — đang xác minh F1 trên `codex/reconcile-reason-verification` (đáy `09d8087`).**
+Badge và câu dẫn đã nói rõ tiền vào đơn đã huỷ/hết hạn/đã hoàn cần hoàn cho khách.
+Chốt unit so BẰNG CHECK mới nhất, reason nơi ghi và khóa câu chữ; mốc không rút được phải đỏ.
+E2E huỷ đơn bằng API thật, nhận webhook rồi đọc đúng hàng đối soát chứa mã của đơn đó,
+không tìm chữ chung trên cả trang. Không đổi `persistUnmatched`, `DEAD_STATUSES` hay migration.
+
+Số đo trước vá: shared-sql **3/1**, payment E2E **79/2** (badge lộ mã và câu dẫn thiếu ca).
+Sau vá: shared-sql **4/4**, payment E2E **81/81**, toàn manifest unit **341/341**.
+Ma trận trên toàn manifest: bỏ nhãn `order_not_live`, thêm reason thứ năm vào CHECK,
+thêm nhãn ngoài CHECK đều **340/1**; đổi hình dạng CHECK cũng **340/1**, có "mốc chết".
+Riêng trả câu dẫn về bản cũ, giữ badge mới: payment E2E **80/1**; đã khôi phục sau đo.
+Manifest giữ **43 unit / 113 E2E**, không thêm bộ. Cổng đầy đủ mới **exit 1**:
+unit **341**, migration trắng **184 / 0 DRIFT / 0 pending**, bảo mật qua (checkout còn
+**4 moderate**), bất biến DB **149**, **112/113 bộ E2E qua**, smoke **8/27/32**.
+Payment trong chính cổng đạt **81/81**. Bộ worker tổng hợp không chạy hết: cleanup tại
+`apps/worker/test/e2e.mjs:486` xoá outbox bị FK `notification_deliveries_outbox_tenant_fkey`
+chặn (23503); thao tác xoá deliveries và outbox là hai lệnh riêng trong lúc worker chạy.
+Sau khi chủ dự án đồng ý mở phạm vi, đã sửa riêng cleanup test worker: chờ delivery kết thúc
+thật (timeout phải lỗi), rồi một connection/transaction khóa outbox trước khi xoá con và cha.
+Worker chạy riêng **77/77**. Cổng chạy lại sau vá cleanup **exit 0, 120 mục / 0 đỏ**:
+unit **341/341**, migration trắng **184 / 0 DRIFT / 0 pending**, bảo mật qua,
+bất biến DB **149/149**, E2E **113/113 bộ** (payment **81/81**, worker **77/77**),
+smoke **8/27/32**, không còn log E2E đỏ. Không dùng lượt đỏ làm bằng chứng xanh.
+**Chờ Claude review chéo, chưa merge**. Đã kiểm PID/PPID:
+một tiến trình cổng, wrapper Git Bash và tiến trình con, không có lượt độc lập thứ hai.
+
 **Còn nợ của lát cắt 7, chưa đo:** `/domains` chưa đi bằng vai thật · chưa đo vai "shop lúc
 có sự cố" cho các nhóm còn lại · trên `/billing` còn hai
 đường chưa đi: hoá đơn quá 72h mà shop vẫn chuyển tiền (status còn `pending` nên vẫn được nhận —
